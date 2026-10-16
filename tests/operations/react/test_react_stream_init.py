@@ -12,6 +12,19 @@ from lionagi.testing import TestBranch as ScriptedBranch
 
 from ._tool_trace import tool_branch
 
+
+def _each_ran_once(trace, expected):
+    """Fail outright unless every expected trace entry occurred exactly once.
+
+    The ordering tests below are strict xfails that accept an AssertionError, so a
+    tool that never ran, or ran twice, would also read as the expected failure. A
+    pytest failure is not an AssertionError, so it reports a broken precondition
+    as a failure instead.
+    """
+    if sorted(trace) != sorted(expected):
+        pytest.fail(f"tools did not each run once: {trace!r}")
+
+
 # 1. Tool Execution Flows
 
 
@@ -108,7 +121,7 @@ async def test_multiple_tool_calls_sequential_strategy(first_round):
         await branch.ReAct(instruction="Calculate (100 * 5) / 10", tools=True, max_extensions=1)
         == "50"
     )
-    assert trace == [
+    expected = [
         ("start", "multiply", 100, 5),
         ("end", "multiply", 100, 5),
         ("start", "divide", 500, 10),
@@ -116,6 +129,8 @@ async def test_multiple_tool_calls_sequential_strategy(first_round):
         ("start", "multiply", 2, 3),
         ("end", "multiply", 2, 3),
     ]
+    _each_ran_once(trace, expected)
+    assert trace == expected
     responses = [m for m in branch.messages if isinstance(m, ActionResponse)]
     assert [(m.function, m.output) for m in responses] == [
         ("multiply", 500),
@@ -170,12 +185,14 @@ async def test_first_round_declared_sequential_runs_in_order():
         "done",
     )
     assert await branch.ReAct(instruction="Run both", tools=True, max_extensions=0) == "done"
-    assert trace == [
+    expected = [
         ("start", "first"),
         ("end", "first"),
         ("start", "second"),
         ("end", "second"),
     ]
+    _each_ran_once(trace, expected)
+    assert trace == expected
 
 
 @pytest.mark.asyncio
@@ -223,12 +240,14 @@ async def test_later_round_declared_concurrent_overlaps():
         await branch.ReAct(instruction="Compare weather", tools=True, max_extensions=1)
         == "Both cities are sunny"
     )
-    assert trace == [
+    expected = [
         ("start", "NYC"),
         ("start", "SF"),
         ("end", "NYC"),
         ("end", "SF"),
     ]
+    _each_ran_once(trace, expected)
+    assert trace == expected
 
 
 @pytest.mark.asyncio
@@ -299,7 +318,20 @@ async def test_tools_parameter_variations():
         assert "output: 42" in str(api_calls[-1].payload["messages"])
 
 
-def test_scripted_tool_branch_leaves_no_log_dump():
-    """A scripted tool branch must not write a log dump when the process exits."""
-    branch = tool_branch([], [], "unused")
-    assert branch._log_manager._config.auto_save_on_exit is False
+@pytest.mark.asyncio
+async def test_a_scripted_tool_run_registers_no_exit_log_dump(monkeypatch):
+    """Running a real tool through a scripted branch arms no exit-time log dump."""
+    import atexit
+
+    registered = []
+    monkeypatch.setattr(atexit, "register", lambda func, *a, **k: registered.append(func))
+
+    def add(a: int, b: int) -> int:
+        """Add two numbers."""
+        return a + b
+
+    request = {"function": "add", "arguments": {"a": 1, "b": 2}}
+    branch = tool_branch([{"action_requests": [request]}], [add], "3")
+    assert await branch.ReAct(instruction="Add", tools=True, max_extensions=0) == "3"
+    assert [m.output for m in branch.messages if isinstance(m, ActionResponse)] == [3]
+    assert registered == []
