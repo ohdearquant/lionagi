@@ -135,7 +135,10 @@ test("Operator streams, persists, stops, records a run, and resumes it", async (
 });
 
 test("Operator Deny and Allow decisions traverse the real permission route", async ({ page }) => {
-  test.setTimeout(45_000);
+  test.setTimeout(90_000);
+  // One silent-stream recovery takes 15 seconds plus reconnect backoff.
+  // Give both decisions room to reconnect and replay their durable frames.
+  const streamTimeout = { timeout: 30_000 };
   // Decisions go over the real permission route with no credential of any kind:
   // Studio is a loopback-local tool and carries no browser-held token.
   const discovery = page.waitForResponse(
@@ -156,11 +159,13 @@ test("Operator Deny and Allow decisions traverse the real permission route", asy
     name: "Action requiring permission",
     exact: true,
   });
-  await expect(deniedProposal).toBeVisible({ timeout: 15_000 });
+  await expect(deniedProposal).toBeVisible(streamTimeout);
   // No click to reveal: the command must be on screen before Allow/Deny are reachable,
   // so asserting it directly is the contract. Re-adding a click here would collapse the
   // disclosure and assert the opposite of what this test is for.
-  await expect(deniedProposal.getByText('"operation": "record_permission_decision"')).toBeVisible();
+  await expect(deniedProposal.getByText('"operation": "record_permission_decision"')).toBeVisible(
+    streamTimeout,
+  );
 
   const deniedResponsePromise = page.waitForResponse(
     (response) =>
@@ -172,12 +177,12 @@ test("Operator Deny and Allow decisions traverse the real permission route", asy
   expect(deniedResponse.status()).toBe(200);
   expect(deniedResponse.request().postDataJSON()).toMatchObject({ decision: "deny" });
   await expect(deniedResponse.json()).resolves.toMatchObject({ status: "failed" });
-  await expect(page.getByText("Action cancelled", { exact: true })).toBeVisible();
+  await expect(page.getByText("Action cancelled", { exact: true })).toBeVisible(streamTimeout);
   await expect(
     page.getByText("Demo action denied. Nothing was changed.", { exact: true }),
-  ).toBeVisible();
+  ).toBeVisible(streamTimeout);
   const completedTurns = page.getByText("Turn completed", { exact: true });
-  await expect(completedTurns).toBeVisible();
+  await expect(completedTurns).toBeVisible(streamTimeout);
   const completedBeforeAllow = await completedTurns.count();
 
   await instruction.fill("Request a gated demo action and wait for me to allow it.");
@@ -187,11 +192,11 @@ test("Operator Deny and Allow decisions traverse the real permission route", asy
     name: "Action requiring permission",
     exact: true,
   });
-  await expect(proposals).toHaveCount(2, { timeout: 15_000 });
+  await expect(proposals).toHaveCount(2, streamTimeout);
   const allowedProposal = proposals.filter({
     has: page.getByRole("button", { name: "Allow", exact: true }),
   });
-  await expect(allowedProposal).toHaveCount(1);
+  await expect(allowedProposal).toHaveCount(1, streamTimeout);
 
   const allowedResponsePromise = page.waitForResponse(
     (response) =>
@@ -209,28 +214,34 @@ test("Operator Deny and Allow decisions traverse the real permission route", asy
     status: "succeeded",
     result: { executed: true },
   });
-  // The decision response can arrive before the stream delivers the completed turn.
-  await expect(page.getByText("Approved action completed", { exact: true })).toBeVisible({
-    timeout: 15_000,
-  });
+  // The decision response can arrive before the stream delivers the confirmation.
+  await expect(page.getByText("Approved action completed", { exact: true })).toBeVisible(
+    streamTimeout,
+  );
   await expect(
     page.getByText("Demo action allowed and completed safely.", { exact: true }),
-  ).toBeVisible({ timeout: 15_000 });
-  await expect(completedTurns).toHaveCount(completedBeforeAllow + 1, { timeout: 15_000 });
+  ).toBeVisible(streamTimeout);
+  await expect(completedTurns).toHaveCount(completedBeforeAllow + 1, streamTimeout);
 
   // Both decisions and outcomes are durable daemon history, not client-only UI.
   await page.reload();
   await expect(
     page.getByText("Demo action denied. Nothing was changed.", { exact: true }),
-  ).toBeVisible();
+  ).toBeVisible(streamTimeout);
   await expect(
     page.getByText("Demo action allowed and completed safely.", { exact: true }),
-  ).toBeVisible();
+  ).toBeVisible(streamTimeout);
   await expect(
     page.getByRole("region", { name: "Action requiring permission", exact: true }),
-  ).toHaveCount(2);
-  await expect(page.getByRole("button", { name: "Allow", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Deny", exact: true })).toHaveCount(0);
+  ).toHaveCount(2, streamTimeout);
+  await expect(page.getByRole("button", { name: "Allow", exact: true })).toHaveCount(
+    0,
+    streamTimeout,
+  );
+  await expect(page.getByRole("button", { name: "Deny", exact: true })).toHaveCount(
+    0,
+    streamTimeout,
+  );
 });
 
 test("a conversation can be renamed using only the keyboard", async ({ page }) => {
