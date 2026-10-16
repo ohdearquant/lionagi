@@ -185,32 +185,37 @@ CONTEXT_WINDOWS: dict[str, int] = {
 }
 
 
-def _replace_name(value: dict, name: Any, taken: Any) -> None:
-    """Rename one entry of ``value`` to ``taken``, in the place it already holds."""
-    items = [(taken if key == name else key, item) for key, item in value.items()]
-    value.clear()
-    value.update(items)
+def _rename_masked_names(value: dict, names: list, key: Any) -> dict:
+    """Rename each of ``names`` in ``value`` whose text holds a run of the key to its
+    masked text, every entry keeping its place, and return ``{name: new name}``.
 
-
-def _rename_masked_name(value: dict, name: Any, key: Any) -> Any:
-    """``name`` in ``value`` replaced by its masked text, or ``name`` itself when its text
-    holds no run of the key. A name whose masked text is already a name of ``value`` is
-    numbered, so both entries stay reachable. Only a string name is matched.
+    Names are taken in order, and a masked name that is already a name of ``value``, or
+    one an earlier name took, is numbered, so every entry stays reachable. Only a string
+    name is matched. The object is rebuilt once, however many names change.
     """
     from lionagi.service.accounts._router import mask_key_runs
 
-    if not isinstance(name, str):
-        return name
-    masked = mask_key_runs(name, key)
-    if masked == name:
-        return name
-    taken = masked
-    suffix = 2
-    while taken in value:
-        taken = f"{masked} ({suffix})"
-        suffix += 1
-    _replace_name(value, name, taken)
-    return taken
+    present = set(value)
+    renames: dict = {}
+    for name in names:
+        if not isinstance(name, str):
+            continue
+        masked = mask_key_runs(name, key)
+        if masked == name:
+            continue
+        taken = masked
+        suffix = 2
+        while taken in present:
+            taken = f"{masked} ({suffix})"
+            suffix += 1
+        present.discard(name)
+        present.add(taken)
+        renames[name] = taken
+    if renames:
+        items = [(renames.get(name, name), item) for name, item in value.items()]
+        value.clear()
+        value.update(items)
+    return renames
 
 
 def _mask_key_runs_in_strings(value: Any, key: Any, skip: set[tuple[int, Any]]) -> bool:
@@ -225,20 +230,20 @@ def _mask_key_runs_in_strings(value: Any, key: Any, skip: set[tuple[int, Any]]) 
     """
     from lionagi.service.accounts._router import mask_key_runs
 
+    changed = False
     if isinstance(value, dict):
+        renames = _rename_masked_names(
+            value, [name for name in value if (id(value), name) not in skip], key
+        )
+        changed = bool(renames)
         items = list(value.items())
     elif isinstance(value, list):
         items = list(enumerate(value))
     else:
         return False
-    changed = False
     for name, item in items:
         if (id(value), name) in skip:
             continue
-        renamed = _rename_masked_name(value, name, key)
-        if renamed != name:
-            name = renamed
-            changed = True
         if isinstance(item, str):
             masked = mask_key_runs(item, key)
             if masked != item:
@@ -274,7 +279,7 @@ def _settlement_reading(event: Any) -> dict | None:
     if event_type == "message_start":
         message = event.get("message")
         if not isinstance(message, dict):
-            return {}
+            return None
         return {
             "model": message.get("model"),
             "id": message.get("id"),
@@ -639,6 +644,7 @@ class AnthropicMessagesEndpoint(Endpoint):
             StreamTextRedactor,
             get_router,
             header_pairs,
+            provider_request_id,
             redact_value,
             routed_client_kwargs,
             validate_routed_request,
@@ -777,14 +783,16 @@ class AnthropicMessagesEndpoint(Endpoint):
                     # run is renamed before its place is recorded, and the write-back
                     # uses that name, since a place in ``skip`` is never rematched.
                     kind = delta_type if isinstance(delta_type, str) and delta_type else None
-                    for name, value in list(delta.items()):
-                        if name != "type" and isinstance(value, str):
-                            renamed = _rename_masked_name(delta, name, attempt.key)
-                            if renamed != name:
-                                value = delta[renamed]
-                                name = renamed
-                            pieces.append((kind, value))
-                            places.append((delta, name))
+                    text_names = [
+                        name
+                        for name, value in delta.items()
+                        if name != "type" and isinstance(value, str)
+                    ]
+                    renames = _rename_masked_names(delta, text_names, attempt.key)
+                    for name in text_names:
+                        name = renames.get(name, name)
+                        pieces.append((kind, delta[name]))
+                        places.append((delta, name))
             # Every other string value in the event is matched on its own: no consumer joins
             # it, except as the text of the event's chunk, which is joined with other chunks'
             # text. An object's name and a number are matched as their text too, and the
@@ -833,12 +841,14 @@ class AnthropicMessagesEndpoint(Endpoint):
                     data = json.dumps(event)
                 event_type = event.get("type") if isinstance(event, dict) else None
                 if event_type == "message_start":
-                    reading = settlement or {}
-                    served_model = reading.get("model")
-                    request_id = reading.get("id")
-                    initial_usage = reading.get("usage")
-                    if isinstance(initial_usage, dict):
-                        usage.update(initial_usage)
+                    # A message_start whose message is not an object says nothing about the
+                    # attempt, so it leaves what an earlier one said in place.
+                    if settlement is not None:
+                        served_model = settlement.get("model")
+                        request_id = provider_request_id(settlement.get("id"), attempt.key)
+                        initial_usage = settlement.get("usage")
+                        if isinstance(initial_usage, dict):
+                            usage.update(initial_usage)
                 elif event_type == "message_delta":
                     delta_usage = settlement.get("usage") if settlement else None
                     if isinstance(delta_usage, dict):

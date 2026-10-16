@@ -70,7 +70,9 @@ the call ended:
   Always reduced to a class-name-only summary, never the raw message.
 - `tokens`: typed numeric usage summary (`input_tokens`/`output_tokens`
   ints); `None` when the shape is unrecognized or the call never produced
-  one. Never the raw provider usage mapping.
+  one. Never the raw provider usage mapping. A count that a routed account
+  masked, because its text held a run of the key, is text by then and reads
+  as 0; the account's ledger prices the provider's own count.
 
 ## Run stream cleanup cascade
 

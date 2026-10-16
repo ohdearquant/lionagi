@@ -143,7 +143,7 @@ class AccountRouter:
                 attempt.ttls,
                 body.get("model"),
                 body.get("usage"),
-                body.get("id") if isinstance(body.get("id"), str) else None,
+                provider_request_id(body.get("id"), attempt.key),
             )
         evidence = usage or UnknownOutcome("usage_incomplete")
         await self.ledger.settle(attempt.attempt_id, evidence)
@@ -422,6 +422,14 @@ def mask_key_runs(text: str, key: SecretStr) -> str:
     whole key, for a shorter key) that occurs anywhere in the key masked, for text that
     no other text continues."""
     return _masked_text(text, _key_runs(text, key))
+
+
+def provider_request_id(value: Any, key: SecretStr) -> str | None:
+    """A provider's message id as an attempt's settlement may record it: the id when it is
+    a string holding no run of the key, else None, so the ledger never stores key text."""
+    if not isinstance(value, str) or mask_key_runs(value, key) != value:
+        return None
+    return value
 
 
 def _masked_text(text: str, masked: list[bool]) -> str:

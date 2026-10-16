@@ -3422,3 +3422,117 @@ async def test_a_streamed_input_count_holding_a_run_still_settles(monkeypatch, t
 
     assert _no_run_of_the_key(_seen(chunks), key)
     assert streamed[2:] == ("settled", plain[3], "complete"), (streamed, plain)
+
+
+def _request_ids(path) -> list:
+    with sqlite3.connect(path) as connection:
+        rows = connection.execute("SELECT request_id FROM attempt ORDER BY rowid").fetchall()
+    return [row[0] for row in rows]
+
+
+def _stream_with_id(message_id: str) -> list[bytes]:
+    start = copy.deepcopy(_MESSAGE_START)
+    start["message"]["id"] = message_id
+    return [
+        _sse(
+            [
+                start,
+                {"type": "message_delta", "usage": {"output_tokens": 5}},
+                {"type": "message_stop"},
+            ]
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_message_id_holding_a_run_of_the_key_is_not_recorded(monkeypatch, tmp_path):
+    """The attempt keeps the provider's message id only when the id holds no run of the
+    key, streamed or not; the attempt settles either way."""
+    key = "sk-ant-api03-ab34567890123cd"
+    held = "msg_34567890123c"
+    path = _install_accounts(monkeypatch, tmp_path, key=key)
+
+    for message_id in (held, "msg_clean"):
+        model, _ = _model(monkeypatch, [StubResponse(pieces=_stream_with_id(message_id))])
+        assert [chunk async for chunk in model.endpoint.stream(REQUEST)]
+    for message_id in (held, "msg_body"):
+        body = _response().body
+        body["id"] = message_id
+        model, _ = _model(monkeypatch, [StubResponse(body=body)])
+        await model.endpoint.call(REQUEST)
+
+    assert _request_ids(path) == [None, "msg_clean", None, "msg_body"]
+    assert [row[2:] for row in _attempts(path)] == [
+        ("settled", row[3], "complete") for row in _attempts(path)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_message_start_whose_message_is_not_an_object_changes_nothing(
+    monkeypatch, tmp_path
+):
+    """A second message_start carrying no message object leaves the model, id and usage
+    the first one gave, so the attempt still settles complete."""
+    path = _install_accounts(monkeypatch, tmp_path)
+    events = [
+        copy.deepcopy(_MESSAGE_START),
+        {"type": "message_start", "message": "junk"},
+        {"type": "message_delta", "usage": {"output_tokens": 5}},
+        {"type": "message_stop"},
+    ]
+    model, _ = _model(monkeypatch, [StubResponse(pieces=[_sse(events)])])
+    assert [chunk async for chunk in model.endpoint.stream(REQUEST)]
+
+    control_model, _ = _model(monkeypatch, [StubResponse(pieces=[_sse(events[:1] + events[2:])])])
+    assert [chunk async for chunk in control_model.endpoint.stream(REQUEST)]
+
+    junk, control = _attempts(path)
+    assert junk[2:] == control[2:] == ("settled", control[3], "complete"), (junk, control)
+    assert _request_ids(path) == ["msg_s", "msg_s"]
+
+
+def test_renaming_many_masked_names_rebuilds_the_object_once():
+    """Every name holding a run is renamed in its place and numbered as one rename after
+    another would number it, and the object is rebuilt once, not once per name."""
+    from pydantic import SecretStr
+
+    from lionagi.providers.anthropic.messages import _rename_masked_names
+    from lionagi.service.accounts._router import mask_key_runs
+
+    key = SecretStr("sk-ant-api03-ab34567890123cd")
+    run = "34567890123c"
+
+    def sequential(value: dict, names: list) -> None:
+        for name in names:
+            masked = mask_key_runs(name, key)
+            if masked == name:
+                continue
+            taken, suffix = masked, 2
+            while taken in value:
+                taken, suffix = f"{masked} ({suffix})", suffix + 1
+            items = [(taken if old == name else old, item) for old, item in value.items()]
+            value.clear()
+            value.update(items)
+
+    class Counting(dict):
+        clears = 0
+
+        def clear(self):
+            self.clears += 1
+            super().clear()
+
+    names = [mask_key_runs(f"a{run}", key)]
+    for index in range(2000):
+        names += [f"a{run}", f"clean{index}"] if index == 0 else [f"{run}{index}", f"clean{index}"]
+    names.append(f"b{run}")
+    names.append(mask_key_runs(f"b{run}", key) + " (2)")
+    entries = [(name, position) for position, name in enumerate(names)]
+
+    expected = dict(entries)
+    sequential(expected, list(expected))
+    value = Counting(entries)
+    renames = _rename_masked_names(value, list(value), key)
+
+    assert list(value.items()) == list(expected.items())
+    assert value.clears == 1
+    assert len(renames) == sum(mask_key_runs(name, key) != name for name in names) == 2001
