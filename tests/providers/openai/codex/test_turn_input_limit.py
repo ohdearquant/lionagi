@@ -222,30 +222,27 @@ def _refuse_a_spawn(monkeypatch):
     monkeypatch.setattr(codex_mod, "ndjson_from_cli", spawned)
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "update,named",
     [
-        ({"reasoning_effort": "x" * ARGUMENT_MAX_BYTES}, "-c override 'reasoning_effort'"),
+        ({"reasoning_effort": "x" * ARGUMENT_MAX_BYTES}, "reasoning_effort"),
         (
             {"plan_mode_reasoning_effort": "x" * ARGUMENT_MAX_BYTES},
-            "-c override 'plan_mode_reasoning_effort'",
+            "plan_mode_reasoning_effort",
         ),
-        ({"enable_features": ["f" * ARGUMENT_MAX_BYTES]}, "value of --enable"),
+        ({"enable_features": ["f" * ARGUMENT_MAX_BYTES]}, "enable_features"),
     ],
     ids=["reasoning-effort", "plan-mode-effort", "enable-feature"],
 )
-async def test_every_argument_is_measured_before_the_cli_starts(
-    tmp_path, monkeypatch, update, named
-):
-    """Arguments the request does not measure when it is built are measured where the
-    process would start."""
-    _refuse_a_spawn(monkeypatch)
-    request = CodexCodeRequest(prompt="hi", repo=tmp_path, **update)
+def test_every_argument_is_measured_naming_its_field(tmp_path, update, named):
+    """Each field rendered into its own argument is measured at construction, and the
+    refusal names the field."""
+    with pytest.raises(CLIInputRefusedError) as caught:
+        CodexCodeRequest(prompt="hi", repo=tmp_path, **update)
 
-    with pytest.raises(ValueError, match=f"{named}.*command-line argument"):
-        async for _ in codex_mod.stream_codex_cli(request):
-            pass
+    message = str(caught.value)
+    assert named in message
+    assert "command-line argument" in message
 
 
 def test_an_argument_is_measured_in_the_bytes_the_process_receives():
@@ -275,7 +272,10 @@ def test_a_lone_surrogate_in_a_prompt_or_an_override_is_refused_while_the_reques
     tmp_path, fields
 ):
     """Text is not a path: a surrogate escape there would reach the CLI as a raw byte, so
-    text the CLI cannot decode is refused by name while the request validates."""
+    a system prompt or an override key that reaches the command line is refused by name
+    while the request validates. An override containment drops is never measured, so a
+    request held with `contain_account_integrations=True` over an unreadable key
+    constructs and `as_cmd_args` refuses the key instead."""
     with pytest.raises(CLIInputRefusedError):
         CodexCodeRequest(prompt="hi", repo=tmp_path, **fields)
 
@@ -495,3 +495,283 @@ def test_a_value_the_encoder_refuses_with_a_type_error_reaches_the_command_build
 
     with pytest.raises(TypeError):
         request.as_cmd_args()
+
+
+# ── a validation error carries no config override ────────────────────────────
+
+SECRET_IN_OVERRIDE = "sentinel-override-value"
+SECRET_OVERRIDE_KEY = "sentinel-override-key"
+
+
+def _overrides_with_two_secrets() -> dict:
+    """One override entry holding a sentinel in its value and a second holding one
+    in its key, as an override that carries a token."""
+    return {SECRET_OVERRIDE_KEY: "plain", "k": SECRET_IN_OVERRIDE}
+
+
+def _hidden_in_a_validation_error(error: BaseException) -> None:
+    """A validation error must not show either sentinel in any of its renderings."""
+    assert isinstance(error, pydantic.ValidationError)
+    shown = " ".join([str(error), repr(error), error.json(), str(error.errors())])
+    assert SECRET_IN_OVERRIDE not in shown
+    assert SECRET_OVERRIDE_KEY not in shown
+
+
+def test_a_missing_prompt_carries_no_config_override(tmp_path):
+    """`validate_message_prompt` raises ValueError for neither a prompt nor messages,
+    and pydantic wraps it in a ValidationError whose rendering carries the whole
+    input — every override beside it included."""
+    with pytest.raises(pydantic.ValidationError) as caught:
+        CodexCodeRequest(repo=tmp_path, config_overrides=_overrides_with_two_secrets())
+
+    _hidden_in_a_validation_error(caught.value)
+
+
+def test_an_ambiguous_approval_policy_carries_no_config_override(tmp_path):
+    overrides = {**_overrides_with_two_secrets(), "approval_policy": "on-request"}
+
+    with pytest.raises(pydantic.ValidationError) as caught:
+        CodexCodeRequest(
+            prompt="hi", repo=tmp_path, ask_for_approval="never", config_overrides=overrides
+        )
+
+    _hidden_in_a_validation_error(caught.value)
+
+
+def test_a_path_outside_the_repo_carries_no_config_override(tmp_path):
+    """A relative path that resolves outside the repo is refused by the model-level
+    validator, whose error carries the whole input."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "escape.json").write_text("{}")
+    (repo / "link").symlink_to(outside)
+
+    with pytest.raises(pydantic.ValidationError) as caught:
+        CodexCodeRequest(
+            prompt="hi",
+            repo=repo,
+            output_schema="link/escape.json",
+            config_overrides=_overrides_with_two_secrets(),
+        )
+
+    _hidden_in_a_validation_error(caught.value)
+
+
+def test_a_profile_error_carries_no_config_override(tmp_path, monkeypatch):
+    """A config profile that cannot be read raises ValueError from the profile
+    resolver, which pydantic wraps in the same validation error."""
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "a-profile.config.toml").write_text("model = \n")
+    monkeypatch.setenv("CODEX_HOME", str(home))
+
+    with pytest.raises(pydantic.ValidationError) as caught:
+        CodexCodeRequest(
+            prompt="hi",
+            model="a-profile",
+            repo=tmp_path,
+            config_overrides=_overrides_with_two_secrets(),
+        )
+
+    _hidden_in_a_validation_error(caught.value)
+
+
+def test_a_config_override_that_is_not_a_mapping_is_refused_without_printing_it(tmp_path):
+    with pytest.raises(TypeError) as caught:
+        CodexCodeRequest(prompt="hi", repo=tmp_path, config_overrides=SECRET_IN_OVERRIDE)
+
+    assert SECRET_IN_OVERRIDE not in str(caught.value)
+    assert "must be a mapping" in str(caught.value)
+
+
+def _write_profile(home, name: str, body: str) -> str:
+    home.mkdir(exist_ok=True)
+    (home / f"{name}.config.toml").write_text(body)
+    return str(home)
+
+
+def test_the_wrapper_round_trips_a_valid_request(tmp_path):
+    """The field's type, value and serialization are what they were before the
+    wrapper, and the argv is unchanged."""
+    overrides = _overrides_with_two_secrets()
+
+    request = CodexCodeRequest(prompt="hi", repo=tmp_path, config_overrides=overrides)
+
+    assert isinstance(request.config_overrides, dict)
+    assert request.config_overrides == overrides
+    assert request.model_dump()["config_overrides"] == overrides
+    assert (
+        request.as_cmd_args()
+        == CodexCodeRequest(prompt="hi", repo=tmp_path, config_overrides=overrides).as_cmd_args()
+    )
+
+
+def test_a_profile_merges_into_the_config_overrides_as_before(tmp_path, monkeypatch):
+    home = tmp_path / "codex-home"
+    _write_profile(home, "a-profile", 'model = "gpt-5.4"\nverbosity = "low"\n')
+    monkeypatch.setenv("CODEX_HOME", str(home))
+
+    request = CodexCodeRequest(
+        prompt="hi", model="a-profile", repo=tmp_path, config_overrides={"caller": "yes"}
+    )
+
+    assert request.config_overrides == {"verbosity": "low", "caller": "yes"}
+
+
+# ── a refusal's exception chain holds no input ───────────────────────────────
+
+CHAIN_SENTINEL = "sentinel-in-the-chained-input"
+
+
+def _everything_reachable_from(error: BaseException) -> str:
+    """Everything every exception CHAINED to the error would print.
+
+    The refusal itself names the field it refused, so the value it was given is part
+    of its own message; what must not be reachable is the input beside it, which is
+    what an earlier exception in the chain would hold.
+    """
+    parts: list[str] = []
+    pending = [error.__context__, error.__cause__]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        parts.extend([str(current), repr(current), repr(current.args)])
+        for attribute in ("object", "input"):
+            value = getattr(current, attribute, None)
+            if value is not None:
+                parts.append(repr(value))
+        pending.extend([current.__context__, current.__cause__])
+    return " ".join(parts)
+
+
+@pytest.mark.parametrize(
+    "fields,named",
+    [
+        ({"prompt": f"hi \udcff {CHAIN_SENTINEL}"}, "turn prompt"),
+        ({"prompt": "hi", "system_prompt": f"hi \udcff {CHAIN_SENTINEL}"}, "system prompt"),
+        (
+            {"prompt": "hi", "config_overrides": {f"k \udcff {CHAIN_SENTINEL}": 1}},
+            "override key",
+        ),
+        ({"prompt": "hi", "config_overrides": {"k": f"hi \udcff {CHAIN_SENTINEL}"}}, "override"),
+    ],
+    ids=["turn-prompt", "system-prompt", "override-key", "override-value"],
+)
+def test_a_refusal_chain_holds_no_input(tmp_path, fields, named):
+    """`raise ... from None` inside an `except` still sets `__context__`, and the
+    UnicodeEncodeError there holds the whole input in `.object`. The refusal is
+    raised after the handler ends, so nothing is reachable through it."""
+    with pytest.raises(CLIInputRefusedError) as caught:
+        CodexCodeRequest(repo=tmp_path, **fields)
+
+    error = caught.value
+    assert named in str(error)
+    assert error.__context__ is None
+    assert error.__cause__ is None
+    assert CHAIN_SENTINEL not in _everything_reachable_from(error)
+
+
+@pytest.mark.asyncio
+async def test_the_spawn_check_chain_holds_no_input_either(tmp_path, monkeypatch):
+    """The same check runs again where the process would start, on a request
+    `model_copy` built without validation. That check is not a model validator, so its
+    refusal is a plain ValueError, with the input unreachable through it all the same."""
+    _refuse_a_spawn(monkeypatch)
+    request = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(
+        update={"prompt": f"hi \udcff {CHAIN_SENTINEL}"}
+    )
+
+    with pytest.raises(ValueError) as caught:
+        async for _ in codex_mod.stream_codex_cli(request):
+            pass
+
+    assert caught.value.__context__ is None
+    assert caught.value.__cause__ is None
+    assert CHAIN_SENTINEL not in _everything_reachable_from(caught.value)
+
+
+# ── every argument text checked at construction ──────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "fields,named",
+    [
+        ({"reasoning_effort": "high\udcff"}, "reasoning_effort"),
+        ({"plan_mode_reasoning_effort": "high\udcff"}, "plan_mode_reasoning_effort"),
+        ({"enable_features": ["x\udcff"]}, "enable_features"),
+        ({"disable_features": ["x\udcff"]}, "disable_features"),
+        ({"model": "gpt-5.4\udcff"}, "model"),
+        ({"profile": "a\udcff"}, "profile"),
+    ],
+    ids=[
+        "reasoning-effort",
+        "plan-mode-effort",
+        "enable-features",
+        "disable-features",
+        "model",
+        "profile",
+    ],
+)
+def test_a_lone_surrogate_in_any_argument_text_is_refused_at_construction(tmp_path, fields, named):
+    """A field `as_cmd_args` renders into its own argument reaches the spawn as a raw
+    byte when it holds a lone surrogate, so it is refused at construction, by name."""
+    with pytest.raises(CLIInputRefusedError) as caught:
+        CodexCodeRequest(prompt="hi", repo=tmp_path, **fields)
+
+    assert named in str(caught.value)
+
+
+def test_a_surrogate_in_a_second_feature_entry_is_refused_too(tmp_path):
+    """A repeated field renders each entry as its own argument, so every entry is
+    measured, not only the one a mapping would keep."""
+    with pytest.raises(CLIInputRefusedError) as caught:
+        CodexCodeRequest(prompt="hi", repo=tmp_path, enable_features=["ok", "x\udcff"])
+
+    assert "enable_features" in str(caught.value)
+
+
+# ── bare TOML keys ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.skipif(tomllib is None, reason="tomllib landed in Python 3.11")
+def test_a_nested_key_ending_in_a_newline_is_quoted_and_reads_back():
+    """`match` with `$` accepts `"abc\\n"` as a bare key, which TOML refuses; the
+    rendered override must quote it and read back with the key intact."""
+    rendered = toml_override_value({"outer": {"abc\n": 1}})
+
+    assert tomllib.loads("k = " + rendered)["k"] == {"outer": {"abc\n": 1}}
+
+
+def test_a_key_ending_in_a_newline_renders_quoted():
+    """A newline is a control character, so it is escaped rather than kept raw."""
+    assert codex_mod._toml_key("abc\n") == '"abc\\u000A"'
+
+
+# ── two encoder properties ───────────────────────────────────────────────────
+
+
+@pytest.mark.skipif(tomllib is None, reason="tomllib landed in Python 3.11")
+def test_u007f_is_rendered_as_an_escape_and_reads_back():
+    """U+007F is a control character TOML may not hold raw, and the `toml` package
+    renders it wrongly, so it is escaped here."""
+    rendered = toml_override_value("a\x7fb")
+
+    assert "\\u007F" in rendered
+    assert tomllib.loads("k = " + rendered)["k"] == "a\x7fb"
+
+
+def test_a_surrogate_in_an_override_value_is_refused_naming_the_value(tmp_path):
+    """The strict encode belongs to the value's own rendering: without it the
+    surrogate would be refused here as an unreadable key instead, so removing the
+    encode from `_toml_string` turns this red."""
+    with pytest.raises(CLIInputRefusedError) as caught:
+        CodexCodeRequest(prompt="hi", repo=tmp_path, config_overrides={"k": "v \udcff"})
+
+    message = str(caught.value)
+    assert message.startswith("The value of the config override")
+    assert "The config override key" not in message

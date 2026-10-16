@@ -18,7 +18,7 @@ from typing import Any
 
 import psutil
 
-from lionagi._errors import EmptyOutgoingContentError, LionError
+from lionagi._errors import CLIInputRefusedError, EmptyOutgoingContentError, LionError
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.casts.emission import SpawnRequest, TaskAssignment
 from lionagi.ln.concurrency import CancelScope, current_time, move_on_after
@@ -3120,11 +3120,13 @@ async def _run_flow_inner(
             )
         except EmptyOutgoingContentError:
             raise
-        except ValueError as exc:
+        except (ValueError, CLIInputRefusedError) as exc:
             # plan() raises a bare ValueError when the orchestrator still
             # overshoots max_tasks after the cap was stated in guidance —
             # route it through the same clean-failure channel as every
-            # other plan-time failure in this function.
+            # other plan-time failure in this function. A CLIInputRefusedError
+            # is what a request the CLI cannot take raises at construction, and
+            # it reaches here the same way.
             raise FlowPlanError(str(exc)) from exc
         if not assignments:
             # Fail loud rather than silently exiting 0 with no work done.
@@ -3141,7 +3143,7 @@ async def _run_flow_inner(
                 )
             except EmptyOutgoingContentError:
                 raise
-            except ValueError as exc:
+            except (ValueError, CLIInputRefusedError) as exc:
                 raise FlowPlanError(str(exc)) from exc
         if not assignments:
             raise FlowPlanError(

@@ -415,8 +415,11 @@ Every CLI provider's request model wraps its `env` and `on_spawn` fields in
 `Redacted` at the top of every model-level `mode="before"` validator
 (`redact_runtime_fields_in_place`), so a rejected request never carries a
 child environment or a bound callback into `str(err)`, `err.errors()`, or
-`err.json()`. This matters because pydantic keeps a failing validator's raw
-input on the error — `repr=False`/`exclude` on a field don't help, since a
+`err.json()`. The Codex request model wraps its `config_overrides` the same
+way, through `_redact_codex_runtime_fields_in_place`, because a `-c` override
+holds the same kind of token a child environment does. This matters because
+pydantic keeps a failing validator's raw input on the error —
+`repr=False`/`exclude` on a field don't help, since a
 model-level validator holds the whole raw mapping regardless of per-field
 settings. `Redacted` deliberately isn't a mapping, so serialization sees no
 structure to walk, and it refuses (`TypeError`, not `ValueError` — pydantic

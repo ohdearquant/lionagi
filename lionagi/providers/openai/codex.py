@@ -10,7 +10,7 @@ import os
 import re
 import subprocess
 import warnings
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from textwrap import shorten
 from typing import Any, Literal
@@ -33,6 +33,7 @@ from lionagi.providers._cli_subprocess import (
     ndjson_from_cli,
     print_readable,
     raise_if_env_is_not_a_string_map,
+    redact_runtime_fields_in_place,
     resolve_cli_workspace,
     reveal_redacted,
     validate_message_prompt,
@@ -103,7 +104,9 @@ _ACCOUNT_INTEGRATION_FEATURES = ("apps", "plugins")
 # codex's `-c key=value` parses `value` as TOML; a JSON-style dump is not
 # valid TOML and either mis-parses or silently produces the wrong value. See
 # docs/internals/providers.md#codex-c-override-toml-serialization.
-_TOML_BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+# A bare TOML key. Matched with `fullmatch`: `match` with `$` accepts a key ending in
+# a newline (`"abc\n"`), which renders bare and which TOML refuses.
+_TOML_BARE_KEY_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 # The CLI's mid-stream retry announcement, e.g. "Reconnecting... 1/5 (stream
 # disconnected before completion: ...)". A non-matching message falls through
@@ -178,6 +181,47 @@ def _refuse_text_strict_utf8_cannot_encode(what: str) -> ValueError:
     )
 
 
+def _strict_utf8_failure(text: str, what: str) -> ValueError | None:
+    """The refusal for ``text`` when strict UTF-8 cannot encode it, else None.
+
+    Returned rather than raised: the ``UnicodeEncodeError`` the encode raises holds the
+    whole text in its ``.object``, and a ``raise`` inside that handler would chain the
+    refusal to it, so the caller raises the returned error after the handler has ended.
+    """
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return _refuse_text_strict_utf8_cannot_encode(what)
+    return None
+
+
+def _redact_codex_runtime_fields_in_place(data) -> None:
+    """Wrap ``env``, ``on_spawn`` and ``config_overrides`` in a raw request mapping.
+
+    ``config_overrides`` joins the runtime-only fields: codex reads it as ``-c
+    key=value`` pairs, and a caller's overrides carry the same kind of secret a child
+    environment does. Called at the top of every model-level ``mode="before"`` validator
+    of ``CodexCodeRequest``, the one place that holds pydantic's whole raw input on a
+    failing validation. The shared helper keeps its behavior for the other providers,
+    whose request models render no overrides. See
+    docs/internals/providers.md#cli-subprocess-lifecycle.
+    """
+    redact_runtime_fields_in_place(data)
+    if not isinstance(data, Mapping) or "config_overrides" not in data:
+        return
+    overrides = data["config_overrides"]
+    if overrides is None or isinstance(overrides, Redacted):
+        return
+    try:
+        data["config_overrides"] = Redacted(overrides, "config_overrides")
+    except TypeError:
+        raise TypeError(
+            f"{type(data).__name__} is read-only, so config_overrides cannot be replaced "
+            "before validation. It carries `-c` overrides, and a validation error would "
+            "render the mapping verbatim. Pass a mutable mapping."
+        ) from None
+
+
 # U+0000-U+001F and U+007F: the control characters a TOML basic string may not hold
 # raw, and the ones the `toml` package renders wrongly (or refuses with IndexError).
 _TOML_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
@@ -206,8 +250,22 @@ def _refuse_oversized_cli_inputs(
     system_prompt: str | None = None,
     config_overrides: dict[str, Any] | None = None,
     *,
+    text_fields: Sequence[tuple[str, str]] | None = None,
     contained: bool = False,
 ) -> None:
+    """Refuse an input the Codex CLI cannot take, before any process starts.
+
+    The turn input in characters and each argument in the bytes exec passes, plus the
+    characters strict UTF-8 cannot carry at all. ``text_fields`` pairs each field's name
+    with the text ``as_cmd_args`` renders into an argument for the fields whose argument
+    is not built here, so a lone surrogate in one of them is refused by name and every
+    entry of a repeated field is measured. Each refusal
+    is raised after the handler that produced it ends: the ``UnicodeEncodeError`` an
+    encode raises holds the whole text in its ``.object``, and raising inside the
+    handler would chain the refusal to it.
+    """
+    failure: ValueError | None = None
+    measured: list[tuple[str, bytes]] = []
     if len(prompt) > CODEX_MAX_TURN_INPUT_CHARS:
         raise ValueError(
             f"the Codex turn input is {len(prompt):,} characters, past the CLI's limit of "
@@ -216,23 +274,20 @@ def _refuse_oversized_cli_inputs(
         )
     # The turn input travels over the child's stdin, where it is encoded strictly; a
     # lone surrogate is refused here rather than after the process has started.
-    try:
-        prompt.encode("utf-8")
-    except UnicodeEncodeError:
-        raise _refuse_text_strict_utf8_cannot_encode("The turn prompt") from None
-    # The system prompt's and each override's argument, measured as as_cmd_args builds them,
-    # so the refusal names them; every argument is measured again where the process starts.
-    # Encoded as strict UTF-8: a lone surrogate here is refused rather than passed to the
-    # CLI as a raw byte, and the refusal names the input rather than the codec alone.
-    if system_prompt:
-        try:
-            argument = f"developer_instructions={system_prompt}".encode()
-        except UnicodeEncodeError:
-            raise _refuse_text_strict_utf8_cannot_encode("The system prompt") from None
-        _refuse_oversized_argument(argument, "The system prompt")
+    failure = _strict_utf8_failure(prompt, "The turn prompt")
+    # The system prompt's and each override's argument, measured as as_cmd_args builds
+    # them, so the refusal names them; every argument is measured again where the
+    # process starts.
+    if failure is None and system_prompt:
+        argument = f"developer_instructions={system_prompt}"
+        failure = _strict_utf8_failure(argument, "The system prompt")
+        if failure is None:
+            measured.append(("The system prompt", argument.encode("utf-8")))
     for key, value in (config_overrides or {}).items():
-        # Encoded before containment reads the key, so a value the encoder refuses with
-        # ValueError refuses the request whether or not containment would drop it.
+        if failure is not None:
+            break
+        # Encoded before containment reads the key, so a value the encoder refuses
+        # refuses the request whether or not containment would drop it.
         try:
             encoded = toml_override_value(value)
         except TypeError:
@@ -240,9 +295,10 @@ def _refuse_oversized_cli_inputs(
         except UnicodeEncodeError:
             # A str value with a lone surrogate: named here rather than left to the
             # codec's own message, which names neither the override nor the request.
-            raise _refuse_text_strict_utf8_cannot_encode(
+            failure = _refuse_text_strict_utf8_cannot_encode(
                 f"The value of the config override {key[:80]!r}"
-            ) from None
+            )
+            break
         if contained:
             try:
                 kept, kept_value = _contain_override(key, value)
@@ -251,14 +307,31 @@ def _refuse_oversized_cli_inputs(
             if not kept:
                 continue
             if kept_value is not value:
-                encoded = toml_override_value(kept_value)
-        try:
-            argument = f"{key}={encoded}".encode()
-        except UnicodeEncodeError:
-            raise _refuse_text_strict_utf8_cannot_encode(
-                f"The config override key {key[:80]!r}"
-            ) from None
-        _refuse_oversized_argument(argument, f"The config override {key[:80]!r}")
+                try:
+                    encoded = toml_override_value(kept_value)
+                except TypeError:
+                    continue  # as_cmd_args refuses the value itself
+                except UnicodeEncodeError:
+                    failure = _refuse_text_strict_utf8_cannot_encode(
+                        f"The value of the config override {key[:80]!r}"
+                    )
+                    break
+        argument = f"{key}={encoded}"
+        failure = _strict_utf8_failure(argument, f"The config override key {key[:80]!r}")
+        if failure is None:
+            measured.append((f"The config override {key[:80]!r}", argument.encode("utf-8")))
+    # The text fields that reach the CLI as an argument of their own, each encoded
+    # strictly under its own name.
+    for what, text in text_fields or ():
+        if failure is not None:
+            break
+        failure = _strict_utf8_failure(text, what)
+        if failure is None:
+            measured.append((what, text.encode("utf-8")))
+    if failure is not None:
+        raise failure
+    for what, argument in measured:
+        _refuse_oversized_argument(argument, what)
 
 
 def _toml_scalar(value: str | int | float | bool) -> str:
@@ -292,7 +365,7 @@ def _override_key_path(key: str) -> list[str]:
 
 
 def _toml_key(key: str) -> str:
-    return key if _TOML_BARE_KEY_RE.match(key) else _toml_scalar(key)
+    return key if _TOML_BARE_KEY_RE.fullmatch(key) else _toml_scalar(key)
 
 
 def toml_override_value(value: Any) -> str:
@@ -468,6 +541,24 @@ class CodexCodeRequest(BaseModel):
         # failing field's input, which would re-expose the unwrapped value.
         raise TypeError(f"on_spawn must be callable, got {type(value).__name__}")
 
+    @field_validator("config_overrides", mode="before")
+    @classmethod
+    def _unwrap_config_overrides(cls, value):
+        """Undo the ``Redacted`` wrapping a model-level validator applied.
+
+        A `-c` override routinely holds a token the CLI authenticates with, so
+        the wrapper keeps it out of a validation error's rendering of the
+        whole input; this is the field validator that then reads it. A value
+        that is not a mapping is refused without printing any of it.
+        """
+        if isinstance(value, Redacted):
+            value = value.reveal()
+        if isinstance(value, Mapping):
+            return value
+        # TypeError, not ValueError: pydantic quotes a ValueError's rejected
+        # input verbatim into the validation error.
+        raise TypeError(f"config_overrides must be a mapping, got {type(value).__name__}")
+
     # ── system prompt (order 40) ──────────────────────────────────
     system_prompt: str | None = None
 
@@ -608,8 +699,12 @@ class CodexCodeRequest(BaseModel):
         values["model"] = profile_model
         if profile_overrides:
             merged = dict(profile_overrides)
-            merged.update(values.get("config_overrides") or {})
-            values["config_overrides"] = merged
+            caller_overrides = reveal_redacted(values.get("config_overrides")) or {}
+            merged.update(caller_overrides)
+            # Wrapped again: `values` is the raw input a later validator, or a
+            # validation error, holds, and the merged mapping carries both the
+            # profile's settings and the caller's.
+            values["config_overrides"] = Redacted(merged, "config_overrides")
         return values
 
     @model_validator(mode="before")
@@ -638,6 +733,7 @@ class CodexCodeRequest(BaseModel):
             codex_unset_effort_default,
         )
 
+        _redact_codex_runtime_fields_in_place(values)
         values = cls._resolve_config_profile(values)
 
         model = values.get("model", cls.model_fields["model"].default)
@@ -658,7 +754,7 @@ class CodexCodeRequest(BaseModel):
             env = reveal_redacted(values.get("env"))
             derived = codex_unset_effort_default(
                 model,
-                values.get("config_overrides"),
+                reveal_redacted(values.get("config_overrides")),
                 env if isinstance(env, Mapping) else None,
             )
             if derived is not None:
@@ -736,24 +832,35 @@ class CodexCodeRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _validate_message_prompt(cls, data):
+        _redact_codex_runtime_fields_in_place(data)
         return validate_message_prompt(data)
 
     @model_validator(mode="after")
     def _refuse_a_turn_input_past_the_cli_limit(self):
-        # A long branch sends its rendered history with every turn, which can exceed the limit.
+        """Refuse, at construction, any input the Codex CLI cannot take.
+
+        Every text field ``as_cmd_args`` renders into an argument is measured here, so a
+        refusal names the field rather than arriving from the spawn as a codec error or a
+        raw byte. Raised OUTSIDE the handler that caught the ValueError: pydantic wraps a
+        ValueError from a validator in a ValidationError whose `.json()` and `.errors()`
+        carry the whole input, so the refusal is a CLIInputRefusedError, which is not a
+        ValueError and passes through unwrapped. Raising it after the handler ends leaves
+        `__context__` None, so the chain the ValueError itself carried is not reachable
+        through the refusal either.
+        """
+        refusal: CLIInputRefusedError | None = None
         try:
             _refuse_oversized_cli_inputs(
                 self.prompt,
                 self.system_prompt,
                 self.config_overrides,
+                text_fields=self._argument_text_fields(),
                 contained=self._contains_account_integrations(),
             )
         except ValueError as exc:
-            # Pydantic wraps a ValueError from a validator in a ValidationError, whose
-            # `.json()` and `.errors()` carry the whole input — config overrides included,
-            # so a secret in one override would reach the wrapper. CLIInputRefusedError is
-            # not a ValueError, so it passes through unwrapped.
-            raise CLIInputRefusedError(str(exc)) from None
+            refusal = CLIInputRefusedError(str(exc))
+        if refusal is not None:
+            raise refusal
         return self
 
     @model_validator(mode="after")
@@ -882,6 +989,33 @@ class CodexCodeRequest(BaseModel):
     def _contains_account_integrations(self) -> bool:
         return self.contain_account_integrations and not self.account_connectors
 
+    def _argument_text_fields(self) -> list[tuple[str, str]]:
+        """The fields ``as_cmd_args`` renders into an argument of their own, by name.
+
+        Read by the construction and spawn checks so a lone surrogate in any of them is
+        refused by name rather than reaching the CLI as a raw byte. Path fields are left
+        out: a path may legitimately hold a byte that is not UTF-8, and ``os.fsencode``
+        is what measures those at the process boundary.
+        """
+        fields: list[tuple[str, str]] = []
+        for name in (
+            "model",
+            "profile",
+            "sandbox",
+            "ask_for_approval",
+            "color",
+            "reasoning_effort",
+            "plan_mode_reasoning_effort",
+        ):
+            text = getattr(self, name)
+            if isinstance(text, str):
+                fields.append((name, text))
+        for name in ("enable_features", "disable_features"):
+            for feature in getattr(self, name) or ():
+                if isinstance(feature, str):
+                    fields.append((name, feature))
+        return fields
+
     def _build_declarative_args(self) -> list[str]:
         if not self._contains_account_integrations():
             return build_declarative_cli_args(self)
@@ -914,6 +1048,7 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
         request.prompt,
         request.system_prompt,
         request.config_overrides,
+        text_fields=request._argument_text_fields(),
         contained=request._contains_account_integrations(),
     )
     cmd = [CODEX_CLI, *request.as_cmd_args()]
