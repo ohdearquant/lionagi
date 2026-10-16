@@ -1,7 +1,13 @@
-"""The advisory pull-request checks can be switched off; the required check cannot."""
+"""The advisory pull-request checks can be switched off; the required check cannot.
+
+These tests read the repository's own workflow files, so they catch a switch
+added to a required workflow by accident. A pull request that edits those files
+can also edit this test, so they do not stop a deliberate one.
+"""
 
 from __future__ import annotations
 
+import posixpath
 import re
 from pathlib import Path
 
@@ -114,25 +120,41 @@ REPO = WORKFLOWS.parents[1]
 VARIABLE_READ = re.compile(r"\bvars\b", re.IGNORECASE)
 
 # A read through the REST API, the GitHub CLI or Octokit, from a step or a script.
+# The REST forms need the `repos/` or `orgs/` path, so a link to GitHub's
+# documentation of the endpoint is not one. A path assembled at run time from
+# pieces is not found.
 API_VARIABLE_READ = re.compile(
-    r"actions/variables|environments/\S*/variables|(Repo|Org|Environment)Variable"
-    r"|\bvariable\s+(get|list|set)\b",
+    r"\b(repos|orgs)/[^\n]*/actions/variables|\benvironments/[^\n]*/variables\b"
+    r"|\b(get|list)(Repo|Org|Environment)Variables?\b|\bgh\s+variable\s+(get|list|set)\b",
     re.IGNORECASE,
 )
 
-# Inputs other than the switch that can skip a required step or turn its failure
-# into a pass for some pull requests: secrets are empty on a pull request from a
-# fork, and a label is set by whoever triages the pull request.
-OTHER_SWITCH = re.compile(r"\bsecrets\b|pull_request\.labels", re.IGNORECASE)
+# Inputs other than the switch that can skip a required step, pass its failure or
+# change what it runs for some pull requests: a label is set by whoever triages a
+# pull request, a secret is empty on a pull request from a fork, and the event's
+# details (draft, fork, author) differ from one pull request to the next.
+# `github.event_name` is the same for every pull request and stays allowed.
+LABEL = re.compile(r"\blabels?\b", re.IGNORECASE)
+SECRET = re.compile(r"\bsecrets\b", re.IGNORECASE)
+EVENT_DETAIL = re.compile(
+    r"\bgithub\s*(\.\s*(event(?!_name)|actor|triggering_actor|head_ref)\b|\[)", re.IGNORECASE
+)
 
 
-def _strings(node: object) -> list[str]:
+def _strings(node: object, skip: str | None = None) -> list[str]:
+    # Every string in a parsed document, keys included, leaving out what sits
+    # under a key named *skip*.
     if isinstance(node, str):
         return [node]
     if isinstance(node, dict):
-        return [s for key, value in node.items() for s in (*_strings(key), *_strings(value))]
+        return [
+            s
+            for key, value in node.items()
+            if key != skip
+            for s in (*_strings(key, skip), *_strings(value, skip))
+        ]
     if isinstance(node, list):
-        return [s for item in node for s in _strings(item)]
+        return [s for item in node for s in _strings(item, skip)]
     return []
 
 
@@ -155,8 +177,9 @@ def _yaml_files() -> list[Path]:
 
 
 def _uncommented(text: str) -> str:
-    # A whole-line comment reads nothing. A comment after a value is kept, which
-    # can only make the search stricter.
+    # A whole-line YAML comment reads nothing. A comment after a value is kept,
+    # and so is a `#` line inside a block scalar, which is part of its string;
+    # both can only make the search stricter.
     return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
 
 
@@ -201,33 +224,58 @@ def test_a_whole_line_comment_is_not_a_variable_read(tmp_path: Path) -> None:
     assert not _reads_a_variable(path)
 
 
+def _local_target(uses: str) -> str | None:
+    """The repository path a local ``uses:`` names, with ``.`` and ``..`` resolved."""
+    return posixpath.normpath(uses[2:]) if uses.startswith("./") else None
+
+
 def test_a_local_action_lives_where_the_variable_search_reads() -> None:
     # A composite action used by path runs inside the job that uses it, so it is
-    # searched like a workflow, and the search covers .github only.
+    # searched like a workflow, and the search covers .github only. The path is
+    # read after resolving `..`, so `./.github/../actions/x` counts as outside.
     uses = [
         value
         for path in _yaml_files()
         for value in _values(yaml.safe_load(path.read_text()), "uses")
     ]
     assert uses
-    assert [
+    outside = [
         u
         for u in uses
-        if isinstance(u, str) and u.startswith("./") and not u.startswith("./.github/")
-    ] == []
+        if isinstance(u, str)
+        and (target := _local_target(u)) is not None
+        and not target.startswith(".github/")
+    ]
+    assert outside == []
+
+
+@pytest.mark.parametrize(
+    ("uses", "target"),
+    [
+        ("./.github/actions/setup", ".github/actions/setup"),
+        ("./.github/./actions//setup", ".github/actions/setup"),
+        ("./.github/../actions/switch", "actions/switch"),
+        ("./../elsewhere", "../elsewhere"),
+        ("actions/checkout@v4", None),
+    ],
+)
+def test_a_local_path_is_read_with_dot_segments_resolved(uses: str, target: str | None) -> None:
+    assert _local_target(uses) == target
 
 
 def test_no_step_or_script_reads_a_variable_through_the_api() -> None:
     # The REST endpoint, `gh variable get` and the Octokit helpers return the same
-    # value as `vars`, to a step's shell or a script it runs.
+    # value as `vars`, to a step's shell, a script it runs or a test the required
+    # `test` job runs. This file names those forms and is left out.
     files = [
         path
-        for root in (WORKFLOWS.parent, REPO / "scripts")
+        for root in (WORKFLOWS.parent, REPO / "scripts", REPO / "tests")
         for path in root.rglob("*")
-        if path.is_file()
+        if path.is_file() and path != Path(__file__).resolve()
     ]
     assert WORKFLOWS / "ci.yml" in files
     assert REPO / "scripts" / "check_issue_links.py" in files
+    assert REPO / "tests" / "conftest.py" in files
     hits = [path for path in files if API_VARIABLE_READ.search(path.read_text(errors="replace"))]
     assert hits == []
 
@@ -236,6 +284,7 @@ def test_no_step_or_script_reads_a_variable_through_the_api() -> None:
     "text",
     [
         "gh api repos/${{ github.repository }}/actions/variables/ADVISORY_PR_CHECKS",
+        "gh api orgs/o/actions/variables",
         "gh api repos/o/r/environments/ci/variables/ADVISORY_PR_CHECKS",
         "gh variable get ADVISORY_PR_CHECKS",
         "gh variable list --json name,value",
@@ -248,35 +297,129 @@ def test_each_api_read_of_a_variable_is_found(text: str) -> None:
     assert API_VARIABLE_READ.search(text)
 
 
-def _conditions(text: str) -> list[str]:
-    # Every `if` and `continue-on-error` value, parsed and as written, so a value
-    # a duplicate key hides from the parse is read too.
+@pytest.mark.parametrize(
+    "text",
+    [
+        "# The endpoint: https://docs.github.com/en/rest/actions/variables",
+        "The variable set to 1 turns it off.",
+        "a variable list of names",
+        "raise MissingEnvironmentVariable(name)",
+    ],
+)
+def test_prose_about_variables_is_not_an_api_read(text: str) -> None:
+    assert not API_VARIABLE_READ.search(text)
+
+
+def _required_files() -> list[Path]:
+    """``ci.yml`` and every local action or reusable workflow it uses, however deep."""
+    found: list[Path] = []
+    pending = [WORKFLOWS / "ci.yml"]
+    while pending:
+        path = pending.pop()
+        if path in found:
+            continue
+        found.append(path)
+        for uses in _values(yaml.safe_load(path.read_text()), "uses"):
+            target = _local_target(uses) if isinstance(uses, str) else None
+            if target is None:
+                continue
+            local = REPO / target
+            if local.suffix in (".yml", ".yaml"):
+                pending.append(local)
+                continue
+            actions = [local / name for name in ("action.yml", "action.yaml")]
+            actions = [action for action in actions if action.is_file()]
+            assert actions, f"{uses} names no action.yml"
+            pending.extend(actions)
+    return found
+
+
+def _other_switches(text: str) -> list[str]:
+    """What in a required workflow or action could act as a switch.
+
+    Labels and event details are refused anywhere in the file, in the raw text
+    without whole-line comments and in the parsed strings, so an `env`, `run`,
+    `runs-on` or matrix value counts as much as an `if`. A secret is allowed only
+    as an action's `with:` input, which is how a step receives one, and the raw
+    text may hold no more of them than those inputs do, so a duplicate key that
+    hides one from the parse is still found.
+    """
     parsed = yaml.safe_load(text)
-    written = [
-        line
-        for line in text.splitlines()
-        if re.match(r"\s*(-\s*)?(if|continue-on-error)\s*:", line)
+    raw = _uncommented(text)
+    found = [
+        match.group(0)
+        for pattern in (LABEL, EVENT_DETAIL)
+        for string in (raw, *_strings(parsed))
+        for match in pattern.finditer(string)
     ]
-    return [
-        *(str(v) for key in ("if", "continue-on-error") for v in _values(parsed, key)),
-        *written,
-    ]
+    inputs = [s for value in _values(parsed, "with") for s in _strings(value)]
+    allowed = sum(len(SECRET.findall(s)) for s in inputs)
+    outside = [s for s in _strings(parsed, skip="with") if SECRET.search(s)]
+    if outside or len(SECRET.findall(raw)) > allowed:
+        found.append("secrets outside a with: input")
+    return found
 
 
 def test_the_required_workflow_has_no_other_switch() -> None:
-    conditions = _conditions((WORKFLOWS / "ci.yml").read_text())
-    assert any("always()" in c for c in conditions)
-    assert [c for c in conditions if OTHER_SWITCH.search(c)] == []
+    files = _required_files()
+    assert files[0] == WORKFLOWS / "ci.yml"
+    # The one secret ci.yml uses reaches an action as an input, so the real file
+    # exercises the allowance.
+    ci = yaml.safe_load(files[0].read_text())
+    assert any(SECRET.search(s) for value in _values(ci, "with") for s in _strings(value))
+    switches = {str(path.relative_to(REPO)): _other_switches(path.read_text()) for path in files}
+    assert switches == {name: [] for name in switches}
 
 
 @pytest.mark.parametrize(
-    "line",
+    "text",
     [
-        "if: ${{ secrets.CODECOV_TOKEN != '' }}",
-        "if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-lint') }}",
-        "continue-on-error: ${{ secrets.TOKEN == '' }}",
+        "jobs:\n  lint:\n    if: ${{ secrets.CODECOV_TOKEN != '' }}\n",
+        "jobs:\n  lint:\n    continue-on-error: ${{ secrets.TOKEN == '' }}\n",
+        "jobs:\n  lint:\n    if: ${{ !contains(github.event.pull_request.labels.*.name, 'x') }}\n",
+        "jobs:\n  lint:\n    if: ${{ !contains(github.event.pull_request['labels'].*.name, 'x') }}\n",
+        "jobs:\n  lint:\n    steps:\n      - env:\n"
+        "          SKIP: ${{ contains(github.event.pull_request.labels.*.name, 'x') }}\n"
+        "        if: env.SKIP != 'true'\n        run: make lint\n",
+        "jobs:\n  lint:\n    steps:\n      - run: |\n"
+        "          gh pr view --json labels | grep -q skip && exit 0\n",
+        "jobs:\n  lint:\n    runs-on: ${{ github.event.label.name == 'x' && 'none' || 'ubuntu' }}\n",
+        "jobs:\n  lint:\n    if: ${{ !github.event.pull_request.draft }}\n",
+        "jobs:\n  lint:\n    if: ${{ github.actor != 'dependabot[bot]' }}\n",
+        "jobs:\n  lint:\n    if: ${{ github['event']['pull_request']['head']['repo']['fork'] }}\n",
+        "jobs:\n  lint:\n    steps:\n      - env:\n          TOKEN: ${{ secrets.TOKEN }}\n"
+        '        run: test -n "$TOKEN" || exit 0\n',
+        "jobs:\n  lint:\n    steps:\n"
+        "      - {if: \"${{ secrets.X != '' }}\", if: always(), run: make lint}\n",
+    ],
+    ids=[
+        "secret-if",
+        "secret-continue-on-error",
+        "label-if",
+        "label-bracket",
+        "label-through-env",
+        "label-in-run",
+        "label-runs-on",
+        "draft",
+        "actor",
+        "event-bracket",
+        "secret-through-env",
+        "secret-hidden-by-duplicate-key",
     ],
 )
-def test_each_other_switch_is_found(line: str) -> None:
-    text = f"jobs:\n  lint:\n    {line}\n"
-    assert [c for c in _conditions(text) if OTHER_SWITCH.search(c)]
+def test_each_other_switch_is_found(text: str) -> None:
+    assert _other_switches(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "jobs:\n  test:\n    steps:\n      - uses: codecov/codecov-action@v4\n"
+        "        with:\n          token: ${{ secrets.CODECOV_TOKEN }}\n",
+        "jobs:\n  test:\n    if: github.event_name != 'pull_request'\n",
+        "# Labels and secrets are read nowhere here.\njobs:\n  test:\n    if: always()\n",
+    ],
+    ids=["secret-as-input", "event-name", "comment"],
+)
+def test_what_a_required_workflow_may_hold(text: str) -> None:
+    assert _other_switches(text) == []
