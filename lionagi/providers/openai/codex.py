@@ -148,7 +148,8 @@ def _refuse_oversized_command(cmd: list[str]) -> None:
     for position, argument in enumerate(cmd[1:], start=1):
         flag = cmd[position - 1] if position > 1 else ""
         if flag == "-c":
-            what = f"The -c override {argument.split('=', 1)[0][:80]!r}"
+            # Named by position: an override's key can hold a secret as its value can.
+            what = f"The -c override at argument {position}"
         elif flag.startswith("-"):
             what = f"The value of {flag}"
         else:
@@ -161,11 +162,12 @@ def _refuse_oversized_command(cmd: list[str]) -> None:
         _refuse_oversized_argument(encoded, what)
 
 
-def _contain_override(key: str, value: Any) -> tuple[bool, Any]:
+def _contain_override(key: str, value: Any, what: str) -> tuple[bool, Any]:
     """Whether account-integration containment keeps the override ``key=value``, and the
     value it keeps: an override under `features.apps` or `features.plugins` is dropped, and
-    those keys leave an inline `features` table, which is dropped when nothing is left."""
-    path = _override_key_path(key)
+    those keys leave an inline `features` table, which is dropped when nothing is left.
+    ``what`` names the key in a refusal, so the key itself is never printed."""
+    path = _override_key_path(key, what)
     if path[0] == "features":
         if len(path) >= 2 and path[1] in _ACCOUNT_INTEGRATION_FEATURES:
             return False, value
@@ -204,12 +206,13 @@ def _nul_refusal_message(what: str) -> str:
     return f"{what} holds a NUL character, which no command-line argument can hold."
 
 
-def _equals_in_key_refusal(key: str) -> ValueError:
+def _equals_in_key_refusal(index: int) -> ValueError:
     # `-c key=value` is split at its first `=`, so a key holding one would set the key
-    # before it to the rest of the argument: `model="x"#` reads as setting `model`.
+    # before it to the rest of the argument: `model="x"#` reads as setting `model`. Named
+    # by position: a key holding `=` is often a value written into it, a secret included.
     return ValueError(
-        f"The config override key {key[:80]!r} holds '=', where the CLI ends a -c key, "
-        "so it would set a different key."
+        f"The key of the config override entry {index} holds '=', where the CLI ends a "
+        "-c key, so it would set a different key."
     )
 
 
@@ -322,7 +325,7 @@ def _refuse_oversized_cli_inputs(
             )
             break
         if "=" in key:
-            failure = _equals_in_key_refusal(key)
+            failure = _equals_in_key_refusal(index)
             break
         # Encoded before containment reads the key, so a value the encoder refuses
         # refuses the request whether or not containment would drop it.
@@ -334,12 +337,14 @@ def _refuse_oversized_cli_inputs(
             # A str value with a lone surrogate: named here rather than left to the
             # codec's own message, which names neither the override nor the request.
             failure = _refuse_text_strict_utf8_cannot_encode(
-                f"The value of the config override {key[:80]!r}"
+                f"The value of the config override entry {index}"
             )
             break
         if contained:
             try:
-                kept, kept_value = _contain_override(key, value)
+                kept, kept_value = _contain_override(
+                    key, value, f"The key of the config override entry {index}"
+                )
             except ValueError as exc:
                 # A key containment cannot read is refused here, by name, so construction
                 # refuses it as the spawn does. A new error, so the parser's is not chained.
@@ -354,20 +359,22 @@ def _refuse_oversized_cli_inputs(
                     continue  # as_cmd_args refuses the value itself
                 except UnicodeEncodeError:
                     failure = _refuse_text_strict_utf8_cannot_encode(
-                        f"The value of the config override {key[:80]!r}"
+                        f"The value of the config override entry {index}"
                     )
                     break
         argument = f"{key}={encoded}"
         # The value is rendered with every control character escaped, so a NUL left in
         # the argument is the key's.
-        failure = _argument_text_failure(argument, f"The config override key {key[:80]!r}")
+        failure = _argument_text_failure(argument, f"The key of the config override entry {index}")
         if failure is None:
-            measured.append((f"The config override {key[:80]!r}", argument.encode("utf-8")))
+            measured.append((f"The config override entry {index}", argument.encode("utf-8")))
     # The text fields that reach the CLI as an argument of their own, each encoded
     # strictly and checked for a NUL under its own name. The efforts and the approval
     # policy are written as TOML strings, where a NUL would be escaped rather than
-    # refused, but each is a closed choice no value with a NUL belongs to, and an
-    # escaped effort would pass the per-model effort clamp, which matches exact names.
+    # refused. The approval policy is a closed choice no value with a NUL belongs to;
+    # the efforts are open strings, but no effort name holds a NUL either. Other control
+    # characters in an effort are escaped and sent, and the per-model clamp ignores
+    # them when it reads the name.
     for what, text in text_fields or ():
         if failure is not None:
             break
@@ -394,19 +401,20 @@ def _toml_scalar(value: str | int | float | bool) -> str:
     return dumped[len("x = ") :].rstrip("\n")
 
 
-def _override_key_path(key: str) -> list[str]:
+def _override_key_path(key: str, what: str) -> list[str]:
     """The parts of a `-c key=value` override's key, read as the TOML dotted
     key the CLI reads it as: a quoted part loses its quotes and its escapes, so
     `features."\\u0061pps"` names the same switch as `features.apps`. A key
-    TOML cannot read is refused here, by name, rather than handed to the CLI."""
+    TOML cannot read is refused here, as ``what``, rather than handed to the CLI;
+    neither the key nor the parser's message, which can quote it, is printed."""
     try:
         table: Any = _tomllib.loads(f"{key} = 1")
         path: list[str] = []
         while isinstance(table, dict):
             ((part, table),) = table.items()
             path.append(part)
-    except Exception as e:
-        raise ValueError(f"config override key {key[:80]!r} is not a TOML key: {e}") from None
+    except Exception:
+        raise ValueError(f"{what} is not a TOML key.") from None
     return path
 
 
@@ -1045,13 +1053,15 @@ class CodexCodeRequest(BaseModel):
                     f"({type(key).__name__})"
                 )
             if "=" in key:
-                raise _equals_in_key_refusal(key)
+                raise _equals_in_key_refusal(index)
             # Containment removes overrides under `features.apps` and
             # `features.plugins`, plus those keys from an inline `features`
             # table. Config profiles can contribute either form alongside the
             # caller. Drop them here rather than relying on flag order.
             if containing:
-                kept, value = _contain_override(key, value)
+                kept, value = _contain_override(
+                    key, value, f"The key of the config override entry {index}"
+                )
                 if not kept:
                     continue
             args.extend(["-c", f"{key}={toml_override_value(value)}"])

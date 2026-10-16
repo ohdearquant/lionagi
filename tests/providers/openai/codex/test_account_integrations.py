@@ -191,7 +191,7 @@ def test_containment_drops_a_nested_account_feature_override():
 
 @pytest.mark.parametrize(
     "key,refusal",
-    [("a b", "is not a TOML key"), ("x = 1\nfeatures.apps", "holds '='")],
+    [("a b", "entry 0 is not a TOML key"), ("x = 1\nfeatures.apps", "entry 0 holds '='")],
     ids=["unreadable", "multiline-with-equals"],
 )
 def test_containment_refuses_an_override_key_it_cannot_read(key, refusal):

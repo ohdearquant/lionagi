@@ -182,7 +182,7 @@ def test_a_config_override_too_long_for_one_argument_is_refused(tmp_path):
     argument = next(a for a in request.as_cmd_args() if a.startswith(f"{key}="))
     assert len(argument.encode("utf-8")) == ARGUMENT_MAX_BYTES - 1
 
-    with pytest.raises(CLIInputRefusedError, match="config override 'developer_instructions'"):
+    with pytest.raises(CLIInputRefusedError, match="config override entry 0 reaches"):
         CodexCodeRequest(prompt="hi", config_overrides={key: fits + "s"}, repo=tmp_path)
 
 
@@ -199,7 +199,7 @@ async def test_a_copied_large_config_override_is_refused_before_the_cli_starts(
         update={"config_overrides": {"k": "v" * ARGUMENT_MAX_BYTES}}
     )
 
-    with pytest.raises(ValueError, match="config override 'k'"):
+    with pytest.raises(ValueError, match="config override entry 0 reaches"):
         async for _ in codex_mod.stream_codex_cli(request):
             pass
 
@@ -468,7 +468,10 @@ def test_an_override_containment_drops_may_hold_a_control_character(tmp_path):
     "fields,named",
     [
         ({"prompt": "hi", "system_prompt": "hi \udcff"}, "system prompt"),
-        ({"prompt": "hi", "config_overrides": {"k\udcff": 1}}, "config override key"),
+        (
+            {"prompt": "hi", "config_overrides": {"k\udcff": 1}},
+            "key of the config override entry 0",
+        ),
         ({"prompt": "hi", "config_overrides": {"k": "hi \udcff"}}, "config override"),
     ],
     ids=["system-prompt", "override-key", "override-value"],
@@ -719,7 +722,7 @@ def _everything_reachable_from(error: BaseException) -> str:
         ({"prompt": "hi", "system_prompt": f"hi \udcff {CHAIN_SENTINEL}"}, "system prompt"),
         (
             {"prompt": "hi", "config_overrides": {f"k \udcff {CHAIN_SENTINEL}": 1}},
-            "override key",
+            "key of the config override entry 0",
         ),
         ({"prompt": "hi", "config_overrides": {"k": f"hi \udcff {CHAIN_SENTINEL}"}}, "override"),
     ],
@@ -805,7 +808,7 @@ def test_a_surrogate_in_a_second_feature_entry_is_refused_too(tmp_path):
         ({"profile": "a\x00"}, "profile"),
         ({"enable_features": ["ok", "x\x00"]}, "enable_features"),
         ({"disable_features": ["x\x00"]}, "disable_features"),
-        ({"config_overrides": {"a\x00b": 1}}, "The config override key"),
+        ({"config_overrides": {"a\x00b": 1}}, "The key of the config override entry 0"),
         ({"reasoning_effort": "high\x00"}, "reasoning_effort"),
         ({"plan_mode_reasoning_effort": "high\x00"}, "plan_mode_reasoning_effort"),
     ],
@@ -844,20 +847,61 @@ def test_a_nul_in_an_override_value_is_escaped_not_refused(tmp_path):
 def test_an_override_key_holding_an_equals_sign_is_refused(tmp_path, key, contained):
     """The CLI ends a `-c` key at its first `=`, so such a key would set the key
     before it: `model="gpt-5"#=1` reads as setting `model`."""
-    with pytest.raises(CLIInputRefusedError, match="holds '='") as caught:
+    with pytest.raises(CLIInputRefusedError, match="entry 0 holds '='") as caught:
         CodexCodeRequest(
             prompt="hi",
             repo=tmp_path,
             contain_account_integrations=contained,
             config_overrides={key: 1},
         )
-    assert repr(key) in str(caught.value)
+    assert key not in str(caught.value)
 
     copied = CodexCodeRequest(
         prompt="hi", repo=tmp_path, contain_account_integrations=contained
     ).model_copy(update={"config_overrides": {key: 1}})
     with pytest.raises(ValueError, match="holds '='"):
         copied.as_cmd_args()
+
+
+_SECRET_IN_A_KEY = "sk-SECRET-KEY-456"
+
+
+@pytest.mark.parametrize(
+    "key,contained",
+    [
+        (f"env.OPENAI_KEY={_SECRET_IN_A_KEY}", False),
+        (f"env.OPENAI_KEY={_SECRET_IN_A_KEY}", True),
+        (f"not a key {_SECRET_IN_A_KEY}", True),
+        (f"env.{_SECRET_IN_A_KEY}\x00", False),
+    ],
+    ids=["equals-uncontained", "equals-contained", "unreadable-contained", "nul"],
+)
+def test_a_refused_override_key_is_never_printed(tmp_path, key, contained):
+    """Each refusal names the entry by position, in the message, in to_dict() and in
+    the command builder's refusal for a copy."""
+    with pytest.raises(CLIInputRefusedError) as constructed:
+        CodexCodeRequest(
+            prompt="hi",
+            repo=tmp_path,
+            contain_account_integrations=contained,
+            config_overrides={"model_verbosity": "low", key: 1},
+        )
+    copied = CodexCodeRequest(
+        prompt="hi", repo=tmp_path, contain_account_integrations=contained
+    ).model_copy(update={"config_overrides": {"model_verbosity": "low", key: 1}})
+    # The command builder refuses a key it cannot split or read; a NUL is refused where
+    # the process starts, by the argument's position.
+    with pytest.raises(ValueError) as built:
+        codex_mod._refuse_oversized_command(["codex", *copied.as_cmd_args()])
+
+    assert "config override entry 1" in str(constructed.value)
+    assert ("config override entry 1" if "\x00" not in key else "-c override at argument") in str(
+        built.value
+    )
+    for caught in (constructed, built):
+        assert _SECRET_IN_A_KEY not in str(caught.value)
+        assert _SECRET_IN_A_KEY not in repr(caught.value)
+    assert _SECRET_IN_A_KEY not in str(constructed.value.to_dict(include_cause=True))
 
 
 class _IterationHidesAKey(dict):
@@ -917,8 +961,9 @@ def test_a_copied_key_that_is_not_a_string_is_refused_by_the_command_builder(tmp
     assert SECRET_OVERRIDE_KEY not in str(caught.value)
 
 
-def test_a_key_containment_cannot_read_is_named_by_its_first_80_characters(tmp_path):
-    """Refused by name at construction, and by the command builder for a copy."""
+def test_a_key_containment_cannot_read_is_named_by_position(tmp_path):
+    """Refused at construction, and by the command builder for a copy, naming the
+    entry and printing none of the key."""
     key = "not a key " + "x" * 120
     with pytest.raises(CLIInputRefusedError, match="is not a TOML key") as constructed:
         CodexCodeRequest(
@@ -931,8 +976,7 @@ def test_a_key_containment_cannot_read_is_named_by_its_first_80_characters(tmp_p
         request.as_cmd_args()
 
     for caught in (constructed, built):
-        assert repr(key[:80]) in str(caught.value)
-        assert key not in str(caught.value)
+        assert "The key of the config override entry 0 is not a TOML key." == str(caught.value)
 
 
 class _KeysHideAKey(Mapping):
@@ -1031,5 +1075,5 @@ def test_a_surrogate_in_an_override_value_is_refused_naming_the_value(tmp_path):
         CodexCodeRequest(prompt="hi", repo=tmp_path, config_overrides={"k": "v \udcff"})
 
     message = str(caught.value)
-    assert message.startswith("The value of the config override")
-    assert "The config override key" not in message
+    assert message.startswith("The value of the config override entry 0")
+    assert "The key of the config override" not in message

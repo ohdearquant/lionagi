@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -77,14 +78,26 @@ _CODEX_KNOWN_EFFORT_MODELS = (
 )
 
 
+_CLAMP_IGNORED_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
+
+
+def _clamp_name(text: str) -> str:
+    """``text`` as the effort clamp compares it: lowercased, without control or format
+    characters and without surrounding whitespace, so a name carrying them is clamped
+    as the bare name is rather than passing the clamp to the CLI."""
+    kept = "".join(c for c in text if unicodedata.category(c) not in _CLAMP_IGNORED_CATEGORIES)
+    return kept.strip().lower()
+
+
 def _clamp_codex_effort(effort: str, model: str | None) -> str:
     """Clamp max/ultra down to the target codex model's supported ceiling."""
-    if effort not in ("max", "ultra"):
+    name = _clamp_name(effort)
+    if name not in ("max", "ultra"):
         return effort
-    model_part = (model or "").split("/", 1)[-1]
+    model_part = _clamp_name((model or "").split("/", 1)[-1])
     if model_part in _CODEX_XHIGH_CEILING_MODELS:
         return "xhigh"
-    if effort == "ultra" and model_part in _CODEX_MAX_ONLY_MODELS:
+    if name == "ultra" and model_part in _CODEX_MAX_ONLY_MODELS:
         return "max"
     return effort
 
