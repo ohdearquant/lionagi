@@ -228,6 +228,37 @@ describe("bounded graph layout", () => {
     },
   );
 
+  it("marks only a genuine fold boundary on a cyclic fallback", () => {
+    const layout = vi.spyOn(dagre, "layout");
+    const { nodes, edges } = backwardChain(40, 37);
+    const result = getLayoutedElements(nodes, edges);
+    expect(layout).not.toHaveBeenCalled();
+    const marked = result.edges.filter((entry) => entry.data?.continuation);
+    // A dependency that points backwards on its own is not a fold continuation.
+    for (const entry of marked) {
+      expect(result.ranks.get(entry.target)!).toBeGreaterThan(result.ranks.get(entry.source)!);
+    }
+    const y = new Map(result.nodes.map((entry) => [entry.id, entry.position.y]));
+    for (const entry of marked) {
+      expect(y.get(entry.target)!).toBeGreaterThan(y.get(entry.source)!);
+    }
+    const rows = new Set(result.nodes.map((entry) => Math.round(entry.position.y))).size;
+    expect(marked).toHaveLength(rows - 1);
+  });
+
+  it("marks no continuation in a top-to-bottom layout", () => {
+    const layout = vi.spyOn(dagre, "layout");
+    const leaves = Array.from({ length: 128 }, (_, index) => node(`leaf-${index}`));
+    const result = getLayoutedElements(
+      [node("root"), ...leaves],
+      leaves.map((entry) => edge("root", entry.id)),
+      "TB",
+    );
+    expect(layout).not.toHaveBeenCalled();
+    expect(result.edges.some((entry) => entry.data?.continuation)).toBe(false);
+    assertNoOverlap(result.nodes);
+  });
+
   it("keeps chain folding and real continuation edges in the bounded path", () => {
     const layout = vi.spyOn(dagre, "layout");
     const { nodes, edges } = chain(111);

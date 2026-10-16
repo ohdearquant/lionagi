@@ -1,7 +1,11 @@
 // Run from apps/studio/frontend with Node 24 or newer:
 // node benchmarks/layout-budget.mjs [--sweep|--chord-sweep|--fixtures]
-// Timing samples use the untouched layout and dependencies. A separate inspection
-// run counts Dagre calls/dummies; it is excluded from every timing statistic.
+// --fixtures times the committed module. --sweep/--chord-sweep time an in-memory
+// copy of it with only the two admission limits substituted, so those samples
+// describe a candidate, not the committed layout; --fixtures is the committed
+// one. No dependency or project file is written. A separate untimed pass counts
+// Dagre calls/dummies by wrapping both in process; no timing sample is taken
+// while that wrapper is installed.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";

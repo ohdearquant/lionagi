@@ -62,16 +62,18 @@ defensive placement convention; they cannot describe a valid dependency order.
 
 The limits are an empirical reference-host choice, not a wall-clock deadline.
 The committed benchmark runs the full layout pipeline with one warm-up and
-seven uninstrumented timing samples per fixed shape. A separate untimed run
-counts Dagre calls and normalization dummies; it does not modify dependencies.
-Run it from this directory with Node 24 or newer:
+seven uninstrumented timing samples per fixed shape. A separate untimed pass
+counts Dagre calls and normalization dummies by wrapping both in process; no
+dependency or project file is written. Run it from this directory with Node 24
+or newer:
 
 ```sh
 node benchmarks/layout-budget.mjs
 ```
 
-`--sweep` runs all candidate boundary families; `--chord-sweep` runs only the
-long-chord candidate family; `--fixtures` runs the configured production fixtures.
+`--fixtures` times the committed module. `--sweep` runs all candidate boundary
+families against an in-memory copy of it with only the two limits substituted;
+`--chord-sweep` runs only the long-chord family that way.
 
 The measured sweep paired work/node caps at 96/64, 144/96, 192/128 and 240/160.
 The declared selection criterion was the largest pair whose sampled boundary
@@ -84,23 +86,27 @@ Node 26.7.0, Dagre 0.8.5, Darwin arm64, Apple M2 Max; memory pressure was 2
 before each phase. Other machine load was not controlled. These are sampled
 observations, not a universal worst-case proof or a browser-frame measurement:
 
-| Work / node caps | Largest family median | Largest sample | Decision        |
-| ---------------- | --------------------: | -------------: | --------------- |
-| 96 / 64          |              9.168 ms |      14.074 ms | Qualified       |
-| 144 / 96         |             14.550 ms |      19.487 ms | Qualified       |
-| 192 / 128        |             16.158 ms |      17.156 ms | Selected        |
-| 240 / 160        |             21.888 ms |      28.375 ms | Did not qualify |
+Each row is one pass except the last, which is the worst observation across the
+two passes that measured it: the sweep alone gave it a largest median of
+18.811 ms, repeating the same families in the fixture pass gave the 21.888 ms
+three-layer median and 28.375 ms fan-out maximum.
 
-The first fixed seven-family sweep also admitted 240/160 (largest median
-18.811 ms). A long-chord supplement added one fixed family at all four pairs.
-A subsequent production-fixture run unintentionally repeated the 240/160
-families; its three-layer median was 21.888 ms and its fan-out maximum was
-28.375 ms. Those unfavorable observations are retained in the decision above;
-the benchmark was not rerun to obtain a passing result. The selected 192/128
-pair includes a measured 128-isolated-node cap and exact 192-work cases. This
-does not imply that node 129 is inherently slow, or independently optimize the
-two caps. An additional 39-node long-chord control at work 191 had an 18.671 ms
-maximum, further illustrating that the caps do not promise a 16 ms frame.
+| Work / node caps       | Largest family median | Largest sample | Decision        |
+| ---------------------- | --------------------: | -------------: | --------------- |
+| 96 / 64                |              9.168 ms |      14.074 ms | Qualified       |
+| 144 / 96               |             14.550 ms |      19.487 ms | Qualified       |
+| 192 / 128              |             16.158 ms |      17.156 ms | Selected        |
+| 240 / 160 (two passes) |             21.888 ms |      28.375 ms | Did not qualify |
+
+The spread between those two passes is 3.1 ms, and the margin from the selected
+16.158 ms median to the 20 ms criterion is 3.8 ms, so the selected pair is not
+separated from the rejected one by a wide gap. The 192/128 pair includes a
+measured 128-isolated-node cap and exact 192-work cases. This does not imply
+that node 129 is inherently slow, or independently optimize the two caps. An
+additional 39-node long-chord control at work 191 had an 18.671 ms maximum,
+further illustrating that the caps do not promise a 16 ms frame. The raw
+per-sample timings are not committed; each row above is the summary the
+benchmark prints.
 
 Wrapping and folding were re-checked alongside admission and remain downstream
 geometry choices. Seven fan-out siblings occupy one column (566 × 747 including
@@ -117,7 +123,9 @@ fall below that floor. With the shallow 90 px gap, five cards occupy 1410 px;
 the sixth crosses 1500 and starts another safe chain row. Final correctness
 tests retain the seven/eight sibling and five/six chain boundaries, along with
 folding on the fallback path. Branch/join boundaries and tall graphs still
-prevent folding. The two visual thresholds do not decide Dagre admission.
+prevent folding. The two visual thresholds do not decide Dagre admission, and
+this work leaves them as they were: they were re-checked for geometry, not
+re-derived from measured layout time.
 
 There is no hysteresis or position cache across graph changes. Crossing an
 admission boundary can move many existing nodes, and Dagre can also reposition

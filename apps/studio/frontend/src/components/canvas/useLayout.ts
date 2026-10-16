@@ -386,15 +386,32 @@ export function enforceMinRankGap(nodes: Node[], minGap = 6): Node[] {
   return out;
 }
 
-// An LR layout puts every target to the right of its source, so an edge that
-// runs backwards can only be one the fold created: it leaves the end of a row
-// and re-enters at the start of the next. That edge is still a real dependency
-// in the graph, but on screen it is doing what the wrap at the end of a line of
+// A folded LR graph re-enters each row at its left edge, so the edge that leaves
+// the end of a row for the start of the next runs backwards on the canvas: it is
+// the one edge the fold itself created. That edge is still a real dependency in
+// the graph, but on screen it is doing what the wrap at the end of a line of
 // text does, and drawing it like the others makes the reader look for a
 // dependency behind them. Detected from the final geometry rather than from the
 // fold's own bookkeeping, so it describes what the edge actually does on the
 // canvas whichever pass moved the nodes.
-export function markContinuationEdges(nodes: Node[], edges: Edge[]): Edge[] {
+//
+// Geometry alone is not enough to tell that edge apart from a dependency that
+// points backwards on its own. A malformed graph — a cycle, or a back edge
+// within a rank — reaches the fallback, whose ranks are a placement convention
+// rather than a dependency order, and there the edge really is drawn backwards.
+// Such an edge must not read as a row boundary, so it is excluded by rank below.
+//
+// Only LR folds, so only LR has a return sweep to mark. A TB layout stacks
+// ranks along the cross axis, where a backwards edge is an ordering choice
+// within a rank, not a row boundary.
+export function markContinuationEdges(
+  nodes: Node[],
+  edges: Edge[],
+  direction: "LR" | "TB" = "LR",
+  ranks?: Map<string, number>,
+): Edge[] {
+  if (direction !== "LR") return edges;
+
   const xById = new Map<string, number>();
   for (const node of nodes) xById.set(node.id, node.position.x);
 
@@ -405,6 +422,11 @@ export function markContinuationEdges(nodes: Node[], edges: Edge[]): Edge[] {
     // An endpoint the layout never placed says nothing about direction.
     if (sourceX === undefined || targetX === undefined) return edge;
     if (targetX >= sourceX) return edge;
+    const sourceRank = ranks?.get(edge.source);
+    const targetRank = ranks?.get(edge.target);
+    if (sourceRank !== undefined && targetRank !== undefined && targetRank <= sourceRank) {
+      return edge;
+    }
     changed = true;
     return { ...edge, data: { ...(edge.data ?? {}), continuation: true } };
   });
@@ -653,7 +675,7 @@ export function getLayoutedElements(
 
   return {
     nodes: finalNodes,
-    edges: markContinuationEdges(finalNodes, edges),
+    edges: markContinuationEdges(finalNodes, edges, direction, ranks),
     height,
     width,
     ranks,
