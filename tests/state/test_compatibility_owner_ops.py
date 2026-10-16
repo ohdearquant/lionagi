@@ -871,6 +871,202 @@ async def test_a_store_with_rows_only_in_its_log_and_no_lineage_row_opens_native
     assert _rows(copy, "SELECT v FROM unfolded") == [("kept",)]
 
 
+@pytest.mark.parametrize("index", [True, False], ids=["with-its-index", "without-an-index"])
+async def test_a_row_in_the_log_is_read_whatever_the_files_row_says(tmp_path, index):
+    """The file's row names this package and the log, not yet folded into it, names the manager:
+    the log's row is the store's, so the open is refused before any writable connection exists
+    and the file, the log and the index keep their bytes and times."""
+    from lionagi.state.db import _read_lineage
+
+    store = tmp_path / "native.db"
+    first = StateDB(store)
+    await first.open()
+    await first.close()
+    _execute(store, "INSERT INTO schema_meta (key, value) VALUES ('lineage', 'lionagi')")
+    copy = tmp_path / "copy.db"
+    with closing(sqlite3.connect(store, isolation_level=None)) as conn:
+        conn.execute("PRAGMA wal_autocheckpoint = 0")
+        conn.execute("UPDATE schema_meta SET value = 'manager' WHERE key = 'lineage'")
+        shutil.copyfile(store, copy)
+        shutil.copyfile(Path(f"{store}-wal"), Path(f"{copy}-wal"))
+        if index:
+            shutil.copyfile(Path(f"{store}-shm"), Path(f"{copy}-shm"))
+    assert _read_lineage(f"{copy.as_uri()}?immutable=1")[1] == "lionagi"
+    before = _snapshot(copy)
+    assert set(before) == ({"", "-wal", "-shm"} if index else {"", "-wal"})
+    with pytest.raises(ForeignLineageError, match="'manager' as the application"):
+        await StateDB(copy).open()
+    assert _snapshot(copy) == before
+
+
+def test_a_checkpoint_between_the_two_copies_takes_the_read_again(tmp_path, monkeypatch):
+    """The row is only in the log and there is no index, so it is read from a private copy. Another
+    connection truncates the log into the file after the file is copied and before the log is:
+    the copy would show no row, so the read is taken again, from the file that now holds it."""
+    from lionagi.state import db as db_mod
+
+    store = tmp_path / "managed.db"
+    with closing(sqlite3.connect(store)) as conn:
+        conn.execute("PRAGMA journal_mode = wal")
+        conn.execute("CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.commit()
+    copy = tmp_path / "copy.db"
+    with closing(sqlite3.connect(store, isolation_level=None)) as conn:
+        conn.execute("PRAGMA wal_autocheckpoint = 0")
+        conn.execute("INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+        shutil.copyfile(store, copy)
+        shutil.copyfile(Path(f"{store}-wal"), Path(f"{copy}-wal"))
+    holders: list[sqlite3.Connection] = []
+    real = db_mod._copy_through_sqlite
+    copies = []
+
+    def checkpoint_after_the_first_copy(path, target):
+        real(path, target)
+        copies.append(path)
+        if len(copies) == 1:
+            # Kept open, so the truncated log stays beside the file, as under a live manager.
+            holder = sqlite3.connect(copy, isolation_level=None)
+            holder.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            holders.append(holder)
+
+    monkeypatch.setattr(db_mod, "_copy_through_sqlite", checkpoint_after_the_first_copy)
+    try:
+        with pytest.raises(ForeignLineageError, match="'manager' as the application"):
+            StateDB(copy)._read_lineage_without_writing(())
+        assert len(copies) == 1
+        assert Path(f"{copy}-wal").stat().st_size == 0
+    finally:
+        for holder in holders:
+            holder.close()
+
+
+def test_without_the_check_a_checkpoint_between_the_copies_hides_the_row(tmp_path, monkeypatch):
+    """The control for the test above: with the state of the store not compared across the two
+    copies, the same race leaves a copy that shows no row, and nothing is refused."""
+    from lionagi.state import db as db_mod
+
+    store = tmp_path / "managed.db"
+    with closing(sqlite3.connect(store)) as conn:
+        conn.execute("PRAGMA journal_mode = wal")
+        conn.execute("CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.commit()
+    with closing(sqlite3.connect(store, isolation_level=None)) as conn:
+        conn.execute("PRAGMA wal_autocheckpoint = 0")
+        conn.execute("INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+        copy = tmp_path / "copy.db"
+        shutil.copyfile(store, copy)
+        shutil.copyfile(Path(f"{store}-wal"), Path(f"{copy}-wal"))
+    holders: list[sqlite3.Connection] = []
+    real = db_mod._copy_through_sqlite
+
+    def checkpoint_after_the_copy(path, target):
+        real(path, target)
+        if not holders:
+            holder = sqlite3.connect(copy, isolation_level=None)
+            holder.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            holders.append(holder)
+
+    monkeypatch.setattr(db_mod, "_copy_through_sqlite", checkpoint_after_the_copy)
+    monkeypatch.setattr(db_mod, "_copy_state", lambda path, suffix: ())
+    try:
+        assert db_mod._read_lineage_from_a_copy(str(copy), "-wal") is None
+    finally:
+        for holder in holders:
+            holder.close()
+
+
+_RESERVE = """
+import sqlite3, sys
+
+conn = sqlite3.connect(sys.argv[1], timeout=0, isolation_level=None)
+try:
+    conn.execute("BEGIN IMMEDIATE")
+    print("acquired")
+    conn.execute("ROLLBACK")
+except sqlite3.OperationalError as exc:
+    print("locked" if "locked" in str(exc) else f"error: {exc}")
+finally:
+    conn.close()
+"""
+
+
+def _another_process_reserves(store: Path) -> str:
+    result = subprocess.run(
+        [sys.executable, "-c", _RESERVE, str(store)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def test_the_private_copy_keeps_the_locks_this_process_holds_on_the_store(tmp_path, monkeypatch):
+    """A connection here is inside a write transaction beside a hot-looking journal when the
+    lineage is read from a copy. Closing any descriptor this process opened on the file would drop
+    that connection's lock and let another process write into its transaction; the copy goes
+    through SQLite, which keeps it. Copied with a plain file copy instead, the lock is lost."""
+    from lionagi.state import db as db_mod
+
+    store = tmp_path / "rollback.db"
+    with closing(sqlite3.connect(store)) as conn:
+        conn.execute("PRAGMA journal_mode = delete")
+        conn.execute("CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.commit()
+    writer = sqlite3.connect(store, isolation_level=None)
+    try:
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+        assert Path(f"{store}-journal").exists()
+        assert _another_process_reserves(store) == "locked"
+        assert db_mod._read_lineage_from_a_copy(str(store), "-journal") is None
+        assert _another_process_reserves(store) == "locked"
+        monkeypatch.setattr(db_mod, "_copy_through_sqlite", shutil.copyfile)
+        db_mod._read_lineage_from_a_copy(str(store), "-journal")
+        assert _another_process_reserves(store) == "acquired"
+    finally:
+        writer.execute("ROLLBACK")
+        writer.close()
+
+
+async def test_a_handle_whose_open_failed_after_its_connection_read_the_store_is_registered(
+    tmp_path, monkeypatch
+):
+    """The engine stays after a failure past the first read, and its connections write without a
+    profile, so compatibility admission in this process refuses the file while it is open."""
+    from lionagi.state import db as db_mod
+
+    store = tmp_path / "state.db"
+
+    async def read_then_fail(self):
+        async with self._engine.connect():
+            pass
+        raise RuntimeError("the schema could not be applied")
+
+    monkeypatch.setattr(StateDB, "_apply_schema", read_then_fail)
+    handle = StateDB(store)
+    try:
+        with pytest.raises(RuntimeError, match="could not be applied"):
+            await handle.open()
+        assert handle._connection_read
+        assert handle._engine is not None
+        assert handle in db_mod._OPEN_NATIVE
+    finally:
+        await handle.close()
+    assert handle not in db_mod._OPEN_NATIVE
+
+
+async def test_close_during_an_open_waits_for_it_and_leaves_no_engine(tmp_path):
+    import asyncio
+
+    handle = StateDB(tmp_path / "state.db")
+    opening = asyncio.ensure_future(handle.open())
+    await asyncio.sleep(0)
+    await handle.close()
+    await opening
+    assert handle._engine is None
+
+
 def _row_lands_before_the_writable_engine(monkeypatch, store: Path) -> None:
     from lionagi.state import db as db_mod
 

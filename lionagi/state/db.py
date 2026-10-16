@@ -799,10 +799,8 @@ class StateDB:
             unread = self.dialect == "sqlite" and not self._connection_read
             if unread or isinstance(exc, (ForeignLineageError, StateCompatibilityRefused)):
                 with CancelScope(shield=True):
-                    await self.close()
+                    await self._close()
             raise
-        if self._native_file is not None:
-            _OPEN_NATIVE.add(self)
 
     def _refuse_a_managed_store(self, dbapi_conn) -> None:
         """Refuse a writable native connection to a file this process holds in compatibility
@@ -827,8 +825,11 @@ class StateDB:
         self._raise_if_foreign_lineage(lineage)
         self._connection_read = True
         # The file the connection opened, however the URL spells it, so compatibility admission
-        # in this process is refused for that file while this handle is open.
+        # in this process is refused for that file while this handle is open. Registered as soon
+        # as a connection has read the store: an open that fails after this keeps its engine.
         self._native_file = _file_identity(opened) if opened else None
+        if self._native_file is not None:
+            _OPEN_NATIVE.add(self)
 
     def _read_lineage_without_writing(self, held: tuple) -> None:
         """Refuse a file this process holds in compatibility mode, or a store whose ``lineage`` row
@@ -838,11 +839,12 @@ class StateDB:
         reads no journal, log or index. Beside a rollback journal that begins with a journal header,
         as one an interrupted transaction leaves does, the file can hold part of that transaction, so
         the row is read instead from a private copy of the file and the journal, which SQLite rolls
-        back. When the file shows no row and a write-ahead log is beside it, the row is read again
-        read-only with ``readonly_shm``, which reads the log through its ``-shm`` index without
-        writing to it, and, when there is no index or that read fails, from a private copy of the
-        file and the log. A read that fails decides nothing here: the writable connection reads the
-        row again before its settings.
+        back. When a write-ahead log with frames is beside it, whatever the file's own row says,
+        the row is read again read-only with ``readonly_shm``, which reads the log through its
+        ``-shm`` index without writing to it, and, when there is no index or that read fails, from
+        a private copy of the file and the log. A copy the store committed or checkpointed under is
+        taken again from the start, a bounded number of times. A read that fails decides nothing
+        here: the writable connection reads the row again before its settings.
         """
         from sqlalchemy.dialects.sqlite.aiosqlite import SQLiteDialect_aiosqlite
 
@@ -852,22 +854,33 @@ class StateDB:
             return
         uri = bool(options.get("uri"))
         target = _read_only_uri(filename, uri, immutable=True)
-        read = _read_lineage(target) if target is not None else None
-        if read is None:
+        if target is None:
             return
-        opened, lineage = read
-        self._refuse_a_held_file(opened, held)
-        if not opened:
-            return
-        if _journal_has_a_header(opened):
-            copied = _read_lineage_from_a_copy(opened, "-journal")
-            if copied is not _UNREAD:
-                lineage = copied
-        elif (lineage is None or lineage is _UNREAD) and _log_has_frames(opened):
-            reread = _read_lineage(_read_only_uri(filename, uri, immutable=False))
-            lineage = _UNREAD if reread is None else reread[1]
-            if lineage is _UNREAD:
-                lineage = _read_lineage_from_a_copy(opened, "-wal")
+        for _ in range(_COPY_ATTEMPTS):
+            read = _read_lineage(target)
+            if read is None:
+                return
+            opened, lineage = read
+            self._refuse_a_held_file(opened, held)
+            if not opened:
+                return
+            if _journal_has_a_header(opened):
+                current = _read_lineage_from_a_copy(opened, "-journal")
+            elif _log_has_frames(opened):
+                # The log is read whatever the file shows: a row it holds is the store's row.
+                reread = _read_lineage(_read_only_uri(filename, uri, immutable=False))
+                current = _UNREAD if reread is None else reread[1]
+                if current is _UNREAD:
+                    current = _read_lineage_from_a_copy(opened, "-wal")
+            else:
+                current = _UNREAD
+            if current is not _MOVED:
+                break
+        else:
+            # Every copy saw the store commit or checkpoint under it; the file's own read stands.
+            current = _UNREAD
+        if current is not _UNREAD:
+            lineage = current
         if lineage is not _UNREAD:
             self._raise_if_foreign_lineage(lineage)
 
@@ -916,7 +929,7 @@ class StateDB:
                 await conn.run_sync(guard.admit)
         except BaseException:
             with CancelScope(shield=True):
-                await self.close()
+                await self._close()
             raise
         self._held_file = _file_identity(lexical)
         _OPEN_COMPAT.add(self)
@@ -1004,6 +1017,12 @@ class StateDB:
         _COMPAT_INSERTED.get().append((table, values["id"]))
 
     async def close(self) -> None:
+        # An open in progress finishes first, so close() never returns before an engine it would
+        # have disposed exists.
+        async with self._open_lock:
+            await self._close()
+
+    async def _close(self) -> None:
         _OPEN_COMPAT.discard(self)
         _OPEN_NATIVE.discard(self)
         if self._engine is not None:
@@ -6939,6 +6958,10 @@ def _read_only_uri(filename: str, uri: bool, *, immutable: bool) -> str | None:
 
 # A store whose file opened but whose `lineage` row could not be read.
 _UNREAD = object()
+# A copy of the file and its journal or log that the store committed or checkpointed under, so the
+# two may not be of one state; the read is taken again, up to _COPY_ATTEMPTS times.
+_MOVED = object()
+_COPY_ATTEMPTS = 3
 # The first eight bytes of a rollback journal's header. A commit deletes, truncates or zeroes it.
 _JOURNAL_HEADER = bytes.fromhex("d9d505f920a163d7")
 
@@ -6965,16 +6988,56 @@ def _read_lineage_from_a_copy(path: str, suffix: str) -> Any:
     ``-wal``, read on a writable connection, so SQLite rolls the copy's journal back or reads the
     copy's log and never touches the originals. The copy is made in a new directory under the
     system's temporary directory, which only this user can read, and removed before this returns.
-    ``_UNREAD`` when the copy or its read fails."""
+    ``_MOVED`` when the store committed or checkpointed while it was copied, ``_UNREAD`` when the
+    copy or its read fails."""
     try:
         with tempfile.TemporaryDirectory(prefix="lionagi-lineage-") as scratch:
             copy = os.path.join(scratch, "store.db")
-            shutil.copyfile(path, copy)
+            before = _copy_state(path, suffix)
+            _copy_through_sqlite(path, copy)
             shutil.copyfile(f"{path}{suffix}", f"{copy}{suffix}")
+            if before is None or _copy_state(path, suffix) != before:
+                return _MOVED
             read = _read_lineage(Path(copy).as_uri())
-    except OSError:
+    except (OSError, sqlite3.Error):
         return _UNREAD
     return _UNREAD if read is None else read[1]
+
+
+def _copy_state(path: str, suffix: str) -> tuple | None:
+    """What changes when the store commits or checkpoints between the copy of its file and the
+    copy of its journal or log: the file's inode, the journal's or log's inode, and the log's header
+    (a checkpoint that resets or truncates the log rewrites it) or the journal header's magic and
+    nonce (a commit removes, truncates or zeroes the journal, and a new transaction writes a new
+    header). None when the journal or log cannot be read."""
+    side = f"{path}{suffix}"
+    try:
+        with open(side, "rb") as handle:
+            header = handle.read(32)
+            inodes = (os.stat(path).st_ino, os.fstat(handle.fileno()).st_ino)
+    except OSError:
+        return None
+    return inodes, header if suffix == "-wal" else header[:8] + header[12:16]
+
+
+def _copy_through_sqlite(path: str, copy: str) -> None:
+    """Copy the file at *path* to *copy* through SQLite, read immutable, rather than by opening the
+    file: closing a descriptor this process holds on the file drops every POSIX lock this process
+    holds on it, which another connection here may be holding, while SQLite keeps its own
+    descriptor open until its connections here release their locks."""
+    source = sqlite3.connect(f"{Path(path).as_uri()}?immutable=1", uri=True)
+    try:
+        # A file whose header counts more pages than it holds, as an interrupted transaction or a
+        # checkpoint can leave it, is copied as far as it goes; the journal or log beside the copy
+        # completes it.
+        source.execute("PRAGMA writable_schema = ON")
+        target = sqlite3.connect(copy)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+    finally:
+        source.close()
 
 
 def _read_lineage(uri: str) -> tuple[str, Any] | None:

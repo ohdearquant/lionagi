@@ -23,9 +23,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   directory that is removed before the open goes on. Each writable connection reads the row again
   before its own settings, for a row written in between; a store refused there may have had its
   journal rolled back, its index written or its log folded into the file by that connection. The
-  managing
-  application writes that row when it creates the store, and compatibility mode admits only a store
-  that has it, so a native open in another process cannot migrate a store being written in
+  managing application writes that row when it creates the store, and compatibility mode admits
+  only a store that has it, so a native open in another process cannot migrate a store being written in
   compatibility mode; compatibility mode in turn refuses a store this process has open natively. A
   store without the row opens and migrates natively as before. Studio's own store opener is not
   covered yet.

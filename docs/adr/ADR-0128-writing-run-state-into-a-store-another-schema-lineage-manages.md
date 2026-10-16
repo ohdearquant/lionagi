@@ -220,12 +220,15 @@ log or index; a table an interrupted transaction left half-written is skipped ra
 the read. Beside a rollback journal that begins with a journal header, as one an interrupted
 transaction leaves does, the file can hold part of that transaction, a row it deleted or one it
 wrote, so the row is read instead from a private copy of the file and the journal, which SQLite rolls
-back. When the file shows no row, or cannot be read alone, and a non-empty write-ahead log is beside
-it, the row is read again read-only with `readonly_shm`, which reads the log through its existing
-`-shm` index and never writes to it; when there is no index, or that read fails, the row is read
-from a private copy of the file and the log. A private copy is made in a new directory under the
-system's temporary directory (Python's `tempfile`), which only the user running lionagi can read,
-and the directory is removed before the open goes on. A copy costs a read of the whole file, and is
+back. When a non-empty write-ahead log is beside the file, whatever row the file shows, the row is
+read again read-only with `readonly_shm`, which reads the log through its existing `-shm` index and
+never writes to it; when there is no index, or that read fails, the row is read from a private copy
+of the file and the log. A private copy is made in a new directory under the system's temporary
+directory (Python's `tempfile`), which only the user running lionagi can read, and the directory is
+removed before the open goes on. The file is copied through SQLite rather than by opening it, since
+closing a descriptor of the file would drop the locks this process's other connections hold on it.
+A copy the store committed or checkpointed under, seen as a changed journal or log header, is taken
+again from the first read, a bounded number of times. A copy costs a read of the whole file, and is
 made only beside such a journal or a log without a readable index.
 
 A read that fails decides nothing; the writable connection then decides. Each writable connection
