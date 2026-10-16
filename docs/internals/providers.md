@@ -417,7 +417,9 @@ Every CLI provider's request model wraps its `env` and `on_spawn` fields in
 child environment or a bound callback into `str(err)`, `err.errors()`, or
 `err.json()`. The Codex request model wraps its `config_overrides` the same
 way, through `_redact_codex_runtime_fields_in_place`, because a `-c` override
-holds the same kind of token a child environment does. This matters because
+holds the same kind of token a child environment does; its field validator
+then refuses a key that is not a string by position and type, as the `env`
+validator does, since pydantic would quote such a key. This matters because
 pydantic keeps a failing validator's raw input on the error —
 `repr=False`/`exclude` on a field don't help, since a
 model-level validator holds the whole raw mapping regardless of per-field

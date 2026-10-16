@@ -543,6 +543,42 @@ def _hidden_in_a_validation_error(error: BaseException) -> None:
     assert SECRET_OVERRIDE_KEY not in shown
 
 
+@pytest.mark.parametrize(
+    "key",
+    [(SECRET_OVERRIDE_KEY, 1), SECRET_OVERRIDE_KEY.encode(), 7],
+    ids=["tuple", "bytes", "int"],
+)
+def test_a_key_that_is_not_a_string_is_refused_by_position_and_type(tmp_path, key):
+    """pydantic quotes a key it cannot validate as a string, so such a key is refused
+    before pydantic reads it, by its position and type only."""
+    overrides = {"k": SECRET_IN_OVERRIDE, key: SECRET_IN_OVERRIDE}
+
+    with pytest.raises(TypeError) as caught:
+        CodexCodeRequest(prompt="hi", repo=tmp_path, config_overrides=overrides)
+
+    message = str(caught.value)
+    assert f"entry 1 (key is {type(key).__name__})" in message
+    shown = " ".join([message, repr(caught.value), _everything_reachable_from(caught.value)])
+    assert SECRET_OVERRIDE_KEY not in shown
+    assert SECRET_IN_OVERRIDE not in shown
+
+
+@pytest.mark.asyncio
+async def test_a_copied_key_that_is_not_a_string_is_refused_before_the_cli_starts(
+    tmp_path, monkeypatch
+):
+    _refuse_a_spawn(monkeypatch)
+    request = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(
+        update={"config_overrides": {(SECRET_OVERRIDE_KEY, 1): "v \udcff"}}
+    )
+
+    with pytest.raises(ValueError, match="entry 0 has a key that is not a string") as caught:
+        async for _ in codex_mod.stream_codex_cli(request):
+            pass
+
+    assert SECRET_OVERRIDE_KEY not in str(caught.value)
+
+
 def test_a_missing_prompt_carries_no_config_override(tmp_path):
     """`validate_message_prompt` raises ValueError for neither a prompt nor messages,
     and pydantic wraps it in a ValidationError whose rendering carries the whole
@@ -759,6 +795,52 @@ def test_a_surrogate_in_a_second_feature_entry_is_refused_too(tmp_path):
         CodexCodeRequest(prompt="hi", repo=tmp_path, enable_features=["ok", "x\udcff"])
 
     assert "enable_features" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "fields,named",
+    [
+        ({"model": "gpt-5.4\x00"}, "model"),
+        ({"profile": "a\x00"}, "profile"),
+        ({"enable_features": ["ok", "x\x00"]}, "enable_features"),
+        ({"disable_features": ["x\x00"]}, "disable_features"),
+        ({"config_overrides": {"a\x00b": 1}}, "The config override key"),
+    ],
+    ids=["model", "profile", "enable-features", "disable-features", "override-key"],
+)
+def test_a_nul_in_any_argument_text_is_refused_at_construction(tmp_path, fields, named):
+    """exec refuses an argument holding a NUL with a message that names nothing, so
+    the request refuses it first, by name."""
+    with pytest.raises(CLIInputRefusedError) as caught:
+        CodexCodeRequest(prompt="hi", repo=tmp_path, **fields)
+
+    assert named in str(caught.value)
+    assert "NUL" in str(caught.value)
+
+
+def test_a_nul_in_an_override_value_is_escaped_not_refused(tmp_path):
+    request = CodexCodeRequest(prompt="hi", repo=tmp_path, config_overrides={"k": "a\x00b"})
+
+    assert 'k="a\\u0000b"' in request.as_cmd_args()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "update,named",
+    [({"model": "gpt-5.4\x00"}, "model"), ({"images": ["a\x00.png"]}, "-i")],
+    ids=["model", "image-path"],
+)
+async def test_a_copied_nul_is_refused_before_the_cli_starts(tmp_path, monkeypatch, update, named):
+    """A path field is not a text field the construction check reads, so the spawn
+    checks every argument it builds for a NUL as well."""
+    _refuse_a_spawn(monkeypatch)
+    request = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(update=update)
+
+    with pytest.raises(ValueError, match="NUL") as caught:
+        async for _ in codex_mod.stream_codex_cli(request):
+            pass
+
+    assert named in str(caught.value)
 
 
 # ── bare TOML keys ───────────────────────────────────────────────────────────

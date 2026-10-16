@@ -143,8 +143,8 @@ def _refuse_oversized_argument(argument: bytes, what: str) -> None:
 
 
 def _refuse_oversized_command(cmd: list[str]) -> None:
-    """Refuse ``cmd`` when any argument after the program is ``_CLI_ARGUMENT_MAX_BYTES`` bytes
-    or more."""
+    """Refuse ``cmd`` when any argument after the program holds a NUL or is
+    ``_CLI_ARGUMENT_MAX_BYTES`` bytes or more."""
     for position, argument in enumerate(cmd[1:], start=1):
         flag = cmd[position - 1] if position > 1 else ""
         if flag == "-c":
@@ -155,7 +155,10 @@ def _refuse_oversized_command(cmd: list[str]) -> None:
             what = f"Command-line argument {position}"
         # Measured in the bytes exec passes: os.fsencode is how an argument is encoded for
         # exec, so a path holding a byte that is not UTF-8 counts that byte once.
-        _refuse_oversized_argument(os.fsencode(argument), what)
+        encoded = os.fsencode(argument)
+        if b"\x00" in encoded:
+            raise ValueError(_nul_refusal_message(what))
+        _refuse_oversized_argument(encoded, what)
 
 
 def _contain_override(key: str, value: Any) -> tuple[bool, Any]:
@@ -195,6 +198,19 @@ def _strict_utf8_failure(text: str, what: str) -> ValueError | None:
     except UnicodeEncodeError:
         return _refuse_text_strict_utf8_cannot_encode(what)
     return None
+
+
+def _nul_refusal_message(what: str) -> str:
+    return f"{what} holds a NUL character, which no command-line argument can hold."
+
+
+def _argument_text_failure(text: str, what: str) -> ValueError | None:
+    """The refusal for ``text`` that reaches the CLI as a command-line argument, else
+    None: strict UTF-8 must encode it, and it may not hold a NUL, which exec refuses."""
+    failure = _strict_utf8_failure(text, what)
+    if failure is None and "\x00" in text:
+        failure = ValueError(_nul_refusal_message(what))
+    return failure
 
 
 def _redact_codex_runtime_fields_in_place(data) -> None:
@@ -285,8 +301,16 @@ def _refuse_oversized_cli_inputs(
         if failure is None:
             argument = f"developer_instructions={toml_override_value(system_prompt)}"
             measured.append(("The system prompt", argument.encode("utf-8")))
-    for key, value in (config_overrides or {}).items():
+    for index, (key, value) in enumerate((config_overrides or {}).items()):
         if failure is not None:
+            break
+        if not isinstance(key, str):
+            # Reached only by a request built without validation, whose field validator
+            # refuses such a key; named by position and type, never by the key.
+            failure = ValueError(
+                f"The config override entry {index} has a key that is not a string "
+                f"({type(key).__name__})."
+            )
             break
         # Encoded before containment reads the key, so a value the encoder refuses
         # refuses the request whether or not containment would drop it.
@@ -319,15 +343,17 @@ def _refuse_oversized_cli_inputs(
                     )
                     break
         argument = f"{key}={encoded}"
-        failure = _strict_utf8_failure(argument, f"The config override key {key[:80]!r}")
+        # The value is rendered with every control character escaped, so a NUL left in
+        # the argument is the key's.
+        failure = _argument_text_failure(argument, f"The config override key {key[:80]!r}")
         if failure is None:
             measured.append((f"The config override {key[:80]!r}", argument.encode("utf-8")))
     # The text fields that reach the CLI as an argument of their own, each encoded
-    # strictly under its own name.
+    # strictly and checked for a NUL under its own name.
     for what, text in text_fields or ():
         if failure is not None:
             break
-        failure = _strict_utf8_failure(text, what)
+        failure = _argument_text_failure(text, what)
         if failure is None:
             measured.append((what, text.encode("utf-8")))
     if failure is not None:
@@ -551,15 +577,29 @@ class CodexCodeRequest(BaseModel):
         A `-c` override routinely holds a token the CLI authenticates with, so
         the wrapper keeps it out of a validation error's rendering of the
         whole input; this is the field validator that then reads it. A value
-        that is not a mapping is refused without printing any of it.
+        that is not a mapping, or a key that is not a string, is refused
+        without printing any of it.
         """
         if isinstance(value, Redacted):
             value = value.reveal()
-        if isinstance(value, Mapping):
-            return value
-        # TypeError, not ValueError: pydantic quotes a ValueError's rejected
-        # input verbatim into the validation error.
-        raise TypeError(f"config_overrides must be a mapping, got {type(value).__name__}")
+        if not isinstance(value, Mapping):
+            # TypeError, not ValueError: pydantic quotes a ValueError's rejected
+            # input verbatim into the validation error.
+            raise TypeError(f"config_overrides must be a mapping, got {type(value).__name__}")
+        # Refused by position and type, as env's keys are: pydantic would quote a
+        # key it cannot validate as a string, and a key can hold a secret as a
+        # value can. A bytes key is refused too rather than decoded.
+        unnamed = [
+            f"entry {index} (key is {type(key).__name__})"
+            for index, key in enumerate(value)
+            if not isinstance(key, str)
+        ]
+        if unnamed:
+            raise TypeError(
+                "config_overrides keys must be strings; these entries are not: "
+                + ", ".join(unnamed)
+            )
+        return value
 
     # ── system prompt (order 40) ──────────────────────────────────
     system_prompt: str | None = None
