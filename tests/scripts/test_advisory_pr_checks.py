@@ -1,12 +1,14 @@
 """The advisory pull-request checks can be switched off; the required check cannot.
 
-These tests read the repository's own workflow files, so they catch a switch
-added to a required workflow by accident. A pull request that edits those files
-can also edit this test, so they do not stop a deliberate one.
+These tests read the required workflow, the scripts it runs and the action code
+it uses, so they catch a switch added to any of them by accident. A pull request
+that edits those files can also edit this test, so they do not stop a deliberate
+one.
 """
 
 from __future__ import annotations
 
+import ast
 import posixpath
 import re
 from pathlib import Path
@@ -113,12 +115,14 @@ def test_an_advisory_workflow_keeps_its_concurrency(name: str) -> None:
 
 REPO = WORKFLOWS.parents[1]
 
-# A read of a repository variable in an expression. `vars` is matched only as a
-# reference (`vars.NAME`, `vars['NAME']`, `vars[...]`, `toJSON(vars)`), so prose,
+# A read of a repository variable in an expression. `vars` is matched as a
+# reference (`vars.NAME`, `vars['NAME']`, `vars[...]`, `toJSON(vars)`) and as a
+# whole context inside `${{ }}` (`${{ vars }}`, `format('{0}', vars)`), so prose,
 # a step name or a trailing comment that merely contains the word is not a read.
 VARIABLE_READ = re.compile(
-    r"\bvars\s*\.\s*[A-Za-z_$]|\bvars\s*\[|toJSON\s*\(\s*vars\s*\)",
-    re.IGNORECASE,
+    r"\bvars\s*\.\s*[A-Za-z_$]|\bvars\s*\[|toJSON\s*\(\s*vars\s*\)"
+    r"|\$\{\{(?:(?!\}\}).)*\bvars\b",
+    re.IGNORECASE | re.DOTALL,
 )
 
 # A read through the REST API, the GitHub CLI or Octokit, from a step or a script.
@@ -133,8 +137,10 @@ API_VARIABLE_READ = re.compile(
 
 # A write verb beside the variables endpoint. The REST path alone does not say
 # whether a call reads or writes, so a line that names a write verb is left alone.
+# `curl` spells the verb `--request`, and either option may carry it as
+# `--method=VERB`.
 API_VARIABLE_WRITE = re.compile(
-    r"(-X|--method)\s*['\"]?(PATCH|POST|PUT|DELETE)\b"
+    r"(-X|--method|--request)\s*=?\s*['\"]?(PATCH|POST|PUT|DELETE)\b"
     r"|\b(create|update|delete)(Repo|Org|Environment)Variables?\b",
     re.IGNORECASE,
 )
@@ -146,20 +152,24 @@ API_VARIABLE_WRITE = re.compile(
 # next. `github.event_name` is the same for every pull request and stays allowed.
 #
 # A label and an event detail are matched only as references, so a step name that
-# reads "Check release labels" or prose in a comment is not one.
+# reads "Check release labels" or prose in a comment is not one. A step that runs
+# `actions/github-script` reads the same details as `context.actor`,
+# `context.payload.pull_request` and `context.payload.label`.
 LABEL = re.compile(
     r"\bgithub\s*\.\s*event\s*\.\s*label\b"
     r"|\bpull_request\s*\[\s*['\"]labels['\"]\s*\]"
     r"|\bpull_request\s*\.\s*labels\b"
     r"|\blabels\s*\.\s*\*"
-    r"|--json\s+labels\b",
+    r"|--json\s+labels\b"
+    r"|\bcontext\s*\.\s*payload\s*\.\s*label\b",
     re.IGNORECASE,
 )
 SECRET = re.compile(r"\bsecrets\s*\.\s*[A-Za-z_$]|\bsecrets\s*\[", re.IGNORECASE)
 EVENT_DETAIL = re.compile(
     r"\bgithub\s*(\.\s*(event_path|event(?!_name)|actor_id|actor|triggering_actor"
     r"|head_ref|base_ref)\b|\[)"
-    r"|toJSON\s*\(\s*github\s*\)",
+    r"|toJSON\s*\(\s*github\s*\)"
+    r"|\bcontext\s*\.\s*(actor\b|payload\s*\.\s*pull_request\b)",
     re.IGNORECASE,
 )
 
@@ -175,20 +185,26 @@ ENV_DETAIL = re.compile(
 INPUT_READ = re.compile(r"\binputs\s*(\.|\[)", re.IGNORECASE)
 
 
-def _strings(node: object, skip: str | None = None) -> list[str]:
+def _strings(node: object, skip: str | None = None, reusable_secrets: bool = False) -> list[str]:
     # Every string in a parsed document, keys included, leaving out what sits
-    # under a key named *skip*.
+    # under a key named *skip*. With *reusable_secrets*, the `secrets:` mapping
+    # of a job that calls a reusable workflow is left out too: it hands secrets
+    # over rather than reading one.
     if isinstance(node, str):
         return [node]
     if isinstance(node, dict):
+        handed_over = reusable_secrets and "uses" in node
         return [
             s
             for key, value in node.items()
-            if key != skip
-            for s in (*_strings(key, skip), *_strings(value, skip))
+            if key != skip and not (handed_over and key == "secrets")
+            for s in (
+                *_strings(key, skip, reusable_secrets),
+                *_strings(value, skip, reusable_secrets),
+            )
         ]
     if isinstance(node, list):
-        return [s for item in node for s in _strings(item, skip)]
+        return [s for item in node for s in _strings(item, skip, reusable_secrets)]
     return []
 
 
@@ -265,15 +281,12 @@ NON_SOURCE_SUFFIXES = frozenset(
 
 
 def _is_source_file(path: Path) -> bool:
+    # The searches read with `errors="replace"`, so nothing here decodes the
+    # file: one byte outside UTF-8 does not make a script unreadable, and a file
+    # dropped for it would escape both scans.
     if "__pycache__" in path.parts:
         return False
-    if path.suffix.lower() in NON_SOURCE_SUFFIXES:
-        return False
-    try:
-        path.read_text("utf-8")
-    except (UnicodeDecodeError, OSError):
-        return False
-    return True
+    return path.suffix.lower() not in NON_SOURCE_SUFFIXES
 
 
 def _scanned_files(roots: tuple[Path, ...]) -> list[Path]:
@@ -292,6 +305,47 @@ def _uncommented(text: str) -> str:
     # is a comment to the shell that runs the block. Text after a value stays, so
     # the raw search is never less strict than the parse except on comment lines.
     return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+
+def _code_only(text: str) -> str:
+    """*text* with whole-line comments and a Python docstring taken out.
+
+    Only code can read a label or an event: a `#` line and a string that stands
+    alone as a statement (a module, class or function docstring) say what the
+    code is for. A Python file is read through `ast`, so such a string is
+    dropped; text that does not parse as Python keeps its `#` lines removed and
+    the rest as written.
+    """
+    stripped = _uncommented(text)
+    try:
+        tree = ast.parse(stripped)
+    except (SyntaxError, ValueError):
+        return stripped
+    lines = stripped.splitlines(keepends=True)
+    starts = [0]
+    for line in lines:
+        starts.append(starts[-1] + len(line))
+
+    def offset(line: int, column: int) -> int:
+        # `col_offset` counts UTF-8 bytes, so it is mapped back to characters.
+        head = lines[line - 1].encode("utf-8")[:column]
+        return starts[line - 1] + len(head.decode("utf-8", "replace"))
+
+    characters = list(stripped)
+    for node in ast.walk(tree):
+        value = getattr(node, "value", None)
+        if (
+            isinstance(node, ast.Expr)
+            and isinstance(value, ast.Constant)
+            and isinstance(value.value, str)
+        ):
+            end_line = value.end_lineno or value.lineno
+            for index in range(
+                offset(value.lineno, value.col_offset), offset(end_line, value.end_col_offset)
+            ):
+                if characters[index] != "\n":
+                    characters[index] = " "
+    return "".join(characters)
 
 
 def _reads_a_variable(path: Path) -> bool:
@@ -321,6 +375,8 @@ def test_only_the_advisory_workflows_read_a_repository_variable() -> None:
         "if: ${{ vars[format('ADVISORY_PR_{0}', 'CHECKS')] != 'off' }}",
         "continue-on-error: ${{ fromJSON(toJSON(vars)).ADVISORY_PR_CHECKS == 'off' }}",
         "if: \"${{ \\x76ars.ADVISORY_PR_CHECKS != 'off' }}\"",
+        "if: ${{ vars }}",
+        "if: ${{ format('{0}', vars) == '' }}",
     ],
 )
 def test_each_spelling_of_a_variable_read_is_found(tmp_path: Path, line: str) -> None:
@@ -390,11 +446,12 @@ def test_a_local_path_is_read_with_dot_segments_resolved(uses: str, target: str 
 def _api_reads(text: str) -> list[str]:
     """The API calls in *text* that return a repository variable.
 
-    A whole-line comment is dropped, and a line that also names a write verb is
-    not a read: only a call that returns the value can stand in for `vars`.
+    A whole-line comment and a docstring are dropped, and a line that also names
+    a write verb is not a read: only a call that returns the value can stand in
+    for `vars`.
     """
     found: list[str] = []
-    for line in _uncommented(text).splitlines():
+    for line in _code_only(text).splitlines():
         if API_VARIABLE_WRITE.search(line):
             continue
         found.extend(match.group(0) for match in API_VARIABLE_READ.finditer(line))
@@ -403,12 +460,14 @@ def _api_reads(text: str) -> list[str]:
 
 def test_no_step_or_script_reads_a_variable_through_the_api() -> None:
     # The REST endpoint, `gh variable get` and the Octokit helpers return the same
-    # value as `vars`, to a step's shell, a script it runs or a test the required
-    # `test` job runs. This file names those forms and is left out.
-    files = _scanned_files((WORKFLOWS.parent, REPO / "scripts", REPO / "tests"))
+    # value as `vars`, to a step's shell or a script the required jobs run. This
+    # file names those forms and is left out.
+    files = _scanned_files((WORKFLOWS.parent, REPO / "scripts"))
     assert WORKFLOWS / "ci.yml" in files
     assert REPO / "scripts" / "check_issue_links.py" in files
-    assert REPO / "tests" / "conftest.py" in files
+    # A test fixture that sets a GITHUB_ variable or spells the endpoint reads
+    # nothing about the pull request, so the tests directory is not searched.
+    assert REPO / "tests" / "conftest.py" not in files
     hits = [path for path in files if _api_reads(path.read_text(errors="replace"))]
     assert hits == []
 
@@ -481,6 +540,21 @@ def test_a_write_or_a_comment_is_not_an_api_read(text: str) -> None:
     assert _api_reads(text) == []
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "gh api --request PATCH repos/o/r/actions/variables/A -d value=off",
+        "curl --request PATCH https://api.github.com/repos/o/r/actions/variables/A -d value=off",
+        "gh api --method=PATCH repos/o/r/actions/variables/A -f value=off",
+    ],
+    ids=["gh-request", "curl-request", "method-equals"],
+)
+def test_a_write_spelled_with_request_or_method_is_not_an_api_read(text: str) -> None:
+    # `--request` and `--method=` name the same write verb as `-X` and `--method`,
+    # so a call that carries one is a write and not a read either way.
+    assert _api_reads(text) == []
+
+
 def _required_files(root: Path = REPO) -> list[Path]:
     """``ci.yml`` and every local action or reusable workflow it uses, however deep."""
     workflows = root / ".github" / "workflows"
@@ -506,18 +580,23 @@ def _required_files(root: Path = REPO) -> list[Path]:
     return found
 
 
+PULL_REQUEST_FILTER_KEYS = ("branches", "branches-ignore", "paths", "paths-ignore")
+
+
 def _pull_request_branch_filter(parsed: object) -> bool:
-    # A `pull_request` trigger with a branch filter runs nothing for a pull
-    # request based elsewhere, so the required check never reports on it.
+    # A `pull_request` trigger with a branch or path filter starts no run for
+    # the pull requests it excludes, so the required check never reports on
+    # them. `pull_request_target` is the same trigger with a write-scoped token.
     if not isinstance(parsed, dict):
         return False
     triggers = parsed.get("on", parsed.get(True))
     if not isinstance(triggers, dict):
         return False
-    pull_request = triggers.get("pull_request")
-    if not isinstance(pull_request, dict):
-        return False
-    return any(key in pull_request for key in ("branches", "branches-ignore"))
+    for name in ("pull_request", "pull_request_target"):
+        trigger = triggers.get(name)
+        if isinstance(trigger, dict) and any(key in trigger for key in PULL_REQUEST_FILTER_KEYS):
+            return True
+    return False
 
 
 def _other_switches(text: str) -> list[str]:
@@ -527,11 +606,13 @@ def _other_switches(text: str) -> list[str]:
     the word in a step name or a comment reads nothing. The raw text is searched
     beside the parsed strings, so an `env`, `run`, `runs-on` or matrix value
     counts as much as an `if`. A secret under a `with:` input is how a step
-    receives one, and it is the only place one is allowed: a secret in an `env`
-    value can gate a step the same way, so that stays refused, while a
-    job-level `secrets:` key is a keyword rather than a read and passes. A
-    `pull_request` trigger with a branch filter is refused outright, because it
-    starts no run for a pull request based on any other branch.
+    receives one, and it is the only place within a job's steps one is allowed:
+    a secret in an `env` value can gate a step the same way, so that stays
+    refused. A job-level `secrets:` mapping is a keyword of a reusable-workflow
+    call, which hands the secrets over rather than reading one, and passes as
+    `secrets: inherit` does. A `pull_request` or `pull_request_target` trigger
+    with a branch or path filter is refused outright, because it starts no run
+    for the pull requests it excludes.
     """
     try:
         parsed = _parse(text)
@@ -544,21 +625,22 @@ def _other_switches(text: str) -> list[str]:
         for string in (raw, *_strings(parsed))
         for match in pattern.finditer(string)
     ]
-    if [s for s in _strings(parsed, skip="with") if SECRET.search(s)]:
+    if [s for s in _strings(parsed, "with", reusable_secrets=True) if SECRET.search(s)]:
         found.append("secrets outside a with: input")
     if _pull_request_branch_filter(parsed):
-        found.append("pull_request branch filter")
+        found.append("pull_request trigger filter")
     return found
 
 
 def _code_switches(text: str) -> list[str]:
-    # A shell script, an action's own code or a test a required job runs reads a
-    # label or an event detail through the same names a workflow would.
-    raw = _uncommented(text)
+    # A shell script or an action's own code reads a label or an event detail
+    # through the same names a workflow would. A whole-line comment and a
+    # docstring name them without reading anything, so both are dropped first.
+    code = _code_only(text)
     return [
         match.group(0)
         for pattern in (LABEL, EVENT_DETAIL, ENV_DETAIL)
-        for match in pattern.finditer(raw)
+        for match in pattern.finditer(code)
     ]
 
 
@@ -579,10 +661,10 @@ def _required_switches(root: Path = REPO) -> dict[str, list[str]]:
     """What could switch a required job off, by file, across a whole checkout."""
     files = _required_files(root)
     switches = {str(path.relative_to(root)): _other_switches(path.read_text()) for path in files}
-    for path in files[1:]:
+    for path in files:
         switches[str(path.relative_to(root))] += _input_gated(path.read_text())
     actions = {path.parent for path in files[1:] if path.name.startswith("action.")}
-    roots = {root / "scripts", root / "tests"} | actions
+    roots = {root / "scripts"} | actions
     for directory in sorted(roots):
         if not directory.is_dir():
             continue
@@ -598,7 +680,26 @@ def test_the_required_workflow_has_no_other_switch() -> None:
     files = _required_files()
     assert files[0] == WORKFLOWS / "ci.yml"
     switches = _required_switches()
+    # ci.yml is in this mapping, so a condition on one of its own inputs is
+    # refused as well.
+    assert ".github/workflows/ci.yml" in switches
     assert switches == {name: [] for name in switches}
+
+
+def test_a_required_job_cannot_gate_on_a_manual_run_input(tmp_path: Path) -> None:
+    # `inputs.python-matrix` is supplied by a manual run only; a pull request
+    # leaves it empty, so a condition on it starts no run there. ci.yml reads
+    # that input in a matrix value and is itself scanned, so a condition on it
+    # in ci.yml is refused as well.
+    text = (
+        "jobs:\n  test:\n    if: inputs.python-matrix == 'endpoints'\n"
+        "    runs-on: ubuntu-latest\n    steps:\n      - run: make lint\n"
+    )
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "ci.yml").write_text(text)
+    assert _input_gated(text)
+    assert _required_switches(tmp_path)[".github/workflows/ci.yml"]
 
 
 def test_a_required_job_cannot_switch_off_in_its_own_code(tmp_path: Path) -> None:
@@ -627,6 +728,75 @@ def test_a_required_job_cannot_switch_off_in_its_own_code(tmp_path: Path) -> Non
     switches = _required_switches(tmp_path)
     assert switches[".github/actions/lint-gate/gate.js"]
     assert switches["scripts/ci.sh"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '"""Release notes name github.actor for the audit log."""\n',
+        '"""\nBuild the wheel; gh variable list shows what is left over.\n"""\n',
+        "# GITHUB_ACTOR names the author; this line reads nothing.\n",
+    ],
+    ids=["docstring-actor", "docstring-api", "whole-line-comment"],
+)
+def test_a_whole_line_comment_or_a_docstring_is_not_a_code_switch(text: str) -> None:
+    # A whole-line comment or a docstring that names an event detail or the
+    # variables endpoint while saying what the code does reads nothing, so it is
+    # not a switch. Prose after a value on the same line is left as written.
+    assert _code_switches(text) == []
+    assert _api_reads(text) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "jq -e '.pull_request.draft' \"$GITHUB_EVENT_PATH\"\n",
+        'name = os.environ["GITHUB_ACTOR"]\n',
+        "gh variable get ADVISORY_PR_CHECKS\n",
+    ],
+    ids=["event-path", "actor-env", "variable-get"],
+)
+def test_a_read_in_code_is_still_a_code_switch(text: str) -> None:
+    # The control: the arms above must pass on the text, not on code that reads.
+    assert _code_switches(text) or _api_reads(text)
+
+
+def test_a_test_fixture_that_sets_an_event_variable_is_not_a_switch(tmp_path: Path) -> None:
+    # A fixture that sets or clears a GITHUB_ variable arranges the environment
+    # for a test; it reads nothing about the pull request. The scan leaves the
+    # tests directory out, so such a fixture never counts.
+    workflows = tmp_path / ".github" / "workflows"
+    scripts = tmp_path / "scripts"
+    tests = tmp_path / "tests" / "scripts"
+    for directory in (workflows, scripts, tests):
+        directory.mkdir(parents=True)
+    (workflows / "ci.yml").write_text(
+        "jobs:\n  lint:\n    runs-on: ubuntu-latest\n    steps:\n      - run: make lint\n"
+    )
+    (tests / "test_issue_links.py").write_text(
+        "def test_x(monkeypatch, tmp_path):\n"
+        '    monkeypatch.setenv("GITHUB_EVENT_PATH", str(tmp_path / "e.json"))\n'
+        "    for name in ('GITHUB_ACTOR', 'GITHUB_EVENT_PATH'):\n"
+        "        monkeypatch.delenv(name, raising=False)\n"
+    )
+    switches = _required_switches(tmp_path)
+    assert switches == {".github/workflows/ci.yml": []}
+
+
+def test_a_script_with_a_non_utf8_byte_is_still_scanned(tmp_path: Path) -> None:
+    # One byte outside UTF-8 does not make a script unreadable: it is read with
+    # replacement, so a read in its code is still found.
+    workflows = tmp_path / ".github" / "workflows"
+    scripts = tmp_path / "scripts"
+    for directory in (workflows, scripts, tmp_path / "tests"):
+        directory.mkdir(parents=True)
+    (workflows / "ci.yml").write_text(
+        "jobs:\n  lint:\n    runs-on: ubuntu-latest\n    steps:\n      - run: scripts/ci.sh lint\n"
+    )
+    (scripts / "ci.sh").write_bytes(
+        b'#!/bin/bash\n# caf\xe9\njq -e ".draft" "$GITHUB_EVENT_PATH" && exit 0\n'
+    )
+    assert _required_switches(tmp_path)["scripts/ci.sh"]
 
 
 def test_a_required_job_cannot_gate_on_an_input_secret(tmp_path: Path) -> None:
@@ -689,6 +859,22 @@ def test_a_pull_request_branch_filter_is_found() -> None:
     assert _other_switches(text)
 
 
+def _pull_request_trigger(trigger: str, key: str) -> str:
+    return (
+        f"on:\n  {trigger}:\n    {key}: [x]\n"
+        "jobs:\n  lint:\n    runs-on: ubuntu-latest\n    steps:\n      - run: make lint\n"
+    )
+
+
+@pytest.mark.parametrize("trigger", ["pull_request", "pull_request_target"])
+@pytest.mark.parametrize("key", ["branches", "branches-ignore", "paths", "paths-ignore"])
+def test_a_pull_request_trigger_with_a_filter_is_found(trigger: str, key: str) -> None:
+    # A branch or path filter starts no run for the pull requests it excludes,
+    # so the required check never reports on them. `pull_request_target` is the
+    # same trigger with a write-scoped token.
+    assert _other_switches(_pull_request_trigger(trigger, key))
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -737,6 +923,15 @@ def test_an_input_gated_action_step_is_found(text: str) -> None:
         "      - run: jq -e '.pull_request.draft' ${{ github.event_path }} && exit 0\n",
         "jobs:\n  lint:\n    steps:\n"
         "      - if: ${{ !contains(toJSON(github), 'skip-lint') }}\n        run: make lint\n",
+        "jobs:\n  lint:\n    steps:\n      - uses: actions/github-script@v7\n"
+        "        with:\n          script: |\n"
+        "            if (context.actor === 'dependabot[bot]') return;\n",
+        "jobs:\n  lint:\n    steps:\n      - uses: actions/github-script@v7\n"
+        "        with:\n          script: |\n"
+        "            if (context.payload.pull_request.draft) return;\n",
+        "jobs:\n  lint:\n    steps:\n      - uses: actions/github-script@v7\n"
+        "        with:\n          script: |\n"
+        "            if (context.payload.label.name === 'skip-lint') return;\n",
     ],
     ids=[
         "secret-if",
@@ -758,6 +953,9 @@ def test_an_input_gated_action_step_is_found(text: str) -> None:
         "actor-id-if",
         "event-path-expression",
         "tojson-github",
+        "script-context-actor",
+        "script-context-payload",
+        "script-context-label",
     ],
 )
 def test_each_other_switch_is_found(text: str) -> None:
@@ -777,6 +975,8 @@ def test_each_other_switch_is_found(text: str) -> None:
         "jobs:\n  lint:\n    timeout-minutes: 15  # no secrets are read here\n"
         "    steps:\n      - run: make lint\n",
         "jobs:\n  reuse:\n    uses: ./.github/workflows/reusable.yml\n    secrets: inherit\n",
+        "jobs:\n  reuse:\n    uses: ./.github/workflows/reusable.yml\n"
+        "    secrets:\n      TOKEN: ${{ secrets.TOKEN }}\n",
         "on:\n  push:\n    branches: [main, develop]\n  pull_request:\n    types: [opened]\n"
         "jobs:\n  test:\n    if: always()\n",
     ],
@@ -788,8 +988,34 @@ def test_each_other_switch_is_found(text: str) -> None:
         "step-name-label",
         "trailing-comment",
         "secrets-inherit",
+        "secrets-mapping",
         "push-branches",
     ],
 )
 def test_what_a_required_workflow_may_hold(text: str) -> None:
     assert _other_switches(text) == []
+
+
+CI_GATE_HARD_GATES = [
+    "lint",
+    "core-install",
+    "docs",
+    "test",
+    "frontend",
+    "studio-e2e",
+    "changes",
+    "vscode",
+    "marketplace",
+]
+
+
+def test_the_aggregate_check_keeps_its_hard_gates() -> None:
+    # ci-gate compares each named job's result against success. Dropping a name
+    # from the list makes the aggregate ignore that job, so a failure it reports
+    # would not fail the check the branch protection reads. The list is pinned
+    # rather than counted: a name is what matters.
+    text = (WORKFLOWS / "ci.yml").read_text()
+    match = re.search(r"^\s*hard_gates\s*=\s*\[(?P<body>.*?)\]", text, re.MULTILINE | re.DOTALL)
+    assert match, "ci.yml no longer names hard_gates as a list literal"
+    found = re.findall(r"\"([^\"]+)\"", match.group("body"))
+    assert found == CI_GATE_HARD_GATES
