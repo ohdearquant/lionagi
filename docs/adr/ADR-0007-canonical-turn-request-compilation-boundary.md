@@ -1,6 +1,6 @@
 # ADR-0007: Canonical turn-request compilation boundary
 
-- **Status**: Proposed
+- **Status**: Proposed, amended 2026-10-16 (see Amendment 1)
 - **Kind**: Aspirational
 - **Area**: messages-context
 - **Date**: 2026-07-09
@@ -63,6 +63,8 @@ histories, and one removal/delegation plan for legacy helpers.
 | Service boundary | D4: Keep compiled messages provider-neutral; adapters translate them only at model invocation. |
 | Chat/run parity | D5: Require chat and run to consume the same compiled result before adding transport-only keyword arguments. |
 | Migration and old helpers | D6: Adapt existing Branch arguments into `TurnRequest`, characterize payloads, then delegate or remove every competing preparation path. |
+| Bound visibility | D7: Give every compiled section a declared bound and posture, and record both the kept and the left-out material on the compiled request. |
+| Section authority | D8: Type every compiled section with an authority level and refuse a material block presented as operator or run-instruction authority. |
 
 This ADR deliberately does **not** decide:
 
@@ -433,6 +435,194 @@ Migration order is part of the decision:
 
 Completion requires one payload test matrix shared by chat and run. A change that updates only one
 side fails the boundary contract.
+
+## Amendment 1 (2026-10-16) — both states of every bound, and a section authority
+
+D1 through D6 decide what a compiled turn request is and who owns it. Two questions about the
+material entering that request are left open, and this amendment decides both. When a bound
+drops or truncates material, the compiled prompt carries only what survived: a reader of the
+request cannot tell that something was left out, or what. And the sections that meet in the
+guidance fold — system text, retrieved context blocks, caller guidance, folded action results —
+arrive as untyped strings, so "what could have instructed the model in this call" is answered by
+reading one long prompt rather than by querying a typed artifact.
+
+The recap table in Context gained two rows for D7 and D8 below. D4, D5 and D6 are unchanged, as
+are the alternatives already recorded in this ADR.
+
+### D7 — Every bound has two visible states
+
+Every section of the compiled request — system, history, context blocks, tool results — declares
+a bound and a posture. There are two postures, and both produce the same record:
+
+- **truncate**: the section renders what fits and carries an in-context marker stating that
+  material was left out, naming the section and counting what was dropped; or
+- **refuse**: compilation raises before the provider call, and the same bound record is
+  produced.
+
+The record states both states of the bound: what the section kept and what it left out. A
+section that dropped nothing still produces its record, with an empty left-out set, so the
+absence of dropped material is a stated fact rather than an unrecorded one. Silent dropping is
+inexpressible: no constructor admits a section without a bound record, and no posture drops
+material without either a marker or a raised error.
+
+Contract (target; the module does not exist yet):
+
+```python
+# lionagi/operations/types.py
+from enum import Enum
+
+
+class SectionAuthority(str, Enum):  # str, Enum: the floor is 3.10 (enum.StrEnum is 3.11)
+    OPERATOR = "operator"  # system text and operator-owned policy
+    RUN_INSTRUCTION = "run_instruction"  # the caller's instruction and guidance
+    MATERIAL = "material"  # retrieved rows, tool output, relayed text
+
+
+@dataclass(frozen=True, slots=True)
+class LeftOut:
+    name: str
+    reason: str  # "per_provider_limit" | "section_budget" | "truncated"
+    tokens: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SectionBound:
+    section: str  # "system" | "history" | "context" | "tool_results"
+    posture: str  # "truncate" | "refuse"
+    budget: int | None
+    kept: tuple[str, ...]
+    left_out: tuple[LeftOut, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledChatRequest:
+    instruction: Instruction
+    messages: tuple[CompiledMessage, ...]
+    provider_kwargs: Mapping[str, Any]
+    bounds: tuple[SectionBound, ...] = ()
+```
+
+Exact semantics:
+
+- one `SectionBound` per section, present whether or not it dropped anything;
+- an empty `left_out` means nothing was left out; it never means "not measured";
+- `reason` is a closed vocabulary: the three values above, with `per_provider_limit` and
+  `section_budget` covering the two admission stages the registry already distinguishes in
+  behavior but not in its report;
+- the truncate marker renders inside the section it belongs to, in the shape the Codex provider
+  already uses for one bounded tool result (`lionagi/providers/openai/codex.py:995-998`), so a
+  model reading the prompt learns that the material is partial;
+- the refusal arm raises before any provider call and still produces the record, so a refused
+  turn remains countable;
+- bound records are transient: they live on the compiled request and never on the durable
+  `InstructionContent` (D1's lifetime table).
+
+### D8 — Sections carry authority; material cannot wear the system's
+
+Every compiled section is typed with an authority level: operator/system authority, run
+instruction, or material. Retrieved rows, tool output, and any text relayed into the request
+from outside the operator or the branch's validated caller are material. The compiled artifact
+preserves these markings, so the audit question — which sections that could have instructed the
+model entered this call — is a query over the compiled request. The constructor refuses a
+material block presented as operator or run-instruction authority.
+
+Exact semantics:
+
+- `SectionAuthority.MATERIAL` is the only default; the code that owns system text or the
+  caller's instruction sets the other two explicitly, and no provider-supplied value can reach
+  them;
+- a block's authority reaches the compiled prompt as data: D3's canonical JSON entry gains an
+  `authority` key, and `sort_keys`, escaping and the envelope delimiters are unchanged;
+- the check is a constructor refusal (a `ValueError`), so it is testable without a live model;
+- this is an auditability and containment-at-assembly decision. It does not claim the model
+  obeys the distinction, and it does not replace D3's statement that attribution and syntactic
+  encoding do not authorize instructions found in retrieved text.
+
+What the code does today:
+
+- the compiler does not exist. `TurnRequest`, `ContextBlock`, `CompiledMessage`,
+  `CompiledChatRequest`, `compile_chat_request` and any authority type are absent from
+  `lionagi/operations/types.py`; `_prepare_run_kwargs()` is still the active chat/run path
+  (`lionagi/operations/chat/_prepare.py:174`, called from `lionagi/operations/chat/chat.py:62`
+  and `lionagi/operations/run/run.py:429`), and `prepare_messages_for_chat()` still stands
+  separately (`lionagi/protocols/messages/prepare.py:100`);
+- kept versus dropped: over a per-provider cap or over the total budget, the registry appends
+  the provider name to `ProviderReport.skipped` and moves on
+  (`lionagi/protocols/context_providers.py:115-117` and `:129-132`). Only the surviving texts
+  are threaded into compilation, as `context_blocks: Sequence[str]`
+  (`lionagi/operations/chat/_prepare.py:180`), and joined into the guidance fold with no marker
+  (`:285-286`). The prompt therefore shows the kept state alone and never says material was
+  dropped;
+- outside the call, aggregate counters exist (`lionagi/protocols/context_providers.py:63-70`)
+  and render per session (`lionagi/cli/monitor.py:669-680`), and `branch.last_context_report`
+  exposes one turn's names (`lionagi/session/branch.py:291-303`). Those are event counts: they
+  do not say what that same call kept, and one `skipped` list merges two causes with no reason
+  code;
+- one in-context cut marker does exist, one layer down: the Codex provider bounds a recorded
+  tool result and states the cut in the text it records
+  (`lionagi/providers/openai/codex.py:995-998`). This amendment generalizes that posture to
+  every section of the compiled request; that provider's own bound is unchanged;
+- refusal exists for exactly one case: an empty assembled message list for a non-empty
+  instruction raises `EmptyOutgoingContentError`
+  (`lionagi/operations/chat/_prepare.py:341-354`). No section boundary refuses over its own
+  budget;
+- authority: no type exists. Retrieved blocks arrive as bare strings, system text is
+  `branch.msgs.system.rendered`, caller guidance is the durable `guidance`, and folded action
+  results are dicts appended to `prompt_context` (`lionagi/operations/chat/_prepare.py:234-239`,
+  `:249-254`); all of them meet in one minimal-YAML rendering, where caller prompt context and
+  tool output share the same "Context" field
+  (`lionagi/protocols/messages/instruction.py:206-218`). Material and instruction are one
+  untyped list;
+- per-section bounds: none. The registry has one total (`_DEFAULT_BUDGET = 2000`,
+  `lionagi/protocols/context_providers.py:25`) and per-provider maxima; history and tool results
+  are bounded only by the model-window estimate (`lionagi/service/token_budget.py:106`), which
+  informs the nudger (`lionagi/agent/nudge.py:207`) rather than the compiler.
+
+Deltas these decisions narrow: this ADR is Aspirational and enumerates target decisions, so it
+carries no current-vs-ideal delta table of its own; the two deltas they settle are rows of
+ADR-0008's table, and amendments are per-record, so those rows are named here and left unedited
+there.
+
+| Delta (ADR-0008) | How this amendment narrows it |
+|---|---|
+| 1 — Add source-attributed data envelopes and separators between system text, each provider block, and guidance | D8 adds each block's authority to the envelope D3 already defines; the separators and escaping D3 fixes are unchanged, so acceptance gains one property rather than losing the others. |
+| 4 — Name the existing total limit as a rendered-token budget and decide whether invocation cost also needs a bound | D7 names each section's bound and posture in the compiled request, so the compiler reads bound records instead of scaling one scalar; invocation cost stays outside this decision. |
+
+Alternatives considered, still applying here:
+
+- **Assembly inside the context-provider registry** (one `gather()` returns ready prompt text).
+  Rejected: history, folded action results and system text are branch facts the registry has no
+  business reading — ADR-0008 D1 keeps it to registered providers — and putting prompt layout
+  there would place section order under a retrieval budget.
+- **Free-form concatenation**, today's `"\n".join(context_blocks)`. Rejected as the surface:
+  source names, authority and the drop record all disappear into one string, which is why P4's
+  boundary cannot be audited today.
+- **Verbatim capture of every assembled request.** Rejected for volume: a record of what was
+  dropped, plus the marker in the prompt, answers the same question without retaining raw
+  material that ADR-0008 D5 records as living on in the report.
+- **Prose addressed to the model as the only boundary** (a sentence telling it to distrust
+  retrieved text). Rejected as the sole layer: D3 already records that attribution does not
+  authorize retrieved instructions, and a sentence the model may ignore is not the auditable
+  layer. The typed artifact is.
+
+Consequences:
+
+- a context-starvation defect becomes visible twice over — the prompt names what was left out
+  and the outside counters count it — instead of presenting as an unexplained model regression;
+- the audit of externally-influenced calls becomes a query over the compiled request's authority
+  markings rather than an inspection of one prompt string;
+- the canonical JSON envelope grows a field per block and a bound record per section, which
+  costs prompt characters for the same reason D3's envelope already does;
+- admission moves from one scalar registry budget to a declared posture per section, which the
+  provider registry must supply, and the new constructor refusal can fail a caller that marked
+  material as operator text, deliberately;
+- reversing either decision costs more than adding it: dropping the authority field returns the
+  assembled artifact to untyped concatenation and invalidates any audit built on it, and
+  dropping the bound records restores exactly the silent drop P3 names and the untyped
+  concatenation that leaves P4's boundary unauditable;
+- both arms are assertable without a live model — a constructor refusal, and a bound record
+  computed from a branch and a request — matching D2's claim that a branch plus a request is
+  enough to assert the complete output.
 
 ## Consequences
 
