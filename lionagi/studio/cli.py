@@ -77,7 +77,8 @@ def _add_studio_flags(parser: argparse.ArgumentParser, *, suppress_defaults: boo
         help=(
             "Host to bind (default: 127.0.0.1). --docker also publishes the "
             "container port on this host, so anything else there exposes the "
-            "daemon to that interface."
+            "daemon to that interface. An IPv6 address is read whole, so one "
+            "carrying a port must be bracketed: [::1]:8765."
         ),
     )
     parser.add_argument(
@@ -367,6 +368,10 @@ def _published_host(host: str) -> str:
     zone, so each of those is refused here with a message instead of failing
     inside docker.
 
+    An IPv4-mapped IPv6 address (``::ffff:192.168.1.5``) is returned as the
+    IPv4 address it maps, since that is what a client reaches it as and what the
+    daemon's Host grammar accepts.
+
     Raises:
         ValueError: *host* is not an address the port can be published on.
     """
@@ -387,13 +392,28 @@ def _published_host(host: str) -> str:
             f"--host {host!r} carries an IPv6 zone, which names a local interface: "
             "--docker cannot publish a port on it"
         ) from None
-    return str(address)
+    # An IPv4-mapped IPv6 address is the IPv4 address in another spelling; a
+    # browser sends the IPv4 form, which is also the form the daemon admits.
+    return str(getattr(address, "ipv4_mapped", None) or address)
 
 
 def _bracketed(address: str) -> str:
     """*address* as a URL authority or a port mapping needs it: an IPv6 literal
     in brackets, since its own colons would otherwise read as a separator."""
     return f"[{address}]" if ":" in address else address
+
+
+def _printed_host(published: str) -> str:
+    """The host to print in the Studio URL for the address *published*.
+
+    A wildcard (``0.0.0.0`` or ``::``) names no address a browser can open, and
+    the daemon refuses it as a Host, so the URL says ``localhost``, which it
+    admits. Any other address is printed as published, an IPv6 literal in
+    brackets.
+    """
+    if ipaddress.ip_address(published).is_unspecified:
+        return "localhost"
+    return _bracketed(published)
 
 
 def _docker_publish_spec(host: str, api_port: int) -> str:
@@ -431,7 +451,7 @@ def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
         print("Trying to use cached image...", file=sys.stderr)
 
     print()
-    print(f"Lion Studio: http://{_bracketed(published)}:{api_port}")
+    print(f"Lion Studio: http://{_printed_host(published)}:{api_port}")
     print("Press Ctrl+C to stop")
     print()
 
@@ -440,11 +460,12 @@ def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
         # The name alone: docker reads the value from this process's environment,
         # so the token reaches the container without entering the argument list.
         env_args += ["-e", "LIONAGI_STUDIO_AUTH_TOKEN"]
-    if not ipaddress.ip_address(published).is_unspecified:
-        # The daemon admits a request whose Host is the address it is reached by,
-        # so the published one is passed to it. 0.0.0.0 and :: name no single
-        # address and are left out, leaving the daemon its loopback Hosts.
-        env_args += ["-e", f"LIONAGI_STUDIO_HOST={published}"]
+    # The published address is passed to the daemon: it admits a request whose
+    # Host is the address it is reached by. A wildcard is passed too, so the
+    # container's startup warning names the same address the publish does. It
+    # adds no client-reachable Host: 0.0.0.0 is never an allowed name, and ::
+    # is not an address a client connects to.
+    env_args += ["-e", f"LIONAGI_STUDIO_HOST={published}"]
 
     claude_plugins = Path.home() / ".claude" / "plugins"
     docker_cmd = [
@@ -497,14 +518,17 @@ def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
     docker_cmd.extend(["--name", "lion-studio", _STUDIO_IMAGE])
 
     try:
-        subprocess.run(docker_cmd, check=False)  # noqa: S603
+        run = subprocess.run(docker_cmd, check=False)  # noqa: S603
     except KeyboardInterrupt:
         print("\nStopping Lion Studio...")
         subprocess.run(  # noqa: S603
             ["docker", "stop", "lion-studio"],  # noqa: S607
             capture_output=True,
         )
-    return 0
+        return 0
+    # docker's own exit status, so a refused publish (a non-zero run) is not
+    # reported as a successful launch.
+    return run.returncode
 
 
 def _start_local(

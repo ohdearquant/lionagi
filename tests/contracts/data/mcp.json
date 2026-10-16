@@ -2564,7 +2564,7 @@
           },
           "host": {
             "type": "string",
-            "description": "Host to bind (default: 127.0.0.1). `docker` also publishes the container port on this host, so anything else there exposes the daemon to that interface.",
+            "description": "Host to bind (default: 127.0.0.1). `docker` also publishes the container port on this host, so anything else there exposes the daemon to that interface. An IPv6 address is read whole, so one carrying a port must be bracketed: [::1]:8765.",
             "x-flag": "--host"
           },
           "frontend_port": {

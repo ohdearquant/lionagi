@@ -16,12 +16,15 @@
 # Publish on another address only with LIONAGI_STUDIO_AUTH_TOKEN set, passed
 # by name so docker reads the value from your environment:
 #   -e LIONAGI_STUDIO_AUTH_TOKEN
-# The daemon answers only a request whose Host header names an address it
-# expects, so a publish on a concrete address also needs
+# The daemon checks a request's Host header against the addresses it expects
+# -- a DNS-rebinding guard, not access control: it reads the header, never the
+# source address, so the bearer token is the access control. A publish on a
+# concrete address also needs
 #   -e LIONAGI_STUDIO_HOST=<that address>
-# 0.0.0.0 and :: name no single address and leave the daemon admitting only
-# the loopback names, so a client elsewhere on the network is refused until
-# LIONAGI_STUDIO_HOST names the address it uses.
+# 0.0.0.0 and :: name no single address a client connects to; a client
+# elsewhere on the network reaches the daemon by one of the machine's real
+# addresses, so LIONAGI_STUDIO_HOST must name that address or the daemon
+# admits only the loopback names.
 
 # ── Stage 1: Build frontend ──────────────────────────────────────────────────
 # Pinned to BUILDPLATFORM on purpose. This stage emits /build/dist, a static

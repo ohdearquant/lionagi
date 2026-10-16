@@ -70,12 +70,16 @@ names, which defaults to `127.0.0.1`, so only this machine reaches the
 container. On `--docker` that address has to be an IP address literal
 (`127.0.0.1`, `0.0.0.0`, `192.168.1.5`, `::1`); a hostname is refused before
 docker runs, because docker does not resolve one in the host half of a port
-mapping. To publish on another interface, either pass `--host` that address, or
-run the image with your own `docker run -p`:
+mapping. A bare IPv6 address is read whole, so an IPv6 address carrying a port
+must be bracketed (`[::1]:8765`), or the port would read as part of the address.
+To publish on another interface, either pass `--host` that address, or run the
+image with your own `docker run -p`:
 
 ```bash
 li studio --docker --host 192.168.1.5   # reachable at 192.168.1.5:8765
-docker run --rm -p 192.168.1.5:8765:8765 -v ~/.lionagi:/root/.lionagi \
+docker run --rm -p 192.168.1.5:8765:8765 \
+  -e LIONAGI_STUDIO_HOST=192.168.1.5 \
+  -v ~/.lionagi:/root/.lionagi \
   ghcr.io/ohdearquant/lion-studio:latest
 ```
 
@@ -92,14 +96,17 @@ passes it to the container as `-e LIONAGI_STUDIO_AUTH_TOKEN` — the name only,
 so docker reads the value from your environment and it never appears in the
 command line.
 
-The daemon answers only a request whose `Host` header names an address it
-expects. `li studio --docker` publishes on a concrete address (`127.0.0.1`,
-`192.168.1.5`, `::1`) and tells the container that address, so clients reach it
-there. `0.0.0.0` and `::` name no single address and are not passed on: the
-port is on every interface, but the daemon keeps admitting only the loopback
-names `localhost`, `127.0.0.1` and `::1`, so a client elsewhere on the network
-is refused with a 400 until you set `LIONAGI_STUDIO_HOST` on the container to
-the address those clients use.
+The daemon checks a request's `Host` header against the addresses it expects.
+This is a guard against DNS rebinding, not access control: it reads the header,
+never the source address, so any client that can reach the port and sends an
+admitted `Host` gets through — the bearer token is the access control.
+`li studio --docker` publishes on a concrete address (`127.0.0.1`,
+`192.168.1.5`, `::1`) and tells the container that address, so a client that
+reaches it there and sends that address as `Host` is admitted. `0.0.0.0` and
+`::` name no single address a client connects to, so a client elsewhere on the
+network reaches the daemon by one of the machine's real addresses and must send
+that address as `Host`: set `LIONAGI_STUDIO_HOST` on the container to it, or the
+daemon admits only the loopback names `localhost`, `127.0.0.1` and `::1`.
 
 In a second terminal, confirm daemon reachability:
 

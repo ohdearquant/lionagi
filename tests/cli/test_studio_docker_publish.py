@@ -9,6 +9,11 @@ the network from the API. The host half of the mapping is therefore what
 decides who can reach the port. These tests read the argv the
 CLI hands docker, faking the subprocess the way the mount tests do, so no
 docker is needed.
+
+The daemon answers only a request whose `Host` header names an address it
+expects, so the tests that care about reachability call that guard in-process
+with the environment the CLI passes to the container, rather than starting a
+server.
 """
 
 from __future__ import annotations
@@ -18,6 +23,61 @@ from pathlib import Path
 import pytest
 
 TOKEN = "LIONAGI_STUDIO_AUTH_TOKEN"
+
+
+def _guard_admits(host_header: str, bind_host: str) -> bool:
+    """Whether the daemon's Host guard admits *host_header* with *bind_host* set.
+
+    Calls the real middleware in-process; no server is started.
+    """
+    pytest.importorskip("fastapi", reason="studio extra not installed")
+    import asyncio
+    import os
+
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+
+    from lionagi.studio.app import validate_host_header
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/plugins",
+            "headers": [(b"host", host_header.encode())],
+        }
+    )
+
+    async def call_next(_request):
+        return JSONResponse({"ok": True})
+
+    saved = os.environ.get("LIONAGI_STUDIO_HOST")
+    os.environ["LIONAGI_STUDIO_HOST"] = bind_host
+    try:
+        response = asyncio.run(validate_host_header(request, call_next))
+    finally:
+        if saved is None:
+            os.environ.pop("LIONAGI_STUDIO_HOST", None)
+        else:
+            os.environ["LIONAGI_STUDIO_HOST"] = saved
+    return response.status_code != 400
+
+
+def _bind_host_from_argv(argv: list[str]) -> str:
+    """The bind host the CLI passes to the container, or the image's default."""
+    for argument in argv:
+        if argument.startswith("LIONAGI_STUDIO_HOST="):
+            return argument.split("=", 1)[1]
+    return "127.0.0.1"
+
+
+def _printed_host(out: str) -> str:
+    """The host of the `Lion Studio:` URL the CLI prints."""
+    prefix = "Lion Studio: http://"
+    for line in out.splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix) :].rsplit(":", 1)[0]
+    raise AssertionError(f"no printed Studio URL in {out!r}")
 
 
 @pytest.fixture(autouse=True)
@@ -176,11 +236,26 @@ def test_the_published_host_is_passed_to_the_daemon(docker_run):
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "::"])
-def test_a_wildcard_host_is_not_passed_to_the_daemon(docker_run, host):
-    """0.0.0.0 and :: name no single address; the daemon keeps its loopback Hosts."""
+def test_a_wildcard_host_is_passed_to_the_daemon(docker_run, host):
+    """The wildcard is passed too, so the container's startup warning names the same
+    address the publish does. No client-reachable Host is added: `0.0.0.0` is never
+    an allowed name, and `::` is not an address a client connects to, so the
+    loopback names stay the ones a client uses.
+    """
     invoke, _, _ = docker_run
     argv = invoke("--host", host)
-    assert not [a for a in argv if a.startswith("LIONAGI_STUDIO_HOST=")]
+    assert f"LIONAGI_STUDIO_HOST={host}" in argv
+    for loopback in ("localhost", "127.0.0.1", "::1"):
+        assert _guard_admits(
+            f"{loopback}:8765" if ":" not in loopback else f"[{loopback}]:8765", host
+        )
+
+
+def test_the_wildcard_does_not_admit_a_concrete_lan_address(docker_run):
+    """Passing the wildcard must not turn it into an admitted Host."""
+    invoke, _, _ = docker_run
+    invoke("--host", "0.0.0.0")
+    assert not _guard_admits("192.168.1.5:8765", "0.0.0.0")
 
 
 def test_the_token_name_reaches_the_container_without_its_value(docker_run, monkeypatch):
@@ -197,6 +272,31 @@ def test_no_token_in_the_environment_sends_no_token_flag(docker_run):
     invoke, _, _ = docker_run
     argv = invoke()
     assert TOKEN not in argv
+
+
+def test_a_failed_run_is_the_launch_return_code(tmp_path, monkeypatch):
+    """`docker run` refusing the mapping (a non-zero exit) must not read as success."""
+    import lionagi.studio.cli as studio_module
+
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(studio_module, "_has_docker", lambda: True)
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+
+        class Result:
+            returncode = 125 if cmd[1] == "run" else 0
+            stderr = b""
+
+        return Result()
+
+    monkeypatch.setattr(studio_module.subprocess, "run", fake_run)
+    from lionagi.cli.main import main
+
+    assert main(["studio", "--docker"]) == 125
+    assert calls[1][1] == "run", calls
 
 
 def test_the_printed_url_names_the_published_host(docker_run, capsys):
@@ -216,3 +316,65 @@ def test_the_default_printed_url_is_loopback(docker_run, capsys):
     invoke, _, _ = docker_run
     invoke()
     assert "Lion Studio: http://127.0.0.1:8765" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "::"])
+def test_the_wildcard_printed_url_is_localhost(docker_run, capsys, host):
+    """A wildcard names no address a browser can open, so the URL says localhost."""
+    invoke, _, _ = docker_run
+    invoke("--host", host)
+    assert "Lion Studio: http://localhost:8765" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "127.0.0.1",
+        "0.0.0.0",
+        "::1",
+        "::",
+        "fe80::1",
+        "[::1]",
+        "192.168.1.5",
+        "::ffff:192.168.1.5",
+        "",
+        "  ",
+        "[]",
+        "[ ]",
+    ],
+)
+def test_the_printed_host_is_admitted_by_the_daemon(docker_run, capsys, host):
+    """Every `--host` the CLI accepts prints a URL the daemon's Host guard admits
+    with the environment the CLI passes to the container.
+
+    The guard reads the Host header, never the source address, so a URL whose host
+    it refuses is a link that answers 400 even from this machine.
+    """
+    invoke, _, _ = docker_run
+    argv = invoke("--host", host)
+    printed = _printed_host(capsys.readouterr().out)
+    assert _guard_admits(f"{printed}:8765", _bind_host_from_argv(argv)), (
+        f"the daemon refuses Host {printed}:8765 with {_bind_host_from_argv(argv)!r} set"
+    )
+
+
+def test_the_publish_spec_normalizes_an_ipv4_mapped_address():
+    """`::ffff:192.168.1.5` is the IPv4 address 192.168.1.5 in another spelling.
+
+    Docker publishes it as an IPv6 literal, and a browser reaching it sends the
+    hexadecimal form, which the daemon's IPv6 Host grammar (no dots) refuses. The
+    IPv4 form is what gets published, printed and passed on.
+    """
+    from lionagi.studio.cli import _docker_publish_spec, _published_host
+
+    assert _published_host("::ffff:192.168.1.5") == "192.168.1.5"
+    assert _docker_publish_spec("::ffff:192.168.1.5", 8765) == "192.168.1.5:8765:8765"
+
+
+def test_a_mapped_address_reaches_the_daemon_as_its_ipv4_form(docker_run, capsys):
+    invoke, _, _ = docker_run
+    argv = invoke("--host", "::ffff:192.168.1.5")
+    assert argv[argv.index("-p") + 1] == "192.168.1.5:8765:8765"
+    assert "LIONAGI_STUDIO_HOST=192.168.1.5" in argv
+    assert "Lion Studio: http://192.168.1.5:8765" in capsys.readouterr().out
+    assert _guard_admits("192.168.1.5:8765", _bind_host_from_argv(argv))

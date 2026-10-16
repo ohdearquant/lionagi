@@ -72,10 +72,13 @@ li studio --docker # auto-pulls ghcr.io/ohdearquant/lion-studio; UI + API on
                    # 192.168.1.5 publishes there and tells the daemon that
                    # address, so requests to it pass the Host check. 0.0.0.0
                    # and :: publish on every interface but name no single
-                   # address, so clients elsewhere need LIONAGI_STUDIO_HOST set
-                   # on the container. Set LIONAGI_STUDIO_AUTH_TOKEN first —
-                   # see Authentication; the CLI passes it by name, never by
-                   # value.
+                   # address a client connects to, so clients elsewhere reach
+                   # the daemon by one of the machine's real addresses and need
+                   # LIONAGI_STUDIO_HOST set on the container to that address.
+                   # The Host check is a DNS-rebinding guard, not access
+                   # control: it reads the Host header, so set
+                   # LIONAGI_STUDIO_AUTH_TOKEN first — see Authentication; the
+                   # CLI passes it by name, never by value.
 ```
 
 **Dev mode (hot-reload)**:
