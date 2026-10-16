@@ -136,11 +136,19 @@ test("Operator streams, persists, stops, records a run, and resumes it", async (
 
 test("Operator Deny and Allow decisions traverse the real permission route", async ({ page }) => {
   test.setTimeout(90_000);
-  // Each DOM assertion gets 30s: one silent-stream stall replays at 15.750s,
-  // or up to three failed reconnects replay at 23.904s, measured from silence.
-  // More failures, a hung reconnect, or another silent stream can exceed 30s.
-  // The 90s case cap budgets 2 * 30s for decision confirmations plus 30s for
-  // setup, reload and other checks; it cannot cover every wait taking 30s.
+  // 15 waits in this test take streamTimeout: four assert a permission proposal
+  // or its command is on screen, six confirm the two decisions (three each), and
+  // five re-assert durable history after the reload. Each gets 30s, and the 90s
+  // case cap bounds the whole test rather than summing those waits. Setup, the
+  // response waits, and the two assertions inside selectFreshConversation keep
+  // Playwright's default timeout.
+  // The 30s is the stream stall budget in src/lib/api.ts, from
+  // OPERATOR_STREAM_LIVENESS_TIMEOUT_MS (15_000) plus the reconnect backoff,
+  // which starts at 750ms, multiplies by 1.8 per failed attempt, and caps at
+  // 10,000ms. One silent stream recovers at 15_000 + 750 = 15,750ms, and three
+  // failed reconnects behind that stall at
+  // 15_000 + 750 + 1,350 + 2,430 + 4,374 = 23,904ms, both measured from
+  // silence. A hung reconnect or a second silent stream can exceed 30s.
   const streamTimeout = { timeout: 30_000 };
   // Decisions go over the real permission route with no credential of any kind:
   // Studio is a loopback-local tool and carries no browser-held token.
@@ -227,6 +235,9 @@ test("Operator Deny and Allow decisions traverse the real permission route", asy
   await expect(completedTurns).toHaveCount(completedBeforeAllow + 1, streamTimeout);
 
   // Both decisions and outcomes are durable daemon history, not client-only UI.
+  // The reload drops the stream subscription, and the panel re-hydrates the
+  // conversation and re-subscribes, so frames these waits assert can arrive over
+  // that stream and inherit its stall budget rather than the shorter default.
   await page.reload();
   await expect(
     page.getByText("Demo action denied. Nothing was changed.", { exact: true }),
