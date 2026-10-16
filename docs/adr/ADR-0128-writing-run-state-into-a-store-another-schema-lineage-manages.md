@@ -197,7 +197,10 @@ and by a native migration that has recognized the store. Native migration requir
 version and the expected shape together; a store without the key is adopted only if its shape is one
 lionagi's own history produced. Compatibility mode reads the store's metadata and never writes
 `version`, `lineage` or any backfill key. Non-numeric, missing and equal version values are
-classified explicitly rather than falling through a numeric comparison.
+classified explicitly rather than falling through a numeric comparison. Native initialization does
+not write `lineage = 'lionagi'` yet, and native migration does not yet require the key: today a
+store with no `lineage` row opens and migrates natively as before, so the refusal below covers
+only a store whose managing application wrote its row.
 
 A store another application manages carries a `lineage` row naming that application. The managing
 application writes it when it creates the store, in the transaction that creates its schema, and the
@@ -207,12 +210,15 @@ manage. A compatibility open that wrote it on first use would leave every native
 write, in any process, free to migrate the store.
 
 A writable native open refuses a store whose `lineage` row names another application, raising
-`ForeignLineageError`. On SQLite it reads the row through a read-only connection before it creates
-the writable engine, so the refusal comes before the connection settings of P2 and before any
-statement of `_apply_schema()`; this is what refuses a second process opening a store this process
-holds in compatibility mode. Every transaction of `_apply_schema()` that writes reads the row again
-under its write lock, ahead of the version, so a store whose `lineage` names another application and
-whose version is above `SCHEMA_VERSION` is refused on its lineage by either check.
+`ForeignLineageError`. On SQLite each writable connection reads the row right after its busy
+timeout, before the connection settings of P2, from the file SQLite opened, so the refusal comes
+before those settings and before any statement of `_apply_schema()`, however the URL spells the
+path; this is what refuses a second process opening a store this process holds in compatibility
+mode. The read is made on the writable connection, so a hot rollback journal is rolled back by it,
+as on any writable open. A refused open closes its engine. Every transaction of `_apply_schema()`
+that writes reads the row again under its write lock, ahead of the version, so a store whose
+`lineage` names another application and whose version is above `SCHEMA_VERSION` is refused on its
+lineage by either check.
 
 ### D8: acceptance
 
@@ -287,10 +293,12 @@ the version first inside its own `BEGIN IMMEDIATE`. The connection settings of P
 any of it. Compatibility mode (D1) runs none of these steps.
 
 A writable native open of a store whose `lineage` row names another application raises
-`ForeignLineageError` (D7) before the writable engine exists, so before the connection settings too,
-and wherever the lineage and the version are both read, the lineage is checked first. While this
-process holds a store open in compatibility mode, a native open of that store from this process is
-refused before any statement, whatever the row says.
+`ForeignLineageError` (D7) from its first connection, before the connection settings of P2 and
+before any statement of `_apply_schema()`, and wherever the lineage and the version are both read,
+the lineage is checked first. While this process holds a store open in compatibility mode, a native
+open of that file from this process is refused before any setting or statement changes it, whatever
+the row says and however the URL spells the path: by the URL before an engine exists, and by the
+file's device and inode on the connection's first read.
 
 ### A.1 Entry points
 

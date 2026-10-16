@@ -10,6 +10,7 @@ import functools
 import json
 import logging
 import math
+import os
 import re
 import shutil
 import sqlite3
@@ -36,6 +37,7 @@ from lionagi.ln.concurrency import CancelScope, Lock, get_cancelled_exc_class, s
 from lionagi.state.compat import (
     _LINEAGE_KEY,
     CompatibilityProfile,
+    StateCompatibilityRefused,
     _names_another_application,
     _operation,
     _sql_tokens,
@@ -515,13 +517,6 @@ def _validate_enum(
 _SCHEMA_META_GUARD_ROWS = "SELECT key, value FROM schema_meta WHERE key IN ('lineage', 'version')"
 
 
-def _read_schema_meta(connection) -> dict[str, Any]:
-    """The lineage and version rows of ``schema_meta``, through a sync connection."""
-    if not inspect(connection).has_table("schema_meta"):
-        return {}
-    return dict(connection.exec_driver_sql(_SCHEMA_META_GUARD_ROWS).all())
-
-
 def _install_begin_immediate(sync_engine) -> None:
     @event.listens_for(sync_engine, "connect")
     def _on_connect(dbapi_conn, _rec):
@@ -637,6 +632,9 @@ class StateDB:
         # profile writes only rows its run creates (ADR-0128 D4). A handle shared by several
         # runs of one owner counts their rows together.
         self._compat_created: dict[str, set[Any]] = {}
+        # The (device, inode) of the file a compatibility handle holds open, so a native open in
+        # this process is refused for that file however its URL spells it.
+        self._held_file: tuple[int, int] | None = None
         if compatibility is None and owner is not None:
             raise ValueError("an owner is written in compatibility mode only")
         if compatibility is not None:
@@ -765,26 +763,50 @@ class StateDB:
                 "open",
             )
         if self.dialect == "sqlite":
-            # P2: the writable engine's connection settings change the file, so a store another
-            # application manages is refused from a read-only connection first (ADR-0128 D7).
-            await self._refuse_foreign_lineage_read_only()
-        self._engine = make_engine(self.url)
-        if self.dialect == "sqlite":
+            # P2: the writable connection's settings change the file, so each new connection
+            # reads, before them, which file SQLite opened and that file's lineage (ADR-0128 D7).
+            self._engine = make_engine(self.url, before_settings=self._refuse_a_managed_store)
             _install_begin_immediate(self._engine.sync_engine)
-        await self._apply_schema()
-
-    async def _refuse_foreign_lineage_read_only(self) -> None:
-        database = make_url(self.url).database
-        if not database or database == ":memory:" or not Path(database).exists():
-            return
-        engine = make_readonly_engine(self.url)
+        else:
+            self._engine = make_engine(self.url)
         try:
-            async with engine.connect() as conn:
-                meta = await conn.run_sync(_read_schema_meta)
-        finally:
+            await self._apply_schema()
+        except (ForeignLineageError, StateCompatibilityRefused):
+            # A refused open leaves no writable engine on the store for a caller that keeps the
+            # object.
             with CancelScope(shield=True):
-                await engine.dispose()
-        self._raise_if_foreign_lineage(meta.get(_LINEAGE_KEY))
+                await self.close()
+            raise
+
+    def _refuse_a_managed_store(self, dbapi_conn) -> None:
+        """Refuse a writable native connection to a file this process holds in compatibility
+        mode, or whose ``lineage`` row names another application, before its settings change the
+        file. Only reads: a hot rollback journal is rolled back by the first read, as on any
+        writable SQLite open."""
+        cursor = dbapi_conn.cursor()
+        try:
+            cursor.execute("PRAGMA database_list")
+            filename = next((row[2] for row in cursor.fetchall() if row[1] == "main"), "")
+            identity = _file_identity(filename) if filename else None
+            if identity is not None:
+                for held in list(_OPEN_COMPAT):
+                    if held._engine is not None and held._held_file == identity:
+                        raise held._compat.refusal(
+                            "this process holds the store in compatibility mode, and a native "
+                            "open would apply this package's schema to it",
+                            "open",
+                        )
+            cursor.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
+            )
+            lineage = None
+            if cursor.fetchone() is not None:
+                cursor.execute("SELECT value FROM schema_meta WHERE key = ?", (_LINEAGE_KEY,))
+                row = cursor.fetchone()
+                lineage = row[0] if row else None
+        finally:
+            cursor.close()
+        self._raise_if_foreign_lineage(lineage)
 
     async def _open_compatibility(self) -> None:
         # Never _apply_schema(), create_all, a rebuild, a backfill or a version stamp: the store's
@@ -807,6 +829,8 @@ class StateDB:
             with CancelScope(shield=True):
                 await self.close()
             raise
+        # SQLAlchemy opens the absolute path of a SQLite URL's database, resolved lexically.
+        self._held_file = _file_identity(os.path.abspath(p))
         _OPEN_COMPAT.add(self)
 
     def _refuse_in_compatibility(self, operation: str, reason: str) -> None:
@@ -6766,6 +6790,15 @@ def _shared_key(db: StateDB) -> str | tuple[str, str, CompatibilityProfile | Non
 # one is open on a store, a native open of that store refuses, and so does the shared lookup unless
 # it can hand out the compatibility handle itself.
 _OPEN_COMPAT: weakref.WeakSet[StateDB] = weakref.WeakSet()
+
+
+def _file_identity(path: str) -> tuple[int, int] | None:
+    """The (device, inode) of the file at *path*, or None when there is no such file."""
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return stat.st_dev, stat.st_ino
 
 
 def _open_in_compatibility_mode(url: str) -> StateDB | None:

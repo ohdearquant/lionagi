@@ -738,9 +738,14 @@ def dialect_of(url: str) -> str:
     return scheme
 
 
-def make_engine(url: str, **overrides):
+def make_engine(url: str, *, before_settings=None, **overrides):
     """Create an AsyncEngine for *url*. SQLite gets a busy_timeout-first pragma
-    listener; PostgreSQL gets pool_pre_ping and sslmode→ssl arg translation."""
+    listener; PostgreSQL gets pool_pre_ping and sslmode→ssl arg translation.
+
+    On SQLite, *before_settings*, when given, is called with each new DBAPI connection after its
+    busy_timeout and before the settings that change the file (``journal_mode`` first). A
+    connection it refuses is closed and its error raised.
+    """
     from sqlalchemy.event import listen
     from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -757,6 +762,18 @@ def make_engine(url: str, **overrides):
             _stop_aiosqlite_once(connection_record.driver_connection)
             cursor = dbapi_conn.cursor()
             cursor.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+            if before_settings is not None:
+                try:
+                    before_settings(dbapi_conn)
+                except BaseException:
+                    # SQLAlchemy does not close a connection whose connect listener raised, and
+                    # its driver thread would outlive the refusal.
+                    try:
+                        cursor.close()
+                        dbapi_conn.close()
+                    except Exception:  # noqa: S110 -- the refusal below is the error to report
+                        pass
+                    raise
             cursor.execute("PRAGMA journal_mode = WAL")
             cursor.execute("PRAGMA synchronous = NORMAL")
             cursor.execute("PRAGMA foreign_keys = ON")

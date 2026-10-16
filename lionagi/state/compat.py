@@ -1712,7 +1712,7 @@ class _Guard:
         )
         row = fetch("SELECT value FROM schema_meta WHERE key = 'lineage'") if present else []
         lineage = row[0][0] if row else None
-        if not _names_another_application(lineage):
+        if not _names_another_application(lineage) or not str(lineage).strip():
             # Without a row naming its manager, a native open in another process would migrate
             # the store under this one's writes (ADR-0128 D7).
             shown = "no lineage row" if lineage is None else f"lineage {str(lineage)[:80]!r}"

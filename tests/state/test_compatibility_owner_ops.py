@@ -10,12 +10,13 @@ of a store a newer schema manages, built synthetically.
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 import subprocess
 import sys
 from contextlib import closing
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -330,7 +331,7 @@ async def test_the_shared_lookup_refuses_a_store_held_open_without_sharing_the_h
 
 # Opens from another process (ADR-0128 D7): the in-process refusals above cover this process only.
 # The managed store's lineage row, written by its manager, is what a second process's native open
-# reads before it opens a writable connection.
+# reads on its writable connection before that connection's settings.
 
 _SECOND_PROCESS = """
 import asyncio
@@ -338,28 +339,26 @@ import sys
 
 from lionagi.state import db as db_mod
 
-writable = []
-make_engine = db_mod.make_engine
-db_mod.make_engine = lambda url, **kw: writable.append(url) or make_engine(url, **kw)
-
 
 async def main(path):
     try:
         await db_mod.StateDB(path).open()
     except db_mod.ForeignLineageError as exc:
-        print("refused", len(writable), str(exc))
+        print("refused", str(exc))
     else:
-        print("opened", len(writable))
+        print("opened")
 
 
 asyncio.run(main(sys.argv[1]))
 """
 
 
-async def test_a_native_open_in_another_process_is_refused_before_it_opens_a_writer(db, store):
+async def test_a_native_open_in_another_process_is_refused_before_its_connection_settings(
+    db, store
+):
     """This process holds the store in compatibility mode; a second process opening the same file
-    natively is refused on the lineage row before it creates a writable engine, so the store's
-    bytes, version and lineage are as they were, and this process goes on writing."""
+    natively is refused on the lineage row its writable connection reads before its settings, so
+    the store's bytes, version and lineage are as they were, and this process goes on writing."""
     before = store.read_bytes()
     result = subprocess.run(
         [sys.executable, "-c", _SECOND_PROCESS, str(store)],
@@ -369,7 +368,7 @@ async def test_a_native_open_in_another_process_is_refused_before_it_opens_a_wri
         cwd=store.parent,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.startswith("refused 0 "), result.stdout
+    assert result.stdout.startswith("refused "), result.stdout
     assert "'manager' as the application that manages its schema" in result.stdout
     assert store.read_bytes() == before
     meta = "SELECT key, value FROM schema_meta WHERE key IN ('lineage', 'version') ORDER BY key"
@@ -382,9 +381,9 @@ async def test_a_native_open_in_another_process_is_refused_before_it_opens_a_wri
 async def test_a_refused_native_open_leaves_the_store_and_its_journal_mode_as_they_were(
     tmp_path, name
 ):
-    """The writable engine's connection settings would switch a rollback-journal store to WAL, so
-    the lineage is read through a read-only connection first, on the file the writable engine
-    would open, whatever characters its path holds."""
+    """The writable connection's settings would switch a rollback-journal store to WAL, so the
+    connection reads the lineage before them, from the file it opened, whatever characters its path
+    holds."""
     store = await _managed_store(tmp_path / name)
     _execute(store, "PRAGMA journal_mode = delete")
     before = store.read_bytes()
@@ -399,15 +398,16 @@ async def test_a_refused_native_open_leaves_the_store_and_its_journal_mode_as_th
 
 async def test_the_lineage_refuses_before_the_version_on_either_guard(store):
     """The managed store records version 900, above this package's. The lineage decides the
-    refusal before the writable engine opens and again inside the migration's version check under
-    the write lock, which reads the lineage first, so the two guards never disagree."""
+    refusal when the writable connection opens and again inside the migration's version check
+    under the write lock, which reads the lineage first, so the two guards never disagree."""
     with pytest.raises(ForeignLineageError):
         await StateDB(store).open()
 
     schema = _rows(store, "SELECT type, name, sql FROM sqlite_master ORDER BY type, name")
     late = StateDB(store)
-    # As if the lineage row landed after the read-only read: its manager still creating the store.
-    with patch.object(StateDB, "_refuse_foreign_lineage_read_only", AsyncMock()):
+    # As if the lineage row landed after the connection's own read: its manager still creating
+    # the store.
+    with patch.object(StateDB, "_refuse_a_managed_store", lambda self, dbapi_conn: None):
         try:
             with pytest.raises(ForeignLineageError):
                 await late.open()
@@ -425,6 +425,116 @@ async def test_a_store_whose_lineage_names_this_package_opens_natively(tmp_path)
     again = StateDB(path)
     await again.open()
     await again.close()
+
+
+def _journal_mode(store: Path) -> str:
+    return _rows(store, "PRAGMA journal_mode")[0][0]
+
+
+def _spelled(tmp_path: Path, store: Path, spelling: str) -> str:
+    if spelling == "dot-dot-through-a-symlink":
+        # The file system resolves link/.. to a/; SQLAlchemy resolves it lexically to the store.
+        (tmp_path / "a" / "b").mkdir(parents=True)
+        (tmp_path / "link").symlink_to(tmp_path / "a" / "b", target_is_directory=True)
+        return f"sqlite+aiosqlite:///{tmp_path}/link/../{store.name}"
+    return f"sqlite+aiosqlite:///file:{store}?uri=true"
+
+
+@pytest.mark.parametrize("spelling", ["dot-dot-through-a-symlink", "file-uri"])
+async def test_a_native_open_is_refused_on_the_file_it_opens_however_the_url_spells_it(
+    tmp_path, monkeypatch, spelling
+):
+    """The lineage is read on the connection that opened the file, so a path the file system
+    resolves differently from SQLite, or SQLite's own URI form, reads the managed store's row."""
+    monkeypatch.chdir(tmp_path)
+    store = await _managed_store(tmp_path / "managed.db")
+    _execute(store, "PRAGMA journal_mode = delete")
+    before = store.read_bytes()
+    native = StateDB(url=_spelled(tmp_path, store, spelling))
+    with pytest.raises(ForeignLineageError, match="'manager' as the application"):
+        await native.open()
+    assert native._engine is None
+    assert _journal_mode(store) == "delete"
+    assert store.read_bytes() == before
+    assert not Path(f"{store}-wal").exists()
+
+
+async def test_a_lineage_row_written_just_before_the_writable_open_is_refused(
+    tmp_path, monkeypatch
+):
+    """A manager that writes its row while a native open is starting is read by the writable
+    connection before its settings, and the refused open leaves no engine to write through."""
+    from lionagi.state import db as db_mod
+
+    store = tmp_path / "managed.db"
+    native = StateDB(store)
+    await native.open()
+    await native.close()
+    _execute(store, "PRAGMA journal_mode = delete")
+    make_engine = db_mod.make_engine
+
+    def landing(url, **kwargs):
+        _execute(store, "INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+        return make_engine(url, **kwargs)
+
+    monkeypatch.setattr(db_mod, "make_engine", landing)
+    late = StateDB(store)
+    with pytest.raises(ForeignLineageError, match="'manager' as the application"):
+        await late.open()
+    assert late._engine is None
+    assert _journal_mode(store) == "delete"
+    assert not Path(f"{store}-wal").exists()
+
+
+def _hot_copy(store: Path, copy: Path) -> Path:
+    """A copy of *store* taken mid-transaction, with its rollback journal: a hot journal."""
+    with closing(sqlite3.connect(store, isolation_level=None)) as conn:
+        conn.execute("PRAGMA cache_size = -64")
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("CREATE TABLE unfinished (v TEXT)")
+        for _ in range(2000):
+            conn.execute("INSERT INTO unfinished (v) VALUES (?)", ("x" * 4000,))
+        shutil.copyfile(store, copy)
+        shutil.copyfile(Path(f"{store}-journal"), Path(f"{copy}-journal"))
+        conn.execute("ROLLBACK")
+    return copy
+
+
+async def test_a_store_with_a_hot_journal_and_no_lineage_row_opens_natively(tmp_path):
+    """The connection's first read rolls the interrupted transaction back, as SQLite does on any
+    writable open, and the store then opens natively."""
+    store = tmp_path / "native.db"
+    first = StateDB(store)
+    await first.open()
+    await first.close()
+    _execute(store, "PRAGMA journal_mode = delete")
+    copy = _hot_copy(store, tmp_path / "copy.db")
+    assert Path(f"{copy}-journal").stat().st_size > 0
+    again = StateDB(copy)
+    await again.open()
+    await again.close()
+    assert _rows(copy, "SELECT name FROM sqlite_master WHERE name = 'unfinished'") == []
+    assert _journal_mode(copy) == "wal"
+
+
+@pytest.mark.parametrize("spelling", ["dot", "symlink"])
+async def test_a_native_open_of_the_held_file_by_another_path_is_refused_whatever_its_row_says(
+    db, store, tmp_path, spelling
+):
+    """The file a compatibility handle holds is known by its device and inode, so a native open in
+    this process is refused for it with its lineage row gone and its path spelled another way."""
+    _execute(store, "DELETE FROM schema_meta WHERE key = 'lineage'")
+    if spelling == "dot":
+        url = f"sqlite+aiosqlite:///{store.parent}/./{store.name}"
+    else:
+        alias = tmp_path / "alias.db"
+        alias.symlink_to(store)
+        url = f"sqlite+aiosqlite:///{alias}"
+    native = StateDB(url=url)
+    with pytest.raises(StateCompatibilityRefused, match="a native open would apply"):
+        await native.open()
+    assert native._engine is None
+    assert _rows(store, "SELECT value FROM schema_meta WHERE key = 'version'") == [("900",)]
 
 
 async def test_a_run_writes_its_owner_on_every_row_it_creates(db, store):
