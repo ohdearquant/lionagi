@@ -111,11 +111,10 @@ default also leaves opening the browser to you.
 
 `--host` sets the daemon's bind address and defaults to `127.0.0.1`; it applies
 to the default, `--no-frontend`, and `--dev` modes. A non-loopback value such
-as `--host 0.0.0.0` exposes the API to other machines, and the daemon also
-reports that in a startup warning. Docker mode takes no host address:
-`li studio --docker` publishes the port on all interfaces by default, as
-described below. `LIONAGI_STUDIO_HOST` sets the same address for a daemon
-started without the flag.
+as `--host 0.0.0.0` exposes the API to other machines; with no token set, the
+daemon warns at startup when it binds `0.0.0.0`. Docker mode takes no host
+address: `li studio --docker` publishes the port on all interfaces by default,
+as described below.
 
 Docker mode pulls `ghcr.io/ohdearquant/lion-studio:latest` and serves the bundled
 UI and API on port 8765 by default. It bind-mounts `~/.lionagi` read-write at
