@@ -714,9 +714,24 @@ def _trigger_owner_problems(sql: str, column: str, owned: frozenset[str]) -> lis
             continue
         if table not in owned:
             continue
+        what = f"{'inserts into' if verb == 'insert' else 'updates'} {table}"
+        # `UPDATE t AS new` names the row being written NEW inside the statement, so a term
+        # comparing the owner with NEW.<column> compares the row with itself and holds for
+        # every owner's row.
+        alias = (
+            _name(statement[after + 1])
+            if verb == "update"
+            and statement[after : after + 1] == [(_WORD, "as")]
+            and after + 1 < len(statement)
+            else None
+        )
+        if alias in ("new", "old"):
+            problems.append(
+                f"{what} under the alias {alias.upper()}, which hides the row that fired it"
+            )
+            continue
         reader = _insert_owner_values if verb == "insert" else _update_owner_values
         values = reader(statement, after, column)
-        what = f"{'inserts into' if verb == 'insert' else 'updates'} {table}"
         if isinstance(values, str):
             problems.append(f"{what} and {values}")
             continue
@@ -857,6 +872,11 @@ class TableShape:
     options: frozenset[str] = frozenset()
     conflicts: frozenset[str] = frozenset()
     definitions: frozenset[str] = frozenset()
+    # Each column with the collation its own definition declares, read from the table's SQL while
+    # a quoted name is still one token, so a column named "primary" or "collate", or one whose
+    # quoted name starts with another column's, is read as the column it is. Derived from the
+    # same SQL as ``definitions``, so it takes no part in comparing a store with a profile.
+    collations: frozenset[tuple[str, str]] = field(default=frozenset(), compare=False)
 
 
 @dataclass(frozen=True)
@@ -1016,7 +1036,11 @@ def _column_collation(definition: str) -> str:
     one is read. Folding is by ASCII letters only, so a name spelled with another character in
     the place of one, ``bınary``, is not the folded ``binary``.
     """
-    tokens = _sql_tokens(definition)
+    return _declared_collation(_sql_tokens(definition))
+
+
+def _declared_collation(tokens: list[tuple[str, str]]) -> str:
+    """The collation the last depth-zero ``COLLATE`` of *tokens* names, or ``binary``."""
     depths = _depths(tokens)
     collation = "binary"
     for index, token in enumerate(tokens):
@@ -1028,13 +1052,33 @@ def _column_collation(definition: str) -> str:
     return collation
 
 
-def _is_table_constraint(words: list[str]) -> bool:
-    """Whether a closure definition, as its words, is a table constraint and not a column.
+def _column_collations(tokens: list[tuple[str, str]]) -> frozenset[tuple[str, str]]:
+    """Each column of a CREATE TABLE with the collation its own definition declares.
 
-    The closure keeps definitions with their quotes dropped, so a column named ``"check"`` and a
-    CHECK constraint both start with ``check``; what follows tells them apart. A table constraint
-    is ``CHECK (``, ``UNIQUE (``, ``PRIMARY KEY (``, ``FOREIGN KEY (``, or one of those after
-    ``CONSTRAINT <name>``; a column's type is a word, never a parenthesis.
+    A definition is a column's unless it is a table constraint, and a table constraint starts
+    with a bare word (``CHECK``, ``UNIQUE``, ``PRIMARY KEY``, ``FOREIGN KEY``, ``CONSTRAINT``), so
+    a definition whose first token is a quoted name or a string is a column's whatever that name
+    spells. The name is the first token alone, and the collation is read from what follows it,
+    so a column named ``collate`` is not read as its own clause.
+    """
+    start = next((i for i, token in enumerate(tokens) if token == (_PUNCT, "(")), None)
+    if start is None:
+        return frozenset()
+    found: set[tuple[str, str]] = set()
+    for group in _groups(tokens, start):
+        if group[0][0] == _WORD and _is_table_constraint([text for _, text in group]):
+            continue
+        name = _name(group[0])
+        if name is not None:
+            found.add((name, _declared_collation(group[1:])))
+    return frozenset(found)
+
+
+def _is_table_constraint(words: list[str]) -> bool:
+    """Whether a definition that starts with a bare word, as its words, is a table constraint.
+
+    A table constraint is ``CHECK (``, ``UNIQUE (``, ``PRIMARY KEY (``, ``FOREIGN KEY (``, or one
+    of those after ``CONSTRAINT <name>``; a column's type is a word, never a parenthesis.
     """
     if words[:2] in (["check", "("], ["unique", "("]):
         return True
@@ -1043,20 +1087,13 @@ def _is_table_constraint(words: list[str]) -> bool:
     return words[:1] == ["constraint"] and _is_table_constraint(words[2:])
 
 
-def _ordered_collation(table: TableShape, column: str) -> str:
-    """The collation *column* compares under in *table*, read from its column definition.
-
-    A column definition starts with the column's name and whatever follows it: a type, a
-    constraint, or nothing. A column whose definition is not found reads as an unknown
-    collation, which is not binary, so the owner check refuses it rather than assume binary.
+def _ordered_collation(table: TableShape, column: str) -> str | None:
+    """The collation *column* compares under in *table*, read from its own definition, or None
+    when the table's SQL does not hold exactly one definition for it: the owner check then
+    refuses rather than assume binary.
     """
-    for definition in sorted(table.definitions):
-        tokens = _sql_tokens(definition)
-        if not tokens or _name(tokens[0]) != column:
-            continue
-        if not _is_table_constraint([token[1] for token in tokens]):
-            return _column_collation(definition)
-    return "unknown (its definition could not be read)"
+    found = [collation for name, collation in table.collations if name == column]
+    return found[0] if len(found) == 1 else None
 
 
 def _indexed_terms(index_sql: str, columns: frozenset[str]) -> list[str]:
@@ -1126,6 +1163,7 @@ def _table_shape(fetch: _Fetch, name: str, sql: str, entries: Mapping) -> TableS
         _options(tokens),
         _conflicts(tokens),
         _definitions(tokens),
+        _column_collations(tokens),
     )
 
 
@@ -1644,11 +1682,23 @@ class _Guard:
         if rule is not None:
             # `owner = ?` compares under the column's collation, so an owner that is not binary
             # takes a variant of the owner's name as the owner, and writes another owner's row.
-            variants = [
-                f"{table.name}.{rule.column} compares under {_ordered_collation(table, rule.column)}"
+            collations = {
+                table.name: _ordered_collation(table, rule.column)
                 for table in self.profile.closure.tables
                 if rule.column in {column.name for column in table.columns}
-                and _ordered_collation(table, rule.column) != "binary"
+            }
+            unread = [name for name, collation in collations.items() if collation is None]
+            if unread:
+                raise self.refusal(
+                    f"{when}: the collation of the owner column could not be read from the "
+                    f"table's SQL, so it cannot be shown to be binary: "
+                    + ", ".join(f"{name}.{rule.column}" for name in sorted(unread)),
+                    operation,
+                )
+            variants = [
+                f"{name}.{rule.column} compares under {collation}"
+                for name, collation in sorted(collations.items())
+                if collation != "binary"
             ]
             if variants:
                 raise self.refusal(
