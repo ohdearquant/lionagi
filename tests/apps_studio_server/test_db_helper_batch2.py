@@ -134,3 +134,63 @@ class TestOpenDb:
             stripped = line.strip()
             if "aiosqlite.connect(" in stripped and not stripped.startswith("#"):
                 raise AssertionError(f"shows.py still uses bare aiosqlite.connect(): {line!r}")
+
+    @pytest.mark.asyncio
+    async def test_a_write_cancelled_mid_transaction_releases_the_write_lock(self, tmp_path):
+        """A write cancelled between its ``BEGIN IMMEDIATE`` and its ``COMMIT`` must not
+        leave the store write-locked.
+
+        SQLite keeps a connection's write lock until the transaction ends, and it defers
+        the close that would end it while any statement of the connection is still
+        unfinalized. A cancelled write leaves both behind: the transaction is never
+        committed or rolled back, and the cursor it was reading through is still open, so
+        closing the connection alone leaves the lock held -- the next writer waits out its
+        whole busy timeout and fails with "database is locked". The helper must end the
+        transaction as the block exits, before the connection is closed.
+        """
+        import asyncio
+
+        from lionagi.studio.services._db import open_db
+
+        db_path = str(tmp_path / "test.db")
+        parked = asyncio.Event()
+
+        async def _cancelled_write():
+            async with open_db(db_path) as db:
+                await db.execute("CREATE TABLE t (a)")
+                await db.commit()
+                await db.execute("BEGIN IMMEDIATE")
+                await db.execute("INSERT INTO t VALUES (1)")
+                await db.execute("INSERT INTO t VALUES (2)")
+                cursor = await db.execute("SELECT a FROM t")
+                # One of two rows read: the statement stays unfinalized, as the frame a
+                # cancel unwinds through leaves it.
+                await cursor.fetchone()
+                parked.set()
+                await asyncio.Event().wait()
+
+        task = asyncio.create_task(_cancelled_write())
+        await asyncio.wait_for(parked.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert self._write_lock_is_free(db_path), (
+            "the store is still write-locked after a cancelled write"
+        )
+
+    @staticmethod
+    def _write_lock_is_free(db_path: str) -> bool:
+        """Whether a fresh connection can take the store's write lock right now."""
+        import sqlite3
+
+        conn = sqlite3.connect(db_path, isolation_level=None, timeout=0)
+        try:
+            conn.execute("PRAGMA busy_timeout = 0")
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("ROLLBACK")
+            return True
+        except sqlite3.OperationalError:
+            return False
+        finally:
+            conn.close()

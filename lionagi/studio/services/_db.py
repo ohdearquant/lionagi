@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 import aiosqlite
 
@@ -112,6 +112,18 @@ async def open_db(path: str) -> AsyncIterator[aiosqlite.Connection]:
             yield db
         finally:
             _ACTIVE_CONNECTIONS -= 1
+            # A body that ended between a BEGIN IMMEDIATE and its COMMIT or ROLLBACK
+            # -- a cancellation reaching a caller inside the block, most often --
+            # leaves the write transaction open. SQLite holds the store's write lock
+            # until the transaction ends, and it defers the close that would end it
+            # while any statement of the connection is still unfinalized, so closing
+            # here alone leaves the lock held and the next writer waits out its whole
+            # busy timeout before failing with "database is locked". Ending the
+            # transaction first releases the lock even when a statement is still
+            # open, so the connection is handed back the way it was found.
+            with suppress(Exception):
+                if db.in_transaction:
+                    await db.rollback()
 
 
 async def table_columns(db: aiosqlite.Connection, table: str) -> set[str]:
