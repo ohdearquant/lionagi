@@ -664,6 +664,71 @@ def test_a_collected_seed_with_two_certifying_verdicts_is_queued_once():
     assert f"{f.eid}: new (not accepted)" not in report
 
 
+def test_a_collected_duplicate_then_new_queues_nothing_and_marks_the_new():
+    eng = HypothesisEngine(dedup_repo="owner/repo")
+    run = eng.new_run()
+    f = run.collect(FindingPosted(description="already tracked, then reported as novel"))
+    run.collect(
+        DedupChecked(finding_ref=f.eid, verdict="duplicate", issue_number=9, issue_state="open")
+    )
+    run.collect(DedupChecked(finding_ref=f.eid, verdict="new"))
+
+    assert filing_queue(run) == []
+    report = hyp_mod.render_evidence(run)
+    assert f"{f.eid}: new (not accepted)" in report
+    assert f"{f.eid}: duplicate #9 (open) (not accepted)" not in report
+
+
+async def _released_on_an_empty_search(eng):
+    run = eng.new_run()
+    calls = _mute(eng, "extract")
+    _wire(eng, run)
+
+    async def make_agent(role, *, name=None, **kwargs):
+        return _StubAgent(name, None)
+
+    async def operate_with_repair(*args, **kwargs):
+        return None
+
+    run.make_agent = make_agent
+    run.operate_with_repair = operate_with_repair
+    await run.emit(FindingPosted(description="released on an empty search"))
+    await run.wait_quiescence()
+    return run, calls, run.events_of(FindingPosted)[-1]
+
+
+@pytest.mark.asyncio
+async def test_a_duplicate_after_a_release_is_reported_and_extracts_nothing_more():
+    eng = HypothesisEngine(dedup_repo="owner/repo", judge_model=None)
+    run, calls, f = await _released_on_an_empty_search(eng)
+    events: list[dict] = []
+    run.on_event = events.append
+    await run.emit(
+        DedupChecked(finding_ref=f.eid, verdict="duplicate", issue_number=9, issue_state="open")
+    )
+    await run.wait_quiescence()
+
+    assert [stage for stage, _ in calls] == ["extract"]
+    assert run.dedup_verdicts[f.eid].verdict == "duplicate"
+    assert any(e["type"] == "finding_duplicate" for e in events)
+    report = hyp_mod.render_evidence(run)
+    assert f"{f.eid}: duplicate #9 (open)" in report
+    assert "(not accepted)" not in report
+    assert filing_queue(run) == []
+
+
+@pytest.mark.asyncio
+async def test_a_new_after_a_release_reaches_the_filing_queue_once():
+    eng = HypothesisEngine(dedup_repo="owner/repo", judge_model=None)
+    run, calls, f = await _released_on_an_empty_search(eng)
+    await run.emit(DedupChecked(finding_ref=f.eid, verdict="new", source_confirmed=True))
+    await run.wait_quiescence()
+
+    assert [stage for stage, _ in calls] == ["extract"]
+    assert run.dedup_verdicts[f.eid].verdict == "new"
+    assert [(i["finding_ref"], i["verdict"]) for i in filing_queue(run)] == [(f.eid, "new")]
+
+
 @pytest.mark.asyncio
 async def test_a_total_failure_with_only_an_orphan_verdict_still_raises():
     eng = HypothesisEngine(dedup_repo="owner/repo", judge_model=None)

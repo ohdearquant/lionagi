@@ -487,8 +487,10 @@ def _accepted_verdict(run: HypothesisRun, d: DedupChecked) -> bool:
     finding whose judge has not passed, and a later verdict for a finding that
     already has one; neither is acted on. A run assembled with ``collect()``
     dispatches no observers, so nothing is recorded there: a seed's first stored
-    verdict stands, as the first would have decided in a live run, and an
-    agent-sourced finding's does not, since nothing shows its judge passed.
+    verdict stands, and an agent-sourced finding's does not, since nothing shows
+    its judge passed. For verdicts stored after their seed that is the verdict a
+    live run acts on; a verdict stored before its seed, which a live run treats
+    as naming no finding, is accepted here.
     """
     f = run.find(d.finding_ref)
     if not isinstance(f, FindingPosted):
@@ -894,12 +896,13 @@ class HypothesisEngine(Engine):
             run.notify("dedup_orphan", eid=d.eid, finding_ref=d.finding_ref)
             return
         if f.gen > 0 and f.eid not in run.dedup_judged:
-            # No judge has passed this finding: its judge refused it, raised or
-            # has not decided yet, or it never reached one (a cycle-capped or
-            # already-seen finding is not judged). A
-            # verdict naming it must not carry it past the judge, so it is
-            # treated as one naming no finding: nothing acts on it, the filing
-            # queue leaves it out, and it does not answer the finding's search.
+            # No judge has passed this finding: its judge refused it or has not
+            # decided yet (under containment a judge that raises has not passed
+            # either), or it never reached one (a cycle-capped or already-seen
+            # finding is not judged). A verdict naming it must not carry it past
+            # the judge, so it is treated as one naming no finding: nothing acts
+            # on it, the filing queue leaves it out, and it does not answer the
+            # finding's search.
             run.notify("dedup_orphan", eid=d.eid, finding_ref=d.finding_ref)
             return
         if f.eid in run.dedup_verdicts:
