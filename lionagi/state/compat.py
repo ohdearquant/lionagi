@@ -109,11 +109,12 @@ _NAME_POSITIONS = frozenset(
         "constraint",
     }
 )
-# Words SQLite reads as a value wherever one of them stands, whether a column of that name is in
-# scope or not: a quoted name spelled like one of them is that name, the bare word is the value.
+# Words SQLite never reads as a name when written bare, whether a column of that name is in scope
+# or not: a quoted name spelled like one of them is that name, the bare word is a value, or for
+# ``not`` the NOT operator, so ``not (x)`` negates while ``"not" (x)`` calls a function named not.
 # ``true`` and ``false`` are deliberately absent: a bare ``true`` is the value only when no column
 # is named ``true``, and where one is, the column wins and the two spellings read alike.
-_VALUE_WORDS = frozenset({"null", "current_date", "current_time", "current_timestamp"})
+_VALUE_WORDS = frozenset({"null", "current_date", "current_time", "current_timestamp", "not"})
 
 
 def _fold(name: str) -> str:
@@ -131,7 +132,8 @@ def _spelled_name(name: str) -> str:
 
     The folded name is compared bare when a bare word can spell it (it is not empty, does not
     start with a digit and holds only identifier characters) and it is not one of
-    :data:`_VALUE_WORDS`, which a bare word reads as a value (``"null"``); otherwise it is kept in
+    :data:`_VALUE_WORDS`, which a bare word reads as a value or an operator (``"null"``,
+    ``"not"``); otherwise it is kept in
     backquotes, with any backquote in it doubled. A string literal keeps its double quotes and a
     bare word has none, so neither can equal the backquoted form.
     """
@@ -150,6 +152,8 @@ def _opens_a_call(sql: str, index: int) -> bool:
     """Whether the token at *index*, past optional whitespace, opens a parenthesis.
 
     A quoted token immediately before one is a function's name to SQLite, not a string literal.
+    Only whitespace is skipped: a comment between the token and the parenthesis leaves the token
+    a literal, so such a definition is refused even though SQLite reads it as the call.
     """
     while index < len(sql) and sql[index] in " \t\n\v\f\r":
         index += 1
@@ -188,8 +192,9 @@ def _sql_tokens(
     ``(``, which makes it a function's name rather than a string. Such a name is compared as
     :func:`_spelled_name` spells it, folded to the bare word where a bare word spells it the same
     and kept in backquotes otherwise (``"null"``, or a name holding a quote). A double-quoted token
-    in a type position, as in ``id "TEXT"``, stands where SQLite reads no name, so it stays a
-    double-quoted literal and is refused against the same type spelled any other way.
+    in a type position, as in ``id "TEXT"``, is kept as a double-quoted literal and refused against
+    the same type spelled any other way, although SQLite reads it as the type name: the comparison
+    refuses that spelling rather than read it as SQLite does.
     """
     tokens: list[tuple[str, str]] = []
     # Inside the parenthesized column list after REFERENCES <table>, where every token is a name.

@@ -69,11 +69,14 @@ whose schema another application manages, and never migrates, stamps or reconfig
   the column list after `REFERENCES <table>`, or immediately before a `(`, which makes it a
   function's name rather than a string. Everywhere else it is a string literal when it names no
   column, and a literal keeps its quotes and equals only the same literal written the same way; a
-  token in a type position, as in `id "TEXT"`, is one of those places, so quoting a type name is
-  refused against the bare type. In the column list after `REFERENCES <table>` a single-quoted
-  token is a name too, since SQLite's grammar takes a string there; anywhere else the same token
-  is the string it spells. A quoted name that a bare word would read as a value (`"null"`,
-  `"current_date"`, `"current_time"`, `"current_timestamp"`) or a name holding a quote equals only
+  token in a type position, as in `id "TEXT"`, is compared the same way, so quoting a type name is
+  refused against the bare type even though SQLite reads it as the type name. In the column list
+  after `REFERENCES <table>` a single-quoted token is a name too, since SQLite's grammar takes a
+  string there; anywhere else it is compared as the string it spells, so a single-quoted name that
+  SQLite also reads as a name (`REFERENCES 'runs'`, `COLLATE 'NOCASE'`) is refused against the
+  bare spelling. A quoted name that a bare word would read as a value (`"null"`,
+  `"current_date"`, `"current_time"`, `"current_timestamp"`) or as the `NOT` operator (`"not"`),
+  or a name holding a quote, equals only
   the same name quoted, never the bare word, though a plain quoted name like `"status"` equals its
   bare spelling. A blob literal (`x'41'`) is a token of its own. The mode fails closed,
   since whether SQLite reads a quoted token as a name or as a string literal depends on the scope

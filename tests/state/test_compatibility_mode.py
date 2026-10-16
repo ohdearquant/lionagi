@@ -1510,7 +1510,7 @@ async def test_a_body_that_quotes_a_name_in_another_case_is_refused(object_sql, 
     assert db._engine is None
 
 
-# A literal keeps its quotes, a blob is one token, and a trigger's order counts (D2)
+# A literal keeps its quotes, a blob is one token, and a trigger's order counts
 
 
 async def _refused_against(
@@ -1665,7 +1665,7 @@ async def test_a_trigger_without_a_timing_is_ordered_with_the_before_triggers(tm
     assert {(o.name, o.position) for o in closure.objects} == {("t1", 0), ("t2", 1)}
 
 
-# A trigger's place in the order SQLite fires, read from its header (D2)
+# A trigger's place in the order SQLite fires, read from its header
 
 
 _ORDER_TABLE = "CREATE TABLE fired (seq INTEGER PRIMARY KEY AUTOINCREMENT, who TEXT NOT NULL);\n"
@@ -1794,7 +1794,7 @@ async def test_a_table_only_the_stores_closure_reaches_is_refused(tmp_path):
     assert "table ledger is not in the profile" in reason
 
 
-# A quoted name that a bare word reads otherwise is not that word (D2)
+# A quoted name that a bare word reads otherwise is not that word
 
 
 def _with_column(definition: str) -> str:
@@ -1906,6 +1906,20 @@ async def test_a_column_named_true_or_false_is_read_as_the_column(word, tmp_path
         await db.close()
 
 
+@pytest.mark.parametrize("word", _VALUE_WORD_COLUMNS)
+async def test_a_quoted_true_or_false_naming_no_column_is_a_string(word, tmp_path):
+    """With no column of that name, a bare ``true`` or ``false`` is the value 1 or 0 while the
+    double-quoted spelling is the string it spells, so the two CHECKs refuse different rows."""
+    reference_schema = _with_column(f'flag TEXT CHECK (flag <> "{word}")')
+    store_schema = _with_column(f"flag TEXT CHECK (flag <> {word})")
+    assert not _runs_accepts(reference_schema, "flag", word)
+    assert _runs_accepts(store_schema, "flag", word)
+    reference = _store(tmp_path / "reference.db", reference_schema)
+    store = _store(tmp_path / "managed.db", store_schema)
+    reason = await _refused_against(reference, store, _profile_with_column(reference, "flag"))
+    assert "runs" in reason
+
+
 _CALL_SPELLINGS = {
     "bare call": "abs_n INTEGER CHECK (abs(abs_n) >= 0)",
     "quoted call": 'abs_n INTEGER CHECK ("abs"(abs_n) >= 0)',
@@ -1927,6 +1941,39 @@ async def test_a_quoted_function_name_in_a_check_reads_as_the_bare_call(store_sq
         store = _store(tmp_path / f"managed-{index}.db", _with_column(managed_sql))
         db = await _open(store, _profile_with_column(reference, "abs_n"))
         await db.close()
+
+
+_NOT_CALL_SPELLINGS = {
+    "double-quoted": 'n INTEGER CHECK ("not" (n))',
+    "bracketed": "n INTEGER CHECK ([not] (n))",
+    "backquoted": "n INTEGER CHECK (`not` (n))",
+}
+
+
+def _with_not_function(conn: sqlite3.Connection) -> sqlite3.Connection:
+    # SQLite creates a table whose CHECK calls a function only when one of that name exists.
+    conn.create_function("not", 1, lambda value: 1)
+    return conn
+
+
+@pytest.mark.parametrize("store_sql", _NOT_CALL_SPELLINGS.values(), ids=list(_NOT_CALL_SPELLINGS))
+async def test_a_quoted_call_named_not_is_not_the_not_operator(store_sql, tmp_path):
+    """A bare ``not`` before a parenthesis is the NOT operator; quoted, it names a function, which
+    a store holds only when its application registered one. The two refuse different rows, so the
+    quoted spelling is refused against the bare one."""
+    reference_schema = _with_column("n INTEGER CHECK (not (n))")
+    store_schema = _with_column(store_sql)
+    assert not _runs_accepts(reference_schema, "n", "1")
+    with closing(_with_not_function(sqlite3.connect(":memory:"))) as conn:
+        conn.executescript(store_schema)
+        conn.execute("INSERT INTO runs (id, status, n) VALUES ('r', 'running', 1)")
+    reference = _store(tmp_path / "reference.db", reference_schema)
+    store = tmp_path / "managed.db"
+    with closing(_with_not_function(sqlite3.connect(store))) as conn:
+        conn.execute("PRAGMA journal_mode = wal")
+        conn.executescript(store_schema)
+    reason = await _refused_against(reference, store, _profile_with_column(reference, "n"))
+    assert "runs" in reason
 
 
 async def test_a_quoted_operand_without_a_call_is_still_a_literal(tmp_path):
