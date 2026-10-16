@@ -328,7 +328,7 @@ class _Endless(RuntimeError):
     @property
     def __cause__(self):
         type(self).reads += 1
-        if type(self).reads > 10_000:
+        if type(self).reads > 1_000:
             return None
         return _Endless("again")
 
@@ -336,7 +336,7 @@ class _Endless(RuntimeError):
 async def test_a_chain_that_builds_a_new_link_on_every_read_ends_at_the_limit_and_fails_open():
     _Endless.reads = 0
     raised, allowed, events = await _judge_outside_the_handler(_Endless("first"))
-    assert _Endless.reads <= 1_000
+    assert _Endless.reads == 100
     assert raised is None, repr(raised)
     assert allowed is True
     assert [kind for kind, _ in events] == ["judge_error"]
@@ -372,5 +372,43 @@ async def test_a_link_that_cannot_be_read_ends_that_branch_only():
     refusal = ContainmentRefusedError("codex refuses its containment")
     error = UnreadableCause("unreadable")
     error.__context__ = refusal
+    raised, _, _ = await _judge_outside_the_handler(error)
+    assert raised is refusal
+
+
+def _linear_chain(length: int, last: BaseException) -> RuntimeError:
+    """*length* links, each the cause of the one before it, the last of them *last*."""
+    links: list[BaseException] = [RuntimeError(f"link {i}") for i in range(1, length)]
+    links.append(last)
+    for current, following in zip(links, links[1:]):
+        current.__cause__ = following
+    return links[0]
+
+
+@pytest.mark.parametrize(("position", "raised"), [(100, True), (101, False)])
+async def test_a_refusal_is_raised_within_the_first_hundred_links_and_not_past_them(
+    position, raised
+):
+    from lionagi._errors import ContainmentRefusedError
+
+    refusal = ContainmentRefusedError("codex refuses its containment")
+    error, allowed, events = await _judge_outside_the_handler(_linear_chain(position, refusal))
+    if raised:
+        assert error is refusal
+    else:
+        assert error is None, repr(error)
+        assert allowed is True
+        assert [kind for kind, _ in events] == ["judge_error"]
+
+
+async def test_a_refusal_one_link_away_is_raised_beside_a_branch_longer_than_the_limit():
+    """The links nearest the error are read first, so a long chain of causes cannot spend the
+    limit before the refusal held as the error's context is read."""
+    from lionagi._errors import ContainmentRefusedError
+
+    refusal = ContainmentRefusedError("codex refuses its containment")
+    error = RuntimeError("the judge failed")
+    error.__context__ = refusal
+    error.__cause__ = _linear_chain(150, RuntimeError("the end of a long branch"))
     raised, _, _ = await _judge_outside_the_handler(error)
     assert raised is refusal

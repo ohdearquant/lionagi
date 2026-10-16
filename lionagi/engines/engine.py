@@ -1324,8 +1324,9 @@ class EngineResult(str):
         return self._events_by_type(event_type)
 
 
-# How many links of a judge error's chain the refusal search reads before it gives up.
-_JUDGE_CHAIN_LIMIT = 1_000
+# How many links of a judge error's chain the refusal search reads before it gives up. A real
+# chain is a few links long: the model layer wraps a provider's error once or twice.
+_JUDGE_CHAIN_LIMIT = 100
 
 
 class Engine:
@@ -1420,7 +1421,7 @@ class Engine:
         return self.efforts.get(stage) or self.effort
 
     async def judge(self, run: EngineRun, eid: str, subject: str) -> bool:
-        """Quality gate before an expansion point; returns True to expand, False to stop. No-op when judge_model is unset. Budget exhaustion stops; any other error fails open, with three exceptions that are raised: a judge agent that cannot carry the engine's agent_env; a containment refusal on the error's chain of causes and contexts, within its first 1,000 links; and, when the engine contains account integrations, every other error, because no error can show that a contained judge ran, so none can be read as a pass."""
+        """Quality gate before an expansion point; returns True to expand, False to stop. No-op when judge_model is unset. Budget exhaustion stops; any other error fails open, with three exceptions that are raised: a judge agent that cannot carry the engine's agent_env; a containment refusal on the error's chain of causes and contexts, within the first 100 links read, nearest first; and, when the engine contains account integrations, every other error, because no error can show that a contained judge ran, so none can be read as a pass."""
         from lionagi._errors import ContainmentRefusedError  # noqa: PLC0415
         from lionagi.agent.factory import _AgentSettingError  # noqa: PLC0415
 
@@ -1458,19 +1459,23 @@ class Engine:
             # turn the gate off for the whole run. Whatever a link holds is followed, an object
             # that is not an exception included, and every link read is kept until the walk
             # ends, so a link an error builds on each read cannot take a visited one's address.
-            pending: list[object] = [exc]
+            # Links are read nearest first, so a long branch cannot spend the limit before a
+            # refusal one link away is read.
+            pending: deque[object] = deque([exc])
             seen: dict[int, object] = {}
             while pending and len(seen) < _JUDGE_CHAIN_LIMIT:
-                cause = pending.pop()
+                cause = pending.popleft()
                 if cause is None or id(cause) in seen:
                     continue
                 seen[id(cause)] = cause
                 if issubclass(type(cause), ContainmentRefusedError):
                     raise cause from cause.__cause__
                 for name in ("__context__", "__cause__"):
+                    # A read that fails ends that branch. An interrupt, an exit or a cancellation
+                    # raised by the read is not caught.
                     try:
                         pending.append(getattr(cause, name, None))
-                    except Exception:  # noqa: S112 -- a link that cannot be read ends there
+                    except Exception:  # noqa: S112
                         continue
             # No refusal on the chain. A chain that loops back on itself, or one longer than
             # the limit, lands here too, instead of walking forever. Under containment the
