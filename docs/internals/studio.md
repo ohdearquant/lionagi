@@ -87,12 +87,18 @@ wiring.
 loadable IANA name. This fallback checks both the spelling and the canonical
 keys reached through configured aliases. Every candidate must match the actual
 localtime file's rules. Configured duplicate keys and canonical aliases must
-agree. Rules are compared using complete transition records, offsets, DST flags,
-abbreviations and exact POSIX footer text; compatibility blocks, unused padding
-and trailing bytes do not prevent an equivalent modern file from matching.
-Different modern table structures or footer expressions are not normalized,
-even when they describe equivalent behavior. A loadable file outside the
-bounded reader's supported format requires exact byte identity instead.
+agree. Two files are compared by what they read as rather than by how they are
+encoded: the offsets, DST flags and names at every transition of either file,
+plus the rule past the last stored transition, must be equal, and the POSIX
+footer text must be identical. A file that leaves a transition to its footer and
+one that stores that transition therefore match, as do files differing in a
+compatibility block, unused padding or trailing bytes. Where one file reads its
+footer and the other still reads stored transitions, the two are also compared
+once a week between 1900 and 2100, so a year one table leaves out is not passed
+over; a rule lasting under a week there is not looked for. Different footer
+expressions for the same recurring rule are not normalized. A loadable file
+outside the bounded reader's supported format requires exact byte identity
+instead.
 Once ambiguity is found, another spelling cannot bypass the refusal. Inaccessible
 search entries are skipped, matching the standard library's filesystem lookup.
 When no configured file supplies a key, the public Python `tzdata` package

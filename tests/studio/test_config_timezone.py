@@ -17,6 +17,8 @@ key.
 import logging
 import os
 import signal
+import zipfile
+import zlib
 import zoneinfo
 from importlib import resources
 from pathlib import Path
@@ -444,6 +446,60 @@ def test_equivalent_rules_with_different_file_sizes_are_accepted(tz_host, outsid
     assert config._system_local_tz_name() == "America/New_York"
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [zipfile.BadZipFile("bad member"), zlib.error("bad stream"), RuntimeError("refused")],
+    ids=["bad-zip-member", "bad-compressed-stream", "refused-member"],
+)
+def test_package_failure_is_not_evidence_about_the_zone(tz_host, monkeypatch, failure):
+    """A tzdata installed inside a zip can fail while its member is read.
+
+    A failed checksum, a compressed stream the reader cannot handle and a
+    member it refuses to open all mean the same thing here: no evidence about
+    the host's zone from this package. The host's file is readable, so the
+    resolution refuses rather than quietly interpreting schedules in UTC.
+    """
+    from importlib import resources
+
+    link, set_roots, zone_file = tz_host
+    link.symlink_to(zone_file("outside/zoneinfo"))
+    set_roots("empty")
+
+    class FailingZone:
+        def joinpath(self, child):
+            return self
+
+        def open(self, mode):
+            raise failure
+
+    monkeypatch.setattr(resources, "files", lambda name: FailingZone())
+    with pytest.raises(config.SystemTimezoneUnreadableError):
+        config._system_local_tz_name()
+
+
+def test_package_failure_does_not_escape_when_nothing_was_readable(tz_host, monkeypatch):
+    """The same failure with no readable localtime falls back to UTC.
+
+    The exception has to be absorbed on both paths: a package that cannot be
+    read is not a reason for host resolution to raise out of its own error
+    handling, and here there is no host file to refuse over.
+    """
+    from importlib import resources
+
+    _link, set_roots, _zone_file = tz_host
+    set_roots("empty")
+
+    class FailingZone:
+        def joinpath(self, child):
+            return self
+
+        def open(self, mode):
+            raise zipfile.BadZipFile("bad member")
+
+    monkeypatch.setattr(resources, "files", lambda name: FailingZone())
+    assert config._system_local_tz_name() == "UTC"
+
+
 @pytest.mark.parametrize("canonical", [False, True])
 @pytest.mark.parametrize("matching", [False, True])
 def test_outside_alias_requires_the_hosts_rules(tz_host, monkeypatch, canonical, matching):
@@ -492,6 +548,88 @@ def test_versioned_trees_accept_different_encodings_of_the_same_rules(tz_host):
     assert config._system_local_tz_name() == "America/New_York"
 
 
+def _slimmed(data):
+    """*data* with the transitions its POSIX footer already covers removed.
+
+    A maintained zone can store a transition that another build of the same
+    rules leaves to the footer, so two files for one zone routinely carry
+    different numbers of transitions and different type tables. Only the
+    stored transitions before the footer's recurring rules start are kept.
+    """
+    import struct
+
+    utc, standard, leap, count, types, chars = struct.unpack_from(">6I", data, 20)
+    second_header = 44 + count * 5 + types * 6 + chars + leap * 8 + standard + utc
+    utc2, standard2, leap2, count2, types2, chars2 = struct.unpack_from(
+        ">6I", data, second_header + 20
+    )
+    times_offset = second_header + 44
+    times = struct.unpack_from(f">{count2}q", data, times_offset)
+    # New York's footer describes the rules in force since 2007, so the stored
+    # transitions from 2008-01-01T00:00:00Z on are the ones it already covers;
+    # dropping them leaves the same behaviour.
+    keep = sum(1 for when in times if when < 1_199_145_600)
+    if not 0 < keep < count2:
+        pytest.skip("this host's zone file stores no transition after 2007")
+    indices_offset = times_offset + count2 * 8
+    types_offset = indices_offset + count2
+    chars_offset = types_offset + types2 * 6
+    leaps_offset = chars_offset + chars2
+    standard_offset = leaps_offset + leap2 * 12
+    end = standard_offset + standard2 + utc2
+    footer_end = data.index(b"\n", end + 1)
+    footer = data[end + 1 : footer_end]
+    header = data[second_header : second_header + 5] + bytes(15)
+    header += struct.pack(">6I", utc2, standard2, leap2, keep, types2, chars2)
+    block = struct.pack(f">{keep}q", *times[:keep])
+    block += data[indices_offset : indices_offset + keep]
+    block += data[types_offset:end]
+    return data[:second_header] + header + block + b"\n" + footer + b"\n"
+
+
+def test_differently_encoded_copies_of_one_zone_are_accepted(tz_host):
+    """Two builds of a zone can store different transitions for the same rules.
+
+    A file that leaves a transition to its POSIX footer and one that stores it
+    describe identical rules, so reading the host's file correctly must not
+    depend on which encoding the copy in the search root happens to use.
+    """
+    link, set_roots, zone_file = tz_host
+    host = zone_file("outside/zoneinfo")
+    slim = _slimmed(host.read_bytes())
+    assert slim != host.read_bytes()
+    zone_file("root").write_bytes(slim)
+    link.symlink_to(host)
+    set_roots("root")
+
+    assert config._system_local_tz_name() == "America/New_York"
+
+
+def test_copies_that_keep_the_same_transitions_but_change_one_are_refused(tz_host):
+    """The comparison above must not accept a copy whose rules differ.
+
+    Shifting one stored transition by an hour changes the offsets the host
+    reads from that instant on, which is the disagreement this check exists to
+    catch, so the encoding-tolerant comparison still has to refuse it.
+    """
+    import struct
+
+    link, set_roots, zone_file = tz_host
+    host = zone_file("outside/zoneinfo")
+    data = bytearray(host.read_bytes())
+    utc, standard, leap, count, types, chars = struct.unpack_from(">6I", data, 20)
+    second_header = 44 + count * 5 + types * 6 + chars + leap * 8 + standard + utc
+    times_offset = second_header + 44
+    first = struct.unpack_from(">q", data, times_offset)[0]
+    struct.pack_into(">q", data, times_offset, first + 3600)
+    zone_file("root").write_bytes(bytes(data))
+    link.symlink_to(host)
+    set_roots("root")
+
+    with pytest.raises(config.SystemTimezoneUnreadableError):
+        config._system_local_tz_name()
+
+
 @pytest.mark.parametrize("same_bytes", [False, True])
 def test_reader_boundary_requires_exact_file_identity(tz_host, same_bytes):
     import io
@@ -527,14 +665,16 @@ def test_oversized_zone_file_is_not_read_in_full(tz_host, monkeypatch, at_host):
     oversized.write_bytes(oversized.read_bytes() + bytes((1 << 20) + 1))
     link.symlink_to(host)
     set_roots("root")
-    original = Path.read_bytes
+    # Reads go through ``os.open`` and ``os.fdopen``, so the spy has to sit on
+    # those rather than on ``Path``, which nothing on this path calls.
+    original_open = os.open
 
-    def bounded_read(path):
+    def bounded_open(path, *args, **kwargs):
         if path == oversized:
             raise AssertionError("oversized timezone was read in full")
-        return original(path)
+        return original_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_bytes", bounded_read)
+    monkeypatch.setattr(os, "open", bounded_open)
     with pytest.raises(config.SystemTimezoneUnreadableError):
         config._system_local_tz_name()
 
@@ -547,14 +687,14 @@ def test_fifo_inside_search_root_is_never_opened(tz_host, tmp_path, monkeypatch)
     zone_file("second")
     link.symlink_to(fifo)
     set_roots("zoneinfo", "second")
-    original = Path.open
+    original_open = os.open
 
     def refuse_fifo(path, *args, **kwargs):
         if path == fifo:
             raise AssertionError("attempted to open a FIFO as timezone data")
-        return original(path, *args, **kwargs)
+        return original_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", refuse_fifo)
+    monkeypatch.setattr(os, "open", refuse_fifo)
     assert config._system_local_tz_name() == "UTC"
 
 

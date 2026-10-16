@@ -5,6 +5,8 @@ import math
 import os
 import stat
 import time
+import zipfile
+import zlib
 import zoneinfo
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -12,7 +14,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
-from ._timezone_rules import MAX_TZIF_BYTES, read_tzif, tzif_rules
+from ._timezone_rules import MAX_TZIF_BYTES, read_tzif, rules_equal, tzif_rules
 
 _logger = logging.getLogger(__name__)
 
@@ -134,7 +136,18 @@ def _named_zone_rules(name: str, cache: dict[Path, tuple | None]) -> tuple | Non
             return _path_zone_rules(resource, cache)
         with resource.open("rb") as stream:
             return tzif_rules(stream.read(MAX_TZIF_BYTES + 1))
-    except (ImportError, OSError, ValueError):
+    except (
+        ImportError,
+        OSError,
+        ValueError,
+        RuntimeError,
+        zipfile.BadZipFile,
+        zlib.error,
+    ):
+        # A zipped package can fail on a member with a failed checksum, a
+        # compressed stream the reader cannot handle (``NotImplementedError``,
+        # a ``RuntimeError``), or a member it refuses to open because it is
+        # encrypted. None of those is evidence about the host's zone.
         return None
 
 
@@ -157,9 +170,9 @@ def _zone_key_is_unambiguous(name: str, host_rules: tuple, cache: dict[Path, tup
                     return False
                 files.append(resolved)
         if not files:
-            if _named_zone_rules(key, cache) != host_rules:
+            if not rules_equal(_named_zone_rules(key, cache), host_rules):
                 return False
-        elif any(_path_zone_rules(path, cache) != host_rules for path in files):
+        elif any(not rules_equal(_path_zone_rules(path, cache), host_rules) for path in files):
             return False
         for path in files:
             for root in roots:
@@ -181,7 +194,8 @@ def _zone_name_from_path(
     Containment alone isn't enough: with several roots configured, an
     earlier one holding the same key can shadow a later one, so a candidate
     is accepted only if resolving it the way the stdlib will arrives back at
-    rules equivalent to the host's complete TZif transition records and footer.
+    rules the host reads identically: the same offset, DST flag and name at
+    every transition of either file, with the same POSIX footer text.
     """
     cache = {} if cache is None else cache
     host_rules = _path_zone_rules(path, cache)
@@ -194,7 +208,7 @@ def _zone_name_from_path(
             continue
         name = "/".join(relative.parts)
         selected = _zone_file_for_name(name) if name else None
-        if selected is not None and _path_zone_rules(selected, cache) == host_rules:
+        if selected is not None and rules_equal(_path_zone_rules(selected, cache), host_rules):
             return name
     return None
 
@@ -214,7 +228,7 @@ def _zone_name_from_link_structure(
     zone sources — and it is accepted only if the stdlib can load it from a
     configured filesystem root or the tzdata package with the host's rules.
     Duplicate names, including a configured alias's resolved key, must agree
-    with the host's complete transition records and POSIX footer.
+    with the host's rules and POSIX footer as those two are compared here.
     """
     cache = {} if cache is None else cache
     host_rules = _path_zone_rules(resolved, cache) if resolved is not None else None
@@ -251,7 +265,9 @@ def _zone_name_from_link_structure(
             named_rules = _named_zone_rules(name, cache)
             if named_rules is None:
                 break
-            if named_rules != host_rules or not _zone_key_is_unambiguous(name, host_rules, cache):
+            if not rules_equal(named_rules, host_rules):
+                return None
+            if not _zone_key_is_unambiguous(name, host_rules, cache):
                 return None
             return name
     return None
