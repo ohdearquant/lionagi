@@ -31,7 +31,10 @@ class ReleaseError(ValueError):
 def _read_command(command: list[str]) -> dict[str, Any]:
     result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=60)
     if result.returncode:
-        raise ReleaseError(f"release metadata request failed: {command[0]}")
+        detail = result.stderr.strip() or result.stdout.strip() or "no output"
+        raise ReleaseError(
+            f"release metadata request failed: {command[0]} exited {result.returncode}: {detail}"
+        )
     value = json.loads(result.stdout)
     if not isinstance(value, dict):
         raise ReleaseError("release metadata is not an object")
@@ -177,6 +180,13 @@ def resolve(
     if prepare_image and (sha != env.get("RESOLVED_SHA") or version != env.get("RESOLVED_VERSION")):
         raise ReleaseError("release source changed after validation")
 
+    # The checks below narrow by path, so a reader can tell which evidence each
+    # caller demands. A release event only needs the tag, the tag's commit and
+    # the source metadata; it can run before PyPI has the wheel. An image
+    # preparation rechecks the pinned source and version and then requires the
+    # published wheel. A manual repair (workflow_dispatch) additionally requires
+    # the wheel and the release workflow's successful upload history, neither of
+    # which a release event can assume exist yet.
     source = read_github(f"repos/{repo}/contents/pyproject.toml?ref={sha}")
     if source.get("encoding") != "base64":
         raise ReleaseError("release source package metadata is unavailable")
@@ -211,15 +221,19 @@ def main() -> int:
             for key, value in values.items():
                 output.write(f"{key}={value}\n")
         print(f"Validated lionagi {values['version']} at {values['sha']}")
+    except ReleaseError as exc:
+        print(f"::error::{exc}", file=sys.stderr)
+        return 1
     except (
-        ReleaseError,
         KeyError,
         TypeError,
         ValueError,
         OSError,
         subprocess.TimeoutExpired,
     ) as exc:
-        print(f"::error::{exc}", file=sys.stderr)
+        # A deliberate refusal is a ReleaseError; anything else here is a bug or
+        # an unexpected API shape, and its type is what tells them apart.
+        print(f"::error::{type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
     return 0
 

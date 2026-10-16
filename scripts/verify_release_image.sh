@@ -16,12 +16,12 @@ if [[ "${PUBLISH_LATEST:-}" != true && "${PUBLISH_LATEST:-}" != false ]]; then
 fi
 
 repo=ohdearquant/lion-studio
-token="$(curl --fail --silent --show-error \
+token="$(curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
   "https://ghcr.io/token?scope=repository:${repo}:pull" | jq -er '.token')"
 
 digest_for() {
   local headers
-  headers="$(curl --fail --silent --show-error --head \
+  headers="$(curl --fail --silent --show-error --connect-timeout 10 --max-time 30 --head \
     -H "Authorization: Bearer ${token}" \
     -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
     "https://ghcr.io/v2/${repo}/manifests/$1")" || return 1

@@ -24,6 +24,9 @@ current workflow helpers run from the dispatch commit, while the build context
 comes from the released commit. A repair does not run the wheel publisher. It
 also retains that release's Dockerfile; package, frontend or Dockerfile changes
 require a new release rather than republishing changed source under an old tag.
+The rebuild still resolves its base images, apt packages and Python dependencies
+on the dispatch day, so a repaired image matches the released one in the source
+it builds from, not byte for byte.
 The manual repair requires all of:
 
 - A published, non-draft GitHub release with the exact version tag.
@@ -34,11 +37,15 @@ The manual repair requires all of:
   count when a later retry fails because the wheel was already uploaded.
 
 The last check uses retained Actions history as evidence that the repository's
-trusted release workflow published this commit. It is not a cryptographic
-attestation of wheel contents: it relies on that workflow testing and uploading
-its run's source. Missing or expired publication history refuses a manual repair;
-it does not prevent a new release event from publishing normally. A moved tag
-without matching publication evidence is refused. If an upload reached PyPI
+release workflow published this commit: it reads the run's workflow path, job
+name and step name, and it does not compare that run's workflow file against the
+default branch. It is not a cryptographic attestation of wheel contents: it
+relies on that workflow testing and uploading its run's source. Missing or
+expired publication history refuses a manual repair; it does not prevent a new
+release event from publishing normally. A release whose wheel never reached PyPI
+is the other case: rerun its release-event run so the deploy job retries the
+wheel upload, and the image job runs after it. A moved tag without matching
+publication evidence is refused. If an upload reached PyPI
 but no attempt recorded a successful upload, a default-branch repair is refused
 with `no successful release workflow wheel upload binds this tag to its commit`.
 This also applies when that release's image job later failed, for example during
@@ -81,10 +88,17 @@ every missing older-version image, so check a displaced older release separately
 
 Inside that slot, the workflow rechecks the source binding and PyPI version
 before building. It publishes the version tag, and updates `latest` only when
-PyPI reports that version as its current default at revalidation. Older versions
-and prereleases that PyPI does not select therefore leave `latest` alone. This
-serializes these image jobs, not external publishers or wheel publication;
-PyPI can advance while an image builds, before its newer image job runs.
+PyPI reports that version as its current default at revalidation. The push
+replaces that version tag if it already exists; nothing reads the registry first,
+so treat the dispatch as a rebuild for a version, not only as a repair, and
+expect the tag's digest to change. PyPI's version index can lag a fresh upload,
+so a release whose own version is not yet the version PyPI reports as current
+leaves `latest` untouched on that run; the daily `Image matches PyPI` check names
+`latest` as stale, and a later image run whose revalidation reads the advanced
+version moves it. Older versions and prereleases that PyPI does not select
+therefore leave `latest` alone. This serializes these image jobs, not external
+publishers or wheel publication; PyPI can advance while an image builds, before
+its newer image job runs.
 
 The image carries its version and source SHA as OCI labels. Before releasing
 the concurrency slot, verification compares registry manifest digests with the

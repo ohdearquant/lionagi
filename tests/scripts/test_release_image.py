@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -25,12 +26,31 @@ SHA = "a" * 40
 OTHER_SHA = "b" * 40
 REPO = "example/lionagi"
 PREFIX = f"repos/{REPO}"
-# Pinned to commit SHAs: a moving major tag would let the release build change
-# without a commit to this repository.
+# The four docker actions are pinned to commit SHAs because they build and push
+# the release image, and a moving major tag would let that build change without
+# a commit to this repository. The first-party actions stay on major tags,
+# which this repository updates through Dependabot.
+# Kept as named constants so an action bump is one edit here, not a hunt
+# through the expected step lists.
+CHECKOUT_ACTION = "actions/checkout@v7"
+SETUP_PYTHON_ACTION = "actions/setup-python@v7"
 QEMU_ACTION = "docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1"
 BUILDX_ACTION = "docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069"
 LOGIN_ACTION = "docker/login-action@dbcb813823bdd20940b903addbd779551569679f"
 IMAGE_ACTION = "docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc"
+GUARD_RUN = (
+    'if [[ ! "${RESOLVED_SHA}" =~ ^[0-9a-f]{40}$ ]]; then\n'
+    "  echo '::error::the release did not resolve a full source commit'\n"
+    "  exit 1\n"
+    "fi\n"
+)
+UV_INSTALL_RUN = (
+    'curl -LsSf https://astral.sh/uv/install.sh | sh\necho "$HOME/.cargo/bin" >> $GITHUB_PATH\n'
+)
+TEST_RUN = (
+    "source .venv/bin/activate\n"
+    "uv run pytest --asyncio-mode=auto --maxfail=1 --disable-warnings tests/\n"
+)
 RUNS = (
     f"{PREFIX}/actions/workflows/release.yml/runs?event=release&head_sha={SHA}&per_page=100&page=1"
 )
@@ -136,6 +156,30 @@ def as_release_event(env):
 
 def test_manual_repair_uses_the_release_commit_not_the_workflow_commit(metadata):
     assert resolve_fixture(metadata) == {"version": "1.2.3", "sha": SHA}
+
+
+def test_metadata_command_failure_keeps_the_command_output():
+    """A bare 'request failed' hides whether the command was missing, refused or
+    returned nothing useful, so the captured stderr belongs in the message."""
+    with pytest.raises(release.ReleaseError) as excinfo:
+        release._read_command(["bash", "-c", "echo 'gh: command not found' >&2; exit 3"])
+    message = str(excinfo.value)
+    assert "exited 3" in message
+    assert "gh: command not found" in message
+
+
+def test_main_reports_an_unexpected_error_by_its_type(monkeypatch, tmp_path, capsys):
+    """A missing metadata field surfaced only as ::error::'content', which reads
+    like a deliberate refusal; the exception type names the real problem."""
+    monkeypatch.setattr(sys, "argv", ["resolve_image_release.py"])
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "output"))
+
+    def broken(env, prepare_image=False):
+        raise KeyError("content")
+
+    monkeypatch.setattr(release, "resolve", broken)
+    assert release.main() == 1
+    assert "KeyError" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -364,6 +408,48 @@ def assert_workflow_contract(document):
         "RELEASE_ACTION": "${{ github.event.action }}",
     }
     assert set(jobs) == {"source", "test", "deploy", "docker", "verify-image"}
+    # Every job and the document are pinned by their exact key set: a new key
+    # can change what a job runs, where it runs or what it is allowed to reach.
+    # YAML 1.1 reads the `on` key as the boolean True, so that is its name here.
+    assert set(document) == {"name", True, "permissions", "env", "jobs"}
+    assert document[True] == {
+        "release": {"types": ["published"]},
+        "workflow_dispatch": {
+            "inputs": {
+                "version": {
+                    "description": (
+                        "Published version to repair from the default branch, without v "
+                        "(e.g. 0.35.1)"
+                    ),
+                    "required": True,
+                    "type": "string",
+                }
+            }
+        },
+    }
+    assert {name: job["runs-on"] for name, job in jobs.items()} == {
+        "source": "ubuntu-latest",
+        "test": "ubuntu-latest",
+        "deploy": "ubuntu-latest",
+        "docker": "ubuntu-latest",
+        "verify-image": "ubuntu-latest",
+    }
+    assert {name: set(job) for name, job in jobs.items()} == {
+        "source": {"if", "permissions", "runs-on", "outputs", "steps"},
+        "test": {"permissions", "needs", "runs-on", "strategy", "steps"},
+        "deploy": {"permissions", "needs", "if", "runs-on", "timeout-minutes", "steps"},
+        "docker": {
+            "permissions",
+            "needs",
+            "if",
+            "concurrency",
+            "timeout-minutes",
+            "runs-on",
+            "outputs",
+            "steps",
+        },
+        "verify-image": {"permissions", "needs", "if", "runs-on", "steps"},
+    }
     for name, job in jobs.items():
         # A job-level value overrides the workflow-level pin, and a soft-failing
         # job leaves the run green without the result the gate requires.
@@ -379,57 +465,84 @@ def assert_workflow_contract(document):
         "version": "${{ steps.release.outputs.version }}",
         "sha": "${{ steps.release.outputs.sha }}",
     }
-    source = jobs["source"]["steps"][-1]
-    assert source["id"] == "release"
-    assert source["env"] == {"GH_TOKEN": "${{ github.token }}"}
-    assert source["run"] == "python scripts/resolve_image_release.py"
-    assert "if" not in source
-    assert not source.get("continue-on-error", False)
+    # Exact step lists: an inserted, reordered, skipped or retagged step can
+    # change the source, the build environment or what is published.
+    guard = {
+        "name": "Require the resolved source commit",
+        "shell": "bash",
+        "env": {"RESOLVED_SHA": "${{ needs.source.outputs.sha }}"},
+        "run": GUARD_RUN,
+    }
+    assert jobs["source"]["outputs"] == {
+        "version": "${{ steps.release.outputs.version }}",
+        "sha": "${{ steps.release.outputs.sha }}",
+    }
     assert jobs["source"]["if"] == (
         "github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v')"
     )
+    assert jobs["source"]["steps"] == [
+        {
+            "uses": CHECKOUT_ACTION,
+            "with": {"ref": "${{ github.sha }}", "persist-credentials": False},
+        },
+        {"uses": SETUP_PYTHON_ACTION, "with": {"python-version": "3.12"}},
+        {
+            "name": "Validate the release and resolve its source",
+            "id": "release",
+            "env": {"GH_TOKEN": "${{ github.token }}"},
+            "run": "python scripts/resolve_image_release.py",
+        },
+    ]
     assert jobs["test"]["needs"] == "source"
     assert "if" not in jobs["test"]
     assert jobs["test"]["strategy"] == {
         "matrix": {"python-version": ["3.10", "3.11", "3.12", "3.13"]}
     }
-    # The test job is what makes a red commit refuse the release; its steps are
-    # pinned by name so a replaced command cannot pass as an install or a test.
-    assert [step_identity(step) for step in jobs["test"]["steps"]] == [
-        ("Require the resolved source commit", None, None),
-        (None, "actions/checkout@v7", None),
-        ("Set up Python ${{ matrix.python-version }}", "actions/setup-python@v7", None),
-        ("Install uv", None, None),
-        ("Install dependencies", None, None),
-        ("Run tests", None, None),
+    # The test job is what makes a red commit refuse the release, so its steps
+    # are pinned whole: a replaced install or test command would otherwise pass.
+    assert jobs["test"]["steps"] == [
+        guard,
+        {
+            "uses": CHECKOUT_ACTION,
+            "with": {"ref": "${{ needs.source.outputs.sha }}", "persist-credentials": False},
+        },
+        {
+            "name": "Set up Python ${{ matrix.python-version }}",
+            "uses": SETUP_PYTHON_ACTION,
+            "with": {"python-version": "${{ matrix.python-version }}"},
+        },
+        {"name": "Install uv", "run": UV_INSTALL_RUN},
+        {"name": "Install dependencies", "run": "uv venv\nuv sync --all-extras\n"},
+        {"name": "Run tests", "run": TEST_RUN},
     ]
-    test_run = next(s for s in jobs["test"]["steps"] if s.get("name") == "Run tests")
-    assert test_run["run"].strip() == (
-        "source .venv/bin/activate\n"
-        "uv run pytest --asyncio-mode=auto --maxfail=1 --disable-warnings tests/"
-    )
+    for step in jobs["test"]["steps"]:
+        assert "if" not in step, "no test step may be skipped"
+        assert not step.get("continue-on-error", False), "no test step may fail softly"
     assert jobs["deploy"]["needs"] == ["source", "test"]
     assert jobs["deploy"]["if"] == "github.event_name == 'release'"
-    publish = next(s for s in jobs["deploy"]["steps"] if s.get("name") == "Publish package to PyPI")
-    assert publish == {
-        "name": "Publish package to PyPI",
-        "env": {
-            "TWINE_USERNAME": "__token__",
-            "TWINE_PASSWORD": "${{ secrets.PYPI_API_KEY }}",
+    assert jobs["deploy"]["steps"] == [
+        guard,
+        {
+            "uses": CHECKOUT_ACTION,
+            "with": {"ref": "${{ needs.source.outputs.sha }}", "persist-credentials": False},
         },
-        "run": "uv run twine upload dist/*",
-    }
-    for name in ("test", "deploy", "docker"):
-        guard = jobs[name]["steps"][0]
-        assert guard["name"] == "Require the resolved source commit"
-        assert guard["shell"] == "bash"
-        assert guard["env"] == {"RESOLVED_SHA": "${{ needs.source.outputs.sha }}"}
-    for name in ("test", "deploy"):
-        checkout = next(
-            s for s in jobs[name]["steps"] if s.get("uses", "").startswith("actions/checkout")
-        )
-        assert checkout.get("with", {}).get("ref") == "${{ needs.source.outputs.sha }}"
-    assert jobs["source"]["steps"][0]["with"]["ref"] == "${{ github.sha }}"
+        {
+            "name": "Set up Python",
+            "uses": SETUP_PYTHON_ACTION,
+            "with": {"python-version": "3.12"},
+        },
+        {"name": "Install uv", "run": UV_INSTALL_RUN},
+        {"name": "Install dependencies", "run": "uv venv\nuv pip install twine\n"},
+        {"name": "Build package", "run": "uv build"},
+        {
+            "name": "Publish package to PyPI",
+            "env": {
+                "TWINE_USERNAME": "__token__",
+                "TWINE_PASSWORD": "${{ secrets.PYPI_API_KEY }}",
+            },
+            "run": "uv run twine upload dist/*",
+        },
+    ]
     docker = jobs["docker"]
     assert docker["needs"] == ["source", "test", "deploy"]
     assert docker["if"] == (
@@ -438,6 +551,7 @@ def assert_workflow_contract(document):
     )
     assert docker["concurrency"] == {"group": "lion-studio-image", "cancel-in-progress": False}
     assert docker["timeout-minutes"] == 60
+    assert jobs["deploy"]["timeout-minutes"] == 30
     assert docker["outputs"] == {
         "digest": "${{ steps.image.outputs.digest }}",
         "publish_latest": "${{ steps.release.outputs.publish_latest }}",
@@ -468,9 +582,9 @@ def assert_workflow_contract(document):
     # it, so the ordered step list and the image inputs are both pinned.
     assert [step_identity(step) for step in docker["steps"]] == [
         ("Require the resolved source commit", None, None),
-        (None, "actions/checkout@v7", None),
-        (None, "actions/checkout@v7", None),
-        (None, "actions/setup-python@v7", None),
+        (None, CHECKOUT_ACTION, None),
+        (None, CHECKOUT_ACTION, None),
+        (None, SETUP_PYTHON_ACTION, None),
         ("Revalidate the source and published wheel", None, "release"),
         ("Set up QEMU", QEMU_ACTION, None),
         ("Set up Docker Buildx", BUILDX_ACTION, "buildx"),
@@ -479,6 +593,7 @@ def assert_workflow_contract(document):
         ("Build and push Docker image (multi-arch)", IMAGE_ACTION, "image"),
         ("Verify the published image digest", None, None),
     ]
+    assert docker["steps"][0] == guard
     assert image == {
         "name": "Build and push Docker image (multi-arch)",
         "id": "image",
@@ -591,6 +706,22 @@ def test_workflow_tests_builds_and_verifies_one_resolved_source():
         "image-action-tag-not-sha",
         "image-push-disabled",
         "image-step-gated-on-latest",
+        "run-tests-continue-on-error",
+        "run-tests-skipped",
+        "install-run-replaced",
+        "source-step-inserted",
+        "deploy-step-inserted",
+        "deploy-checkout-tag",
+        "deploy-defaults",
+        "deploy-container",
+        "deploy-step-env",
+        "build-run-replaced",
+        "document-extra-key",
+        "job-extra-key",
+        "triggers-pull-request",
+        "docker-runs-on-changed",
+        "guard-run-retags",
+        "deploy-timeout-removed",
     ],
 )
 def test_workflow_contract_rejects_publication_wiring_mutations(mutation):
@@ -603,6 +734,9 @@ def test_workflow_contract_rejects_publication_wiring_mutations(mutation):
     digest_verify = docker["steps"][-1]
     image = next(s for s in docker["steps"] if s.get("id") == "image")
     publish = next(s for s in jobs["deploy"]["steps"] if s.get("name") == "Publish package to PyPI")
+    source = jobs["source"]
+    deploy = jobs["deploy"]
+    test = jobs["test"]
     if mutation == "deploy-write":
         jobs["deploy"]["permissions"]["packages"] = "write"
     elif mutation == "top-level-actions":
@@ -713,6 +847,48 @@ def test_workflow_contract_rejects_publication_wiring_mutations(mutation):
         image["with"]["push"] = False
     elif mutation == "image-step-gated-on-latest":
         image["if"] = "steps.release.outputs.publish_latest == 'true'"
+    elif mutation == "run-tests-continue-on-error":
+        next(s for s in test["steps"] if s.get("name") == "Run tests")["continue-on-error"] = True
+    elif mutation == "run-tests-skipped":
+        next(s for s in test["steps"] if s.get("name") == "Run tests")["if"] = "false"
+    elif mutation == "install-run-replaced":
+        next(s for s in test["steps"] if s.get("name") == "Install dependencies")["run"] = "true"
+    elif mutation == "source-step-inserted":
+        source["steps"].insert(1, {"name": "Overwrite resolver", "run": "true"})
+    elif mutation == "deploy-step-inserted":
+        deploy["steps"].insert(1, {"name": "Overwrite source", "run": "true"})
+    elif mutation == "deploy-checkout-tag":
+        next(s for s in deploy["steps"] if s.get("uses", "").startswith("actions/checkout"))[
+            "uses"
+        ] = "actions/checkout@v6"
+    elif mutation == "deploy-defaults":
+        deploy["defaults"] = {"run": {"working-directory": "scratch"}}
+    elif mutation == "deploy-container":
+        deploy["container"] = "python:3.12"
+    elif mutation == "deploy-step-env":
+        next(s for s in deploy["steps"] if s.get("name") == "Install dependencies")["env"] = {
+            "UV_INDEX_URL": "https://pypi.example/simple"
+        }
+    elif mutation == "build-run-replaced":
+        next(s for s in deploy["steps"] if s.get("name") == "Build package")["run"] = (
+            "uv build --wheel && uv build --sdist"
+        )
+    elif mutation == "document-extra-key":
+        document["concurrency"] = {"group": "release"}
+    elif mutation == "job-extra-key":
+        deploy["environment"] = "pypi"
+    elif mutation == "triggers-pull-request":
+        document[True]["pull_request"] = {}
+    elif mutation == "docker-runs-on-changed":
+        docker["runs-on"] = "ubuntu-22.04"
+    elif mutation == "guard-run-retags":
+        for job in (test, deploy, docker):
+            job["steps"][0]["run"] += (
+                "docker buildx imagetools create -t ghcr.io/ohdearquant/lion-studio:latest"
+                " ghcr.io/ohdearquant/lion-studio:1.2.3 || true\n"
+            )
+    elif mutation == "deploy-timeout-removed":
+        deploy.pop("timeout-minutes", None)
     with pytest.raises((AssertionError, KeyError)):
         assert_workflow_contract(document)
 
@@ -738,6 +914,7 @@ def registry(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     calls = tmp_path / "calls"
+    arguments = tmp_path / "curl-arguments"
     responses = tmp_path / "responses.json"
     responses.write_text("{}")
     curl = bindir / "curl"
@@ -747,6 +924,8 @@ from pathlib import Path
 url = sys.argv[-1]
 with Path(os.environ["CALLS"]).open("a") as out:
     out.write(url + "\\n")
+with Path(os.environ["CURL_ARGUMENTS"]).open("a") as out:
+    out.write(" ".join(sys.argv[1:]) + "\\n")
 if "/token?" in url:
     print('{"token": "public-pull-token"}')
 else:
@@ -767,6 +946,7 @@ else:
         **os.environ,
         "PATH": f"{bindir}:{os.environ['PATH']}",
         "CALLS": str(calls),
+        "CURL_ARGUMENTS": str(arguments),
         "RESPONSES": str(responses),
         "VERSION": "1.2.3",
         "EXPECTED_DIGEST": digest,
@@ -783,23 +963,37 @@ else:
             timeout=10,
         )
 
-    return run, digest, calls
+    return run, digest, calls, arguments
+
+
+def test_registry_reads_are_bounded_in_time(registry):
+    """The verifier holds the shared image slot while it reads the registry. A
+    request with no client-side deadline can sit until the docker job's timeout
+    ends it, holding every queued image job behind it, so each curl call must
+    carry both a connect and a total deadline."""
+    run, digest, _, arguments = registry
+    assert run({"1.2.3": {"digest": digest}, "latest": {"digest": digest}}).returncode == 0
+    lines = arguments.read_text().splitlines()
+    assert lines, "the verifier must have called curl"
+    for line in lines:
+        assert "--connect-timeout" in line, line
+        assert "--max-time" in line, line
 
 
 def test_registry_verifies_both_published_digests(registry):
-    run, digest, _ = registry
+    run, digest, _, _ = registry
     assert run({"1.2.3": {"digest": digest}, "latest": {"digest": digest}}).returncode == 0
 
 
 def test_old_version_verification_does_not_require_or_read_latest(registry):
-    run, digest, calls = registry
+    run, digest, calls, _ = registry
     assert run({"1.2.3": {"digest": digest}}, PUBLISH_LATEST="false").returncode == 0
     assert "/manifests/latest" not in calls.read_text()
 
 
 @pytest.mark.parametrize("tag", ["1.2.3", "latest"])
 def test_an_old_digest_cannot_satisfy_this_runs_build(registry, tag):
-    run, digest, _ = registry
+    run, digest, _, _ = registry
     tags = {"1.2.3": {"digest": digest}, "latest": {"digest": digest}}
     tags[tag]["digest"] = "sha256:" + "d" * 64
     result = run(tags)
@@ -811,7 +1005,7 @@ def test_an_old_digest_cannot_satisfy_this_runs_build(registry, tag):
 
 
 def test_failed_registry_read_cannot_pass_with_partial_output(registry):
-    run, digest, _ = registry
+    run, digest, _, _ = registry
     result = run({"1.2.3": {"digest": digest, "exit": 22}, "latest": {"digest": digest}})
     assert result.returncode == 1
     assert (
@@ -822,7 +1016,7 @@ def test_failed_registry_read_cannot_pass_with_partial_output(registry):
 
 @pytest.mark.parametrize("digest", ["", "sha256:bad"])
 def test_failed_build_is_not_verified_against_a_preexisting_tag(registry, digest):
-    run, existing_digest, calls = registry
+    run, existing_digest, calls, _ = registry
     result = run(
         {"1.2.3": {"digest": existing_digest}, "latest": {"digest": existing_digest}},
         EXPECTED_DIGEST=digest,
@@ -834,7 +1028,7 @@ def test_failed_build_is_not_verified_against_a_preexisting_tag(registry, digest
 
 @pytest.mark.parametrize("value", ["", "TRUE", "yes", "0", "false\ntrue"])
 def test_invalid_latest_decision_is_refused_before_registry_reads(registry, value):
-    run, _, calls = registry
+    run, _, calls, _ = registry
     result = run({}, PUBLISH_LATEST=value)
     assert result.returncode == 1
     assert "::error::latest publication decision must be true or false" in result.stderr
@@ -843,7 +1037,7 @@ def test_invalid_latest_decision_is_refused_before_registry_reads(registry, valu
 
 @pytest.mark.parametrize("value", ["", "v1.2.3", "1.2", "latest", "1.2.3/path", "1.2.3\nlatest"])
 def test_invalid_verifier_version_is_refused_before_registry_reads(registry, value):
-    run, _, calls = registry
+    run, _, calls, _ = registry
     result = run({}, VERSION=value)
     assert result.returncode == 1
     assert "::error::version must be a numeric x.y.z release" in result.stderr
@@ -855,7 +1049,7 @@ def test_invalid_verifier_version_is_refused_before_registry_reads(registry, val
     ["1.2.3a1", "1.2.3b2", "1.2.3rc1", "1.2.3.post1", "1.2.3.dev1", "1.2.3rc1.post2.dev3"],
 )
 def test_verifier_accepts_the_resolver_version_forms(registry, version):
-    run, digest, _ = registry
+    run, digest, _, _ = registry
     assert release._VERSION.fullmatch(version)
     result = run({version: {"digest": digest}}, VERSION=version, PUBLISH_LATEST="false")
     assert result.returncode == 0
@@ -863,7 +1057,7 @@ def test_verifier_accepts_the_resolver_version_forms(registry, version):
 
 
 def test_empty_registry_digest_cannot_match_a_valid_build(registry):
-    run, _, _ = registry
+    run, _, _, _ = registry
     result = run({})
     assert result.returncode == 1
     assert (
@@ -912,7 +1106,7 @@ def test_final_status_gate_requires_successful_build_and_verification(result, di
 
 
 def test_digest_verification_checks_each_registry_snapshot(registry):
-    run, digest_a, _ = registry
+    run, digest_a, _, _ = registry
     digest_b = "sha256:" + "d" * 64
     after_a = {"1.2.3": {"digest": digest_a}, "latest": {"digest": digest_a}}
     after_b = {**after_a, "1.2.4": {"digest": digest_b}, "latest": {"digest": digest_b}}
@@ -930,12 +1124,24 @@ def test_digest_verification_checks_each_registry_snapshot(registry):
     assert run(after_b, VERSION="1.2.4", EXPECTED_DIGEST=digest_b).returncode == 0
 
 
-def test_daily_check_guidance_does_not_promise_a_new_release_restores_an_old_image():
+def test_daily_check_guidance_does_not_offer_a_new_release_as_recovery():
     """The daily check follows PyPI's current version, so the issue it files for an
     older version closes as soon as a newer image becomes current. Guidance that
     offered a new release as recovery would leave that version without an image
-    while the issue that reported it closed."""
+    while the issue that reported it closed, so the offer must be gone and the
+    correction that replaced it present."""
     text = " ".join((ROOT / ".github/workflows/image-matches-pypi.yml").read_text().split())
-    assert "publish a new release. A newer release does not restore this version's image" in text
+    assert "publish a new release" not in text
+    assert "A newer release does not restore this version's image" in text
     assert "the issue closes and the version above is left without one" in text
     assert yaml.safe_load((ROOT / ".github/workflows/image-matches-pypi.yml").read_text())
+
+
+def test_daily_check_guidance_does_not_claim_the_issue_is_current():
+    """The check reads the registry once a day, so an issue stays open after a
+    repair until the next run. Saying "right now" would overstate what the open
+    issue proves; it records the last reading, not the current registry."""
+    text = " ".join((ROOT / ".github/workflows/image-matches-pypi.yml").read_text().split())
+    assert "right now" not in text
+    assert "currently-behind" not in text
+    assert "behind at the last daily reading" in text

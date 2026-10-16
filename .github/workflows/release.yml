@@ -102,6 +102,9 @@ jobs:
     # has accepted the wheel.
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
+    # Bound the wheel build and upload so a stalled step cannot hold the image
+    # job, which waits on this job, for GitHub's default job limit.
+    timeout-minutes: 30
     steps:
     - name: Require the resolved source commit
       shell: bash
@@ -236,7 +239,11 @@ jobs:
         PUBLISH_LATEST: ${{ steps.release.outputs.publish_latest }}
       run: bash .release-control/scripts/verify_release_image.sh
 
-  # Preserve a failing verification gate for any failed publication attempt.
+  # The registry read moved into the docker job, so it runs in the same
+  # concurrency slot as the push. This job keeps a named image-verification gate
+  # over the docker job's result: a skipped, cancelled or failed image job, or a
+  # build that produced no valid digest, still fails here rather than ending the
+  # run green.
   verify-image:
     permissions:
       contents: read
