@@ -13,6 +13,7 @@ import pytest
 
 import lionagi.engines.engine as engine_mod
 import lionagi.engines.hypothesis as hyp_mod
+from lionagi._errors import ContainmentRefusedError
 from lionagi.engines.hypothesis import (
     ChainEvent,
     ConclusionDrawn,
@@ -319,7 +320,7 @@ async def test_dedup_stage_exception_releases_finding_to_extract():
     async def boom_dedup(_run, _f):
         raise TimeoutError("agent construction timed out")
 
-    eng._dedup = boom_dedup
+    eng._dedup_search = boom_dedup
 
     events: list[dict] = []
     run.on_event = lambda e: events.append(e)
@@ -345,12 +346,79 @@ async def test_dedup_stage_exception_does_not_double_release_with_late_verdict()
         await run.emit(DedupChecked(finding_ref=f.eid, verdict="new"))
         raise TimeoutError("post-verdict cleanup failed")
 
-    eng._dedup = dedup_then_boom
+    eng._dedup_search = dedup_then_boom
 
     await run.emit(FindingPosted(description="verdict lands then leg still errors"))
     await run.wait_quiescence()
 
     assert [s for s, _ in calls] == ["extract"]
+
+
+class _StubAgent:
+    def __init__(self, name, judge_error):
+        self.name = name
+        self._judge_error = judge_error
+
+    async def operate(self, **kwargs):
+        if self._judge_error is not None and self.name.startswith("judge-"):
+            raise self._judge_error
+        return "ok"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("contained", "judge_error", "searched"),
+    [
+        (True, RuntimeError("provider failed"), False),
+        (True, ContainmentRefusedError("codex config selects a profile"), False),
+        (False, RuntimeError("provider failed"), True),
+    ],
+    ids=["contained-provider-error", "contained-refusal", "uncontained-fails-open"],
+)
+async def test_a_judge_that_raises_in_the_dedup_stage_ends_the_finding(
+    contained, judge_error, searched
+):
+    """A contained judge raises any error, and the finding stops there: neither the
+    tracker search nor extraction runs, since extraction skips the judge for a finding
+    the dedup stage released. Without containment the judge fails open (control)."""
+    eng = HypothesisEngine(
+        dedup_repo="owner/repo",
+        judge_model="codex/gpt-5.5",
+        contain_account_integrations=contained,
+        max_depth=1,
+    )
+    run = eng.new_run()
+    _wire(eng, run)
+    built: list[str] = []
+
+    async def make_agent(role, *, name=None, **kwargs):
+        built.append(name)
+        return _StubAgent(name, judge_error)
+
+    async def operate_with_repair(*args, **kwargs):
+        return None
+
+    run.make_agent = make_agent
+    run.operate_with_repair = operate_with_repair
+    events: list[dict] = []
+    run.on_event = lambda e: events.append(e)
+
+    q = run.collect(QuestionRaised(area="a", what_is_unknown="why X?", gen=0))
+    h = run.collect(HypothesisFormed(question_ref=q.eid, statement="X < 500us"))
+    x = run.collect(ExperimentDesigned(hypothesis_ref=h.eid, method="analysis", procedure="bench"))
+    await run.emit(FindingPosted(description="a finding from validation", parent_ref=x.eid))
+    await run.wait_quiescence()
+
+    f = run.events_of(FindingPosted)[-1]
+    assert f.gen == 1
+    stages = sorted({name.split("-")[0] for name in built})
+    if searched:
+        assert stages == ["dedup", "extract", "judge"]
+    else:
+        assert stages == ["judge"]
+        assert f.eid not in run.dedup_cleared
+        assert not any(e["type"] == "dedup_missing" for e in events)
+        assert any(e["type"] == "stage_error" and e["stage"] == "dedup" for e in events)
 
 
 @pytest.mark.parametrize("bad_verdict", ["uncertain", "Duplicate", "dupe", "NEW", ""])

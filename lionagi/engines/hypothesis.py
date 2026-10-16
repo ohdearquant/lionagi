@@ -854,10 +854,7 @@ class HypothesisEngine(Engine):
         if run.seen(f"f:{f.description}|{f.evidence}|{f.source}|{f.parent_ref}"):
             return
         if self.dedup_repo:
-            # A dedup leg that raises (agent construction, timeout, ...) must
-            # not drop the finding — release it to extraction the same way a
-            # missing-but-not-errored verdict does.
-            run.spawn(self._guard(run, "dedup", self._dedup, f, on_error=self._dedup_release))
+            run.spawn(self._guard(run, "dedup", self._dedup, f))
         else:
             run.spawn(self._guard(run, "extract", self._extract, f))
 
@@ -945,9 +942,18 @@ class HypothesisEngine(Engine):
 
     async def _dedup(self, run: HypothesisRun, f: FindingPosted) -> None:
         # The novelty gate carries the recursive-cycle judge so junk findings
-        # are rejected before a tracker-search agent is spent on them.
+        # are rejected before a tracker-search agent is spent on them. The judge
+        # runs outside the release below: a judge that raises (a contained one
+        # raises any error) ends the finding here, where a release would send it
+        # to extraction, which skips the judge for a released finding.
         if f.gen > 0 and not await self.judge(run, f.eid, _label(f) + _judge_bar(f.gen)):
             return
+        # A tracker search that raises (agent construction, timeout, ...) must
+        # not drop the finding — release it to extraction the same way a
+        # missing-but-not-errored verdict does.
+        await self._guard(run, "dedup", self._dedup_search, f, on_error=self._dedup_release)
+
+    async def _dedup_search(self, run: HypothesisRun, f: FindingPosted) -> None:
         emits = (DedupChecked,)
         cwd = self.dedup_cwd or self.validate_cwd
         async with run._sem:

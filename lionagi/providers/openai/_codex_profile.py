@@ -59,10 +59,13 @@ def _is_file(path: Path) -> bool:
 
     ``Path.is_file()`` answers False for a permission error from Python 3.14 on, and raises
     it before that, so an unreadable profile or config would read as an absent one on some
-    supported versions only. This keeps the earlier meaning on all of them.
+    supported versions only. This keeps the earlier meaning on all of them. A path the
+    operating system cannot name (an embedded NUL) is not a file, as ``Path.is_file()`` says.
     """
     try:
         return stat.S_ISREG(path.stat().st_mode)
+    except ValueError:
+        return False
     except OSError as exc:
         if exc.errno in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP, errno.EBADF):
             return False

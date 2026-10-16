@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from pathlib import Path
 
 import pytest
 
@@ -845,6 +846,17 @@ def test_a_profile_file_that_is_not_utf8_is_refused_naming_it(tmp_path):
     (home / "deep.config.toml").write_bytes(b'model = "\xff\xfe"\n')
     with pytest.raises(ValueError, match=re.escape("deep.config.toml") + ".*could not be read"):
         resolve_codex_config_profile("deep", env={"CODEX_HOME": str(home)})
+
+
+def test_a_codex_home_holding_a_nul_reads_as_having_no_profile():
+    """A path the operating system cannot name holds no file, as ``Path.is_file()`` says:
+    a bare model name is sent as a model id, and the request is built."""
+    from lionagi.providers.openai._codex_profile import _is_file, resolve_codex_config_profile
+
+    env = {"CODEX_HOME": "/nonexistent/a\0b"}
+    assert _is_file(Path("/nonexistent/a\0b/o3.config.toml")) is False
+    assert resolve_codex_config_profile("o3", env=env) is None
+    assert CodexCodeRequest(prompt="hi", model="o3", env=env).model == "o3"
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root reads any directory")
