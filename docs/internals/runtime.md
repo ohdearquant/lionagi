@@ -97,9 +97,14 @@ whose schema another application manages, and never migrates, stamps or reconfig
 - Native and read-only handles are shared by url, as before; a compatibility handle is keyed by
   `(url, mode, profile, owner)`, so a native and a compatibility handle on one file, and two
   compatibility handles writing different owners, are never the same object.
-- `get_shared_db()` never opens a native handle on a store a registered compatibility handle
-  holds: it returns that handle, so a caller naming only the store (the default hook handlers)
-  writes through the profile, and it refuses when handles for several owners hold the store.
+- While this process holds a store open in compatibility mode, a native open of that store
+  refuses (a read-only open is left alone), and so does registering a native handle for it as
+  the shared one. `get_shared_db()` returns the registered compatibility handle, ahead of any
+  native handle registered for the same store, so a caller naming only the store (the default
+  hook handlers) writes through the profile. It refuses when more than one compatibility handle
+  is registered for the store, and when the compatibility handle is open but not registered.
+  Another process is not covered: its native open applies this package's schema unless the
+  store is at a later one (ADR-0128 Appendix A.0).
 
 ### `state/health.py`
 

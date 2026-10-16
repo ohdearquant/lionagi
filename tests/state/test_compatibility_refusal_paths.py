@@ -88,6 +88,37 @@ async def test_a_final_operate_the_store_refuses_is_raised(tmp_path: Path):
 # 2. Orchestration admission: a refused admission write fails the run with its reason
 
 
+async def test_a_refusal_inside_a_group_fails_the_orchestration_run(tmp_path: Path, monkeypatch):
+    """A refusal that arrives inside an exception group fails the run with the refusal as its
+    reason, as a bare one does, rather than recording persistence as degraded."""
+    from lionagi import Session
+    from lionagi.cli._runs import RunDir
+    from lionagi.cli.orchestrate import _orchestration
+    from lionagi.ln.concurrency._compat import BaseExceptionGroup
+
+    refusal = StateCompatibilityRefused("create_progression", "owned@1", "refused")
+
+    async def grouped():
+        raise BaseExceptionGroup("setup", [refusal, ValueError("other")])
+
+    monkeypatch.setattr(_orchestration, "_open_shared_db", grouped)
+    run = RunDir(
+        run_id="grouped-refusal",
+        state_root=tmp_path / "state",
+        artifact_root=tmp_path / "artifacts",
+    )
+    run.ensure_state_dirs()
+    manifest: dict = {"status": "running"}
+    run.write_manifest(manifest)
+
+    with pytest.raises(BaseExceptionGroup):
+        await _orchestration.setup_orchestration_persist(Session(), run=run, run_manifest=manifest)
+
+    assert manifest["status"] == "failed"
+    assert manifest["error"] == f"The store refused a write: {refusal}"
+    assert "persistence_degraded_reason" not in manifest
+
+
 async def test_a_refused_orchestration_admission_fails_the_run(tmp_path: Path, monkeypatch):
     """An admission write the store refuses fails the run with the refusal as its reason, rather
     than recording persistence as degraded and continuing without it (ADR-0128 D6)."""

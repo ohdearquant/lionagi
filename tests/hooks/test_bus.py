@@ -190,6 +190,36 @@ async def test_a_refused_handler_write_is_recorded_before_it_is_raised():
     )
 
 
+async def test_a_refusal_inside_a_group_stops_the_emit_and_is_recorded():
+    """A handler that runs its writes in a task group raises a refusal inside an exception
+    group; it stops the emit like a bare refusal, and the signal records the refusal."""
+    from lionagi.ln.concurrency._compat import BaseExceptionGroup
+    from lionagi.state.compat import StateCompatibilityRefused
+
+    observer = _RecordingObserver()
+    bus = HookBus(observer)
+    fired_after: list[str] = []
+    refusal = StateCompatibilityRefused("persist_live_message", "owned@1", "refused")
+
+    async def refused(**kw):
+        raise BaseExceptionGroup("handler writes", [ValueError("other"), refusal])
+
+    async def after(**kw):
+        fired_after.append("after")
+
+    bus.on(HookPoint.MESSAGE_ADD, refused)
+    bus.on(HookPoint.MESSAGE_ADD, after)
+
+    with pytest.raises(BaseExceptionGroup) as caught:
+        await bus.emit(HookPoint.MESSAGE_ADD, message={}, session_id="s")
+    assert refusal in caught.value.exceptions
+    assert fired_after == []
+    (signal,) = observer.signals
+    assert signal.kwargs["exception"].startswith(
+        "StateCompatibilityRefused: persist_live_message refused"
+    )
+
+
 async def test_a_refused_session_end_flush_flushes_every_queue_and_runs_no_handler():
     """Every queue gets its attempt before the first refusal is raised; the SESSION_END
     handlers, which write, do not run after it (ADR-0128 D6)."""

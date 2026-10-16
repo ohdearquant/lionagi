@@ -1757,7 +1757,7 @@ async def setup_orchestration_persist(
     extra_node_metadata: dict | None = None,
 ) -> dict | None:
     db = None
-    from lionagi.state.compat import StateCompatibilityRefused
+    from lionagi.state.compat import refusal_in
 
     try:
         session_id = str(session.id)
@@ -1861,32 +1861,34 @@ async def setup_orchestration_persist(
             register_branch_hook(ctx, branch)
 
         return ctx
-    except StateCompatibilityRefused as exc:
-        # The store refused an admission write in compatibility mode, so the run fails with that
-        # refusal as its reason instead of going on without persistence (ADR-0128 D6). The refusal
-        # is recorded on the run's own manifest here, the way `li agent` records it at its setup:
-        # setup returns no context, so nothing downstream writes the reason for this run.
-        _log_orch.error("live persist setup refused: %s", exc)
-        if run is not None and run_manifest is not None:
-            run_manifest["status"] = "failed"
-            run_manifest["ended_at"] = time.time()
-            run_manifest["error"] = f"The store refused a write: {exc}"
-            try:
-                run.write_manifest(run_manifest)
-            except Exception as write_exc:  # noqa: BLE001 — the refusal is the failure to report
-                _log_orch.warning("could not record the refusal on this run: %s", write_exc)
-        if db is not None:
-            try:
-                await db.close()
-            except Exception as close_exc:
-                _log_orch.warning(
-                    "fallback db.close after setup refusal also failed: %s", close_exc
-                )
-            from lionagi.state.db import unregister_shared_db
-
-            unregister_shared_db(db)
-        raise
     except Exception as exc:
+        refusal = refusal_in(exc)
+        if refusal is not None:
+            # The store refused an admission write in compatibility mode, alone or inside a
+            # group, so the run fails with that refusal as its reason instead of going on without
+            # persistence (ADR-0128 D6). The refusal is recorded on the run's own manifest here,
+            # the way `li agent` records it at its setup: setup returns no context, so nothing
+            # downstream writes the reason for this run.
+            _log_orch.error("live persist setup refused: %s", refusal)
+            if run is not None and run_manifest is not None:
+                run_manifest["status"] = "failed"
+                run_manifest["ended_at"] = time.time()
+                run_manifest["error"] = f"The store refused a write: {refusal}"
+                try:
+                    run.write_manifest(run_manifest)
+                except Exception as write_exc:  # noqa: BLE001 — the refusal is what to report
+                    _log_orch.warning("could not record the refusal on this run: %s", write_exc)
+            if db is not None:
+                try:
+                    await db.close()
+                except Exception as close_exc:
+                    _log_orch.warning(
+                        "fallback db.close after setup refusal also failed: %s", close_exc
+                    )
+                from lionagi.state.db import unregister_shared_db
+
+                unregister_shared_db(db)
+            raise
         _log_orch.warning(
             "live persist setup failed (%r) — disabling persistence for this run",
             exc,

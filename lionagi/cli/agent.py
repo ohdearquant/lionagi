@@ -1446,7 +1446,12 @@ async def _run_agent(
             # boundary, since StateDB re-raises out of __aenter__ and an
             # unguarded `async with` here would turn a completed run into a
             # reported infrastructure exception.
-            if not will_auto_resume and live:
+            # Not on a store in compatibility mode: its control rows are not ones this run
+            # created, the only rows the profile lets it write (ADR-0128 D4), and the sweep's
+            # native open would apply this package's schema to the store.
+            from lionagi.state.compat import is_compatibility_store
+
+            if not will_auto_resume and live and not is_compatibility_store(live.get("db")):
                 from lionagi.state.db import StateDB
 
                 try:

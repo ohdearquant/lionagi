@@ -16,6 +16,7 @@ import sqlite3
 import struct
 import time
 import uuid
+import weakref
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -734,6 +735,15 @@ class StateDB:
             # those mutates the file.
             self._engine = make_readonly_engine(self.url)
             return
+        held = _open_in_compatibility_mode(self.url)
+        if held is not None:
+            # A native open applies this package's schema, and this process holds the store for
+            # another application that manages it (ADR-0128 D1).
+            raise held._compat.refusal(
+                "this process holds the store in compatibility mode, and a native open would "
+                "apply this package's schema to it",
+                "open",
+            )
         self._engine = make_engine(self.url)
         if self.dialect == "sqlite":
             _install_begin_immediate(self._engine.sync_engine)
@@ -760,6 +770,7 @@ class StateDB:
             with CancelScope(shield=True):
                 await self.close()
             raise
+        _OPEN_COMPAT.add(self)
 
     def _refuse_in_compatibility(self, operation: str, reason: str) -> None:
         if self._compat is not None:
@@ -844,6 +855,7 @@ class StateDB:
         _COMPAT_INSERTED.get().append((table, values["id"]))
 
     async def close(self) -> None:
+        _OPEN_COMPAT.discard(self)
         if self._engine is not None:
             await self._engine.dispose()
             self._engine = None
@@ -6701,17 +6713,33 @@ def _shared_key(db: StateDB) -> str | tuple[str, str, CompatibilityProfile | Non
     return (db.url, db.mode, db.compatibility, owner)
 
 
+# Every compatibility handle open in this process, registered as the shared handle or not. While
+# one is open on a store, a native open of that store refuses, and so does the shared lookup unless
+# it can hand out the compatibility handle itself.
+_OPEN_COMPAT: weakref.WeakSet[StateDB] = weakref.WeakSet()
+
+
+def _open_in_compatibility_mode(url: str) -> StateDB | None:
+    """A compatibility handle this process holds open on *url*, registered or not, else None."""
+    for db in list(_OPEN_COMPAT):
+        if db.url == url and db._engine is not None:
+            return db
+    return None
+
+
 def _held_in_compatibility_mode(url: str) -> StateDB | None:
     """The compatibility handle registered for *url*, or None when no such handle is registered.
 
-    Handles for several owners write different runs' rows, so a caller that names only the store
-    cannot say which of them it means, and that lookup is refused.
+    Each registered handle differs in its profile or its owner, so it writes under rules or for
+    an owner of its own; a caller that names only the store cannot say which it means, and when
+    more than one is registered that lookup is refused.
     """
     held = [db for key, db in _SHARED.items() if isinstance(key, tuple) and key[0] == url]
     if len(held) > 1:
         raise held[0]._compat.refusal(
-            f"{len(held)} compatibility handles for different owners hold this store, and a "
-            "caller that names only the store does not say whose rows it writes",
+            f"{len(held)} compatibility handles are registered for this store, each with its own "
+            "profile or owner, and a caller that names only the store does not say which one "
+            "it writes through",
             operation="open",
         )
     return held[0] if held else None
@@ -6720,21 +6748,24 @@ def _held_in_compatibility_mode(url: str) -> StateDB | None:
 async def get_shared_db(path: str | Path | None = None) -> StateDB:
     """Return the process-wide open StateDB for *path* (default: DEFAULT_DB_PATH).
 
-    A store this process holds only in compatibility mode is never opened natively here: a native
+    A store this process holds in compatibility mode is never handed out natively here: a native
     open applies this package's schema to a store another application manages (ADR-0128 D1). The
-    registered compatibility handle is returned instead, so what the caller writes meets the
-    profile (Appendix A.2), and a store held for several owners is refused.
+    registered compatibility handle is returned instead, before any native handle registered for
+    the same store, so what the caller writes meets the profile (Appendix A.2). A store with more
+    than one compatibility handle registered is refused, and so is one this process holds open in
+    compatibility mode without registering it, since the caller cannot be given that handle.
     """
     global _SHARED_OPEN_LOCK  # noqa: PLW0603
     # Resolve the key through StateDB's own cascade so a monkeypatched DEFAULT_DB_PATH is honored;
     # normalize_state_db_url(None) would bypass it to the real home db.
     url = StateDB(path).url
     key = url
-    if key in _SHARED:
-        return _SHARED[key]
     held = _held_in_compatibility_mode(url)
     if held is not None:
         return held
+    _refuse_native_beside_compatibility(url)
+    if key in _SHARED:
+        return _SHARED[key]
     if _SHARED_OPEN_LOCK is None:
         _SHARED_OPEN_LOCK = Lock()
     lock = _SHARED_OPEN_LOCK
@@ -6746,18 +6777,32 @@ async def get_shared_db(path: str | Path | None = None) -> StateDB:
             raise RuntimeError(_SHARED_TEARDOWN_RACE)
         # Double-checked: another coroutine may have opened it while we waited, or registered a
         # compatibility handle for it.
+        held = _held_in_compatibility_mode(url)
+        if held is not None:
+            return held
+        _refuse_native_beside_compatibility(url)
         if key not in _SHARED:
-            held = _held_in_compatibility_mode(url)
-            if held is not None:
-                return held
             db = StateDB(url=url)
             await db.open()
             _SHARED[key] = db
     return _SHARED[key]
 
 
+def _refuse_native_beside_compatibility(url: str) -> None:
+    held = _open_in_compatibility_mode(url)
+    if held is not None:
+        raise held._compat.refusal(
+            "this process holds the store open in compatibility mode without sharing that "
+            "handle, and a native handle would write to it outside the profile",
+            "open",
+        )
+
+
 async def register_shared_db(db: StateDB) -> None:
-    """Adopt a caller-owned StateDB as the shared instance, closing any prior one for its url."""
+    """Adopt a caller-owned StateDB as the shared instance, closing any prior one for its url.
+
+    A native writer is refused for a store this process holds open in compatibility mode.
+    """
     global _SHARED_OPEN_LOCK  # noqa: PLW0603
     import contextlib
 
@@ -6768,6 +6813,8 @@ async def register_shared_db(db: StateDB) -> None:
     async with lock:
         if _SHARED_CLOSE_GEN != gen:
             raise RuntimeError(_SHARED_TEARDOWN_RACE)
+        if db.mode == "native":
+            _refuse_native_beside_compatibility(db.url)
         key = _shared_key(db)
         existing = _SHARED.get(key)
         if existing is not None and existing is not db:

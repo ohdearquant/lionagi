@@ -635,6 +635,41 @@ async def test_a_refusal_from_the_setup_recovery_is_recorded_not_suppressed(tmp_
 
 
 @pytest.mark.asyncio
+async def test_a_setup_recovery_refused_by_a_later_schema_is_a_store_refusal(tmp_path, monkeypatch):
+    """The recovery opens the store natively, and a store at a later schema refuses that open;
+    no retry changes that, so the turn records it as the store's refusal."""
+    from lionagi.state.db import SchemaTooNewError
+
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    too_new = SchemaTooNewError("state.db schema version 900 is newer than this package")
+
+    async def setup(*args, **kwargs):
+        raise RuntimeError("setup fell over")
+
+    async def recover(run_id):
+        raise too_new
+
+    monkeypatch.setattr(runs_mod, "setup_agent_persist", setup)
+    monkeypatch.setattr(runs_mod, "find_incomplete_session_for_run", recover)
+
+    coordinator = OperatorCoordinator(store=OperatorStore(tmp_path / "state.db"))
+    await coordinator.startup()
+    try:
+        cid, request_id = await _submit(coordinator)
+        turn = await _await_finished_turn(coordinator.store, request_id)
+        frames = await coordinator.store.list_frames(cid)
+    finally:
+        await coordinator.shutdown()
+
+    (error,) = [f["payload"]["error"] for f in frames if f["type"] == "error"]
+    assert turn["status"] == "failed"
+    assert error["code"] == "store_refused"
+    assert error["message"] == str(too_new)
+    assert error["retryable"] is False
+
+
+@pytest.mark.asyncio
 async def test_a_retryable_engine_failure_then_a_refused_teardown_is_not_retryable(
     tmp_path, monkeypatch
 ):
@@ -747,17 +782,165 @@ async def test_a_cancel_during_teardown_lets_it_finish_before_both_records(
     try:
         cid, request_id = await _submit(coordinator)
         assert await _until(lambda: ("teardown", "completed") in log)
+        task = coordinator._tasks[request_id]
         await coordinator.cancel(cid, request_id)
         await anyio.sleep(0.1)
         release.set()
         turn = await _await_finished_turn(coordinator.store, request_id)
         final = await _await_terminal_run_status(runs_root)
+        await asyncio.wait((task,), timeout=5)
     finally:
         release.set()
         await coordinator.shutdown()
 
     assert ("teardown", "interrupted") not in log
     assert (turn["status"], final) == (turn_status, run_status)
+    # The held cancel is raised again once both records exist, so the turn ends cancelled.
+    assert task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_landing_in_the_run_json_write_still_writes_it(tmp_path, monkeypatch):
+    """The terminal run.json write is held like the turn's record: a cancel that lands while
+    it is in flight waits for it and is raised after. Interrupted, run.json stayed running."""
+    import threading
+
+    async def teardown(ctx, *, status="completed", exception=None):
+        return "completed"
+
+    runs_root = _install_turn(monkeypatch, tmp_path, compatibility=None, teardown=teardown)
+    inside, release = threading.Event(), threading.Event()
+    real_write = runs_mod.RunDir.write_manifest
+
+    def held_write(self, manifest):
+        if manifest.get("status") != "running" and "ended_at" in manifest:
+            inside.set()
+            release.wait(5)
+        return real_write(self, manifest)
+
+    monkeypatch.setattr(runs_mod.RunDir, "write_manifest", held_write)
+    coordinator = OperatorCoordinator(
+        store=OperatorStore(tmp_path / "state.db"), engine_factory=_EndingEngine
+    )
+    await coordinator.startup()
+    try:
+        cid, request_id = await _submit(coordinator)
+        assert await _until(inside.is_set)
+        task = coordinator._tasks[request_id]
+        await coordinator.cancel(cid, request_id)
+        await anyio.sleep(0.1)
+        release.set()
+        await asyncio.wait((task,), timeout=5)
+        final = _run_status(runs_root)
+    finally:
+        release.set()
+        await coordinator.shutdown()
+
+    assert final == "completed"
+    assert task.cancelled()
+
+
+class _SessionEngine:
+    """Names the provider's session, then replies; the stream ends when ``end`` is set."""
+
+    end: asyncio.Event | None = None
+
+    async def _stream(self, _turn):
+        yield OperatorEngineEvent("session", {"providerSessionId": "provider-session-1"})
+        yield OperatorEngineEvent(
+            "text", {"content": "reply", "format": "plain", "role": "assistant"}
+        )
+        if self.end is not None:
+            await self.end.wait()
+
+    def stream(self, turn):
+        return self._stream(turn)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("compatibility", "linked"),
+    [(_profile(), []), (None, ["task", "last"])],
+    ids=["compatibility", "native"],
+)
+async def test_a_compatibility_turn_does_not_stamp_the_mirrored_session(
+    tmp_path, monkeypatch, compatibility, linked
+):
+    """The mirrored transcript is not a row the run created, so a turn on a store in
+    compatibility mode makes neither the background stamp nor the last attempt."""
+    calls: list[str] = []
+
+    async def link(db, session_uid, *, parent_run_id):
+        calls.append("task")
+        return False
+
+    async def link_once(session_uid, *, parent_run_id):
+        calls.append("last")
+        return False
+
+    async def teardown(ctx, *, status="completed", exception=None):
+        return "completed"
+
+    monkeypatch.setattr(coordinator_mod, "_link_engine_child", link)
+    monkeypatch.setattr(coordinator_mod, "_link_engine_child_once", link_once)
+    runs_root = _install_turn(monkeypatch, tmp_path, compatibility=compatibility, teardown=teardown)
+    coordinator = OperatorCoordinator(
+        store=OperatorStore(tmp_path / "state.db"), engine_factory=_SessionEngine
+    )
+    await coordinator.startup()
+    try:
+        _cid, request_id = await _submit(coordinator)
+        await _await_finished_turn(coordinator.store, request_id)
+        await _await_terminal_run_status(runs_root)
+    finally:
+        await coordinator.shutdown()
+
+    assert calls == linked
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_the_last_stamp_attempt_still_runs_teardown(tmp_path, monkeypatch):
+    """The last stamp attempt is held like the background one: a cancel that lands in it is
+    raised again only after teardown and both records. Interrupted, run.json stayed running."""
+    inside, release = asyncio.Event(), asyncio.Event()
+    log: list[str] = []
+
+    async def link(db, session_uid, *, parent_run_id):
+        return False
+
+    async def link_once(session_uid, *, parent_run_id):
+        inside.set()
+        await release.wait()
+        return True
+
+    async def teardown(ctx, *, status="completed", exception=None):
+        log.append(status)
+        return status
+
+    monkeypatch.setattr(coordinator_mod, "_link_engine_child", link)
+    monkeypatch.setattr(coordinator_mod, "_link_engine_child_once", link_once)
+    runs_root = _install_turn(monkeypatch, tmp_path, compatibility=None, teardown=teardown)
+    coordinator = OperatorCoordinator(
+        store=OperatorStore(tmp_path / "state.db"), engine_factory=_SessionEngine
+    )
+    await coordinator.startup()
+    try:
+        cid, request_id = await _submit(coordinator)
+        await asyncio.wait_for(inside.wait(), 5)
+        task = coordinator._tasks[request_id]
+        await coordinator.cancel(cid, request_id)
+        await anyio.sleep(0.1)
+        release.set()
+        await _await_finished_turn(coordinator.store, request_id)
+        final = await _await_terminal_run_status(runs_root)
+        await asyncio.wait((task,), timeout=5)
+    finally:
+        release.set()
+        await coordinator.shutdown()
+
+    assert log == ["completed"]
+    assert final == "completed"
+    assert task.cancelled()
 
 
 @pytest.mark.asyncio

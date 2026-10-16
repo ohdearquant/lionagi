@@ -272,6 +272,56 @@ async def test_the_shared_lookup_refuses_a_store_held_for_several_owners(store):
         await db_mod.close_shared_db()
 
 
+async def test_the_shared_lookup_hands_out_the_compatibility_handle_before_a_native_one(store):
+    """A native handle registered for the store first is not handed out once a compatibility
+    handle is registered for it: what the caller writes must meet the profile."""
+    from lionagi.state import db as db_mod
+
+    native = StateDB(store)
+    compat = StateDB(store, compatibility=_profile(store), owner="principal:a")
+    try:
+        await db_mod.register_shared_db(native)
+        await db_mod.register_shared_db(compat)
+        assert await db_mod.get_shared_db(store) is compat
+    finally:
+        await db_mod.close_shared_db()
+
+
+async def test_a_native_open_of_a_store_held_in_compatibility_mode_is_refused(db, store):
+    """A native open would apply this package's schema to the managed store; a read-only open
+    applies nothing and is left alone."""
+    native = StateDB(store)
+    with pytest.raises(StateCompatibilityRefused, match="a native open would apply"):
+        await native.open()
+    assert native._engine is None
+    assert _rows(store, "SELECT value FROM schema_meta WHERE key = 'version'") == [("900",)]
+
+    reader = StateDB(store, readonly=True)
+    await reader.open()
+    await reader.close()
+
+    await db.close()
+    from lionagi.state import db as db_mod
+
+    assert db_mod._open_in_compatibility_mode(db.url) is None
+
+
+async def test_the_shared_lookup_refuses_a_store_held_open_without_sharing_the_handle(db, store):
+    """The caller cannot be given an unregistered compatibility handle, and a native one would
+    write outside the profile, so the lookup refuses and registers nothing."""
+    from lionagi.state import db as db_mod
+
+    try:
+        with pytest.raises(StateCompatibilityRefused, match="without sharing that handle"):
+            await db_mod.get_shared_db(store)
+        assert db_mod._SHARED.get(db.url) is None
+        with pytest.raises(StateCompatibilityRefused, match="without sharing that handle"):
+            await db_mod.register_shared_db(StateDB(store))
+        assert db_mod._SHARED.get(db.url) is None
+    finally:
+        await db_mod.close_shared_db()
+
+
 async def test_a_run_writes_its_owner_on_every_row_it_creates(db, store):
     await _setup_run(db)
 

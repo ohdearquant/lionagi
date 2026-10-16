@@ -169,7 +169,7 @@ class HookBus:
         emit, so later handlers do not run, and the signal is recorded with the
         refusal first.
         """
-        from lionagi.state.compat import StateCompatibilityRefused  # noqa: PLC0415
+        from lionagi.state.compat import refusal_in  # noqa: PLC0415
 
         point = _normalize_point(point)
         if point in _BLOCKING_POINTS:
@@ -185,14 +185,19 @@ class HookBus:
                     await maybe_await(handler(**kwargs))
                 except StopHook:
                     break
-                except StateCompatibilityRefused:
-                    # A write the store refused in compatibility mode stops the run
-                    # instead of leaving it unpersisted (ADR-0128 D6).
-                    raise
-                except Exception:  # noqa: BLE001 — hook isolation invariant
+                except Exception as exc:  # noqa: BLE001 — hook isolation invariant
+                    if refusal_in(exc) is not None:
+                        # A write the store refused in compatibility mode, alone or inside a
+                        # group, stops the run instead of leaving it unpersisted (ADR-0128 D6).
+                        raise
                     logger.exception("Hook failed: %s", point.value)
-        except StateCompatibilityRefused as exc:
-            await self._record(point, {**kwargs, "exception": f"{type(exc).__name__}: {exc}"})
+        except Exception as exc:
+            refusal = refusal_in(exc)
+            if refusal is None:
+                raise
+            await self._record(
+                point, {**kwargs, "exception": f"{type(refusal).__name__}: {refusal}"}
+            )
             raise
         finally:
             _emitting_bus.reset(token)
