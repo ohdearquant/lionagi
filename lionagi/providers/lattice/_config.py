@@ -6,7 +6,8 @@ from enum import Enum
 from lionagi.service.connections.provider_config import LazyType, ProviderConfig
 from lionagi.service.connections.registry import EndpointType
 
-# Where `lattice serve` listens unless started with other --host/--port values.
+# The address `lattice serve` binds when it is started without --host or --port: the CLI
+# defaults to host 127.0.0.1 and port 8080.
 LATTICE_DEFAULT_BASE_URL = "http://127.0.0.1:8080/v1"
 
 

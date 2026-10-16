@@ -54,8 +54,19 @@ with it the address guard admits only the loopback hosts `localhost`, `127.0.0.1
 `base_url=` may change the port or the path but not the host. Passing
 `allow_local_network=False` applies the ordinary guard instead, which refuses loopback and
 private addresses. `model` must be the id the server reports at `GET /v1/models`. The server
-refuses tool calling. Its requests also take `reasoning_budget`, `top_k`, `repetition_penalty`, and
-`lora`, an ordered list of resident adapters (`{"id": ..., "scale": ...}`).
+refuses tool calling. A request that omits `max_tokens` gets the server's default, 256 tokens
+unless it was started with `--max-tokens`; a reply cut at that cap carries
+`finish_reason: "length"`, which lionagi reads as neither an error nor an unfinished reply. Its
+requests also take `reasoning_budget` and `lora`, an ordered list of resident adapters
+(`{"id": ..., "scale": ...}`). `top_k` and `repetition_penalty` are accepted and ignored by
+`lattice serve` (the standalone `lattice_serve` daemon applies them), and `lattice serve` reads
+none of `frequency_penalty`, `presence_penalty`, `logit_bias` and `user`.
+
+A reply's leading `<think>...</think>` block is moved from `content` to `reasoning_content`, so structured
+output parses the answer after it; a block with no closing tag, from a reply cut off while it was
+still reasoning, stays in `content`, and streamed replies keep the block where it arrives.
+Embeddings need `lattice serve` started on a vision-language checkpoint; a checkpoint without one
+gets `400 vision_unsupported`.
 
 ```python
 model = li.iModel(provider="lattice", model="qwen3.5-0.8b")
