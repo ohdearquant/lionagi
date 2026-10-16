@@ -1539,8 +1539,15 @@ async def test_adoption_compares_each_column_it_writes(
         if column not in {name for name, _, _ in differences}:
             unchecked.append(column)
     # A cron trigger reads no interval and no repository, and a member that notifies on
-    # nothing runs no command; each is compared where it is read, in its own test.
-    assert unchecked == ["github_filter", "github_repo", "interval_sec", "notify_command"]
+    # nothing runs no command and reads no event; each is compared where it is read, in
+    # its own test.
+    assert unchecked == [
+        "github_filter",
+        "github_repo",
+        "interval_sec",
+        "notify_command",
+        "notify_on",
+    ]
 
 
 _EVERY_HOUR_TRIGGER = (
@@ -2363,10 +2370,19 @@ def test_columns_the_scheduler_reads_alike_compare_alike():
     assert _adopt_comparable("interval_sec", interval, 300) != _adopt_comparable(
         "interval_sec", interval, None
     )
-    assert _adopt_comparable("notify_on", {}, []) == _adopt_comparable("notify_on", {}, None)
-    assert _adopt_comparable("notify_on", {}, ["failed"]) != _adopt_comparable(
+    notifying = {"notify_command": "echo done"}
+    assert _adopt_comparable("notify_on", notifying, []) == _adopt_comparable(
+        "notify_on", notifying, None
+    )
+    assert _adopt_comparable("notify_on", notifying, ["failed"]) != _adopt_comparable(
+        "notify_on", notifying, None
+    )
+    # No notification is registered without a command to run on the event, so the
+    # event list is inert wherever the row holds no command.
+    assert _adopt_comparable("notify_on", {}, ["failed"]) == _adopt_comparable(
         "notify_on", {}, None
     )
+    assert _adopt_comparable("notify_command", {"notify_on": ["failed"]}, "") is None
 
 
 @pytest.mark.asyncio
@@ -2841,3 +2857,354 @@ def test_the_other_fields_validator_would_refuse_every_real_shape(args):
 
     with pytest.raises(ValueError, match="starts with '-'"):
         _validate_extra_args(args)
+
+
+# ---------------------------------------------------------------------------
+# Adoption reads each column the way the launch that holds it reads it
+# ---------------------------------------------------------------------------
+
+_AGENT_TARGET_BLOCK = (
+    '    target:\n      kind: agent\n      profile: reviewer\n      prompt: "check things"\n'
+)
+_PLAY_TARGET_BLOCK = "    target:\n      kind: playbook\n      name: health-audit\n"
+_COMMAND_TARGET_BLOCK = "    target:\n      kind: command\n      executable: refresh-index\n"
+_NOTIFY_BLOCK = '    notify:\n      on: [failed]\n      command: "echo done"\n'
+
+
+def _manifest_with_target(name: str, *, cwd: Path, target: str, extra: str = "") -> str:
+    """The agent member's manifest with its target block replaced by *target*."""
+    return _agent_manifest(name, cwd=cwd, extra_member=extra).replace(_AGENT_TARGET_BLOCK, target)
+
+
+def _play_row(cwd: Path, **overrides) -> dict:
+    row = {
+        "action_kind": "play",
+        "action_model": None,
+        "action_prompt": None,
+        "action_agent": None,
+        "action_playbook": "health-audit",
+    }
+    row.update(overrides)
+    return _legacy_adoption_row("nightly", cwd=cwd, **row)
+
+
+def _command_row(cwd: Path, **overrides) -> dict:
+    row = {
+        "action_kind": "command",
+        "action_model": None,
+        "action_prompt": None,
+        "action_agent": None,
+        "action_command": "refresh-index",
+    }
+    row.update(overrides)
+    return _legacy_adoption_row("nightly", cwd=cwd, **row)
+
+
+@pytest.mark.asyncio
+async def test_adopt_reads_an_empty_prompt_on_a_play_row_as_no_prompt(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    """A play launch appends a prompt only when it is set, so '' and none act alike."""
+    doc = parse_schedule_set(
+        _manifest_with_target("nightly", cwd=agent_profile, target=_PLAY_TARGET_BLOCK)
+    )
+    async with StateDB() as db:
+        await db.create_schedule(_play_row(agent_profile, action_prompt=""))
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+    assert [entry.action for entry in plan] == ["ADOPT"], plan[0].detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target", [_PLAY_TARGET_BLOCK, _COMMAND_TARGET_BLOCK])
+async def test_adopt_reads_a_stale_agent_a_kind_never_passes_on(
+    temp_db_path, agent_profile, pinned_scheduler_tz, monkeypatch, target
+):
+    """Only an agent or engine launch passes the profile on, so a play or command
+    row holding one -- which the launch validates and then drops -- acts like a
+    row holding none."""
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
+    doc = parse_schedule_set(_manifest_with_target("nightly", cwd=agent_profile, target=target))
+    row = (
+        _command_row(agent_profile, action_agent="reviewer")
+        if target == _COMMAND_TARGET_BLOCK
+        else _play_row(agent_profile, action_agent="reviewer")
+    )
+    async with StateDB() as db:
+        await db.create_schedule(row)
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+    assert [entry.action for entry in plan] == ["ADOPT"], plan[0].detail
+
+
+@pytest.mark.asyncio
+async def test_adopt_reads_a_notification_that_can_never_run_as_none(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    """A notification is registered only with both an event and a command, so a
+    row holding events and an empty command notifies on nothing."""
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_adoption_row(
+                "nightly", cwd=agent_profile, notify_on=["failed"], notify_command=""
+            )
+        )
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+    assert [entry.action for entry in plan] == ["ADOPT"], plan[0].detail
+
+
+# ---------------------------------------------------------------------------
+# A refusal offers no member edit for a value no member can state
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_adopt_names_an_agent_identifier_the_launch_always_refuses(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    """The launch checks the profile identifier whatever the kind, so a row holding
+    one it refuses fails at every fire and no member can carry it."""
+    doc = parse_schedule_set(
+        _manifest_with_target("nightly", cwd=agent_profile, target=_PLAY_TARGET_BLOCK)
+    )
+    async with StateDB() as db:
+        await db.create_schedule(_play_row(agent_profile, action_agent="-oops"))
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+    assert [entry.action for entry in plan] == ["ERROR"]
+    assert "no member can declare the row's action_agent" in plan[0].detail
+    assert "edit the member to match the row" not in plan[0].detail
+
+
+@pytest.mark.asyncio
+async def test_adopt_names_an_empty_agent_identifier_on_an_agent_row_as_undeclarable(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    """An agent member always names a profile, so a row that names none -- where the
+    launch would fall back to its own default -- cannot be matched by an edit."""
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_adoption_row("nightly", cwd=agent_profile, action_agent="")
+        )
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+    assert [entry.action for entry in plan] == ["ERROR"]
+    assert "no member can declare the row's action_agent" in plan[0].detail
+    assert "edit the member to match the row" not in plan[0].detail
+
+
+@pytest.mark.asyncio
+async def test_adopt_reads_an_empty_profile_on_a_play_row_as_no_profile(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    """A play launch passes no profile on, so a row storing an empty one acts like a
+    row storing none."""
+    doc = parse_schedule_set(
+        _manifest_with_target("nightly", cwd=agent_profile, target=_PLAY_TARGET_BLOCK)
+    )
+    async with StateDB() as db:
+        await db.create_schedule(_play_row(agent_profile, action_agent=""))
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+    assert [entry.action for entry in plan] == ["ADOPT"], plan[0].detail
+
+
+@pytest.mark.asyncio
+async def test_adopt_names_a_missing_agent_prompt_as_one_no_member_declares(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    """An agent member's prompt is a required string, so a row holding none cannot
+    be matched by editing the member."""
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_adoption_row("nightly", cwd=agent_profile, action_prompt=None)
+        )
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+    assert [entry.action for entry in plan] == ["ERROR"]
+    assert "no member can declare the row's action_prompt" in plan[0].detail
+    assert "edit the member to match the row" not in plan[0].detail
+
+
+@pytest.mark.asyncio
+async def test_adopt_names_a_profile_the_execution_root_does_not_have(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    """A member naming the row's profile would fail to resolve from the row's own
+    root, so no member can be edited to match this row."""
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_adoption_row("nightly", cwd=agent_profile, action_agent="ghost")
+        )
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+    assert [entry.action for entry in plan] == ["ERROR"]
+    assert "no member can declare the row's action_agent" in plan[0].detail
+    assert "edit the member to match the row" not in plan[0].detail
+
+
+@pytest.mark.asyncio
+async def test_adopt_still_offers_the_member_edit_for_a_profile_that_resolves(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    """Control: a profile the execution root resolves is one the member can be
+    edited to name, so that refusal keeps its member remedy."""
+    (agent_profile / ".lionagi" / "agents" / "other.md").write_text(
+        "---\nmodel: anthropic/claude-sonnet-5\n---\nBody.\n"
+    )
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_adoption_row("nightly", cwd=agent_profile, action_agent="other")
+        )
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+    assert [entry.action for entry in plan] == ["ERROR"]
+    assert "action_agent: row='other' declared='reviewer'" in plan[0].detail
+    assert "edit the member to match the row" in plan[0].detail
+
+
+@pytest.mark.asyncio
+async def test_adopt_names_a_status_no_member_can_declare(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    """The declaration checks the notify status vocabulary, so a row holding a
+    status outside it cannot be matched by editing the member."""
+    doc = parse_schedule_set(
+        _agent_manifest("nightly", cwd=agent_profile, extra_member=_NOTIFY_BLOCK)
+    )
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_adoption_row(
+                "nightly", cwd=agent_profile, notify_on=["bogus"], notify_command="echo done"
+            )
+        )
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+    assert [entry.action for entry in plan] == ["ERROR"]
+    assert "no member can declare the row's notify_on" in plan[0].detail
+    assert "edit the member to match the row" not in plan[0].detail
+
+
+@pytest.mark.asyncio
+async def test_adopt_names_a_launch_kind_no_member_target_produces(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    """A member's target maps to agent, flow_yaml, play or command, so a row
+    holding any other launch kind is not one a member can be edited into."""
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_adoption_row(
+                "nightly",
+                cwd=agent_profile,
+                action_kind="flow",
+                action_model=None,
+                action_prompt=None,
+                action_agent=None,
+            )
+        )
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+    assert [entry.action for entry in plan] == ["ERROR"]
+    assert "no member can declare the row's action_kind" in plan[0].detail
+    assert "edit the member to match the row" not in plan[0].detail
+
+
+# ---------------------------------------------------------------------------
+# A one-shot is compared against the fire the engine would make
+# ---------------------------------------------------------------------------
+
+_AT_PAST_TRIGGER = '      at: "2020-01-01T00:00:00+00:00"\n'
+_CRON_TRIGGER_BLOCK = (
+    '      cron:\n        expression: "0 2 * * *"\n        timezone: America/New_York\n'
+)
+_RUN_ONCE_POLICIES = "    policies:\n      missedFire: run_once\n"
+
+
+def _at_agent_manifest(*, cwd: Path, policies: str = "") -> ScheduleSetDocument:
+    return parse_schedule_set(
+        _agent_manifest("nightly", cwd=cwd, extra_member=policies).replace(
+            _CRON_TRIGGER_BLOCK, _AT_PAST_TRIGGER
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_adopt_refuses_a_due_one_shot_the_engine_would_recover(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    """A run_once row holding no instant has never been fired and will not fire;
+    the member's own row is due and a recovery queues one fire for it, so the two
+    do not behave alike and the row cannot be adopted as it stands."""
+    doc = _at_agent_manifest(cwd=agent_profile, policies=_RUN_ONCE_POLICIES)
+    row = _legacy_adoption_row(
+        "nightly",
+        cwd=agent_profile,
+        trigger_type="at",
+        cron_expr=None,
+        next_fire_at=None,
+        max_runs=1,
+        missed_fire_policy="run_once",
+    )
+    async with StateDB() as db:
+        await db.create_schedule(row)
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+    assert [entry.action for entry in plan] == ["ERROR"], plan[0].detail
+    assert "next_fire_at: row=" in plan[0].detail
+
+
+@pytest.mark.asyncio
+async def test_adopt_still_reads_a_run_once_one_shot_that_already_fired(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    """Control: the same row with its single fire in its history has spent the
+    one-shot, so its missing instant is the member's own outcome."""
+    doc = _at_agent_manifest(cwd=agent_profile, policies=_RUN_ONCE_POLICIES)
+    row = _legacy_adoption_row(
+        "nightly",
+        cwd=agent_profile,
+        trigger_type="at",
+        cron_expr=None,
+        next_fire_at=None,
+        last_fired_at=time.time() - 3600,
+        max_runs=1,
+        missed_fire_policy="run_once",
+    )
+    async with StateDB() as db:
+        await db.create_schedule(row)
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+    assert [entry.action for entry in plan] == ["ADOPT"], plan[0].detail
+
+
+# ---------------------------------------------------------------------------
+# The poll interval a github trigger reads at its own default
+# ---------------------------------------------------------------------------
+
+_GITHUB_TRIGGER_BLOCK = "      github:\n        repo: acme/widgets\n"
+
+
+def _github_agent_manifest(*, cwd: Path) -> ScheduleSetDocument:
+    return parse_schedule_set(
+        _agent_manifest("nightly", cwd=cwd).replace(_CRON_TRIGGER_BLOCK, _GITHUB_TRIGGER_BLOCK)
+    )
+
+
+@pytest.mark.asyncio
+async def test_adopt_accepts_a_github_poll_row_polling_at_the_default(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    """A github row whose poll interval is the default polls exactly as a row with
+    no interval does, so clearing it on adoption changes no fire."""
+    doc = _github_agent_manifest(cwd=agent_profile)
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_adoption_row(
+                "nightly",
+                cwd=agent_profile,
+                trigger_type="github_poll",
+                cron_expr=None,
+                effective_timezone=None,
+                github_repo="acme/widgets",
+                poll_interval_sec=300,
+            )
+        )
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+        assert [entry.action for entry in plan] == ["ADOPT"], plan[0].detail
+        await apply_schedule_set(db, doc, agent_profile, adopt=True)
+        adopted = await db.get_schedule_by_name("demo/nightly")
+    assert adopted["poll_interval_sec"] is None

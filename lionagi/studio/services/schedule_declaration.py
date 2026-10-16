@@ -826,6 +826,13 @@ _ADOPT_UNDECLARED_COLUMNS = (
 # else this many seconds; a poll_interval_sec at this value changes nothing.
 _GITHUB_POLL_DEFAULT_SEC = 300
 _PROJECT_FLAG_ACTION_KINDS = frozenset({"agent", "flow", "fanout", "flow_yaml"})
+# The launch kinds a declaration target resolves to: every member's target is an
+# agent, a flow_yaml snapshot, a playbook or a command.
+_MEMBER_ACTION_KINDS = frozenset(_TARGET_KIND_TO_ACTION_KIND.values())
+# The launch kinds whose argv reads action_agent: an agent launch passes the
+# profile as --agent, and an engine launch reads it as the engine kind. Every
+# other kind validates the identifier and then drops it.
+_AGENT_READING_ACTION_KINDS = frozenset({"agent", "engine"})
 
 
 def _is_adoptable(row: dict[str, Any]) -> bool:
@@ -966,13 +973,35 @@ def _adopt_unconfirmed_recorded_zone(row: dict[str, Any]) -> tuple[str, str] | N
 def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
     """A column value as the scheduler acts on it, for columns where two stored values act alike."""
     if name == "notify_on":
-        # No notification is registered for an empty list or for none, and the
-        # events are matched as a set, so neither their order nor a repeat changes
-        # what fires.
-        return sorted(set(value)) if value else None
+        # No notification is registered for an empty list or for none, and no
+        # notification is registered without a command to run, so neither the
+        # order nor a repeat of a status changes what fires, and neither does a
+        # status with no command beside it.
+        if not value or not schedule.get("notify_command"):
+            return None
+        return sorted(set(value))
     if name == "notify_command":
-        # A command with no event to run on never runs.
-        return value if schedule.get("notify_on") else None
+        # A command with no event to run on, and a command that is empty, never run.
+        return value if value and schedule.get("notify_on") else None
+    if name == "action_agent":
+        # An empty identifier passes nothing on. Every launch validates a
+        # non-empty one, so a value the launch refuses fails at every fire
+        # whatever the kind; only an agent or an engine launch then passes it on,
+        # and the other kinds drop it after the check.
+        if not value:
+            return None
+        from lionagi.studio.scheduler.subprocess import _validate_identifier
+
+        try:
+            _validate_identifier(value, "action_agent")
+        except ValueError:
+            return value
+        return value if schedule.get("action_kind") in _AGENT_READING_ACTION_KINDS else None
+    if name == "action_prompt":
+        # A launch reads the prompt only when it is set: an unset and an empty
+        # prompt are passed alike (an agent launch passes one empty positional,
+        # and a play launch appends nothing).
+        return value or None
     if name == "cron_expr":
         # Only a cron trigger reads the expression.
         return value if schedule.get("trigger_type") == "cron" else None
@@ -1047,10 +1076,15 @@ async def _adopt_spec_differences(
             and declared_fields.get("trigger_type") == "at"
             and (declared or 0.0) <= time.time()
             and row.get("next_fire_at") is None
+            and (row.get("missed_fire_policy") == "skip" or row.get("last_fired_at") is not None)
         ):
             # The write leaves the row's instant alone once the declared one has passed,
             # which is the same act only for a one-shot that already fired or was
-            # skipped. A row still holding an instant fires at it, so it is compared.
+            # skipped: those have no instant left to fire at. A row still holding an
+            # instant fires at it, and a never-fired run_once row holds none at all but
+            # would keep it that way -- it never fires, while the write of the declared
+            # epoch (or the recovery the engine queues for a fresh apply) fires once --
+            # so both are compared.
             continue
         current = row.get(name)
         if _adopt_comparable(name, row, current) != _adopt_comparable(
@@ -1080,11 +1114,42 @@ async def _adopt_undeclarable(
     if name == "action_cwd":
         # A member always resolves an execution root.
         return current is None
+    if name == "action_kind":
+        # A member's target resolves to an agent, flow_yaml, play or command launch.
+        return row.get("action_kind") not in _MEMBER_ACTION_KINDS
+    if name == "action_agent" and current is not None:
+        # The launch validates the identifier however the kind, and reads the
+        # profile from the row's own execution root. A member always names a
+        # profile, so a value the launch refuses or resolves nowhere is one no
+        # member of this set declares.
+        from lionagi.studio.scheduler.subprocess import _validate_identifier
+
+        try:
+            _validate_identifier(current, "action_agent")
+        except ValueError:
+            return True
+        root_key, root_path, _display = await _adoption_execution_root(row)
+        if root_key[0] != "path" or root_path is None:
+            return True
+        from lionagi.cli._providers import load_agent_profile
+
+        try:
+            load_agent_profile(current, cwd=Path(root_path))
+        except (FileNotFoundError, OSError, ValueError):
+            return True
+        return False
+    if name == "notify_on" and current:
+        # The declaration checks the status vocabulary, so a status outside it
+        # cannot be matched by editing the member.
+        return any(status not in _NOTIFY_ALLOWED_STATUSES for status in current)
     if name in ("action_prompt", "action_model") and row.get("action_kind") != "agent":
         # Only an agent member declares a prompt or a model, and it declares the agent kind.
         return current is not None
     if name == "action_model" and current is None:
         # An agent member always resolves a model, its own or its profile's.
+        return True
+    if name == "action_prompt" and current is None:
+        # An agent member's prompt is a required string.
         return True
     if name == "action_prompt" and isinstance(current, str):
         # A member's prompt is refused when the launch would refuse it.
@@ -1447,6 +1512,9 @@ async def apply_schedule_set(
                         # Adoption accepts a poll interval only where the row's trigger
                         # does not read it. Cleared, so a later apply that makes the
                         # member a github trigger polls at the cadence it declares.
+                        # The row's id, its runs and its runtime watermarks
+                        # (last_fired_at, effective_timezone) carry over as they are:
+                        # a later apply rewrites only the columns the declaration owns.
                         "poll_interval_sec": None,
                     }
                 )
