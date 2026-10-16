@@ -68,9 +68,14 @@ li studio          # starts the local daemon and opens https://lion-studio.khive
 ```bash
 li studio --docker # auto-pulls ghcr.io/ohdearquant/lion-studio; UI + API on
                    # 127.0.0.1:8765. The container port is published on --host,
-                   # loopback by default; another address publishes it there:
-                   # li studio --docker --host 0.0.0.0 (set
-                   # LIONAGI_STUDIO_AUTH_TOKEN first — see Authentication)
+                   # which must be an IP address: li studio --docker --host
+                   # 192.168.1.5 publishes there and tells the daemon that
+                   # address, so requests to it pass the Host check. 0.0.0.0
+                   # and :: publish on every interface but name no single
+                   # address, so clients elsewhere need LIONAGI_STUDIO_HOST set
+                   # on the container. Set LIONAGI_STUDIO_AUTH_TOKEN first —
+                   # see Authentication; the CLI passes it by name, never by
+                   # value.
 ```
 
 **Dev mode (hot-reload)**:

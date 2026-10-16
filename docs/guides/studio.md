@@ -66,9 +66,12 @@ li studio --dev          # source checkout with frontend hot reload
 ```
 
 `li studio --docker` publishes the container's port on the address `--host`
-names, which defaults to `127.0.0.1`: only this machine reaches the container.
-To publish it on another interface, either pass `--host` that address, or run
-the image with your own `docker run -p`:
+names, which defaults to `127.0.0.1`, so only this machine reaches the
+container. On `--docker` that address has to be an IP address literal
+(`127.0.0.1`, `0.0.0.0`, `192.168.1.5`, `::1`); a hostname is refused before
+docker runs, because docker does not resolve one in the host half of a port
+mapping. To publish on another interface, either pass `--host` that address, or
+run the image with your own `docker run -p`:
 
 ```bash
 li studio --docker --host 192.168.1.5   # reachable at 192.168.1.5:8765
@@ -76,11 +79,27 @@ docker run --rm -p 192.168.1.5:8765:8765 -v ~/.lionagi:/root/.lionagi \
   ghcr.io/ohdearquant/lion-studio:latest
 ```
 
+On a docker release older than 28.0.0 a port published to a loopback address is
+also reachable from hosts on the same L2 segment (the same switch); 28.0.0 and
+later keep it to this machine.
+
 Publishing anywhere other than loopback exposes the daemon to everyone who can
 reach that address, and with `LIONAGI_STUDIO_AUTH_TOKEN` unset nothing else
 stands between them and the API. Set the token before publishing on another
 interface, as described in
-[Hosting the Studio frontend](../../apps/studio/frontend/HOSTING.md).
+[Hosting the Studio frontend](../../apps/studio/frontend/HOSTING.md). The CLI
+passes it to the container as `-e LIONAGI_STUDIO_AUTH_TOKEN` — the name only,
+so docker reads the value from your environment and it never appears in the
+command line.
+
+The daemon answers only a request whose `Host` header names an address it
+expects. `li studio --docker` publishes on a concrete address (`127.0.0.1`,
+`192.168.1.5`, `::1`) and tells the container that address, so clients reach it
+there. `0.0.0.0` and `::` name no single address and are not passed on: the
+port is on every interface, but the daemon keeps admitting only the loopback
+names `localhost`, `127.0.0.1` and `::1`, so a client elsewhere on the network
+is refused with a 400 until you set `LIONAGI_STUDIO_HOST` on the container to
+the address those clients use.
 
 In a second terminal, confirm daemon reachability:
 

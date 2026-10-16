@@ -355,28 +355,68 @@ def _start_backend_only(host: str, port: int) -> int:
 _STUDIO_CONTAINER_PORT = 8765
 
 
+def _published_host(host: str) -> str:
+    """The address ``--docker`` publishes the container's port on, named by *host*.
+
+    Brackets are stripped first, so a bracketed blank is as blank as a bare one:
+    a blank host is the loopback default rather than a request to publish
+    everywhere, since an empty host half means every interface to docker, the
+    opposite of what an unset flag asks for. What is left has to be an IP
+    address literal. Docker does not resolve a name in the host half of a
+    mapping, and it cannot publish on an address that carries a port or an IPv6
+    zone, so each of those is refused here with a message instead of failing
+    inside docker.
+
+    Raises:
+        ValueError: *host* is not an address the port can be published on.
+    """
+    stripped = host.strip()
+    if stripped.startswith("[") and stripped.endswith("]"):
+        stripped = stripped[1:-1].strip()
+    if not stripped:
+        return "127.0.0.1"
+    try:
+        address = ipaddress.ip_address(stripped)
+    except ValueError:
+        raise ValueError(
+            f"--host {host!r} is not an IP address; --docker publishes the container "
+            "port on an address such as 127.0.0.1, 0.0.0.0, 192.168.1.5 or ::1"
+        ) from None
+    if getattr(address, "scope_id", None) is not None:
+        raise ValueError(
+            f"--host {host!r} carries an IPv6 zone, which names a local interface: "
+            "--docker cannot publish a port on it"
+        ) from None
+    return str(address)
+
+
+def _bracketed(address: str) -> str:
+    """*address* as a URL authority or a port mapping needs it: an IPv6 literal
+    in brackets, since its own colons would otherwise read as a separator."""
+    return f"[{address}]" if ":" in address else address
+
+
 def _docker_publish_spec(host: str, api_port: int) -> str:
     """The ``-p`` value publishing the container's port on *host* at *api_port*.
 
     A host half is always written: a bare ``PORT:PORT`` mapping publishes on
     every host interface, which puts an unauthenticated daemon on the local
-    network. An IPv6 literal is bracketed, since its own colons would otherwise
-    read as the mapping's separators. A blank host is the loopback default
-    rather than a request to publish everywhere: an empty host half means
-    every interface to docker, the opposite of what an unset flag asks for.
+    network.
+
+    Raises:
+        ValueError: *host* is not an address the port can be published on.
     """
-    stripped = host.strip() or "127.0.0.1"
-    if stripped.startswith("[") and stripped.endswith("]"):
-        stripped = stripped[1:-1]
-    try:
-        is_ipv6 = ipaddress.ip_address(stripped).version == 6
-    except ValueError:
-        is_ipv6 = False
-    address = f"[{stripped}]" if is_ipv6 else stripped
-    return f"{address}:{api_port}:{_STUDIO_CONTAINER_PORT}"
+    return f"{_bracketed(_published_host(host))}:{api_port}:{_STUDIO_CONTAINER_PORT}"
 
 
 def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
+    try:
+        publish_spec = _docker_publish_spec(host, api_port)
+        published = _published_host(host)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
     lionagi_home = Path.home() / ".lionagi"
     ensure_lionagi_dir(lionagi_home)
 
@@ -391,9 +431,20 @@ def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
         print("Trying to use cached image...", file=sys.stderr)
 
     print()
-    print(f"Lion Studio: http://localhost:{api_port}")
+    print(f"Lion Studio: http://{_bracketed(published)}:{api_port}")
     print("Press Ctrl+C to stop")
     print()
+
+    env_args: list[str] = []
+    if os.environ.get("LIONAGI_STUDIO_AUTH_TOKEN"):
+        # The name alone: docker reads the value from this process's environment,
+        # so the token reaches the container without entering the argument list.
+        env_args += ["-e", "LIONAGI_STUDIO_AUTH_TOKEN"]
+    if not ipaddress.ip_address(published).is_unspecified:
+        # The daemon admits a request whose Host is the address it is reached by,
+        # so the published one is passed to it. 0.0.0.0 and :: name no single
+        # address and are left out, leaving the daemon its loopback Hosts.
+        env_args += ["-e", f"LIONAGI_STUDIO_HOST={published}"]
 
     claude_plugins = Path.home() / ".claude" / "plugins"
     docker_cmd = [
@@ -404,7 +455,8 @@ def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
         # The image's uvicorn binds 0.0.0.0 inside the container, which is what
         # makes the published port reachable at all; the host half of this
         # mapping, not that bind, decides who can reach it.
-        _docker_publish_spec(host, api_port),
+        publish_spec,
+        *env_args,
         "-v",
         f"{lionagi_home}:/root/.lionagi",
     ]

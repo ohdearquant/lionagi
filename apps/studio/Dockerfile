@@ -9,8 +9,19 @@
 #
 # The host half of -p decides who can reach the port: the image's uvicorn
 # binds 0.0.0.0 so the published port works at all, and 127.0.0.1 keeps
-# that reach to this machine. Publish on another address only with
-# LIONAGI_STUDIO_AUTH_TOKEN set.
+# that reach to this machine. On a docker release older than 28.0.0 a port
+# published to a loopback address is also reachable from hosts on the same
+# L2 segment; 28.0.0 and later keep it to this machine.
+#
+# Publish on another address only with LIONAGI_STUDIO_AUTH_TOKEN set, passed
+# by name so docker reads the value from your environment:
+#   -e LIONAGI_STUDIO_AUTH_TOKEN
+# The daemon answers only a request whose Host header names an address it
+# expects, so a publish on a concrete address also needs
+#   -e LIONAGI_STUDIO_HOST=<that address>
+# 0.0.0.0 and :: name no single address and leave the daemon admitting only
+# the loopback names, so a client elsewhere on the network is refused until
+# LIONAGI_STUDIO_HOST names the address it uses.
 
 # ── Stage 1: Build frontend ──────────────────────────────────────────────────
 # Pinned to BUILDPLATFORM on purpose. This stage emits /build/dist, a static
