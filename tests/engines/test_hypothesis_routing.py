@@ -6,6 +6,7 @@ recursion narrowing, filing queue, and loud total-failure. No LLM."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pydantic
@@ -13,6 +14,7 @@ import pytest
 
 import lionagi.engines.engine as engine_mod
 import lionagi.engines.hypothesis as hyp_mod
+from lionagi._errors import ContainmentRefusedError
 from lionagi.engines.hypothesis import (
     ChainEvent,
     ConclusionDrawn,
@@ -319,7 +321,7 @@ async def test_dedup_stage_exception_releases_finding_to_extract():
     async def boom_dedup(_run, _f):
         raise TimeoutError("agent construction timed out")
 
-    eng._dedup = boom_dedup
+    eng._dedup_search = boom_dedup
 
     events: list[dict] = []
     run.on_event = lambda e: events.append(e)
@@ -330,6 +332,44 @@ async def test_dedup_stage_exception_releases_finding_to_extract():
     assert [s for s, _ in calls] == ["extract"]
     assert any(e["type"] == "dedup_missing" for e in events)
     assert any(e["type"] == "stage_error" and e["stage"] == "dedup" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_a_tracker_search_that_answers_nothing_releases_the_finding_once():
+    """A search agent that runs and posts no verdict releases the finding to extraction,
+    once, and records that the verdict is missing."""
+    eng = HypothesisEngine(dedup_repo="owner/repo", judge_model=None)
+    run = eng.new_run()
+    calls = _mute(eng, "extract")
+    _wire(eng, run)
+    built: list[_StubAgent] = []
+
+    async def make_agent(role, *, name=None, **kwargs):
+        agent = _StubAgent(name, None)
+        built.append(agent)
+        return agent
+
+    operated: list[_StubAgent] = []
+
+    async def operate_with_repair(agent, *args, **kwargs):
+        operated.append(agent)
+        return None
+
+    run.make_agent = make_agent
+    run.operate_with_repair = operate_with_repair
+    events: list[dict] = []
+    run.on_event = lambda e: events.append(e)
+
+    await run.emit(FindingPosted(description="the search finds nothing to say"))
+    await run.wait_quiescence()
+
+    assert [agent.name.split("-")[0] for agent in built] == ["dedup"]
+    # _StubAgent has no __eq__, so this compares identity: the search operated
+    # exactly the agent it built.
+    assert operated == built
+    assert [s for s, _ in calls] == ["extract"]
+    assert sum(e["type"] == "dedup_missing" for e in events) == 1
+    assert not any(e["type"] == "stage_error" for e in events)
 
 
 @pytest.mark.asyncio
@@ -345,12 +385,374 @@ async def test_dedup_stage_exception_does_not_double_release_with_late_verdict()
         await run.emit(DedupChecked(finding_ref=f.eid, verdict="new"))
         raise TimeoutError("post-verdict cleanup failed")
 
-    eng._dedup = dedup_then_boom
+    eng._dedup_search = dedup_then_boom
 
     await run.emit(FindingPosted(description="verdict lands then leg still errors"))
     await run.wait_quiescence()
 
     assert [s for s, _ in calls] == ["extract"]
+
+
+class _StubAgent:
+    def __init__(self, name, judge_error):
+        self.name = name
+        self._judge_error = judge_error
+
+    async def operate(self, **kwargs):
+        if self._judge_error is not None and self.name.startswith("judge-"):
+            raise self._judge_error
+        return "ok"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("contained", "judge_error", "searched"),
+    [
+        (True, RuntimeError("provider failed"), False),
+        (True, ContainmentRefusedError("codex config selects a profile"), False),
+        (False, RuntimeError("provider failed"), True),
+    ],
+    ids=["contained-provider-error", "contained-refusal", "uncontained-fails-open"],
+)
+async def test_a_judge_that_raises_in_the_dedup_stage_ends_the_finding(
+    contained, judge_error, searched
+):
+    """A contained judge raises any error, and the finding stops there: neither the
+    tracker search nor extraction runs, since extraction skips the judge for a finding
+    the dedup stage released. Without containment the judge fails open (control)."""
+    eng = HypothesisEngine(
+        dedup_repo="owner/repo",
+        judge_model="codex/gpt-5.5",
+        contain_account_integrations=contained,
+        max_depth=1,
+    )
+    run = eng.new_run()
+    _wire(eng, run)
+    built: list[str] = []
+
+    async def make_agent(role, *, name=None, **kwargs):
+        built.append(name)
+        return _StubAgent(name, judge_error)
+
+    async def operate_with_repair(*args, **kwargs):
+        return None
+
+    run.make_agent = make_agent
+    run.operate_with_repair = operate_with_repair
+    events: list[dict] = []
+    run.on_event = lambda e: events.append(e)
+
+    q = run.collect(QuestionRaised(area="a", what_is_unknown="why X?", gen=0))
+    h = run.collect(HypothesisFormed(question_ref=q.eid, statement="X < 500us"))
+    x = run.collect(ExperimentDesigned(hypothesis_ref=h.eid, method="analysis", procedure="bench"))
+    await run.emit(FindingPosted(description="a finding from validation", parent_ref=x.eid))
+    await run.wait_quiescence()
+
+    f = run.events_of(FindingPosted)[-1]
+    assert f.gen == 1
+    stages = sorted({name.split("-")[0] for name in built})
+    if searched:
+        assert stages == ["dedup", "extract", "judge"]
+    else:
+        assert stages == ["judge"]
+        assert f.eid not in run.dedup_cleared
+        assert not any(e["type"] == "dedup_missing" for e in events)
+        assert any(e["type"] == "stage_error" and e["stage"] == "dedup" for e in events)
+
+
+def _agent_sourced_finding_chain(run):
+    q = run.collect(QuestionRaised(area="a", what_is_unknown="why X?", gen=0))
+    h = run.collect(HypothesisFormed(question_ref=q.eid, statement="X < 500us"))
+    return run.collect(ExperimentDesigned(hypothesis_ref=h.eid, method="analysis", procedure="b"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verdict", ["new", "extends", "duplicate"])
+async def test_a_verdict_naming_a_finding_its_judge_refused_is_an_orphan(verdict):
+    """A dedup agent can name any finding in its verdict. A finding whose judge refused
+    it had no search sent, so a verdict naming it neither extracts it nor marks it."""
+    eng = HypothesisEngine(dedup_repo="owner/repo", max_depth=1)
+    run = eng.new_run()
+    calls = _mute(eng, "extract", "dedup_search")
+    _wire(eng, run)
+    judged: list[str] = []
+
+    async def judge(_run, eid, _subject):
+        judged.append(eid)
+        return False
+
+    eng.judge = judge
+    events: list[dict] = []
+    run.on_event = lambda e: events.append(e)
+    x = _agent_sourced_finding_chain(run)
+    await run.emit(FindingPosted(description="junk", parent_ref=x.eid))
+    await run.wait_quiescence()
+    f = run.events_of(FindingPosted)[-1]
+    assert f.gen == 1
+
+    await run.emit(DedupChecked(finding_ref=f.eid, verdict=verdict, issue_number=3))
+    await run.wait_quiescence()
+
+    assert judged == [f.eid]
+    assert calls == []
+    assert f.eid not in run.dedup_cleared
+    assert any(e["type"] == "dedup_orphan" and e["finding_ref"] == f.eid for e in events)
+    assert not any(e["type"] == "finding_duplicate" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_a_finding_its_judge_passed_is_extracted_without_a_second_judge():
+    eng = HypothesisEngine(dedup_repo="owner/repo", max_depth=1)
+    run = eng.new_run()
+    _wire(eng, run)
+    judged: list[str] = []
+
+    async def judge(_run, eid, _subject):
+        judged.append(eid)
+        return True
+
+    async def search(_run, f):
+        await _run.emit(DedupChecked(finding_ref=f.eid, verdict="new"))
+
+    extracted: list[str] = []
+
+    async def make_agent(role, *, name=None, **kwargs):
+        extracted.append(name)
+        return _StubAgent(name, None)
+
+    async def operate_with_repair(*args, **kwargs):
+        return None
+
+    eng.judge = judge
+    eng._dedup_search = search
+    run.make_agent = make_agent
+    run.operate_with_repair = operate_with_repair
+    x = _agent_sourced_finding_chain(run)
+    await run.emit(FindingPosted(description="a real finding", parent_ref=x.eid))
+    await run.wait_quiescence()
+    f = run.events_of(FindingPosted)[-1]
+
+    assert judged == [f.eid]
+    assert extracted == [f"extract-{f.eid}"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verdict", ["new", "extends"])
+async def test_a_refused_finding_named_by_a_verdict_stays_out_of_the_filing_queue(verdict):
+    eng = HypothesisEngine(dedup_repo="owner/repo", max_depth=1)
+    run = eng.new_run()
+    _mute(eng, "extract", "dedup_search")
+    _wire(eng, run)
+
+    async def judge(_run, eid, _subject):
+        return False
+
+    eng.judge = judge
+    x = _agent_sourced_finding_chain(run)
+    await run.emit(FindingPosted(description="junk", parent_ref=x.eid))
+    await run.wait_quiescence()
+    f = run.events_of(FindingPosted)[-1]
+    await run.emit(DedupChecked(finding_ref=f.eid, verdict=verdict))
+    await run.wait_quiescence()
+
+    assert filing_queue(run) == []
+    report = hyp_mod.render_evidence(run)
+    assert f"{f.eid}: {verdict} (not accepted)" in report
+    assert "Filing queue" not in report
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verdict", ["new", "duplicate"])
+async def test_a_verdict_while_the_judge_decides_does_not_answer_the_search(verdict):
+    """The early verdict is an orphan. Once the judge passes, the finding's own search
+    posts nothing, so the finding is released and extracted."""
+    gate = asyncio.Event()
+    eng = HypothesisEngine(dedup_repo="owner/repo", max_depth=1)
+    run = eng.new_run()
+    calls = _mute(eng, "extract")
+    _wire(eng, run)
+
+    async def judge(_run, eid, _subject):
+        await gate.wait()
+        return True
+
+    async def make_agent(role, *, name=None, **kwargs):
+        return _StubAgent(name, None)
+
+    async def operate_with_repair(*args, **kwargs):
+        return None
+
+    eng.judge = judge
+    run.make_agent = make_agent
+    run.operate_with_repair = operate_with_repair
+    events: list[dict] = []
+    run.on_event = lambda e: events.append(e)
+    x = _agent_sourced_finding_chain(run)
+    await run.emit(FindingPosted(description="agent claim", parent_ref=x.eid))
+    f = run.events_of(FindingPosted)[-1]
+    await asyncio.sleep(0.01)
+    await run.emit(DedupChecked(finding_ref=f.eid, verdict=verdict, issue_number=3))
+    gate.set()
+    await run.wait_quiescence()
+
+    assert [e["type"] for e in events if e["type"] == "dedup_orphan"] == ["dedup_orphan"]
+    assert [s for s, _ in calls] == ["extract"]
+    assert any(e["type"] == "dedup_missing" and e["eid"] == f.eid for e in events)
+    assert f.eid not in run.dedup_verdicts
+
+
+@pytest.mark.asyncio
+async def test_a_later_verdict_does_not_reopen_a_duplicate():
+    eng = HypothesisEngine(dedup_repo="owner/repo")
+    run = eng.new_run()
+    calls = _mute(eng, "dedup", "extract")
+    _wire(eng, run)
+    f = run.collect(FindingPosted(description="already tracked"))
+    await run.emit(
+        DedupChecked(finding_ref=f.eid, verdict="duplicate", issue_number=9, issue_state="open")
+    )
+    await run.emit(DedupChecked(finding_ref=f.eid, verdict="new"))
+    await run.wait_quiescence()
+
+    assert calls == []
+    assert run.dedup_verdicts[f.eid].verdict == "duplicate"
+    assert filing_queue(run) == []
+
+
+@pytest.mark.asyncio
+async def test_a_search_that_records_a_duplicate_and_then_fails_does_not_release_the_finding():
+    eng = HypothesisEngine(dedup_repo="owner/repo", judge_model=None)
+    run = eng.new_run()
+    calls = _mute(eng, "extract")
+    _wire(eng, run)
+
+    async def make_agent(role, *, name=None, **kwargs):
+        return _StubAgent(name, None)
+
+    async def operate_with_repair(*args, **kwargs):
+        f = run.events_of(FindingPosted)[-1]
+        await run.emit(
+            DedupChecked(finding_ref=f.eid, verdict="duplicate", issue_number=9, issue_state="open")
+        )
+        raise TimeoutError("timed out after the verdict")
+
+    run.make_agent = make_agent
+    run.operate_with_repair = operate_with_repair
+    events: list[dict] = []
+    run.on_event = lambda e: events.append(e)
+    await run.emit(FindingPosted(description="already tracked"))
+    await run.wait_quiescence()
+
+    assert calls == []
+    assert not any(e["type"] == "dedup_missing" for e in events)
+    assert any(e["type"] == "stage_error" and e["stage"] == "dedup" for e in events)
+    assert run.dedup_verdicts[run.events_of(FindingPosted)[-1].eid].verdict == "duplicate"
+
+
+def test_a_collected_seed_with_two_certifying_verdicts_is_queued_once():
+    eng = HypothesisEngine(dedup_repo="owner/repo")
+    run = eng.new_run()
+    f = run.collect(FindingPosted(description="stale checkpoint overwrites newer segment"))
+    run.collect(DedupChecked(finding_ref=f.eid, verdict="new"))
+    run.collect(
+        DedupChecked(finding_ref=f.eid, verdict="extends", issue_number=7, issue_state="open")
+    )
+
+    assert [(i["finding_ref"], i["verdict"]) for i in filing_queue(run)] == [(f.eid, "new")]
+    report = hyp_mod.render_evidence(run)
+    assert f"{f.eid}: extends #7 (open) (not accepted)" in report
+    assert f"{f.eid}: new (not accepted)" not in report
+
+
+def test_a_collected_duplicate_then_new_queues_nothing_and_marks_the_new():
+    eng = HypothesisEngine(dedup_repo="owner/repo")
+    run = eng.new_run()
+    f = run.collect(FindingPosted(description="already tracked, then reported as novel"))
+    run.collect(
+        DedupChecked(finding_ref=f.eid, verdict="duplicate", issue_number=9, issue_state="open")
+    )
+    run.collect(DedupChecked(finding_ref=f.eid, verdict="new"))
+
+    assert filing_queue(run) == []
+    report = hyp_mod.render_evidence(run)
+    assert f"{f.eid}: new (not accepted)" in report
+    assert f"{f.eid}: duplicate #9 (open) (not accepted)" not in report
+
+
+async def _released_on_an_empty_search(eng):
+    run = eng.new_run()
+    calls = _mute(eng, "extract")
+    _wire(eng, run)
+
+    async def make_agent(role, *, name=None, **kwargs):
+        return _StubAgent(name, None)
+
+    async def operate_with_repair(*args, **kwargs):
+        return None
+
+    run.make_agent = make_agent
+    run.operate_with_repair = operate_with_repair
+    await run.emit(FindingPosted(description="released on an empty search"))
+    await run.wait_quiescence()
+    f = run.events_of(FindingPosted)[-1]
+    # The search posted nothing, so the finding was released: extracted once, no verdict yet.
+    assert [stage for stage, _ in calls] == ["extract"]
+    assert f.eid in run.dedup_cleared
+    assert f.eid not in run.dedup_verdicts
+    return run, calls, f
+
+
+@pytest.mark.asyncio
+async def test_a_duplicate_after_a_release_is_reported_and_extracts_nothing_more():
+    eng = HypothesisEngine(dedup_repo="owner/repo", judge_model=None)
+    run, calls, f = await _released_on_an_empty_search(eng)
+    events: list[dict] = []
+    run.on_event = events.append
+    await run.emit(
+        DedupChecked(finding_ref=f.eid, verdict="duplicate", issue_number=9, issue_state="open")
+    )
+    await run.wait_quiescence()
+
+    assert [stage for stage, _ in calls] == ["extract"]
+    assert run.dedup_verdicts[f.eid].verdict == "duplicate"
+    assert any(e["type"] == "finding_duplicate" for e in events)
+    report = hyp_mod.render_evidence(run)
+    assert f"{f.eid}: duplicate #9 (open)" in report
+    assert "(not accepted)" not in report
+    assert filing_queue(run) == []
+
+
+@pytest.mark.asyncio
+async def test_a_new_after_a_release_reaches_the_filing_queue_once():
+    eng = HypothesisEngine(dedup_repo="owner/repo", judge_model=None)
+    run, calls, f = await _released_on_an_empty_search(eng)
+    await run.emit(DedupChecked(finding_ref=f.eid, verdict="new", source_confirmed=True))
+    await run.wait_quiescence()
+
+    assert [stage for stage, _ in calls] == ["extract"]
+    assert run.dedup_verdicts[f.eid].verdict == "new"
+    assert [(i["finding_ref"], i["verdict"]) for i in filing_queue(run)] == [(f.eid, "new")]
+
+
+@pytest.mark.asyncio
+async def test_a_total_failure_with_only_an_orphan_verdict_still_raises():
+    eng = HypothesisEngine(dedup_repo="owner/repo", judge_model=None)
+
+    async def search(run, f):
+        await run.emit(DedupChecked(finding_ref="F-9", verdict="new"))
+        raise TimeoutError("search timed out")
+
+    async def extract_boom(run, f):
+        raise RuntimeError("no API key")
+
+    async def fake_synth(run):
+        return "REPORT"
+
+    eng._dedup_search = search
+    eng._extract = extract_boom
+    eng._synthesize = fake_synth
+    with pytest.raises(RuntimeError, match="produced no events"):
+        await eng.run("seed finding")
 
 
 @pytest.mark.parametrize("bad_verdict", ["uncertain", "Duplicate", "dupe", "NEW", ""])

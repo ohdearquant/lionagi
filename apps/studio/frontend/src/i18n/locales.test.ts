@@ -248,8 +248,12 @@ describe("messages — leaf-key parity across all 16 locales", () => {
   // all 16 locales, so they add nothing to the identity-leak baseline.
   // 1106 = 1105 + the Library's explicit clear-filter action.
   // 1105 = 1106 - empty.createWorkflow, a Library label no component reads.
-  it("en.json has 1105 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1105);
+  // 1109 = 1105 + daemon.accessRequired (title, body, fix, command), the screen
+  // shown when a running daemon refuses the page. The three prose leaves are
+  // natively translated in all 16; command is the literal `li studio`, which is
+  // attributed in the identity-leak baseline below.
+  it("en.json has 1109 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1109);
   });
 
   it.each(LOCALES.map((l) => l.code))(
@@ -376,11 +380,16 @@ describe("messages — a locale value byte-identical to English is a missed tran
   // every non-English locale. It joins the controls.* placeholder debt already
   // attributed above rather than adding a new kind of it, and the follow-up
   // that translates that subtree should take this key with it.
+  //
+  // Raised from 3742 to 3757 (+15 = 1 leaf × 15 non-English locales) with
+  // daemon.accessRequired.command, the shell command `li studio`, which is the
+  // same in every language on the merits. Its three sibling leaves are natively
+  // translated in all 16 and add nothing here.
   it("pre-existing identity-leak count across all locales does not grow past its pinned baseline", () => {
     const total = LOCALES.map((l) => l.code)
       .filter((c) => c !== "en")
       .reduce((sum, code) => sum + findIdentityLeaks(code).length, 0);
-    expect(total).toBeLessThanOrEqual(3742);
+    expect(total).toBeLessThanOrEqual(3757);
   });
 });
 
