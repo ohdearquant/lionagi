@@ -10,11 +10,13 @@ of a store a newer schema manages, built synthetically.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import sqlite3
 import subprocess
 import sys
+import threading
 from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
@@ -860,6 +862,151 @@ async def test_a_refused_native_open_of_a_store_whose_file_was_cut_short_beside_
     assert _snapshot(copy) == before
 
 
+def _first_page_beside_its_log(directory: Path, *, whole: bool = False) -> Path:
+    """A store whose file stops after its first page, beside a log that holds the pages written
+    since the last checkpoint, the managing row among them, and no index; or, with *whole*, the
+    whole file beside the same log."""
+    store = directory / "source.db"
+    with closing(sqlite3.connect(store, isolation_level=None)) as conn:
+        conn.execute("PRAGMA journal_mode = wal")
+        conn.execute("CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute("INSERT INTO schema_meta (key, value) VALUES ('version', '900')")
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("PRAGMA wal_autocheckpoint = 0")
+        conn.execute("INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+        copy = directory / "copy.db"
+        data = store.read_bytes()
+        copy.write_bytes(data if whole else data[:4096])
+        Path(f"{copy}-wal").write_bytes(Path(f"{store}-wal").read_bytes())
+    return copy
+
+
+async def test_a_refused_native_open_of_a_store_whose_file_stops_at_its_first_page(tmp_path):
+    """Only the pages written since the last checkpoint are in the log, so neither the file alone
+    nor a copy that stops where its pages stop holds the row; a byte copy of the file and the log
+    does, and the open is refused with no file of the store changed."""
+    from lionagi.state.db import _UNREAD, _read_lineage
+
+    copy = _first_page_beside_its_log(tmp_path)
+    assert _read_lineage(f"{copy.as_uri()}?immutable=1")[1] is _UNREAD
+    before = _snapshot(copy)
+    assert set(before) == {"", "-wal"}
+    with pytest.raises(ForeignLineageError, match="'manager' as the application"):
+        await StateDB(copy).open()
+    assert _snapshot(copy) == before
+
+
+_TEAR_THE_FIRST_PAGE = """
+import os, sqlite3, sys
+
+conn = sqlite3.connect(sys.argv[1], isolation_level=None)
+conn.execute("PRAGMA journal_mode = delete")
+conn.execute("CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+conn.execute("CREATE TABLE filler (id INTEGER PRIMARY KEY, x TEXT)")
+conn.execute("INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+conn.execute("BEGIN IMMEDIATE")
+conn.executemany("INSERT INTO filler (x) VALUES (?)", [("y" * 200,)] * 3000)
+conn.execute("COMMIT")
+conn.execute("PRAGMA cache_size = -16")
+conn.execute("BEGIN IMMEDIATE")
+conn.execute("UPDATE schema_meta SET value = 'lionagi' WHERE key = 'lineage'")
+conn.executemany("INSERT INTO filler (x) VALUES (?)", [("z" * 200,)] * 3000)
+with open(sys.argv[1], "r+b") as handle:
+    handle.write(bytes(100))
+os._exit(0)
+"""
+
+
+async def test_a_refused_native_open_of_a_store_whose_first_page_a_crash_tore(tmp_path):
+    """A process stopped inside a transaction that had written into the file, its first page torn,
+    with the journal holding the pages as they were. SQLite cannot read the file alone, so the row
+    is read from a byte copy of the file and the journal, rolled back there, and the open is refused
+    before any writable connection could roll the store's own journal back."""
+    from lionagi.state.db import _UNREAD, _journal_has_a_header, _read_lineage
+
+    store = tmp_path / "torn.db"
+    subprocess.run(
+        [sys.executable, "-c", _TEAR_THE_FIRST_PAGE, str(store)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=True,
+    )
+    assert _journal_has_a_header(str(store))
+    assert _read_lineage(f"{store.as_uri()}?immutable=1")[1] is _UNREAD
+    before = _snapshot(store)
+    with pytest.raises(ForeignLineageError, match="'manager' as the application"):
+        await StateDB(store).open()
+    assert _snapshot(store) == before
+
+
+async def test_a_store_that_moves_under_every_copy_is_decided_by_the_writable_connection(
+    tmp_path, monkeypatch
+):
+    """Every copy sees the store commit or checkpoint under it. After the bounded number of copies
+    the early read decides nothing beyond the file's own row, which names no application here, and
+    the writable connection's own read refuses the row in the log."""
+    from lionagi.state import db as db_mod
+
+    copy = _first_page_beside_its_log(tmp_path, whole=True)
+    copies = []
+    real = db_mod._copy_store_file
+    moves = iter(range(1_000))
+
+    def counting(path, target):
+        copies.append(path)
+        real(path, target)
+
+    monkeypatch.setattr(db_mod, "_copy_store_file", counting)
+    monkeypatch.setattr(db_mod, "_copy_state", lambda path, suffix: next(moves))
+    StateDB(copy)._read_lineage_without_writing(())
+    assert len(copies) == db_mod._COPY_ATTEMPTS
+    with pytest.raises(ForeignLineageError, match="'manager' as the application"):
+        await StateDB(copy).open()
+    assert len(copies) == 2 * db_mod._COPY_ATTEMPTS
+
+
+async def test_close_from_another_event_loop_during_an_open_is_refused(tmp_path, monkeypatch):
+    """The open lock wakes a waiter only on the loop that holds it, so a close from another loop
+    while an open is in progress is refused at once, rather than waiting on a wake that never comes
+    while the open goes on to keep its engine; the open finishes, and closes on its own loop."""
+    store = tmp_path / "plain.db"
+    first = StateDB(store)
+    await first.open()
+    await first.close()
+    original = StateDB._apply_schema
+    started = asyncio.Event()
+
+    async def slow(self):
+        started.set()
+        await asyncio.sleep(0.5)
+        await original(self)
+
+    monkeypatch.setattr(StateDB, "_apply_schema", slow)
+    handle = StateDB(store)
+    opening = asyncio.ensure_future(handle.open())
+    await started.wait()
+    outcome = {}
+
+    def close_on_another_loop():
+        try:
+            asyncio.run(asyncio.wait_for(handle.close(), timeout=5))
+            outcome["result"] = "returned"
+        except BaseException as exc:  # noqa: BLE001 -- the test asserts what close raised
+            outcome["result"] = exc
+
+    worker = threading.Thread(target=close_on_another_loop)
+    worker.start()
+    await asyncio.get_running_loop().run_in_executor(None, worker.join, 30)
+    assert not worker.is_alive()
+    assert isinstance(outcome["result"], RuntimeError), outcome
+    assert "another event loop" in str(outcome["result"])
+    await opening
+    assert handle._engine is not None
+    await handle.close()
+    assert handle._engine is None
+
+
 async def test_a_store_with_rows_only_in_its_log_and_no_lineage_row_opens_natively(tmp_path):
     store = tmp_path / "native.db"
     first = StateDB(store)
@@ -918,7 +1065,7 @@ def test_a_checkpoint_between_the_two_copies_takes_the_read_again(tmp_path, monk
         shutil.copyfile(store, copy)
         shutil.copyfile(Path(f"{store}-wal"), Path(f"{copy}-wal"))
     holders: list[sqlite3.Connection] = []
-    real = db_mod._copy_through_sqlite
+    real = db_mod._copy_store_file
     copies = []
 
     def checkpoint_after_the_first_copy(path, target):
@@ -930,7 +1077,7 @@ def test_a_checkpoint_between_the_two_copies_takes_the_read_again(tmp_path, monk
             holder.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             holders.append(holder)
 
-    monkeypatch.setattr(db_mod, "_copy_through_sqlite", checkpoint_after_the_first_copy)
+    monkeypatch.setattr(db_mod, "_copy_store_file", checkpoint_after_the_first_copy)
     try:
         with pytest.raises(ForeignLineageError, match="'manager' as the application"):
             StateDB(copy)._read_lineage_without_writing(())
@@ -958,7 +1105,7 @@ def test_without_the_check_a_checkpoint_between_the_copies_hides_the_row(tmp_pat
         shutil.copyfile(store, copy)
         shutil.copyfile(Path(f"{store}-wal"), Path(f"{copy}-wal"))
     holders: list[sqlite3.Connection] = []
-    real = db_mod._copy_through_sqlite
+    real = db_mod._copy_store_file
 
     def checkpoint_after_the_copy(path, target):
         real(path, target)
@@ -967,7 +1114,7 @@ def test_without_the_check_a_checkpoint_between_the_copies_hides_the_row(tmp_pat
             holder.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             holders.append(holder)
 
-    monkeypatch.setattr(db_mod, "_copy_through_sqlite", checkpoint_after_the_copy)
+    monkeypatch.setattr(db_mod, "_copy_store_file", checkpoint_after_the_copy)
     monkeypatch.setattr(db_mod, "_copy_state", lambda path, suffix: ())
     try:
         assert db_mod._read_lineage_from_a_copy(str(copy), "-wal") is None
@@ -1005,8 +1152,9 @@ def _another_process_reserves(store: Path) -> str:
 def test_the_private_copy_keeps_the_locks_this_process_holds_on_the_store(tmp_path, monkeypatch):
     """A connection here is inside a write transaction beside a hot-looking journal when the
     lineage is read from a copy. Closing any descriptor this process opened on the file would drop
-    that connection's lock and let another process write into its transaction; the copy goes
-    through SQLite, which keeps it. Copied with a plain file copy instead, the lock is lost."""
+    that connection's lock and let another process write into its transaction; the copy reads the
+    file through a descriptor this process keeps open, so the lock stays. Copied with a plain file
+    copy instead, the lock is lost."""
     from lionagi.state import db as db_mod
 
     store = tmp_path / "rollback.db"
@@ -1022,7 +1170,7 @@ def test_the_private_copy_keeps_the_locks_this_process_holds_on_the_store(tmp_pa
         assert _another_process_reserves(store) == "locked"
         assert db_mod._read_lineage_from_a_copy(str(store), "-journal") is None
         assert _another_process_reserves(store) == "locked"
-        monkeypatch.setattr(db_mod, "_copy_through_sqlite", shutil.copyfile)
+        monkeypatch.setattr(db_mod, "_copy_store_file", shutil.copyfile)
         db_mod._read_lineage_from_a_copy(str(store), "-journal")
         assert _another_process_reserves(store) == "acquired"
     finally:

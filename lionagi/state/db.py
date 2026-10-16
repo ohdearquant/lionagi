@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import json
 import logging
@@ -16,6 +17,7 @@ import shutil
 import sqlite3
 import struct
 import tempfile
+import threading
 import time
 import uuid
 import weakref
@@ -646,6 +648,12 @@ class StateDB:
         # One open at a time: a native open reads the store in a worker thread before its engine
         # exists, so two opens running together would each build an engine and lose one.
         self._open_lock: Lock = Lock()
+        # The event loop whose open() or close() holds or waits on _open_lock, and how many do.
+        # The lock wakes a waiter only on the loop that holds it, so a call from another loop is
+        # refused rather than left waiting.
+        self._open_lock_guard = threading.Lock()
+        self._open_lock_loop: asyncio.AbstractEventLoop | None = None
+        self._open_lock_users = 0
         if compatibility is None and owner is not None:
             raise ValueError("an owner is written in compatibility mode only")
         if compatibility is not None:
@@ -738,8 +746,31 @@ class StateDB:
     # Connection lifecycle
 
     async def open(self) -> None:
-        async with self._open_lock:
+        async with self._holding_open_lock():
             await self._open()
+
+    @asynccontextmanager
+    async def _holding_open_lock(self):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # another async library, where the engine cannot run anyway
+            loop = None
+        with self._open_lock_guard:
+            if self._open_lock_users and self._open_lock_loop is not loop:
+                raise RuntimeError(
+                    "this StateDB is being opened or closed on another event loop; call open() "
+                    "and close() on that loop"
+                )
+            self._open_lock_loop = loop
+            self._open_lock_users += 1
+        try:
+            async with self._open_lock:
+                yield
+        finally:
+            with self._open_lock_guard:
+                self._open_lock_users -= 1
+                if not self._open_lock_users:
+                    self._open_lock_loop = None
 
     async def _open(self) -> None:
         if self._engine is not None:
@@ -778,10 +809,10 @@ class StateDB:
                 "open",
             )
         if self.dialect == "sqlite":
-            # P2: a refused open leaves the store as it was, so the file and its lineage are read
-            # before any writable connection exists, and each new writable connection reads them
-            # again before its settings change the file, for a row written in between (ADR-0128
-            # D7).
+            # The file and its lineage row are read before any writable connection exists, so a
+            # refusal from those reads changes no file of the store, and each new writable
+            # connection reads them again before its settings change the file, for a row written
+            # in between (ADR-0128 D7).
             await run_sync(self._read_lineage_without_writing, _held_files())
             self._connection_read = False
             self._native_file = None
@@ -877,7 +908,9 @@ class StateDB:
             if current is not _MOVED:
                 break
         else:
-            # Every copy saw the store commit or checkpoint under it; the file's own read stands.
+            # Every copy saw the store commit or checkpoint under it. The file's own read stands,
+            # and the writable connection's read decides the rest, as for a copy that cannot be
+            # made or read.
             current = _UNREAD
         if current is not _UNREAD:
             lineage = current
@@ -1017,9 +1050,9 @@ class StateDB:
         _COMPAT_INSERTED.get().append((table, values["id"]))
 
     async def close(self) -> None:
-        # An open in progress finishes first, so close() never returns before an engine it would
-        # have disposed exists.
-        async with self._open_lock:
+        # An open in progress on this loop finishes first, so close() never returns before an
+        # engine it would have disposed exists; one in progress on another loop refuses it.
+        async with self._holding_open_lock():
             await self._close()
 
     async def _close(self) -> None:
@@ -6987,14 +7020,14 @@ def _read_lineage_from_a_copy(path: str, suffix: str) -> Any:
     """The ``lineage`` row of a private copy of the file at *path* and of its ``-journal`` or
     ``-wal``, read on a writable connection, so SQLite rolls the copy's journal back or reads the
     copy's log and never touches the originals. The copy is made in a new directory under the
-    system's temporary directory, which only this user can read, and removed before this returns.
-    ``_MOVED`` when the store committed or checkpointed while it was copied, ``_UNREAD`` when the
-    copy or its read fails."""
+    system's temporary directory, which only this user can read, and removed before this returns;
+    a process killed while it copies leaves the copy there. ``_MOVED`` when the store committed or
+    checkpointed while it was copied, ``_UNREAD`` when the copy or its read fails."""
     try:
         with tempfile.TemporaryDirectory(prefix="lionagi-lineage-") as scratch:
             copy = os.path.join(scratch, "store.db")
             before = _copy_state(path, suffix)
-            _copy_through_sqlite(path, copy)
+            _copy_store_file(path, copy)
             shutil.copyfile(f"{path}{suffix}", f"{copy}{suffix}")
             if before is None or _copy_state(path, suffix) != before:
                 return _MOVED
@@ -7020,24 +7053,40 @@ def _copy_state(path: str, suffix: str) -> tuple | None:
     return inodes, header if suffix == "-wal" else header[:8] + header[12:16]
 
 
-def _copy_through_sqlite(path: str, copy: str) -> None:
-    """Copy the file at *path* to *copy* through SQLite, read immutable, rather than by opening the
-    file: closing a descriptor this process holds on the file drops every POSIX lock this process
-    holds on it, which another connection here may be holding, while SQLite keeps its own
-    descriptor open until its connections here release their locks."""
-    source = sqlite3.connect(f"{Path(path).as_uri()}?immutable=1", uri=True)
-    try:
-        # A file whose header counts more pages than it holds, as an interrupted transaction or a
-        # checkpoint can leave it, is copied as far as it goes; the journal or log beside the copy
-        # completes it.
-        source.execute("PRAGMA writable_schema = ON")
-        target = sqlite3.connect(copy)
-        try:
-            source.backup(target)
-        finally:
-            target.close()
-    finally:
-        source.close()
+# Descriptors this process opened on a store's file to copy it, one per file, never closed: closing
+# any descriptor of a file drops every POSIX lock this process holds on that file, which another
+# connection here may hold, so each stays open until the process exits, as SQLite keeps its own
+# descriptor of a file open while its connections here hold locks on it.
+_COPY_DESCRIPTORS: dict[tuple[int, int], int] = {}
+_COPY_DESCRIPTORS_LOCK = threading.Lock()
+
+
+def _copy_store_file(path: str, copy: str) -> None:
+    """Copy the file at *path* to *copy* byte for byte, whatever its pages hold, through a
+    descriptor of the file this process keeps open, so the copy closes no descriptor of it. On
+    Windows a lock belongs to the handle that took it, and the file is copied as usual."""
+    if os.name == "nt":
+        shutil.copyfile(path, copy)
+        return
+    descriptor = _copy_descriptor(path)
+    with open(copy, "wb") as target:
+        offset = 0
+        while chunk := os.pread(descriptor, 1 << 20, offset):
+            target.write(chunk)
+            offset += len(chunk)
+
+
+def _copy_descriptor(path: str) -> int:
+    with _COPY_DESCRIPTORS_LOCK:
+        found = os.stat(path)
+        descriptor = _COPY_DESCRIPTORS.get((found.st_dev, found.st_ino))
+        if descriptor is None:
+            descriptor = os.open(path, os.O_RDONLY)
+            opened = os.fstat(descriptor)
+            # A file replaced between the stat and the open is filed under the file it opened;
+            # a descriptor that finds one already filed there stays open, as every one here does.
+            descriptor = _COPY_DESCRIPTORS.setdefault((opened.st_dev, opened.st_ino), descriptor)
+        return descriptor
 
 
 def _read_lineage(uri: str) -> tuple[str, Any] | None:

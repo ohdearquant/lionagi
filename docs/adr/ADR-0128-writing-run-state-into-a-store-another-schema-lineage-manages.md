@@ -225,11 +225,15 @@ read again read-only with `readonly_shm`, which reads the log through its existi
 never writes to it; when there is no index, or that read fails, the row is read from a private copy
 of the file and the log. A private copy is made in a new directory under the system's temporary
 directory (Python's `tempfile`), which only the user running lionagi can read, and the directory is
-removed before the open goes on. The file is copied through SQLite rather than by opening it, since
-closing a descriptor of the file would drop the locks this process's other connections hold on it.
-A copy the store committed or checkpointed under, seen as a changed journal or log header, is taken
-again from the first read, a bounded number of times. A copy costs a read of the whole file, and is
-made only beside such a journal or a log without a readable index.
+removed before the read returns; a process killed while it copies leaves the copy in that directory.
+The file is copied byte for byte, whatever its pages hold, through a descriptor this process keeps
+open for each file it copies and never closes, since closing a descriptor of the file would drop the
+locks this process's other connections hold on it; on Windows, where a lock belongs to the handle
+that took it, the file is copied as usual. A copy the store committed or checkpointed under, seen as
+a changed journal or log header, is taken again from the first read, a bounded number of times; when
+every copy sees the store move, the file's own row stands and the writable connection decides the
+rest. A copy costs a read of the whole file, and is made only beside such a journal or a log without
+a readable index.
 
 A read that fails decides nothing; the writable connection then decides. Each writable connection
 reads the row again right after its busy timeout, before the connection settings of P2 and before
@@ -240,12 +244,12 @@ the connection may have rolled back a hot rollback journal, as on any writable o
 `-shm` index or recorded its read in it, and, if no other connection has the store open when it
 closes, SQLite folds the log into the file. It happens only when the row was written after the reads
 before the writable connection, or when those reads could not read it (a file SQLite cannot open
-read-only, or a copy that cannot be made or read). A refused open, and an open
-whose first connection never read the store, leaves no engine. A connection a native handle opened
-before the row was written is not asked again; only its later connections read the row. Every
-transaction of `_apply_schema()` that writes reads the row again under its write lock, ahead of the
-version, so a store whose `lineage` names another application and whose version is above
-`SCHEMA_VERSION` is refused on its lineage by any of these checks.
+read-only, a copy that cannot be made or read, or a store that moved under every copy). A refused
+open, and an open whose first connection never read the store, leaves no engine. A connection a
+native handle opened before the row was written is not asked again; only its later connections read
+the row. Every transaction of `_apply_schema()` that writes reads the row again under its write
+lock, ahead of the version, so a store whose `lineage` names another application and whose version
+is above `SCHEMA_VERSION` is refused on its lineage by any of these checks.
 
 While a writable native handle in this process has a file open, compatibility mode does not admit
 that file: the handle's connections write without the profile, and those already open would never
@@ -330,7 +334,7 @@ A writable native `StateDB` open of a store whose `lineage` row names another ap
 `ForeignLineageError` (D7) before any writable connection exists, leaving the store file, its
 journal, its log and its `-shm` index as they were: beside a journal an interrupted transaction left,
 or when the row is only in the log and the log has no readable index, the row is read from a private
-copy in a temporary directory that is removed before the open goes on, and otherwise a row only in
+copy in a temporary directory that is removed before the read returns, and otherwise a row only in
 the log is read through the index without writing it. A row written after those reads, or one they
 could not read, is refused by the writable connection's first read, before the connection settings
 of P2 and before any statement of `_apply_schema()`; by then that connection may have rolled back a
