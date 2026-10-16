@@ -121,6 +121,8 @@ async def test_invocation_cancel_preserves_concurrent_terminal_transition(
 async def test_invocation_cancel_preserves_existing_running_end_time(
     tmp_path, monkeypatch, ended_at
 ):
+    """Regression control for the end-time rule, not for the running guard: a
+    plain write would overwrite the stored value with the observation time."""
     monkeypatch.setattr(kill_mod, "time", SimpleNamespace(time=lambda: 300.0))
     async with StateDB(tmp_path / "state.db") as db:
         await _create_invocation(db, ended_at=ended_at)
@@ -131,6 +133,9 @@ async def test_invocation_cancel_preserves_existing_running_end_time(
 
 
 async def test_invocation_cancel_preserves_concurrent_running_end_time(tmp_path, monkeypatch):
+    """Regression control for the end-time rule against a write that lands
+    between the transition's read and its update; the running guard does not
+    reach this case."""
     monkeypatch.setattr(kill_mod, "time", SimpleNamespace(time=lambda: 300.0))
     async with StateDB(tmp_path / "state.db") as db:
         await _create_invocation(db)

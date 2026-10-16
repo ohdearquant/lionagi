@@ -350,8 +350,11 @@ non-schema `include_usage` query flag, which the library usage panel passes and 
 Fleet and Mission Control polls leave off. Without it the route returns only the
 plain `total` and `completed_total` counts a row-rendering poll reads, and both
 `finished_total` and `latest_started_at` are null — so a 3-second poll over the
-unfiltered invocation list does not scan every matching row for numbers it never
-displays. With it the route additionally returns `latest_started_at`, a nullable
+unfiltered invocation list runs the two `COUNT(*)` reads it renders and not the
+`MAX(started_at)` aggregate or the terminal-status `CASE` count that would scan
+the same matching rows for numbers no poll displays. Both paths count every
+matching row; the flag drops the aggregate work, not the scan. With it the route
+additionally returns `latest_started_at`, a nullable
 Unix-second timestamp for the maximum recorded start across every row matching
 `skill`, `plugin`, and `status`; it is computed with `total` in a combined
 `COUNT(*)`/`MAX(started_at)` aggregate SELECT within the existing page/count read
@@ -368,7 +371,14 @@ last use or an unavailable rate when their respective aggregate is omitted,
 rather than estimating from a bounded page. Cancellation end times record
 observation of cancellation, including delayed cleanup; cancelled invocations are
 excluded from the scheduler `p95_latency_ms` metric so cleanup delay does not
-become execution latency.
+become execution latency. A scheduled fire writes its trigger type into `plugin`
+(`lionagi/studio/scheduler/engine.py`), so the stored-identity filters match a
+same-named plugin to those rows; correcting producer identity and historical rows
+is separate work. Last tracked use counts every matching recorded start, including
+a scheduled fire that lost its claim and never launched: its row keeps its start
+time, and what it does carry — a reason code shared with cancellations that did
+launch, and the scheduler's own `status_evidence_refs` kind — is not a
+dialect-neutral key this aggregate filters on.
 
 **`get_invocation`** — One invocation with its child sessions, artifacts
 and derived health. `readonly` opens the store read-only for callers whose

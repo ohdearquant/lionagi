@@ -168,3 +168,43 @@ async def test_other_entities_keep_explicit_end_time_write(entity_type, tmp_path
         assert outcome.result == "applied"
         row = await db.fetch_one(f"SELECT status, ended_at FROM {table} WHERE id = ?", ("run",))
         assert row == {"status": status, "ended_at": 300.0}
+
+
+async def test_invocation_cancel_keeps_the_recorded_reason_on_a_same_status_write():
+    """A cancellation arriving after the row already reached ``cancelled``
+    describes the same terminal fact, so the row keeps the observation it
+    already carries: neither its end time nor its reason is replaced, while the
+    write still appends its own history row."""
+    async with StateDB(":memory:") as db:
+        await _invocation(db, ended_at=None)
+        service = SQLAlchemyLifecycleService(db)
+        first = _command(patch={"ended_at": 200.0})
+        assert (await service.transition(first)).result == "applied"
+        await db.execute(
+            "UPDATE invocations SET status_reason_summary = 'first' WHERE id = ?", ("run",)
+        )
+
+        second = TransitionCommand(
+            entity_type="invocation",
+            entity_id="run",
+            to_status="cancelled",
+            reason=ReasonRecord(code=RunReasons.CANCELLED_STALE_AUTO),
+            actor=ActorRecord(type="system", id="stale-sweep"),
+            patch={"ended_at": 300.0},
+        )
+        outcome = await service.transition(second)
+
+        assert outcome.result == "applied"
+        row = await db.get_invocation("run")
+        assert row["status"] == "cancelled"
+        assert row["ended_at"] == 200.0
+        assert row["status_reason_code"] == RunReasons.CANCELLED_MANUAL_KILL
+        assert row["status_reason_summary"] == "first"
+        assert await db.fetch_all(
+            "SELECT status, reason_code FROM status_transitions WHERE entity_id = ? "
+            "AND previous_status IS NOT NULL ORDER BY created_at, id",
+            ("run",),
+        ) == [
+            {"status": "cancelled", "reason_code": RunReasons.CANCELLED_MANUAL_KILL},
+            {"status": "cancelled", "reason_code": RunReasons.CANCELLED_STALE_AUTO},
+        ]

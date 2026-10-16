@@ -62,8 +62,9 @@ The recent list contains five records ordered by update time, with ages measured
 from those updates. Failed usage requests show an unavailable state with a retry
 action, without replacing failure with zero or an empty-history claim. Last
 tracked use is the latest recorded start across all matching records, independent
-of the recent list and later completion or cleanup. Older servers without this
-aggregate show Unknown for nonempty results.
+of the recent list and later completion or cleanup; that includes a scheduled fire
+that lost its claim and never launched, whose row keeps its start time. Older
+servers without this aggregate show Unknown for nonempty results.
 
 ## API resolution
 

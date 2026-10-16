@@ -623,12 +623,14 @@ li invoke end "$INV" --status completed
 | `end ID` | `--status` (default `completed`), `--metadata` | Closes it with a canonical terminal status |
 | `list` | `--skill`, `--status`, `--limit` (default 20) | Lists recent invocations |
 
-`end` only closes a *running* invocation. The first terminal write wins, so an
-`end` that loses that race — the row was cancelled, reaped, or closed by a
-sibling launch while the work ran — records neither the requested `--status` nor
-its `--metadata`. That refusal is reported on stderr and **exits 1**; the stored
-status another writer recorded is left exactly as it is. Treat a zero exit as
-proof the status and metadata were saved.
+`end` closes a *running* invocation, and it records `--metadata` on a row an
+earlier close already put in the requested status: that same-status close merges
+the payload without moving the stored status or end time. An `end` that names a
+*different* status than the stored one — the row was cancelled, reaped, or closed
+by a sibling launch while the work ran — records neither the requested `--status`
+nor its `--metadata`. That refusal is reported on stderr and **exits 1**; the
+stored status another writer recorded is left exactly as it is. Treat a zero exit
+as proof the status and metadata were saved.
 
 ---
 

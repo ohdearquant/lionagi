@@ -783,9 +783,12 @@ engine model that does include it.
 
 **`_end_invocation`** — the guarded `status` write returns an `InvocationEnd` rather than a
 bare row, so the handler can tell an applied close from a refused one. A refusal means the
-row was already terminal (another closer, the reaper, or a sibling launch won the race), so
-the requested `--status` and `--metadata` were not recorded; the command reports that on
-stderr and exits 1 instead of printing the stored status as a successful close.
+row was already in a *different* terminal status (another closer, the reaper, or a sibling
+launch won the race), so the requested `--status` and `--metadata` were not recorded; the
+command reports that on stderr and exits 1 instead of printing the stored status as a
+successful close. A close naming the status the row already carries is applied: the status
+and end time are left alone and only the `--metadata` payload is merged, which is how a
+finalizer records its result on a row an earlier close already moved.
 
 **`_start_invocation`** — invocation records carry no pid marker. `li invoke start` is a
 short-lived CLI command that creates the row and exits (`INV=$(li invoke start ...)`); it is

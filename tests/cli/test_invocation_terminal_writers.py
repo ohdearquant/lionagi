@@ -61,7 +61,11 @@ async def test_terminal_writers_preserve_concurrent_terminal_outcome(
 
     monkeypatch.setattr("lionagi.studio.scheduler.subprocess.spawn_and_wait", spawn)
     if writer == "invoke":
-        result = await _end_invocation("run", status=winner, metadata={"late": True})
+        # The close names a status other than the one the winner recorded, so it
+        # is refused: a same-status close records its metadata instead (see
+        # test_run_invoke_end_records_metadata_on_a_same_status_close).
+        refused_status = "failed" if winner != "failed" else "timed_out"
+        result = await _end_invocation("run", status=refused_status, metadata={"late": True})
         assert result.applied is False
         assert result.row["status"] == winner
     elif writer == "launch_cancel":
@@ -112,8 +116,8 @@ async def test_terminal_writers_finish_running_invocation(tmp_path, monkeypatch,
 
 
 async def test_refused_exit_write_is_logged(tmp_path, monkeypatch, caplog):
-    """A terminal row refuses the post-exit write; the refusal names the run,
-    the stored status, and the status that was refused."""
+    """A terminal row refuses the post-exit write; the refusal is recorded at
+    INFO with the stored status, not reported as a failed update."""
     import logging
 
     path = tmp_path / "state.db"
@@ -141,9 +145,10 @@ async def test_refused_exit_write_is_logged(tmp_path, monkeypatch, caplog):
     with caplog.at_level(logging.INFO, logger="lionagi.studio.services.launches"):
         await launches._spawn_detached(["unused"], "run", tmp_path=None)
 
-    assert "run" in caplog.text
+    assert "Refused exit write for launch invocation run" in caplog.text
     assert "cancelled" in caplog.text
     assert "completed" in caplog.text
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
 async def test_refused_cancellation_write_is_logged(tmp_path, monkeypatch, caplog):
@@ -179,5 +184,6 @@ async def test_refused_cancellation_write_is_logged(tmp_path, monkeypatch, caplo
     ):
         await launches._spawn_detached(["unused"], "run", tmp_path=None)
 
-    assert "run" in caplog.text
+    assert "Refused cancellation write for launch invocation run" in caplog.text
     assert "cancelled" in caplog.text
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]

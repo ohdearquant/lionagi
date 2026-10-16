@@ -229,3 +229,94 @@ def test_run_invoke_end_rejects_an_already_terminal_row_without_rewriting_it(
     row = asyncio.run(read())
     assert row["status"] == "failed"
     assert row["node_metadata"] == {"kept": True}
+
+
+def test_run_invoke_end_records_metadata_on_a_same_status_close(tmp_path, monkeypatch) -> None:
+    """Ending an invocation that is already in the requested terminal status
+    still saves the --metadata, without moving the stored end time: the status
+    write is refused, but the closer's payload is merged onto the row it names."""
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            await db.create_invocation(
+                {
+                    "id": "closed",
+                    "skill": "example",
+                    "started_at": 100.0,
+                    "ended_at": 200.0,
+                    "status": "completed",
+                    "node_metadata": {"kept": True},
+                }
+            )
+
+    import asyncio
+
+    asyncio.run(seed())
+
+    rc = run_invoke(
+        _end_args(invocation_id="closed", status="completed", metadata='{"result": "pr-url"}')
+    )
+
+    assert rc == 0
+
+    async def read():
+        async with StateDB(db_path) as db:
+            return await db.get_invocation("closed")
+
+    row = asyncio.run(read())
+    assert row["status"] == "completed"
+    assert row["ended_at"] == 200.0
+    assert row["node_metadata"] == {"kept": True, "result": "pr-url"}
+
+
+def test_run_invoke_end_still_refuses_a_different_terminal_status(tmp_path, monkeypatch) -> None:
+    """A close naming a different terminal status than the stored one is still
+    refused: it does not overwrite the row another writer closed, and it does
+    not merge the metadata it could not record."""
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            await db.create_invocation(
+                {
+                    "id": "closed",
+                    "skill": "example",
+                    "started_at": 100.0,
+                    "ended_at": 200.0,
+                    "status": "cancelled",
+                    "node_metadata": {"kept": True},
+                }
+            )
+
+    import asyncio
+
+    asyncio.run(seed())
+
+    records, logger, handler = _error_records()
+    try:
+        rc = run_invoke(
+            _end_args(invocation_id="closed", status="failed", metadata='{"late": true}')
+        )
+    finally:
+        logger.removeHandler(handler)
+
+    assert rc == 1
+    message = " ".join(records)
+    assert "'cancelled'" in message
+    assert "--metadata" in message
+
+    async def read():
+        async with StateDB(db_path) as db:
+            return await db.get_invocation("closed")
+
+    row = asyncio.run(read())
+    assert row["status"] == "cancelled"
+    assert row["ended_at"] == 200.0
+    assert row["node_metadata"] == {"kept": True}

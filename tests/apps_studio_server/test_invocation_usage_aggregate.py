@@ -250,10 +250,11 @@ async def test_latest_start_counts_a_fire_that_never_launched(db_path):
     The scheduler writes the invocation row at fire time and then abandons it as
     ``cancelled`` when its occurrence write loses the claim
     (``run.cancelled.stale_auto``, ``started_at`` kept). That reason code is also
-    written by the stale sweep, which cancels rows that did launch, and the row
-    carries no other mark of "never launched" -- the abandon's basis rides only
-    ``status_transitions.actor`` and its ``status_evidence_refs``, not a column a
-    dialect-neutral query can filter on. So the row is counted, pinned here.
+    written by the stale sweep, which cancels rows that did launch, and the
+    abandon's own distinguishing marks -- its ``status_transitions.actor`` and the
+    ``{"kind": "schedule"}`` entry in ``status_evidence_refs`` -- are a JSON blob
+    and a history column, not a declared identity key this status-scoped
+    aggregate filters on. So the row is counted, pinned here.
     """
     async with StateDB(db_path) as db:
         await insert(db, "ran", started_at=100, status="completed")

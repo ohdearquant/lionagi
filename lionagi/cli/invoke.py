@@ -49,10 +49,12 @@ async def _start_invocation(
 class InvocationEnd:
     """Outcome of closing one invocation.
 
-    ``applied`` says whether this call wrote the terminal status; ``row`` is the
-    stored invocation either way, so a caller can report the status another
-    writer left behind. When ``applied`` is false the requested status and any
-    ``--metadata`` were not recorded.
+    ``applied`` says whether this call wrote the requested terminal status;
+    ``row`` is the stored invocation either way, so a caller can report the
+    status another writer left behind. A row already in the requested status is
+    not rewritten, but a same-status close still merges its ``--metadata``, so
+    ``applied`` is true there too. When ``applied`` is false the requested
+    status and any ``--metadata`` were not recorded.
     """
 
     row: dict
@@ -89,25 +91,38 @@ async def _end_invocation(
             extra_fields={"ended_at": time.time()},
         )
         if not transitioned:
-            # The row is no longer running, so the status and metadata this
-            # call carried were not written. Return them as not applied rather
-            # than merging metadata onto the terminal row another writer owns.
+            # The guarded write was refused, so the row left running before it.
             stored = await db.get_invocation(invocation_id)
-            return InvocationEnd(row=stored, applied=False)
+            if stored is None or stored.get("status") != status:
+                # A different terminal status owns the row. Return the status
+                # and metadata this call carried as not written rather than
+                # overwriting the outcome another writer recorded.
+                return InvocationEnd(row=stored, applied=False)
+            # The row is already in the status this call requested, so there is
+            # no status or end time to move. A --metadata payload is still the
+            # closer's to record, merged onto the row as it now stands.
+            if metadata is not None:
+                await _merge_invocation_metadata(db, invocation_id, stored, metadata)
+            return InvocationEnd(row=await db.get_invocation(invocation_id), applied=True)
         if metadata is not None:
             # Merge: preserve any metadata the skill wrote during the
             # run, overwrite per-key with the closer's payload.
-            current = existing.get("node_metadata") or {}
-            if isinstance(current, str):
-                try:
-                    current = json.loads(current)
-                except json.JSONDecodeError:
-                    current = {}
-            await db.update_invocation(
-                invocation_id,
-                node_metadata={**current, **metadata},
-            )
+            await _merge_invocation_metadata(db, invocation_id, existing, metadata)
         return InvocationEnd(row=await db.get_invocation(invocation_id), applied=True)
+
+
+async def _merge_invocation_metadata(db, invocation_id: str, row: dict, metadata: dict) -> None:
+    """Merge ``metadata`` over the row's stored node_metadata, per key."""
+    current = row.get("node_metadata") or {}
+    if isinstance(current, str):
+        try:
+            current = json.loads(current)
+        except json.JSONDecodeError:
+            current = {}
+    await db.update_invocation(
+        invocation_id,
+        node_metadata={**current, **metadata},
+    )
 
 
 async def _list_invocations(*, skill: str | None, status: str | None, limit: int) -> list[dict]:
@@ -191,7 +206,8 @@ def add_invoke_subparser(subparsers: argparse._SubParsersAction) -> None:
         default=None,
         help=(
             "JSON merged key-by-key into the invocation's existing metadata, so anything written "
-            "during the run survives unless this overwrites that key."
+            "during the run survives unless this overwrites that key. A close naming a different "
+            "status than the stored one records neither the status nor this payload."
         ),
     )
 

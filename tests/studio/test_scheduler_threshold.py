@@ -1536,11 +1536,13 @@ async def test_p95_latency_counts_reaper_observed_timeout_rows(tmp_path, monkeyp
     """A reaped ``timed_out`` row's end time is the reaper's observation, so its
     whole 8000s age enters the latency sample even though nothing ran that long.
 
-    Nothing on the invocation row separates a reaper-observed ``timed_out``
-    from one the run wrote itself: both carry reason code
-    ``run.timed_out.deadline``, the reaper's metadata lives in
-    ``status_transitions``, not the row, and only the reason summary text differs.
-    This pins the resulting number and names the gap.
+    The metric filters on status alone, and the row carries no status or identity
+    column that separates a reaper-observed ``timed_out`` from one the run wrote
+    itself: both carry reason code ``run.timed_out.deadline`` and the reaper's
+    basis (deadline, action kind) lives in ``status_transitions``, not the row.
+    ``status_evidence_refs`` does differ by producer, but it is a free-form JSON
+    blob rather than a declared key. This pins the resulting number and names the
+    gap.
     """
     import time as _time
     from types import SimpleNamespace
