@@ -60,6 +60,29 @@ function schedule(id: string, runs: ScheduleRunSliceRow[] = []): ScheduleSummary
   };
 }
 
+const SLICE_KEYS = [
+  "id",
+  "schedule_id",
+  "invocation_id",
+  "action_kind",
+  "status",
+  "exit_code",
+  "chain_depth",
+  "fired_at",
+  "ended_at",
+  "error_class",
+];
+
+function runViewRow(id: string, index = 0): ScheduleRunSliceRow & Record<string, unknown> {
+  return {
+    ...run(id, index),
+    duration_ms: 42,
+    artifacts: ["/tmp/artifacts"],
+    session_ids: [`${id}-session`],
+    outcome: { code: "run.completed.ok", summary: "completed", source: "session" },
+  };
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (error: Error) => void;
@@ -158,6 +181,22 @@ describe("schedule summary refresh", () => {
     expect(listScheduleRuns).toHaveBeenCalledWith("legacy", { limit: 26 });
     expect(recentRunsUnavailable(latest.schedules[0])).toBe(false);
     expect(latest.runs.map((row) => row.id)).toEqual(["legacy-run-0"]);
+  });
+
+  it("projects fallback rows to exactly the slice fields the list contract carries", async () => {
+    const legacy = schedule("legacy");
+    delete legacy.recent_runs_summary;
+    vi.mocked(listSchedules).mockResolvedValue({ schedules: [legacy] });
+    vi.mocked(listScheduleRuns).mockResolvedValue({ runs: [runViewRow("legacy")], has_next: false });
+    await act(async () => root.render(<Harness />));
+    const summary = latest.schedules[0].recent_runs_summary;
+    expect(summary?.status).toBe("available");
+    // A field-path row and a fallback row carry the same shape: the wider run
+    // view the history endpoint serves contributes no key the slice does not.
+    expect(Object.keys(summary?.runs[0] ?? {}).sort()).toEqual([...SLICE_KEYS].sort());
+    for (const dropped of ["duration_ms", "artifacts", "session_ids", "outcome"]) {
+      expect(summary?.runs[0]).not.toHaveProperty(dropped);
+    }
   });
 
   it("falls back only for the rows a daemon answered without the field", async () => {

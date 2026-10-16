@@ -105,19 +105,43 @@ export function recentRunsUnavailable(schedule: ScheduleSummary): boolean {
 }
 
 /**
+ * The fields the list contract's recent-run slice carries for one occurrence.
+ * Kept here so a fallback row is projected onto exactly the shape a
+ * field-bearing row has rather than keeping the wider run view's extras.
+ */
+const SLICE_FIELDS = [
+  "id",
+  "schedule_id",
+  "invocation_id",
+  "action_kind",
+  "status",
+  "exit_code",
+  "chain_depth",
+  "fired_at",
+  "ended_at",
+  "error_class",
+] as const satisfies readonly (keyof ScheduleRunSliceRow)[];
+
+/**
  * Read one schedule's history the way a daemon that predates the summary field
- * serves it, and present it as the same slice. The rows are the wider run view
- * that endpoint serves -- it adds duration, artifact paths, session ids, and
- * the reconciled outcome -- while the acceptance rules, the displayed count and
- * `has_next` are the slice's. One extra row is requested so a history of
- * exactly the displayed count is not reported as having more. A read that fails
- * or answers with a body the rules reject stays unavailable, so a short history
- * is never reported as empty.
+ * serves it, and present it as the same slice. That endpoint serves the wider
+ * run view -- duration, artifact paths, session ids, and the reconciled outcome
+ * on top of the occurrence -- so each row is projected onto the slice fields,
+ * which leaves a fallback row and a field-path row the same shape. The
+ * acceptance rules, the displayed count and `has_next` are the slice's. One
+ * extra row is requested so a history of exactly the displayed count is not
+ * reported as having more. A read that fails or answers with a body the rules
+ * reject stays unavailable, so a short history is never reported as empty.
  */
 async function historySummary(schedule: ScheduleSummary): Promise<ScheduleRecentRunsSummary> {
   try {
     const { runs } = await listScheduleRuns(schedule.id, { limit: RECENT_RUNS + 1 });
     if (!Array.isArray(runs)) return unavailableSummary();
+    const slice = runs.slice(0, RECENT_RUNS).map((run) => {
+      const row: Record<string, unknown> = {};
+      for (const field of SLICE_FIELDS) row[field] = run[field];
+      return row as unknown as ScheduleRunSliceRow;
+    });
     // The candidate goes back through recentSummary, so a fallback slice is
     // held to exactly the rules a field-bearing one is.
     return recentSummary({
@@ -127,7 +151,7 @@ async function historySummary(schedule: ScheduleSummary): Promise<ScheduleRecent
         limit: 25,
         status: "available",
         has_next: runs.length > RECENT_RUNS,
-        runs: runs.slice(0, RECENT_RUNS),
+        runs: slice,
       },
     });
   } catch {

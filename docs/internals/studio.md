@@ -211,7 +211,7 @@ between `build_argv()` and this function gives a revoked
 
 - **Recent-run list contract v1** — `GET /api/schedules/?include_recent_runs=true` adds optional
   `recent_runs_summary` to each definition: `{version: 1, limit: 25, status,
-  has_next, runs}`. Available slices contain the newest 25 occurrences in
+  has_next, runs}`. Available slices contain up to 25 occurrences in
   `fired_at DESC, id DESC` order, including chain children and every status.
   `has_next: true` means older history exists; fewer than 25 with
   `has_next: false` is a complete short slice, and an available empty slice
@@ -248,9 +248,11 @@ between `build_argv()` and this function gives a revoked
   the detail view retains the separate reconciled outcome.
   On the field path, raw error text, prompts, event payloads, and artifact
   paths stay withheld. A row read through the older daemon's history endpoint
-  is the wider run view that endpoint serves: it adds duration, artifact paths,
-  session ids, and the reconciled outcome, while the raw error text stays
-  withheld there too.
+  arrives as the wider run view that endpoint serves, so the client projects
+  each row onto the fields the list contract's slice carries -- dropping
+  duration, artifact paths, session ids, and the reconciled outcome -- which
+  leaves a field-path row and a fallback row the same shape. The raw error text
+  stays withheld there too.
   A shared batch read failure is followed by one liveness read that does not
   touch the failing statement. When that read fails too the failure is treated
   as store-wide, and every slice is left unavailable without a read each, so an

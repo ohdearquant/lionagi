@@ -578,13 +578,14 @@ def _recent_run_keys_sql(dialect: str) -> str:
 
     SQLite aggregates each definition's keys with ``json_group_array`` and
     expands them with ``json_each``; ``recent.key`` is the 0-based position, so
-    the payload bound is ``recent.key < :limit``.
+    the payload bound is the read's third bound parameter (``recent.key < ?``).
 
     PostgreSQL has neither function for this shape -- ``json_each`` reads a
     JSON *object*, not the text array bound here -- so the same structure is
     built from ``jsonb_agg`` over an ordered, ``LIMIT``-ed subquery and
     ``jsonb_array_elements_text(...) WITH ORDINALITY``; ``recent.ord`` is the
-    1-based position, so the payload bound is ``recent.ord <= :limit``.
+    1-based position, so the payload bound is the read's third bound parameter
+    (``recent.ord <= ?``).
     """
     if dialect == "sqlite":
         return (
@@ -647,8 +648,8 @@ _RunBatch = tuple[
 async def _read_run_batch(db: StateDB, schedule_ids: list[str]) -> _RunBatch:
     """Read a set of definitions' occurrence rows and the evidence they project with.
 
-    Three set reads, none per run: the bounded key read, then the invocation
-    and session evidence for the displayed rows only. A read failure raises to
+    Up to three set reads, none per run: the bounded key read, then the
+    invocation and session evidence for the displayed rows only. A read failure raises to
     the caller, which uses it to decide what to attribute the failure to.
     """
     rows = await db.fetch_all(
