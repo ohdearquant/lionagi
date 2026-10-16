@@ -138,17 +138,22 @@ test("Operator Deny and Allow decisions traverse the real permission route", asy
   test.setTimeout(90_000);
   // 15 waits in this test take streamTimeout: four assert a permission proposal
   // or its command is on screen, six confirm the two decisions (three each), and
-  // five re-assert durable history after the reload. Each gets 30s, and the 90s
-  // case cap bounds the whole test rather than summing those waits. Setup, the
-  // response waits, and the two assertions inside selectFreshConversation keep
-  // Playwright's default timeout.
-  // The 30s is the stream stall budget in src/lib/api.ts, from
-  // OPERATOR_STREAM_LIVENESS_TIMEOUT_MS (15_000) plus the reconnect backoff,
-  // which starts at 750ms, multiplies by 1.8 per failed attempt, and caps at
-  // 10,000ms. One silent stream recovers at 15_000 + 750 = 15,750ms, and three
-  // failed reconnects behind that stall at
-  // 15_000 + 750 + 1,350 + 2,430 + 4,374 = 23,904ms, both measured from
-  // silence. A hung reconnect or a second silent stream can exceed 30s.
+  // five re-assert durable history after the reload. Each wait tolerates up to
+  // 30s of delay, so a slow render passes silently. The 90s is a chosen cap on
+  // the whole case, not a sum of those waits: a delayed run can reach the cap
+  // before any single wait times out. Setup, the response waits, and the two
+  // assertions inside selectFreshConversation carry no explicit timeout.
+  // The 30s is sized against the stream's stall-and-replay path, whose timings
+  // come from src/lib/api.ts: OPERATOR_STREAM_LIVENESS_TIMEOUT_MS (15_000) plus
+  // the reconnect backoff, which starts at 750ms, multiplies by 1.8 per failed
+  // attempt, and caps at 10,000ms. Measured from the start of the silence, one
+  // silent stream recovers at 15_000 + 750 = 15,750ms, so that path stays inside
+  // the wait only when the silence starts before the wait does or within about
+  // 14.25s of it. Three failed reconnects behind the stall land at
+  // 15_000 + 750 + 1,350 + 2,430 + 4,374 = 23,904ms only when each reconnect
+  // fails the moment it opens; a failed reconnect that itself takes f ms adds f
+  // to that, so three 2,500ms failures add 7,500ms and land at 31,404ms, past
+  // the wait. A hung reconnect or a second silent stream can exceed 30s.
   const streamTimeout = { timeout: 30_000 };
   // Decisions go over the real permission route with no credential of any kind:
   // Studio is a loopback-local tool and carries no browser-held token.
@@ -235,9 +240,10 @@ test("Operator Deny and Allow decisions traverse the real permission route", asy
   await expect(completedTurns).toHaveCount(completedBeforeAllow + 1, streamTimeout);
 
   // Both decisions and outcomes are durable daemon history, not client-only UI.
-  // The reload drops the stream subscription, and the panel re-hydrates the
-  // conversation and re-subscribes, so frames these waits assert can arrive over
-  // that stream and inherit its stall budget rather than the shorter default.
+  // The reload drops the stream subscription and re-hydrates the conversation
+  // from the HTTP snapshot, which already carries these frames, so the waits
+  // below are gated by that snapshot request rather than by stream recovery.
+  // They share the 30s for consistency; no reconnect budget is needed here.
   await page.reload();
   await expect(
     page.getByText("Demo action denied. Nothing was changed.", { exact: true }),
