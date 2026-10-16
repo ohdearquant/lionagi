@@ -1119,9 +1119,9 @@ async def teardown_persist(
         if refusal is not None:
             # The store refused a write in compatibility mode, so the run fails with that
             # refusal as its reason instead of reading back a status it could not write
-            # (ADR-0128 D6). Nothing more is written: the message hooks are detached, and
-            # SESSION_END, whose handlers write, is not emitted -- the teardown refused before
-            # reaching it.
+            # (ADR-0128 D6). Nothing more is written and the message hooks are detached: the
+            # refusal rose either from one of the teardown's own writes, before SESSION_END
+            # was reached, or from a SESSION_END handler, after the emit below had run.
             _log.error("live persist teardown refused: %s", refusal)
             _unroute_message_hooks(ctx)
             ctx["terminal_reason"] = ("failed", f"The store refused a write: {refusal}")
@@ -1665,12 +1665,13 @@ async def setup_agent_persist(
         ctx["hook"] = route_message_persistence(session, branch, _on_message)
         return ctx
     except Exception as exc:
-        from lionagi.state.compat import StateCompatibilityRefused
+        from lionagi.state.compat import refusal_in
 
         # A store that refuses a write in compatibility mode stops the run instead of
-        # letting it go on without persistence (ADR-0128 D6); it is raised after cleanup.
-        refused = isinstance(exc, StateCompatibilityRefused)
-        if not refused:
+        # letting it go on without persistence (ADR-0128 D6); it is raised as itself, after
+        # cleanup, so a caller's check finds it even when a task group wrapped it.
+        refusal = refusal_in(exc)
+        if refusal is None:
             _log.warning(
                 "live persist setup failed (%r) — disabling persistence for this run",
                 exc,
@@ -1694,8 +1695,8 @@ async def setup_agent_persist(
                 from lionagi.state.db import unregister_shared_db
 
                 unregister_shared_db(db)
-        if refused:
-            raise
+        if refusal is not None:
+            raise refusal  # noqa: B904 -- raised as found, keeping its own cause
         return None
 
 

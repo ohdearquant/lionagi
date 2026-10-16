@@ -30,19 +30,21 @@ def _raise_callback_errors(errors: list[BaseException]) -> NoReturn:
     One error is raised as itself and several as one group, except that a store refusal
     (ADR-0128 D6) is always raised as itself, with its own cause, so a caller's ``isinstance``
     check finds it; the other callbacks' errors are logged, since only one exception leaves.
+    A cancellation collected beside the refusal is not logged: it is the teardown's ordinary
+    noise, not a failure the run should report.
     """
     if len(errors) == 1:
         raise errors[0]
+    from lionagi.ln.concurrency import is_cancelled  # noqa: PLC0415
     from lionagi.state.compat import refusal_in  # noqa: PLC0415
 
     for error in errors:
         refusal = refusal_in(error)
         if refusal is not None:
             for other in errors:
-                if other is not error:
-                    _log.warning(
-                        "on_message_added callback error beside a store refusal: %r", other
-                    )
+                if other is error or is_cancelled(other):
+                    continue
+                _log.warning("on_message_added callback error beside a store refusal: %r", other)
             raise refusal
     raise _BaseExceptionGroup("on_message_added hooks failed", errors)
 
