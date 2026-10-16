@@ -460,12 +460,13 @@ class iModel:  # noqa: N801
         if api_call is None:
             kw["stream"] = True
             api_call = await self.create_event(**kw)
-        # A call stream() drives is consumed by this generator, so it is tracked
-        # in the executor's pile and never queued: the next forward() on this
-        # executor would pop a queued id and look it up in the pile, which the
-        # teardown below has already emptied for it. A caller that appended the
-        # call before passing it in put it in the queue at that append, so it is
-        # dropped here, and a forward() between the two can still have sent it.
+        # A call stream() creates is consumed by this generator, never by the
+        # executor's queue: it goes straight into the pile, because the next
+        # forward() on this executor would pop a queued id and look it up in the
+        # pile, which the teardown below has already emptied for it. A caller
+        # that appended the call before passing it in did put it in the queue at
+        # that append, so the entry is dropped here; a forward() between the two
+        # can still have sent it.
         self.executor.pending.exclude(api_call.id)
         api_call.metadata.pop("served_model", None)
 
