@@ -222,13 +222,21 @@ async def test_list_endpoint_returns_empty(patched_app):
     assert resp.json() == {"version": 1, "items": [], "next_cursor": None}
 
 
-async def test_canonical_list_endpoint_does_not_redirect(patched_app):
-    """Hosted clients reach the canonical list route without a redirect hop."""
+async def test_canonical_list_endpoint_does_not_redirect(patched_app, monkeypatch):
+    """Hosted clients reach the canonical list route without a redirect hop.
+
+    A page on another origin is accepted only with a bearer, so the hosted client here
+    presents the configured token, as a hosted deployment does.
+    """
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "hosted-token")
     _, _, client = patched_app
     async with client as ac:
         resp = await ac.get(
             "/api/engine-runs/",
-            headers={"Origin": "https://studio.example.com"},
+            headers={
+                "Origin": "https://studio.example.com",
+                "Authorization": "Bearer hosted-token",
+            },
             follow_redirects=False,
         )
     assert resp.status_code == 200
