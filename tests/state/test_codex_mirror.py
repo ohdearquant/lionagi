@@ -134,6 +134,31 @@ async def test_a_repeated_tool_output_in_a_later_batch_keeps_the_call_name(db):
     assert [(r["function"], r["output"]) for r in responses] == [("shell", "again")]
 
 
+async def test_an_output_with_no_call_id_is_never_named_from_a_batch_key(db):
+    """Two calls and an output with no ``call_id`` at all must not be linked together.
+
+    ``_tool_pair_ids`` falls back to the record's own ``id`` when a ``call_id`` is absent, so
+    the two unkeyed calls share one request id, and the unkeyed output shares that id too.
+    Naming the output from a batch keyed by ``call_id`` would take the name of whichever
+    call landed last in the batch; it has no call to name, so it keeps the empty name."""
+    records = [
+        _rec("session_meta", {"id": ROLLOUT_UID, "cwd": "/x"}),
+        _rec("response_item", {"type": "function_call", "name": "shell", "arguments": "{}"}),
+        _rec("response_item", {"type": "function_call", "name": "apply_patch", "arguments": "{}"}),
+        _rec("response_item", {"type": "function_call_output", "output": "X-out"}),
+    ]
+    await mirror_session(db, rollout_uid=ROLLOUT_UID, records=records, tool_names={}, turn={})
+    session = await db.get_session(session_db_id(ROLLOUT_UID))
+    contents = []
+    for mid in await db.get_progression(session["progression_id"]):
+        content = (await db.get_message(mid))["content"]
+        contents.append(json.loads(content) if isinstance(content, str) else content)
+    outputs = [c for c in contents if c.get("output") == "X-out"]
+    assert [c["function"] for c in outputs] == [""]
+    # It points at no request row: the shared fallback id is the two calls' id, not its own.
+    assert "action_request_id" not in outputs[0] or outputs[0].get("action_request_id") is None
+
+
 async def test_mirrored_session_carries_codex_import_provenance(db):
     """The row records that it was imported, from which file, and on which id."""
     written, tally = await _mirror(db, _records())

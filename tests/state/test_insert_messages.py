@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""StateDB.insert_messages: one transaction, at most one progression rewrite per batch."""
+"""StateDB.insert_messages: one transaction; a string-id progression is rewritten at most once."""
 
 from __future__ import annotations
 

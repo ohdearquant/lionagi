@@ -1938,6 +1938,102 @@ async def test_a_tool_result_whose_use_was_never_mirrored_keeps_an_empty_name(
 
 
 @pytest.mark.asyncio
+async def test_naming_unnamed_results_reads_the_store_once_per_pass(temp_db_path: Path) -> None:
+    """A pass whose results link to uses never mirrored must not open one read per result.
+
+    Each such result needs the name off its use's stored row; the naming step must batch
+    those lookups into one query rather than one ``get_message`` each."""
+    from sqlalchemy import event
+
+    events = [_user_text("u1", "hi")] + [
+        _tool_result(f"u{i + 2}", f"tool_{i}", f"out {i}") for i in range(40)
+    ]
+    async with StateDB() as db:
+        reads: list[str] = []
+
+        def _spy(conn, cursor, statement, parameters, context, executemany):
+            upper = statement.lstrip().upper()
+            if upper.startswith("SELECT") and "FROM MESSAGES" in upper:
+                reads.append(statement)
+
+        event.listen(db._engine.sync_engine, "before_cursor_execute", _spy)
+        try:
+            await mirror_session(db, session_uid=SID, events=events, tool_names={})
+        finally:
+            event.remove(db._engine.sync_engine, "before_cursor_execute", _spy)
+        contents = await _session_contents(db)
+
+    assert _response_functions(contents) == ["" for _ in range(40)]
+    assert len(reads) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_results_pointer_covers_the_named_row(
+    temp_db_path: Path, tmp_path: Path
+) -> None:
+    """The source pointer of a repeated result must hash the row as stored, name included.
+
+    The name is recovered from the use's stored row after the source pointer is built; a
+    pointer hashing the pre-naming content would let a reader reconstruct an unnamed
+    ActionResponse and accept it as the full content."""
+    from sqlalchemy import event
+
+    from lionagi.state._mirror_common import resolve_mirrored_content
+
+    use = _assistant("a1", [{"type": "tool_use", "id": "tool_1", "name": "Bash", "input": {}}])
+    first = _tool_result("u2", "tool_1", "first")
+    repeat = _tool_result("u3", "tool_1", "again")
+    path = tmp_path / "t.jsonl"
+
+    def _write(lines: list[dict]) -> list[tuple[int, int, str]]:
+        sources: list[tuple[int, int, str]] = []
+        offset = 0
+        blob = b""
+        for line in lines:
+            raw = (json.dumps(line) + "\n").encode()
+            sources.append((offset, len(raw) - 1, hashlib.sha256(raw[:-1]).hexdigest()))
+            offset += len(raw)
+            blob += raw
+        path.write_bytes(blob)
+        return sources
+
+    events = [_user_text("u1", "run it"), use, first]
+    sources = _write(events)
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=SID,
+            events=events,
+            tool_names={},
+            source_path=str(path),
+            event_sources=sources,
+            max_preview_chars=500,
+        )
+        sources = _write([*events, repeat])[-1:]
+        await mirror_session(
+            db,
+            session_uid=SID,
+            events=[repeat],
+            tool_names={},
+            source_path=str(path),
+            event_sources=sources,
+            max_preview_chars=500,
+        )
+        row = await db.get_message(_det(SID, "toolresp", "tool_1"))
+
+    assert row["content"]["function"] == "Bash"
+
+    def _reconstruct(record, session_uid, message_id):
+        for m in messages_for_event(record, session_uid, {}):
+            if str(m.id) == message_id:
+                return m.to_dict(mode="db")["content"]
+        return None
+
+    resolved = resolve_mirrored_content(row, reconstruct=_reconstruct)
+    assert resolved.content["function"] == "Bash"
+
+
+@pytest.mark.asyncio
 async def test_a_mirror_pass_rewrites_each_progression_once(temp_db_path: Path) -> None:
     from sqlalchemy import event
 
@@ -2862,7 +2958,7 @@ async def test_a_failed_prior_stem_absorption_also_leaves_the_file_eligible(tmp_
     assert calls == [uid, stem, uid, stem], f"absorption ids across both passes: {calls}"
 
 
-# Bounded preview + source pointer codec (mirror_spec.md)
+# Bounded preview + source pointer codec
 
 
 def _source_line_for(raw: bytes, path: Path) -> SourceLine:

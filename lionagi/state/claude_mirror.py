@@ -19,6 +19,7 @@ from ._mirror_common import (
     MIRROR_PROVIDER_ERROR_KEY,
     SourceLine,
     bound_mirror_content,
+    name_answered_results,
     write_mirrored_messages,
 )
 
@@ -84,11 +85,13 @@ def messages_for_event(
     tool_names: dict[str, str],
 ) -> list[RoledMessage]:
     """Map one Claude JSONL event to ordered lionagi messages. ``tool_names`` is
-    read/written in place so a matching tool_result can label its ActionResponse; the
-    result consumes its entry, so the map holds only tool uses still awaiting a result. A
-    second result for a use already answered finds no entry, so its ActionResponse has an
-    empty function name here; ``write_mirrored_messages`` names it from the use's own row
-    before it replaces the row of the first result, whose message id it shares."""
+    read/written in place so a matching tool_result can label its ActionResponse; the result
+    consumes its entry, so the map holds the tool uses still awaiting a result — except a map
+    loaded from an earlier release's key, which also holds answered uses until a repeat of
+    their result consumes them. A second result for a use already answered finds no entry,
+    so its ActionResponse has an empty function name here; ``mirror_session`` names it from
+    the use's own row before it writes the batch, so it replaces the row of the first
+    result, whose message id it shares, keeping the name."""
     etype = event.get("type")
     if etype not in _MESSAGE_TYPES or event.get("isMeta"):
         return []
@@ -334,9 +337,16 @@ async def mirror_session(
         }
     )
 
-    rows: list[dict[str, Any]] = []
+    entries: list[tuple[dict[str, Any], SourceLine | None]] = []
     for m, src in zip(messages, message_sources, strict=False):
         md = m.to_dict(mode="db")
+        entries.append((md, src))
+    # Name each repeated result before its content is bounded: the source pointer's
+    # content hash must cover the row as stored, name included, or a reader reconstructing
+    # the unnamed ActionResponse would mismatch and fall back to the stale preview.
+    await name_answered_results(db, [md for md, _ in entries])
+    written: list[dict[str, Any]] = []
+    for md, src in entries:
         if max_preview_chars is not None and src is not None:
             preview, pointer = bound_mirror_content(
                 md["content"],
@@ -350,11 +360,11 @@ async def mirror_session(
             nm = dict(md.get("node_metadata") or {})
             nm["mirror_source"] = pointer
             md["node_metadata"] = nm
-        rows.append(md)
+        written.append(md)
 
-    if rows:
+    if written:
         await write_mirrored_messages(
-            db, rows, progression_ids=(bprog, sprog), session_id=sid, activity_at=last_ts
+            db, written, progression_ids=(bprog, sprog), session_id=sid, activity_at=last_ts
         )
 
     return len(messages)

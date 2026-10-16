@@ -218,13 +218,13 @@ def _resolve_project_for_mirror(cwd: str) -> tuple[str, str]:
     return project, source
 
 
-# A tool result consumes its tool use's name (see messages_for_event), so a file's map holds only
+# A tool result consumes its tool use's name (see messages_for_event), so a file's map holds the
 # uses still waiting for a result, and is saved as "pending_tool_names" and loaded whole. It is
 # also saved as "tool_names", the key earlier releases read, so a downgraded mirror still names
-# those results. Maps saved by earlier releases have only "tool_names" and kept every use ever
-# seen. A load keeps the newest entries of such a map, on the assumption that a use still
-# pending is among a file's most recent ones; an older pending use is dropped, and its result
-# is mirrored with no function name.
+# those results. A map saved by an earlier release has only "tool_names" and kept every use ever
+# seen, so a load of one keeps its newest entries, answered uses included, and those stay until a
+# repeat of their result consumes them. A pending use older than that window is dropped from the
+# map, and its result takes the name from the use's stored row instead.
 _LEGACY_TOOL_NAMES_KEEP = 64
 
 

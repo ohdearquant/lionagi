@@ -2161,6 +2161,7 @@ class StateDB:
     # Messages
 
     _UNKNOWN_TYPE_ID = 0
+    _MESSAGE_READ_CHUNK = 500
 
     @staticmethod
     def _validate_message(msg: dict[str, Any]) -> None:
@@ -2234,6 +2235,33 @@ class StateDB:
                 .first()
             )
         return self._row_to_dict(row) if row else None
+
+    async def get_messages(self, message_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
+        """Read many messages in one query, keyed by id; absent ids are simply missing.
+
+        A caller that needs N rows by id (e.g. recovering a name from a stored tool use)
+        reads them in bounded chunks rather than one ``get_message`` per row, which reopens
+        a connection each time. ``_MESSAGE_READ_CHUNK`` keeps each IN list under SQLite's
+        bound-parameter ceiling.
+        """
+        unique = list(dict.fromkeys(message_ids))
+        if not unique:
+            return {}
+        found: dict[str, dict[str, Any]] = {}
+        async with self._read() as conn:
+            for start in range(0, len(unique), self._MESSAGE_READ_CHUNK):
+                chunk = unique[start : start + self._MESSAGE_READ_CHUNK]
+                placeholders = ",".join(f":id{i}" for i in range(len(chunk)))
+                sql = (
+                    f"SELECT m.*, mt.lion_class AS lion_class_str "  # noqa: S608
+                    f"FROM messages m LEFT JOIN message_types mt ON m.lion_class = mt.type_id "
+                    f"WHERE m.id IN ({placeholders})"
+                )
+                params = {f"id{i}": mid for i, mid in enumerate(chunk)}
+                rows = (await conn.execute(text(sql), params)).mappings().all()
+                for row in rows:
+                    found[row["id"]] = self._row_to_dict(row)
+        return found
 
     async def _resolve_lion_class(self, lion_class_str: str) -> int:
         """Get or create a message_types row; race-safe via ON CONFLICT DO NOTHING."""
@@ -2365,7 +2393,7 @@ class StateDB:
         ids, is rewritten at most once for the whole batch, where ``insert_message`` plus
         ``append_to_progression`` per message rewrites each progression's whole array once
         per message. Ids are appended in batch order and
-        skipped when already present, so re-running a batch leaves every progression
+        skipped when already present, so re-running a batch leaves a string-id progression
         unchanged. That single rewrite covers a stored array of string ids given string ids,
         the shape every writer produces; any other stored value or id goes through
         ``append_to_progression``'s own statement one id at a time, so it ends as appending

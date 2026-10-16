@@ -30,6 +30,7 @@ from ._mirror_common import (
     MIRROR_PROVIDER_ERROR_KEY,
     SourceLine,
     bound_mirror_content,
+    name_answered_results,
     write_mirrored_messages,
 )
 
@@ -291,11 +292,13 @@ def messages_for_record(
     turn: dict[str, Any] | None = None,
 ) -> list[RoledMessage]:
     """Map one codex rollout record to ordered lionagi messages. ``tool_names`` is
-    read/written in place so a tool output can label its ActionResponse; the output
-    consumes its entry, so the map holds only calls still awaiting an output. A second
-    output for a call already answered finds no entry, so its ActionResponse has an empty
-    function name here; ``write_mirrored_messages`` names it from the call's own row
-    before it replaces the row of the first output, whose message id it shares.
+    read/written in place so a tool output can label its ActionResponse; the output consumes
+    its entry, so the map holds the calls still awaiting an output — except a map loaded
+    from an earlier release's key, which also holds answered calls until a repeat of their
+    output consumes them. A second output for a call already answered finds no entry, so its
+    ActionResponse has an empty function name here; ``mirror_session`` names it from the
+    call's own row before it writes the batch, so it replaces the row of the first output,
+    whose message id it shares, keeping the name.
 
     ``turn`` is the most recent ``turn_context`` seen before this record; it is
     stamped onto every message produced so a mirrored turn stays attributable to
@@ -376,6 +379,12 @@ def messages_for_record(
         out = p.get("tools") if kind == "tool_search_output" else p.get("output")
         text = json.dumps(out, default=str) if kind == "tool_search_output" else _text_blocks(out)
         req_id, resp_id = _tool_pair_ids(rollout_uid, call_id, pid)
+        # An output carries no request of its own to point at: its fallback id is derived
+        # from the output's record, not the call's, so it can only link by call_id. Without
+        # one, leave it unlinked rather than pointing at a shared fallback id that names it
+        # after whichever unkeyed call in the batch landed last.
+        if not call_id:
+            req_id = None
         fn = tool_names.pop(call_id, "")
         specs.append(
             (
@@ -579,9 +588,16 @@ async def mirror_session(
         }
     )
 
-    rows: list[dict[str, Any]] = []
+    entries: list[tuple[dict[str, Any], SourceLine | None]] = []
     for m, src in zip(messages, message_sources, strict=False):
         md = m.to_dict(mode="db")
+        entries.append((md, src))
+    # Name each repeated output before its content is bounded: the source pointer's
+    # content hash must cover the row as stored, name included, or a reader reconstructing
+    # the unnamed ActionResponse would mismatch and fall back to the stale preview.
+    await name_answered_results(db, [md for md, _ in entries])
+    written: list[dict[str, Any]] = []
+    for md, src in entries:
         if max_preview_chars is not None and src is not None:
             preview, pointer = bound_mirror_content(
                 md["content"],
@@ -595,11 +611,11 @@ async def mirror_session(
             nm = dict(md.get("node_metadata") or {})
             nm["mirror_source"] = pointer
             md["node_metadata"] = nm
-        rows.append(md)
+        written.append(md)
 
-    if rows:
+    if written:
         await write_mirrored_messages(
-            db, rows, progression_ids=(bprog, sprog), session_id=sid, activity_at=last_ts
+            db, written, progression_ids=(bprog, sprog), session_id=sid, activity_at=last_ts
         )
 
     return len(messages), tally
