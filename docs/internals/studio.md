@@ -85,12 +85,20 @@ wiring.
 **System timezone fallback** — When the localtime symlink points outside
 `zoneinfo.TZPATH`, a `zoneinfo` component in its path can still supply a
 loadable IANA name. This fallback checks both the spelling and the canonical
-keys reached through configured aliases. Conflicting files under one key are
-ambiguous; the same inode, symlink aliases, and byte-identical copies are accepted.
+keys reached through configured aliases. Every candidate must match the actual
+localtime file's rules. Configured duplicate keys and canonical aliases must
+agree. Rules are compared using complete transition records, offsets, DST flags,
+abbreviations and exact POSIX footer text; compatibility blocks, unused padding
+and trailing bytes do not prevent an equivalent modern file from matching.
+Different modern table structures or footer expressions are not normalized,
+even when they describe equivalent behavior. A loadable file outside the
+bounded reader's supported format requires exact byte identity instead.
 Once ambiguity is found, another spelling cannot bypass the refusal. Inaccessible
 search entries are skipped, matching the standard library's filesystem lookup.
-A name available only from the Python `tzdata` package has no configured-file
-evidence for this fallback and is not inferred from localtime. A readable
+When no configured file supplies a key, the public Python `tzdata` package
+resource may supply the same evidence. Filesystem reads require regular files,
+use nonblocking opens with a second file-type check, and are capped at 1 MiB.
+Package resources have the same size cap. A readable
 localtime file with no accepted, unambiguous name raises
 `SystemTimezoneUnreadableError`; `LIONAGI_SCHEDULER_TZ` can select the desired
 zone explicitly.

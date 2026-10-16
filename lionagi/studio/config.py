@@ -8,8 +8,11 @@ import time
 import zoneinfo
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from importlib import resources
 from pathlib import Path
 from typing import Any
+
+from ._timezone_rules import MAX_TZIF_BYTES, read_tzif, tzif_rules
 
 _logger = logging.getLogger(__name__)
 
@@ -106,16 +109,37 @@ def _zone_file_for_name(name: str) -> Path | None:
     return None
 
 
-def _same_zone_file(first: Path, second: Path) -> bool:
-    """Whether two paths identify the same tzfile or byte-identical copies."""
+def _path_zone_rules(path: Path, cache: dict[Path, tuple | None]) -> tuple | None:
+    if path not in cache:
+        cache[path] = tzif_rules(read_tzif(path))
+    return cache[path]
+
+
+def _valid_zone_key(name: str) -> bool:
+    return bool(name) and all(part not in ("", ".", "..") for part in name.split("/"))
+
+
+def _named_zone_rules(name: str, cache: dict[Path, tuple | None]) -> tuple | None:
+    """Read the first configured file, or its public tzdata package resource."""
+    if not _valid_zone_key(name):
+        return None
+    selected = _zone_file_for_name(name)
+    if selected is not None:
+        return _path_zone_rules(selected, cache)
     try:
-        return os.path.samefile(first, second) or first.read_bytes() == second.read_bytes()
-    except OSError:
-        return False
+        resource = resources.files("tzdata.zoneinfo")
+        for part in name.split("/"):
+            resource = resource.joinpath(part)
+        if isinstance(resource, Path):
+            return _path_zone_rules(resource, cache)
+        with resource.open("rb") as stream:
+            return tzif_rules(stream.read(MAX_TZIF_BYTES + 1))
+    except (ImportError, OSError, ValueError):
+        return None
 
 
-def _zone_key_is_unambiguous(name: str) -> bool:
-    """Check a key and its resolved aliases against every configured root."""
+def _zone_key_is_unambiguous(name: str, host_rules: tuple, cache: dict[Path, tuple | None]) -> bool:
+    """Check the host's rules against a key and every configured resolved alias."""
     roots = _tz_search_roots()
     pending = [name]
     checked: set[str] = set()
@@ -132,9 +156,10 @@ def _zone_key_is_unambiguous(name: str) -> bool:
                 if resolved is None:
                     return False
                 files.append(resolved)
-        # Package-only loadability cannot establish which filesystem rules
-        # the host's link names. An explicit scheduler zone remains available.
-        if not files or any(not _same_zone_file(files[0], other) for other in files[1:]):
+        if not files:
+            if _named_zone_rules(key, cache) != host_rules:
+                return False
+        elif any(_path_zone_rules(path, cache) != host_rules for path in files):
             return False
         for path in files:
             for root in roots:
@@ -148,14 +173,20 @@ def _zone_key_is_unambiguous(name: str) -> bool:
     return True
 
 
-def _zone_name_from_path(path: Path, roots: list[Path]) -> str | None:
+def _zone_name_from_path(
+    path: Path, roots: list[Path], cache: dict[Path, tuple | None] | None = None
+) -> str | None:
     """Express *path* as a zone name that loads the same timezone rules.
 
     Containment alone isn't enough: with several roots configured, an
     earlier one holding the same key can shadow a later one, so a candidate
     is accepted only if resolving it the way the stdlib will arrives back at
-    the same file or byte-identical rules.
+    rules equivalent to the host's complete TZif transition records and footer.
     """
+    cache = {} if cache is None else cache
+    host_rules = _path_zone_rules(path, cache)
+    if host_rules is None:
+        return None
     for root in roots:
         try:
             relative = path.relative_to(root)
@@ -163,12 +194,14 @@ def _zone_name_from_path(path: Path, roots: list[Path]) -> str | None:
             continue
         name = "/".join(relative.parts)
         selected = _zone_file_for_name(name) if name else None
-        if selected is not None and _same_zone_file(selected, path):
+        if selected is not None and _path_zone_rules(selected, cache) == host_rules:
             return name
     return None
 
 
-def _zone_name_from_link_structure(link: Path, resolved: Path | None) -> str | None:
+def _zone_name_from_link_structure(
+    link: Path, resolved: Path | None, cache: dict[Path, tuple | None] | None = None
+) -> str | None:
     """Zone name read from the shape of the localtime link itself.
 
     Reached when no search-root-relative key safely identifies the target: a Python whose
@@ -179,18 +212,23 @@ def _zone_name_from_link_structure(link: Path, resolved: Path | None) -> str | N
     a suffixed directory like ``zoneinfo.backup`` stays a refusal, keeping
     the containment rule's judgment that unrelated lookalike trees are not
     zone sources — and it is accepted only if the stdlib can load it from a
-    configured filesystem root. Duplicate names, including a configured
-    alias's resolved key, must identify the same file or byte-identical copies.
+    configured filesystem root or the tzdata package with the host's rules.
+    Duplicate names, including a configured alias's resolved key, must agree
+    with the host's complete transition records and POSIX footer.
     """
+    cache = {} if cache is None else cache
+    host_rules = _path_zone_rules(resolved, cache) if resolved is not None else None
+    if host_rules is None:
+        return None
     # Resolved first, link text second. The primary path already derives the
     # name from where the link resolves rather than from what it says, and this
     # fallback answers the same question, so the two must not disagree about
     # which spelling wins. They differ whenever the link names an alias -- a
     # localtime pointing at ``zoneinfo/US/Eastern`` that resolves to
     # ``zoneinfo/America/New_York`` -- where both spellings load but only one is
-    # the zone the host actually uses. Link text stays as the second candidate
-    # for the case this fallback exists for, where the resolved path lands
-    # outside any component named ``zoneinfo`` and supplies no path-derived key.
+    # the zone the host actually uses. Link text can supply an alias when the
+    # resolved spelling is absent or unloadable, but must independently match
+    # the actual localtime rules before it can be accepted.
     # An ambiguous resolved spelling is a refusal, never a reason to try an alias.
     candidates: list[Path] = []
     if resolved is not None:
@@ -210,11 +248,10 @@ def _zone_name_from_link_structure(link: Path, resolved: Path | None) -> str | N
             name = "/".join(parts[index + 1 :])
             if not name:
                 break
-            try:
-                zoneinfo.ZoneInfo(name)
-            except Exception:  # noqa: BLE001
+            named_rules = _named_zone_rules(name, cache)
+            if named_rules is None:
                 break
-            if not _zone_key_is_unambiguous(name):
+            if named_rules != host_rules or not _zone_key_is_unambiguous(name, host_rules, cache):
                 return None
             return name
     return None
@@ -231,7 +268,10 @@ def _localtime_is_readable() -> bool:
     try:
         if not stat.S_ISREG(SYSTEM_LOCALTIME_LINK.stat().st_mode):
             return False
-        with SYSTEM_LOCALTIME_LINK.open("rb") as handle:
+        fd = os.open(SYSTEM_LOCALTIME_LINK, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+        with os.fdopen(fd, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                return False
             handle.read(1)
     except OSError:
         return False
@@ -255,20 +295,14 @@ def _resolve_system_local_tz() -> TimezoneResolution:
     if tz_env:
         return TimezoneResolution(tz_env, TZ_SOURCE_TZ_ENV, "TZ")
 
+    cache: dict[Path, tuple | None] = {}
     localtime = _resolved(SYSTEM_LOCALTIME_LINK)
     if localtime is not None:
-        name = _zone_name_from_path(localtime, _tz_search_roots())
+        name = _zone_name_from_path(localtime, _tz_search_roots(), cache)
         if name is not None:
-            try:
-                zoneinfo.ZoneInfo(name)
-            except Exception:  # noqa: BLE001
-                name = None
-            if name is not None:
-                return TimezoneResolution(
-                    name, TZ_SOURCE_SYSTEM_LOCALTIME, str(SYSTEM_LOCALTIME_LINK)
-                )
+            return TimezoneResolution(name, TZ_SOURCE_SYSTEM_LOCALTIME, str(SYSTEM_LOCALTIME_LINK))
 
-    name = _zone_name_from_link_structure(SYSTEM_LOCALTIME_LINK, localtime)
+    name = _zone_name_from_link_structure(SYSTEM_LOCALTIME_LINK, localtime, cache)
     if name is not None:
         return TimezoneResolution(
             name,
@@ -278,7 +312,7 @@ def _resolve_system_local_tz() -> TimezoneResolution:
 
     if _localtime_is_readable():
         raise SystemTimezoneUnreadableError(
-            f"{SYSTEM_LOCALTIME_LINK} is readable but does not resolve to a "
+            f"{SYSTEM_LOCALTIME_LINK} is readable but its rules could not be matched to a "
             "loadable, unambiguous IANA timezone. Refusing to start rather than "
             "interpreting schedules in an "
             f"unrequested UTC. Set {SCHEDULER_TZ_ENV_VAR} to an IANA zone name "

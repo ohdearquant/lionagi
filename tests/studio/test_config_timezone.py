@@ -18,6 +18,7 @@ import logging
 import os
 import signal
 import zoneinfo
+from importlib import resources
 from pathlib import Path
 
 import pytest
@@ -46,6 +47,14 @@ def tz_host(tmp_path, monkeypatch):
     monkeypatch.delenv("TZ", raising=False)
     link = tmp_path / "localtime"
     monkeypatch.setattr(config, "SYSTEM_LOCALTIME_LINK", link)
+    original_resources = resources.files
+
+    def no_package_fallback(name):
+        if name == "tzdata.zoneinfo":
+            raise ModuleNotFoundError(name)
+        return original_resources(name)
+
+    monkeypatch.setattr(resources, "files", no_package_fallback)
 
     def set_roots(*names):
         """Point the stdlib's zone search at these trees, in this order."""
@@ -300,12 +309,26 @@ def test_ambiguous_resolved_spelling_cannot_fall_back_to_another_alias(tz_host):
     link, set_roots, zone_file = tz_host
     zone_file("first", data_from="Asia/Tokyo")
     zone_file("second")
-    zone_file("first", "US/Eastern", data_from="Asia/Tokyo")
+    zone_file("first", "US/Eastern", data_from="America/New_York")
     canonical = zone_file("outside/zoneinfo")
     alias = zone_file("outside/zoneinfo", "US/Eastern", data_from="America/New_York")
     alias.unlink()
     alias.symlink_to(canonical)
     link.symlink_to(alias)
+    set_roots("first", "second")
+
+    with pytest.raises(config.SystemTimezoneUnreadableError):
+        config._system_local_tz_name()
+
+
+def test_equivalent_alias_still_checks_its_shadowed_canonical_key(tz_host, tmp_path):
+    link, set_roots, zone_file = tz_host
+    canonical = zone_file("first")
+    zone_file("second", data_from="Asia/Tokyo")
+    alias = tmp_path / "first" / "US" / "Eastern"
+    alias.parent.mkdir(parents=True)
+    alias.symlink_to(canonical)
+    link.symlink_to(zone_file("outside/zoneinfo", "US/Eastern", data_from="America/New_York"))
     set_roots("first", "second")
 
     with pytest.raises(config.SystemTimezoneUnreadableError):
@@ -349,25 +372,210 @@ def test_inaccessible_search_root_does_not_escape_resolution(
     assert config._system_local_tz_name() == "America/New_York"
 
 
-def test_link_structure_requires_filesystem_evidence_for_package_only_zone(tz_host, monkeypatch):
+@pytest.mark.parametrize("package_zone", ["America/New_York", "Asia/Tokyo", None])
+def test_link_structure_checks_package_rules_against_host(
+    tz_host, tmp_path, monkeypatch, package_zone
+):
     link, set_roots, zone_file = tz_host
     target = zone_file("outside/zoneinfo")
     link.symlink_to(target)
     set_roots("empty")
-    # Supply the tzdata package's resource stream without installing a package.
-    # ZoneInfo still uses its real parser and filesystem-to-package fallback.
-    from zoneinfo import _common
+    package_root = tmp_path / "package"
+    if package_zone:
+        zone_file("package", data_from=package_zone)
+    from importlib import resources
 
-    requested = []
+    monkeypatch.setattr(resources, "files", lambda name: package_root)
+    if package_zone == "America/New_York":
+        assert config._system_local_tz_name() == "America/New_York"
+    else:
+        with pytest.raises(config.SystemTimezoneUnreadableError):
+            config._system_local_tz_name()
 
-    def package_loader(name):
-        requested.append(name)
-        return target.open("rb")
 
-    monkeypatch.setattr(_common, "load_tzdata", package_loader)
+@pytest.mark.parametrize("oversized", [False, True])
+def test_package_streams_are_bounded(tz_host, monkeypatch, oversized):
+    import io
+
+    link, set_roots, zone_file = tz_host
+    host = zone_file("outside/zoneinfo")
+    limit = 1 << 20
+    data = host.read_bytes() + (bytes(limit) if oversized else b"")
+    reads = []
+
+    class PackageStream(io.BytesIO):
+        def read(self, size=-1):
+            reads.append(size)
+            return super().read(size)
+
+    class PackageZone:
+        def __init__(self, parts=()):
+            self.parts = parts
+
+        def joinpath(self, child):
+            return PackageZone((*self.parts, child))
+
+        def open(self, mode):
+            assert mode == "rb"
+            assert self.parts == ("America", "New_York")
+            return PackageStream(data)
+
+    monkeypatch.setattr(resources, "files", lambda name: PackageZone())
+    link.symlink_to(host)
+    set_roots("empty")
+    if oversized:
+        with pytest.raises(config.SystemTimezoneUnreadableError):
+            config._system_local_tz_name()
+    else:
+        assert config._system_local_tz_name() == "America/New_York"
+    assert reads and all(size == limit + 1 for size in reads)
+
+
+@pytest.mark.parametrize("outside", [False, True])
+def test_equivalent_rules_with_different_file_sizes_are_accepted(tz_host, outside):
+    link, set_roots, zone_file = tz_host
+    zone_file("first")
+    second = zone_file("second")
+    second.write_bytes(second.read_bytes() + b"\n")
+    host = zone_file("outside/zoneinfo") if outside else second
+    link.symlink_to(host)
+    set_roots("first", "second")
+
+    assert config._system_local_tz_name() == "America/New_York"
+
+
+@pytest.mark.parametrize("canonical", [False, True])
+@pytest.mark.parametrize("matching", [False, True])
+def test_outside_alias_requires_the_hosts_rules(tz_host, monkeypatch, canonical, matching):
+    from importlib import resources
+
+    link, set_roots, zone_file = tz_host
+    zone_file("root", "US/Eastern", data_from="America/New_York" if matching else "Asia/Tokyo")
+    alias = zone_file("outside/zoneinfo", "US/Eastern", data_from="America/New_York")
+    if canonical:
+        target = zone_file("outside/zoneinfo")
+        alias.unlink()
+        alias.symlink_to(target)
+    link.symlink_to(alias)
+    set_roots("root")
+
+    def no_package(name):
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(resources, "files", no_package)
+    if matching:
+        assert config._system_local_tz_name() == "US/Eastern"
+    else:
+        with pytest.raises(config.SystemTimezoneUnreadableError):
+            config._system_local_tz_name()
+
+
+def test_versioned_trees_accept_different_encodings_of_the_same_rules(tz_host):
+    link, set_roots, zone_file = tz_host
+    host = zone_file("old/zoneinfo")
+    configured = zone_file("new/zoneinfo")
+    # The 32-bit compatibility block is not the modern reader's rule table.
+    # Replace it with the valid placeholder permitted by the TZif format.
+    import struct
+
+    data = configured.read_bytes()
+    utc, standard, leap, count, types, chars = struct.unpack_from(">6I", data, 20)
+    second_header = 44 + count * 5 + types * 6 + chars + leap * 8 + standard + utc
+    version = data[4:5]
+    assert version in (b"2", b"3", b"4")
+    header = b"TZif" + version + bytes(15) + struct.pack(">6I", 0, 0, 0, 0, 1, 1)
+    configured.write_bytes(header + bytes(7) + data[second_header:])
+    assert configured.read_bytes() != host.read_bytes()
+    link.symlink_to(host)
+    set_roots("new/zoneinfo")
+
+    assert config._system_local_tz_name() == "America/New_York"
+
+
+@pytest.mark.parametrize("same_bytes", [False, True])
+def test_reader_boundary_requires_exact_file_identity(tz_host, same_bytes):
+    import io
+
+    link, set_roots, zone_file = tz_host
+    host = zone_file("outside/zoneinfo")
+    original = host.read_bytes()
+    assert b"LMT" in original
+    unsupported = original.replace(b"LMT", "ÉT".encode())
+    host.write_bytes(unsupported)
+    root = zone_file("root")
+    configured = unsupported if same_bytes else unsupported + b"\0"
+    root.write_bytes(configured)
+    assert isinstance(zoneinfo.ZoneInfo.from_file(io.BytesIO(unsupported)), zoneinfo.ZoneInfo)
+    assert isinstance(zoneinfo.ZoneInfo.from_file(io.BytesIO(configured)), zoneinfo.ZoneInfo)
+    link.symlink_to(host)
+    set_roots("root")
+    if same_bytes:
+        assert config._system_local_tz_name() == "America/New_York"
+    else:
+        with pytest.raises(config.SystemTimezoneUnreadableError):
+            config._system_local_tz_name()
+
+
+@pytest.mark.parametrize("at_host", [False, True])
+def test_oversized_zone_file_is_not_read_in_full(tz_host, monkeypatch, at_host):
+    from pathlib import Path
+
+    link, set_roots, zone_file = tz_host
+    host = zone_file("outside/zoneinfo")
+    root = zone_file("root")
+    oversized = host if at_host else root
+    oversized.write_bytes(oversized.read_bytes() + bytes((1 << 20) + 1))
+    link.symlink_to(host)
+    set_roots("root")
+    original = Path.read_bytes
+
+    def bounded_read(path):
+        if path == oversized:
+            raise AssertionError("oversized timezone was read in full")
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", bounded_read)
     with pytest.raises(config.SystemTimezoneUnreadableError):
         config._system_local_tz_name()
-    assert requested == ["America/New_York"]
+
+
+def test_fifo_inside_search_root_is_never_opened(tz_host, tmp_path, monkeypatch):
+    link, set_roots, zone_file = tz_host
+    fifo = tmp_path / "zoneinfo" / "America" / "New_York"
+    fifo.parent.mkdir(parents=True)
+    os.mkfifo(fifo)
+    zone_file("second")
+    link.symlink_to(fifo)
+    set_roots("zoneinfo", "second")
+    original = Path.open
+
+    def refuse_fifo(path, *args, **kwargs):
+        if path == fifo:
+            raise AssertionError("attempted to open a FIFO as timezone data")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", refuse_fifo)
+    assert config._system_local_tz_name() == "UTC"
+
+
+@pytest.mark.parametrize("regular_alternative", [False, True])
+def test_cycle_in_root_key_does_not_escape_resolution(tz_host, tmp_path, regular_alternative):
+    link, set_roots, zone_file = tz_host
+    first = tmp_path / "first" / "America" / "New_York"
+    first.parent.mkdir(parents=True)
+    alias = first.with_name("alias")
+    first.symlink_to(alias)
+    alias.symlink_to(first)
+    host = zone_file("outside/zoneinfo")
+    link.symlink_to(host)
+    if regular_alternative:
+        zone_file("second")
+    set_roots("first", "second")
+    if regular_alternative:
+        assert config._system_local_tz_name() == "America/New_York"
+    else:
+        with pytest.raises(config.SystemTimezoneUnreadableError):
+            config._system_local_tz_name()
 
 
 def test_malformed_zone_data_raises_rather_than_defaulting(tz_host, tmp_path):
