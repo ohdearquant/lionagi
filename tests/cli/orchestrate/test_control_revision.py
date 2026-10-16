@@ -7,7 +7,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sqlite3
 import subprocess
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock
 
@@ -19,6 +21,7 @@ from lionagi.cli.monitor import _session_to_row
 from lionagi.cli.orchestrate import flow
 from lionagi.cli.orchestrate._control import _enqueue_control_inner
 from lionagi.cli.status import EXIT_UNKNOWN
+from lionagi.state import engine as state_engine
 from lionagi.state.db import StateDB
 from tests.cli.orchestrate.test_control_poller import _FakeExecutor, _make_session, _queue_control
 from tests.cli.orchestrate.test_control_poller_lifecycle import _plan_and_dag
@@ -645,6 +648,177 @@ async def test_marker_write_is_cancelled_when_it_outlives_its_budget(tmp_path, m
 
     assert task.done(), "the bounded marker write must return, not await a wedged store"
     assert any("marker write was cancelled after its budget" in w for w in warnings), warnings
+
+
+_BUSY_TIMEOUT_ENV = "LIONAGI_SQLITE_BUSY_TIMEOUT_MS"
+
+
+async def _write_lock_wait(db, *, window: float) -> float | None:
+    """Seconds this task waited to take the store's write lock, or None if still held.
+
+    The lionagi Lock wrapper has no non-blocking acquire, so a short timed
+    acquire distinguishes held (the wait times out) from free (it takes at once).
+    """
+    start = time.monotonic()
+    while True:
+        try:
+            await asyncio.wait_for(db._write_lock.acquire(), 0.02)
+        except asyncio.TimeoutError:
+            if time.monotonic() - start >= window:
+                return None
+            await asyncio.sleep(0.01)
+            continue
+        db._write_lock.release()
+        return time.monotonic() - start
+
+
+async def test_marker_write_parked_in_the_driver_busy_wait_holds_the_lock_to_busy_timeout(
+    db_path, monkeypatch
+):
+    """A driver call already in flight cannot be cancelled, so the lock outlives the budget.
+
+    The budget bounds the caller: the helper returns and reports the write as
+    abandoned. It cannot bound the store. A write parked in SQLite's busy wait
+    is inside the driver, and cancelling the task does not interrupt it, so the
+    store's write lock is held until that call returns at the busy timeout
+    (here lowered to a few hundred milliseconds). This test pins both halves:
+    the helper returns at its budget, and the lock frees within the busy timeout
+    plus the grace period, not at the budget.
+    """
+    # A busy timeout well above the budget, so a helper that is bounded returns
+    # long before the parked call ends and the two are far apart in time rather
+    # than a scheduling accident.
+    busy_timeout_ms = 1500
+    monkeypatch.setenv(_BUSY_TIMEOUT_ENV, str(busy_timeout_ms))
+    # The pragma reads the module attribute at connect time, so give it the
+    # value the environment resolver makes of the variable above.
+    monkeypatch.setattr(
+        state_engine, "SQLITE_BUSY_TIMEOUT_MS", state_engine._busy_timeout_from_env()
+    )
+    grace = 0.05
+    monkeypatch.setattr(flow, "_DRAIN_GRACE_SECONDS", grace)
+
+    db = StateDB(db_path)
+    await db.open()
+    sid = await _make_session(db)
+    # Warm a pooled connection so its pragmas (busy_timeout included) are in
+    # place before the external writer takes the lock.
+    await db.get_session(sid)
+
+    holder = sqlite3.connect(str(db_path), isolation_level=None, timeout=0)
+    holder.execute("BEGIN IMMEDIATE")
+    warnings: list[str] = []
+    monkeypatch.setattr(flow, "_warn", warnings.append)
+    env = _make_env(db_path, live_persist={"db": db, "session_id": sid})
+
+    try:
+        t0 = time.monotonic()
+        await flow._persist_control_poller_state_bounded(env, "stopped")
+        returned_after = time.monotonic() - t0
+        held_still = await _write_lock_wait(db, window=0.0)
+        freed_after = await _write_lock_wait(db, window=busy_timeout_ms / 1000 + 2 * grace + 0.5)
+    finally:
+        holder.execute("ROLLBACK")
+        holder.close()
+        await db.close()
+
+    assert returned_after < 0.5, (
+        f"the helper returned after {returned_after:.2f}s, not at its budget "
+        f"({2 * grace:.2f}s); a parked driver call must not hold the caller"
+    )
+    assert held_still is None, (
+        "the store's write lock was free at the budget, so this test is not "
+        "exercising a parked driver call"
+    )
+    assert freed_after is not None, (
+        "the write lock was still held past the busy timeout plus grace; the "
+        "parked driver call never returned"
+    )
+    assert freed_after <= busy_timeout_ms / 1000 + 2 * grace + 0.5, (
+        f"the lock freed {freed_after:.2f}s after the helper was called, past "
+        f"the busy timeout ({busy_timeout_ms}ms) plus grace ({grace}s)"
+    )
+    assert any("abandoned" in w for w in warnings), (
+        f"a parked driver call must be reported as abandoned: {warnings}"
+    )
+
+
+async def test_marker_write_is_cancelled_with_its_caller_before_the_budget(tmp_path, monkeypatch):
+    """A caller cancelled inside the budget cancels its write and re-raises.
+
+    The write must not outlive the caller: it holds the store teardown waits
+    on. Cancelled before the budget expires, the write is cancelled at once and
+    the cancellation is re-raised to the caller, and the report names the
+    caller as the cause rather than a budget that had not run out.
+    """
+    env = _make_env(tmp_path, live_persist={"db": object(), "session_id": "s"})
+    started = asyncio.Event()
+    cancelled_inside = False
+
+    async def waits_forever(db, session_id, patch):
+        nonlocal cancelled_inside
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled_inside = True
+            raise
+
+    monkeypatch.setattr(flow, "_persist_node_metadata_patch", waits_forever)
+    warnings: list[str] = []
+    monkeypatch.setattr(flow, "_warn", warnings.append)
+    monkeypatch.setattr(flow, "_DRAIN_GRACE_SECONDS", 5.0)
+
+    task = asyncio.ensure_future(flow._persist_control_poller_state_bounded(env, "stopped"))
+    await asyncio.wait_for(started.wait(), timeout=5)
+    task.cancel()
+    await asyncio.wait({task}, timeout=5)
+
+    assert task.done(), "the caller's cancellation must return"
+    assert task.cancelled(), "the caller's cancellation was swallowed"
+    assert cancelled_inside, "the marker write was not cancelled with its caller"
+    assert any("with its caller" in w for w in warnings), warnings
+    assert not any("after its budget" in w for w in warnings), (
+        f"the budget (5s) had not expired, yet the report says: {warnings}"
+    )
+
+
+async def test_marker_write_that_landed_then_stalled_is_not_reported_stale(db_path, monkeypatch):
+    """A cancelled write that committed is not reported as a lost marker.
+
+    A cancel can land after the merge committed but before the task unwinds, so
+    the helper cannot tell a written marker from a lost one. Reporting "stale"
+    would assert a negative it has not established; it reports that the outcome
+    is unknown instead. The merge here writes for real and then stalls.
+    """
+    db = StateDB(db_path)
+    await db.open()
+    sid = await _make_session(db)
+    real = flow._persist_node_metadata_patch
+
+    async def lands_then_stalls(db, session_id, patch):
+        await real(db, session_id, patch)
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(flow, "_persist_node_metadata_patch", lands_then_stalls)
+    warnings: list[str] = []
+    monkeypatch.setattr(flow, "_warn", warnings.append)
+    monkeypatch.setattr(flow, "_DRAIN_GRACE_SECONDS", 0.05)
+    env = _make_env(db_path, live_persist={"db": db, "session_id": sid})
+
+    try:
+        await flow._persist_control_poller_state_bounded(env, "stopped")
+        metadata = (await db.get_session(sid)).get("node_metadata") or {}
+    finally:
+        await db.close()
+
+    if isinstance(metadata, str):
+        metadata = json.loads(metadata)
+    assert metadata.get("flow_control_poller") == "stopped", metadata
+    assert not any("stale" in w for w in warnings), (
+        f"the merge landed, but the report claims a stale marker: {warnings}"
+    )
+    assert any("not known" in w for w in warnings), warnings
 
 
 @pytest.mark.parametrize("route", ["compatibility", "service"])

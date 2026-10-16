@@ -266,26 +266,36 @@ async def _persist_control_poller_state(env, state: str) -> None:
 async def _cancel_poller_marker_write(write: _asyncio.Task, reason: str) -> None:
     """Cancel a still-running marker write and give it the drain's grace period.
 
-    A marker write left running is not free: it holds the store when it is the
-    writer, and teardown's own status write is queued behind that lock, so the
-    write is cancelled here rather than abandoned. A write that ignores its
-    cancel is abandoned after the grace period and reported, as one segment
-    write would be; this never raises.
+    A marker write left running is not free: while it runs it holds the store
+    when it is the writer, and teardown's own status write is queued behind
+    that lock, so the write is cancelled here rather than left to run to its
+    own end. Cancelling cuts a write that cooperates: one parked in a driver
+    call (SQLite's busy wait, say) cannot be interrupted from Python, so it
+    keeps the store until that call returns, up to the driver's own busy
+    timeout. A write that ignores its cancel is abandoned after the grace
+    period and reported, as one segment write would be. A cancellation that
+    arrives from further out is left to propagate, so this never swallows one
+    that was not its to take.
     """
     if write.done():
         return
     write.cancel()
-    # The deadline scope catches its own expiry; a cancellation from further out
-    # is left to propagate, so this never swallows one that was not its to take.
     with move_on_after(_DRAIN_GRACE_SECONDS):
         await _asyncio.wait({write})
     if not write.done():
         _warn(
-            f"control-poller marker write was abandoned after its budget ({reason}); it may still hold the store"
+            f"control-poller marker write was abandoned {reason}; it still holds "
+            "the store until its driver call returns, and whether the marker "
+            "landed is not known from here"
         )
     else:
+        # The write unwound, which does not say the merge committed: a cancel
+        # delivered while the driver call ran can land here with the UPDATE
+        # already applied. The helper cannot tell the two apart, so it does not
+        # claim the marker is stale.
         _warn(
-            f"control-poller marker write was cancelled after its budget ({reason}); the marker may be stale until a later write lands"
+            f"control-poller marker write was cancelled {reason}; whether the "
+            "marker landed is not known from here"
         )
 
 
@@ -295,21 +305,26 @@ async def _persist_control_poller_state_bounded(env, state: str) -> None:
     The marker is telemetry, like every other node_metadata write, so it gets
     the same budget the drain gives one segment-metadata write. A write still
     running at the budget is cancelled and given the drain's grace period to
-    unwind, because leaving it running would let it hold the store's write lock
-    past the budget, and teardown's own status write is queued behind it. A
-    write that ignores the cancel is abandoned and reported, not awaited.
+    unwind, because leaving it running would let it go on holding the store's
+    write lock, and teardown's own status write is queued behind it. The budget
+    bounds the caller, not the store: a cooperative write is cut at the budget,
+    while one parked in a driver call (SQLite's busy wait) keeps the lock until
+    that call returns, bounded by the driver's busy timeout
+    (``LIONAGI_SQLITE_BUSY_TIMEOUT_MS``, 5 s by default). A write that ignores
+    the cancel is abandoned and reported, not awaited.
     """
     write = _asyncio.ensure_future(_persist_control_poller_state(env, state))
     try:
         _done, pending = await _asyncio.wait({write}, timeout=_DRAIN_GRACE_SECONDS)
     except BaseException:
         # The caller is being cancelled with this write still in flight. The
-        # write must not outlive it, for the same reason a write that runs out
-        # its budget must not: it holds the store that teardown is waiting on.
-        await _cancel_poller_marker_write(write, "caller cancelled")
+        # write is cancelled so it cannot outlive the caller, but a write this
+        # does not unwind (one parked in a driver call) keeps the store until
+        # that call returns.
+        await _cancel_poller_marker_write(write, "with its caller")
         raise
     if pending:
-        await _cancel_poller_marker_write(write, "budget expired")
+        await _cancel_poller_marker_write(write, "after its budget")
         return
     # The write swallows every error it can report itself; what escapes it is a
     # cancellation, and the caller asked for this write, so it is the caller's
@@ -2170,6 +2185,11 @@ async def _execute_dag(
             add_dir.append(project_root)
 
     t_exec = time.monotonic()
+    # The run-start publish is bounded the same way as the stop marker, and has
+    # the same limit: a cooperative write is cut at the budget, while one parked
+    # in the store driver's busy wait keeps the writer lock until that call
+    # returns, so run start can wait out the driver's busy timeout on a stalled
+    # store.
     await _persist_control_poller_state_bounded(env, "active")
     _hb_task = _asyncio.ensure_future(_heartbeat_loop())
     _ctl_task = _asyncio.ensure_future(_control_poll_loop())
@@ -3113,9 +3133,12 @@ async def _run_flow(
                         # A read-only probe first, because the sweep needs a writable
                         # handle and the writable open takes the store's writer lock and
                         # re-runs the schema reconciliation. Most runs queue no control at
-                        # all, and a read-only open skips both, so the common exit stays
-                        # a read. The probe is only an optimisation: the sweep re-checks
-                        # the terminal precondition and the claim before it writes.
+                        # all, and for a file store a read-only open skips both, so that
+                        # common exit stays a read. Read-only is SQLite-only: a store with
+                        # no file path (a server-backed URL) opens writable either way, so
+                        # the probe is an optimisation for file stores, not for every
+                        # store. The sweep re-checks the terminal precondition and the
+                        # claim before it writes, so the probe is only an optimisation.
                         if not state_db_known_absent():
                             async with StateDB(readonly=read_only_open_supported()) as _probe_db:
                                 _probe_session = await _probe_db.get_session(_control_session_id)

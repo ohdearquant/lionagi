@@ -588,8 +588,13 @@ Flow/play sessions persist `planning` before calling the planner. Their scalar
 consumers refuse new controls; missing declarations are refused as predating
 control-delivery tracking. Agent turn-end drain declarations are unchanged.
 The stopped marker is published before the DAG poll loop is cancelled; once it
-commits, admission refuses new controls. The write is bounded, and shielded
-against cooperative cancellation only. A control admitted before it commits
+commits, admission refuses new controls. The marker write's budget bounds the
+caller, not the store, and it is shielded against cooperative cancellation only:
+a cooperative write is cancelled at the budget, while one parked in the store
+driver's busy wait cannot be interrupted from Python and keeps the writer lock
+until that call returns, bounded by the busy timeout
+(`LIONAGI_SQLITE_BUSY_TIMEOUT_MS`, 5 s by default). A control admitted before it
+commits
 (while the write runs, after it outlives its budget, or after a native
 cancellation interrupts the wait) may never be applied once the loop is gone, so
 `_run_flow`'s teardown closes every control still queued and unclaimed as
@@ -622,8 +627,9 @@ monitor's linked-engine reconcile, the engine runner, the studio reapers and the
 studio admin transition. The transcript mirrors write no phase. The SESSION_END
 hook (`hooks/builtins.py`) does not: when it is the writer that terminalizes a
 row it writes the status without clearing the phase, and a row it finds already
-terminal is left as it is, which is why reads normalize a stored phase on a
-terminal row rather than relying on every writer. `current_phase` was
+terminal still takes the usage columns it carries, written without the status or
+the phase, which is why reads normalize a stored phase on a terminal row rather
+than relying on every writer. `current_phase` was
 added to the two session status-patch allowlists; unrelated fields remain refused.
 The existing cancellation shield covers cooperative scopes, not native task
 cancellation: repeated native cancellation can still interrupt the pre-existing
@@ -632,8 +638,9 @@ is why reads still normalize a stored phase on a terminal row. Status/monitor
 normalize historical terminal phases while retaining the agent or playbook name
 fallback. Queuing a control does not change the applied phase.
 
-The teardown close above is the only path that closes an unclaimed control, and it
-runs on the flow's own teardown. `li kill`, the doctor sweep and the studio reapers
+The teardown close above closes an unclaimed flow control on the flow's own
+teardown; an agent run closes its own undelivered steers the same way, at its
+turn-end teardown. `li kill`, the doctor sweep and the studio reapers
 end a session without sweeping its control queue, and a SIGKILLed process runs no
 teardown at all, so a control queued before one of those ends a run stays pending;
 `li o ctl status` renders it on a terminal row as never landed, and
@@ -646,7 +653,9 @@ the `T` after the date (ADR-0108, Amendment 2). Any other string is an exact id:
 shorter than eight characters or containing a non-hex character, it enters the
 prefix search only when it reaches that `T` and prefixes a recorded run id. Before
 the `T` a run id is all digits, so a number or a date never acts on a run, and an
-eight-digit date is searched only as a printed hex prefix. A string that prefixes
+eight-digit date is searched only as a printed hex prefix — unless a recorded
+run id also begins with those digits, which makes the string ambiguous and
+refused. A string that prefixes
 both a run id and a session, invocation, play or branch id is refused as
 ambiguous. A label therefore cannot match another run's session, invocation or
 play. Read-only status keeps its broader run-id prefix lookup, but it shares the
@@ -953,9 +962,13 @@ failed (unknown id, or state.db unreachable; also argparse's own usage-error cod
 `synthesizing`). It is null when the requested entity or its backing session is
 terminal, including older records that still store a live phase.
 
-`pending_controls`: unapplied `session_controls` rows (id, verb, created_at) for the resolved
+`pending_controls`: unapplied `session_controls` rows for the resolved
 session, oldest first — queued via `li o ctl pause|resume|msg`, then consumed by the control
-poller while a flow runs. `[]` when no backing session or nothing queued.
+poller while a flow runs. Each row carries its id, verb and created_at, its claim (`result`,
+`claimed_at`) when a consumer took it, `never_landed` when the row is unclaimed on a terminal
+run, and `remedy`, the one command that can still deliver it — set only for the kinds that
+have such a command (an agent run's `li agent -r`), `null` otherwise. `[]` when no backing
+session or nothing queued.
 
 `pending_controls_note`: one sentence naming how a queued control for this session would be
 delivered — the flow/play DAG execution poller or, for an agent run, its next turn boundary —

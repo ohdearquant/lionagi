@@ -344,8 +344,10 @@ reaches that `T` and begins a recorded run ID, and one that begins both a run ID
 and another ID is refused as ambiguous. A run-id prefix that stops short of the
 `T`, such as `2` or `2026`, therefore cannot act on a run; an eight-character
 hex string is read as a printed id prefix, so `20260801` acts on the session
-whose printed id it begins, exactly as any other eight-hex prefix does. Shorter
-prefixes remain available to `status`, which does not act on a run. An exact
+whose printed id it begins, exactly as any other eight-hex prefix does — unless
+a recorded run id also begins with those eight digits, which makes the string
+ambiguous and refused. Shorter prefixes remain available to `status`, which does
+not act on a run. An exact
 stored ID need not be a UUID. `--invocation` must name an existing invocation
 registered with `li invoke start`; unknown values fail before flow
 setup/planning or background launch, rather than silently disabling persistence.
@@ -364,9 +366,10 @@ refuses rather than queueing against a consumer that is gone. A control admitted
 just before the marker lands can miss the last poll; when the run's teardown
 writes its terminal status, every control still queued and unclaimed is closed as
 rejected rather than left pending. Teardown also closes them if a later teardown
-step fails after that status write. Only that teardown path closes them: a process
-killed outright runs no teardown, and neither `li kill` nor a reaper sweeps the
-queue, so a control queued in that window stays pending and `li o ctl status`
+step fails after that status write. That teardown path closes the flow/play
+queue: a process killed outright runs no teardown, and neither `li kill` nor a
+reaper sweeps the queue, so a control queued in that window stays pending and
+`li o ctl status`
 renders it as never landed. `li o ctl resolve` closes only a row a consumer
 claimed and never reported back. Marker writes are best-effort: a failed
 stop-marker write can leave a stale active marker, so enqueue is never a delivery

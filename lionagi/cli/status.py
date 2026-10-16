@@ -463,10 +463,39 @@ async def _build_view(
         # that as never-landed would be the same fabricated negative the
         # teardown declines to write.
         "pending_controls": [
-            {**c, "never_landed": terminal and c.get("result") is None} for c in pending_controls
+            {
+                **c,
+                "never_landed": terminal and c.get("result") is None,
+                # Only a never-landed row needs a remedy, and the remedy is a
+                # property of the consumer, like the note above: an agent steer
+                # is drained by a leg's next turn boundary and reopened with
+                # `li agent -r`, while a flow/play control's consumer is the
+                # run's own DAG poller, which is gone with the run. Naming the
+                # agent command for a flow row would send its reader to one that
+                # cannot apply the control.
+                "remedy": (
+                    _never_landed_remedy(primary_session)
+                    if terminal and c.get("result") is None
+                    else None
+                ),
+            }
+            for c in pending_controls
         ],
         "pending_controls_note": pending_controls_note,
     }
+
+
+def _never_landed_remedy(primary_session: dict[str, Any] | None) -> str | None:
+    """The one command that can still deliver a queued control, or ``None``.
+
+    ``None`` means no command this surface can name would apply it, so the
+    renderer prints none: the agent hint names a path only an agent run has.
+    """
+    if primary_session is None:
+        return None
+    if primary_session.get("invocation_kind") == "agent":
+        return "use `li agent -r`"
+    return None
 
 
 def _pending_controls_note(primary_session: dict[str, Any] | None) -> str | None:
@@ -560,7 +589,9 @@ def _render_human(view: dict[str, Any]) -> str:
                 if view["terminal"]:
                     line += " — owner never reported back; outcome unknown"
             elif ctl.get("never_landed"):
-                line += "  never landed — use `li agent -r`"
+                line += "  never landed"
+                if ctl.get("remedy"):
+                    line += f" — {ctl['remedy']}"
             lines.append(line)
 
     if view["degraded"]:

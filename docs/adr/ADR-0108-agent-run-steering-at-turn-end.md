@@ -19,15 +19,18 @@ beyond). Such a prefix cannot begin a hexadecimal key, so within the run-id spac
 it can collide only with other run ids, which the run-id search already refuses as
 ambiguous; it can also begin a self-chosen session, invocation, play or branch id,
 and a string that begins both spaces is refused as ambiguous rather than resolved
-to either. An eight-digit
-date is still read as a printed hexadecimal prefix of a session, invocation or
-play, never as a run-id prefix. This amendment is scoped to the commands that
-queue a control against a live run: `li o ctl status`, `li wait` and checkpoint
-resolution are left outside it and keep the prefix of any length. Status acts on
-nothing, so it is inert. `li wait` blocks on an answer. Checkpoint resolution is
-not inert — `li o flow --resume` re-executes what it resolves, so a short run-id
-prefix there carries the same hazard these commands had, and reading a bare date
-as one can resolve a lone run directory. That path is deliberately not changed
+to either. An eight-digit date is still read as a printed hexadecimal prefix of
+a session, invocation or play, never as a run-id prefix — and when a recorded run
+id also begins with those eight digits the string is refused as ambiguous rather
+than resolved. This amendment is scoped to the run-id prefix rule of the commands
+that queue a control against a live run. `li o ctl status`, `li wait` and
+checkpoint resolution are left outside that rule and keep the prefix of any
+length, but they share the resolver's ambiguity refusal: a string that begins
+both a recorded run id and another id is refused there too, rather than resolved
+to one of them. Status acts on nothing, so it is inert. `li wait` blocks on an
+answer. Checkpoint resolution is not inert — `li o flow --resume` re-executes
+what it resolves, so a short run-id prefix there carries the same hazard these
+commands had, and reading a bare date as one can resolve a lone run directory. That path is deliberately not changed
 here: it resolves a persisted checkpoint rather than a live control queue, it
 lives in different code, and narrowing it is its own decision rather than a side
 effect of this amendment.

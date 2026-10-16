@@ -1106,6 +1106,46 @@ async def test_view_pending_control_on_running_run_is_not_never_landed(temp_db_p
 
 
 @pytest.mark.asyncio
+async def test_never_landed_remedy_names_a_command_only_an_agent_row_can_run(
+    temp_db_path: Path,
+):
+    """The remedy under a never-landed row is the one its consumer has.
+
+    `li agent -r` reopens an agent run's branch and lets the next turn drain
+    the steer; it does nothing for a flow, whose consumer is the DAG poller
+    that ended with the run. Printing it under a flow row sends the reader to
+    a command that cannot apply the control.
+    """
+    from lionagi.cli.status import _render_human
+
+    async with StateDB() as db:
+        agent_sid = await _make_session(db, invocation_kind="agent")
+        await db.insert_session_control(session_id=agent_sid, verb="message", payload={"text": "x"})
+        await db.update_status(
+            "session", agent_sid, new_status="completed", reason_code="run.completed.ok"
+        )
+
+        flow_sid = await _make_session(db, invocation_kind="flow")
+        await db.insert_session_control(session_id=flow_sid, verb="pause")
+        await db.update_status(
+            "session", flow_sid, new_status="completed", reason_code="run.completed.ok"
+        )
+
+        agent_row = await db.get_session(agent_sid)
+        flow_row = await db.get_session(flow_sid)
+
+        agent_view = await _build_view(db, command="ctl", entity_type="session", row=agent_row)
+        flow_view = await _build_view(db, command="ctl", entity_type="session", row=flow_row)
+
+    assert agent_view["pending_controls"][0]["never_landed"] is True
+    assert flow_view["pending_controls"][0]["never_landed"] is True
+    assert "li agent -r" in _render_human(agent_view)
+    assert "li agent -r" not in _render_human(flow_view), (
+        "a flow row named the agent resume command, which cannot apply its control"
+    )
+
+
+@pytest.mark.asyncio
 async def test_pending_control_note_names_the_consumer_for_each_kind(temp_db_path: Path):
     """The pending-controls note describes the run's own consumer.
 
