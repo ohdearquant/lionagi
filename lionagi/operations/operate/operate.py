@@ -287,14 +287,24 @@ async def operate(
     # materializes an operative type while model_class stays None, so gating on model_class silently skips tools.
     if isinstance(result, BaseModel):
         requests = getattr(result, "action_requests", None)
+        declared_strategy = getattr(result, "action_strategy", None)
     elif isinstance(result, dict):
         requests = result.get("action_requests")
+        declared_strategy = result.get("action_strategy")
     else:
         requests = None
+        declared_strategy = None
 
     action_response_models = None
     if action_param and requests is not None:
         from ..act.act import act
+
+        # A turn that declares 'sequential' runs its own batch one call at a time. The
+        # declaration can only narrow the prepared strategy: a caller that asked for
+        # 'sequential' keeps it whatever the turn says, and a turn that declares nothing
+        # (a response model may default the field to 'concurrent') keeps the prepared value.
+        if declared_strategy == "sequential":
+            action_param = action_param.with_updates(strategy="sequential")
 
         action_response_models = await act(branch, requests, action_param)
 
