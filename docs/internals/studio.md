@@ -216,8 +216,11 @@ between `build_argv()` and this function gives a revoked
   `has_next: true` means older history exists; fewer than 25 with
   `has_next: false` is a complete short slice, and an available empty slice
   means no run rows were found. A failed slice has `status: "unavailable"`,
-  `has_next: null`, and `runs: []`; clients also treat missing or unsupported
-  versions as unavailable. Neither is evidence of empty history.
+  `has_next: null`, and `runs: []`, and so does a slice whose version the client
+  does not support. A row that omits the field altogether -- a daemon that
+  predates it -- is read through that definition's own history endpoint and
+  marked unavailable only when that read fails. None of these is evidence of
+  empty history.
   The flag defaults to false; Mission, operator MCP, and machine list callers
   retain their existing response and do not compute these histories.
   One batched statement selects at most 26 keys per listed definition through
@@ -239,13 +242,16 @@ between `build_argv()` and this function gives a revoked
   failure need not produce an error class when the occurrence has no error text;
   the detail view retains the separate reconciled outcome.
   Raw error text, prompts, event payloads, and artifact paths stay withheld.
-  A shared batch read failure is retried for each definition on its own before
-  that definition is marked unavailable, so a failure belonging to one
-  definition's rows is attributed to that definition and does not hide the
-  other summaries on the page. A run of consecutive failed retries is treated as
-  store-wide: the remaining definitions are marked unavailable without a read
-  of their own. A store-wide read failure leaves every slice unavailable, never
-  an available empty slice. Projection failures are isolated to one schedule.
+  A shared batch read failure is followed by one liveness read that does not
+  touch the failing statement. When that read fails too the failure is treated
+  as store-wide, and every slice is left unavailable without a read each, so an
+  outage costs two reads rather than one per listed definition. When the store
+  answers, the shared read failed for a reason belonging to its rows, and each
+  definition is retried on its own before it is marked unavailable, so the
+  failure is attributed to the definition it comes from and does not hide the
+  other summaries on the page. A store-wide read failure leaves every slice
+  unavailable, never an available empty slice. Projection failures are isolated
+  to one schedule.
   Existing health/count queries, budget rollups, schedule-list limits, and
   filters are unchanged.
   Cards and table mark an unavailable schedule's own row; the shared banner

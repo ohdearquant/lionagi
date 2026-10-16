@@ -567,14 +567,6 @@ def _run_summary(row: dict[str, Any]) -> dict[str, Any]:
 
 _RECENT_RUN_LIMIT = 25
 
-# How many definitions, in a row, may fail their isolated retry before the
-# failure is treated as store-wide and the rest of the page is marked
-# unavailable without reading each one. A failure belonging to one definition
-# sits behind its own retry, so the definitions around it succeed and reset the
-# count; a store-wide failure makes every retry fail, and this stops it at a
-# handful of reads instead of one per listed definition.
-_RECENT_RUN_ISOLATION_FAILURES = 5
-
 
 def _recent_run_keys_sql(dialect: str) -> str:
     """The per-definition key read, in the dialect's own collection vocabulary.
@@ -705,15 +697,15 @@ async def _recent_run_summaries(db: StateDB, schedule_ids: list[str]) -> dict[st
     session evidence must include every child: the shared reducer only grades a
     session outcome when all children are terminal. No per-run reads are performed.
 
-    The definitions are read in one batch. If that shared read fails, each
-    definition is retried on its own before it is marked unavailable, so a
-    failure that belongs to one definition's rows is attributed to that
-    definition and does not hide the rest of the page's summaries. Retries stop
-    after ``_RECENT_RUN_ISOLATION_FAILURES`` consecutive failures: a failure
-    that is not definition-specific -- an unreachable store, a closed
-    connection -- fails every retry too, and then the remaining definitions are
-    marked unavailable without reading each of them. Either way a failed read
-    leaves a slice unavailable, never silently empty.
+    The definitions are read in one batch. If that shared read fails, a single
+    liveness read decides whether the store is reachable: when it fails too, the
+    failure is store-wide and every slice is left unavailable without a read
+    each, so an outage costs two reads rather than one per listed definition.
+    When the store answers, the shared read failed for a reason that belongs to
+    its rows, and each definition is retried on its own so the failure is
+    attributed to the definition it comes from and does not hide the rest of
+    the page's summaries. Either way a failed read leaves a slice unavailable,
+    never silently empty.
     """
     result = {sid: _unavailable_run_summary() for sid in schedule_ids}
     if not schedule_ids:
@@ -723,28 +715,27 @@ async def _recent_run_summaries(db: StateDB, schedule_ids: list[str]) -> dict[st
     except Exception:
         _log.exception("Recent schedule run summary query failed")
         grouped, invocations, sessions = {}, {}, {}
-        failures: list[tuple[str, BaseException]] = []
-        consecutive = 0
-        store_wide = False
-        for sid in schedule_ids:
-            try:
-                one_grouped, one_invocations, one_sessions = await _read_run_batch(db, [sid])
-            except Exception as exc:
-                failures.append((sid, exc))
-                consecutive += 1
-                if consecutive >= _RECENT_RUN_ISOLATION_FAILURES:
-                    store_wide = True
-                    break
-                continue
-            consecutive = 0
-            grouped.update(one_grouped)
-            invocations.update(one_invocations)
-            sessions.update(one_sessions)
-        # Name each failing definition only when the failure stays isolated.
-        # Once consecutive retries fail, the exception above already carries the
-        # cause, and a line per definition would turn one outage into thousands
-        # of log lines.
-        if not store_wide:
+        try:
+            # A read that does not touch the failing statement: if the store
+            # cannot answer even this, the batch failure is the store's, and
+            # every definition is unavailable without a read of its own.
+            await db.fetch_one("SELECT 1")
+        except Exception:
+            _log.exception("Recent schedule run summary store is unavailable")
+        else:
+            failures: list[tuple[str, BaseException]] = []
+            for sid in schedule_ids:
+                try:
+                    one_grouped, one_invocations, one_sessions = await _read_run_batch(db, [sid])
+                except Exception as exc:
+                    failures.append((sid, exc))
+                    continue
+                grouped.update(one_grouped)
+                invocations.update(one_invocations)
+                sessions.update(one_sessions)
+            # The exception above already carries the cause once per batch; a
+            # line per failing definition is what names the definition it
+            # belongs to, and the retries are bounded by the page size.
             for sid, exc in failures:
                 _log.error("Recent run summary unavailable for schedule %s", sid, exc_info=exc)
 

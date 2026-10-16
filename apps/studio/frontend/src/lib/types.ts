@@ -436,7 +436,11 @@ export interface ScheduleSummary {
   health_last_outcome?: string | null;
   health_last_outcome_at?: number | null;
   health_since?: number;
-  /** Optional for older daemons; absence means the recent slice is unavailable. */
+  /**
+   * Absent on daemons that predate the field; the client reads those rows
+   * through their own history endpoint and marks them unavailable only when
+   * that read fails.
+   */
   recent_runs_summary?: ScheduleRecentRunsSummary;
   created_at: number;
   updated_at: number;

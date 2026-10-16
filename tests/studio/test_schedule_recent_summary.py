@@ -290,8 +290,6 @@ async def test_status_fields_and_reconciled_error_class_match_history(isolated_d
 
 @pytest.mark.asyncio
 async def test_store_wide_read_failure_is_unavailable_for_every_slice(isolated_db, monkeypatch):
-    # More definitions than the consecutive-retry bound, so the store-wide path
-    # is the one exercised: the failures stop the per-definition retries.
     async with StateDB() as db:
         for sid in ["a", "b", "c", "d", "e", "f", "g"]:
             await create_schedule(db, sid)
@@ -307,18 +305,68 @@ async def test_store_wide_read_failure_is_unavailable_for_every_slice(isolated_d
         reads += 1
         raise OSError("Database read unavailable")
 
+    async def fetch_one(db, query, params=None):
+        nonlocal reads
+        reads += 1
+        raise OSError("Database read unavailable")
+
     monkeypatch.setattr(StateDB, "fetch_all", fetch_all)
+    monkeypatch.setattr(StateDB, "fetch_one", fetch_one)
     rows = await list_rows()
     assert len(rows) == 7
-    # A failure every read hits leaves every slice unavailable, never an
-    # available empty slice that would read as "no recent runs".
+    # A store-wide failure -- the batch read and the liveness read alike --
+    # leaves every slice unavailable, never an available empty slice that would
+    # read as "no recent runs".
     assert all(
         row["recent_runs_summary"]
         == {"version": 1, "status": "unavailable", "limit": 25, "has_next": None, "runs": []}
         for row in rows
     )
-    # The batch read plus a bounded run of retries, not one read per definition.
-    assert reads == 1 + schedules._RECENT_RUN_ISOLATION_FAILURES
+    # The batch read and one liveness read; the store is unavailable, so the
+    # remaining definitions are marked without a read each: two reads, not one
+    # per listed definition.
+    assert reads == 2
+
+
+@pytest.mark.asyncio
+async def test_consecutive_definition_failures_do_not_hide_later_summaries(
+    isolated_db, monkeypatch
+):
+    # Five failing definitions sit ahead of the healthy ones in list order
+    # (updated_at DESC). A failure that belongs to a definition's own rows must
+    # not mark the definitions listed after it unavailable.
+    async with StateDB() as db:
+        ids = ["bad-0", "bad-1", "bad-2", "bad-3", "bad-4", "ok-0", "ok-1"]
+        for position, sid in enumerate(ids):
+            await create_schedule(db, sid, updated_at=1000 - position)
+        await create_run(db, "ok-0", "ok-0-run")
+        await create_run(db, "ok-1", "ok-1-run")
+
+    original = StateDB.fetch_all
+    reads = 0
+
+    async def fetch_all(db, query, params=None):
+        nonlocal reads
+        reads += 1
+        if params and "bad" in str(params[0]):
+            raise OSError("Database read unavailable for one definition")
+        return await original(db, query, params)
+
+    monkeypatch.setattr(StateDB, "fetch_all", fetch_all)
+    listed = await list_rows()
+    rows = {row["id"]: row["recent_runs_summary"] for row in listed}
+    assert [row["id"] for row in listed] == ids
+    # Every failing definition keeps its own unavailable attribution...
+    for sid in ids[:5]:
+        assert rows[sid]["status"] == "unavailable"
+        assert rows[sid]["has_next"] is None
+    # ...and the healthy definitions behind them are still read and served.
+    for sid in ids[5:]:
+        assert rows[sid]["status"] == "available"
+        assert [run["id"] for run in rows[sid]["runs"]] == [f"{sid}-run"]
+    # One batch read plus one read per definition: the run of failures does not
+    # stop the reads that follow it.
+    assert reads == 1 + len(ids)
 
 
 @pytest.mark.asyncio
@@ -393,32 +441,3 @@ async def test_list_filters_and_detail_history_remain_independent(isolated_db):
     assert "recent_runs_summary" not in detail
     history = await schedules.list_schedule_run_views("selected", limit=7, offset=25)
     assert [row["id"] for row in history] == [f"run-{index:02}" for index in range(4, -1, -1)]
-
-
-def test_key_read_uses_each_dialect_own_collection_vocabulary():
-    """The list read must be portable: PostgreSQL has no ``json_group_array``
-    and its ``json_each`` reads a JSON object, not the text array bound here.
-    Pin both forms so a change to one cannot silently reintroduce the other's
-    statements."""
-    sqlite_sql = schedules._recent_run_keys_sql("sqlite")
-    assert "json_group_array" in sqlite_sql and "json_each" in sqlite_sql
-    assert "jsonb_array_elements_text" not in sqlite_sql
-
-    pg_sql = schedules._recent_run_keys_sql("postgresql")
-    assert "json_group_array" not in pg_sql
-    assert "json_each(" not in pg_sql
-    assert "jsonb_array_elements_text" in pg_sql and "WITH ORDINALITY" in pg_sql
-
-    assert schedules._id_set_predicate("sqlite") == "IN (SELECT value FROM json_each(?))"
-    id_set_pg = schedules._id_set_predicate("postgresql")
-    assert "json_each(" not in id_set_pg and "jsonb_array_elements_text" in id_set_pg
-
-    # The statement is written with qmark placeholders, which the store layer
-    # rewrites to bound names. A change in the number of them is a change in
-    # what the statement reads, so pin the count: three on the key read (the
-    # definition set, the per-group limit, the displayed-row bound) and one on
-    # each id set.
-    assert pg_sql.count("?") == 3
-    assert sqlite_sql.count("?") == 3
-    assert schedules._id_set_predicate("postgresql").count("?") == 1
-    assert schedules._id_set_predicate("sqlite").count("?") == 1

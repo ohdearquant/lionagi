@@ -118,11 +118,9 @@ describe("schedule summary refresh", () => {
     expect(latest.error).toBe(false);
   });
 
-  it("preserves good and empty slices while attributing missing, failed, and unknown versions", async () => {
+  it("preserves good and empty slices while attributing failed and unknown versions", async () => {
     const empty = schedule("empty");
     const good = schedule("good", [run("good")]);
-    const missing = schedule("missing");
-    delete missing.recent_runs_summary;
     const failed = schedule("failed");
     failed.recent_runs_summary = {
       version: 1,
@@ -137,17 +135,51 @@ describe("schedule summary refresh", () => {
       version: 2,
     } as unknown as ScheduleSummary["recent_runs_summary"];
     vi.mocked(listSchedules).mockResolvedValue({
-      schedules: [empty, good, missing, failed, unknown],
+      schedules: [empty, good, failed, unknown],
     });
     await act(async () => root.render(<Harness />));
     expect(latest.runs.map((row) => row.id)).toEqual(["good-run-0"]);
     expect(latest.schedules.filter(recentRunsUnavailable).map((row) => row.id)).toEqual([
-      "missing",
       "failed",
       "unknown",
     ]);
     expect(latest.schedules[0].recent_runs_summary?.status).toBe("available");
+    // A slice the daemon reports as unavailable is not a version gap, so it
+    // does not send a per-schedule history read.
     expect(listScheduleRuns).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the per-schedule history read for a daemon that omits the field", async () => {
+    const legacy = schedule("legacy");
+    delete legacy.recent_runs_summary;
+    vi.mocked(listSchedules).mockResolvedValue({ schedules: [legacy] });
+    vi.mocked(listScheduleRuns).mockResolvedValue({ runs: [run("legacy")], has_next: false });
+    await act(async () => root.render(<Harness />));
+    expect(listScheduleRuns).toHaveBeenCalledWith("legacy", { limit: 25 });
+    expect(recentRunsUnavailable(latest.schedules[0])).toBe(false);
+    expect(latest.runs.map((row) => row.id)).toEqual(["legacy-run-0"]);
+  });
+
+  it("falls back only for the rows a daemon answered without the field", async () => {
+    const modern = schedule("modern", [run("modern")]);
+    const legacy = schedule("legacy");
+    delete legacy.recent_runs_summary;
+    vi.mocked(listSchedules).mockResolvedValue({ schedules: [modern, legacy] });
+    vi.mocked(listScheduleRuns).mockResolvedValue({ runs: [run("legacy")], has_next: false });
+    await act(async () => root.render(<Harness />));
+    expect(listScheduleRuns).toHaveBeenCalledTimes(1);
+    expect(listScheduleRuns).toHaveBeenCalledWith("legacy", { limit: 25 });
+    expect(latest.runs.map((row) => row.id).sort()).toEqual(["legacy-run-0", "modern-run-0"]);
+  });
+
+  it("keeps a schedule whose fallback read failed unavailable", async () => {
+    const legacy = schedule("legacy");
+    delete legacy.recent_runs_summary;
+    vi.mocked(listSchedules).mockResolvedValue({ schedules: [legacy] });
+    vi.mocked(listScheduleRuns).mockRejectedValue(new Error("Unavailable"));
+    await act(async () => root.render(<Harness />));
+    expect(recentRunsUnavailable(latest.schedules[0])).toBe(true);
+    expect(latest.runs).toEqual([]);
   });
 
   it("rejects a cross-schedule slice instead of attaching its runs to another definition", async () => {

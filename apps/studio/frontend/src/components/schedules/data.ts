@@ -1,9 +1,10 @@
 /**
  * Schedules space data layer — fetch + polling + time math. One row per
- * schedule; run history lives on the schedule detail page, not here.
+ * schedule, carrying its newest-25 run slice from the list response; the full
+ * paginated history stays on the schedule detail page.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { listSchedules } from "@/lib/api";
+import { listScheduleRuns, listSchedules } from "@/lib/api";
 import type { ScheduleRecentRunsSummary, ScheduleRunSliceRow, ScheduleSummary } from "@/lib/types";
 
 // Statuses with a history.status translation; unknown values fall back to
@@ -98,6 +99,20 @@ export function recentRunsUnavailable(schedule: ScheduleSummary): boolean {
 }
 
 /**
+ * Read one schedule's history the way a daemon that predates the summary field
+ * serves it, and shape it as the same slice. A failed read stays unavailable,
+ * so a short history is never reported as empty.
+ */
+async function historySummary(schedule: ScheduleSummary): Promise<ScheduleRecentRunsSummary> {
+  try {
+    const { runs, has_next } = await listScheduleRuns(schedule.id, { limit: 25 });
+    return { version: 1, limit: 25, status: "available", has_next, runs };
+  } catch {
+    return { version: 1, limit: 25, status: "unavailable", has_next: null, runs: [] };
+  }
+}
+
+/**
  * One list request includes recent run slices. Overlapping polls and explicit
  * refreshes share the in-flight request and queue at most one trailing refresh.
  */
@@ -124,10 +139,18 @@ export function useSchedulesData(): SchedulesData {
       try {
         const res = await listSchedules({ include_recent_runs: true });
         if (!active) return;
-        const list = res.schedules.map((schedule) => ({
-          ...schedule,
-          recent_runs_summary: recentSummary(schedule),
-        }));
+        // A daemon that predates the summary field omits it; that row is read
+        // through its own history endpoint rather than shown unavailable.
+        const list = await Promise.all(
+          res.schedules.map(async (schedule) => ({
+            ...schedule,
+            recent_runs_summary:
+              schedule.recent_runs_summary === undefined
+                ? await historySummary(schedule)
+                : recentSummary(schedule),
+          })),
+        );
+        if (!active) return;
         setSchedules(list);
         setRuns(
           list.flatMap((schedule) =>
