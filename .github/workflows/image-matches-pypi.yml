@@ -230,6 +230,20 @@ jobs:
           with \`version\` set to the version above. Changes to the image source
           require a new release.
 
+          Manual repair requires a retained successful release-run wheel upload.
+          If the upload reached PyPI but every upload attempt reported failure,
+          manual repair is refused even when the wheel is available. Rerun the
+          original release-event run to retry its image job while GitHub permits
+          reruns, provided that run already includes the release source and wheel
+          checks. Rerunning an older workflow does not add those checks; if that
+          recovery is unavailable, publish a new release.
+
+          A queued image job can be cancelled when another image job takes its
+          pending slot. Rerun a displaced release-event run, or dispatch a manual
+          repair again when successful upload evidence is retained. Avoid
+          overlapping recovery dispatches. This daily check will report the
+          current PyPI version again if its image is still missing or stale.
+
           This issue is opened and closed by the \`Image matches PyPI\` workflow, so it
           being open means the registry is behind right now, not that it once was.
           EOF

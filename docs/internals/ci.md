@@ -39,13 +39,18 @@ attestation of wheel contents: it relies on that workflow testing and uploading
 its run's source. Missing or expired publication history refuses a manual repair;
 it does not prevent a new release event from publishing normally. A moved tag
 without matching publication evidence is refused. If an upload reached PyPI
-but no attempt recorded a successful upload, manual repair remains unavailable.
-For release-event runs that already include this workflow version, rerun the
-release-event workflow to retry its image job while GitHub still permits a
-rerun. That path uses the immutable event/tag/source binding and the actual
-PyPI wheel check, trusting the release publisher without requiring a successful
-upload-step conclusion. A pre-fix run does not gain this recovery behavior by
-rerunning: [reruns retain their original workflow and commit](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs)
+but no attempt recorded a successful upload, a default-branch repair is refused
+with `no successful release workflow wheel upload binds this tag to its commit`.
+This also applies when that release's image job later failed, for example during
+Buildx setup. Dispatching a repair cannot recover this case. For release-event
+runs that already include this workflow version, rerun the original release-event
+workflow to retry its image job while GitHub still permits a rerun. That path
+compares the tag with the recorded event commit and source package version, then
+checks the actual PyPI wheel, without requiring a successful upload-step
+conclusion. If wheel upload is retried after PyPI accepted it, the duplicate
+upload can still fail and leave the run red even when the image publishes.
+An older run does not gain this recovery behavior by rerunning:
+[reruns retain their original workflow and commit](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs)
 and are subject to GitHub's rerun limits.
 
 The default-branch dispatch check is a process guard inside the workflow and
@@ -57,14 +62,22 @@ Both paths trust this repository's publication workflow and do not prove that
 PyPI wheel bytes equal the checked-out source.
 
 The docker job uses the shared `lion-studio-image` concurrency group with
-`cancel-in-progress: false`. The source/PyPI revalidation, image push, and
-registry verification occupy one slot, so an older repair cannot make its latest-tag decision before a newer
-image job and then overwrite that job's push. With this default concurrency
+`cancel-in-progress: false` and a 60-minute timeout. The source/PyPI revalidation,
+image push, and registry verification occupy one slot, so an older repair cannot
+make its latest-tag decision before a newer image job and then overwrite that
+job's push. With this default concurrency
 configuration, GitHub keeps at most one pending job in the group; a newly
-queued job can replace an older pending job. See
+queued job can cancel and replace an older pending job even though
+`cancel-in-progress` is false. The displaced release can therefore finish red
+without publishing an image. The daily `Image matches PyPI` workflow detects a
+missing current-version image or stale `latest`. Rerun the displaced release-event
+run to recover its image while reruns remain available; if a manual repair was
+displaced, dispatch it again from the default branch when its evidence is retained.
+Avoid overlapping recovery dispatches so they do not replace another pending job.
+See
 [GitHub's concurrency behavior](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
-Retry a superseded run if its version image is still needed and a rerun remains
-available.
+The daily check compares the version PyPI currently serves; it does not detect
+every missing older-version image, so check a displaced older release separately.
 
 Inside that slot, the workflow rechecks the source binding and PyPI version
 before building. It publishes the version tag, and updates `latest` only when
@@ -77,9 +90,11 @@ The image carries its version and source SHA as OCI labels. Before releasing
 the concurrency slot, verification compares registry manifest digests with the
 digest returned by this run's image build, including `latest` when published.
 A pre-existing version tag cannot make a failed build pass. The separate
-`verify-image` job checks that the docker job, including that verification,
-succeeded and emitted a valid digest; it does not reread tags after releasing
-the slot. A later image publication therefore cannot invalidate an earlier
+`verify-image` job rejects skipped, cancelled or failed docker jobs, and requires
+successful digest verification and a valid build digest. The in-slot registry
+verifier runs only after the image build was attempted, preserving an earlier
+source or wheel refusal as the cause of failure. The final gate does not reread
+tags after releasing the slot. A later image publication cannot invalidate an earlier
 run's completed registry check.
 
 `tests/scripts/test_release_image.py` exercises the production resolver with

@@ -98,7 +98,8 @@ jobs:
     # version that already shipped, so its wheel is already on PyPI; letting
     # this job run would attempt a duplicate upload and fail the run for a
     # reason unrelated to what was asked for. The image job checks PyPI after
-    # this job finishes, including when an upload succeeds but reports failure.
+    # this job finishes, including when the client reports failure after PyPI
+    # has accepted the wheel.
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
     steps:
@@ -146,6 +147,7 @@ jobs:
     concurrency:
       group: lion-studio-image
       cancel-in-progress: false
+    timeout-minutes: 60
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -227,7 +229,7 @@ jobs:
         cache-to: type=gha,mode=max
 
     - name: Verify the published image digest
-      if: ${{ !cancelled() }}
+      if: ${{ !cancelled() && steps.image.outcome != 'skipped' }}
       env:
         VERSION: ${{ needs.source.outputs.version }}
         EXPECTED_DIGEST: ${{ steps.image.outputs.digest }}
@@ -239,7 +241,7 @@ jobs:
     permissions:
       contents: read
     needs: [source, docker]
-    if: ${{ always() && needs.source.result == 'success' && needs.docker.result != 'skipped' }}
+    if: ${{ always() && needs.source.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
     - name: Require successful image publication and verification

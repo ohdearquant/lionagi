@@ -193,7 +193,12 @@ def test_pypi_version_must_match(metadata):
 
 @pytest.mark.parametrize(
     "field,value",
-    [("head_sha", OTHER_SHA), ("head_branch", "v9.9.9"), ("event", "workflow_dispatch")],
+    [
+        ("head_sha", OTHER_SHA),
+        ("head_branch", "v9.9.9"),
+        ("event", "workflow_dispatch"),
+        ("path", ".github/workflows/another.yml"),
+    ],
 )
 def test_another_run_is_not_publication_evidence(metadata, field, value):
     metadata[1][RUNS]["workflow_runs"][0][field] = value
@@ -312,6 +317,14 @@ def test_image_preparation_rechecks_the_pinned_source(metadata, sha):
         resolve_fixture(metadata, prepare_image=True)
 
 
+@pytest.mark.parametrize("version", ["", "9.9.9"])
+def test_image_preparation_rechecks_the_pinned_version(metadata, version):
+    metadata[0]["RESOLVED_VERSION"] = version
+    with pytest.raises(release.ReleaseError, match="source changed"):
+        resolve_fixture(metadata, prepare_image=True)
+    assert metadata[-1][-1] == ("github", f"{PREFIX}/commits/v1.2.3")
+
+
 @pytest.mark.parametrize("current,expected", [("1.2.3", "true"), ("1.2.4", "false")])
 def test_old_manual_versions_cannot_move_latest(metadata, current, expected):
     metadata[2][""]["info"]["version"] = current
@@ -332,6 +345,13 @@ def workflow():
 def assert_workflow_contract(document):
     jobs = document["jobs"]
     assert document["permissions"] == {"contents": "read"}
+    assert document["env"] == {
+        "DEFAULT_BRANCH": "${{ github.event.repository.default_branch }}",
+        "INPUT_VERSION": "${{ inputs.version }}",
+        "RELEASE_TAG": "${{ github.event.release.tag_name }}",
+        "RELEASE_ID": "${{ github.event.release.id }}",
+        "RELEASE_ACTION": "${{ github.event.action }}",
+    }
     assert set(jobs) == {"source", "test", "deploy", "docker", "verify-image"}
     for name, job in jobs.items():
         expected = {"contents": "read"}
@@ -354,8 +374,18 @@ def assert_workflow_contract(document):
         "github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v')"
     )
     assert jobs["test"]["needs"] == "source"
+    assert "if" not in jobs["test"]
     assert jobs["deploy"]["needs"] == ["source", "test"]
     assert jobs["deploy"]["if"] == "github.event_name == 'release'"
+    publish = next(s for s in jobs["deploy"]["steps"] if s.get("name") == "Publish package to PyPI")
+    assert publish == {
+        "name": "Publish package to PyPI",
+        "env": {
+            "TWINE_USERNAME": "__token__",
+            "TWINE_PASSWORD": "${{ secrets.PYPI_API_KEY }}",
+        },
+        "run": "uv run twine upload dist/*",
+    }
     for name in ("test", "deploy", "docker"):
         guard = jobs[name]["steps"][0]
         assert guard["name"] == "Require the resolved source commit"
@@ -374,6 +404,7 @@ def assert_workflow_contract(document):
         "&& (github.event_name == 'release' || github.event_name == 'workflow_dispatch') }}"
     )
     assert docker["concurrency"] == {"group": "lion-studio-image", "cancel-in-progress": False}
+    assert docker["timeout-minutes"] == 60
     assert docker["outputs"] == {
         "digest": "${{ steps.image.outputs.digest }}",
         "publish_latest": "${{ steps.release.outputs.publish_latest }}",
@@ -401,15 +432,16 @@ def assert_workflow_contract(document):
     assert docker["steps"].index(revalidate) < docker["steps"].index(image)
     assert image["with"]["context"] == "./source"
     assert image["with"]["file"] == "source/apps/studio/Dockerfile"
-    assert "needs.source.outputs.version" in image["with"]["tags"]
-    assert "publish_latest == 'true'" in image["with"]["tags"]
-    assert jobs["verify-image"]["needs"] == ["source", "docker"]
-    assert jobs["verify-image"]["if"] == (
-        "${{ always() && needs.source.result == 'success' && needs.docker.result != 'skipped' }}"
+    assert image["with"]["tags"] == (
+        "ghcr.io/ohdearquant/lion-studio:${{ needs.source.outputs.version }}\n"
+        "${{ steps.release.outputs.publish_latest == 'true' && "
+        "'ghcr.io/ohdearquant/lion-studio:latest' || '' }}\n"
     )
+    assert jobs["verify-image"]["needs"] == ["source", "docker"]
+    assert jobs["verify-image"]["if"] == ("${{ always() && needs.source.result == 'success' }}")
     digest_verify = docker["steps"][-1]
     assert docker["steps"].index(digest_verify) == docker["steps"].index(image) + 1
-    assert digest_verify["if"] == "${{ !cancelled() }}"
+    assert digest_verify["if"] == "${{ !cancelled() && steps.image.outcome != 'skipped' }}"
     assert digest_verify["env"] == {
         "VERSION": "${{ needs.source.outputs.version }}",
         "EXPECTED_DIGEST": "${{ steps.image.outputs.digest }}",
@@ -467,15 +499,32 @@ def test_workflow_tests_builds_and_verifies_one_resolved_source():
         "status-soft-failure",
         "status-soft-step",
         "guard-after-checkout",
+        "test-skipped",
+        "test-release-only",
+        "test-unconditional",
+        "default-branch-literal",
+        "default-branch-current-ref",
+        "latest-from-other-step",
+        "version-tag-from-input",
+        "latest-unconditional",
+        "upload-soft-failure",
+        "upload-skip-existing",
+        "upload-skipped",
+        "no-image-timeout",
+        "verify-skipped-docker",
+        "verify-before-image",
     ],
 )
 def test_workflow_contract_rejects_publication_wiring_mutations(mutation):
     document = workflow()
+    assert_workflow_contract(document)
     jobs = document["jobs"]
     docker = jobs["docker"]
     revalidate = next(s for s in docker["steps"] if s.get("id") == "release")
     verify = jobs["verify-image"]["steps"][0]
     digest_verify = docker["steps"][-1]
+    image = next(s for s in docker["steps"] if s.get("id") == "image")
+    publish = next(s for s in jobs["deploy"]["steps"] if s.get("name") == "Publish package to PyPI")
     if mutation == "deploy-write":
         jobs["deploy"]["permissions"]["packages"] = "write"
     elif mutation == "top-level-actions":
@@ -512,6 +561,40 @@ def test_workflow_contract_rejects_publication_wiring_mutations(mutation):
         verify["continue-on-error"] = True
     elif mutation == "guard-after-checkout":
         jobs["test"]["steps"][0:2] = reversed(jobs["test"]["steps"][0:2])
+    elif mutation == "test-skipped":
+        jobs["test"]["if"] = "false"
+    elif mutation == "test-release-only":
+        jobs["test"]["if"] = "github.event_name == 'release'"
+    elif mutation == "test-unconditional":
+        jobs["test"]["if"] = "true"
+    elif mutation == "default-branch-literal":
+        document["env"]["DEFAULT_BRANCH"] = "feature"
+    elif mutation == "default-branch-current-ref":
+        document["env"]["DEFAULT_BRANCH"] = "${{ github.ref_name }}"
+    elif mutation == "latest-from-other-step":
+        image["with"]["tags"] = image["with"]["tags"].replace(
+            "steps.release.outputs.publish_latest", "steps.other.outputs.publish_latest"
+        )
+    elif mutation == "version-tag-from-input":
+        image["with"]["tags"] = image["with"]["tags"].replace(
+            "needs.source.outputs.version", "inputs.version"
+        )
+    elif mutation == "latest-unconditional":
+        image["with"]["tags"] += "ghcr.io/ohdearquant/lion-studio:latest\n"
+    elif mutation == "upload-soft-failure":
+        publish["continue-on-error"] = True
+    elif mutation == "upload-skip-existing":
+        publish["run"] += " --skip-existing"
+    elif mutation == "upload-skipped":
+        publish["if"] = "false"
+    elif mutation == "no-image-timeout":
+        docker.pop("timeout-minutes", None)
+    elif mutation == "verify-skipped-docker":
+        jobs["verify-image"]["if"] = (
+            "${{ always() && needs.source.result == 'success' && needs.docker.result != 'skipped' }}"
+        )
+    elif mutation == "verify-before-image":
+        digest_verify["if"] = "${{ !cancelled() }}"
     with pytest.raises((AssertionError, KeyError)):
         assert_workflow_contract(document)
 
@@ -686,6 +769,12 @@ def test_empty_registry_digest_cannot_match_a_valid_build(registry):
             "sha256:" + "c" * 64,
             "image publication or digest verification did not succeed",
         ),
+        (
+            "skipped",
+            "sha256:" + "c" * 64,
+            "image publication or digest verification did not succeed",
+        ),
+        ("skipped", "", "image publication or digest verification did not succeed"),
         ("success", "", "the image build did not produce a valid digest"),
         ("success", "sha256:bad", "the image build did not produce a valid digest"),
     ],
@@ -704,13 +793,13 @@ def test_final_status_gate_requires_successful_build_and_verification(result, di
         assert f"::error::{error}" in completed.stdout
 
 
-def test_digest_verification_must_finish_before_a_newer_publication(registry):
+def test_digest_verification_checks_each_registry_snapshot(registry):
     run, digest_a, _ = registry
     digest_b = "sha256:" + "d" * 64
     after_a = {"1.2.3": {"digest": digest_a}, "latest": {"digest": digest_a}}
     after_b = {**after_a, "1.2.4": {"digest": digest_b}, "latest": {"digest": digest_b}}
 
-    # Broken ordering: A pushes and releases, B pushes, then A verifies latest.
+    # A's digest no longer matches latest once the registry contains B's snapshot.
     late_a = run(after_b)
     assert late_a.returncode == 1
     assert (
@@ -718,6 +807,6 @@ def test_digest_verification_must_finish_before_a_newer_publication(registry):
         in late_a.stdout
     )
 
-    # Serialized ordering: each holder pushes and verifies before releasing.
+    # Each matching registry snapshot verifies its own build digest.
     assert run(after_a).returncode == 0
     assert run(after_b, VERSION="1.2.4", EXPECTED_DIGEST=digest_b).returncode == 0
