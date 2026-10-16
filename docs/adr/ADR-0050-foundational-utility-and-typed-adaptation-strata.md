@@ -257,14 +257,19 @@ class Note(BaseModel):
   `metadata` to `node_metadata`. The inverse DB path renames it back.
 - `DataClass` and `HashableModel` are mutable and unhashable. The historical
   `HashableModel` name and imports remain available for serialization compatibility;
-  they do not promise hashability. Use stable identifiers or immutable snapshots as
-  container keys. `DataClass` fallback equality compares public fields of the exact
-  concrete type, while ordinary message dataclasses retain generated equality.
-- `to_list(..., flatten=True, unique=True)` deduplicates `DataClass` values by
-  identity or equality in first-occurrence order. Generic mappings, Pydantic models,
-  and msgspec structs retain transient hash buckets with equality confirmation.
-  The operation DTO listable-field validator uses direct identity/equality instead,
-  including for opaque outputs whose equality differs from their representation.
+  they do not promise hashability. Use stable identifiers as container keys. A frozen
+  `HashableModel` subclass gets Pydantic's hash of its field values, so it hashes only
+  when every field value does; a list or dict field makes it unhashable. `DataClass`
+  fallback equality compares public fields of the exact concrete type, while ordinary
+  message dataclasses retain generated equality.
+- `to_list(..., flatten=True, unique=True)` keeps the first of equal `DataClass` values,
+  grouping them by a transient hash of their declared field state and confirming
+  identity or equality inside each group. Generic mappings, Pydantic models, and
+  msgspec structs retain transient hash buckets with equality confirmation. The
+  operation DTO listable-field validator compares by identity, then equality, without
+  hashing; opaque outputs whose equality differs from their representation dedupe by
+  equality, and a pair whose equality gives no single truth value (an array, a data
+  frame) stays two values.
 - `Note.to_dict()` recursively removes sentinel values from dictionaries and lists.
   `exclude_none` and `exclude_empty` extend that recursive omission policy. The
   returned structure is a deep copy; JSON mode additionally runs recursive model

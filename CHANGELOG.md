@@ -8,16 +8,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Removed
 
-- Mutable `DataClass` and `HashableModel` values, including operation DTOs, now reject
-  `hash()`, set membership admission, and use as dictionary keys with `TypeError`.
-  This removes content hashes that could change after mutation and corrupt container
-  membership. Use a stable identifier or an explicitly immutable snapshot as a key.
-  `HashableModel` keeps its public name, imports, value equality, and serialization.
+- A mutable `HashableModel` or `DataClass` value, the operation field models included, now
+  raises `TypeError` from `hash()`, so it can no longer be put in a set or used as a dictionary
+  key. Its hash was computed from its content, which can change after the value is stored, and
+  the container then fails to find it. Use a stable identifier as the key. `HashableModel`
+  keeps its name, imports, value equality and serialization. The `MessageContent` types
+  already raised. A frozen `HashableModel` subclass now gets pydantic's hash of its field
+  values: it hashes when every field value does, so a subclass with a list or dict field now
+  raises `TypeError` where it used to hash by content. Declare such fields as tuples to keep
+  hashing.
 
 ### Changed
 
-- Dataclass and operation-field deduplication preserves the first equal value without
-  hashing mutable content, including equal opaque action outputs with different representations.
+- Deduplicating operation fields keeps the first of equal values without hashing them, so two
+  action outputs that compare equal are one value even when they print differently. An output
+  whose `==` gives no single truth value, such as an array or a data frame, is kept as a
+  separate value instead of raising. `to_list(..., unique=True)` groups `DataClass` values by a
+  hash of their declared field state, taken during deduplication and not stored, and compares
+  only values with the same structure.
 - The Antigravity (`gemini_code` / `gemini-code` / `gemini-cli`) backend knows the Gemini 4 Argon
   family that `agy models` now lists: `gemini-4-argon` (and `gemini-4`, `argon`) resolves to
   `Gemini 4 Argon (High)`, the `-low` / `-medium` / `-high` suffixes and `--effort` pick the tier,

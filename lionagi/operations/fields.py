@@ -384,9 +384,23 @@ def _validate_listable_field(cls: Any, value: Any) -> list[Any]:
     del cls  # Pydantic recognizes the validator class argument by this exact name.
     result: list[Any] = []
     for item in to_list(value, dropna=True, flatten=True):
-        if not any(existing is item or existing == item for existing in result):
+        if not any(_repeats(existing, item) for existing in result):
             result.append(item)
     return result
+
+
+def _repeats(existing: Any, item: Any) -> bool:
+    """Whether *item* is *existing* again: the same object, or an equal value.
+
+    An output such as an array or a data frame compares element by element, so
+    its ``==`` gives no single truth value; such a pair stays two values.
+    """
+    if existing is item:
+        return True
+    try:
+        return bool(existing == item)
+    except (TypeError, ValueError):
+        return False
 
 
 def _validate_action_required_field(cls: Any, value: Any) -> bool | None:

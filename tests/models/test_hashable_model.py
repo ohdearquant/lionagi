@@ -5,7 +5,7 @@
 
 import orjson
 import pytest
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from lionagi.models.hashable_model import HashableModel
 
@@ -14,6 +14,26 @@ class _Sample(HashableModel):
     name: str
     count: int = 0
     metadata: dict = Field(default_factory=dict)
+
+
+def test_a_frozen_subclass_hashes_by_its_field_values():
+    """A mutable instance has no hash. A frozen subclass gets pydantic's hash of
+    its field values, which a tuple field allows and a list field refuses."""
+
+    class FrozenTags(HashableModel):
+        model_config = ConfigDict(frozen=True)
+        tags: tuple[str, ...]
+
+    class FrozenList(HashableModel):
+        model_config = ConfigDict(frozen=True)
+        tags: list[str]
+
+    assert hash(FrozenTags(tags=("a",))) == hash(FrozenTags(tags=("a",)))
+    assert len({FrozenTags(tags=("a",)), FrozenTags(tags=("a",)), FrozenTags(tags=("b",))}) == 2
+    with pytest.raises(TypeError, match="unhashable"):
+        hash(FrozenList(tags=["a"]))
+    with pytest.raises(TypeError, match="unhashable"):
+        hash(_Sample(name="x"))
 
 
 class TestToDictModes:

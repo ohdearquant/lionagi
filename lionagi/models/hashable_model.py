@@ -25,8 +25,10 @@ __all__ = (
 class HashableModel(BaseModel):
     """Mutable Pydantic model with sentinel-aware serialization.
 
-    The historical name remains for import compatibility. Instances are
-    unhashable; use a stable identifier or an immutable snapshot as a key.
+    The historical name remains for import compatibility. A mutable instance is
+    unhashable; use a stable identifier as a key. A frozen subclass gets
+    pydantic's hash of its field values, so it hashes when every value does: a
+    tuple field hashes, a list or dict field raises ``TypeError``.
     """
 
     model_config = ConfigDict(

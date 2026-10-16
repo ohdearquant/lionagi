@@ -12,8 +12,8 @@
   types are `Undefined`; `Params`, `Meta`, and `Spec` use one typed structural equality/hash
   projection, production declarations use the explicit `eq=False` authority, and declaration,
   field-layout, sentinel, singleton, annotation, and Pydantic model caches use identity-safe keys;
-  mutable `DataClass`/`HashableModel` families are unhashable, with direct identity/equality
-  deduplication for mutable dataclasses and operation DTOs; registry snapshots, canonical durable
+  mutable `DataClass`/`HashableModel` families are unhashable, and mutable dataclasses and
+  operation DTOs deduplicate without hashing the value; registry snapshots, canonical durable
   serialization, and the `OperableModel` adapter migration remain open
 - **Area**: utilities
 - **Date**: 2026-08-16
@@ -442,16 +442,19 @@ equality for subclasses declaring `eq=False`; message dataclasses retain their g
 `HashableModel` remains available under its existing import paths and name, with its Pydantic
 equality and serialization behavior. The name is a compatibility spelling, not a hashability
 promise. Removing or renaming it is deferred; this migration adds no deprecation warning shim.
+A frozen `HashableModel` subclass gets Pydantic's generated hash of its field values, so it
+hashes only when every field value does: a tuple field hashes, a list or dict field raises.
 
-No intentional production set or dictionary-key consumers were found. Transient deduplication
-uses ordered identity-first equality for `DataClass` values in `to_list()` and for the four
-operation DTOs at their shared listable-field validator. Generic mapping, Pydantic, and msgspec
-deduplication retains its existing transient hash buckets and confirms equality inside each
-bucket. Mutable operation outputs may be opaque values whose equality does not match their
-representation, so that boundary cannot use a content hash. Arbitrary default-field declarations
-remain fresh, validator functions have stable identities, and the six named lazy field constants
-retain singleton identity. Container keys must instead be stable identifiers or explicitly
-immutable snapshots; changing a mutable value after admission cannot repair container membership.
+No intentional production set or dictionary-key consumers were found. `to_list()` groups
+`DataClass` values by a transient hash of their declared field state and confirms identity-first
+equality inside each group. The four operation DTOs at their shared listable-field validator use
+ordered identity-first equality, and a pair whose equality gives no single truth value stays two
+values. Generic mapping, Pydantic, and msgspec deduplication retains its existing transient hash
+buckets and confirms equality inside each bucket. Mutable operation outputs may be opaque values
+whose equality does not match their representation, so that boundary cannot use a content hash.
+Arbitrary default-field declarations remain fresh, validator functions have stable identities, and
+the six named lazy field constants retain singleton identity. Container keys must instead be stable
+identifiers; changing a mutable value after admission cannot repair container membership.
 
 ### D5 — `Spec` and `Operable` are the only neutral declaration vocabulary
 

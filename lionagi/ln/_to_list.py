@@ -12,6 +12,7 @@ from typing import Any, ClassVar
 
 from ._hash import hash_dict
 from ._lazy_init import LazyInit
+from ._structural import UnhashableStructuralValueError, _dataclass_structural_key
 from .types import DataClass, Params
 
 __all__ = ("to_list", "ToListParams")
@@ -122,13 +123,25 @@ def to_list(
 
     if unique:
         seen: set = set()
-        dataclass_values: list[DataClass] = []
+        dataclass_buckets: dict[int | None, list[DataClass]] = {}
         unhashable_buckets: dict[Any, list] = {}
         out: list = []
         for i in processed:
             if isinstance(i, DataClass):
-                if not any(existing is i or existing == i for existing in dataclass_values):
-                    dataclass_values.append(i)
+                # A value compared by its structure is bucketed by a hash of that
+                # structure, taken now and never kept on the instance, and only
+                # values sharing a bucket are compared. A subclass with its own
+                # equality, or a value whose structure cannot be keyed, shares one
+                # bucket and is compared with every other such value.
+                bucket_key = None
+                if type(i).__eq__ is DataClass.__eq__:
+                    try:
+                        bucket_key = hash(_dataclass_structural_key(i._field_state()))
+                    except (AttributeError, TypeError, UnhashableStructuralValueError):
+                        bucket_key = None
+                bucket = dataclass_buckets.setdefault(bucket_key, [])
+                if not any(existing is i or existing == i for existing in bucket):
+                    bucket.append(i)
                     out.append(i)
                 continue
             try:

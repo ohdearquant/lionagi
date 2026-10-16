@@ -267,6 +267,48 @@ def test_operation_dedup_honors_opaque_equality_instead_of_repr():
     assert result[1] is unequal
 
 
+def _array(values):
+    return pytest.importorskip("numpy").array(values)
+
+
+def _frame(values):
+    return pytest.importorskip("pandas").DataFrame({"x": values})
+
+
+@pytest.mark.parametrize("make", [_array, _frame], ids=["array", "frame"])
+def test_operation_dedup_keeps_outputs_whose_equality_has_no_single_answer(make):
+    """An array or frame output compares element by element, so asking its ``==``
+    for one truth value raises; the responses stay separate values instead."""
+    first = fields.ActionResponseModel(output=make([1, 2]))
+    same_values = fields.ActionResponseModel(output=make([1, 2]))
+    other = fields.ActionResponseModel(output=make([3, 4]))
+    result = fields._validate_listable_field(None, [first, same_values, other, first])
+    assert len(result) == 3
+    assert result[0] is first
+    assert result[1] is same_values
+    assert result[2] is other
+
+
+def test_dataclass_dedup_compares_only_values_with_the_same_structure(monkeypatch):
+    """Distinct values are told apart by their structure before any comparison,
+    so deduplicating a long list does not compare every pair."""
+    calls = []
+    compare = DataClass.__eq__
+
+    def counted(self, other):
+        calls.append(other)
+        return compare(self, other)
+
+    monkeypatch.setattr(DataClass, "__eq__", counted)
+    values = [MutableContext([n]) for n in range(200)]
+    repeat = MutableContext([7])
+    result = to_list([values, repeat], flatten=True, unique=True)
+    assert len(result) == 200
+    assert all(kept is value for kept, value in zip(result, values, strict=True))
+    assert len(calls) == 1
+    assert calls[0] is repeat
+
+
 def test_operation_dedup_checks_identity_before_equality(monkeypatch):
     first = fields.ActionResponseModel(output=OpaqueOutput(1, "opaque"))
 
