@@ -298,17 +298,26 @@ in the model's own call markup, instead of making the call. The CLI accepts
 that text as the turn's final message and still ends the turn with
 `turn.completed`, so the run would otherwise be recorded as completed although
 the agent stopped mid-task and the call never ran. When a turn ends — or the
-stream ends without a turn end — and the turn's last non-empty agent text
+stream ends without a turn end — and the turn's last text with visible content
 carries call markup outside code, the parser marks the session failed
 (`session.is_error`, with a `session.result` saying the model wrote a call as
 text and the run stopped before it ran) and emits an error `StreamChunk` whose
-metadata carries `call_markup_in_text: True` — while the usage `result` chunk
-is still emitted. A streamed run raises on that error chunk; a non-streamed
-call returns the session marked failed, as it does for any failed turn, and
-does not raise. Only the turn's last text is read: markup in an earlier message
-was superseded by a later one, a completed call after the message clears it,
-and text inside a fenced code block or an inline code span is a quotation of
-the markup rather than a call. The markup itself is the tuple
+metadata carries `call_markup_in_text: True`. When the turn ends with
+`turn.completed`, the usage `result` chunk for that turn is still emitted
+beside it; the stream-end path has no turn to report usage for. A streamed run
+raises on that error chunk; a non-streamed call returns the session marked
+failed, as it does for any failed turn, and does not raise.
+
+Only the turn's last text is read: markup in an earlier message was superseded
+by a later one, a completed call after the message clears it, and a message
+with no visible text leaves the text it followed in place. Text inside a
+fenced code block or an inline code span is a quotation of the markup rather
+than a call, so a call the model writes inside a fence completes the turn and
+never runs. The quotation is read as written, not as CommonMark reads a
+document: a backtick fence closed by `~~~` is not a closed fence, so the
+markup after it is still read as written call text and the turn fails. A tag
+in plain prose fails the reply as well; a reply that needs to name one writes
+it between backticks. The markup itself is the tuple
 `_TOOL_CALL_MARKUP_PATTERNS`, one compiled pattern per call markup the CLI can
 surface; another model's markup is supported by adding one entry there. The
 patterns match markup tags only — never the word DSML or a bare `|` in

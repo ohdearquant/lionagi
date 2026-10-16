@@ -131,8 +131,10 @@ _FENCED_CODE_RE = re.compile(
     r"^[ \t]*(?P<fence>```|~~~)[^\n]*\n.*?^[ \t]*(?P=fence)[ \t]*$",
     re.M | re.S,
 )
-# An inline code span: text between matching runs of backticks.
-_INLINE_CODE_RE = re.compile(r"(`+)[^`]*\1")
+# An inline code span: text between runs of the same length of backticks, on
+# one paragraph. A span does not cross a blank line, and a three-backtick run
+# is not closed by a two-backtick run.
+_INLINE_CODE_RE = re.compile(r"(?<!`)(`+)(?!`)(?:(?!\n[ \t]*\n).)*?(?<!`)\1(?!`)", re.S)
 
 # Completed items that are a call the CLI ran, or a call's result. One of these
 # after a message means the turn went on past that message, so the message is
@@ -954,9 +956,9 @@ async def stream_codex_cli(
                 if item_type == "agent_message":
                     text = item.get("text", "")
                     session.messages.append(item)
-                    # An empty message does not become the turn's last text;
-                    # it does not replace a message that carried one.
-                    if text:
+                    # A message with no visible text does not become the turn's
+                    # last text; it does not replace a message that carried one.
+                    if text and text.strip():
                         _last_agent_text = text
                     if on_text:
                         await maybe_await(on_text(text))
@@ -1142,11 +1144,10 @@ async def stream_codex_cli(
                 session.chunks.append(rsc)
                 yield rsc
 
-                # A model that writes a tool call into its reply as text has
-                # stopped mid-task: the CLI accepts that text as the turn's
-                # final message, no call is made, and the turn still completes.
-                # Only the turn's last non-empty agent text is read — markup in
-                # an earlier message was already superseded by a later one.
+                # The turn end reads the turn's pending text: markup in it
+                # means the model wrote a call as text, no call ran, and the
+                # turn still completed. Markup in an earlier message was
+                # already superseded by a later one.
                 if _has_tool_call_markup(_last_agent_text or ""):
                     yield _call_markup_error_chunk(session, obj)
                 _last_agent_text = None
@@ -1196,10 +1197,11 @@ async def stream_codex_cli(
                     continue
 
                 # Benign-EOS sentinel on resumed sessions — see docs/internals/runtime.md
-                # for the exact 3-condition classification. Classified before the
-                # session is touched: a benign sentinel leaves the session's
-                # outcome and result exactly as they were, and only emits its
-                # non-error chunk with the empty-payload message.
+                # for the exact 3-condition classification. It stands in for
+                # turn.completed on a stream that ends there, so it closes the
+                # turn: it reads and clears the pending text the way a turn end
+                # does, then emits its own non-error chunk. A consumer that
+                # stops at that chunk never reaches the check after the loop.
                 _is_benign_eos = (
                     typ == "error"
                     and "error" in obj  # a bare {"type": "error"} is malformed, not EOF
@@ -1207,6 +1209,12 @@ async def stream_codex_cli(
                     and not any(k in obj for k in ("code", "message", "status"))
                 )
                 if _is_benign_eos:
+                    # The sentinel ends a turn, so it reads the pending text as
+                    # the turn end does. A consumer that stops at the sentinel
+                    # never reaches the stream-end check below.
+                    if _has_tool_call_markup(_last_agent_text or ""):
+                        yield _call_markup_error_chunk(session, obj)
+                    _last_agent_text = None
                     sc = StreamChunk(
                         type="error",
                         content=_err_message,
@@ -1241,7 +1249,7 @@ async def stream_codex_cli(
 
                 content = msg.get("content", "")
                 if isinstance(content, str):
-                    if content:
+                    if content and content.strip():
                         _last_agent_text = content
                     if on_text:
                         await maybe_await(on_text(content))
@@ -1255,9 +1263,9 @@ async def stream_codex_cli(
                         if not isinstance(blk, dict):
                             continue
                         btype = blk.get("type")
-                        if btype == "text":
+                        if btype in ("text", "output_text"):
                             text = blk.get("text", "")
-                            if text:
+                            if text and text.strip():
                                 _last_agent_text = text
                             if on_text:
                                 await maybe_await(on_text(text))
@@ -1291,7 +1299,7 @@ async def stream_codex_cli(
                             yield sc
 
             elif typ in ("result", "response", "session.end"):
-                session.result = obj.get(
+                _event_result = obj.get(
                     "result",
                     obj.get("response", obj.get("text", "")),
                 ).strip()
@@ -1299,7 +1307,14 @@ async def stream_codex_cli(
                 session.total_cost_usd = obj.get("total_cost_usd", obj.get("cost"))
                 session.num_turns = obj.get("num_turns", obj.get("turns"))
                 session.duration_ms = obj.get("duration_ms", obj.get("duration"))
-                session.is_error = obj.get("is_error", obj.get("error") is not None)
+                # The event's text is its own outcome, so it does not replace
+                # the result of a failure already recorded; the event's own
+                # failure, or its success, cannot retract one either.
+                if not session.is_error and _event_result:
+                    session.result = _event_result
+                session.is_error = session.is_error or bool(
+                    obj.get("is_error", obj.get("error") is not None)
+                )
 
                 # Legacy terminal event (older CLI versions) -- same seam as
                 # turn.completed above.
@@ -1322,9 +1337,10 @@ async def stream_codex_cli(
     finally:
         await stream.aclose()
 
-    # A stream that ends without a turn end leaves the turn's last text unread;
-    # if it carries markup, the run stopped before the call ran, so fail it the
-    # same way a turn end would.
+    # A stream that is exhausted mid-turn leaves the turn's pending text
+    # unread. A turn end (turn.completed, the sentinel, a real failure) already
+    # read and cleared it, so this reads what is left: a stream that ended
+    # without a turn end. A consumer that stops reading early never gets here.
     if _has_tool_call_markup(_last_agent_text or ""):
         yield _call_markup_error_chunk(session, {})
         _last_agent_text = None
@@ -1406,7 +1422,12 @@ class CodexCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
                 if isinstance(item, CLISession):
                     # Turns the session's terminal verdict into a chunk — see
                     # docs/internals/providers.md#a-session-terminal-error-must-be-turned-back-into-a-stream-chunk.
-                    if item.is_error and not any(c.type == "error" for c in item.chunks):
+                    # Only a failing error chunk already stands for the verdict;
+                    # a non-error one (the end-of-stream sentinel) does not
+                    # carry it, so the fallback still fires beside it.
+                    if item.is_error and not any(
+                        c.type == "error" and c.is_error for c in item.chunks
+                    ):
                         yield StreamChunk(
                             type="error",
                             content=item.result or "Codex session failed",

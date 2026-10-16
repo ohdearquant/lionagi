@@ -7,21 +7,26 @@ A model served through the CLI can write a tool call into its reply as text, in
 the model's own call markup, rather than making the call. The CLI accepts that
 text as the turn's final message and ends the turn with ``turn.completed``, so
 without this check the run is recorded as completed although the agent stopped
-mid-task and the call never ran. When the turn's last non-empty agent text
-carries markup outside code, the session is marked failed (``is_error``, and
-the result names the cause) and an error chunk is emitted — read when a turn
-completes or the stream ends. A streamed run raises on that error chunk; a
-non-streamed call returns the session marked failed, as it does for any failed
-turn, and does not raise.
+mid-task and the call never ran. When the turn's last agent text with visible
+content carries markup outside code, the session is marked failed (``is_error``,
+and the result names the cause) and an error chunk is emitted. The pending
+text is read at a turn end -- ``turn.completed``, or the end-of-stream
+sentinel a resumed session closes with, which a consumer reads instead of
+reading on to the stream's end -- and at the end of a stream that carried no
+turn end. A streamed run raises on that error chunk; a non-streamed call
+returns the session marked failed, as it does for any failed turn, and does
+not raise.
 
-The parser reads only the turn's last text: markup in an earlier message was
+The parser reads only the turn's last such text: markup in an earlier message is
 superseded by a later one or by a call that ran after it, text inside a fenced
-code block or an inline code span is a quotation of the markup rather than a
-call, and a prose mention of the markup's word or a bare ``|`` is not a tag.
+code block or a single-paragraph inline code span is a quotation of the markup
+rather than a call, and a prose mention of the markup's word or a bare ``|`` is
+not a tag.
 """
 
 from __future__ import annotations
 
+import contextlib
 from unittest.mock import patch
 
 import pytest
@@ -31,6 +36,7 @@ from lionagi.providers.openai.codex import (
     CodexCodeRequest,
     stream_codex_cli,
 )
+from lionagi.service.types.cli_session import CLISession
 from lionagi.service.types.stream_chunk import StreamChunk
 
 # U+FF5C FULLWIDTH VERTICAL LINE, written as an escape so the source stays
@@ -90,6 +96,10 @@ def _command_execution() -> dict:
 
 def _legacy_message(text: str) -> dict:
     return {"type": "message", "message": {"content": text}}
+
+
+def _legacy_block(block_type: str, text: str) -> dict:
+    return {"type": "message", "message": {"content": [{"type": block_type, "text": text}]}}
 
 
 def _legacy_tool_block() -> dict:
@@ -556,3 +566,264 @@ async def test_the_double_bar_form_fails():
     _, session = await _parse([_agent_message(text), _turn_completed()])
 
     assert session.is_error is True, f"the double-bar form went unnoticed: {text!r}"
+
+
+# --- a consumer that stops at the end-of-stream sentinel, as a streamed run does ---
+
+
+async def _stop_at_the_sentinel(events: list[dict]) -> tuple[list[StreamChunk], CLISession]:
+    """Consume the parser as a streamed run does, stopping at the sentinel chunk.
+
+    The generator is closed at that point, so the parser's stream-end check
+    never runs and only what was yielded before the sentinel can be read.
+    """
+
+    async def fake_events(request):
+        for event in events:
+            yield event
+
+    chunks: list[StreamChunk] = []
+    session = CLISession()
+    with patch(
+        "lionagi.providers.openai.codex.stream_codex_cli_events",
+        side_effect=fake_events,
+    ):
+        async with contextlib.aclosing(stream_codex_cli(_request(), session)) as gen:
+            async for item in gen:
+                if isinstance(item, StreamChunk):
+                    chunks.append(item)
+                    if item.metadata.get("benign_eos"):
+                        break
+    return chunks, session
+
+
+@pytest.mark.asyncio
+async def test_markup_before_the_sentinel_without_a_turn_end_fails():
+    """The sentinel closes a turn the way turn.completed does, so pending markup fails."""
+    chunks, session = await _stop_at_the_sentinel(
+        [_agent_message(MARKUP_FIXTURE), _benign_sentinel()]
+    )
+
+    assert session.is_error is True, (
+        "the sentinel ended the turn without reading the markup message it left pending"
+    )
+    assert session.result and "tool call" in session.result, (
+        f"the session result does not explain the failure: {session.result!r}"
+    )
+    markup_errors = _markup_errors(chunks)
+    assert len(markup_errors) == 1, f"expected one markup error chunk, got {chunks}"
+    assert markup_errors[0].type == "error" and markup_errors[0].is_error is True, (
+        f"the markup chunk reads as success: {markup_errors[0]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_turn_end_before_the_sentinel_does_not_report_the_markup_twice():
+    """The turn end already read and cleared the pending text; the sentinel reports nothing."""
+    chunks, session = await _stop_at_the_sentinel(
+        [_agent_message(MARKUP_FIXTURE), _turn_completed(), _benign_sentinel()]
+    )
+
+    assert session.is_error is True, "the sentinel turned a failed turn back into a success"
+    markup_errors = _markup_errors(chunks)
+    assert len(markup_errors) == 1, f"expected exactly one markup error chunk, got {markup_errors}"
+
+
+@pytest.mark.asyncio
+async def test_a_clean_message_before_the_sentinel_still_completes():
+    """The sentinel's turn-end read leaves a turn with no markup text alone."""
+    chunks, session = await _stop_at_the_sentinel(
+        [_agent_message("done"), _turn_completed(), _benign_sentinel()]
+    )
+
+    assert session.is_error is False, "a clean turn was marked failed by its own sentinel"
+    assert _markup_errors(chunks) == [], f"a clean turn produced a markup chunk: {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_a_non_streamed_call_markup_then_sentinel_is_failed():
+    """The non-streamed path reads the same sentinel turn end and returns failed."""
+    events = [_agent_message(MARKUP_FIXTURE), _benign_sentinel()]
+
+    async def fake(request):
+        for event in events:
+            yield event
+
+    with patch(
+        "lionagi.providers.openai.codex.stream_codex_cli_events",
+        side_effect=fake,
+    ):
+        out = await CodexCLIEndpoint()._call({"request": _request()}, {})
+
+    assert out["is_error"] is True, (
+        f"the returned session came back marked successful: {out['is_error']!r}"
+    )
+    assert out["result"] and "tool call" in out["result"], (
+        f"the returned session result does not explain the failure: {out['result']!r}"
+    )
+
+
+# --- the turn-end check itself ---
+
+
+@pytest.mark.asyncio
+async def test_the_turn_end_check_reports_the_markup_before_the_sentinel():
+    """The failure is the turn end's own, read before the sentinel ends the stream.
+
+    The chunk names the event it was read at, so a consumer that stops at the
+    sentinel can tell the turn-end read from a later one.
+    """
+    events = [_agent_message(MARKUP_FIXTURE), _turn_completed(), _benign_sentinel()]
+    chunks, session = await _stop_at_the_sentinel(events)
+
+    markup_errors = _markup_errors(chunks)
+    assert len(markup_errors) == 1, f"the turn end did not report the markup message: {chunks}"
+    assert markup_errors[0].metadata.get("type") == "turn.completed", (
+        f"the markup chunk was not read at the turn end: {markup_errors[0].metadata}"
+    )
+    sentinel_index = next(i for i, c in enumerate(chunks) if c.metadata.get("benign_eos"))
+    assert chunks.index(markup_errors[0]) < sentinel_index, (
+        f"the markup chunk arrived after the sentinel: {chunks}"
+    )
+    assert session.is_error is True, "the failure did not reach the session"
+
+
+@pytest.mark.asyncio
+async def test_two_turns_where_the_first_ends_with_markup_stay_failed():
+    """The first turn's failure stands when a later clean turn ends the stream."""
+    events = [
+        _agent_message(MARKUP_FIXTURE),
+        _turn_completed(),
+        _agent_message("ok"),
+        _turn_completed(),
+    ]
+    chunks, session = await _parse(events)
+
+    assert session.is_error is True, "a clean second turn retracted the markup failure of the first"
+    assert len(_markup_errors(chunks)) == 1, (
+        f"expected one markup error chunk for the first turn, got {chunks}"
+    )
+
+
+# --- a whitespace-only message is not the turn's last visible text ---
+
+
+@pytest.mark.asyncio
+async def test_a_whitespace_only_message_does_not_supersede_markup():
+    """A message with no visible text cannot take the markup message's place."""
+    events = [
+        _agent_message(MARKUP_FIXTURE),
+        _agent_message("\n"),
+        _turn_completed(),
+    ]
+    chunks, session = await _parse(events)
+
+    assert session.is_error is True, (
+        "a whitespace-only message replaced the markup message and the turn completed"
+    )
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+# --- an inline code span stays inside one paragraph and needs a matching run ---
+
+
+@pytest.mark.asyncio
+async def test_a_stray_backtick_in_another_paragraph_does_not_hide_markup():
+    """The span would cross a blank line, so it does not quote the markup between them."""
+    text = f"I'll check the ` char.\n\n{MARKUP_FIXTURE}\n\nThen `x` is fine."
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is True, (
+        f"two stray backticks in separate paragraphs quoted the markup: {text!r}"
+    )
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_three_backticks_closed_by_two_do_not_hide_markup():
+    """A run closes only on a run of the same length, so the markup stays visible."""
+    text = f'```<{BAR}DSML{BAR} invoke name="x">``'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is True, (
+        f"a three-backtick run closed on two backticks and quoted the markup: {text!r}"
+    )
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+# --- the legacy terminal event reports an outcome, it does not retract one ---
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_result_event_does_not_retract_a_markup_failure():
+    """A success outcome arriving after the failure leaves the failure in place."""
+    events = [
+        _agent_message(MARKUP_FIXTURE),
+        _turn_completed(),
+        {"type": "result", "result": "done", "is_error": False},
+    ]
+    _, session = await _parse(events)
+
+    assert session.is_error is True, (
+        "the legacy result event turned the markup failure back into a success"
+    )
+    assert session.result and "tool call" in session.result, (
+        f"the event's own text replaced the failure result: {session.result!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_result_event_failure_without_markup_is_reported():
+    """The event's own failure still marks the session, and its text is the result."""
+    events = [{"type": "result", "result": "boom", "is_error": True}]
+    _, session = await _parse(events)
+
+    assert session.is_error is True, "a failing legacy result event was read as a success"
+    assert session.result == "boom", f"the failure text was lost: {session.result!r}"
+
+
+# --- a legacy block list reads output_text blocks too ---
+
+
+@pytest.mark.asyncio
+async def test_markup_in_a_legacy_output_text_block_fails():
+    """An output_text block is a text block, so its markup is the turn's last text."""
+    events = [
+        _legacy_block("output_text", MARKUP_FIXTURE),
+        _turn_completed(),
+    ]
+    chunks, session = await _parse(events)
+
+    assert session.is_error is True, (
+        "markup in an output_text block went unnoticed, so a written call passed as a turn"
+    )
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+# --- the endpoint's own fallback chunk for a failed session ---
+
+
+@pytest.mark.asyncio
+async def test_endpoint_stream_reports_a_failed_legacy_result_before_the_sentinel():
+    """The non-error sentinel chunk does not stand in for the session's failure."""
+    events = [
+        {"type": "result", "result": "boom", "is_error": True},
+        _benign_sentinel(),
+    ]
+
+    async def fake(request):
+        for event in events:
+            yield event
+
+    with patch(
+        "lionagi.providers.openai.codex.stream_codex_cli_events",
+        side_effect=fake,
+    ):
+        chunks = [c async for c in CodexCLIEndpoint().stream({"request": _request()})]
+
+    failed = [c for c in chunks if c.type == "error" and c.is_error]
+    assert len(failed) == 1, (
+        "no failure chunk beside the sentinel for a failed session: "
+        f"{[(c.type, c.is_error, c.content) for c in chunks]}"
+    )
+    assert "boom" in failed[0].content, f"the failure text was lost: {failed[0].content!r}"
