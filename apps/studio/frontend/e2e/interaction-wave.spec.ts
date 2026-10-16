@@ -65,6 +65,23 @@ test("expanded run graph keeps the keyboard inside it and hands it back", async 
   const expand = page.getByRole("button", { name: "Expand execution graph", exact: true });
   await expect(expand).toBeVisible();
   const inlineViewport = page.locator("#run-dag .react-flow__viewport").first();
+  // The inline graph fits itself on a later frame, once its nodes are laid out and
+  // its container has grown to them, so a transform read straight away can be the
+  // unfitted one. Take the baseline only after the nodes are drawn and the
+  // transform has held still between two reads.
+  await expect(page.locator("#run-dag .react-flow__node").first()).toBeVisible();
+  let lastRead: string | null | undefined;
+  await expect
+    .poll(
+      async () => {
+        const current = await inlineViewport.getAttribute("style");
+        const held = current === lastRead;
+        lastRead = current;
+        return held;
+      },
+      { intervals: [250] },
+    )
+    .toBe(true);
   const inlineTransform = await inlineViewport.getAttribute("style");
 
   await expand.click();
