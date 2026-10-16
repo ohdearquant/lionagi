@@ -76,6 +76,7 @@ function run(overrides: Partial<RunSummary> = {}): RunSummary {
     status: "running",
     started_at: 0,
     ...overrides,
+    id: overrides.id ?? overrides.run_id ?? "session-00000000000001",
   };
 }
 

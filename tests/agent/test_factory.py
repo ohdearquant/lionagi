@@ -1672,3 +1672,61 @@ async def test_forward_mcp_codex_profile_created_0600_without_chmod_window(tmp_p
     # 0600 despite umask 0: the mode came from creation, not a later chmod.
     assert stat.S_IMODE(profile_path.stat().st_mode) == 0o600
     assert str(profile_path) not in chmodded
+
+
+async def test_forward_mcp_codex_allowlist_reads_a_deeply_nested_ambient_config_as_unreadable(
+    tmp_path, monkeypatch
+):
+    """A config.toml nested past the parser's limit must fall through to the
+    `codex mcp list --json` fallback, not raise RecursionError out of the
+    discovery: an explicit allowlist that cannot be verified fails closed by
+    raising, and a parser error is not that.
+
+    The subprocess is stubbed so no `codex` process can start; the call it
+    would have made is asserted instead."""
+    import subprocess
+
+    codex_home = tmp_path / "codex_home"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text("x = " + "[" * 3000 + "]" * 3000 + "\n")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    calls: list[tuple] = []
+
+    def _run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+
+    monkeypatch.setattr("subprocess.run", _run)
+
+    config = AgentSpec.compose("reviewer", model="codex/gpt-5.5", cwd=str(tmp_path / "elsewhere"))
+    config.mcp_servers = []
+    branch = await create_agent(config, load_settings=False)
+
+    assert [argv for argv, _ in calls] == [["codex", "mcp", "list", "--json"]]
+    overrides = branch.chat_model.endpoint.config.kwargs.get("config_overrides")
+    assert overrides is None
+
+
+async def test_forward_mcp_codex_allowlist_reads_a_non_utf8_ambient_config_as_unreadable(
+    tmp_path, monkeypatch
+):
+    """A config.toml that is not UTF-8 is as unreadable as an unparseable one:
+    read_text() decodes it, and the UnicodeDecodeError must reach the fallback
+    rather than escape the discovery."""
+    codex_home = tmp_path / "codex_home"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_bytes(b"mcp_servers = 1\n\xff\xfe\n")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    def _run(argv, **kwargs):
+        raise FileNotFoundError("codex CLI not found")
+
+    monkeypatch.setattr("subprocess.run", _run)
+
+    config = AgentSpec.compose("reviewer", model="codex/gpt-5.5", cwd=str(tmp_path / "elsewhere"))
+    config.mcp_servers = []
+    with pytest.raises(ConfigurationError, match="allowlist"):
+        await create_agent(config, load_settings=False)

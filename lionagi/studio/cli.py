@@ -244,16 +244,87 @@ def _studio_start(args: argparse.Namespace) -> int:
     return _start_hosted(host, port, no_open)
 
 
+class _PairingRefusedError(Exception):
+    """A daemon answers on the port but would not issue a pairing code."""
+
+
+def _code_from_running_daemon(port: int) -> str | None:
+    """A pairing code from a lionagi daemon already listening on ``port``, or None.
+
+    None means nothing that answers like a lionagi daemon is there, so this launch
+    starts one. A daemon that answers but refuses to pair raises, since starting a
+    second one on the same port would only fail to bind.
+    """
+    import urllib.error
+    import urllib.request
+
+    base = f"http://127.0.0.1:{port}"
+    try:
+        with urllib.request.urlopen(f"{base}/health", timeout=2) as resp:  # noqa: S310
+            health = json.loads(resp.read())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(health, dict) or health.get("status") != "ok":
+        return None
+    headers = {"Content-Type": "application/json"}
+    if token := os.environ.get("LIONAGI_STUDIO_AUTH_TOKEN"):
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(  # noqa: S310
+        f"{base}/api/studio/pairing-codes", data=b"{}", method="POST", headers=headers
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310
+            code = json.loads(resp.read()).get("code")
+    except urllib.error.HTTPError as exc:
+        raise _PairingRefusedError(f"HTTP {exc.code}") from exc
+    except (OSError, ValueError, AttributeError) as exc:
+        raise _PairingRefusedError(str(exc) or type(exc).__name__) from exc
+    if not isinstance(code, str) or not code:
+        raise _PairingRefusedError("no code in the response")
+    return code
+
+
+def _hosted_launch_url(port: int, code: str) -> str:
+    """The hosted page's URL for this daemon, carrying a one-time pairing code.
+
+    The code rides the fragment, which a browser never sends to a server; the page
+    reads it once, removes it from the address bar and exchanges it for a bearer.
+    """
+    query = "" if port == 8765 else f"?api=http://127.0.0.1:{port}"
+    return f"{_HOSTED_URL}/{query}#pair={code}"
+
+
 def _start_hosted(host: str, port: int, no_open: bool) -> int:
+    from lionagi.studio.launch_access import PAIRING_CODE_TTL_S, mint_pairing_code
+
     daemon_url = f"http://127.0.0.1:{port}"
+    try:
+        code = _code_from_running_daemon(port)
+    except _PairingRefusedError as exc:
+        log_error(
+            f"A Studio daemon is already running at {daemon_url}, but it would not pair "
+            f"a page ({exc}). Stop it and run `li studio` again."
+        )
+        return 1
+    already_running = code is not None
+    if code is None:
+        code = mint_pairing_code()
+    url = _hosted_launch_url(port, code)
     print(f"Lion Studio: {_HOSTED_URL}")
     print(f"  connects to your local daemon at {daemon_url}")
-    print()
+    opened = False
     if not no_open and sys.stdin.isatty() and sys.stdout.isatty():
         import webbrowser
 
         with contextlib.suppress(Exception):
-            webbrowser.open(_HOSTED_URL)
+            opened = bool(webbrowser.open(url))
+    if not opened:
+        minutes = int(PAIRING_CODE_TTL_S // 60)
+        print(f"  open this link within {minutes} minutes; it works once: {url}")
+    print()
+    if already_running:
+        print("A daemon was already running on this port; this page is paired with it.")
+        return 0
     return _start_backend_only(host, port)
 
 

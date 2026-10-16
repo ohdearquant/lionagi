@@ -241,8 +241,8 @@
       "allHint": "첫 에이전트 또는 워크플로를 만들어 시작하세요.",
       "filtered": "필터와 일치하는 항목이 없습니다.",
       "filteredHint": "다른 종류를 시도하거나 검색을 지우세요.",
+      "clearFilters": "필터 지우기",
       "createFirst": "첫 항목 만들기",
-      "createWorkflow": "새 워크플로",
       "createAgent": "새 에이전트",
       "allSkill": "스킬을 찾을 수 없습니다.",
       "allSkillHint": "여기에 표시하려면 ~/.lionagi/skills/NAME/ 아래에 SKILL.md를 추가하세요.",
@@ -1250,6 +1250,12 @@
       "body": "Something answered at {base}, but it isn't a lionagi daemon.",
       "fix": "Stop that program, or point the daemon at a different port:",
       "command": "li studio --port 8766"
+    },
+    "accessRequired": {
+      "title": "이 데몬에는 액세스 토큰이 필요합니다",
+      "body": "{base}의 lionagi 데몬이 응답했지만 이 페이지를 거부했습니다. 데몬은 다른 출처의 페이지를 액세스 토큰이 있을 때만 받아들이며, li studio 명령이 이 페이지를 열 때 토큰을 전달합니다. 페이지를 새로 고치면 토큰이 사라집니다.",
+      "fix": "데몬이 실행 중인 곳에서 이 명령을 실행해 액세스 권한으로 Studio를 여세요:",
+      "command": "li studio"
     },
     "retry": "Retry",
     "dismiss": "Dismiss"

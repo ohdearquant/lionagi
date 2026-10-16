@@ -455,6 +455,7 @@ async def list_sessions(
             )
             SELECT
                 s.id,
+                s.run_id,
                 s.name,
                 s.created_at,
                 s.updated_at,
@@ -503,6 +504,9 @@ async def list_sessions(
     return [
         {
             "id": row["id"],
+            # Nullable CLI-run provenance. This is not the Session identity
+            # used by Studio routes and can be shared by several Sessions.
+            "run_id": row["run_id"],
             # Displayed name prefers structured identity (playbook/show/agent)
             # over the raw, possibly prompt-derived value stored on the row
             # — see resolve_display_name().
@@ -1390,6 +1394,9 @@ async def get_session(
 
     return {
         "id": session_row["id"],
+        # Nullable CLI-run provenance; consumers must use ``id`` for this
+        # Session projection's routes, controls, streams, and row identity.
+        "run_id": session_row["run_id"],
         # Same resolution as list_sessions() — structured identity beats
         # the raw, possibly prompt-derived stored name.
         "name": resolve_display_name(dict(session_row)),

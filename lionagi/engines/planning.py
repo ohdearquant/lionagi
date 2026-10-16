@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from lionagi._errors import ConfigurationError
 from lionagi.casts.emission import SpawnRequest
 from lionagi.orchestration import (
     build_dag_graph,
@@ -57,11 +58,33 @@ class PlanningEngine(Engine):
         self.roles = roles
         self.synthesis_role = synthesis_role
         self.reactive = reactive
+        self._refuse_settings_workers_drop()
+
+    def _refuse_settings_workers_drop(self) -> None:
+        # Workers are built by spawn_roles from the assignee's role alone, not
+        # through make_agent, so they get neither setting: a worker would run
+        # uncontained, or without the overlay, beside an orchestrator that has it.
+        dropped = [
+            name
+            for name, value in (
+                ("contain_account_integrations", self.contain_account_integrations),
+                ("agent_env", self.agent_env),
+            )
+            if value
+        ]
+        if dropped:
+            raise ConfigurationError(
+                f"PlanningEngine does not support {' or '.join(dropped)}: its workers are "
+                "built from their role alone, without the engine's agent settings, so the "
+                "setting would reach the orchestrator and the synthesizer but not the workers."
+            )
 
     # -- lifecycle ------------------------------------------------------------
 
     async def _run(self, run: EngineRun, prompt: str, *, max_ops: int = 0) -> str:
         """Plan *prompt* into a DAG, execute it (reactively when self.reactive), then synthesize worker outputs."""
+        # Checked again here: both are plain attributes a caller can set after construction.
+        self._refuse_settings_workers_drop()
         prompt = prompt.strip()
         if not prompt:
             raise ValueError("prompt is empty")

@@ -10,6 +10,8 @@ import pytest
 
 from lionagi import _paths
 from lionagi.cli._mcp_resolve import (
+    SNAPSHOT_SEARCHED_FROM_KEY,
+    SNAPSHOT_SOURCE_KEY,
     McpConfigError,
     discover_mcp_config,
     resolve_spawn_mcp_servers,
@@ -98,6 +100,71 @@ def test_explicit_config_wins_over_discovery(tmp_path):
     named.write_text(json.dumps({"mcpServers": SERVERS}))
     resolution = resolve_spawn_mcp_servers(str(named), launch_dir=tmp_path)
     assert resolution.servers == SERVERS
+
+
+def test_snapshot_keeps_the_discovered_source_and_is_not_explicit(tmp_path):
+    source = _write_config(tmp_path)
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(json.dumps({"mcpServers": SERVERS, SNAPSHOT_SOURCE_KEY: str(source)}))
+
+    resolution = resolve_spawn_mcp_servers(snapshot, launch_dir=tmp_path)
+
+    assert resolution.servers == SERVERS
+    assert resolution.source == source
+    assert resolution.explicit is False
+
+
+def test_a_snapshot_reports_the_directory_its_search_began_in(tmp_path):
+    """A run whose submission named a cwd starts there; when that cwd is not where the
+    search began, the pair the snapshot reports must still rediscover the same file."""
+    from lionagi.mcp.jobs import _write_mcp_server_snapshot
+
+    server_dir = tmp_path / "server"
+    checkout = tmp_path / "checkout"
+    server_dir.mkdir()
+    checkout.mkdir()
+    source = _write_config(server_dir)
+    _write_config(checkout, {"other": {"command": "x"}})
+    snapshot = tmp_path / "job" / "mcp-servers.json"
+    snapshot.parent.mkdir()
+    _write_mcp_server_snapshot(snapshot, SERVERS, source=source, searched_from=server_dir)
+
+    resolution = resolve_spawn_mcp_servers(snapshot, launch_dir=checkout)
+
+    assert resolution.servers == SERVERS
+    assert resolution.source == source
+    assert resolution.searched_from == server_dir
+    assert resolution.explicit is False
+    assert discover_mcp_config(resolution.searched_from) == resolution.source
+
+
+def test_a_snapshot_without_its_search_directory_reports_the_launch_directory(tmp_path):
+    """A snapshot written before the search directory was recorded still resolves."""
+    source = _write_config(tmp_path)
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(json.dumps({"mcpServers": SERVERS, SNAPSHOT_SOURCE_KEY: str(source)}))
+
+    resolution = resolve_spawn_mcp_servers(snapshot, launch_dir=tmp_path / ".")
+
+    assert resolution.searched_from == tmp_path.resolve()
+
+
+@pytest.mark.parametrize("key", [SNAPSHOT_SOURCE_KEY, SNAPSHOT_SEARCHED_FROM_KEY])
+@pytest.mark.parametrize(
+    "value", [None, 5, ["x"], "", "rel/.mcp.json"], ids=["null", "int", "list", "empty", "relative"]
+)
+def test_a_snapshot_path_that_is_not_absolute_makes_the_file_unusable(tmp_path, key, value):
+    document = {
+        "mcpServers": SERVERS,
+        SNAPSHOT_SOURCE_KEY: str(tmp_path / ".mcp.json"),
+        SNAPSHOT_SEARCHED_FROM_KEY: str(tmp_path),
+    }
+    document[key] = value
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(json.dumps(document))
+
+    with pytest.raises(McpConfigError, match=f"{key}.*must be an absolute path"):
+        resolve_spawn_mcp_servers(snapshot, launch_dir=tmp_path)
 
 
 def test_config_without_servers_key_is_unusable_not_empty(tmp_path):

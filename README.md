@@ -188,10 +188,11 @@ place.
 
 ![Lion Studio — Mission Control: live agents, completion pulse, and run history](assets/studio.png)
 
-**No download or build required.** Lion Studio is a client-side web app —
-open **[lion-studio.khive.ai](https://lion-studio.khive.ai)** directly in your
-browser and it connects to your local daemon at `http://127.0.0.1:8765`. Your
-data never leaves your machine; the hosted page is just the UI. Available in
+**No download or build required.** Lion Studio is a client-side web app:
+`li studio` starts your local daemon and opens
+**[lion-studio.khive.ai](https://lion-studio.khive.ai)** paired with it, and the
+page talks to the daemon at `http://127.0.0.1:8765`. Your data never leaves your
+machine; the hosted page is just the UI. Available in
 **16 languages**: English, 中文, Español, Français, हिन्दी, বাংলা, Deutsch,
 Bahasa Indonesia, Português (Brasil), 한국어, Türkçe, اردو, Tiếng Việt,
 العربية, Русский, and 日本語 — with full right-to-left support.
@@ -207,7 +208,7 @@ li studio --dev       # from a source checkout: backend + in-repo frontend, hot 
 
 `--web`, `--docker`, `--no-frontend`, and `--dev` are mutually exclusive; `--web`
 is the default when no flag is given. Pass `--no-open` to skip auto-opening the
-hosted UI in your browser.
+hosted UI in your browser; `li studio` then prints a one-time link to open instead.
 
 ## Providers
 
@@ -249,6 +250,10 @@ uv add "lionagi[postgres]"  # PostgreSQL persistence
 uv add "lionagi[ruvector]"  # Native vector memory and retrieval (RuVector)
 uv add "lionagi[all]"       # Everything
 ```
+
+Agents that need memory across sessions can use khive, a hosted memory and
+knowledge graph served over MCP:
+https://khive.ai/?utm_source=github&utm_campaign=lionagi-readme
 
 ## Claude Code Marketplace
 

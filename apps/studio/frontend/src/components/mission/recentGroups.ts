@@ -46,7 +46,7 @@ export function groupConsecutiveRecentRuns(runs: RunSummary[]): RecentGroup[] {
     if (last && last.name === name && last.displayStatus === displayStatus) {
       last.runs.push(run);
     } else {
-      groups.push({ key: run.run_id, runs: [run], name, displayStatus });
+      groups.push({ key: run.id, runs: [run], name, displayStatus });
     }
   }
 

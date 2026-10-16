@@ -276,7 +276,7 @@ def test_remove_run_tag_route(tmp_path, monkeypatch):
     assert r.json()["tags"] == []
 
 
-# ── Round-trip via the run row (R1: run_id ≡ session_id) ─────────────────────
+# ── Round-trip via the Session-keyed run projection ────────────────────────────
 
 
 def test_list_runs_tag_filter_round_trips_through_run_row(tmp_path, monkeypatch):
@@ -292,9 +292,10 @@ def test_list_runs_tag_filter_round_trips_through_run_row(tmp_path, monkeypatch)
     r2 = client.get("/api/runs?tag=x")
     assert r2.status_code == 200
     runs = r2.json()["runs"]
-    target = next((run for run in runs if run["run_id"] == sid), None)
+    target = next((run for run in runs if run["id"] == sid), None)
     assert target is not None, "tagged session did not round-trip through the run row"
     assert target["id"] == sid
+    assert target["run_id"] is None
     assert "x" in target["tags"]
 
 

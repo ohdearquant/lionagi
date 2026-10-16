@@ -420,24 +420,26 @@ def test_a_large_payload_never_enters_the_dataclass_cache():
         _structural_key,
     )
 
-    before = len(_stable_dataclass_keys._cache)
-    _structural_key(_Payload("x" * (_MAX_CACHED_WEIGHT + 1)))
-    assert len(_stable_dataclass_keys._cache) == before
+    large = _Payload("x" * (_MAX_CACHED_WEIGHT + 1))
+    _structural_key(large)
+    assert not [key for key in _stable_dataclass_keys._cache if key.target is large]
 
-    _structural_key(_Payload("x"))
-    assert len(_stable_dataclass_keys._cache) == before + 1
+    small = _Payload("x")
+    _structural_key(small)
+    assert [key for key in _stable_dataclass_keys._cache if key.target is small]
 
 
 def test_a_declaration_that_cannot_be_held_weakly_never_enters_the_dataclass_cache():
     """Storing it means the entry holds it, and it holds everything it carries."""
     from lionagi.ln._structural import _stable_dataclass_keys, _structural_key
 
-    before = len(_stable_dataclass_keys._cache)
-    _structural_key(_Unreferenceable("x"))
-    assert len(_stable_dataclass_keys._cache) == before
+    unreferenceable = _Unreferenceable("x")
+    _structural_key(unreferenceable)
+    assert not [key for key in _stable_dataclass_keys._cache if key.target is unreferenceable]
 
-    _structural_key(_Payload("y"))
-    assert len(_stable_dataclass_keys._cache) == before + 1
+    payload = _Payload("y")
+    _structural_key(payload)
+    assert [key for key in _stable_dataclass_keys._cache if key.target is payload]
 
 
 def _oversized(limit: int) -> str:
@@ -718,11 +720,159 @@ def test_the_cache_is_bounded_by_eviction():
     """A cache is a bounded store, not a growing one: eviction has to actually fire."""
     from lionagi.ln._structural import _stable_dataclass_keys, _structural_key
 
-    for filler in range(_stable_dataclass_keys._max_size + 1):
+    # Held, so the oldest of them can leave the cache only by eviction.
+    held_alive = [_Payload(filler) for filler in range(_stable_dataclass_keys._max_size + 1)]
+    for payload in held_alive:
+        _structural_key(payload)
+
+    assert len(_stable_dataclass_keys) <= _stable_dataclass_keys._max_size
+    assert [key for key in _stable_dataclass_keys._cache if key.target is held_alive[-1]]
+    assert not [key for key in _stable_dataclass_keys._cache if key.target is held_alive[0]]
+
+
+def test_an_entry_leaves_the_cache_when_its_declaration_is_collected():
+    """Each of these is freed after its one use, and the next is allocated at the address
+    it left. Left in the cache, every dead entry shares that hash, so each lookup compared
+    against all of them, and inserting n such objects took time quadratic in n."""
+    from lionagi.ln._structural import _stable_dataclass_keys, _structural_key
+
+    for filler in range(2000):
         _structural_key(_Payload(filler))
 
-    held = len(_stable_dataclass_keys._cache)
-    assert 0 < held <= _stable_dataclass_keys._max_size
+    # With the cycle collector off, nothing is collected between the read that removes
+    # the entries already forgotten and the scan.
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        len(_stable_dataclass_keys)
+        # Asserted per entry, not by count: a cache another test left full stays at its
+        # bound however many dead entries it holds.
+        assert not [key for key in _stable_dataclass_keys._cache if key.target is None]
+    finally:
+        if was_enabled:
+            gc.enable()
+
+
+def test_a_collected_entry_is_removed_without_removing_a_live_one_in_its_bucket():
+    """An object allocated where a collected one was hashes the same; its entry stays."""
+    from lionagi.ln._cache import BoundedLRUCache
+    from lionagi.ln._structural import _IdentityKey
+
+    cache = BoundedLRUCache("LIONAGI_TEST_UNSET_CACHE_SIZE", 16)
+    dead, live = _Payload("dead"), _Payload("live")
+    dead_key = _IdentityKey(dead, on_collect=cache.forget)
+    live_key = _IdentityKey(live, on_collect=cache.forget)
+    lookup = _IdentityKey(live)
+    # One bucket, as when the live object took the collected one's address.
+    live_key._hash = lookup._hash = dead_key._hash
+    cache.put(dead_key, "dead")
+    cache.put(live_key, "live")
+
+    del dead
+    gc.collect()
+
+    assert cache.get(lookup) == "live"
+    # The read removed the collected entry itself.
+    assert len(cache._cache) == 1
+    assert len(cache) == 1
+
+
+def test_a_write_removes_a_collected_entry():
+    from lionagi.ln._cache import BoundedLRUCache
+    from lionagi.ln._structural import _IdentityKey
+
+    cache = BoundedLRUCache("LIONAGI_TEST_UNSET_CACHE_SIZE", 16)
+    dead, live = _Payload("dead"), _Payload("live")
+    cache.put(_IdentityKey(dead, on_collect=cache.forget), "dead")
+    del dead
+    gc.collect()
+
+    cache.put(_IdentityKey(live, on_collect=cache.forget), "live")
+
+    assert [key.target for key in cache._cache] == [live]
+
+
+def test_a_dropped_cache_frees_its_keys_and_values_without_the_cycle_collector():
+    """A stored key's callback holds neither the key nor the cache, so reference counting
+    alone frees both once nothing else holds them."""
+    from lionagi.ln._cache import BoundedLRUCache
+    from lionagi.ln._structural import _IdentityKey
+
+    gc.collect()
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        target, value = _Payload("target"), _Payload("value")
+        cache = BoundedLRUCache("LIONAGI_TEST_UNSET_CACHE_SIZE", 16)
+        # As the dataclass projection cache passes it: `forget` would hold the cache.
+        key = _IdentityKey(target, on_collect=cache._pending_removals.append)
+        cache.put(key, value)
+        key_freed, value_freed = weakref.ref(key), weakref.ref(value)
+
+        del cache, key, value
+
+        assert (key_freed(), value_freed()) == (None, None)
+    finally:
+        if was_enabled:
+            gc.enable()
+
+
+def _held_by(func) -> list:
+    """What a callable holds directly: closure cells, defaults, and a bound owner."""
+    held = [cell.cell_contents for cell in getattr(func, "__closure__", None) or ()]
+    held += list(getattr(func, "__defaults__", None) or ())
+    held += list((getattr(func, "__kwdefaults__", None) or {}).values())
+    owner = getattr(func, "__self__", None)
+    if owner is not None:
+        held.append(owner)
+    return held
+
+
+def test_the_projection_cache_callback_holds_its_queue_and_not_the_cache_one_level_down():
+    from lionagi.ln._structural import _stable_dataclass_keys, _structural_key
+
+    payload = _Payload("held")
+    _structural_key(payload)
+    (key,) = [key for key in _stable_dataclass_keys._cache if key.target is payload]
+
+    # The weakref callback and, one level down, each callable it holds: their closure
+    # cells, default arguments and bound owners. A holder deeper than that is not read.
+    direct = _held_by(key._ref.__callback__)
+    reached = direct + [item for value in direct if callable(value) for item in _held_by(value)]
+    assert not any(value is _stable_dataclass_keys for value in reached)
+    assert any(value is _stable_dataclass_keys._pending_removals for value in reached)
+
+
+def test_forget_removes_an_entry_at_the_next_read():
+    from lionagi.ln._cache import BoundedLRUCache
+
+    cache = BoundedLRUCache("LIONAGI_TEST_UNSET_CACHE_SIZE", 16)
+    cache.put("kept", 1)
+    cache.put("forgotten", 2)
+
+    cache.forget("forgotten")
+
+    assert list(cache._cache) == ["kept", "forgotten"]
+    assert cache.get("forgotten") is None
+    assert list(cache._cache) == ["kept"]
+
+
+def test_forget_refuses_an_unhashable_key_when_called():
+    from lionagi.ln._cache import BoundedLRUCache
+
+    cache = BoundedLRUCache("LIONAGI_TEST_UNSET_CACHE_SIZE", 16)
+    cache.put("kept", 1)
+
+    with pytest.raises(TypeError):
+        cache.forget([1])
+
+    assert cache.get("kept") == 1
+
+
+def test_an_empty_cache_is_truthy():
+    from lionagi.ln._cache import BoundedLRUCache
+
+    assert BoundedLRUCache("LIONAGI_TEST_UNSET_CACHE_SIZE", 16)
 
 
 def test_a_dynamically_created_callable_is_released_after_projection():

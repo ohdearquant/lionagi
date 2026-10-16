@@ -241,8 +241,8 @@
       "allHint": "أنشئ أول وكيل أو سير عمل للبدء.",
       "filtered": "لا توجد عناصر تطابق عامل التصفية.",
       "filteredHint": "جرّب نوعًا آخر أو امسح البحث.",
+      "clearFilters": "مسح عوامل التصفية",
       "createFirst": "أنشئ أول",
-      "createWorkflow": "سير عمل جديد",
       "createAgent": "وكيل جديد",
       "allSkill": "لم يتم العثور على مهارات.",
       "allSkillHint": "أضف ملف SKILL.md ضمن ~/.lionagi/skills/NAME/ لتظهر هنا.",
@@ -1250,6 +1250,12 @@
       "body": "Something answered at {base}, but it isn't a lionagi daemon.",
       "fix": "Stop that program, or point the daemon at a different port:",
       "command": "li studio --port 8766"
+    },
+    "accessRequired": {
+      "title": "يحتاج هذا الخادم الخلفي إلى رمز وصول",
+      "body": "استجاب خادم lionagi الخلفي على {base}، لكنه رفض هذه الصفحة. لا يقبل الخادم الخلفي صفحة من أصل آخر إلا برمز وصول، والأمر li studio يمنح هذه الصفحة رمزًا عندما يفتحها. تؤدي إعادة تحميل الصفحة إلى فقدان الرمز.",
+      "fix": "شغّل هذا الأمر حيث يعمل الخادم الخلفي لفتح Studio مع إذن الوصول:",
+      "command": "li studio"
     },
     "retry": "Retry",
     "dismiss": "Dismiss"
