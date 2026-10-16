@@ -181,15 +181,15 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                 elif isinstance(node, ast.Expr):
                     inspect_calls(node, bindings)
                 else:
-                    # Inspect declarations in conditional/loop/try suites without
-                    # pretending to decide which branch executes at runtime.
+                    # Inspect declarations in conditional, loop, try and match suites
+                    # without pretending to decide which branch executes at runtime.
                     for _field, value in ast.iter_fields(node):
                         if isinstance(value, list):
                             statements = [item for item in value if isinstance(item, ast.stmt)]
                             if statements:
                                 walk(statements, bindings.copy(), scope, class_name, closure)
                             for handler in value:
-                                if isinstance(handler, ast.ExceptHandler):
+                                if isinstance(handler, (ast.ExceptHandler, ast.match_case)):
                                     walk(handler.body, bindings.copy(), scope, class_name, closure)
 
         def inspect_calls(node: ast.AST, bindings: dict[str, str]) -> None:
@@ -497,6 +497,28 @@ class Known(IdentityMixin, HashableModel): pass
 """)
     assert _violations(scan, {*_ROOTS, "sample.Known"}) == [
         "sample.Known: inherited generated hash authority from sample.IdentityMixin"
+    ]
+
+
+@pytest.mark.parametrize(
+    "suite",
+    [
+        "if flag:\n    {}",
+        "if flag:\n    pass\nelse:\n    {}",
+        "try:\n    pass\nexcept ImportError:\n    {}",
+        "try:\n    pass\nfinally:\n    {}",
+        "with context:\n    {}",
+        "for _ in ():\n    {}",
+        "match flag:\n    case 1:\n        {}",
+        "match flag:\n    case 1:\n        pass\n    case _:\n        {}",
+    ],
+    ids=["if", "else", "except", "finally", "with", "for", "case", "later-case"],
+)
+def test_a_descendant_declared_inside_any_suite_is_inventoried(suite):
+    declaration = "class Hidden(HashableModel): pass"
+    scan = _sample("from lionagi.models import HashableModel\n" + suite.format(declaration))
+    assert _violations(scan, {*_ROOTS}) == [
+        "inventory drift: missing=[], unexpected=['sample.Hidden']"
     ]
 
 
