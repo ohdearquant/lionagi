@@ -1251,6 +1251,12 @@
       "fix": "Stop that program, or point the daemon at a different port:",
       "command": "li studio --port 8766"
     },
+    "accessRequired": {
+      "title": "يحتاج هذا الخادم الخلفي إلى رمز وصول",
+      "body": "استجاب خادم lionagi الخلفي على {base}، لكنه رفض هذه الصفحة. لا يقبل الخادم الخلفي صفحة من أصل آخر إلا برمز وصول، والأمر li studio يمنح هذه الصفحة رمزًا عندما يفتحها. تؤدي إعادة تحميل الصفحة إلى فقدان الرمز.",
+      "fix": "شغّل هذا الأمر حيث يعمل الخادم الخلفي لفتح Studio مع إذن الوصول:",
+      "command": "li studio"
+    },
     "retry": "Retry",
     "dismiss": "Dismiss"
   },

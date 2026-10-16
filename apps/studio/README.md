@@ -40,7 +40,7 @@ All variables are optional; defaults are shown.
 | `LIONAGI_STUDIO_MIRROR_CODEX_ROOT` | *(unset)* | Explicit Codex sessions source root |
 | `LIONAGI_STUDIO_MIRROR_IMPORT_AMBIENT` | automatic | Read `~/.claude`/`~/.codex`; on by default only for the conventional `~/.lionagi` profile |
 | `STUDIO_API_URL` | selected `--host` / `--port` in dev mode | Explicit Vite proxy target; an operator-supplied value takes precedence over CLI flags |
-| `CORS_ORIGINS` | `localhost:5173,localhost:3000` | Comma-separated allowed browser origins |
+| `CORS_ORIGINS` | `http://localhost:5173`, `http://localhost:3000`, `http://localhost:3765`, `https://lion-studio.khive.ai` | Comma-separated allowed browser origins; a value replaces the defaults, and only a page on one of these origins can pair with `li studio` |
 
 Selecting a different `LIONAGI_HOME` creates an isolated Studio profile: its
 mirror does not read the ambient user transcript trees unless explicit roots
@@ -162,7 +162,12 @@ npm run dev        # http://localhost:5173 — proxies /api → :8765
 
 ## Authentication
 
-When `LIONAGI_STUDIO_AUTH_TOKEN` is unset, all local API routes are open.
+When `LIONAGI_STUDIO_AUTH_TOKEN` is unset, API routes are open to command-line
+clients and to pages on a loopback origin or on the daemon's own origin. A page
+on any other origin, the hosted Studio included, is refused with 401 unless it
+sends the bearer of this daemon's launch. `li studio` gives the page that bearer
+when it opens it, through a one-time pairing code in the URL fragment; a page
+opened any other way, or reloaded, says to run `li studio`.
 
 When set, all `/api/*` requests must include:
 
@@ -170,6 +175,7 @@ When set, all `/api/*` requests must include:
 Authorization: Bearer <token>
 ```
 
+`li studio` pairs the hosted page with the configured token the same way.
 `/health` remains open regardless.
 
 ## Database
