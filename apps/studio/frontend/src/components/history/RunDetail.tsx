@@ -1991,6 +1991,14 @@ export default function RunDetail({ id }: RunDetailProps) {
       : new URLSearchParams(window.location.search).get(RUN_DETAIL_NODE_QUERY_KEY),
   );
   const initialNodeAppliedRef = useRef(false);
+  // The run the effect below last reset the selection for, or null before its
+  // first pass. A ref rather than the `id` comparison beside it: a switch away
+  // and back reaches the mount id again while the reader is looking at the
+  // other run's selection, so `id === initialNodeRunId` cannot tell the two
+  // visits apart. Comparing the previous id also keeps the first mount's own
+  // pass (which runs twice under StrictMode) from clearing a pending link out
+  // of the URL before its run has had a chance to answer.
+  const selectionRunRef = useRef<string | null>(null);
   const [initialNodeRunId] = useState(id);
   const writeSelectedNodeToUrl = useCallback((key: string | null) => {
     if (typeof window === "undefined") return;
@@ -2062,17 +2070,22 @@ export default function RunDetail({ id }: RunDetailProps) {
     initialScrollDoneRef.current = false;
     // The Fleet view keeps this component mounted and swaps `id` — the
     // selection is scoped to the run it was made on, so a run switch must
-    // drop it rather than let it read as the new run's selection.
-    // A switch does NOT consume a still-pending deep link: the link was read
-    // for the run this component mounted with, so returning to that run
-    // before its first response lands still restores it. Each response is
-    // gated on `id === initialNodeRunId` below instead, which is what keeps
-    // the original run's node off a different run.
-    if (initialNodeAppliedRef.current || id !== initialNodeRunId) {
+    // drop it rather than let it read as the new run's selection. Every id
+    // change after the first mount clears it, including a switch back to the
+    // run this component mounted with: that selection was made on the other
+    // run's graph, and this run's pending deep link (below) is restored from
+    // scratch once its response lands.
+    // The clear does not consume a still-pending deep link — the link was
+    // read for the mount run, so returning to it before its first response
+    // lands still restores it. Each response is gated on
+    // `id === initialNodeRunId` below instead, which is what keeps the
+    // original run's node off a different run.
+    if (selectionRunRef.current !== null && selectionRunRef.current !== id) {
       setSelectedStepKey(null);
       setUnmatchedNodeId(null);
       writeSelectedNodeToUrl(null);
     }
+    selectionRunRef.current = id;
     getSession(id)
       .then((s) => {
         if (cancelled) return;

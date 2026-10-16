@@ -3028,18 +3028,9 @@ describe("history/RunDetail.tsx — graph/list view toggle and cross-view select
       await render("run-mount-view");
       await render("run-next");
       await render("run-mount-view");
-      await act(async () => {
-        back.resolve(sessionWithBranches(edgedGraph));
-      });
-      await act(async () => {
-        for (let i = 0; i < 8; i++) await Promise.resolve();
-      });
-      // The link was read for `run-mount-view`, and the reader is back on it
-      // before that run's first response lands — it still belongs to this run.
-      expect(
-        container.querySelector('[data-testid="run-detail-selected-node"]')?.textContent,
-      ).toContain("A");
-      // The earlier responses for the other run never apply it.
+      // The other run answers while the reader is back on the run the link
+      // was read for, and it must not restore anything: the response is the
+      // other run's, not this one's.
       await act(async () => {
         middle.resolve({
           ...(sessionWithBranches(edgedGraph) as Record<string, unknown>),
@@ -3047,9 +3038,114 @@ describe("history/RunDetail.tsx — graph/list view toggle and cross-view select
           name: "run-next",
         });
       });
+      await act(async () => {
+        for (let i = 0; i < 8; i++) await Promise.resolve();
+      });
+      expect(container.querySelector('[data-testid="run-detail-selected-node"]')).toBeNull();
+
+      // This run's own response lands next, and the link still belongs to it.
+      await act(async () => {
+        back.resolve(sessionWithBranches(edgedGraph));
+      });
+      await act(async () => {
+        for (let i = 0; i < 8; i++) await Promise.resolve();
+      });
       expect(
         container.querySelector('[data-testid="run-detail-selected-node"]')?.textContent,
       ).toContain("A");
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
+
+  it("a node clicked on another run does not stay selected when the reader switches back", async () => {
+    window.history.replaceState(null, "", "/?node=A");
+    const [{ getSession }, { default: RunDetail }] = await Promise.all([
+      import("@/lib/api"),
+      import("./RunDetail"),
+    ]);
+    const deferred = <T,>() => {
+      let resolve!: (value: T) => void;
+      let reject!: (reason: Error) => void;
+      const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    };
+    const first = deferred<unknown>();
+    const second = deferred<unknown>();
+    const back = deferred<unknown>();
+    vi.mocked(getSession)
+      .mockReturnValueOnce(first.promise as never)
+      .mockReturnValueOnce(second.promise as never)
+      .mockReturnValueOnce(back.promise as never);
+
+    const runNext = {
+      ...(sessionWithBranches(edgedGraph) as Record<string, unknown>),
+      id: "run-next",
+      name: "run-next",
+      branches: [{ id: "branch-b", name: "B", created_at: 0, messages: [] }],
+    };
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const render = async (id: string) => {
+      await act(async () => {
+        root.render(
+          <IntlProvider locale="en" messages={enMessages}>
+            <RunDetail id={id} />
+          </IntlProvider>,
+        );
+      });
+      await act(async () => {
+        for (let i = 0; i < 4; i++) await Promise.resolve();
+      });
+    };
+    try {
+      // This run's detail is still on its way when the reader leaves it.
+      await render("run-mount-view");
+      await render("run-next");
+      await act(async () => {
+        second.resolve(runNext);
+      });
+      await act(async () => {
+        for (let i = 0; i < 8; i++) await Promise.resolve();
+      });
+      const canvas = container.querySelector('[data-testid="worker-canvas"]');
+      const panel = canvas?.parentElement;
+      expect(panel).not.toBeNull();
+      const fakeNode = document.createElement("div");
+      fakeNode.className = "react-flow__node";
+      fakeNode.dataset.id = "B";
+      panel!.appendChild(fakeNode);
+      await act(async () => {
+        fakeNode.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      expect(
+        container.querySelector('[data-testid="run-detail-selected-node"]')?.textContent,
+      ).toContain("B");
+      expect(new URLSearchParams(window.location.search).get("node")).toBe("B");
+
+      // Coming back before the first run's own response lands: the selection
+      // the reader made on the other run is not this run's selection.
+      await render("run-mount-view");
+      expect(container.querySelector('[data-testid="run-detail-selected-node"]')).toBeNull();
+      expect(new URLSearchParams(window.location.search).get("node")).toBeNull();
+
+      await act(async () => {
+        back.resolve(sessionWithBranches(edgedGraph));
+      });
+      await act(async () => {
+        for (let i = 0; i < 8; i++) await Promise.resolve();
+      });
+      // The pending link was read for this run, so it belongs here; nothing
+      // from the other run is left in the selection or in the URL.
+      expect(
+        container.querySelector('[data-testid="run-detail-selected-node"]')?.textContent,
+      ).toContain("A");
+      expect(new URLSearchParams(window.location.search).get("node")).not.toBe("B");
     } finally {
       act(() => root.unmount());
       container.remove();

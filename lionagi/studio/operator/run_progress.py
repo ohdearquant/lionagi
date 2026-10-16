@@ -233,7 +233,10 @@ async def resolve_run(ref: str) -> dict[str, Any]:
     name/playbook substring matching 2-``MAX_CANDIDATES`` sessions, comes
     back as candidates; more than ``MAX_CANDIDATES`` text matches come back
     as the newest ``MAX_CANDIDATES`` plus ``truncated: True``. Every arm is
-    scoped to the calling turn's project (when it names one). A turn whose
+    scoped to the calling turn's project (when it names one), and id-prefix
+    ambiguity is counted over that project's rows alone: the prefix query
+    carries the project predicate, so foreign rows cannot fill its window
+    and hide a match or pad a collision. A turn whose
     identity is present but whose context names no project may still resolve
     an exact full-UUID reference (or 'current') -- a bare id identifies at
     most one row and cannot enumerate, so it is safe where prefix and
@@ -293,8 +296,13 @@ async def resolve_run(ref: str) -> dict[str, Any]:
 
     async with StateDB(readonly=True) as db:
         try:
-            row = await fetch_unique_row(db, "sessions", normalized)
+            row = await fetch_unique_row(db, "sessions", normalized, project=project)
         except AmbiguousIdError as exc:
+            # The collision set came from a query already narrowed to this
+            # turn's project, so the rows named here are the ones it may see
+            # and the window that produced them counted no foreign row. The
+            # follow-up read is only for display columns; it filters again so
+            # a row that left the project between the two reads is dropped.
             owned = await _fetch_ambiguous_candidates(db, exc.candidates, project=project)
             if not owned:
                 return {
@@ -303,12 +311,10 @@ async def resolve_run(ref: str) -> dict[str, Any]:
                 }
             if len(owned) == 1:
                 return {"found": True, "ambiguous": False, "session_id": owned[0]["id"]}
-            # fetch_unique_row's prefix scan reads one row past the CLI
-            # helper's listing size (lionagi/cli/_util.py::_CANDIDATES_SHOWN)
-            # before raising, so the returned list is sliced back to that
-            # size here. Truncation is counted over the rows THIS turn may
-            # see: a collision set padded with foreign rows is not truncated
-            # once those rows are gone.
+            # The scoped prefix scan stops one row past the CLI helper's
+            # listing size (lionagi/cli/_util.py::_CANDIDATES_SHOWN), so a
+            # full window is the only honest truncation signal -- and it now
+            # means more than that many rows THIS turn may see.
             return {
                 "found": True,
                 "ambiguous": True,

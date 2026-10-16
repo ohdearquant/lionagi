@@ -40,7 +40,7 @@ CANCEL_RUN_DESCRIPTION = (
     "terminal status rather than sending a duplicate signal, and does not "
     "create a proposal for a run there is nothing left to do to. "
     "Does not support mass cancellation -- one run at a time. "
-    "Accepts a run UUID, an 8+ hex id prefix, a name substring (minimum 3 "
+    "Accepts a run UUID, an id prefix, a name substring (minimum 3 "
     "characters), or 'current' for the run open when this instruction was "
     "sent. Ambiguous references return candidates rather than guessing. "
     "Use resume_run to continue a run's conversation with a new instruction "
@@ -182,8 +182,10 @@ async def _resolve_run(db: Any, ref: str, *, project: str) -> dict[str, Any] | N
     ``project`` (the calling turn's own; see ``_allowed_project``): a
     foreign exact/prefix match is reported exactly like a nonexistent one
     (``None``), never as e.g. "already terminal", which would itself
-    confirm the id exists. See docs/internals/studio.md ("Resolving a run
-    reference").
+    confirm the id exists. The scope travels into the prefix query, so its
+    bounded window counts only this project's rows: foreign rows cannot fill
+    it and hide a match behind them. See docs/internals/studio.md
+    ("Resolving a run reference").
     """
     from lionagi.cli._util import AmbiguousIdError, fetch_unique_row
 
@@ -192,7 +194,7 @@ async def _resolve_run(db: Any, ref: str, *, project: str) -> dict[str, Any] | N
         return None
 
     try:
-        row = await fetch_unique_row(db, "sessions", ref)
+        row = await fetch_unique_row(db, "sessions", ref, project=project)
     except AmbiguousIdError as exc:
         owned = await _owned_rows(db, exc.candidates, project)
         if not owned:

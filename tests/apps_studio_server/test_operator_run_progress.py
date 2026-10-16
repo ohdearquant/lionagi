@@ -405,6 +405,99 @@ async def test_run_progress_id_prefix_truncation_ignores_foreign_rows(db_path, m
     assert result["truncated"] is False
 
 
+def _shared_prefix_run(index: int, *, foreign: bool = False) -> str:
+    suffix = "8888-7777-666655554444" if foreign else "2222-3333-444455556666"
+    return f"deadbeef-{index:04d}-{suffix}"
+
+
+async def _seed_shared_prefix_runs(
+    db_path: Path, *, owned_indexes: list[int], foreign_indexes: list[int], project: str
+) -> list[str]:
+    owned = [_shared_prefix_run(index) for index in owned_indexes]
+    for sid in owned:
+        await seed_session(db_path, session_id=sid, name="run", status="completed", project=project)
+    for index in foreign_indexes:
+        await seed_session(
+            db_path,
+            session_id=_shared_prefix_run(index, foreign=True),
+            name="run",
+            status="completed",
+            project="/Users/admin/acme-ops",
+        )
+    return owned
+
+
+async def _scope_turn_to(db_path: Path, monkeypatch: Any, project: str) -> None:
+    cid, request_id = await _make_running_turn_with_project(db_path, project=project)
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(db_path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", request_id)
+
+
+async def test_run_progress_id_prefix_ambiguity_counts_only_visible_rows(db_path, monkeypatch):
+    """Two runs of the turn's own project share a prefix, but five foreign
+    rows sort ahead of the second one. The pick between the two in-scope runs
+    is still ambiguous: the five foreign rows must not fill the prefix
+    window."""
+    from lionagi.studio.operator.run_progress import run_progress
+
+    project = "/Users/admin/acme-research"
+    owned = await _seed_shared_prefix_runs(
+        db_path, owned_indexes=[5, 6], foreign_indexes=[0, 1, 2, 3, 4], project=project
+    )
+    await _scope_turn_to(db_path, monkeypatch, project)
+
+    result = await run_progress({"run": "deadbeef"})
+
+    assert result["found"] is True
+    assert result["ambiguous"] is True
+    assert {c["id"] for c in result["candidates"]} == set(owned)
+    assert result["truncated"] is False
+
+
+async def test_run_progress_id_prefix_truncation_counts_only_visible_rows(db_path, monkeypatch):
+    """One foreign row and six in-scope rows share a prefix. Five candidates
+    are shown and a sixth in-scope match is hidden, so truncation is reported
+    over the rows this turn may see."""
+    from lionagi.cli._util import _CANDIDATES_SHOWN
+    from lionagi.studio.operator.run_progress import run_progress
+
+    project = "/Users/admin/acme-research"
+    owned = await _seed_shared_prefix_runs(
+        db_path, owned_indexes=[1, 2, 3, 4, 5, 6], foreign_indexes=[0], project=project
+    )
+    await _scope_turn_to(db_path, monkeypatch, project)
+
+    result = await run_progress({"run": "deadbeef"})
+
+    assert result["found"] is True
+    assert result["ambiguous"] is True
+    assert len(result["candidates"]) == _CANDIDATES_SHOWN
+    assert {c["id"] for c in result["candidates"]} == set(owned[:_CANDIDATES_SHOWN])
+    assert result["truncated"] is True
+
+
+async def test_run_progress_id_prefix_finds_an_in_scope_run_behind_foreign_rows(
+    db_path, monkeypatch
+):
+    """Six foreign rows fill the id order ahead of the one in-scope match.
+    That run is the only one this turn may pick, so it resolves instead of
+    being reported absent."""
+    from lionagi.studio.operator.run_progress import run_progress
+
+    project = "/Users/admin/acme-research"
+    owned = await _seed_shared_prefix_runs(
+        db_path, owned_indexes=[6], foreign_indexes=[0, 1, 2, 3, 4, 5], project=project
+    )
+    await _scope_turn_to(db_path, monkeypatch, project)
+
+    result = await run_progress({"run": "deadbeef"})
+
+    assert result["found"] is True
+    assert result["ambiguous"] is False
+    assert result["id"] == owned[0]
+
+
 async def test_run_progress_current_view(db_path, monkeypatch):
     from lionagi.studio.operator.application_mcp import navigate  # noqa: F401
     from lionagi.studio.operator.run_progress import run_progress

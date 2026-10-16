@@ -329,6 +329,73 @@ describe("Operator project context", () => {
     },
   );
 
+  it("does not publish a stale reload's project for the run that is now selected", async () => {
+    const staleReload = deferred<SessionDetail>();
+    api.getSession
+      // The run the reader starts on, with older history still to load.
+      .mockResolvedValueOnce({
+        ...session("first", "first-project"),
+        message_next_cursor: "cursor-1",
+        branches: [
+          {
+            id: "branch-a",
+            name: "A",
+            created_at: 1,
+            message_total: 2,
+            message_has_older: true,
+            messages: [
+              {
+                id: "m2",
+                role: "user",
+                content: { instruction: "content" },
+                lion_class: "Instruction",
+                timestamp: 2,
+              },
+            ],
+          },
+        ],
+      })
+      // Its anchor has aged out of the branch, so older history is refused.
+      .mockRejectedValueOnce(
+        Object.assign(new api.ApiError("the anchor moved on"), { status: 400 }),
+      )
+      // The reload it offers is still in flight when the reader leaves.
+      .mockReturnValueOnce(staleReload.promise)
+      // The run the reader switches to.
+      .mockResolvedValueOnce(session("second", "second-project"));
+
+    router.location.search = { s: "first" };
+    await render("first");
+    expect(await viewProject()).toBe("first-project");
+
+    const loadOlder = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Load older messages"),
+    );
+    expect(loadOlder).toBeDefined();
+    await act(async () => {
+      loadOlder?.click();
+    });
+    const reload = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Reload conversation"),
+    );
+    expect(reload).toBeDefined();
+    await act(async () => {
+      reload?.click();
+    });
+
+    router.location = { pathname: "/fleet", search: { s: "second" } };
+    await render("second");
+    expect(await viewProject()).toBe("second-project");
+
+    // The in-flight reload is the run the reader has left: its response must
+    // not scope the turn to that run's project.
+    await act(async () => staleReload.resolve(session("first", "first-project")));
+    const published = await viewProject();
+    expect(published).not.toBe("first-project");
+    expect([undefined, "second-project"]).toContain(published);
+    expect(await sendProject()).not.toBe("first-project");
+  });
+
   it("keeps the loaded run's project when a later read fails", async () => {
     router.location.search = { s: "selected", project: "list-project" };
     api.getSession.mockResolvedValueOnce({

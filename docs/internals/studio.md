@@ -1239,22 +1239,25 @@ many runs across its life.
 `run_progress.py::resolve_run` (reused by `run_findings.py`,
 `resume_run.py`, and `rename_session.py`) and `cancel_run.py`'s own
 `_resolve_run` both accept the same reference vocabulary: an exact run/session
-id, an 8+ hex id prefix, a name or playbook substring (minimum 3
+id, an id prefix, a name or playbook substring (minimum 3
 characters), or the literal `"current"`. Id/prefix resolution reuses
 `lionagi.cli._util.fetch_unique_row`, the same primitive `li kill` uses, so
 a reference this tool accepts resolves identically to one typed at the CLI.
 When the turn names a project, each arm checks that project from the stored
-turn context rather than accepting it as a tool argument. Foreign rows are
-excluded from resolved ids and ambiguity candidates. The resolver's failure
+turn context rather than accepting it as a tool argument, and prefix resolution
+carries that project into the query itself, so its bounded id-ordered window is
+filled from that project's rows alone. Foreign rows are excluded from resolved
+ids and ambiguity candidates, and cannot push an in-scope match out of the
+window or hide one behind them. The resolver's failure
 reasons can differ for a foreign id and a nonexistent reference; identical
 not-found responses are not guaranteed. An owned turn with no project can
 still resolve a full 36-character UUID, including one selected by `"current"`;
 prefix and substring lookup require project context. An ambiguous match
 returns candidates rather than choosing one: substring results are capped at
 `MAX_CANDIDATES` (10), and the shared resolver's id-prefix candidates at the
-CLI helper's own listing size (5), counting truncation over the rows the turn
-may see, so a collision set padded with foreign rows is not reported as
-truncated once those rows are gone.
+CLI helper's own listing size (5). Truncation for an id prefix is counted over
+that project's rows, because the project predicate is what the prefix query's
+window counted.
 
 `run_progress.resolve_run("current")` calls `get_current_view`, which can use a
 later observation from the same browser page. Tools that reuse this resolver
