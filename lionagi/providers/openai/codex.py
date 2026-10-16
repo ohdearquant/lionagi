@@ -18,7 +18,7 @@ from textwrap import shorten
 from typing import Any, Literal
 
 import toml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from lionagi._errors import CLIInputRefusedError
@@ -840,9 +840,6 @@ class CodexCodeRequest(BaseModel):
         model = values.get("model", cls.model_fields["model"].default)
         for key in ("reasoning_effort", "plan_mode_reasoning_effort"):
             effort = values.get(key)
-            if isinstance(effort, (bytes, bytearray)):
-                # Field validation reads bytes as text, after the clamp has passed them by.
-                raise ValueError(f"{key} must be a string, not {type(effort).__name__}")
             if isinstance(effort, str):
                 values[key] = _clamp_codex_effort(effort, model)
 
@@ -881,6 +878,16 @@ class CodexCodeRequest(BaseModel):
     cli_include_summary: bool = Field(default=False, exclude=True)
 
     # ── validators ────────────────────────────────────────────────
+
+    @field_validator("reasoning_effort", "plan_mode_reasoning_effort", mode="before")
+    @classmethod
+    def _refuse_an_effort_given_as_bytes(cls, value, info: ValidationInfo):
+        # Field validation reads bytes as text, after the clamp has passed them by. Refused
+        # here, not in the model validator: a ValueError there puts the whole input,
+        # prompt included, into the validation error, and here it holds only this field.
+        if isinstance(value, bytes | bytearray):
+            raise ValueError(f"{info.field_name} must be a string, not {type(value).__name__}")
+        return value
 
     @field_validator("account_connectors", mode="before")
     @classmethod

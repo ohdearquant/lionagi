@@ -180,28 +180,56 @@ def raise_if_env_is_not_a_string_map(value: Mapping) -> None:
         raise TypeError(_unencodable_env_message(unencodable))
 
 
-def unencodable_env_entry(env: Mapping) -> str | None:
-    """The first ``env`` key or value the spawn cannot encode, named by its position, else
-    None.
+def unencodable_env_entry(env: Mapping[str, str]) -> str | None:
+    """The first key or value of a string environment the spawn cannot encode, named by
+    its position, else None.
 
-    The spawn copies the mapping with ``dict()`` and encodes every key and value of the
-    copy with ``os.fsencode``, so this reads the same copy the same way: a mapping whose
-    ``items()`` leaves an entry out is still checked, and a path-like value is encoded
-    through its ``__fspath__``. A surrogate escape (U+DC80 to U+DCFF) passes as the byte
-    it stands for and any other lone surrogate fails. The codec's error holds the whole
-    key or value, which can be a credential, so only the position is returned, and the
-    caller raises its refusal after this handler has ended. A key or value ``os.fsencode``
-    does not take at all is left to the spawn, whose ``TypeError`` names only its type.
+    A surrogate escape (U+DC80 to U+DCFF) passes as the byte it stands for and any other
+    lone surrogate fails. The codec's error holds the whole key or value, which can be a
+    credential, so only the position is returned, and the caller raises its refusal after
+    this handler has ended.
     """
-    for index, (key, val) in enumerate(dict(env).items()):
+    for index, (key, val) in enumerate(env.items()):
         for part, text in (("key", key), ("value", val)):
             try:
                 os.fsencode(text)
             except UnicodeEncodeError:
                 return f"The environment entry {index} {part}"
-            except TypeError:
-                continue
     return None
+
+
+def env_as_the_spawn_encodes_it(env: Mapping) -> dict[str, str]:
+    """``env`` copied once, each key and value read once and kept as the text of the bytes
+    the spawn passes.
+
+    The spawn copies the mapping with ``dict()`` and encodes every key and value of the
+    copy with ``os.fsencode``. Doing both here, once, and handing this copy to the spawn
+    means the entries checked are the entries passed, whatever a view of the mapping or a
+    path-like value answers on a later read. A surrogate escape (U+DC80 to U+DCFF) passes
+    as the byte it stands for, so the spawn encodes the copy to the same bytes. A key or
+    value that cannot be encoded, or cannot be read as a path at all, is refused by its
+    position: the codec's error, or the error a path-like value raises, can hold the whole
+    key or value, which can be a credential, so the refusal is raised after that handler
+    has ended and carries no part of it.
+    """
+    copied: dict[str, str] = {}
+    for index, (key, val) in enumerate(dict(env).items()):
+        texts: list[str] = []
+        for part, item in (("key", key), ("value", val)):
+            refusal = None
+            try:
+                texts.append(os.fsdecode(os.fsencode(item)))
+            except UnicodeEncodeError:
+                refusal = _unencodable_env_message(f"The environment entry {index} {part}")
+            except Exception:
+                refusal = (
+                    f"The environment entry {index} {part}, of type {type(item).__name__}, "
+                    "could not be read as text, so it cannot be passed to a CLI process."
+                )
+            if refusal is not None:
+                raise ValueError(refusal)
+        copied[texts[0]] = texts[1]
+    return copied
 
 
 def _unencodable_env_message(what: str) -> str:
@@ -731,11 +759,10 @@ async def ndjson_from_cli(
     See docs/internals/providers.md#cli-subprocess-lifecycle.
     """
     # A request copied with model_copy(update=...) skips validation, and the spawn's own
-    # encode error would hold the whole key or value, so the environment is checked here.
+    # encode error would hold the whole key or value, so the environment is read and
+    # checked here, once, and that copy is what the fill and the spawn receive.
     if env is not None:
-        unencodable = unencodable_env_entry(env)
-        if unencodable is not None:
-            raise ValueError(_unencodable_env_message(unencodable))
+        env = env_as_the_spawn_encodes_it(env)
     # Every CLI provider spawns through here, so a secret the child must read
     # from its own environment is filled in one place rather than four. Purely
     # additive: with nothing configured this returns ``env`` unchanged, and a

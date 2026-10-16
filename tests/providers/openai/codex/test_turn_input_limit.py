@@ -1232,17 +1232,12 @@ class _SecretPath:
             _ItemsHideAKey({"HOME": "/h", "OPENAI_API_KEY": f"{_SECRET_IN_A_VALUE}\ud800"}),
             id="items-hide-it",
         ),
-        pytest.param(
-            _IterationHidesAKey({"HOME": "/h", "OPENAI_API_KEY": f"{_SECRET_IN_A_VALUE}\ud800"}),
-            id="iteration-hides-it",
-        ),
     ],
 )
 async def test_a_copied_environment_is_checked_as_the_spawn_copies_it(tmp_path, monkeypatch, env):
-    """The spawn copies the mapping with dict() and encodes every key and value of the
-    copy, so the check reads that copy the same way: an entry a view of the mapping
-    leaves out, or a value the spawn reaches through ``__fspath__``, is refused by
-    position before any process starts."""
+    """The spawn helper copies the mapping with dict() and encodes every key and value of
+    that copy, as the spawn would: an entry items() leaves out, or a value read through
+    ``__fspath__``, is refused by position before any process starts."""
     from lionagi.providers import _cli_subprocess
 
     def spawned(*_args, **_kwargs):
@@ -1259,6 +1254,88 @@ async def test_a_copied_environment_is_checked_as_the_spawn_copies_it(tmp_path, 
     assert str(refused.value) == (
         "The environment entry 1 value holds a character the process environment cannot "
         "encode: a lone surrogate cannot be passed to a CLI process."
+    )
+    assert refused.value.__context__ is None
+    assert _SECRET_IN_A_VALUE not in _everything_the_error_shows(refused.value)
+
+
+class _ChangesAfterItsFirstRead:
+    """A path-like value whose first read is plain text and whose every later read holds a
+    character the process environment cannot encode."""
+
+    def __init__(self):
+        self.reads = 0
+
+    def __fspath__(self):
+        self.reads += 1
+        return "plain" if self.reads == 1 else f"{_SECRET_IN_A_VALUE}\ud800"
+
+
+class _CannotBeRead:
+    """A path-like value whose read fails with the value's text in the error."""
+
+    def __init__(self, error: type[Exception]):
+        self.error = error
+
+    def __fspath__(self):
+        raise self.error(f"cannot read {_SECRET_IN_A_VALUE}")
+
+
+class _StoppedAtTheSpawn(Exception):
+    pass
+
+
+@pytest.mark.asyncio
+async def test_the_process_receives_the_environment_the_check_read(tmp_path, monkeypatch):
+    """Each key and value is read once, and the copy that was checked is the copy the
+    process is given, so a value that would answer a later read differently is never
+    read again."""
+    from lionagi.providers import _cli_subprocess
+
+    given = {}
+
+    def spawned(*_args, **kwargs):
+        given.update(kwargs["env"])
+        raise _StoppedAtTheSpawn
+
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
+    monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
+    value = _ChangesAfterItsFirstRead()
+    copied = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(
+        update={"env": {"HOME": "/h", "OPENAI_API_KEY": value}}
+    )
+    with pytest.raises(_StoppedAtTheSpawn):
+        async for _ in codex_mod._ndjson_from_cli(copied):
+            pass
+
+    assert given["OPENAI_API_KEY"] == "plain"
+    assert value.reads == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [ValueError, TypeError])
+async def test_a_copied_environment_value_that_cannot_be_read_is_refused_without_its_text(
+    tmp_path, monkeypatch, error
+):
+    from lionagi.providers import _cli_subprocess
+
+    def spawned(*_args, **_kwargs):
+        raise AssertionError("a process was started")
+
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
+    monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
+    copied = CodexCodeRequest(prompt="hi", repo=tmp_path).model_copy(
+        update={"env": {"HOME": "/h", "OPENAI_API_KEY": _CannotBeRead(error)}}
+    )
+    with pytest.raises(ValueError) as refused:
+        async for _ in codex_mod._ndjson_from_cli(copied):
+            pass
+
+    assert str(refused.value) == (
+        "The environment entry 1 value, of type _CannotBeRead, could not be read as text, "
+        "so it cannot be passed to a CLI process."
     )
     assert refused.value.__context__ is None
     assert _SECRET_IN_A_VALUE not in _everything_the_error_shows(refused.value)
@@ -1290,11 +1367,19 @@ def test_an_effort_given_as_bytes_is_refused_rather_than_read_past_the_clamp(
     tmp_path, field, effort
 ):
     """Field validation reads bytes as text, so an effort given as bytes would reach the
-    command line unclamped; the request refuses it by the field's name."""
+    command line unclamped; the request refuses it by the field's name, in a validation
+    error that holds no other part of the input."""
     with pytest.raises(pydantic.ValidationError) as refused:
-        CodexCodeRequest(prompt="hi", repo=tmp_path, model="gpt-5.5", **{field: effort})
+        CodexCodeRequest(
+            repo=tmp_path, model="gpt-5.5", **_fields_with_two_secrets({field: effort})
+        )
 
     assert f"{field} must be a string, not {type(effort).__name__}" in str(refused.value)
+    shown = " ".join(
+        [str(refused.value), repr(refused.value), refused.value.json(), str(refused.value.errors())]
+    )
+    assert SECRET_PROMPT not in shown
+    assert SECRET_OVERRIDE not in shown
     assert (
         CodexCodeRequest(
             prompt="hi", repo=tmp_path, model="gpt-5.5", **{field: "ultra"}
