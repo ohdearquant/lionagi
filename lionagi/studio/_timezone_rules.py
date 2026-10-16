@@ -198,13 +198,15 @@ def tzif_rules(data: bytes | None) -> tuple | None:
     offsets, daylight offsets, names and POSIX footer agree describe the same
     rules.
     This does not prove equivalence between different footer expressions for the
-    same recurrence. A loadable file outside this reader's boundary keeps its
-    exact bytes as its only evidence.
+    same recurrence. After a supported file passes the loader checks, details
+    outside this reader's comparison boundary keep exact bytes as evidence.
     """
     if data is None or len(data) > MAX_TZIF_BYTES:
         return None
     try:
         version, counts, cursor, end = _bounds(data, 0, 4)
+        if version not in (b"\0", b"2", b"3", b"4"):
+            raise ValueError("Unsupported TZif version")
         width = 4
         if version != b"\0":
             _version, counts, cursor, end = _bounds(data, end, 8)

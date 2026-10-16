@@ -83,7 +83,7 @@ def _host_zone_bytes(zone):
 
 
 def _without_transitions_the_footer_covers(data):
-    """*data* with the transitions its POSIX footer already covers removed.
+    """Remove a suffix of transitions already described by the POSIX footer.
 
     A zone's POSIX footer describes its recurrence, so a build may store those
     transitions or leave them to the footer. Dropping the records a footer
@@ -103,9 +103,9 @@ def _without_transitions_the_footer_covers(data):
     end = standard_offset + standard2 + utc2
     footer_end = data.index(b"\n", end + 1)
     footer = data[end + 1 : footer_end]
-    # America/New_York's footer carries the recurrence in force from 2008 on,
-    # so the 2008-01-01T00:00:00Z cutoff keeps only the transitions the footer
-    # does not already describe; dropping the rest leaves the same behaviour.
+    # America/New_York's footer carries the recurrence in force from 2007 on.
+    # This 2008-01-01T00:00:00Z cutoff keeps both 2007 transitions, which the
+    # footer also describes, and drops the later records without changing rules.
     keep = sum(1 for when in times if when < 1_199_145_600)
     if not 0 < keep < count2:
         pytest.skip("this zone stores no transition the footer already covers")
@@ -326,6 +326,63 @@ def test_transition_types_are_bounded_before_the_public_loader(monkeypatch, mode
     assert rules.tzif_rules(data) is None
 
 
+@pytest.mark.parametrize(
+    "first_block",
+    [
+        pytest.param(
+            _header(b"1", 2, 2, 1)
+            + struct.pack(">2i", -1000000, 2000000)
+            + bytes(2)
+            + struct.pack(">iBBiBB", -18000, 1, 0, -14400, 1, 0)
+            + b"\0",
+            id="daylight-walk-past-table",
+        ),
+        pytest.param(b"TZif1" + _compatibility_only(2)[5:], id="transition-type-past-table"),
+    ],
+)
+def test_version_one_tables_never_reach_the_public_loader(monkeypatch, first_block):
+    """ASCII '1' must not select an unchecked 32-bit table in the loader."""
+    valid = _tzif()
+    assert rules.tzif_rules(valid) is not None
+    # A clean modern block follows the first table. Checking only that block
+    # cannot establish that the first table is safe for a version-1 reader.
+    modern_block = valid[51:]
+
+    def forbidden_loader(*args, **kwargs):
+        raise RuntimeError("an unsupported version reached the public loader")
+
+    monkeypatch.setattr(zoneinfo, "ZoneInfo", type("Loader", (), {"from_file": forbidden_loader}))
+    with pytest.raises(RuntimeError, match="unsupported version"):
+        rules.tzif_rules(valid)
+    assert rules.tzif_rules(first_block + modern_block) is None
+
+
+@pytest.mark.parametrize("version", [b"1", b"5", b"A", b"\xff"])
+def test_unsupported_versions_are_refused_before_the_public_loader(monkeypatch, version):
+    valid = _tzif()
+
+    def forbidden_loader(*args, **kwargs):
+        raise RuntimeError("an unsupported version reached the public loader")
+
+    monkeypatch.setattr(zoneinfo, "ZoneInfo", type("Loader", (), {"from_file": forbidden_loader}))
+    with pytest.raises(RuntimeError, match="unsupported version"):
+        rules.tzif_rules(valid)
+    assert rules.tzif_rules(valid[:4] + version + valid[5:]) is None
+
+
+@pytest.mark.parametrize("version", [b"\0", b"2", b"3", b"4"])
+def test_supported_versions_remain_loadable(version):
+    if version == b"\0":
+        data = _compatibility_only(1)
+    else:
+        data = bytearray(_tzif())
+        data[4:5] = version
+        data[55:56] = version
+        data = bytes(data)
+    _assert_loadable(data)
+    assert rules.tzif_rules(data) is not None
+
+
 def test_stream_read_is_capped_if_a_file_grows(tmp_path, monkeypatch):
     from contextlib import contextmanager
 
@@ -419,9 +476,9 @@ _READ_PAST_TABLES = [
     ),
 ]
 
-# A flag outside ``{0, 1}`` on a type whose offset the walk can still place: a
-# standard type follows it, so nothing reads past the table and only the flag
-# itself makes this file one the loader cannot be trusted to walk.
+# A flag outside ``{0, 1}`` without a read past the table. The walk leaves its
+# daylight offset unplaced and uses the one-hour fallback; only the invalid
+# flag makes this file one the reader refuses.
 _UNPLACEABLE_FLAG_TABLES = [
     pytest.param(
         _crafted_tzif([(-18000, 0x80, 0), (-14400, 0, 0)], [0, 1]), id="unplaceable-flag-0x80"
@@ -436,12 +493,12 @@ _CRAFTED_TABLES = _READ_PAST_TABLES + _UNPLACEABLE_FLAG_TABLES
 
 @pytest.mark.parametrize("data", _CRAFTED_TABLES)
 def test_crafted_table_never_reaches_the_public_loader(monkeypatch, data):
-    """A table the loader cannot walk is refused before it gets it.
+    """An unsafe table or invalid daylight flag is refused before the loader.
 
-    Placing the flagged type's offset steps one transition past the table. The
-    pure-Python loader raises ``IndexError`` there; the C accelerator reads out
-    of bounds and the process dies, so a check after the loader returns would
-    come too late.
+    The read-past cases step one transition beyond the table while placing a
+    daylight offset. The other cases use the loader's one-hour fallback but
+    still have a daylight flag outside the format's two allowed values. Both
+    classes are refused before the public loader is called.
     """
     valid = _tzif()
     assert rules.tzif_rules(valid) is not None
