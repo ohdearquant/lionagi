@@ -36,7 +36,7 @@ export function useInvocationStats(
 
     const scope = kind === "skill" ? { skill: name } : { plugin: name };
 
-    listInvocations({ ...scope, limit: RECENT_LIMIT })
+    listInvocations({ ...scope, limit: RECENT_LIMIT, includeUsage: true })
       .then((res) => {
         if (!alive) return;
         const successRate =

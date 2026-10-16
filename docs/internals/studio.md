@@ -318,23 +318,30 @@ message ids) must not fall through to `0 or fallback`.
 
 ## lionagi/studio/services/invocations.py
 
-**`list_invocations_route`** — Returns `latest_started_at`, a nullable Unix-second
-timestamp for the maximum recorded start across every row matching `skill`,
-`plugin`, and `status`. It is computed with `total` in a combined `COUNT(*)`/`MAX(started_at)`
-aggregate SELECT within the existing page/count read snapshot; limit, offset, update order, and cleanup end times cannot change
-it. No matches or an absent store return null. `completed_total` retains its
-existing status-independent count of `completed` records. The additive
-`finished_total` counts the canonical invocation terminal statuses (`completed`,
-`completed_empty`, `failed`, `timed_out`, `aborted`, and `cancelled`) with the same
-skill/plugin scope, ignoring the page's status filter. Both completion counts
-share one SELECT in that snapshot, without increasing query count. Recorded
-success rate is `completed_total / finished_total`; empty completions and
-cancellations are finished but not successes. Older clients can ignore the new
-fields; newer clients show unknown last use or an unavailable rate when their
-respective aggregate is omitted, rather than estimating from a bounded page.
-Cancellation end times record observation of cancellation, including delayed
-cleanup; cancelled invocations are excluded from the scheduler
-`p95_latency_ms` metric so cleanup delay does not become execution latency.
+**`list_invocations_route`** — The usage aggregates are opt-in through the
+non-schema `include_usage` query flag, which the library usage panel passes and the
+Fleet and Mission Control polls leave off. Without it the route returns only the
+plain `total` and `completed_total` counts a row-rendering poll reads, and both
+`finished_total` and `latest_started_at` are null — so a 3-second poll over the
+unfiltered invocation list does not scan every matching row for numbers it never
+displays. With it the route additionally returns `latest_started_at`, a nullable
+Unix-second timestamp for the maximum recorded start across every row matching
+`skill`, `plugin`, and `status`; it is computed with `total` in a combined
+`COUNT(*)`/`MAX(started_at)` aggregate SELECT within the existing page/count read
+snapshot, so limit, offset, update order, and cleanup end times cannot change it.
+No matches return null. `completed_total` keeps its status-independent count of
+`completed` records. The additive `finished_total` counts the canonical invocation
+terminal statuses (`completed`, `completed_empty`, `failed`, `timed_out`,
+`aborted`, and `cancelled`) with the same skill/plugin scope, ignoring the page's
+status filter. Both completion counts share one SELECT in that snapshot, without
+increasing query count. Recorded success rate is `completed_total /
+finished_total`; empty completions and cancellations are finished but not
+successes. Older clients can ignore the new fields; newer clients show unknown
+last use or an unavailable rate when their respective aggregate is omitted,
+rather than estimating from a bounded page. Cancellation end times record
+observation of cancellation, including delayed cleanup; cancelled invocations are
+excluded from the scheduler `p95_latency_ms` metric so cleanup delay does not
+become execution latency.
 
 **`get_invocation`** — One invocation with its child sessions, artifacts
 and derived health. `readonly` opens the store read-only for callers whose

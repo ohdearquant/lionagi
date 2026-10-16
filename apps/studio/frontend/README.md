@@ -54,6 +54,10 @@ records by all finished records (`completed`, `completed_empty`, `failed`,
 completions and cancellations are not successes. No finished records, or an older
 server missing their aggregate, display an unavailable rate.
 
+The usage request asks the server for the recorded-usage aggregates explicitly
+(`include_usage`); the Fleet and Mission Control polls omit that flag and read
+only the recent rows, so they do not pay for aggregates they never show.
+
 The recent list contains five records ordered by update time, with ages measured
 from those updates. Failed usage requests show an unavailable state with a retry
 action, without replacing failure with zero or an empty-history claim. Last

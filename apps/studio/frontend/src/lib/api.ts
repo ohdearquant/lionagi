@@ -1698,6 +1698,8 @@ export interface InvocationListParams {
   status?: string;
   limit?: number;
   offset?: number;
+  /** Ask the server for the recorded-usage aggregates; polls leave it off. */
+  includeUsage?: boolean;
 }
 
 export async function listInvocations(
@@ -1709,6 +1711,7 @@ export async function listInvocations(
   if (params?.status) query.set("status", params.status);
   if (params?.limit !== undefined) query.set("limit", String(params.limit));
   if (params?.offset !== undefined) query.set("offset", String(params.offset));
+  if (params?.includeUsage) query.set("include_usage", "true");
   const qs = query.toString();
   return fetchJson<InvocationListResponse>(`/api/invocations/${qs ? `?${qs}` : ""}`);
 }

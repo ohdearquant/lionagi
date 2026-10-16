@@ -149,7 +149,11 @@ describe.each(["skill", "plugin"] as const)("%s recorded usage", (kind) => {
     );
     expect(container.textContent).toContain("No recorded invocations.");
     expect(container.querySelector('[role="alert"]')).toBeNull();
-    expect(api.listInvocations).toHaveBeenCalledWith({ [kind]: "example", limit: 5 });
+    expect(api.listInvocations).toHaveBeenCalledWith({
+      [kind]: "example",
+      limit: 5,
+      includeUsage: true,
+    });
   });
 
   it("keeps a failed read distinct from empty and retries only the usage request", async () => {
@@ -184,7 +188,11 @@ describe.each(["skill", "plugin"] as const)("%s recorded usage", (kind) => {
     expect(rows[0].lastElementChild?.textContent).toBe("0s");
     expect(container.textContent).toContain("Recently updated records");
     expect(container.textContent).toContain("Recent ages show updates");
-    expect(api.listInvocations).toHaveBeenCalledWith({ [kind]: "example", limit: 5 });
+    expect(api.listInvocations).toHaveBeenCalledWith({
+      [kind]: "example",
+      limit: 5,
+      includeUsage: true,
+    });
   });
 
   it.each([
@@ -234,6 +242,10 @@ describe.each(["skill", "plugin"] as const)("%s recorded usage", (kind) => {
     await act(async () => previous.reject(new Error("Late failure")));
     expect(metric("Recorded invocations")).toBe("320");
     expect(container.querySelector('[role="alert"]')).toBeNull();
-    expect(api.listInvocations).toHaveBeenLastCalledWith({ [kind]: "another", limit: 5 });
+    expect(api.listInvocations).toHaveBeenLastCalledWith({
+      [kind]: "another",
+      limit: 5,
+      includeUsage: true,
+    });
   });
 });

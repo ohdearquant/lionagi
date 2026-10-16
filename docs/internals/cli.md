@@ -781,6 +781,12 @@ engine model that does include it.
 
 ## `invoke.py` — invocation records
 
+**`_end_invocation`** — the guarded `status` write returns an `InvocationEnd` rather than a
+bare row, so the handler can tell an applied close from a refused one. A refusal means the
+row was already terminal (another closer, the reaper, or a sibling launch won the race), so
+the requested `--status` and `--metadata` were not recorded; the command reports that on
+stderr and exits 1 instead of printing the stored status as a successful close.
+
 **`_start_invocation`** — invocation records carry no pid marker. `li invoke start` is a
 short-lived CLI command that creates the row and exits (`INV=$(li invoke start ...)`); it is
 NOT the long-lived owner. Recording its pid would be a recycled-PID hazard — a later live

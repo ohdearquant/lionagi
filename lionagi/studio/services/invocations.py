@@ -370,14 +370,28 @@ async def list_invocations_route(
     status: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    # Off unless the caller asks. Requesting the aggregates scans every matching
+    # row per distinct status expression, so a poll that renders only the recent
+    # rows must not pay for them. Excluded from the schema: it is an internal
+    # opt-in between this server and its bundled client, not a documented option.
+    include_usage: bool = Query(default=False, include_in_schema=False),
 ) -> dict[str, Any]:
+    # A direct call can pass the Query parameter object itself, which is truthy;
+    # only an explicit True turns the aggregates on.
+    if not isinstance(include_usage, bool):
+        include_usage = False
     if state_db_known_absent():
         rows: list[dict[str, Any]] = []
         total = 0
         completed_total = 0
-        finished_total = 0
+        # An absent store has zero finished records; null means "not computed".
+        finished_total = 0 if include_usage else None
         latest_started_at = None
     else:
+        # Null here means "not computed"; a caller that asked for the usage
+        # aggregates replaces both below.
+        finished_total = None
+        latest_started_at = None
         async with StateDB(readonly=read_only_open_supported()) as db:
             async with db.read_snapshot() as connection:
                 raw_rows, children_by_invocation = await _load_invocations_from_db(
@@ -389,22 +403,44 @@ async def list_invocations_route(
                     offset=offset,
                     connection=connection,
                 )
-                total, latest_started_at = await _invocation_totals(
-                    connection,
-                    skill=skill,
-                    plugin=plugin,
-                    status=status,
-                )
-                completed_total, finished_total = await _invocation_completion_totals(
-                    connection, skill=skill, plugin=plugin
-                )
+                if include_usage:
+                    total, latest_started_at = await _invocation_totals(
+                        connection,
+                        skill=skill,
+                        plugin=plugin,
+                        status=status,
+                    )
+                    completed_total, finished_total = await _invocation_completion_totals(
+                        connection, skill=skill, plugin=plugin
+                    )
+                else:
+                    # The plain counts a row-rendering poll needs. The usage
+                    # aggregates scan every matching row per distinct status
+                    # expression, and a poll that never reads them should not
+                    # pay for them.
+                    total = await _count_invocations_from_db(
+                        db,
+                        skill=skill,
+                        plugin=plugin,
+                        status=status,
+                        connection=connection,
+                    )
+                    completed_total = await _count_invocations_from_db(
+                        db,
+                        skill=skill,
+                        plugin=plugin,
+                        status="completed",
+                        connection=connection,
+                    )
             rows = await _serialize_invocations(raw_rows, children_by_invocation)
     # Real totals, not a count of this page: `limit` caps at 200, so counting
     # `rows` instead silently plateaus there with nothing distinguishing an
     # exact count from a capped one. completed_total always means status ==
     # "completed" specifically -- it ignores the caller's own `status` filter
     # (which scopes `total`/`rows`). finished_total shares that scope and counts
-    # every terminal status, including completed_empty and cancelled.
+    # every terminal status, including completed_empty and cancelled; both it
+    # and latest_started_at are null unless the caller asked for the usage
+    # aggregates.
     return {
         "invocations": rows,
         "limit": limit,

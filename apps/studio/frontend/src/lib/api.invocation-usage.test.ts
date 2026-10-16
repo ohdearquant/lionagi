@@ -43,3 +43,29 @@ it.each([
     offset: "10",
   });
 });
+
+it("sends the usage flag only when the caller asks for the aggregates", async () => {
+  const body: InvocationListResponse = {
+    invocations: [],
+    limit: 5,
+    offset: 0,
+    has_next: false,
+    total: 0,
+    completed_total: 0,
+  };
+  const fetch = vi.fn().mockResolvedValue(
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+  );
+  vi.stubGlobal("fetch", fetch);
+
+  await listInvocations({ skill: "one", limit: 5, includeUsage: true });
+  const withUsage = new URL(fetch.mock.calls[0][0], "http://localhost");
+  expect(withUsage.searchParams.get("include_usage")).toBe("true");
+
+  await listInvocations({ skill: "one", limit: 5 });
+  const withoutUsage = new URL(fetch.mock.calls[1][0], "http://localhost");
+  expect(withoutUsage.searchParams.has("include_usage")).toBe(false);
+});

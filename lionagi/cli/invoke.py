@@ -8,6 +8,7 @@ import argparse
 import json
 import time
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from lionagi._auto import CliDeclaration, auto_register
@@ -44,7 +45,23 @@ async def _start_invocation(
     return inv_id
 
 
-async def _end_invocation(invocation_id: str, *, status: str, metadata: dict | None) -> dict | None:
+@dataclass(frozen=True)
+class InvocationEnd:
+    """Outcome of closing one invocation.
+
+    ``applied`` says whether this call wrote the terminal status; ``row`` is the
+    stored invocation either way, so a caller can report the status another
+    writer left behind. When ``applied`` is false the requested status and any
+    ``--metadata`` were not recorded.
+    """
+
+    row: dict
+    applied: bool
+
+
+async def _end_invocation(
+    invocation_id: str, *, status: str, metadata: dict | None
+) -> InvocationEnd | None:
     from lionagi.state.db import StateDB
     from lionagi.state.reasons import RunReasons
 
@@ -72,7 +89,11 @@ async def _end_invocation(invocation_id: str, *, status: str, metadata: dict | N
             extra_fields={"ended_at": time.time()},
         )
         if not transitioned:
-            return await db.get_invocation(invocation_id)
+            # The row is no longer running, so the status and metadata this
+            # call carried were not written. Return them as not applied rather
+            # than merging metadata onto the terminal row another writer owns.
+            stored = await db.get_invocation(invocation_id)
+            return InvocationEnd(row=stored, applied=False)
         if metadata is not None:
             # Merge: preserve any metadata the skill wrote during the
             # run, overwrite per-key with the closer's payload.
@@ -86,7 +107,7 @@ async def _end_invocation(invocation_id: str, *, status: str, metadata: dict | N
                 invocation_id,
                 node_metadata={**current, **metadata},
             )
-        return await db.get_invocation(invocation_id)
+        return InvocationEnd(row=await db.get_invocation(invocation_id), applied=True)
 
 
 async def _list_invocations(*, skill: str | None, status: str | None, limit: int) -> list[dict]:
@@ -245,7 +266,23 @@ def run_invoke(args: argparse.Namespace) -> int:
         if result is None:
             log_error(f"invocation not found: {args.invocation_id}")
             return 1
-        print(f"{args.invocation_id}: {result['status']} ({result['session_count']} session(s))")
+        if not result.applied:
+            stored_status = result.row["status"] if result.row else None
+            detail = (
+                f"invocation {args.invocation_id} was not running; "
+                f"requested status {args.status!r} was not recorded"
+                if stored_status is None
+                else f"invocation {args.invocation_id} is already {stored_status!r}; "
+                f"requested status {args.status!r} was not recorded"
+            )
+            if metadata is not None:
+                detail += " and its --metadata was not saved"
+            log_error(detail + ".")
+            return 1
+        print(
+            f"{args.invocation_id}: {result.row['status']} "
+            f"({result.row['session_count']} session(s))"
+        )
         return 0
 
     if args.invoke_command == "list":

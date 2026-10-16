@@ -34,8 +34,15 @@ async def insert(
 
 
 async def query(*, skill=None, plugin=None, status=None, limit=5, offset=0):
+    # These tests exercise the usage aggregates, so they request them the way
+    # the library usage panel does.
     return await invocations.list_invocations_route(
-        skill=skill, plugin=plugin, status=status, limit=limit, offset=offset
+        skill=skill,
+        plugin=plugin,
+        status=status,
+        limit=limit,
+        offset=offset,
+        include_usage=True,
     )
 
 
@@ -184,3 +191,53 @@ async def test_finished_count_excludes_running_and_keeps_completed_empty_separat
     assert result["completed_total"] == 2
     assert result["finished_total"] == 7
     assert result["total"] == (10 if status_filter is None else statuses.count(status_filter))
+
+
+def _explode(name):
+    def _fail(*args, **kwargs):
+        raise AssertionError(f"{name} must not run for a polling-shaped request")
+
+    return _fail
+
+
+async def test_polling_request_skips_the_usage_aggregates(db_path, monkeypatch):
+    """The fleet and live-board polls read only the recent rows, so a request
+    that does not ask for the usage aggregates must not pay for them."""
+    async with StateDB(db_path) as db:
+        for index in range(3):
+            await insert(db, f"poll-{index}", started_at=100 + index)
+
+    monkeypatch.setattr(invocations, "_invocation_totals", _explode("_invocation_totals"))
+    monkeypatch.setattr(
+        invocations, "_invocation_completion_totals", _explode("_invocation_completion_totals")
+    )
+
+    result = await invocations.list_invocations_route(
+        skill=None, plugin=None, status=None, limit=5, offset=0
+    )
+
+    assert [row["id"] for row in result["invocations"]] == ["poll-2", "poll-1", "poll-0"]
+    # The always-present counts are the pre-existing filtered counts, unchanged.
+    assert result["total"] == 3
+    assert result["completed_total"] == 3
+    # No aggregate was requested, so neither is reported as available.
+    assert result["finished_total"] is None
+    assert result["latest_started_at"] is None
+
+
+async def test_usage_request_returns_the_aggregates(db_path, monkeypatch):
+    """The library usage panel asks for the aggregates explicitly and still
+    receives the count, latest start, and finished totals it renders."""
+    async with StateDB(db_path) as db:
+        await insert(db, "ok", started_at=100, status="completed")
+        await insert(db, "empty", started_at=200, status="completed_empty")
+        await insert(db, "bad", started_at=300, status="failed")
+
+    result = await invocations.list_invocations_route(
+        skill="sample", plugin="package", status=None, limit=5, offset=0, include_usage=True
+    )
+
+    assert result["total"] == 3
+    assert result["completed_total"] == 1
+    assert result["finished_total"] == 3
+    assert result["latest_started_at"] == 300

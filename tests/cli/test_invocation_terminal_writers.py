@@ -62,7 +62,8 @@ async def test_terminal_writers_preserve_concurrent_terminal_outcome(
     monkeypatch.setattr("lionagi.studio.scheduler.subprocess.spawn_and_wait", spawn)
     if writer == "invoke":
         result = await _end_invocation("run", status=winner, metadata={"late": True})
-        assert result["status"] == winner
+        assert result.applied is False
+        assert result.row["status"] == winner
     elif writer == "launch_cancel":
         with pytest.raises(asyncio.CancelledError):
             await launches._spawn_detached(["unused"], "run", tmp_path=None)
