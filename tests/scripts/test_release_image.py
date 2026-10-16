@@ -251,6 +251,46 @@ def test_release_event_can_precede_pypi_and_publish_history(metadata):
     assert not any(service == "pypi" for service, _ in metadata[-1])
 
 
+@pytest.mark.parametrize("outcome", ["failure", "cancelled"])
+def test_release_image_accepts_a_published_wheel_after_upload_client_failure(metadata, outcome):
+    as_release_event(metadata[0])
+    deploy = metadata[1][JOBS]["jobs"][0]
+    deploy["conclusion"] = outcome
+    deploy["steps"][0]["conclusion"] = outcome
+    assert resolve_fixture(metadata, prepare_image=True) == {
+        "version": "1.2.3",
+        "sha": SHA,
+        "publish_latest": "true",
+    }
+    assert not any("/actions/" in path for service, path in metadata[-1] if service == "github")
+
+
+@pytest.mark.parametrize(
+    "field,value", [("info", ["wrong shape"]), ("urls", None), ("urls", ["wrong shape"])]
+)
+def test_malformed_pypi_release_metadata_is_refused(metadata, field, value):
+    metadata[2]["1.2.3"][field] = value
+    with pytest.raises(release.ReleaseError, match="PyPI"):
+        resolve_fixture(metadata)
+
+
+@pytest.mark.parametrize("info", [["wrong shape"], {"name": "lionagi", "version": 123}, {}])
+def test_malformed_latest_metadata_is_refused(metadata, info):
+    metadata[2][""]["info"] = info
+    with pytest.raises(release.ReleaseError, match="PyPI did not report"):
+        resolve_fixture(metadata, prepare_image=True)
+
+
+def test_publication_history_page_budget_is_explicit(metadata):
+    for page in range(1, 11):
+        metadata[1][RUNS.replace("&page=1", f"&page={page}")] = {
+            "workflow_runs": [{"head_sha": OTHER_SHA}] * 100
+        }
+    with pytest.raises(release.ReleaseError, match="resolver's 1,000-item pagination budget"):
+        resolve_fixture(metadata)
+    assert not any("page=11" in path for _, path in metadata[-1])
+
+
 def test_release_event_rejects_a_moved_tag(metadata):
     as_release_event(metadata[0])
     metadata[1][f"{PREFIX}/commits/v1.2.3"]["sha"] = OTHER_SHA
@@ -265,8 +305,9 @@ def test_release_event_identity_cannot_change(metadata):
         resolve_fixture(metadata)
 
 
-def test_image_preparation_rechecks_the_pinned_source(metadata):
-    metadata[0]["RESOLVED_SHA"] = OTHER_SHA
+@pytest.mark.parametrize("sha", ["", OTHER_SHA])
+def test_image_preparation_rechecks_the_pinned_source(metadata, sha):
+    metadata[0]["RESOLVED_SHA"] = sha
     with pytest.raises(release.ReleaseError, match="source changed"):
         resolve_fixture(metadata, prepare_image=True)
 
@@ -284,15 +325,59 @@ def test_release_image_waits_for_the_wheel_to_be_published(metadata):
         resolve_fixture(metadata, prepare_image=True)
 
 
-def test_workflow_tests_builds_and_verifies_one_resolved_source():
-    jobs = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())["jobs"]
+def workflow():
+    return yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())
+
+
+def assert_workflow_contract(document):
+    jobs = document["jobs"]
+    assert document["permissions"] == {"contents": "read"}
+    assert set(jobs) == {"source", "test", "deploy", "docker", "verify-image"}
+    for name, job in jobs.items():
+        expected = {"contents": "read"}
+        if name in {"source", "docker"}:
+            expected["actions"] = "read"
+        if name == "docker":
+            expected["packages"] = "write"
+        assert job["permissions"] == expected
+    assert jobs["source"]["outputs"] == {
+        "version": "${{ steps.release.outputs.version }}",
+        "sha": "${{ steps.release.outputs.sha }}",
+    }
+    source = jobs["source"]["steps"][-1]
+    assert source["id"] == "release"
+    assert source["env"] == {"GH_TOKEN": "${{ github.token }}"}
+    assert source["run"] == "python scripts/resolve_image_release.py"
+    assert "if" not in source
+    assert not source.get("continue-on-error", False)
+    assert jobs["source"]["if"] == (
+        "github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v')"
+    )
+    assert jobs["test"]["needs"] == "source"
+    assert jobs["deploy"]["needs"] == ["source", "test"]
+    assert jobs["deploy"]["if"] == "github.event_name == 'release'"
+    for name in ("test", "deploy", "docker"):
+        guard = jobs[name]["steps"][0]
+        assert guard["name"] == "Require the resolved source commit"
+        assert guard["shell"] == "bash"
+        assert guard["env"] == {"RESOLVED_SHA": "${{ needs.source.outputs.sha }}"}
     for name in ("test", "deploy"):
         checkout = next(
             s for s in jobs[name]["steps"] if s.get("uses", "").startswith("actions/checkout")
         )
         assert checkout.get("with", {}).get("ref") == "${{ needs.source.outputs.sha }}"
-        assert "source" in jobs[name]["needs"]
+    assert jobs["source"]["steps"][0]["with"]["ref"] == "${{ github.sha }}"
     docker = jobs["docker"]
+    assert docker["needs"] == ["source", "test", "deploy"]
+    assert docker["if"] == (
+        "${{ !cancelled() && needs.source.result == 'success' && needs.test.result == 'success' "
+        "&& (github.event_name == 'release' || github.event_name == 'workflow_dispatch') }}"
+    )
+    assert docker["concurrency"] == {"group": "lion-studio-image", "cancel-in-progress": False}
+    assert docker["outputs"] == {
+        "digest": "${{ steps.image.outputs.digest }}",
+        "publish_latest": "${{ steps.release.outputs.publish_latest }}",
+    }
     checkouts = [
         s["with"] for s in docker["steps"] if s.get("uses", "").startswith("actions/checkout")
     ]
@@ -300,21 +385,151 @@ def test_workflow_tests_builds_and_verifies_one_resolved_source():
         ".release-control": "${{ github.sha }}",
         "source": "${{ needs.source.outputs.sha }}",
     }
+    revalidate = next(s for s in docker["steps"] if s.get("id") == "release")
+    assert revalidate["env"] == {
+        "GH_TOKEN": "${{ github.token }}",
+        "RESOLVED_SHA": "${{ needs.source.outputs.sha }}",
+        "RESOLVED_VERSION": "${{ needs.source.outputs.version }}",
+    }
+    assert (
+        revalidate["run"]
+        == "python .release-control/scripts/resolve_image_release.py --prepare-image"
+    )
+    assert "if" not in revalidate
+    assert not revalidate.get("continue-on-error", False)
     image = next(s for s in docker["steps"] if s.get("id") == "image")
+    assert docker["steps"].index(revalidate) < docker["steps"].index(image)
     assert image["with"]["context"] == "./source"
     assert image["with"]["file"] == "source/apps/studio/Dockerfile"
     assert "needs.source.outputs.version" in image["with"]["tags"]
     assert "publish_latest == 'true'" in image["with"]["tags"]
-    assert "needs.deploy.result == 'success'" in docker["if"]
-    assert jobs["deploy"]["if"] == "github.event_name == 'release'"
-    verify = jobs["verify-image"]["steps"][-1]
-    assert verify["env"]["VERSION"] == "${{ needs.source.outputs.version }}"
-    assert verify["env"]["EXPECTED_DIGEST"] == "${{ needs.docker.outputs.digest }}"
-    assert verify["run"] == "bash scripts/verify_release_image.sh"
+    assert jobs["verify-image"]["needs"] == ["source", "docker"]
+    assert jobs["verify-image"]["if"] == (
+        "${{ always() && needs.source.result == 'success' && needs.docker.result != 'skipped' }}"
+    )
+    digest_verify = docker["steps"][-1]
+    assert docker["steps"].index(digest_verify) == docker["steps"].index(image) + 1
+    assert digest_verify["if"] == "${{ !cancelled() }}"
+    assert digest_verify["env"] == {
+        "VERSION": "${{ needs.source.outputs.version }}",
+        "EXPECTED_DIGEST": "${{ steps.image.outputs.digest }}",
+        "PUBLISH_LATEST": "${{ steps.release.outputs.publish_latest }}",
+    }
+    assert digest_verify["run"] == "bash .release-control/scripts/verify_release_image.sh"
+    assert not digest_verify.get("continue-on-error", False)
+    assert len(jobs["verify-image"]["steps"]) == 1
+    verify = jobs["verify-image"]["steps"][0]
+    assert verify["env"] == {
+        "DOCKER_RESULT": "${{ needs.docker.result }}",
+        "EXPECTED_DIGEST": "${{ needs.docker.outputs.digest }}",
+    }
+    assert verify["shell"] == "bash"
+    assert (
+        verify["run"].strip()
+        == """if [ "${DOCKER_RESULT}" != success ]; then
+  echo '::error::image publication or digest verification did not succeed'
+  exit 1
+fi
+if [[ ! "${EXPECTED_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  echo '::error::the image build did not produce a valid digest'
+  exit 1
+fi"""
+    )
+    assert "if" not in verify
+    assert not verify.get("continue-on-error", False)
     for job in jobs.values():
         for step in job.get("steps", []):
             if step.get("uses", "").startswith("actions/checkout"):
                 assert step["with"]["persist-credentials"] is False
+
+
+def test_workflow_tests_builds_and_verifies_one_resolved_source():
+    assert_workflow_contract(workflow())
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "deploy-write",
+        "top-level-actions",
+        "source-condition",
+        "deploy-success",
+        "no-lock",
+        "cancel-running",
+        "revalidate-skipped",
+        "revalidate-soft-failure",
+        "wrong-source",
+        "verify-condition",
+        "verify-latest",
+        "verify-soft-failure",
+        "digest-verify-skipped",
+        "digest-verify-soft-step",
+        "status-soft-failure",
+        "status-soft-step",
+        "guard-after-checkout",
+    ],
+)
+def test_workflow_contract_rejects_publication_wiring_mutations(mutation):
+    document = workflow()
+    jobs = document["jobs"]
+    docker = jobs["docker"]
+    revalidate = next(s for s in docker["steps"] if s.get("id") == "release")
+    verify = jobs["verify-image"]["steps"][0]
+    digest_verify = docker["steps"][-1]
+    if mutation == "deploy-write":
+        jobs["deploy"]["permissions"]["packages"] = "write"
+    elif mutation == "top-level-actions":
+        document["permissions"]["actions"] = "read"
+    elif mutation == "source-condition":
+        docker["if"] = docker["if"].replace("needs.source.result == 'success' && ", "")
+    elif mutation == "deploy-success":
+        docker["if"] = docker["if"].replace(
+            "!cancelled()", "!cancelled() && needs.deploy.result == 'success'"
+        )
+    elif mutation == "no-lock":
+        del docker["concurrency"]
+    elif mutation == "cancel-running":
+        docker["concurrency"]["cancel-in-progress"] = True
+    elif mutation == "revalidate-skipped":
+        revalidate["if"] = "false"
+    elif mutation == "revalidate-soft-failure":
+        revalidate["continue-on-error"] = True
+    elif mutation == "wrong-source":
+        revalidate["env"]["RESOLVED_SHA"] = "${{ github.sha }}"
+    elif mutation == "verify-condition":
+        jobs["verify-image"]["if"] = "success()"
+    elif mutation == "verify-latest":
+        digest_verify["env"]["PUBLISH_LATEST"] = "false"
+    elif mutation == "verify-soft-failure":
+        digest_verify["run"] += " || true"
+    elif mutation == "digest-verify-skipped":
+        digest_verify["if"] = "false"
+    elif mutation == "digest-verify-soft-step":
+        digest_verify["continue-on-error"] = True
+    elif mutation == "status-soft-failure":
+        verify["run"] = "true"
+    elif mutation == "status-soft-step":
+        verify["continue-on-error"] = True
+    elif mutation == "guard-after-checkout":
+        jobs["test"]["steps"][0:2] = reversed(jobs["test"]["steps"][0:2])
+    with pytest.raises((AssertionError, KeyError)):
+        assert_workflow_contract(document)
+
+
+@pytest.mark.parametrize("job", ["test", "deploy", "docker"])
+@pytest.mark.parametrize("sha", ["", "branch-name", "a" * 39, SHA])
+def test_source_guard_refuses_checkout_fallback(job, sha):
+    guard = workflow()["jobs"][job]["steps"][0]
+    result = subprocess.run(
+        ["bash", "-c", guard["run"]],
+        env={**os.environ, "RESOLVED_SHA": sha},
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == (0 if sha == SHA else 1)
+    if sha != SHA:
+        assert "::error::the release did not resolve a full source commit" in result.stdout
 
 
 @pytest.fixture
@@ -386,18 +601,123 @@ def test_an_old_digest_cannot_satisfy_this_runs_build(registry, tag):
     run, digest, _ = registry
     tags = {"1.2.3": {"digest": digest}, "latest": {"digest": digest}}
     tags[tag]["digest"] = "sha256:" + "d" * 64
-    assert run(tags).returncode != 0
+    result = run(tags)
+    assert result.returncode == 1
+    assert (
+        "::error::the requested image tags do not resolve to this run's build digest"
+        in result.stdout
+    )
 
 
 def test_failed_registry_read_cannot_pass_with_partial_output(registry):
     run, digest, _ = registry
+    result = run({"1.2.3": {"digest": digest, "exit": 22}, "latest": {"digest": digest}})
+    assert result.returncode == 1
     assert (
-        run({"1.2.3": {"digest": digest, "exit": 22}, "latest": {"digest": digest}}).returncode != 0
+        "::error::the requested image tags do not resolve to this run's build digest"
+        in result.stdout
     )
 
 
 @pytest.mark.parametrize("digest", ["", "sha256:bad"])
 def test_failed_build_is_not_verified_against_a_preexisting_tag(registry, digest):
-    run, _, calls = registry
-    assert run({}, EXPECTED_DIGEST=digest).returncode != 0
+    run, existing_digest, calls = registry
+    result = run(
+        {"1.2.3": {"digest": existing_digest}, "latest": {"digest": existing_digest}},
+        EXPECTED_DIGEST=digest,
+    )
+    assert result.returncode == 1
+    assert "::error::the image build did not produce a valid digest" in result.stderr
     assert not calls.exists()
+
+
+@pytest.mark.parametrize("value", ["", "TRUE", "yes", "0", "false\ntrue"])
+def test_invalid_latest_decision_is_refused_before_registry_reads(registry, value):
+    run, _, calls = registry
+    result = run({}, PUBLISH_LATEST=value)
+    assert result.returncode == 1
+    assert "::error::latest publication decision must be true or false" in result.stderr
+    assert not calls.exists()
+
+
+@pytest.mark.parametrize("value", ["", "v1.2.3", "1.2", "latest", "1.2.3/path", "1.2.3\nlatest"])
+def test_invalid_verifier_version_is_refused_before_registry_reads(registry, value):
+    run, _, calls = registry
+    result = run({}, VERSION=value)
+    assert result.returncode == 1
+    assert "::error::version must be a numeric x.y.z release" in result.stderr
+    assert not calls.exists()
+
+
+@pytest.mark.parametrize(
+    "version",
+    ["1.2.3a1", "1.2.3b2", "1.2.3rc1", "1.2.3.post1", "1.2.3.dev1", "1.2.3rc1.post2.dev3"],
+)
+def test_verifier_accepts_the_resolver_version_forms(registry, version):
+    run, digest, _ = registry
+    assert release._VERSION.fullmatch(version)
+    result = run({version: {"digest": digest}}, VERSION=version, PUBLISH_LATEST="false")
+    assert result.returncode == 0
+    assert f"Verified ghcr.io/ohdearquant/lion-studio:{version}" in result.stdout
+
+
+def test_empty_registry_digest_cannot_match_a_valid_build(registry):
+    run, _, _ = registry
+    result = run({})
+    assert result.returncode == 1
+    assert (
+        "::error::the requested image tags do not resolve to this run's build digest"
+        in result.stdout
+    )
+
+
+@pytest.mark.parametrize(
+    "result,digest,error",
+    [
+        ("success", "sha256:" + "c" * 64, None),
+        (
+            "failure",
+            "sha256:" + "c" * 64,
+            "image publication or digest verification did not succeed",
+        ),
+        ("failure", "", "image publication or digest verification did not succeed"),
+        (
+            "cancelled",
+            "sha256:" + "c" * 64,
+            "image publication or digest verification did not succeed",
+        ),
+        ("success", "", "the image build did not produce a valid digest"),
+        ("success", "sha256:bad", "the image build did not produce a valid digest"),
+    ],
+)
+def test_final_status_gate_requires_successful_build_and_verification(result, digest, error):
+    guard = workflow()["jobs"]["verify-image"]["steps"][0]
+    completed = subprocess.run(
+        ["bash", "-c", guard["run"]],
+        env={**os.environ, "DOCKER_RESULT": result, "EXPECTED_DIGEST": digest},
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert completed.returncode == (0 if error is None else 1)
+    if error:
+        assert f"::error::{error}" in completed.stdout
+
+
+def test_digest_verification_must_finish_before_a_newer_publication(registry):
+    run, digest_a, _ = registry
+    digest_b = "sha256:" + "d" * 64
+    after_a = {"1.2.3": {"digest": digest_a}, "latest": {"digest": digest_a}}
+    after_b = {**after_a, "1.2.4": {"digest": digest_b}, "latest": {"digest": digest_b}}
+
+    # Broken ordering: A pushes and releases, B pushes, then A verifies latest.
+    late_a = run(after_b)
+    assert late_a.returncode == 1
+    assert (
+        "::error::the requested image tags do not resolve to this run's build digest"
+        in late_a.stdout
+    )
+
+    # Serialized ordering: each holder pushes and verifies before releasing.
+    assert run(after_a).returncode == 0
+    assert run(after_b, VERSION="1.2.4", EXPECTED_DIGEST=digest_b).returncode == 0

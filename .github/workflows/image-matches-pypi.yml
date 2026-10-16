@@ -226,8 +226,9 @@ jobs:
           Anyone running \`li studio --docker\`, or pulling \`:latest\`, is on the older
           image until this is repaired.
 
-          To repair: dispatch the Release workflow at a ref carrying any needed fix,
-          with \`version\` set to the version above.
+          To repair: dispatch the Release workflow from the default branch,
+          with \`version\` set to the version above. Changes to the image source
+          require a new release.
 
           This issue is opened and closed by the \`Image matches PyPI\` workflow, so it
           being open means the registry is behind right now, not that it once was.

@@ -10,7 +10,13 @@ The Release workflow resolves one published `v<version>` release to a full
 commit SHA. Its test matrix, wheel publisher and container build all check out
 that SHA. The tag must match the source package's version. A new release event
 also requires the tag to match the event's commit; it can publish a wheel that
-does not exist on PyPI yet. The image waits for the wheel publisher to succeed.
+does not exist on PyPI yet. For release events, the image job waits for the
+wheel publisher to finish, then checks PyPI for a non-yanked wheel. A failed
+publisher result does not skip that check: an upload can reach PyPI even when
+the client reports failure or a retry reports an existing file. The source and
+test jobs must still succeed. A missing or yanked wheel prevents image publication.
+A failed upload job still leaves the overall workflow failed even if its image
+is subsequently published.
 
 To repair a missing container image, dispatch `release.yml` **from the default
 branch**, with the published version as its `version` input, without `v`. The
@@ -18,8 +24,7 @@ current workflow helpers run from the dispatch commit, while the build context
 comes from the released commit. A repair does not run the wheel publisher. It
 also retains that release's Dockerfile; package, frontend or Dockerfile changes
 require a new release rather than republishing changed source under an old tag.
-The manual repair
-requires all of:
+The manual repair requires all of:
 
 - A published, non-draft GitHub release with the exact version tag.
 - A matching package version in the released `pyproject.toml`.
@@ -33,17 +38,49 @@ trusted release workflow published this commit. It is not a cryptographic
 attestation of wheel contents: it relies on that workflow testing and uploading
 its run's source. Missing or expired publication history refuses a manual repair;
 it does not prevent a new release event from publishing normally. A moved tag
-without matching publication evidence is refused. Dispatching a branch with
-different package or frontend code cannot substitute that tree for the release.
+without matching publication evidence is refused. If an upload reached PyPI
+but no attempt recorded a successful upload, manual repair remains unavailable.
+For release-event runs that already include this workflow version, rerun the
+release-event workflow to retry its image job while GitHub still permits a
+rerun. That path uses the immutable event/tag/source binding and the actual
+PyPI wheel check, trusting the release publisher without requiring a successful
+upload-step conclusion. A pre-fix run does not gain this recovery behavior by
+rerunning: [reruns retain their original workflow and commit](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs)
+and are subject to GitHub's rerun limits.
 
-Immediately before an image is built, the workflow rechecks the source binding
-and PyPI version. It publishes the version tag, and updates `latest` only when
-that version is PyPI's current default. Repairing an older release therefore
-leaves `latest` alone. The image carries its version and source SHA as OCI
-labels. Verification compares the registry manifest digest with the digest
-returned by this run's image build; a pre-existing version tag cannot make a
-failed build pass. When the workflow publishes `latest`, its digest is checked
-as well.
+The default-branch dispatch check is a process guard inside the workflow and
+helper code. With that code unchanged, a branch dispatch is rejected before
+tests, and the image is built from the release commit. A maintainer able to
+change the workflow or helper can remove the guard; this is not an external
+default-branch deployment restriction. No GitHub environment rule is assumed.
+Both paths trust this repository's publication workflow and do not prove that
+PyPI wheel bytes equal the checked-out source.
+
+The docker job uses the shared `lion-studio-image` concurrency group with
+`cancel-in-progress: false`. The source/PyPI revalidation, image push, and
+registry verification occupy one slot, so an older repair cannot make its latest-tag decision before a newer
+image job and then overwrite that job's push. With this default concurrency
+configuration, GitHub keeps at most one pending job in the group; a newly
+queued job can replace an older pending job. See
+[GitHub's concurrency behavior](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+Retry a superseded run if its version image is still needed and a rerun remains
+available.
+
+Inside that slot, the workflow rechecks the source binding and PyPI version
+before building. It publishes the version tag, and updates `latest` only when
+PyPI reports that version as its current default at revalidation. Older versions
+and prereleases that PyPI does not select therefore leave `latest` alone. This
+serializes these image jobs, not external publishers or wheel publication;
+PyPI can advance while an image builds, before its newer image job runs.
+
+The image carries its version and source SHA as OCI labels. Before releasing
+the concurrency slot, verification compares registry manifest digests with the
+digest returned by this run's image build, including `latest` when published.
+A pre-existing version tag cannot make a failed build pass. The separate
+`verify-image` job checks that the docker job, including that verification,
+succeeded and emitted a valid digest; it does not reread tags after releasing
+the slot. A later image publication therefore cannot invalidate an earlier
+run's completed registry check.
 
 `tests/scripts/test_release_image.py` exercises the production resolver with
 mock GitHub/PyPI metadata, verifies workflow source wiring, and runs the registry

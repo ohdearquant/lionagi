@@ -68,17 +68,25 @@ def _pages(read: JsonReader, route: str, key: str):
         yield from items
         if len(items) < 100:
             return
-    raise ReleaseError("release publication history exceeds the API's 1,000-result search limit")
+    raise ReleaseError(
+        "release publication history exceeds the resolver's 1,000-item pagination budget"
+    )
 
 
 def _require_published_wheel(read: JsonReader, version: str) -> None:
     package = read(version)
-    info = package.get("info") or {}
-    if info.get("name") != "lionagi" or info.get("version") != version:
+    info = package.get("info")
+    if (
+        not isinstance(info, dict)
+        or info.get("name") != "lionagi"
+        or info.get("version") != version
+    ):
         raise ReleaseError("PyPI package identity does not match the release version")
+    files = package.get("urls")
+    if not isinstance(files, list) or any(not isinstance(item, dict) for item in files):
+        raise ReleaseError("PyPI did not report a wheel file list")
     if not any(
-        item.get("packagetype") == "bdist_wheel" and item.get("yanked") is False
-        for item in package.get("urls", [])
+        item.get("packagetype") == "bdist_wheel" and item.get("yanked") is False for item in files
     ):
         raise ReleaseError("the release has no non-yanked wheel on PyPI")
 
@@ -182,8 +190,13 @@ def resolve(
         _require_publish_evidence(read_github, repo, tag, sha)
     result = {"version": version, "sha": sha}
     if prepare_image:
-        latest = read_pypi("").get("info") or {}
-        if latest.get("name") != "lionagi" or not _VERSION.fullmatch(latest.get("version", "")):
+        latest = read_pypi("").get("info")
+        if (
+            not isinstance(latest, dict)
+            or latest.get("name") != "lionagi"
+            or not isinstance(latest.get("version"), str)
+            or not _VERSION.fullmatch(latest["version"])
+        ):
             raise ReleaseError("PyPI did not report its current lionagi version")
         result["publish_latest"] = str(latest["version"] == version).lower()
     return result

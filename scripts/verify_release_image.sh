@@ -2,11 +2,16 @@
 # Check the image produced by this run, rather than any older image with its tag.
 set -euo pipefail
 
-: "${VERSION:?validated version is required}"
-: "${EXPECTED_DIGEST:?the image build did not produce a digest}"
-: "${PUBLISH_LATEST:?latest publication decision is required}"
-if [[ ! "${EXPECTED_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-  echo '::error::the image build did not produce a valid digest'
+if [[ ! "${VERSION:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?$ ]]; then
+  echo '::error::version must be a numeric x.y.z release, optionally with a/b/rc/post/dev suffix' >&2
+  exit 1
+fi
+if [[ ! "${EXPECTED_DIGEST:-}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  echo '::error::the image build did not produce a valid digest' >&2
+  exit 1
+fi
+if [[ "${PUBLISH_LATEST:-}" != true && "${PUBLISH_LATEST:-}" != false ]]; then
+  echo '::error::latest publication decision must be true or false' >&2
   exit 1
 fi
 

@@ -14,7 +14,6 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 env:
   DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -25,7 +24,10 @@ env:
 
 jobs:
   source:
-    # lion1 has a separate release workflow and tag namespace.
+    permissions:
+      contents: read
+      actions: read
+    # Only the lionagi v-prefixed release tag namespace belongs here.
     if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-latest
     outputs:
@@ -46,12 +48,23 @@ jobs:
       run: python scripts/resolve_image_release.py
 
   test:
+    permissions:
+      contents: read
     needs: source
     runs-on: ubuntu-latest
     strategy:
       matrix:
         python-version: ['3.10', '3.11', '3.12', '3.13']
     steps:
+    - name: Require the resolved source commit
+      shell: bash
+      env:
+        RESOLVED_SHA: ${{ needs.source.outputs.sha }}
+      run: |
+        if [[ ! "${RESOLVED_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+          echo '::error::the release did not resolve a full source commit'
+          exit 1
+        fi
     - uses: actions/checkout@v7
       with:
         ref: ${{ needs.source.outputs.sha }}
@@ -77,16 +90,27 @@ jobs:
         uv run pytest --asyncio-mode=auto --maxfail=1 --disable-warnings tests/
 
   deploy:
+    permissions:
+      contents: read
     needs: [source, test]
     # Publishing the wheel belongs to the release that created the version, and
     # to nothing else. A manual dispatch exists to republish an image for a
     # version that already shipped, so its wheel is already on PyPI; letting
     # this job run would attempt a duplicate upload and fail the run for a
-    # reason unrelated to what was asked for. The image job permits this skip
-    # only for a validated manual repair.
+    # reason unrelated to what was asked for. The image job checks PyPI after
+    # this job finishes, including when an upload succeeds but reports failure.
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
     steps:
+    - name: Require the resolved source commit
+      shell: bash
+      env:
+        RESOLVED_SHA: ${{ needs.source.outputs.sha }}
+      run: |
+        if [[ ! "${RESOLVED_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+          echo '::error::the release did not resolve a full source commit'
+          exit 1
+        fi
     - uses: actions/checkout@v7
       with:
         ref: ${{ needs.source.outputs.sha }}
@@ -117,7 +141,11 @@ jobs:
 
   docker:
     needs: [source, test, deploy]
-    if: ${{ !cancelled() && needs.source.result == 'success' && needs.test.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.deploy.result == 'success') }}
+    if: ${{ !cancelled() && needs.source.result == 'success' && needs.test.result == 'success' && (github.event_name == 'release' || github.event_name == 'workflow_dispatch') }}
+    # Keep the PyPI decision, image push and digest verification in one slot.
+    concurrency:
+      group: lion-studio-image
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -127,6 +155,15 @@ jobs:
       digest: ${{ steps.image.outputs.digest }}
       publish_latest: ${{ steps.release.outputs.publish_latest }}
     steps:
+    - name: Require the resolved source commit
+      shell: bash
+      env:
+        RESOLVED_SHA: ${{ needs.source.outputs.sha }}
+      run: |
+        if [[ ! "${RESOLVED_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+          echo '::error::the release did not resolve a full source commit'
+          exit 1
+        fi
     # Keep current workflow helpers separate from an older release's source.
     - uses: actions/checkout@v7
       with:
@@ -189,19 +226,33 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
-  # A pre-existing version tag cannot stand in for this run's failed build.
+    - name: Verify the published image digest
+      if: ${{ !cancelled() }}
+      env:
+        VERSION: ${{ needs.source.outputs.version }}
+        EXPECTED_DIGEST: ${{ steps.image.outputs.digest }}
+        PUBLISH_LATEST: ${{ steps.release.outputs.publish_latest }}
+      run: bash .release-control/scripts/verify_release_image.sh
+
+  # Preserve a failing verification gate for any failed publication attempt.
   verify-image:
+    permissions:
+      contents: read
     needs: [source, docker]
     if: ${{ always() && needs.source.result == 'success' && needs.docker.result != 'skipped' }}
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v7
-      with:
-        ref: ${{ github.sha }}
-        persist-credentials: false
-    - name: Verify the published image digest
+    - name: Require successful image publication and verification
+      shell: bash
       env:
-        VERSION: ${{ needs.source.outputs.version }}
+        DOCKER_RESULT: ${{ needs.docker.result }}
         EXPECTED_DIGEST: ${{ needs.docker.outputs.digest }}
-        PUBLISH_LATEST: ${{ needs.docker.outputs.publish_latest }}
-      run: bash scripts/verify_release_image.sh
+      run: |
+        if [ "${DOCKER_RESULT}" != success ]; then
+          echo '::error::image publication or digest verification did not succeed'
+          exit 1
+        fi
+        if [[ ! "${EXPECTED_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+          echo '::error::the image build did not produce a valid digest'
+          exit 1
+        fi
