@@ -49,16 +49,20 @@ async def _start_invocation(
 class InvocationEnd:
     """Outcome of closing one invocation.
 
-    ``applied`` says whether this call wrote the requested terminal status;
-    ``row`` is the stored invocation either way, so a caller can report the
-    status another writer left behind. A row already in the requested status is
-    not rewritten, but a same-status close still merges its ``--metadata``, so
-    ``applied`` is true there too. When ``applied`` is false the requested
-    status and any ``--metadata`` were not recorded.
+    ``applied`` says whether this call recorded what it was asked to record:
+    the guarded status write landed, or the row already carried the requested
+    status and the ``--metadata`` payload was merged. A row already in the
+    requested status keeps its stored status and end time. ``row`` is the stored
+    invocation either way, so a caller can report the status another writer left
+    behind. When ``applied`` is false neither the requested status nor any
+    ``--metadata`` was recorded.
     """
 
     row: dict
     applied: bool
+
+
+_METADATA_MERGE_ATTEMPTS = 5
 
 
 async def _end_invocation(
@@ -102,27 +106,56 @@ async def _end_invocation(
             # no status or end time to move. A --metadata payload is still the
             # closer's to record, merged onto the row as it now stands.
             if metadata is not None:
-                await _merge_invocation_metadata(db, invocation_id, stored, metadata)
+                merged = await _merge_invocation_metadata(db, invocation_id, stored, metadata)
+                if not merged:
+                    # The payload never landed, so the close cannot report the
+                    # saved status it promises on a zero exit.
+                    return InvocationEnd(row=await db.get_invocation(invocation_id), applied=False)
             return InvocationEnd(row=await db.get_invocation(invocation_id), applied=True)
         if metadata is not None:
             # Merge: preserve any metadata the skill wrote during the
             # run, overwrite per-key with the closer's payload.
-            await _merge_invocation_metadata(db, invocation_id, existing, metadata)
+            merged = await _merge_invocation_metadata(db, invocation_id, existing, metadata)
+            if not merged:
+                return InvocationEnd(row=await db.get_invocation(invocation_id), applied=False)
         return InvocationEnd(row=await db.get_invocation(invocation_id), applied=True)
 
 
-async def _merge_invocation_metadata(db, invocation_id: str, row: dict, metadata: dict) -> None:
-    """Merge ``metadata`` over the row's stored node_metadata, per key."""
+def _decoded_node_metadata(row: dict) -> dict:
+    """The row's node_metadata as a mapping, defaulting to empty."""
     current = row.get("node_metadata") or {}
     if isinstance(current, str):
         try:
             current = json.loads(current)
         except json.JSONDecodeError:
             current = {}
-    await db.update_invocation(
-        invocation_id,
-        node_metadata={**current, **metadata},
-    )
+    return current if isinstance(current, dict) else {}
+
+
+async def _merge_invocation_metadata(db, invocation_id: str, row: dict, metadata: dict) -> bool:
+    """Merge ``metadata`` over the row's stored node_metadata, per key, under a compare-and-set.
+
+    Another closer may write its own payload between this call's read of the row
+    and its write, because both closes merge into the same column. The write
+    therefore carries the value it read in its WHERE: a row that moved changes
+    zero rows, and the merge re-reads the row and tries again instead of
+    overwriting the other closer's key. Returns whether the payload landed.
+    """
+    observed = row.get("node_metadata")
+    for _ in range(_METADATA_MERGE_ATTEMPTS):
+        merged = {**_decoded_node_metadata(row), **metadata}
+        landed = await db.compare_and_set_invocation_node_metadata(
+            invocation_id,
+            expected=observed,
+            merged=merged,
+        )
+        if landed:
+            return True
+        row = await db.get_invocation(invocation_id)
+        if row is None:
+            return False
+        observed = row.get("node_metadata")
+    return False
 
 
 async def _list_invocations(*, skill: str | None, status: str | None, limit: int) -> list[dict]:
@@ -284,15 +317,28 @@ def run_invoke(args: argparse.Namespace) -> int:
             return 1
         if not result.applied:
             stored_status = result.row["status"] if result.row else None
-            detail = (
-                f"invocation {args.invocation_id} was not running; "
-                f"requested status {args.status!r} was not recorded"
-                if stored_status is None
-                else f"invocation {args.invocation_id} is already {stored_status!r}; "
-                f"requested status {args.status!r} was not recorded"
-            )
-            if metadata is not None:
-                detail += " and its --metadata was not saved"
+            if stored_status is None:
+                detail = (
+                    f"invocation {args.invocation_id} was not running; "
+                    f"requested status {args.status!r} was not recorded"
+                )
+                if metadata is not None:
+                    detail += " and its --metadata was not saved"
+            elif stored_status == args.status:
+                # The status is already the requested one, so only the payload
+                # failed to land: nothing about the status was refused. Say what
+                # did not land rather than name the status that already matches.
+                detail = (
+                    f"invocation {args.invocation_id} is already {stored_status!r}; "
+                    "its --metadata could not be saved"
+                )
+            else:
+                detail = (
+                    f"invocation {args.invocation_id} is already {stored_status!r}; "
+                    f"requested status {args.status!r} was not recorded"
+                )
+                if metadata is not None:
+                    detail += " and its --metadata was not saved"
             log_error(detail + ".")
             return 1
         print(

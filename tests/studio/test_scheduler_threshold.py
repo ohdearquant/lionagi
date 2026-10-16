@@ -1532,17 +1532,16 @@ async def test_metric_value_p95_latency_excludes_cancelled_observation_time(
         )
 
 
-async def test_p95_latency_counts_reaper_observed_timeout_rows(tmp_path, monkeypatch):
-    """A reaped ``timed_out`` row's end time is the reaper's observation, so its
-    whole 8000s age enters the latency sample even though nothing ran that long.
+async def test_p95_latency_excludes_reaper_observed_rows(tmp_path, monkeypatch):
+    """A reaped row's ended_at is when the reaper noticed a stale run, not how
+    long anything ran, so it must not enter the latency sample.
 
-    The metric filters on status alone, and the row carries no status or identity
-    column that separates a reaper-observed ``timed_out`` from one the run wrote
-    itself: both carry reason code ``run.timed_out.deadline`` and the reaper's
-    basis (deadline, action kind) lives in ``status_transitions``, not the row.
-    ``status_evidence_refs`` does differ by producer, but it is a free-form JSON
-    blob rather than a declared key. This pins the resulting number and names the
-    gap.
+    The reaper writes a ``{"kind": "invocation"}`` entry into
+    ``status_evidence_refs`` and a run's own deadline write does not, so the
+    metric can tell the two apart by that entry even though both carry status
+    ``timed_out`` and reason code ``run.timed_out.deadline``. Here a 2 h row the
+    reaper ends sits beside a 30 s row the run recorded itself: the percentile
+    must be the 30 s row's.
     """
     import time as _time
     from types import SimpleNamespace
@@ -1569,7 +1568,7 @@ async def test_p95_latency_counts_reaper_observed_timeout_rows(tmp_path, monkeyp
                 "skill": "agent",
                 "status": "completed",
                 "started_at": 999_970.0,
-                "ended_at": 999_940.0,
+                "ended_at": 1_000_000.0,
             }
         )
 
@@ -1579,5 +1578,36 @@ async def test_p95_latency_counts_reaper_observed_timeout_rows(tmp_path, monkeyp
         reaped = await db.get_invocation("reaped")
         assert reaped["status"] == "timed_out"
         assert reaped["ended_at"] == 1_000_000.0
-        # The 8000s observation, not the 30s of real work, is what the metric reports.
-        assert await db.metric_value("p95_latency_ms", window_start=0.0) == 8_000_000.0
+        # The reaper's 8000s observation is excluded; the 30s of real work stands.
+        assert await db.metric_value("p95_latency_ms", window_start=0.0) == 30_000.0
+
+
+async def test_p95_latency_keeps_a_run_recorded_timeout(tmp_path):
+    """A run's own deadline write carries no reaper evidence entry, so its
+    recorded duration still enters the sample."""
+    from lionagi.state.db import StateDB
+
+    path = tmp_path / "state.db"
+    async with StateDB(path) as db:
+        for index, evidence in enumerate(([], [{"kind": "session", "id": "child"}])):
+            await db.create_invocation(
+                {
+                    "id": f"own-timeout-{index}",
+                    "skill": "agent",
+                    "status": "running",
+                    "started_at": 100.0,
+                }
+            )
+            await db.update_status(
+                "invocation",
+                f"own-timeout-{index}",
+                new_status="timed_out",
+                reason_code="run.timed_out.deadline",
+                reason_summary="Flow timed out after 3600s",
+                evidence_refs=evidence,
+                source="executor",
+                actor=f"own-timeout-{index}",
+                expected_statuses={"running"},
+                extra_fields={"ended_at": 145.0},
+            )
+        assert await db.metric_value("p95_latency_ms", window_start=0.0) == 45_000.0

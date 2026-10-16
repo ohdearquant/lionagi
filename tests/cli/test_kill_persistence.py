@@ -134,8 +134,8 @@ async def test_invocation_cancel_preserves_existing_running_end_time(
 
 async def test_invocation_cancel_preserves_concurrent_running_end_time(tmp_path, monkeypatch):
     """Regression control for the end-time rule against a write that lands
-    between the transition's read and its update; the running guard does not
-    reach this case."""
+    before the transition's own read; the running guard does not reach this
+    case, because the row is still ``running`` when the read happens."""
     monkeypatch.setattr(kill_mod, "time", SimpleNamespace(time=lambda: 300.0))
     async with StateDB(tmp_path / "state.db") as db:
         await _create_invocation(db)

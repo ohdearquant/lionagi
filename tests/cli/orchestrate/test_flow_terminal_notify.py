@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import shlex
 import sys
 import time
@@ -690,14 +691,16 @@ async def test_run_flow_fires_hook_without_invocation_id(temp_db_path: Path, tmp
 
 
 async def test_flow_finalize_after_kill_keeps_the_kill_outcome(
-    temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
 ):
     """A kill records the invocation's outcome first; the flow's later
     finalize must not replace that reason or its end time.
 
     Both writes land on ``cancelled``, so the flow's is a same-status write:
-    without the running-status guard it appends a transition and overwrites
-    the kill's reason. The guard refuses it and the kill's record stands.
+    with the guard removed it takes that write, appending a second cancelled
+    ``status_transitions`` row and reporting nothing. The guard refuses it
+    before the write, so the history keeps the kill's one row and the refusal
+    is logged. The stored reason and end time stand either way.
     """
     monkeypatch.setattr(
         "lionagi.cli.kill.current_pid_markers",
@@ -733,6 +736,7 @@ async def test_flow_finalize_after_kill_keeps_the_kill_outcome(
             AsyncMock(return_value=env),
         ),
         patch("lionagi.cli.orchestrate.flow._run_flow_inner", cancelled),
+        caplog.at_level(logging.INFO, logger="lionagi.cli.orchestrate.flow"),
         pytest.raises(asyncio.CancelledError),
     ):
         await _run_flow("claude", "do the thing", invocation_id=invocation_id)
@@ -741,9 +745,19 @@ async def test_flow_finalize_after_kill_keeps_the_kill_outcome(
     await db.open()
     try:
         row = await db.get_invocation(invocation_id)
+        transitions = await db.fetch_all(
+            "SELECT status FROM status_transitions WHERE entity_id = ? "
+            "AND previous_status IS NOT NULL",
+            (invocation_id,),
+        )
     finally:
         await db.close()
     assert row["status"] == "cancelled"
     assert row["status_reason_code"] == RunReasons.CANCELLED_MANUAL_KILL
     assert row["status_reason_summary"] == "Manually cancelled via `li kill`."
     assert row["ended_at"] == 200.0
+    # The refused write is reported, not silently dropped.
+    assert f"Refused terminal write for invocation {invocation_id}" in caplog.text
+    # Only the kill's own transition exists: the flow's refused write appended
+    # nothing, so the history has one cancelled row and not two.
+    assert transitions == [{"status": "cancelled"}]

@@ -371,7 +371,11 @@ last use or an unavailable rate when their respective aggregate is omitted,
 rather than estimating from a bounded page. Cancellation end times record
 observation of cancellation, including delayed cleanup; cancelled invocations are
 excluded from the scheduler `p95_latency_ms` metric so cleanup delay does not
-become execution latency. A scheduled fire writes its trigger type into `plugin`
+become execution latency, and so are the rows the lifecycle reaper ends: its
+`timed_out` write carries a `{"kind": "invocation"}` entry in
+`status_evidence_refs`, which a run's own deadline write does not, so the metric
+excludes a reaper-observed end time by that entry while a run that recorded its
+own timeout still counts. A scheduled fire writes its trigger type into `plugin`
 (`lionagi/studio/scheduler/engine.py`), so the stored-identity filters match a
 same-named plugin to those rows; correcting producer identity and historical rows
 is separate work. Last tracked use counts every matching recorded start, including

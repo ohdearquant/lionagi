@@ -495,7 +495,13 @@ The predicate is a lower bound only, so a row timestamped in the future is
 included rather than held back until its time arrives. Three of its members do
 not fit even that shape. `p95_latency_ms` needs a sorted
 sample, which SQLite has no percentile function for, so it fetches raw
-invocation durations and computes the percentile in Python.
+invocation durations and computes the percentile in Python. It excludes rows
+whose `ended_at` is an observation of a run being ended from outside: a cancelled
+row, whose end records when cleanup noticed it, and a row the lifecycle reaper
+ended. The reaper tags its rows with `{"kind": "invocation"}` in
+`status_evidence_refs` and no run-side terminal writer adds that entry, so the
+query both drops `cancelled` and reads that column to drop reaped rows; a run
+that recorded its own timeout stays in the sample.
 `github_poll_healthy_age_minutes` is a point-in-time gauge rather than a
 windowed aggregate, so it accepts `window_start` for signature parity and
 ignores it, reading "now" fresh inside the method.

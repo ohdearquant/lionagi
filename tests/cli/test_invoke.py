@@ -51,7 +51,7 @@ async def test_end_invocation_writes_terminal_status_and_ended_at_through_guard(
 
         def __init__(self):
             self.get_invocation = AsyncMock(side_effect=[existing, updated])
-            self.update_invocation = AsyncMock()
+            self.compare_and_set_invocation_node_metadata = AsyncMock(return_value=True)
             self.update_status = AsyncMock(return_value=True)
             type(self).instance = self
 
@@ -71,8 +71,10 @@ async def test_end_invocation_writes_terminal_status_and_ended_at_through_guard(
     )
 
     db = FakeStateDB.instance
-    db.update_invocation.assert_awaited_once_with(
-        "invocation-1", node_metadata={"kept": True, "added": "value"}
+    db.compare_and_set_invocation_node_metadata.assert_awaited_once_with(
+        "invocation-1",
+        expected={"kept": True},
+        merged={"kept": True, "added": "value"},
     )
     db.update_status.assert_awaited_once_with(
         "invocation",
@@ -273,6 +275,44 @@ def test_run_invoke_end_records_metadata_on_a_same_status_close(tmp_path, monkey
     assert row["node_metadata"] == {"kept": True, "result": "pr-url"}
 
 
+def test_run_invoke_end_same_status_without_metadata_exits_zero(tmp_path, monkeypatch) -> None:
+    """A same-status close with no ``--metadata`` has nothing left to record, so
+    it reports the stored status and exits 0 rather than refusing."""
+    import asyncio
+
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            await db.create_invocation(
+                {
+                    "id": "closed",
+                    "skill": "example",
+                    "started_at": 100.0,
+                    "ended_at": 200.0,
+                    "status": "completed",
+                    "node_metadata": {"kept": True},
+                }
+            )
+
+    asyncio.run(seed())
+
+    rc = run_invoke(_end_args(invocation_id="closed", status="completed", metadata=None))
+    assert rc == 0
+
+    async def read():
+        async with StateDB(db_path) as db:
+            return await db.get_invocation("closed")
+
+    row = asyncio.run(read())
+    assert row["status"] == "completed"
+    assert row["ended_at"] == 200.0
+    assert row["node_metadata"] == {"kept": True}
+
+
 def test_run_invoke_end_still_refuses_a_different_terminal_status(tmp_path, monkeypatch) -> None:
     """A close naming a different terminal status than the stored one is still
     refused: it does not overwrite the row another writer closed, and it does
@@ -320,3 +360,123 @@ def test_run_invoke_end_still_refuses_a_different_terminal_status(tmp_path, monk
     assert row["status"] == "cancelled"
     assert row["ended_at"] == 200.0
     assert row["node_metadata"] == {"kept": True}
+
+
+def test_same_status_close_merges_past_a_racing_closer(tmp_path, monkeypatch) -> None:
+    """A same-status close must not drop a payload another closer landed first.
+
+    The row is already ``completed``, so the close takes the same-status path:
+    it reads ``{"kept": true}`` and merges ``{"b": 2}``. Between that read and
+    its write, another closer lands ``{"a": 1}`` -- the window a whole-column
+    read-modify-write loses to. The merge carries the value it read in its
+    WHERE, so it re-reads on that miss and both keys survive.
+    """
+    import asyncio
+
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            await db.create_invocation(
+                {
+                    "id": "race",
+                    "skill": "example",
+                    "started_at": 100.0,
+                    "ended_at": 200.0,
+                    "status": "completed",
+                    "node_metadata": {"kept": True},
+                }
+            )
+
+    asyncio.run(seed())
+
+    real_cas = StateDB.compare_and_set_invocation_node_metadata
+    injected = False
+
+    async def cas_with_a_racing_landing(db, invocation_id, *, expected, merged):
+        nonlocal injected
+        if not injected:
+            injected = True
+            # The other closer's payload lands here, after this close read the
+            # row and before it writes.
+            async with StateDB(db_path) as other:
+                await other.execute(
+                    "UPDATE invocations SET node_metadata = ? WHERE id = ?",
+                    ('{"kept": true, "a": 1}', invocation_id),
+                )
+        return await real_cas(db, invocation_id, expected=expected, merged=merged)
+
+    monkeypatch.setattr(
+        StateDB,
+        "compare_and_set_invocation_node_metadata",
+        cas_with_a_racing_landing,
+    )
+
+    result = asyncio.run(_end_invocation("race", status="completed", metadata={"b": 2}))
+    assert injected
+    assert result.applied is True
+
+    async def read():
+        async with StateDB(db_path) as db:
+            return await db.get_invocation("race")
+
+    row = asyncio.run(read())
+    assert row["status"] == "completed"
+    assert row["ended_at"] == 200.0
+    assert row["node_metadata"] == {"kept": True, "a": 1, "b": 2}
+
+
+def test_run_invoke_end_same_status_reports_failure_when_the_merge_cannot_land(
+    tmp_path, monkeypatch
+) -> None:
+    """A same-status close whose metadata merge never lands must not exit 0: the
+    zero exit is the promise that the payload was saved."""
+    import asyncio
+
+    from lionagi.cli import invoke as invoke_mod
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            await db.create_invocation(
+                {
+                    "id": "closed",
+                    "skill": "example",
+                    "started_at": 100.0,
+                    "status": "completed",
+                    "node_metadata": {"kept": True},
+                }
+            )
+
+    asyncio.run(seed())
+
+    async def lost(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(invoke_mod, "_merge_invocation_metadata", lost)
+
+    records, logger, handler = _error_records()
+    try:
+        rc = run_invoke(
+            _end_args(invocation_id="closed", status="completed", metadata='{"result": "pr"}')
+        )
+    finally:
+        logger.removeHandler(handler)
+
+    assert rc == 1
+    message = " ".join(records)
+    assert "closed" in message
+    assert "--metadata" in message
+    assert "could not be saved" in message
+
+    async def read():
+        async with StateDB(db_path) as db:
+            return await db.get_invocation("closed")
+
+    assert asyncio.run(read())["node_metadata"] == {"kept": True}

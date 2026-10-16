@@ -3003,6 +3003,56 @@ class StateDB:
             "WHERE id = :id"
         )
 
+    @staticmethod
+    def _node_metadata_cas_predicate(dialect: str) -> str:
+        """A predicate matching a row whose ``node_metadata`` still reads as ``:expected``."""
+        if dialect == "sqlite":
+            # json() normalizes both sides of a parseable value, so a different
+            # spelling of the same document still matches; json_valid guards the
+            # decode, since json() raises on text that is not JSON.
+            return (
+                "(CASE WHEN json_valid(node_metadata) THEN json(node_metadata) "
+                "ELSE node_metadata END) IS "
+                "(CASE WHEN json_valid(:expected) THEN json(:expected) ELSE :expected END)"
+            )
+        return (
+            "((node_metadata IS NULL AND CAST(:expected AS text) IS NULL) "
+            " OR (node_metadata IS NOT NULL AND CAST(:expected AS text) IS NOT NULL "
+            "     AND node_metadata::jsonb = CAST(:expected AS jsonb)))"
+        )
+
+    async def compare_and_set_invocation_node_metadata(
+        self, invocation_id: str, *, expected: Any, merged: dict[str, Any]
+    ) -> bool:
+        """Write *merged* as an invocation's ``node_metadata`` if it still reads as *expected*.
+
+        A whole-column read-modify-write can land after another writer's own
+        merge and silently drop it, so the observed value rides in the WHERE:
+        a row that moved changes zero rows and reports ``False``, and the caller
+        re-reads and retries. *expected* is the value as a reader saw it: a
+        mapping compares in its normalized JSON text, so spacing and key order
+        do not matter, text that is not JSON compares as the text it is, and
+        NULL compares as NULL.
+        """
+        expected_text = (
+            None
+            if expected is None
+            else expected
+            if isinstance(expected, str)
+            else _json_dumps(expected)
+        )
+        now = time.time()
+        stmt = text(
+            "UPDATE invocations SET node_metadata = :merged, updated_at = :now "  # noqa: S608
+            f"WHERE id = :id AND {self._node_metadata_cas_predicate(self.dialect)}"
+        ).bindparams(bindparam("merged", type_=JSON))
+        async with self._tx() as conn:
+            result = await conn.execute(
+                stmt,
+                {"id": invocation_id, "merged": merged, "expected": expected_text, "now": now},
+            )
+        return result.rowcount != 0
+
     async def _merge_node_metadata(self, table: str, entity_id: str, patch: dict[str, Any]) -> None:
         """Shared body for the two node_metadata merges: validate the patch, then UPDATE *table*."""
         for key, value in patch.items():
@@ -4263,6 +4313,30 @@ class StateDB:
             "unreported_sessions": int(row["unreported_sessions"] or 0),
         }
 
+    @staticmethod
+    def _reaper_evidence_exclusion_sql(dialect: str) -> str:
+        """A predicate excluding rows whose terminal evidence the reaper wrote.
+
+        The reaper tags its rows with a ``{"kind": "invocation"}`` entry; a run's own terminal
+        writers do not. The entry lives in a free-form JSON array, so the predicate walks it and
+        compares the ``kind`` member of each object, guarding the JSON functions with validity
+        checks so a legacy non-JSON value cannot abort the whole metric query.
+        """
+        if dialect == "sqlite":
+            return (
+                "NOT EXISTS (SELECT 1 FROM json_each("
+                "CASE WHEN json_valid(status_evidence_refs) THEN status_evidence_refs ELSE '[]' END"
+                ") AS ev WHERE json_valid(ev.value) AND json_type(ev.value) = 'object' "
+                "AND json_extract(ev.value, '$.kind') = 'invocation')"
+            )
+        return (
+            "NOT EXISTS (SELECT 1 FROM jsonb_array_elements("
+            "CASE WHEN status_evidence_refs IS NULL "
+            "OR jsonb_typeof(status_evidence_refs::jsonb) <> 'array' THEN '[]'::jsonb "
+            "ELSE status_evidence_refs::jsonb END) AS ev "
+            "WHERE jsonb_typeof(ev) = 'object' AND ev ->> 'kind' = 'invocation')"
+        )
+
     # Threshold-alert metrics, studio-wide rather than scoped to a single schedule's runs. These are
     # the VALID_METRICS members one aggregate query answers, which is not all of them:
     # p95_latency_ms needs a sorted sample and github_poll_healthy_age_minutes is a point-in-time
@@ -4330,26 +4404,23 @@ class StateDB:
             return (time.time() - float(last_healthy)) / 60.0
 
         if metric == "p95_latency_ms":
-            # Cancellation end times record when the cancellation was observed, not the length
-            # of the work, so those rows are excluded: a cancelled row's ended_at may mark a
-            # delayed cleanup. The lifecycle reaper's timed_out rows are NOT excluded, even
-            # though its ended_at is the same kind of observation time for a stale run. What the
-            # row carries is not a status or identity column this metric can key on: both the
-            # reaper and the run's own deadline write reason code run.timed_out.deadline, and the
-            # reaper's basis (deadline, action kind) rides only status_transitions.metadata. Its
-            # status_evidence_refs does differ by producer ([{"kind": "invocation"}] from the
-            # reaper, [] from a run's own deadline), but that field is a free-form JSON blob that
-            # every terminal writer shapes for itself, not a declared key a dialect-neutral
-            # status query filters on. So a run started long before it was reaped still enters
-            # this sample at its full observed age.
+            # Only an end the run itself measured counts. A cancellation's ended_at records when
+            # the cancellation was observed, so a cancelled row's age can be a delayed cleanup
+            # rather than anything that ran -- dropped by status. A row the lifecycle reaper ends
+            # is the same kind of outside observation, and its timed_out status and
+            # run.timed_out.deadline reason code are shared with a run that hit its own deadline,
+            # so nothing on those two columns tells the two apart. What does separate them is the
+            # reaper's {"kind": "invocation"} entry in status_evidence_refs, which no run-side
+            # invocation terminal writer adds; that column is read here in the same query.
             async with self._read() as conn:
                 rows = (
                     (
                         await conn.execute(
                             text(
-                                "SELECT (ended_at - started_at) AS latency_sec FROM invocations "
+                                "SELECT (ended_at - started_at) AS latency_sec FROM invocations "  # noqa: S608
                                 "WHERE started_at >= :window_start AND ended_at IS NOT NULL "
-                                "AND ended_at >= started_at AND status != 'cancelled'"
+                                "AND ended_at >= started_at AND status != 'cancelled' "
+                                f"AND {self._reaper_evidence_exclusion_sql(self.dialect)}"
                             ),
                             {"window_start": window_start},
                         )

@@ -625,12 +625,15 @@ li invoke end "$INV" --status completed
 
 `end` closes a *running* invocation, and it records `--metadata` on a row an
 earlier close already put in the requested status: that same-status close merges
-the payload without moving the stored status or end time. An `end` that names a
-*different* status than the stored one — the row was cancelled, reaped, or closed
-by a sibling launch while the work ran — records neither the requested `--status`
-nor its `--metadata`. That refusal is reported on stderr and **exits 1**; the
-stored status another writer recorded is left exactly as it is. Treat a zero exit
-as proof the status and metadata were saved.
+the payload without moving the stored status or end time, and exits 0; the same
+close with no `--metadata` also exits 0, since there is nothing left to record.
+The merge is retried if another closer writes the row meanwhile. An `end` that
+names a *different* status than the stored one — the row was cancelled, reaped,
+or closed by a sibling launch while the work ran — records neither the requested
+`--status` nor its `--metadata`. That refusal is reported on stderr and **exits
+1**; so is a same-status close whose `--metadata` could not be merged. Either
+way the stored status another writer recorded is left exactly as it is. Treat a
+zero exit as proof the status and metadata were saved.
 
 ---
 
