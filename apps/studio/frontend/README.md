@@ -82,9 +82,9 @@ include chains, a long chord, isolated-node caps, node caps with chain edges,
 fan-out, fan-in with many dummies, and complete two- and three-layer components.
 Padding isolated nodes makes the work-bound fixtures reach each exact limit.
 
-Node 26.7.0, Dagre 0.8.5, Darwin arm64, Apple M2 Max; memory pressure was 2
-before each phase. Other machine load was not controlled. These are sampled
-observations, not a universal worst-case proof or a browser-frame measurement:
+Node 26.7.0, Dagre 0.8.5, Darwin arm64, Apple M2 Max. Other machine load was
+not controlled. These are sampled observations, not a universal worst-case
+proof or a browser-frame measurement:
 
 Each row is one pass except the last, which is the worst observation across the
 two passes that measured it: the sweep alone gave it a largest median of
@@ -105,8 +105,9 @@ measured 128-isolated-node cap and exact 192-work cases. This does not imply
 that node 129 is inherently slow, or independently optimize the two caps. An
 additional 39-node long-chord control at work 191 had an 18.671 ms maximum,
 further illustrating that the caps do not promise a 16 ms frame. The raw
-per-sample timings are not committed; each row above is the summary the
-benchmark prints.
+per-sample timings are not committed; each row above is one printed summary,
+except the 240/160 row, which is the worse of that pair's two printed summaries
+(one from each pass).
 
 Wrapping and folding were re-checked alongside admission and remain downstream
 geometry choices. Seven fan-out siblings occupy one column (566 × 747 including

@@ -226,6 +226,12 @@ export function foldWideGraph(nodes: Node[], edges: Edge[] = []): Node[] {
   // boundary is safe, matching the pre-edge-aware behavior exactly.
   const edgeAware = edges.length > 0;
   const { outDeg, inDeg } = computeDegrees(nodes, edges);
+  // Which column each node sits in, as an index into `xs`, so an edge can be
+  // tested against a boundary without comparing pixel positions.
+  const columnById = new Map<string, number>();
+  for (const [index, x] of xs.entries()) {
+    for (const node of byX.get(x) ?? []) columnById.set(node.id, index);
+  }
   const isSafeBreak = (beforeX: number, afterX: number): boolean => {
     const beforeNodes = byX.get(beforeX) ?? [];
     const afterNodes = byX.get(afterX) ?? [];
@@ -234,7 +240,25 @@ export function foldWideGraph(nodes: Node[], edges: Edge[] = []): Node[] {
     const b = afterNodes[0]!;
     const aOut = outDeg.get(a.id) ?? [];
     const bIn = inDeg.get(b.id) ?? [];
-    return aOut.length === 1 && aOut[0] === b.id && bIn.length === 1 && bIn[0] === a.id;
+    if (!(aOut.length === 1 && aOut[0] === b.id && bIn.length === 1 && bIn[0] === a.id)) {
+      return false;
+    }
+    // ...and no other edge may cross this boundary. Both boundary columns hold
+    // one node, so the only way left for an edge to cross without touching them
+    // is to start left of the break and end right of it: a chord. Breaking there
+    // would fold that chord onto the next row and draw a real dependency as a
+    // row boundary, so refuse the break instead.
+    const cut = columnById.get(a.id)!;
+    for (const edge of edges) {
+      const sourceColumn = columnById.get(edge.source);
+      const targetColumn = columnById.get(edge.target);
+      if (sourceColumn === undefined || targetColumn === undefined) continue;
+      if (sourceColumn === cut && targetColumn === cut + 1) continue;
+      const left = Math.min(sourceColumn, targetColumn);
+      const right = Math.max(sourceColumn, targetColumn);
+      if (left <= cut && right >= cut + 1) return false;
+    }
+    return true;
   };
 
   const rows: number[][] = [];
@@ -388,18 +412,22 @@ export function enforceMinRankGap(nodes: Node[], minGap = 6): Node[] {
 
 // A folded LR graph re-enters each row at its left edge, so the edge that leaves
 // the end of a row for the start of the next runs backwards on the canvas: it is
-// the one edge the fold itself created. That edge is still a real dependency in
-// the graph, but on screen it is doing what the wrap at the end of a line of
-// text does, and drawing it like the others makes the reader look for a
-// dependency behind them. Detected from the final geometry rather than from the
-// fold's own bookkeeping, so it describes what the edge actually does on the
+// the edge the fold's own row boundary turned around. A break is taken only
+// where the chain link is the one edge crossing it (see isSafeBreak), so no
+// other edge is ever folded across a row boundary. That edge is still a real
+// dependency in the graph, but on screen it is doing what the wrap at the end of
+// a line of text does, and drawing it like the others makes the reader look for
+// a dependency behind them. Detected from the final geometry rather than from
+// the fold's own bookkeeping, so it describes what the edge actually does on the
 // canvas whichever pass moved the nodes.
 //
 // Geometry alone is not enough to tell that edge apart from a dependency that
 // points backwards on its own. A malformed graph — a cycle, or a back edge
 // within a rank — reaches the fallback, whose ranks are a placement convention
 // rather than a dependency order, and there the edge really is drawn backwards.
-// Such an edge must not read as a row boundary, so it is excluded by rank below.
+// Such an edge must not read as a row boundary, so it is excluded by rank below:
+// a marked edge both runs backwards and advances in rank, which a row boundary
+// does and a dependency that points backwards does not.
 //
 // Only LR folds, so only LR has a return sweep to mark. A TB layout stacks
 // ranks along the cross axis, where a backwards edge is an ordering choice
@@ -408,7 +436,7 @@ export function markContinuationEdges(
   nodes: Node[],
   edges: Edge[],
   direction: "LR" | "TB" = "LR",
-  ranks?: Map<string, number>,
+  ranks: Map<string, number>,
 ): Edge[] {
   if (direction !== "LR") return edges;
 
@@ -422,8 +450,8 @@ export function markContinuationEdges(
     // An endpoint the layout never placed says nothing about direction.
     if (sourceX === undefined || targetX === undefined) return edge;
     if (targetX >= sourceX) return edge;
-    const sourceRank = ranks?.get(edge.source);
-    const targetRank = ranks?.get(edge.target);
+    const sourceRank = ranks.get(edge.source);
+    const targetRank = ranks.get(edge.target);
     if (sourceRank !== undefined && targetRank !== undefined && targetRank <= sourceRank) {
       return edge;
     }
@@ -561,17 +589,34 @@ function placeAsapRanks(
   return nodes.map((node) => ({ ...node, position: positions.get(node.id)! }));
 }
 
+// The canvas can hand the layout two records for one id. Every pass below keys
+// by id - the rank map, graphlib's node map, the wrap, the gap sweep - so the
+// second record would take a slot of its own, and the gap sweep would then push
+// it into a neighbouring column on top of another card. Keep the first record
+// per id, the one the caller listed first, and lay out one slot per id.
+function dedupeById(nodes: Node[]): Node[] {
+  const seen = new Set<string>();
+  const out: Node[] = [];
+  for (const node of nodes) {
+    if (seen.has(node.id)) continue;
+    seen.add(node.id);
+    out.push(node);
+  }
+  return out.length === nodes.length ? nodes : out;
+}
+
 export function getLayoutedElements(
   nodes: Node[],
   edges: Edge[],
   direction: "LR" | "TB" = "LR",
 ): LayoutedGraph {
-  const ranks = computeNodeDepths(nodes, edges);
+  const uniqueNodes = dedupeById(nodes);
+  const ranks = computeNodeDepths(uniqueNodes, edges);
   const maxDepth = ranks.size ? Math.max(...ranks.values()) : 0;
 
   let layoutedNodes: Node[];
-  if (!fitsDagreBudget(nodes, edges, ranks)) {
-    layoutedNodes = placeAsapRanks(nodes, ranks, direction, rankSepForDepth(maxDepth));
+  if (!fitsDagreBudget(uniqueNodes, edges, ranks)) {
+    layoutedNodes = placeAsapRanks(uniqueNodes, ranks, direction, rankSepForDepth(maxDepth));
   } else {
     const g = new dagre.graphlib.Graph();
     g.setDefaultEdgeLabel(() => ({}));
@@ -634,7 +679,7 @@ export function getLayoutedElements(
 
     dagre.layout(g);
 
-    layoutedNodes = nodes.map((node) => {
+    layoutedNodes = uniqueNodes.map((node) => {
       const pos = g.node(node.id);
       // dagre reports a centre, so each node is offset by its OWN height. Using a
       // shared constant here would re-introduce the overlap from the other side.

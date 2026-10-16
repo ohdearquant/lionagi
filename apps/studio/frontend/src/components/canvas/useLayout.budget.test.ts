@@ -259,6 +259,74 @@ describe("bounded graph layout", () => {
     assertNoOverlap(result.nodes);
   });
 
+  it("refuses a fold break that a forward chord crosses, so the chord is never a continuation", () => {
+    // One forward chord across a ten-node chain. The chord spans the column
+    // boundary the fold would otherwise break at (c4|c5), so that break is
+    // refused and the row ends at the next boundary no other edge spans
+    // (c6|c7). The chord stays inside one row and reads forward; the only edge
+    // drawn backwards, and so the only edge marked, is the row boundary the
+    // fold actually created.
+    const ids = Array.from({ length: 10 }, (_, index) => `c${index}`);
+    const nodes = ids.map(node);
+    const edges = ids.slice(1).map((id, index) => edge(ids[index], id));
+    edges.push(edge("c3", "c6"));
+    const result = getLayoutedElements(nodes, edges, "LR");
+    const x = new Map(result.nodes.map((entry) => [entry.id, entry.position.x]));
+    const backwards = result.edges
+      .filter((entry) => x.get(entry.target)! < x.get(entry.source)!)
+      .map((entry) => entry.id);
+    const marked = result.edges
+      .filter((entry) => entry.data?.continuation)
+      .map((entry) => entry.id);
+    // The chord runs forward on the canvas, not folded across a row boundary.
+    expect(x.get("c3")!).toBeLessThan(x.get("c6")!);
+    expect(marked).toEqual(["c6-c7"]);
+    // Every edge the fold did turn around is marked, and nothing else is.
+    expect(backwards).toEqual(marked);
+    assertNoOverlap(result.nodes);
+  });
+
+  it("keeps one slot per node id, so a duplicated record cannot overlap in TB", () => {
+    // The canvas can hand the layout two records for one id. Both would take a
+    // slot of their own, and the gap pass would then push the second one down
+    // into the neighbouring column on top of another card. The first record is
+    // the one kept, so the 150 records collapse to the 149 distinct ids and no
+    // two cards overlap.
+    const ids = Array.from({ length: 149 }, (_, index) => `n|${index}`);
+    ids[0] = "é|0";
+    const nodes = [...ids.map(node), node(ids[0])];
+    const edges = ids.slice(1).map((id, index) => edge(ids[index], id));
+    const result = getLayoutedElements(nodes, edges, "TB");
+    assertNoOverlap(result.nodes);
+    expect(result.nodes.map((entry) => entry.id).sort()).toEqual([...ids].sort());
+    expect(new Set(result.nodes.map((entry) => entry.id)).size).toBe(result.nodes.length);
+  });
+
+  it("keeps one slot per node id when a generated graph duplicates a record", () => {
+    // The same property on a graph whose ids mix label shapes and whose parents
+    // spread across ranks, so the duplicate lands in a rank that already holds
+    // other cards rather than on a chain's end.
+    let state = 1;
+    const next = () => {
+      state = (state + 0x6d2b79f5) | 0;
+      let t = Math.imul(state ^ (state >>> 15), 1 | state);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const labels = ["é", "a", "Z", "Ω", "漢字", "😀", "~", "2", "10", "1", "b", "c", "d", "e"];
+    const ids = Array.from(
+      { length: 149 },
+      (_, index) => `${labels[Math.floor(next() * labels.length)]}|${index}`,
+    );
+    ids[0] = "é|0";
+    const nodes = [...ids.map(node), node(ids[0])];
+    const edges = ids.slice(1).map((id, index) => edge(ids[Math.floor(next() * index)], id));
+    const result = getLayoutedElements(nodes, edges, "TB");
+    assertNoOverlap(result.nodes);
+    expect(result.nodes.map((entry) => entry.id).sort()).toEqual([...ids].sort());
+    expect(new Set(result.nodes.map((entry) => entry.id)).size).toBe(result.nodes.length);
+  });
+
   it("keeps chain folding and real continuation edges in the bounded path", () => {
     const layout = vi.spyOn(dagre, "layout");
     const { nodes, edges } = chain(111);

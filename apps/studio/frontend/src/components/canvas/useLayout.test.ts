@@ -9,6 +9,8 @@
  * instead of the arithmetic that happens to produce it.
  */
 import { describe, it, expect } from "vitest";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import type { Node, Edge } from "reactflow";
 import {
   computeNodeDepths,
@@ -1074,22 +1076,50 @@ describe("markContinuationEdges — the fold's return sweep is not a dependency"
     source,
     target,
   });
+  const ranksOf = (...entries: [string, number][]) => new Map(entries);
 
   it("marks an edge whose target was folded onto the row below its source", () => {
-    const marked = markContinuationEdges([at("a", 1400), at("b", 0)], [link("a", "b")]);
+    const marked = markContinuationEdges(
+      [at("a", 1400), at("b", 0)],
+      [link("a", "b")],
+      "LR",
+      ranksOf(["a", 0], ["b", 1]),
+    );
     expect(marked[0].data).toMatchObject({ continuation: true });
   });
 
   it("leaves a forward edge alone, which is every edge in an unfolded LR graph", () => {
     const edges = [link("a", "b")];
-    const marked = markContinuationEdges([at("a", 0), at("b", 300)], edges);
+    const marked = markContinuationEdges(
+      [at("a", 0), at("b", 300)],
+      edges,
+      "LR",
+      ranksOf(["a", 0], ["b", 1]),
+    );
+    expect(marked[0].data?.continuation).toBeUndefined();
+  });
+
+  it("leaves a backwards edge alone when its ranks do not advance", () => {
+    // A cyclic fallback's ranks are a placement convention, not a dependency
+    // order, so an edge that runs backwards there is not a fold boundary.
+    const marked = markContinuationEdges(
+      [at("a", 1400), at("b", 0)],
+      [link("a", "b")],
+      "LR",
+      ranksOf(["a", 5], ["b", 2]),
+    );
     expect(marked[0].data?.continuation).toBeUndefined();
   });
 
   it("does not mark an edge between two nodes at the same x", () => {
     // Equal x is not backwards. Marking it would put a continuation inside a
     // wrapped rank's grid column, where nothing wrapped.
-    const marked = markContinuationEdges([at("a", 500), at("b", 500)], [link("a", "b")]);
+    const marked = markContinuationEdges(
+      [at("a", 500), at("b", 500)],
+      [link("a", "b")],
+      "LR",
+      ranksOf(["a", 0], ["b", 1]),
+    );
     expect(marked[0].data?.continuation).toBeUndefined();
   });
 
@@ -1098,26 +1128,49 @@ describe("markContinuationEdges — the fold's return sweep is not a dependency"
     // a fresh array each time would invalidate memoized edges for no reason.
     const edges = [link("a", "b")];
     const nodes = [at("a", 0), at("b", 300)];
-    expect(markContinuationEdges(nodes, edges)).toBe(edges);
+    expect(markContinuationEdges(nodes, edges, "LR", ranksOf(["a", 0], ["b", 1]))).toBe(edges);
   });
 
   it("keeps the data a marked edge already carried", () => {
     const edges: Edge[] = [{ ...link("a", "b"), data: { mode: "code", rankDistance: 4 } }];
-    const marked = markContinuationEdges([at("a", 1400), at("b", 0)], edges);
+    const marked = markContinuationEdges(
+      [at("a", 1400), at("b", 0)],
+      edges,
+      "LR",
+      ranksOf(["a", 0], ["b", 1]),
+    );
     expect(marked[0].data).toMatchObject({ mode: "code", rankDistance: 4, continuation: true });
   });
 
   it("says nothing about an edge whose endpoints the layout never placed", () => {
     // An unplaced endpoint has no x, so it has no direction either. Guessing
     // one would mark edges in the editor's fresh-connect path, which never folded.
-    const marked = markContinuationEdges([at("a", 1400)], [link("a", "ghost")]);
+    const marked = markContinuationEdges(
+      [at("a", 1400)],
+      [link("a", "ghost")],
+      "LR",
+      ranksOf(["a", 0]),
+    );
     expect(marked[0].data?.continuation).toBeUndefined();
   });
 
   it("does not mutate the edges it was given", () => {
     const edges = [link("a", "b")];
-    markContinuationEdges([at("a", 1400), at("b", 0)], edges);
+    markContinuationEdges([at("a", 1400), at("b", 0)], edges, "LR", ranksOf(["a", 0], ["b", 1]));
     expect(edges[0].data).toBeUndefined();
+  });
+});
+
+describe("markContinuationEdges — the rank map is required", () => {
+  it("declares ranks as a required parameter, so the rank guard cannot be dropped by omission", () => {
+    // The guard only runs when the layout hands over its ranks. A caller that
+    // could omit them would silently mark every backwards edge on a cyclic
+    // fallback again, so the parameter is required rather than optional.
+    const src = fs.readFileSync(path.join(__dirname, "useLayout.ts"), "utf-8");
+    const signature = src.match(/export function markContinuationEdges\(([\s\S]*?)\): Edge\[\]/);
+    expect(signature).not.toBeNull();
+    expect(signature![1]).toMatch(/ranks: Map<string, number>/);
+    expect(signature![1]).not.toMatch(/ranks\?:/);
   });
 });
 
