@@ -356,9 +356,9 @@ def _detect_degraded(
     if primary_session.get("num_turns") is not None:
         return False, None
     # The stored phase is deliberately not quoted here: a terminal row can still
-    # carry one when its writer was interrupted before the terminal commit, or
-    # when the row predates the phase clear, so it is not evidence about this
-    # record. The num_turns gap above is the signal.
+    # carry one when the row predates the phase clear, or when a writer that does
+    # not clear it ended the run, so it is not evidence about this record. The
+    # num_turns gap above is the signal.
     return True, f"status={status!r} but run-usage metrics (num_turns) were never recorded"
 
 

@@ -15,12 +15,22 @@ For the commands that act on the answer, `li o ctl pause`, `resume` and `msg`, t
 is too wide. Before the `T` that follows the date a run id is all digits, so `2` or
 `2026` queued a control on whichever single recorded run started with it. These
 commands now take a run-id prefix only once it reaches the `T` (`YYYYMMDDT` and
-beyond). Such a prefix cannot begin a hexadecimal key, so it can collide only with
-other run ids, which the run-id search already refuses as ambiguous. An eight-digit
+beyond). Such a prefix cannot begin a hexadecimal key, so within the run-id space
+it can collide only with other run ids, which the run-id search already refuses as
+ambiguous; it can also begin a self-chosen session, invocation, play or branch id,
+and a string that begins both spaces is refused as ambiguous rather than resolved
+to either. An eight-digit
 date is still read as a printed hexadecimal prefix of a session, invocation or
-play, never as a run-id prefix. `li o ctl status`, `li wait` and checkpoint
-resolution keep the prefix of any length: status acts on nothing, and the other
-two are outside this amendment.
+play, never as a run-id prefix. This amendment is scoped to the commands that
+queue a control against a live run: `li o ctl status`, `li wait` and checkpoint
+resolution are left outside it and keep the prefix of any length. Status acts on
+nothing, so it is inert. `li wait` blocks on an answer. Checkpoint resolution is
+not inert — `li o flow --resume` re-executes what it resolves, so a short run-id
+prefix there carries the same hazard these commands had, and reading a bare date
+as one can resolve a lone run directory. That path is deliberately not changed
+here: it resolves a persisted checkpoint rather than a live control queue, it
+lives in different code, and narrowing it is its own decision rather than a side
+effect of this amendment.
 
 The branch-id fallback now refuses a prefix that also begins a recorded run id, as
 the entity search already did under Decision 1; before, a branch hit returned

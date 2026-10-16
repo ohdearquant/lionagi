@@ -341,11 +341,13 @@ unambiguous 8-character hex prefix, or an unambiguous prefix of a run ID (the ID
 Any other string is looked up as an exact id first; a string shorter than eight
 characters or carrying a non-hex character is treated as a prefix only when it
 reaches that `T` and begins a recorded run ID, and one that begins both a run ID
-and another ID is refused as ambiguous. A number, a date or a self-chosen label
-therefore cannot act on a different run; an eight-hex label is a prefix like any
-other printed id. Shorter prefixes remain available to `status`, which does
-not act on a run. An exact stored ID need not be a UUID. `--invocation` must name an existing
-invocation registered with `li invoke start`; unknown values fail before flow
+and another ID is refused as ambiguous. A run-id prefix that stops short of the
+`T`, such as `2` or `2026`, therefore cannot act on a run; an eight-character
+hex string is read as a printed id prefix, so `20260801` acts on the session
+whose printed id it begins, exactly as any other eight-hex prefix does. Shorter
+prefixes remain available to `status`, which does not act on a run. An exact
+stored ID need not be a UUID. `--invocation` must name an existing invocation
+registered with `li invoke start`; unknown values fail before flow
 setup/planning or background launch, rather than silently disabling persistence.
 Both `li o flow` and `li o fanout` check it before anything is spawned. The flag
 does not register an alias.
@@ -359,20 +361,26 @@ stopped, and older flows without control-delivery tracking, refuse new controls.
 The stop marker is published before the poll loop stops, and enqueue re-checks it
 in the same statement that inserts the control, so a run that has lost its poller
 refuses rather than queueing against a consumer that is gone. A control admitted
-just before the marker lands can miss the last poll; when the run ends, every
-control still queued and unclaimed is closed as rejected rather than left
-pending. Marker writes are best-effort: a failed stop-marker write can leave a
-stale active marker, so enqueue is never a delivery guarantee. Check `status` for
-application.
+just before the marker lands can miss the last poll; when the run's teardown
+writes its terminal status, every control still queued and unclaimed is closed as
+rejected rather than left pending. Teardown also closes them if a later teardown
+step fails after that status write. Only that teardown path closes them: a process
+killed outright runs no teardown, and neither `li kill` nor a reaper sweeps the
+queue, so a control queued in that window stays pending and `li o ctl status`
+renders it as never landed. `li o ctl resolve` closes only a row a consumer
+claimed and never reported back. Marker writes are best-effort: a failed
+stop-marker write can leave a stale active marker, so enqueue is never a delivery
+guarantee. Check `status` for application.
 
 Pause/resume acts at operation boundaries before the concurrency limiter.
 Operations already past the pause gate, including those waiting for limiter
 capacity, may still start; running operations are not interrupted. Messages affect
 only operations prepared after delivery and are rejected if none remain pending.
 Applied pause/resume writes `paused`/`executing` with one retry after a phase-write
-failure; repeated write failure can leave telemetry stale. Every writer that ends a
-session clears `current_phase` in the same statement as the terminal status, and
-reads still hide a stored phase on a terminal row. Flow runs are sessions: use
+failure; repeated write failure can leave telemetry stale. The paths that end a
+flow run clear `current_phase` in the same statement as the terminal status; a
+legacy or out-of-band terminal row can keep a stored phase, and reads hide one on
+a terminal row. Flow runs are sessions: use
 `li monitor --type session`, or `--type invocation` for registered invocations.
 
 ---

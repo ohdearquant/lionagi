@@ -210,7 +210,7 @@ async def _enqueue_control_inner(
             if after.get("status") in SESSION_TERMINAL_STATUSES:
                 reason = f"reached terminal status {after['status']}"
             elif after.get("status") != "running":
-                reason = f"is {after.get('status') or 'missing'}, not running,"
+                reason = f"is {after.get('status') or 'missing'}, not running"
             elif kind in {"flow", "play"} and _flow_control_poller_state(after) not in {
                 "pending",
                 "active",

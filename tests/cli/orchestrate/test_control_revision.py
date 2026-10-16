@@ -455,6 +455,198 @@ async def test_dag_poller_marker_lifecycle_and_failed_stop_write(
         assert "stopped" in output
 
 
+async def test_teardown_opens_the_store_writable_only_with_a_control_to_close(
+    db_path, tmp_path, monkeypatch
+):
+    """A run that queued no control must not take the writer lock at exit.
+
+    The sweep that closes queued controls needs a writable handle, and a
+    writable open takes the store's writer lock and re-runs the schema
+    reconciliation. Most runs queue no control, so the common exit must ask
+    with a read-only handle first and only reopen writable when there is a row
+    to close.
+    """
+    env = _make_env(tmp_path)
+    env.run.run_id = "no-control"
+    env.run.write_manifest = Mock()
+    env._run_manifest = {}
+    env.orc_profile_name = None
+
+    opens: list[bool] = []
+    real_init = StateDB.__init__
+
+    def record_init(self, *args, **kwargs):
+        opens.append(bool(kwargs.get("readonly", False)))
+        return real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(StateDB, "__init__", record_init)
+
+    async def start(env, **kwargs):
+        db = StateDB(db_path)
+        await db.open()
+        sid = await _make_session(db)
+        await db.update_session(sid, invocation_kind="flow")
+        await db.merge_session_node_metadata(sid, kwargs["extra_node_metadata"])
+        row = await db.get_session(sid)
+        env._live_persist = {
+            "db": db,
+            "session_id": sid,
+            "session_prog_id": row["progression_id"],
+            "shared_db_registered": False,
+        }
+        env.test_session_id = sid
+
+    async def inner(*args, **kwargs):
+        return "done"
+
+    monkeypatch.setattr(flow, "setup_orchestration", AsyncMock(return_value=env))
+    monkeypatch.setattr(flow, "start_live_persist", start)
+    monkeypatch.setattr(flow, "_run_flow_inner", inner)
+    monkeypatch.setattr(
+        "lionagi.state.completion_evidence.check_completion_evidence",
+        lambda cwd: {"checked": False},
+    )
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.register_run_notify_outcome_scope",
+        lambda *args, **kwargs: None,
+    )
+    opens.clear()
+    result, _status = await flow._run_flow("fake/model", "work")
+    # Snapshot before the verification open below, which is itself writable.
+    teardown_opens = list(opens)
+
+    assert result == "done"
+    async with StateDB(db_path) as db:
+        assert await db.list_pending_session_controls(env.test_session_id) == []
+    assert True in teardown_opens, "teardown should probe with a read-only handle"
+    assert False not in teardown_opens[teardown_opens.index(True) :], (
+        "a run with no queued control must not open the store writable at exit"
+    )
+
+
+async def test_teardown_closes_controls_even_when_its_status_write_raises(
+    db_path, tmp_path, monkeypatch
+):
+    """A teardown that raises after its terminal commit still closes queued controls.
+
+    The session's terminal status is what makes a queued control undeliverable,
+    and it can be written before a later teardown step fails (for instance the
+    run-manifest write). The close must not be skipped by that failure, or the
+    control sits pending against a consumer that is already gone.
+    """
+    env = _make_env(tmp_path)
+    env.run.run_id = "raising-teardown"
+    env.run.write_manifest = Mock()
+    env._run_manifest = {}
+    env.orc_profile_name = None
+
+    real_stop = flow.stop_live_persist
+
+    async def start(env, **kwargs):
+        db = StateDB(db_path)
+        await db.open()
+        sid = await _make_session(db)
+        await db.update_session(sid, invocation_kind="flow")
+        await db.merge_session_node_metadata(sid, kwargs["extra_node_metadata"])
+        row = await db.get_session(sid)
+        env._live_persist = {
+            "db": db,
+            "session_id": sid,
+            "session_prog_id": row["progression_id"],
+            "shared_db_registered": False,
+        }
+        env.test_session_id = sid
+
+    async def inner(*args, **kwargs):
+        _output, rc = await _enqueue_control_inner(
+            entity_id=env.test_session_id, verb="pause", payload=None
+        )
+        assert rc == 0
+        return "done"
+
+    async def stop_then_raise(env, **kwargs):
+        await real_stop(env, **kwargs)
+        raise OSError("run manifest write failed")
+
+    monkeypatch.setattr(flow, "setup_orchestration", AsyncMock(return_value=env))
+    monkeypatch.setattr(flow, "start_live_persist", start)
+    monkeypatch.setattr(flow, "stop_live_persist", stop_then_raise)
+    monkeypatch.setattr(flow, "_run_flow_inner", inner)
+    monkeypatch.setattr(
+        "lionagi.state.completion_evidence.check_completion_evidence",
+        lambda cwd: {"checked": False},
+    )
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.register_run_notify_outcome_scope",
+        lambda *args, **kwargs: None,
+    )
+    with pytest.raises(OSError, match="run manifest write failed"):
+        await flow._run_flow("fake/model", "work")
+    async with StateDB(db_path) as db:
+        session = await db.get_session(env.test_session_id)
+        assert session["status"] == "completed"
+        assert await db.list_pending_session_controls(env.test_session_id) == []
+        controls = await db.fetch_all(
+            "SELECT result FROM session_controls WHERE session_id = ?",
+            (env.test_session_id,),
+        )
+    assert len(controls) == 1
+    assert controls[0]["result"].startswith("rejected: run reached terminal status")
+
+
+async def test_marker_write_error_is_swallowed_without_raising(tmp_path, monkeypatch, caplog):
+    """A store error on the marker write is telemetry, not a run failure.
+
+    The marker is best-effort: a busy store or a failed statement must be
+    reported and left behind, never propagated out of the bounded write, or a
+    telemetry write would end the run it describes.
+    """
+    env = _make_env(tmp_path, live_persist={"db": object(), "session_id": "s"})
+
+    async def raises(db, session_id, patch):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(flow, "_persist_node_metadata_patch", raises)
+    warnings: list[str] = []
+    monkeypatch.setattr(flow, "_warn", warnings.append)
+
+    with caplog.at_level("DEBUG", logger="lionagi.cli.orchestrate.flow"):
+        await flow._persist_control_poller_state_bounded(env, "stopped")
+
+    assert not warnings, warnings
+    assert any("could not be persisted" in record.message for record in caplog.records), (
+        "a failed marker write must be recorded, not dropped silently"
+    )
+
+
+async def test_marker_write_is_cancelled_when_it_outlives_its_budget(tmp_path, monkeypatch):
+    """A marker write that never returns must be cancelled, not left running.
+
+    A write left running holds the store's write lock, and teardown's own
+    status write is queued behind it, so the run's teardown would wait on a
+    wedged store it was told it would not wait on. The bounded write cancels
+    the write at its budget and records that the marker may be stale.
+    """
+    env = _make_env(tmp_path, live_persist={"db": None, "session_id": "s"})
+
+    async def never_returns(db, session_id, patch):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(flow, "_persist_node_metadata_patch", never_returns)
+    warnings: list[str] = []
+    monkeypatch.setattr(flow, "_warn", warnings.append)
+    # The env carries a db handle only so the marker path is entered; the write
+    # itself is replaced above, so the value is never opened.
+    env._live_persist = {"db": object(), "session_id": "s"}
+    monkeypatch.setattr(flow, "_DRAIN_GRACE_SECONDS", 0.05)
+
+    task = asyncio.create_task(flow._persist_control_poller_state_bounded(env, "stopped"))
+    await asyncio.wait({task}, timeout=2)
+
+    assert task.done(), "the bounded marker write must return, not await a wedged store"
+    assert any("marker write was cancelled after its budget" in w for w in warnings), warnings
+
+
 @pytest.mark.parametrize("route", ["compatibility", "service"])
 async def test_terminal_phase_allowlist_does_not_admit_unrelated_field(db_path, route):
     from lionagi.state.lifecycle import ActorRecord, ReasonRecord, TransitionCommand

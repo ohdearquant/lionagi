@@ -263,19 +263,53 @@ async def _persist_control_poller_state(env, state: str) -> None:
             logger.debug("control poller state %s could not be persisted: %s", state, exc)
 
 
+async def _cancel_poller_marker_write(write: _asyncio.Task, reason: str) -> None:
+    """Cancel a still-running marker write and give it the drain's grace period.
+
+    A marker write left running is not free: it holds the store when it is the
+    writer, and teardown's own status write is queued behind that lock, so the
+    write is cancelled here rather than abandoned. A write that ignores its
+    cancel is abandoned after the grace period and reported, as one segment
+    write would be; this never raises.
+    """
+    if write.done():
+        return
+    write.cancel()
+    # The deadline scope catches its own expiry; a cancellation from further out
+    # is left to propagate, so this never swallows one that was not its to take.
+    with move_on_after(_DRAIN_GRACE_SECONDS):
+        await _asyncio.wait({write})
+    if not write.done():
+        _warn(
+            f"control-poller marker write was abandoned after its budget ({reason}); it may still hold the store"
+        )
+    else:
+        _warn(
+            f"control-poller marker write was cancelled after its budget ({reason}); the marker may be stale until a later write lands"
+        )
+
+
 async def _persist_control_poller_state_bounded(env, state: str) -> None:
     """Best-effort marker write, bounded so a wedged store cannot hold the caller.
 
     The marker is telemetry, like every other node_metadata write, so it gets
     the same budget the drain gives one segment-metadata write. A write still
-    running at the budget is left to finish on its own and reported, not
-    awaited: teardown and the run's own start must not be held by a store
-    wedged mid-write.
+    running at the budget is cancelled and given the drain's grace period to
+    unwind, because leaving it running would let it hold the store's write lock
+    past the budget, and teardown's own status write is queued behind it. A
+    write that ignores the cancel is abandoned and reported, not awaited.
     """
     write = _asyncio.ensure_future(_persist_control_poller_state(env, state))
-    _done, pending = await _asyncio.wait({write}, timeout=_DRAIN_GRACE_SECONDS)
+    try:
+        _done, pending = await _asyncio.wait({write}, timeout=_DRAIN_GRACE_SECONDS)
+    except BaseException:
+        # The caller is being cancelled with this write still in flight. The
+        # write must not outlive it, for the same reason a write that runs out
+        # its budget must not: it holds the store that teardown is waiting on.
+        await _cancel_poller_marker_write(write, "caller cancelled")
+        raise
     if pending:
-        _warn("control-poller marker write did not land within its budget; it may land later")
+        await _cancel_poller_marker_write(write, "budget expired")
         return
     # The write swallows every error it can report itself; what escapes it is a
     # cancellation, and the caller asked for this write, so it is the caller's
@@ -2180,13 +2214,14 @@ async def _execute_dag(
             if _exch_task is not None:
                 _exchange.stop()
             # Publish the stop, then cancel the poll loop. Once the marker commits,
-            # admission refuses new controls. A control admitted before that, including
-            # while this write runs, runs past its budget or is interrupted by a native
-            # cancellation, may never be applied once the loop is gone; _run_flow's
-            # teardown closes every such control as rejected after the session is
-            # terminal, so none is left pending. Ordered after the heartbeat and exchange
-            # stops above so the write cannot delay or skip them, and shielded against
-            # cooperative cancellation. The cancel runs in the finally either way.
+            # admission refuses new controls. A control admitted before that -- while
+            # this write runs, after the write outlives its budget, or after a native
+            # cancellation interrupts the wait -- may never be applied once the loop is
+            # gone; _run_flow's teardown closes every such control as rejected after the
+            # session is terminal, so none is left pending. Ordered after the heartbeat
+            # and exchange stops above so the write cannot delay or skip them, and
+            # shielded against cooperative cancellation. The cancel runs in the finally
+            # either way.
             try:
                 with CancelScope(shield=True):
                     await _persist_control_poller_state_bounded(env, "stopped")
@@ -3054,27 +3089,54 @@ async def _run_flow(
             # This shield covers cooperative cancel scopes; native task.cancel
             # can still interrupt the existing teardown before that commit.
             _control_session_id = (env._live_persist or {}).get("session_id")
-            effective_status = await stop_live_persist(env, status=_terminal_status)
-            if _control_session_id is not None:
-                # The DAG poller is gone, so a control still queued and unclaimed
-                # will never be applied: close it, as the agent runner closes its
-                # undelivered steers. The sweep refuses a session whose stored status
-                # is not terminal, and leaves a claimed row to whoever claimed it.
-                # Teardown closed the live handle, so it gets a fresh one.
-                from lionagi.cli.agent import _tombstone_pending_steers
-                from lionagi.state.db import StateDB
+            try:
+                effective_status = await stop_live_persist(env, status=_terminal_status)
+            finally:
+                if _control_session_id is not None:
+                    # The DAG poller is gone, so a control still queued and unclaimed
+                    # will never be applied: close it, as the agent runner closes its
+                    # undelivered steers. This runs even when the teardown above raised
+                    # after its terminal commit, so a failure there cannot leave a
+                    # control queued against a consumer that has already gone. The
+                    # sweep refuses a session whose stored status is not terminal, and
+                    # leaves a claimed row to whoever claimed it; teardown closed the
+                    # live handle, so it gets a fresh one.
+                    from lionagi.cli.agent import _tombstone_pending_steers
+                    from lionagi.state.db import (
+                        SESSION_TERMINAL_STATUSES,
+                        StateDB,
+                        read_only_open_supported,
+                        state_db_known_absent,
+                    )
 
-                try:
-                    async with StateDB() as _sweep_db:
-                        await _tombstone_pending_steers(
-                            {"db": _sweep_db, "session_id": _control_session_id},
-                            result=(
-                                "rejected: run reached terminal status before its DAG "
-                                "poller applied the control"
-                            ),
-                        )
-                except Exception as _sweep_exc:  # noqa: BLE001 — teardown must not raise
-                    logger.warning("control tombstone write failed: %r", _sweep_exc)
+                    try:
+                        # A read-only probe first, because the sweep needs a writable
+                        # handle and the writable open takes the store's writer lock and
+                        # re-runs the schema reconciliation. Most runs queue no control at
+                        # all, and a read-only open skips both, so the common exit stays
+                        # a read. The probe is only an optimisation: the sweep re-checks
+                        # the terminal precondition and the claim before it writes.
+                        if not state_db_known_absent():
+                            async with StateDB(readonly=read_only_open_supported()) as _probe_db:
+                                _probe_session = await _probe_db.get_session(_control_session_id)
+                                _probe_pending = await _probe_db.list_pending_session_controls(
+                                    _control_session_id
+                                )
+                            if (_probe_session or {}).get(
+                                "status"
+                            ) in SESSION_TERMINAL_STATUSES and any(
+                                row.get("result") is None for row in _probe_pending
+                            ):
+                                async with StateDB() as _sweep_db:
+                                    await _tombstone_pending_steers(
+                                        {"db": _sweep_db, "session_id": _control_session_id},
+                                        result=(
+                                            "rejected: run reached terminal status before its DAG "
+                                            "poller applied the control"
+                                        ),
+                                    )
+                    except Exception as _sweep_exc:  # noqa: BLE001 — teardown must not raise
+                        logger.warning("control tombstone write failed: %r", _sweep_exc)
             if effective_status != _terminal_status:
                 _terminal_status = effective_status
             import time as _time

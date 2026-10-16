@@ -594,8 +594,10 @@ against cooperative cancellation only. A control admitted before it commits
 cancellation interrupts the wait) may never be applied once the loop is gone, so
 `_run_flow`'s teardown closes every control still queued and unclaimed as
 `rejected: run reached terminal status before its DAG poller applied the control`
-after the session's terminal status is written, as the agent runner closes its
-undelivered steers; a claimed row is left to its claimant. Marker writes remain
+after the session's terminal status is written -- and it closes them even if a
+later teardown step fails after that commit, since the status write is what makes
+them undeliverable -- as the agent runner closes its undelivered steers; a claimed
+row is left to its claimant. Marker writes remain
 best-effort, and a failed write may leave a stale active marker; it admits nothing
 once the session is terminal, because the insert also requires a running session.
 Enqueue re-checks the marker and the running status in the same statement that
@@ -614,12 +616,14 @@ operations prepared after delivery and are rejected when none remain pending.
 Agent legs drain at the next turn boundary, which can be far later than two seconds
 into a provider call.
 
-Every writer that ends a session carries `current_phase=None` in its terminal
-status UPDATE: teardown, the setup-failure sweep, the `li kill` writer, the doctor
-sweep, the monitor's linked-engine reconcile, the engine runner, the studio
-reapers and the studio admin transition. The transcript mirrors write no phase.
-A terminal row therefore no longer keeps the live phase it had, whichever path
-ended it. `current_phase` was
+The writers below carry `current_phase=None` in their terminal status UPDATE:
+teardown, the setup-failure sweep, the `li kill` writer, the doctor sweep, the
+monitor's linked-engine reconcile, the engine runner, the studio reapers and the
+studio admin transition. The transcript mirrors write no phase. The SESSION_END
+hook (`hooks/builtins.py`) does not: when it is the writer that terminalizes a
+row it writes the status without clearing the phase, and a row it finds already
+terminal is left as it is, which is why reads normalize a stored phase on a
+terminal row rather than relying on every writer. `current_phase` was
 added to the two session status-patch allowlists; unrelated fields remain refused.
 The existing cancellation shield covers cooperative scopes, not native task
 cancellation: repeated native cancellation can still interrupt the pre-existing
@@ -627,6 +631,14 @@ teardown before it commits, and a SIGKILLed process runs no writer at all, which
 is why reads still normalize a stored phase on a terminal row. Status/monitor
 normalize historical terminal phases while retaining the agent or playbook name
 fallback. Queuing a control does not change the applied phase.
+
+The teardown close above is the only path that closes an unclaimed control, and it
+runs on the flow's own teardown. `li kill`, the doctor sweep and the studio reapers
+end a session without sweeping its control queue, and a SIGKILLed process runs no
+teardown at all, so a control queued before one of those ends a run stays pending;
+`li o ctl status` renders it on a terminal row as never landed, and
+`li o ctl resolve` closes only a row a consumer claimed and never reported back.
+Whether those paths should sweep is a separate decision this change does not take.
 
 Control actions accept an exact recorded session/invocation/play/run ID, an
 unambiguous 8-character hex prefix, or an unambiguous run-id prefix that reaches
@@ -637,7 +649,9 @@ the `T` a run id is all digits, so a number or a date never acts on a run, and a
 eight-digit date is searched only as a printed hex prefix. A string that prefixes
 both a run id and a session, invocation, play or branch id is refused as
 ambiguous. A label therefore cannot match another run's session, invocation or
-play. Read-only status retains broader prefix lookup.
+play. Read-only status keeps its broader run-id prefix lookup, but it shares the
+resolver and so it too refuses a string that begins both spaces rather than
+returning one of them.
 Foreground flow prints its full persisted Session ID before planning; background
 launch prints the full ID assigned to its child. `--invocation` is validated against
 the real invocation row before setup/planning and before background spawn; register
