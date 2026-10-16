@@ -546,7 +546,11 @@ re-apply under the export's project. Reading the null as "inherit" did the same
 for a row stored without a project. Either way the re-applied row changed its
 project, which is the fallback execution root it uses only when its own stored
 `action_cwd` is unusable and, for the `agent` and `flow_yaml` targets a
-declaration produces, the `--project` its command receives.
+declaration produces, the `--project` its command receives. A row that a
+null-spelled member had given the document's project loses both on its next
+apply: with no project and an unusable `action_cwd`, the scheduler refuses the
+fire (`SchedulerCwdInheritRefusedError`) rather than running in the project's
+path.
 
 Round-trip identity across export/re-apply rests on three helpers.
 `_effective_project` picks the project namespace a row is grouped under:

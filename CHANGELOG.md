@@ -64,8 +64,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   the document's `metadata.project` in a project-scoped document (a global one
   has none). A project-scoped document already applied whose member writes its
   project as null in any of those spellings plans an `UPDATE` on its next apply
-  that removes the project the member ran under. `li schedule export` writes
-  every member's stored project, `null` included.
+  that removes the project the member ran under. Such a row also loses the
+  project's registered path as its fallback working directory: if its stored
+  `cwd` no longer exists, it is refused when it fires instead of running in the
+  project's path. `li schedule export` writes every member's stored project,
+  `null` included.
 
 ### Fixed
 

@@ -675,10 +675,10 @@ def resolve_member(
     }
     digest = _digest_of(resolved)
     authored = member.model_dump(mode="json")
-    # The stored spec is read back as a member on export and on re-apply, so an
-    # omitted project must stay omitted: writing a null in its place would read
-    # back as "no project" and drop the project the member inherited from the
-    # document.
+    # The stored spec records the member as authored, so an omitted project stays
+    # omitted rather than becoming a null, which now means "no project". The
+    # managed export, the only reader of this spec, sets the project from the
+    # row's stored action_project before it validates the member.
     authored["execution"] = member.execution.model_dump(mode="json", exclude_unset=True)
     db_fields = _to_db_fields(resolved_trigger, resolved_target, member, cwd, resolved_project)
 
