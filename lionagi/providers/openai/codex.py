@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import html
 import json
 import logging
 import os
@@ -135,16 +136,26 @@ _TOOL_CALL_MARKUP_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
 )
 
+# CommonMark block structure decides which lines the markup check can see.
 # A fenced code block opens on a line of three or more backticks or tildes
-# (a backtick fence's info string holds no backtick) and closes on a line of
-# the same character, at least as long as the opener, with nothing after it.
-# Its contents are a quotation of the markup, not a call. A fence that never
-# closes is not a block: its text stays visible to the markup check.
-_FENCE_OPEN_RE = re.compile(r"^[ \t]*(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+# (a backtick fence's information string holds no backtick) and closes on a
+# line of the same character, at least as long as the opener, with nothing
+# else on it. A fence line carries at most three spaces of indentation; four
+# or more (or a tab) is an indented code block, whose text is code as well. A
+# blockquote marker or a list marker before the fence puts the fence in that
+# container, and the container prefix is removed before the fence is matched,
+# so a fence inside a list item or a quote is code like any other. A fence
+# that never closes is not a block: its text stays visible.
+_QUOTE_MARKER_RE = re.compile(r"^ {0,3}>[ \t]?")
+_LIST_MARKER_RE = re.compile(r"^ {0,3}(?:[-+*]|\d{1,9}[.)])(?:[ \t]+|$)")
+_ATX_HEADING_RE = re.compile(r"^#{1,6}(?:[ \t]|$)")
+_THEMATIC_BREAK_RE = re.compile(r"^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$")
+_FENCE_OPEN_RE = re.compile(r"^(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
 # An inline code span: text between runs of the same length of backticks, on
-# one paragraph. A span does not cross a blank line, a three-backtick run is
-# not closed by a two-backtick run, and a backslash-escaped backtick opens none.
-_INLINE_CODE_RE = re.compile(r"(?<![`\\])(`+)(?!`)(?:(?!\n[ \t]*\n).)*?(?<!`)\1(?!`)", re.S)
+# one paragraph. A span does not cross a blank line or a block boundary, a
+# three-backtick run is not closed by a two-backtick run, and a backtick after
+# an odd run of backslashes is escaped, so it opens and closes none.
+_INLINE_CODE_RE = re.compile(r"(?<![`])(`+)(?!`)(?:(?!\n[ \t]*\n).)*?(?<!`)\1(?!`)", re.S)
 
 # Completed items that are a call the CLI ran, or a call's result. One of these
 # after a message means the turn went on past that message, so the message is
@@ -169,63 +180,144 @@ _TOOL_CALL_MARKUP_FAILURE = (
 )
 
 
-def _code_free_blocks(text: str) -> list[str]:
-    """Split ``text`` into its runs of lines outside closed fenced code blocks.
+def _indent_width(whitespace: str) -> int:
+    """Width of a leading run of spaces and tabs, a tab advancing to the next
+    multiple of four columns as it does in CommonMark."""
+    width = 0
+    for ch in whitespace:
+        width += 1 if ch == " " else 4 - (width % 4)
+    return width
 
-    A closed fence is dropped. A fence line also ends the paragraph before it,
-    so an inline span never reaches across one. A fence that never closes is
-    not code: its line starts a new run and its text stays visible. A table of
-    the longest closing line after each line keeps the scan linear however
-    many fences open without closing.
+
+def _classify_line(line: str) -> tuple[str, int, bool]:
+    """Strip a block container from ``line``: return its content, the width of
+    the indentation left on the content, and whether the line starts a block.
+
+    Blockquote markers and one list marker are removed, then the remaining
+    leading whitespace is measured. A line starts a block when a container
+    preceded it, when it is an ATX heading or a thematic break, or when it is
+    indented far enough to be an indented code block.
     """
-    lines = text.split("\n")
-    longest_after = {"`": [0] * (len(lines) + 1), "~": [0] * (len(lines) + 1)}
-    for i in range(len(lines) - 1, -1, -1):
-        bare = lines[i].strip(" \t")
-        for char, column in longest_after.items():
-            run = len(bare) if bare and set(bare) == {char} else 0
-            column[i] = max(column[i + 1], run)
-
-    blocks: list[list[str]] = [[]]
+    rest = line
+    block_start = False
+    while True:
+        m = _QUOTE_MARKER_RE.match(rest)
+        if m is None:
+            break
+        rest = rest[m.end() :]
+        block_start = True
+    m = _LIST_MARKER_RE.match(rest)
+    if m is not None:
+        rest = rest[m.end() :]
+        block_start = True
     i = 0
-    while i < len(lines):
-        m = _FENCE_OPEN_RE.match(lines[i])
-        if m is None or (m["fence"][0] == "`" and "`" in m["info"]):
-            blocks[-1].append(lines[i])
-            i += 1
-            continue
-        char, length = m["fence"][0], len(m["fence"])
-        if longest_after[char][i + 1] < length:
-            blocks.append([lines[i]])
-            i += 1
-            continue
+    while i < len(rest) and rest[i] in " \t":
         i += 1
-        while True:
-            bare = lines[i].strip(" \t")
-            i += 1
-            if bare and set(bare) == {char} and len(bare) >= length:
-                break
-        blocks.append([])
-    return ["\n".join(block) for block in blocks if block]
+    indent = _indent_width(rest[:i])
+    content = rest[i:]
+    if not block_start and (
+        indent >= 4 or _ATX_HEADING_RE.match(content) or _THEMATIC_BREAK_RE.match(content)
+    ):
+        block_start = True
+    return content, indent, block_start
 
 
 def _strip_code_regions(text: str) -> str:
-    """Remove fenced code blocks and inline code spans from ``text``.
+    """Remove fenced code blocks, indented code blocks and the inline code
+    spans from ``text``, keeping the rest as paragraph segments.
 
     Markup inside code is being shown, not written as a call, so the regions
     are dropped before the markup patterns are matched. Line ends are
     normalised first, so a CRLF blank line ends a span and a CRLF fence line
-    closes a block.
+    closes a block. A fence line, an indented code line, a blank line and a
+    line that starts a block each end the paragraph before them, so an inline
+    span never reaches across one; the fence scan is a single pass over the
+    lines however many fences open without closing.
     """
     text = text.replace("\r\n", "\n").replace("\r", "\n")
-    return "\n".join(_INLINE_CODE_RE.sub(" ", block) for block in _code_free_blocks(text))
+    lines = text.split("\n")
+    meta = [_classify_line(line) for line in lines]
+
+    # The longest bare fence run at or after each line, per fence character,
+    # so a closer is found by one lookup and the scan stays linear.
+    longest_after = {"`": [0] * (len(lines) + 1), "~": [0] * (len(lines) + 1)}
+    for i in range(len(lines) - 1, -1, -1):
+        content, indent, _ = meta[i]
+        run = len(content) if content and indent <= 3 and set(content) == {content[0]} else 0
+        for char in ("`", "~"):
+            bare = run if content.startswith(char) else 0
+            longest_after[char][i] = max(longest_after[char][i + 1], bare)
+
+    def _closer(i: int, char: str, length: int) -> bool:
+        content, indent, _ = meta[i]
+        return indent <= 3 and bool(content) and set(content) == {char} and len(content) >= length
+
+    paragraphs: list[str] = []
+    current: list[str] = []
+
+    def _flush() -> None:
+        if current:
+            paragraphs.append("\n".join(current))
+            current.clear()
+
+    i = 0
+    while i < len(lines):
+        content, indent, block_start = meta[i]
+        if indent >= 4:
+            _flush()
+            i += 1
+            continue
+        m = _FENCE_OPEN_RE.match(content)
+        if m is not None and not (m["fence"][0] == "`" and "`" in m["info"]):
+            char, length = m["fence"][0], len(m["fence"])
+            if longest_after[char][i + 1] >= length:
+                _flush()
+                i += 1
+                while not _closer(i, char, length):
+                    i += 1
+                i += 1
+                continue
+            # The fence never closes, so it is not code, but its line still
+            # starts a new block: the runs it would have opened on do not pair.
+            block_start = True
+        if not content.strip():
+            _flush()
+            i += 1
+            continue
+        if block_start:
+            _flush()
+        current.append(content)
+        i += 1
+    _flush()
+    return "\n".join(_INLINE_CODE_RE.sub(" ", _blank_escaped_backticks(p)) for p in paragraphs)
+
+
+def _blank_escaped_backticks(segment: str) -> str:
+    """Blank a backtick that a backslash-escaped run precedes: an odd run of
+    backslashes escapes it, an even run does not, so it is no code delimiter."""
+    if "`" not in segment:
+        return segment
+    out: list[str] = []
+    backslashes = 0
+    for ch in segment:
+        if ch == "\\":
+            backslashes += 1
+            out.append(ch)
+            continue
+        out.append(" " if ch == "`" and backslashes % 2 else ch)
+        backslashes = 0
+    return "".join(out)
 
 
 def _has_tool_call_markup(text: object) -> bool:
-    """True when ``text`` carries a tool-call markup tag written as plain text."""
+    """True when ``text`` carries a tool-call markup tag written as plain text.
+
+    The visible text is read as its reader sees it, so an HTML entity that
+    spells a tag (`&lt;...&gt;`) names one too.
+    """
     if not isinstance(text, str) or not text:
         return False
-    visible = _strip_code_regions(text)
+    visible = html.unescape(_strip_code_regions(text))
     return any(p.search(visible) for p in _TOOL_CALL_MARKUP_PATTERNS)
 
 
@@ -1792,10 +1884,15 @@ async def stream_codex_cli(
                             yield sc
 
             elif typ in ("result", "response", "session.end"):
-                _event_result = obj.get(
+                # The event's text is read only when it is a string, exactly as
+                # a message's text is: a non-string value is not read.
+                _raw_event_result = obj.get(
                     "result",
                     obj.get("response", obj.get("text", "")),
-                ).strip()
+                )
+                _event_result = (
+                    _raw_event_result.strip() if isinstance(_raw_event_result, str) else ""
+                )
                 session.usage = obj.get("usage", obj.get("stats", {}))
                 session.total_cost_usd = obj.get("total_cost_usd", obj.get("cost"))
                 session.num_turns = obj.get("num_turns", obj.get("turns"))

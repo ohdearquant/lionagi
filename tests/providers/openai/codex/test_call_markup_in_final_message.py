@@ -32,6 +32,7 @@ from unittest.mock import patch
 import pytest
 
 from lionagi.providers.openai.codex import (
+    _CALL_ITEM_TYPES,
     CodexCLIEndpoint,
     CodexCodeRequest,
     stream_codex_cli,
@@ -356,37 +357,56 @@ async def test_markup_in_a_legacy_message_at_the_stream_end_fails():
     assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
 
 
+def _call_item(item_type: str) -> dict:
+    """A completed call or call result of ``item_type``, as the CLI reports it."""
+    items = {
+        "command_execution": _command_execution()["item"],
+        "file_change": {
+            "type": "file_change",
+            "id": "call-4",
+            "changes": [],
+            "status": "completed",
+        },
+        "mcp_tool_call": {
+            "type": "mcp_tool_call",
+            "id": "call-3",
+            "server": "docs",
+            "tool": "search",
+            "status": "completed",
+        },
+        "web_search": {"type": "web_search", "id": "call-5", "query": "x", "status": "completed"},
+        "function_call": {
+            "type": "function_call",
+            "id": "call-6",
+            "name": "Bash",
+            "arguments": "{}",
+        },
+        "tool_call": {"type": "tool_call", "id": "call-7", "name": "Bash", "input": {}},
+        "function_call_output": {
+            "type": "function_call_output",
+            "call_id": "call-8",
+            "output": "ok",
+        },
+    }
+    return {"type": "item.completed", "item": items[item_type]}
+
+
 @pytest.mark.asyncio
-async def test_a_call_after_the_markup_supersedes_it():
-    """A completed call is a real call, so an earlier message is not the last one."""
+@pytest.mark.parametrize("call", sorted(_CALL_ITEM_TYPES))
+async def test_a_call_after_the_markup_supersedes_it(call):
+    """A completed call is a real call: the turn ends on it, so the markup message
+    before it is not the turn's last text and does not fail the turn."""
     events = [
         _agent_message(MARKUP_FIXTURE),
-        _command_execution(),
-        _agent_message("Ran it; here are the results."),
+        _call_item(call),
         _turn_completed(),
     ]
     chunks, session = await _parse(events)
 
     assert session.is_error is False, (
-        "markup the model moved past by running a real call still failed the turn"
+        f"a turn that ended on a completed {call} failed over an earlier markup message"
     )
-    assert _markup_errors(chunks) == [], f"a superseded message produced an error chunk: {chunks}"
-
-
-@pytest.mark.asyncio
-async def test_a_call_after_the_markup_without_a_later_message_completes():
-    """The turn ends on the call's own result; the markup is not the last text."""
-    events = [
-        _agent_message(MARKUP_FIXTURE),
-        _command_execution(),
-        _turn_completed(),
-    ]
-    chunks, session = await _parse(events)
-
-    assert session.is_error is False, (
-        "a turn that ended on a completed call failed over an earlier markup message"
-    )
-    assert _markup_errors(chunks) == [], f"the completed call did not clear the text: {chunks}"
+    assert _markup_errors(chunks) == [], f"the completed {call} did not clear the text: {chunks}"
 
 
 @pytest.mark.asyncio
@@ -538,6 +558,129 @@ async def test_markup_outside_code_still_fails_alongside_quoted_markup():
     assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
 
 
+# --- block structure ends an inline span and marks code ---
+
+
+@pytest.mark.asyncio
+async def test_a_list_item_line_ends_an_inline_span_before_the_markup():
+    """An inline span stays inside one paragraph, and a list item is its own block."""
+    text = f'- Use the `build command\n- <{BAR}DSML{BAR} invoke name="x">\n- Run `ls`.'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is True, f"a list item line did not end the span: {text!r}"
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_a_heading_line_ends_an_inline_span_before_the_markup():
+    """An ATX heading starts a new block, so a stray backtick before it quotes nothing."""
+    text = f'Stray ` backtick\n# Heading <{BAR}DSML{BAR} invoke name="x">\nAlso `x` here.'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is True, f"a heading line did not end the span: {text!r}"
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_a_blockquote_line_ends_an_inline_span_before_the_markup():
+    """A blockquote line starts a new block too."""
+    text = f'Stray ` backtick\n> Quote <{BAR}DSML{BAR} invoke name="x">\nAlso `x` here.'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is True, f"a blockquote line did not end the span: {text!r}"
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_a_fence_opener_indented_four_spaces_is_an_indented_code_block():
+    """Four spaces make an indented code block, not a fence opener; the markup after
+    it is prose and fails the turn."""
+    text = f'Done.\n\n    ```\n\n<{BAR}DSML{BAR} invoke name="x">\n\n```python\nx = 1\n```'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is True, f"a four-space line opened a fence: {text!r}"
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_a_tab_indented_fence_line_is_an_indented_code_block():
+    """A tab before the fence is an indented code block; the markup is prose."""
+    text = f'\t```\n<{BAR}DSML{BAR} invoke name="x">\n\t```'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is True, f"a tab-indented line opened a fence: {text!r}"
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_an_indented_fence_line_does_not_close_a_fence_early():
+    """Four spaces inside a fence is content, not a closer; the block still quotes."""
+    text = f'```\n    ```\n<{BAR}DSML{BAR} invoke name="x">\n```'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is False, f"an indented line closed the fence early: {text!r}"
+    assert _markup_errors(chunks) == [], f"a quotation was reported as a call: {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_a_fence_inside_a_list_item_quotes_the_markup():
+    """A list marker before a fence puts the fence in that list item, so it is code."""
+    text = f'- ```xml\n  <{BAR}DSML{BAR} invoke name="x">\n  ```'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is False, f"a list-item fence was read as a call: {text!r}"
+    assert _markup_errors(chunks) == [], f"a quotation was reported as a call: {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_a_fence_inside_an_ordered_list_item_quotes_the_markup():
+    """The ordered-list marker works the same way."""
+    text = f'1. ```\n   <{BAR}DSML{BAR} invoke name="x">\n   ```'
+    _, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is False, f"an ordered-list fence was read as a call: {text!r}"
+
+
+@pytest.mark.asyncio
+async def test_a_doubled_backslash_before_a_backtick_still_opens_a_span():
+    """A backtick is escaped only after an odd run of backslashes, so two do not escape."""
+    text = f'\\\\`<{BAR}DSML{BAR} invoke name="x">`'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is False, f"a doubled backslash suppressed the span: {text!r}"
+    assert _markup_errors(chunks) == [], f"a quotation was reported as a call: {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_an_indented_code_block_quotes_the_markup():
+    """Four spaces after a blank line start an indented code block, so the tag is code."""
+    text = f'Example:\n\n    <{BAR}DSML{BAR} invoke name="x">\n'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is False, f"an indented code block was read as a call: {text!r}"
+    assert _markup_errors(chunks) == [], f"a quotation was reported as a call: {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_an_html_escaped_tag_is_read_as_the_reader_sees_it():
+    """An entity that spells the tag names it on screen, so it fails the turn too."""
+    text = f"&lt;{BAR}DSML{BAR} invoke name=&quot;x&quot;&gt;"
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is True, f"an escaped tag was read as prose: {text!r}"
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+@pytest.mark.asyncio
+async def test_a_longer_closer_line_hides_the_markup_it_contains():
+    """A five-backtick line closes a three-backtick fence, so its contents are quoted."""
+    text = f'```\n<{BAR}DSML{BAR} invoke name="x">\n`````\nDone.'
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is False, f"a longer closer did not hold the block open: {text!r}"
+    assert _markup_errors(chunks) == [], f"a quotation was reported as a call: {chunks}"
+
+
 # --- the markup pattern ---
 
 
@@ -661,6 +804,47 @@ async def test_a_non_streamed_call_markup_then_sentinel_is_failed():
     assert out["result"] and "tool call" in out["result"], (
         f"the returned session result does not explain the failure: {out['result']!r}"
     )
+
+
+# --- the failure reaches a real run, which stops at the sentinel ---
+
+
+@pytest.mark.asyncio
+async def test_a_real_run_raises_on_markup_before_the_sentinel():
+    """A streamed run over a real endpoint raises on the markup chunk.
+
+    This drives ``Branch.run`` itself rather than the parser's generator, so
+    the failure is shown to reach the streamed path and not only the parser.
+    """
+    from unittest.mock import patch
+
+    from lionagi.operations.run.run import RunParam, run
+    from lionagi.service.imodel import iModel
+    from lionagi.session.branch import Branch
+
+    events = [_agent_message(MARKUP_FIXTURE), _benign_sentinel()]
+
+    async def fake(request):
+        for event in events:
+            yield event
+
+    model = iModel(provider="codex", model="gpt-5.1-codex", api_key="x")
+    branch = Branch()
+    branch.chat_model = model
+
+    with patch(
+        "lionagi.providers.openai.codex.stream_codex_cli_events",
+        side_effect=fake,
+    ):
+        raised: Exception | None = None
+        try:
+            async for _ in run(branch, "go", RunParam()):
+                pass
+        except Exception as exc:  # noqa: BLE001 - the run's own failure is the subject
+            raised = exc
+
+    assert raised is not None, "a real run over a written call passed as a success"
+    assert "tool call" in str(raised), f"the run failed without naming the markup: {raised!r}"
 
 
 # --- the turn-end check itself ---
@@ -929,6 +1113,24 @@ async def test_non_string_message_text_is_not_read():
     chunks, session = await _parse(events)
 
     assert session.is_error is True, "a non-string message superseded the markup"
+    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        {"type": "result", "result": 7},
+        {"type": "session.end", "response": None},
+        {"type": "response", "text": ["x"]},
+    ],
+)
+async def test_a_legacy_terminal_events_non_string_text_is_not_read(event):
+    """A non-string result/response/text is not read and does not raise."""
+    chunks, session = await _parse([_agent_message(MARKUP_FIXTURE), event, _turn_completed()])
+
+    assert session.is_error is True, (
+        f"a non-string event text cleared the pending markup: {event!r}"
+    )
     assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
 
 
