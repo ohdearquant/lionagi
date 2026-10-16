@@ -1,6 +1,6 @@
 # ADR-0002: UUID-keyed ordered collection model
 
-- **Status**: Accepted
+- **Status**: Accepted, amended 2026-10-16 (see Amendment 2)
 - **Kind**: Retrospective
 - **Area**: core-data-model
 - **Date**: 2026-07-09
@@ -56,10 +56,12 @@ This ADR deliberately does **not** decide:
 
 - database indexes or persistence tables for collections; adapters consume the serialized model;
 - durable queue or scheduler semantics; Progression is an ordering, not an acknowledgement queue;
-- the future choice between unique and repeated standalone sequences; the current mixed behavior is
-  retrospective truth and remains a delta; or
-- a unified sync/async concurrency design; the shipped locks and their limits are recorded, while
-  the target requires a separate design decision.
+- ~~the future choice between unique and repeated standalone sequences; the current mixed behavior
+  is retrospective truth and remains a delta~~ — **decided 2026-10-16 (Amendment 2)**: multiplicity
+  is a property of the ordering type;
+- ~~a unified sync/async concurrency design; the shipped locks and their limits are recorded, while
+  the target requires a separate design decision~~ — **decided 2026-10-16 (Amendment 2)**:
+  collections carry no locks, and coordination belongs to the holder.
 
 ## Decision
 
@@ -338,6 +340,12 @@ is ignored; any other member raises `ValueError`.
 Pile construction imposes uniqueness on its default Progression; standalone and Flow-owned
 Progressions do not. No caller can safely infer a universal duplicate rule from the type alone.
 
+> **Superseded (2026-10-16, Amendment 2).** This heading's "method-dependent multiplicity" and the
+> sentence above describe the shipped state. The rule now decided is that multiplicity is a
+> property of the ordering type: a unique order belongs to a collection and admits no second
+> position for a resident id, while a repeated order is a standalone sequence. See Amendment 2 for
+> the decision, the code that does not follow it yet, and the rejected alternatives.
+
 ### D5 — Flow owns multiple referentially valid views over one item Pile
 
 **The contract** (`lionagi/protocols/generic/flow.py`):
@@ -425,6 +433,131 @@ These facilities support disciplined cooperative use and individually serialized
 They do not promise a linearizable mixed thread/async collection, immutable snapshots, or atomic
 multi-method transactions.
 
+> **Superseded (2026-10-16, Amendment 2).** The locks above are the shipped state. The rule now
+> decided is that a collection type owns no lock: one holder at a time, a snapshot where several
+> reads must agree, and coordination at the holder rather than inside the type. See Amendment 2 for
+> the decision, the callers that hold a collection across an await today, and the rejected
+> alternatives.
+
+## Amendment 2 (2026-10-16) — multiplicity is a property of the ordering type, and collections carry no locks
+
+The 2026-07-25 amendment recorded inside D3 is counted as Amendment 1 here. This amendment
+settles the two questions D4 and D6 left open: what decides a Progression's multiplicity, and
+where the coordination of concurrent access lives. They are one question, whether the rule
+belongs to the type, so they are decided together, and both change what D4 and D6 say.
+
+### Multiplicity is named by the ordering type, not by the mutator
+
+**The decision.** A Progression's multiplicity is a property of its type, and two types state the
+two rules:
+
+- A **unique order** is the order inside a collection. It holds exactly the store's ids, one
+  position each, as D1 requires, and no mutator on it can add a second position for an id that is
+  already there.
+- A **repeated order** is a standalone sequence, used where a second visit to the same id is
+  meaning-bearing. `append`, `extend`, `insert`, `+=`, and positional assignment store another
+  position on it, and construction, membership, and serialization agree with that rule.
+
+A caller gets the rule the type names, not the rule the method happens to implement, so reading a
+signature answers whether the caller may duplicate an id.
+
+**What this changes.** D4's heading and its closing sentence — "duplicate behavior remains
+method-dependent", "No caller can safely infer a universal duplicate rule from the type alone" —
+are superseded; the note at the end of D4 states what stands in their place.
+
+**What the code does today.** One `Progression` class
+(`lionagi/protocols/generic/progression.py:139`) carries both rules, and which rule applies
+depends on the mutator and on who owns the instance:
+
+- Uniqueness holds where a Pile owns the order. Construction rejects a repeated id in the supplied
+  order (`lionagi/protocols/generic/pile.py:129-133`), `include` adds only ids absent from the
+  order (`pile.py:303-307` through `progression.py:270-286`), `insert` raises `ItemExistsError`
+  for an id already in the order (`pile.py:826-835`), and positional replacement does the same
+  (`pile.py:707-747`).
+- Repeats survive where the caller owns the order. `append`, `extend`, `insert`, `+=`, and slice
+  or integer assignment keep a repeated id (`progression.py:302-314`, `:364-369`, `:392-398`,
+  `:379-381`, `:225-244`), while `include` on the same class is set-like
+  (`progression.py:270-286`), `exclude` removes every occurrence (`progression.py:288-300`), and
+  membership asks only whether the id occurs at least once (`progression.py:200-205`).
+
+One object therefore answers multiplicity differently depending on the method called, and the
+unique rule lives in Pile's constructor and its own methods rather than in the ordering type.
+Pile's default order is a public field (`pile.py:188`), so `pile.progression.append(uid)` still
+leaves a second position for a resident id; D1 records the same escape hatch for direct field
+mutation.
+
+**The alternatives this leaves rejected.**
+
+- *A uniqueness flag on one type.* A `unique: bool` field, or a constructor switch, would carry
+  the rule in a value, and every caller and reviewer would have to read that value to know whether
+  a mutation may duplicate an id. That is the method-dependent rule moved from the method name to
+  a field, and the field is what the type cannot check.
+- *Keep the shipped mixed behavior.* Pile's constructor and its naming mutators would stay the
+  only places the unique rule holds, and a standalone ordering would keep meaning different things
+  per method. Delta 3 is the record of why that is not enough.
+
+### Collections carry no locks, and coordination belongs to the holder
+
+**The decision.** A collection type owns no lock. A Pile or a Flow has one holder at a time; a
+holder that needs several reads to agree takes one snapshot and reads that; coordination between
+holders is the holder's, exercised where the holder lives — `Session` over its branches,
+`Executor` over its event pile (`lionagi/protocols/generic/processor.py:188`), `Flow` over its
+named views. Where a shared-read shape is genuinely
+needed, it enters as an explicit snapshot value, not as interior locking and not as a lock a
+caller may hold across an await.
+
+**What this changes.** D6's heading and the "method-level cooperative locks" sentence in the
+table above are superseded; the note at the end of D6 states what stands in their place. The
+unified sync/async concurrency design this ADR listed as undecided is decided here to the extent
+that it is a place rather than a lock: coordination moves out of the collection.
+
+**What the code does today.** Pile carries two private locks and a protocol over both
+(`lionagi/protocols/generic/pile.py:208-209`, the both-lock entry at `:549-564`, the public
+`lock`/`async_lock` properties at `:538-547`); async entry, async iteration, async adaptation, and
+`adump` take them (`pile.py:857-876`, `:631-637`, `:902`, `:994-1012`). Flow carries its own
+reentrant lock (`lionagi/protocols/generic/flow.py:41`, rebuilt at `:132`) and takes it in
+`add_progression`, `remove_progression`, `get_progression`, `add_item`, `remove_item`, and
+`clear` (`flow.py:140`, `:161`, `:175`, `:212`, `:233`, `:244`). Neither lock is serialized;
+pickle and deep copy build fresh ones (`pile.py:504-536`).
+
+Callers hold a collection across an await today: `async with self.branches`
+(`lionagi/session/session.py:75`), `async with self.messages`
+(`lionagi/protocols/messages/manager.py:74`), `async with self.flows`
+(`lionagi/session/exchange.py:87`), and `async with self.logs`
+(`lionagi/protocols/generic/log.py:246`). There is no snapshot type for them to move onto:
+iteration stabilizes the order and looks items up live (`pile.py:378-386`), and `keys`, `values`,
+and `items` materialize a list inside the lock (`pile.py:358-368`). Delta 4 is rewritten below to
+name the removal, the missing snapshot, and those four holders.
+
+**The alternatives this leaves rejected.**
+
+- *Keep the two locks and publish their contract.* D6 already records why a lock inside the
+  collection cannot give a caller a linearizable mixed thread/async view or a stable snapshot.
+  Documenting the limit does not remove it, and the cost of holding a collection across real work
+  stays hidden inside the type.
+- *One lock for both contexts.* A single lock was rejected above: a threading lock cannot be
+  awaited as the only async primitive, and an AnyIO lock is not a drop-in synchronous lock.
+  Removing the pair is the decision taken instead of widening it.
+
+### Consequences of both decisions
+
+- A caller states multiplicity in the ordering type it holds, so a reviewer reads the rule from
+  the signature rather than reconstructing it from the call history, and Pile's default order is
+  unique because of its type rather than because its constructor checked.
+- Removing interior locks removes a deadlock class and the cross-thread spin from every async
+  entry, and it removes the guarantee D6 records for a caller that holds a collection across an
+  await. Each affected caller moves to the holder rule or to a snapshot, which is work outside
+  `lionagi/protocols/generic/`.
+- A snapshot copies the order and the items it visits, so a reader that takes several snapshots
+  pays for each, while a holder that owns the collection pays nothing extra.
+- Reversal is asymmetric. Splitting the ordering type touches serialized repeated sequences and
+  the Pile constructor; restoring interior locking touches every caller listed above.
+- Neither decision adds a persistence format. The serialized Pile keeps its shape, a polymorphic
+  item list plus a serialized Progression; the default order's class name inside that payload is
+  the ordering split's own change.
+- Delta rows 3 and 4 are narrowed in place by this amendment rather than closed: each decision is
+  now recorded, and neither is in the code yet.
+
 ## Consequences
 
 Identity lookup remains independent from traversal order, and one stored object can participate in
@@ -455,8 +588,8 @@ reentrancy, async scheduling, and snapshot guarantees.
 |---|---|---|---|
 | 1 | Fix Pile UUID-string reference normalization in `to_list_type`; acceptance requires valid UUID strings to work as one-item references on the paths that fail today — `__getitem__`, `__setitem__`, `exclude`, and `order=` at construction — with regression coverage (`get` and `pop` already route through `validate_order` and work). | S | #2012 |
 | 2 | ~~Define one public Pile-item contract and align the exported Observable protocol with it~~ — **Resolved 2026-07-20**: the structural protocol is deleted, the nominal ABC is the sole contract, exported as `Observable`, enforced by item-type validation, with extension tests in `tests/protocols/test_observable_protocol.py`. | M | #2017 |
-| 3 | Decide and enforce Progression multiplicity semantics for standalone Progressions, Pile default order, and Flow named views; acceptance requires append, extend, insert, serialization, and membership behavior to match the documented rule. | M | (filled at issue-open time) |
-| 4 | Publish and enforce Pile synchronization and snapshot semantics; acceptance requires every public mutator and read API to be audited against a stated sync, async, and mixed-context contract, with stable snapshot APIs where live traversal is unsafe. | M | (filled at issue-open time) |
+| 3 | ~~Decide and enforce Progression multiplicity semantics for standalone Progressions, Pile default order, and Flow named views; acceptance requires append, extend, insert, serialization, and membership behavior to match the documented rule~~ — **Narrowed 2026-10-16 (Amendment 2)**: the rule is decided (multiplicity is a property of the ordering type). What remains is the code: a unique order type and a repeated order type, with Pile's default order, standalone sequences, and serialization following the rule their type names. | M | (filled at issue-open time) |
+| 4 | ~~Publish and enforce Pile synchronization and snapshot semantics; acceptance requires every public mutator and read API to be audited against a stated sync, async, and mixed-context contract, with stable snapshot APIs where live traversal is unsafe~~ — **Narrowed 2026-10-16 (Amendment 2)**: the design is decided (collections carry no interior locks; coordination and snapshots belong to the holder). What remains is the code: remove the locks, provide the snapshot value, and move every caller that holds a collection across an await onto the holder rule. | M | (filled at issue-open time) |
 | 5 | Define and enforce Progression ownership in `Flow.add_item`; acceptance requires instance, UUID, and name references to follow one documented residency rule, reject invalid ownership before item insertion, and never mutate an external view accidentally. | S | (filled at issue-open time) |
 | 6 | Make `Pile.dump(clear=True)` consistent across JSON-lines, CSV, and Parquet; acceptance requires every format either to clear the same documented pre-write snapshot after success or to retain it, with failure-path tests. | S | (filled at issue-open time) |
 
