@@ -122,7 +122,7 @@ export function useSchedulesData(): SchedulesData {
       }
       inFlight = true;
       try {
-        const res = await listSchedules();
+        const res = await listSchedules({ include_recent_runs: true });
         if (!active) return;
         const list = res.schedules.map((schedule) => ({
           ...schedule,

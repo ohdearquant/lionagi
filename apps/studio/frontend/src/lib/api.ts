@@ -2375,11 +2375,14 @@ export async function listSchedules(params?: {
   enabled?: boolean;
   trigger_type?: string;
   project?: string;
+  include_recent_runs?: boolean;
 }): Promise<ScheduleListResponse> {
   const query = new URLSearchParams();
   if (params?.enabled !== undefined) query.set("enabled", String(params.enabled));
   if (params?.trigger_type) query.set("trigger_type", params.trigger_type);
   if (params?.project) query.set("project", params.project);
+  if (params?.include_recent_runs !== undefined)
+    query.set("include_recent_runs", String(params.include_recent_runs));
   const qs = query.toString();
   return fetchJson<ScheduleListResponse>(`/api/schedules/${qs ? `?${qs}` : ""}`);
 }

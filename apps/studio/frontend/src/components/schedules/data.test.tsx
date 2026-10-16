@@ -107,6 +107,7 @@ describe("schedule summary refresh", () => {
     vi.mocked(listSchedules).mockResolvedValue({ schedules: rows });
     await act(async () => root.render(<Harness />));
     expect(listSchedules).toHaveBeenCalledTimes(1);
+    expect(listSchedules).toHaveBeenCalledWith({ include_recent_runs: true });
     expect(listScheduleRuns).not.toHaveBeenCalled();
     expect(latest.schedules).toHaveLength(100);
     expect(latest.runs).toHaveLength(2500);

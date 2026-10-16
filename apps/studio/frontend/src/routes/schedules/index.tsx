@@ -177,9 +177,14 @@ function SchedulesSpace() {
           className="mx-4 mb-3 flex flex-wrap items-center justify-between gap-3 rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-content-secondary sm:mx-6"
         >
           <span>
-            {error
-              ? t("loadError")
-              : `${t("recentRunsUnavailable")}: ${unavailable.map((s) => s.name).join(", ")}`}
+            {[
+              error ? t("loadError") : null,
+              unavailable.length > 0
+                ? `${t("recentRunsUnavailable")}: ${unavailable.map((s) => s.name).join(", ")}`
+                : null,
+            ]
+              .filter(Boolean)
+              .join(" ")}
           </span>
           <Button variant="secondary" size="sm" onClick={refresh}>
             {tDaemon("retry")}

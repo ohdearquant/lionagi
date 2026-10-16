@@ -182,7 +182,7 @@ between `build_argv()` and this function gives a revoked
 
 ## lionagi/studio/services/schedules.py
 
-- **Recent-run list contract v1** — `GET /api/schedules/` adds optional
+- **Recent-run list contract v1** — `GET /api/schedules/?include_recent_runs=true` adds optional
   `recent_runs_summary` to each definition: `{version: 1, limit: 25, status,
   has_next, runs}`. Available slices contain the newest 25 occurrences in
   `fired_at DESC, id DESC` order, including chain children and every status.
@@ -191,18 +191,29 @@ between `build_argv()` and this function gives a revoked
   means no run rows were found. A failed slice has `status: "unavailable"`,
   `has_next: null`, and `runs: []`; clients also treat missing or unsupported
   versions as unavailable. Neither is evidence of empty history.
-  The service fetches at most 26 occurrences per listed definition in one
-  window query, then joins invocation and session evidence in two set queries.
+  The flag defaults to false; Mission, operator MCP, and machine list callers
+  retain their existing response and do not compute these histories.
+  One batched statement selects at most 26 keys per listed definition through
+  a correlated, ordered `LIMIT 26` query, then loads occurrence payloads and
+  error details only for its displayed 25. Each group uses the schedule/time
+  index; equal-timestamp groups may still scan/sort additional keys by id.
+  Invocation and session evidence is joined in two additional set queries.
   All linked sessions participate in the existing outcome reducer; session
   count is not capped because an omitted active child could change its verdict.
   Public rows retain occurrence status, timestamps, exit code, and chain depth;
   error classification uses the same reconciled outcome as detail history.
+  Occurrence status is not a combined child-session status. An unreported child
+  failure need not produce an error class when the occurrence has no error text;
+  the detail view retains the separate reconciled outcome.
   Raw error text, prompts, event payloads, and artifact paths stay withheld.
-  Query failure marks all slices unavailable; a projection failure affects only
-  its schedule. The existing schedule-list limit and filters are unchanged.
+  A batch query failure marks every requested slice unavailable; only projection
+  failures are isolated to one schedule. This does not promise that other slices
+  remain available when their shared database read fails. Existing health/count
+  queries, budget rollups, schedule-list limits, and filters are unchanged.
   Cards, table, and calendar consume this one list request and identify unavailable
   schedules. Refreshes are single-flight with at most one queued refresh. Explicit
-  detail history keeps its separate pagination and does not use this slice.
+  detail history keeps its separate pagination and uses the same deterministic
+  timestamp/id ordering without using this slice.
 - **`_svc_validate_action_command`** — Delegates to the subprocess validators
   so charset/allow-list rules live in one place. `build_argv` re-checks the
   allow-list again at spawn time since `LIONAGI_SCHEDULER_COMMAND_ALLOWLIST`

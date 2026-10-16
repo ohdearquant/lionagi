@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Recent schedule slices are bounded, batched, and distinguish failure from empty."""
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -48,9 +49,108 @@ async def create_run(db: StateDB, sid: str, rid: str, **fields) -> None:
 
 async def list_rows(**filters) -> list[dict]:
     response = await schedules.list_schedules_route(
-        enabled=filters.get("enabled"), trigger_type=None, project=filters.get("project")
+        enabled=filters.get("enabled"),
+        trigger_type=None,
+        project=filters.get("project"),
+        include_recent_runs=True,
     )
     return response["schedules"]
+
+
+@pytest.mark.asyncio
+async def test_recent_summary_is_opt_in_and_default_does_no_summary_work(isolated_db, monkeypatch):
+    async with StateDB() as db:
+        await create_schedule(db, "nightly")
+
+    async def forbidden(*args, **kwargs):
+        pytest.fail("Default list consumers must not compute recent histories")
+
+    monkeypatch.setattr(schedules, "_recent_run_summaries", forbidden)
+    rows = await schedules.list_schedules()
+    assert len(rows) == 1
+    assert "recent_runs_summary" not in rows[0]
+    response = await schedules.list_schedules_route(enabled=None, trigger_type=None, project=None)
+    assert "recent_runs_summary" not in response["schedules"][0]
+
+
+@pytest.mark.asyncio
+async def test_recent_reads_limit_index_work_and_fetch_only_displayed_error_payloads(
+    isolated_db, monkeypatch, record_property
+):
+    async with StateDB() as db:
+        await create_schedule(db, "nightly")
+    # Distinct timestamps let the existing schedule/time index stop at the
+    # requested prefix; equal-timestamp groups may still need an id sort.
+    with sqlite3.connect(isolated_db) as connection:
+        connection.executemany(
+            "INSERT INTO schedule_runs (id, schedule_id, action_kind, status, fired_at, error_detail,"
+            " trigger_context, action_args, created_at)"
+            " VALUES (?, 'nightly', 'agent', 'failed', ?, ?, '{}', '{}', 0)",
+            [
+                (f"run-{index:04}", index, "Permission denied " + "x" * 2048)
+                for index in range(2000)
+            ],
+        )
+
+    payloads = []
+    steps = 0
+    statements = []
+    plan = []
+
+    def progress():
+        nonlocal steps
+        steps += 1
+
+    def error_payload(value):
+        payloads.append(value)
+        return value
+
+    original = StateDB.fetch_all
+
+    async def observed_read(db, query, params=None):
+        if "schedule_runs" not in query:
+            return await original(db, query, params)
+        statements.append(query)
+        with sqlite3.connect(isolated_db) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.create_function("observe_error", 1, error_payload)
+            columns = ", ".join(schedules._RUN_SUMMARY_FIELDS)
+            connection.execute(
+                f"CREATE TEMP VIEW observed_runs AS SELECT {columns},"
+                " observe_error(error_detail) AS error_detail FROM schedule_runs"
+            )
+            observed_query = query.replace("schedule_runs", "observed_runs")
+            plan.extend(
+                row["detail"]
+                for row in connection.execute("EXPLAIN QUERY PLAN " + observed_query, params)
+            )
+            connection.set_progress_handler(progress, 1)
+            return [dict(row) for row in connection.execute(observed_query, params)]
+
+    monkeypatch.setattr(StateDB, "fetch_all", observed_read)
+    async with StateDB() as db:
+        summary = (await schedules._recent_run_summaries(db, ["nightly"]))["nightly"]
+    assert summary["status"] == "available"
+    assert summary["has_next"] is True
+    assert len(summary["runs"]) == 25
+    assert len(statements) == 1
+    record_property("sqlite_vm_steps", steps)
+    record_property("error_payload_reads", len(payloads))
+    record_property("query_plan", " | ".join(plan))
+    assert any("idx_sched_runs_schedule" in step for step in plan)
+    assert len(payloads) == 25
+    assert steps < 5000, f"Expected an indexed prefix read, observed {steps} SQLite VM steps"
+
+
+@pytest.mark.asyncio
+async def test_tied_summary_and_detail_choose_the_same_first_page(isolated_db):
+    async with StateDB() as db:
+        await create_schedule(db, "nightly")
+        for index in reversed(range(30)):
+            await create_run(db, "nightly", f"run-{index:02}")
+    summary = (await list_rows())[0]["recent_runs_summary"]
+    history = await schedules.list_schedule_run_views("nightly", limit=25)
+    assert [row["id"] for row in summary["runs"]] == [row["id"] for row in history]
 
 
 @pytest.mark.asyncio
@@ -108,7 +208,7 @@ async def test_100_schedules_use_three_batched_reads_and_no_history_reads(isolat
     assert len(rows) == 100
     assert len(calls) == 3
     assert calls[0][1] == 100
-    assert "ROW_NUMBER()" in calls[0][0]
+    assert "ORDER BY fired_at DESC, id DESC LIMIT ?" in calls[0][0]
     assert all(len(row["recent_runs_summary"]["runs"]) == 1 for row in rows)
 
 
@@ -196,7 +296,11 @@ async def test_batch_failure_is_unavailable_for_every_slice(isolated_db, monkeyp
     monkeypatch.setattr(StateDB, "fetch_all", fetch_all)
     rows = await list_rows()
     assert len(rows) == 2
-    assert all(row["recent_runs_summary"] == schedules._unavailable_run_summary() for row in rows)
+    assert all(
+        row["recent_runs_summary"]
+        == {"version": 1, "status": "unavailable", "limit": 25, "has_next": None, "runs": []}
+        for row in rows
+    )
 
 
 @pytest.mark.asyncio

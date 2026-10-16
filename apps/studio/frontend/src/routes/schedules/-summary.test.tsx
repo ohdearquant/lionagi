@@ -98,3 +98,10 @@ it("does not render an empty-schedules claim when the first batch failed", () =>
   expect(container.querySelector('[role="alert"]')?.textContent).toContain(en.schedules.loadError);
   expect(container.textContent).not.toContain(en.schedules.emptyTitle);
 });
+
+it("keeps unavailable schedule names beside a list refresh failure", () => {
+  renderPage([{ id: "missing", name: "Nightly" } as ScheduleSummary], true);
+  const alert = container.querySelector('[role="alert"]')?.textContent;
+  expect(alert).toContain(en.schedules.loadError);
+  expect(alert).toContain("Recent runs unavailable: Nightly");
+});

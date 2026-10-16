@@ -466,6 +466,7 @@ async def list_schedules(
     enabled: bool | None = None,
     trigger_type: str | None = None,
     project: str | None = None,
+    include_recent_runs: bool = False,
 ) -> list[dict[str, Any]]:
     if state_db_known_absent():
         return []
@@ -475,10 +476,11 @@ async def list_schedules(
         used_by_id = await db.count_schedule_runs_batch(ids, chain_depth=0)
         streaks_by_id = await db.schedule_run_streaks(ids)
         health_evidence_by_id = await db.schedule_health_evidence(ids)
-        recent_by_id = await _recent_run_summaries(db, ids)
+        recent_by_id = await _recent_run_summaries(db, ids) if include_recent_runs else None
         now = time.time()
         for row in rows:
-            row["recent_runs_summary"] = recent_by_id[row["id"]]
+            if recent_by_id is not None:
+                row["recent_runs_summary"] = recent_by_id[row["id"]]
             if row.get("max_runs"):
                 row["remaining_runs"] = max(row["max_runs"] - used_by_id[row["id"]], 0)
             if row.get("budget_usd") or row.get("budget_tokens"):
@@ -577,9 +579,11 @@ def _unavailable_run_summary() -> dict[str, Any]:
 
 
 async def _recent_run_summaries(db: StateDB, schedule_ids: list[str]) -> dict[str, dict[str, Any]]:
-    """One recent slice per definition, with bounded occurrence reads and batched joins.
+    """Select 26 recent keys per definition and load payloads for the displayed 25.
 
-    The extra occurrence detects longer history without a lifetime count. Linked
+    Each correlated key query uses the schedule/time index and its own LIMIT;
+    tied timestamps may require sorting more keys by id. The extra key detects
+    longer history without reading its error payload or counting all runs. Linked
     session evidence must include every child: the shared reducer only grades a
     session outcome when all children are terminal. No per-run reads are performed.
     """
@@ -588,13 +592,18 @@ async def _recent_run_summaries(db: StateDB, schedule_ids: list[str]) -> dict[st
         return result
     try:
         rows = await db.fetch_all(
-            "SELECT * FROM ("
-            " SELECT id, schedule_id, invocation_id, action_kind, status, exit_code,"
-            " chain_depth, fired_at, ended_at, error_detail,"
-            " ROW_NUMBER() OVER (PARTITION BY schedule_id ORDER BY fired_at DESC, id DESC) AS rn"
-            " FROM schedule_runs WHERE schedule_id IN (SELECT value FROM json_each(?))"
-            ") WHERE rn <= ? ORDER BY schedule_id, rn",
-            (json.dumps(schedule_ids), _RECENT_RUN_LIMIT + 1),
+            "SELECT recent.value AS id, definition.value AS schedule_id,"
+            " occurrence.invocation_id, occurrence.action_kind, occurrence.status,"
+            " occurrence.exit_code, occurrence.chain_depth, occurrence.fired_at,"
+            " occurrence.ended_at, occurrence.error_detail"
+            " FROM json_each(?) AS definition"
+            " JOIN json_each((SELECT json_group_array(id) FROM ("
+            " SELECT id FROM schedule_runs WHERE schedule_id = definition.value"
+            " ORDER BY fired_at DESC, id DESC LIMIT ?))) AS recent"
+            " LEFT JOIN schedule_runs AS occurrence"
+            " ON occurrence.id = recent.value AND recent.key < ?"
+            " ORDER BY definition.value, recent.key",
+            (json.dumps(schedule_ids), _RECENT_RUN_LIMIT + 1, _RECENT_RUN_LIMIT),
         )
         grouped: dict[str, list[dict[str, Any]]] = {sid: [] for sid in schedule_ids}
         for row in rows:
@@ -1229,8 +1238,14 @@ async def list_schedules_route(
     enabled: bool | None = Query(default=None),
     trigger_type: str | None = Query(default=None),
     project: str | None = Query(default=None),
+    include_recent_runs: bool = False,
 ) -> dict[str, Any]:
-    rows = await list_schedules(enabled=enabled, trigger_type=trigger_type, project=project)
+    rows = await list_schedules(
+        enabled=enabled,
+        trigger_type=trigger_type,
+        project=project,
+        include_recent_runs=include_recent_runs,
+    )
     return {"schedules": [_schedule_summary(row) for row in rows]}
 
 
