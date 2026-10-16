@@ -1512,9 +1512,11 @@ async def test_a_body_that_quotes_a_name_in_another_case_is_refused(object_sql, 
 # A literal keeps its quotes, a blob is one token, and a trigger's order counts (D2)
 
 
-async def _refused_against(reference: Path, store: Path) -> str:
+async def _refused_against(
+    reference: Path, store: Path, profile: CompatibilityProfile | None = None
+) -> str:
     """The reference store is admitted against its own closure; the other store is refused."""
-    profile = _profile(reference)
+    profile = profile or _profile(reference)
     await (await _open(reference, profile)).close()
     db = _RunsDB(store, compatibility=profile)
     with pytest.raises(StateCompatibilityRefused, match="does not match the profile") as caught:
@@ -1619,12 +1621,201 @@ async def test_two_triggers_in_the_other_order_are_refused(tmp_path):
         closure = read_closure(conn, ["runs", "events"])
     assert {(o.name, o.position) for o in closure.objects} == {("fa", 0), ("fb", 1)}
     reason = await _refused_against(reference, store)
-    assert "position" in reason
+    assert "trigger fa is at position 1" in reason
+    assert "trigger fb is at position 0" in reason
+    # Each moved trigger is reported once, by its position, and never also as missing.
+    assert "missing or changed" not in reason
 
 
 async def test_two_triggers_in_the_same_order_are_admitted(tmp_path):
     reference = _store(tmp_path / "reference.db", _SCHEMA + _TRIGGER_A + _TRIGGER_B)
     store = _store(tmp_path / "managed.db", _SCHEMA + _TRIGGER_A + _TRIGGER_B)
+    db = await _open(store, _profile(reference))
+    await db.close()
+
+
+_BEFORE_INSERT = "CREATE TRIGGER tb BEFORE INSERT ON events BEGIN SELECT 1; END;\n"
+_AFTER_UPDATE = "CREATE TRIGGER tu AFTER UPDATE ON events BEGIN SELECT 2; END;\n"
+
+
+async def test_triggers_for_different_events_in_the_other_order_are_admitted(tmp_path):
+    """SQLite orders a table's triggers by creation only among those for one event and timing,
+    so a BEFORE INSERT and an AFTER UPDATE trigger created in the other order are the same
+    closure."""
+    reference = _store(tmp_path / "reference.db", _SCHEMA + _BEFORE_INSERT + _AFTER_UPDATE)
+    store = _store(tmp_path / "managed.db", _SCHEMA + _AFTER_UPDATE + _BEFORE_INSERT)
+    with closing(sqlite3.connect(store)) as conn:
+        closure = read_closure(conn, ["runs", "events"])
+    assert {(o.name, o.position) for o in closure.objects} == {("tb", 0), ("tu", 0)}
+    db = await _open(store, _profile(reference))
+    await db.close()
+
+
+async def test_a_trigger_without_a_timing_is_ordered_with_the_before_triggers(tmp_path):
+    """A trigger that names no timing fires BEFORE, so it shares its place in the order with the
+    BEFORE triggers for its event."""
+    schema = (
+        _SCHEMA
+        + "CREATE TRIGGER t1 INSERT ON events BEGIN SELECT 1; END;\n"
+        + "CREATE TRIGGER t2 BEFORE INSERT ON events BEGIN SELECT 2; END;\n"
+    )
+    with closing(sqlite3.connect(_store(tmp_path / "store.db", schema))) as conn:
+        closure = read_closure(conn, ["runs", "events"])
+    assert {(o.name, o.position) for o in closure.objects} == {("t1", 0), ("t2", 1)}
+
+
+_LEDGER_TRIGGER = (
+    "CREATE TRIGGER keep AFTER INSERT ON events BEGIN "
+    "INSERT INTO ledger (entry) VALUES (NEW.body); END;\n"
+)
+_LEDGER = "CREATE TABLE ledger (entry TEXT);\n"
+
+
+def _event_insert_succeeds(schema: str) -> bool:
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.executescript(schema)
+        try:
+            conn.execute("INSERT INTO events (run_id, body) VALUES ('r', 'b')")
+        except sqlite3.OperationalError:
+            return False
+        return True
+
+
+async def test_a_table_only_the_stores_closure_reaches_is_refused(tmp_path):
+    """A closure trigger that writes a table the profile's store lacks fails there and succeeds
+    in a store that has the table, so a table only the store's closure reaches refuses it."""
+    reference_schema = _SCHEMA + _LEDGER_TRIGGER
+    store_schema = _SCHEMA + _LEDGER + _LEDGER_TRIGGER
+    assert not _event_insert_succeeds(reference_schema)
+    assert _event_insert_succeeds(store_schema)
+    reference = _store(tmp_path / "reference.db", reference_schema)
+    store = _store(tmp_path / "managed.db", store_schema)
+    reason = await _refused_against(reference, store)
+    assert "table ledger is not in the profile" in reason
+
+
+# A quoted name that a bare word reads otherwise is not that word (D2)
+
+
+def _with_column(definition: str) -> str:
+    return _SCHEMA.replace(_NOTE_COLUMN, f"{_NOTE_COLUMN}\n    {definition},", 1)
+
+
+def _profile_with_column(reference: Path, name: str) -> CompatibilityProfile:
+    runs = _WRITES["runs"]
+    unwritten = {**runs.unwritten, name: "the managing application writes it"}
+    writes = {**_WRITES, "runs": TableWrites(runs.insert, runs.update, unwritten)}
+    return _profile(reference, writes=writes)
+
+
+def _runs_accepts(schema: str, column: str, value: str | None) -> bool:
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.executescript(schema)
+        try:
+            conn.execute(
+                f"INSERT INTO runs (id, status, {column}) VALUES ('r', 'running', ?)", (value,)
+            )
+        except sqlite3.IntegrityError:
+            return False
+        return True
+
+
+# (column as SQL, column as PRAGMA names it, the reference's definition, the store's, a value
+# the reference refuses and the store accepts)
+_QUOTED_NAME_PAIRS = {
+    "double-quoted null": (
+        '"null"',
+        "null",
+        '"null" TEXT CHECK ("null" IS NULL)',
+        '"null" TEXT CHECK (null IS NULL)',
+        "value",
+    ),
+    "bracketed null": (
+        '"null"',
+        "null",
+        "[null] TEXT CHECK ([null] IS NULL)",
+        "[null] TEXT CHECK (null IS NULL)",
+        "value",
+    ),
+    "a name holding quotes": (
+        '"""x"""',
+        '"x"',
+        '"""x""" TEXT CHECK ("""x""" IS NOT NULL)',
+        '"""x""" TEXT CHECK ("x" IS NOT NULL)',
+        None,
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("column", "name", "reference_sql", "store_sql", "value"),
+    _QUOTED_NAME_PAIRS.values(),
+    ids=_QUOTED_NAME_PAIRS,
+)
+async def test_a_quoted_name_is_not_the_bare_word_or_literal_spelled_alike(
+    column, name, reference_sql, store_sql, value, tmp_path
+):
+    """``"null"`` naming a column is that column, the bare ``null`` is the value NULL, and
+    ``"x"`` naming no column is a string, so a CHECK on the column and a CHECK on the value read
+    alike once folded and still refuse different rows."""
+    reference_schema, store_schema = _with_column(reference_sql), _with_column(store_sql)
+    assert not _runs_accepts(reference_schema, column, value)
+    assert _runs_accepts(store_schema, column, value)
+    reference = _store(tmp_path / "reference.db", reference_schema)
+    store = _store(tmp_path / "managed.db", store_schema)
+    reason = await _refused_against(reference, store, _profile_with_column(reference, name))
+    assert "runs" in reason
+
+
+_SAME_NAME_PAIRS = {
+    "null in two quote styles": (
+        "null",
+        '"null" TEXT CHECK ("null" IS NULL)',
+        "[null] TEXT CHECK (`null` IS NULL)",
+    ),
+    "a plain name quoted and bare": (
+        "label",
+        '"label" TEXT CHECK ("label" IS NOT NULL)',
+        "label TEXT CHECK (label IS NOT NULL)",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("name", "reference_sql", "store_sql"), _SAME_NAME_PAIRS.values(), ids=_SAME_NAME_PAIRS
+)
+async def test_one_name_quoted_two_ways_is_admitted(name, reference_sql, store_sql, tmp_path):
+    reference = _store(tmp_path / "reference.db", _with_column(reference_sql))
+    store = _store(tmp_path / "managed.db", _with_column(store_sql))
+    db = await _open(store, _profile_with_column(reference, name))
+    await db.close()
+
+
+_NAMED_SPELLINGS = {
+    "referenced column": (
+        "run_id TEXT NOT NULL REFERENCES runs(id)",
+        'run_id TEXT NOT NULL REFERENCES runs("id")',
+    ),
+    "constraint name": (
+        "CONSTRAINT uq UNIQUE (run_id, body)",
+        'CONSTRAINT "uq" UNIQUE (run_id, body)',
+    ),
+}
+_NAMED_SITES = {
+    "referenced column": "run_id TEXT NOT NULL REFERENCES runs(id)",
+    "constraint name": "UNIQUE (run_id, body)",
+}
+
+
+@pytest.mark.parametrize("site", _NAMED_SPELLINGS)
+async def test_a_quoted_token_sqlite_reads_as_a_name_is_compared_as_one(site, tmp_path):
+    """The column list after ``REFERENCES <table>`` and the word after ``CONSTRAINT`` are names,
+    so quoting them changes nothing."""
+    reference_sql, store_sql = _NAMED_SPELLINGS[site]
+    reference = _store(
+        tmp_path / "reference.db", _SCHEMA.replace(_NAMED_SITES[site], reference_sql, 1)
+    )
+    store = _store(tmp_path / "managed.db", _SCHEMA.replace(_NAMED_SITES[site], store_sql, 1))
     db = await _open(store, _profile(reference))
     await db.close()
 

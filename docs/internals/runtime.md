@@ -47,9 +47,11 @@ whose schema another application manages, and never migrates, stamps or reconfig
   closure's triggers and views) and refuses unless it equals the profile's closure. What joins the
   closure is a fixed point: a trigger or view whose SQL may name one of the tables, in any
   spelling and a quoted string included, joins, and so does one whose SQL may name another object of
-  the closure; a view or a table a closure object reads joins in turn, until nothing new joins. A
-  trigger's place among the closure triggers on its own table is part of the closure, since the
-  order SQLite fires a table's triggers in depends on the order they were created.
+  the closure; a view or a table a closure object reads joins in turn, until nothing new joins,
+  and a table only the store's closure reaches is refused as not in the profile. A trigger's place
+  among the closure triggers on its own table that fire on the same event and timing is part of
+  the closure, since SQLite fires those in an order fixed by when they were created; triggers
+  for different events or timings may be created in any order.
   `store_versions` narrows the stores a profile is tried on; a version never admits on its own. A
   failed admission disposes the engine, so the object stays unopened. A write transaction compares
   `PRAGMA schema_version` with the admitted value once it holds the writer, and re-reads the
@@ -62,9 +64,13 @@ whose schema another application manages, and never migrates, stamps or reconfig
   compared as written, with only whitespace and comments set aside: every token keeps its case and
   its quote characters, and a store whose default, trigger or view differs from the profile's in
   case or in quoting is refused even where SQLite would read the two alike. A double-quoted token
-  in a table's or an index's definition that names no column is read as a string literal, keeps
-  its quotes, and equals only the same literal written the same way; a blob literal (`x'41'`) is a
-  token of its own. The mode fails closed,
+  in a table's or an index's definition is read as a string literal when it names no column and
+  stands where SQLite may read a literal, that is anywhere but after a dot, after a word that
+  takes a name (`REFERENCES`, `ON`, `COLLATE`, `CONSTRAINT` and the like) or in the column list
+  after `REFERENCES <table>`; a literal keeps its quotes and equals only the same literal written
+  the same way. A quoted name that a bare word would read as something else, `"null"` or a name
+  holding a quote, equals only the same name quoted, never the bare word. A blob literal
+  (`x'41'`) is a token of its own. The mode fails closed,
   since whether SQLite reads a quoted token as a name or as a string literal depends on the scope
   it appears in and on the connection's double-quoted-string setting. A table whose constraints
   declare any conflict resolution but ABORT (`ON CONFLICT REPLACE`, `ROLLBACK`, `IGNORE` or
