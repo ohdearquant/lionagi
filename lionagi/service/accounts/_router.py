@@ -167,13 +167,12 @@ class AccountRouter:
         usage: CompleteUsage | None,
         *,
         reason: str = "usage_incomplete",
-    ) -> bool:
+    ) -> None:
         evidence = usage or UnknownOutcome(reason)
-        timeout = max(0.1, self.ledger.busy_timeout_s)
+        # The write runs in a worker thread that is not abandoned on cancellation, so the
+        # shield keeps an anyio cancel scope from returning before it commits.
         with anyio.CancelScope(shield=True):
-            with anyio.move_on_after(timeout, shield=True) as timeout_scope:
-                await self.ledger.settle(attempt.attempt_id, evidence)
-        return not timeout_scope.cancel_called
+            await self.ledger.settle(attempt.attempt_id, evidence)
 
 
 def _refuse(code: RouterErrorCode) -> AccountRoutingError:

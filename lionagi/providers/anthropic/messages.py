@@ -455,8 +455,12 @@ class AnthropicMessagesEndpoint(Endpoint):
                 )
                 status = response.status
                 if status in (401, 403):
-                    await router.settle_unknown(attempt, "auth_required")
+                    # A cancellation during the first of these writes lets it commit but stops
+                    # the second from starting, so the block goes first: losing the attempt's
+                    # reason keeps its ceiling held, while losing the block would leave the
+                    # refused key free to be reserved again.
                     await router.block(attempt, "auth_required")
+                    await router.settle_unknown(attempt, "auth_required")
                     raise _RoutedNoRetryError(
                         RouterErrorCode.AUTH_FAILED.value,
                         account=attempt.account,
@@ -516,16 +520,18 @@ class AnthropicMessagesEndpoint(Endpoint):
                 return redact_value(_mask_content_runs(body, attempt.key), attempt.key)
         except get_cancelled_exc_class():
             # The request may have reached the provider, so the attempt stays open with its
-            # ceiling held and records why, as a cancelled stream does. The write is shielded
-            # so the cancellation cannot cut it short; an attempt that already settled is left
-            # as it is. A ledger that refuses the write (locked) records nothing, and the
-            # cancellation still reaches the caller.
+            # ceiling held and records why, as a cancelled stream does. The write runs in a
+            # worker thread that the cancellation does not stop: under an anyio cancel scope
+            # the caller waits for it, while a native task.cancel() returns to the caller at
+            # once and the write commits after. An attempt that already settled is left as it
+            # is. A write that fails records nothing, and the cancellation still reaches the
+            # caller.
             try:
                 if not request_entered:
                     await router.settle_not_sent(attempt)
                 else:
                     await router.settle_stream_end(attempt, None, reason="cancelled")
-            except AccountRoutingError:
+            except Exception:  # noqa: S110 - the caller must see the cancellation
                 pass
             raise
         except AccountRoutingError as exc:
@@ -866,6 +872,8 @@ class AnthropicMessagesEndpoint(Endpoint):
                         started_model = settlement.get("model")
                         if isinstance(started_model, str) and started_model:
                             start_models.add(started_model)
+                        else:
+                            started_model = None
                         if not saw_final_usage:
                             served_model = started_model or served_model
                         request_id = (
@@ -878,16 +886,16 @@ class AnthropicMessagesEndpoint(Endpoint):
                     delta_usage = settlement.get("usage") if settlement else None
                     if isinstance(delta_usage, dict):
                         usage.update(delta_usage)
+                        # Usage that arrives after starts naming two models, an output count
+                        # or any other count, has no one model to price it at, so the attempt
+                        # is left unpriced, open with its ceiling held. Usage that arrived
+                        # before the second start keeps the first model's price.
+                        if len(start_models) > 1:
+                            served_model = None
                         output_tokens = delta_usage.get("output_tokens")
                         if isinstance(output_tokens, int) and not isinstance(output_tokens, bool):
-                            # A count that arrives after starts naming two models has no one
-                            # model to price it at, so the attempt is left unpriced, open with
-                            # its ceiling held. A count that arrived before the second start
-                            # keeps the first model's price. A later delta whose count is not
-                            # an integer replaces the earlier count, which also leaves the
-                            # attempt unpriced.
-                            if len(start_models) > 1:
-                                served_model = None
+                            # A later delta whose count is not an integer replaces the earlier
+                            # count, which also leaves the attempt unpriced.
                             saw_final_usage = True
                 elif event_type == "error":
                     saw_error_event = True
@@ -933,8 +941,12 @@ class AnthropicMessagesEndpoint(Endpoint):
                 )
                 status = response.status
                 if status in (401, 403):
-                    await router.settle_unknown(attempt, "auth_required")
+                    # A cancellation during the first of these writes lets it commit but stops
+                    # the second from starting, so the block goes first: losing the attempt's
+                    # reason keeps its ceiling held, while losing the block would leave the
+                    # refused key free to be reserved again.
                     await router.block(attempt, "auth_required")
+                    await router.settle_unknown(attempt, "auth_required")
                     raise AccountRoutingError(
                         RouterErrorCode.AUTH_FAILED,
                         account=attempt.account,
@@ -999,14 +1011,14 @@ class AnthropicMessagesEndpoint(Endpoint):
                     await router.settle_stream_end(attempt, None, reason=reason)
                     settled = True
         except get_cancelled_exc_class():
-            # A ledger that refuses the write (locked) records nothing; the cancellation still
-            # reaches the caller.
+            # A write that fails records nothing; the cancellation still reaches the caller.
+            # As on the call path, a native task.cancel() returns before the write commits.
             try:
                 if not request_entered:
                     await router.settle_not_sent(attempt)
                 elif not settled:
                     await router.settle_stream_end(attempt, None, reason="cancelled")
-            except AccountRoutingError:
+            except Exception:  # noqa: S110 - the caller must see the cancellation
                 pass
             raise
         except GeneratorExit:

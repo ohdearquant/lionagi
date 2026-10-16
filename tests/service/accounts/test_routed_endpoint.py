@@ -8,6 +8,8 @@ import asyncio
 import copy
 import json
 import sqlite3
+import threading
+import time
 from collections import deque
 from collections.abc import Mapping
 from uuid import uuid4
@@ -3722,14 +3724,119 @@ async def test_a_count_after_starts_naming_two_models_leaves_the_attempt_unprice
 
 
 @pytest.mark.asyncio
+async def test_usage_after_starts_naming_two_models_leaves_the_attempt_unpriced(
+    monkeypatch, tmp_path
+):
+    """Usage that arrives after a second message_start names another model has no one model
+    to price it at, even when it carries no output count, so the attempt stays open with its
+    ceiling held instead of settling at the first model's price."""
+    path = _install_accounts(monkeypatch, tmp_path)
+    start = copy.deepcopy(_MESSAGE_START)
+    start["message"]["usage"]["output_tokens"] = 1
+    late = {"type": "message_start", "message": {"id": "msg_s", "model": "claude-opus-5-5"}}
+    events = [
+        start,
+        _PARTIAL_TEXT,
+        {"type": "message_delta", "usage": {"output_tokens": 5}},
+        late,
+        {"type": "message_delta", "usage": {"input_tokens": 120}},
+        {"type": "message_stop"},
+    ]
+    model, _ = _model(monkeypatch, [StubResponse(pieces=[_sse(events)])])
+    assert [chunk async for chunk in model.endpoint.stream(REQUEST)]
+
+    (row,) = _attempts(path)
+    assert row[2:] == ("open", None, "usage_incomplete"), row
+
+
+@pytest.mark.asyncio
+async def test_a_message_start_whose_model_is_not_a_string_keeps_the_earlier_model(
+    monkeypatch, tmp_path
+):
+    """A message_start whose model is not a string says nothing about the model, so the
+    earlier start's model prices the attempt."""
+    path = _install_accounts(monkeypatch, tmp_path)
+    events = [
+        copy.deepcopy(_MESSAGE_START),
+        _PARTIAL_TEXT,
+        {"type": "message_start", "message": {"id": "msg_b", "model": 5}},
+        {"type": "message_delta", "usage": {"output_tokens": 5}},
+        {"type": "message_stop"},
+    ]
+    model, _ = _model(monkeypatch, [StubResponse(pieces=[_sse(events)])])
+    assert [chunk async for chunk in model.endpoint.stream(REQUEST)]
+
+    (row,) = _attempts(path)
+    assert row[2:] == ("settled", 250_000, "complete"), row
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("streamed", [False, True], ids=["call", "stream"])
-async def test_a_locked_ledger_does_not_replace_the_cancellation(monkeypatch, tmp_path, streamed):
-    """When the ledger refuses the cancelled attempt's write, the caller still gets
-    CancelledError, not the ledger's refusal."""
+async def test_a_cancel_while_an_auth_failure_is_recorded_keeps_the_account_blocked(
+    monkeypatch, tmp_path, streamed
+):
+    """A native cancel that arrives while a 401's attempt is being written returns before
+    that write commits and stops any write after it, so the account block is written first:
+    the refused key is not reserved again."""
+    path = _install_accounts(monkeypatch, tmp_path)
+    router = router_module.get_router()
+    in_write = threading.Event()
+    write_done = threading.Event()
+    original = router.ledger._settle_sync
+
+    def slow_auth_settle(attempt_id, evidence):
+        auth = getattr(evidence, "reason_code", None) == "auth_required"
+        try:
+            if auth:
+                in_write.set()
+                time.sleep(0.2)
+            return original(attempt_id, evidence)
+        finally:
+            if auth:
+                write_done.set()
+
+    monkeypatch.setattr(router.ledger, "_settle_sync", slow_auth_settle)
+    model, _ = _model(monkeypatch, [StubResponse(401, {"error": CANARY})])
+
+    async def consume():
+        if streamed:
+            async for _ in model.endpoint.stream(REQUEST):
+                pass
+        else:
+            await model.endpoint.call(REQUEST)
+
+    task = asyncio.create_task(consume())
+    for _ in range(1000):
+        if in_write.is_set() or task.done():
+            break
+        await asyncio.sleep(0.005)
+    assert in_write.is_set()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert await asyncio.to_thread(write_done.wait, 5)
+
+    with sqlite3.connect(path) as connection:
+        reason = connection.execute(
+            "SELECT block_reason FROM account WHERE name = 'primary'"
+        ).fetchone()[0]
+    assert reason == "auth_required"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["refused", "missing-row"])
+@pytest.mark.parametrize("streamed", [False, True], ids=["call", "stream"])
+async def test_a_failed_ledger_write_does_not_replace_the_cancellation(
+    monkeypatch, tmp_path, streamed, failure
+):
+    """When the cancelled attempt's write fails, refused by the ledger or for any other
+    reason, the caller still gets CancelledError, not the write's error."""
     _install_accounts(monkeypatch, tmp_path)
 
     async def refuse(self, attempt, usage, *, reason="usage_incomplete"):
-        raise AccountRoutingError(RouterErrorCode.LEDGER_BUSY)
+        if failure == "refused":
+            raise AccountRoutingError(RouterErrorCode.LEDGER_BUSY)
+        raise LookupError("no attempt row")
 
     monkeypatch.setattr(router_module.AccountRouter, "settle_stream_end", refuse)
     model = iModel(provider="anthropic", model=MODEL)
