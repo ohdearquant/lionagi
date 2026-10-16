@@ -51,11 +51,12 @@ li studio
 
 The default starts the API daemon at `http://127.0.0.1:8765` and opens the hosted
 web client at [lion-studio.khive.ai](https://lion-studio.khive.ai). The hosted
-page is the frontend; execution and stored history remain on your machine.
-Keep the command running while using Studio or its scheduler. `li studio` opens the page
-with a one-time pairing code, which is how the daemon knows the page came from
-you: a code works once, within two minutes. If you reload the page or open the
-hosted address yourself, the page asks you to run `li studio` again; with the
+page is the frontend; the daemon it pairs with holds the execution and stored
+history. Keep the command running while using Studio or its scheduler. `li studio`
+opens the page with a one-time pairing code, which lets the daemon give the
+bearer only to a page that presents a code from this launch: a code works once,
+within two minutes. If you reload the page or open the hosted address yourself,
+the page asks you to run `li studio` again; with the
 daemon already running, that opens a newly paired page without starting a
 second daemon. Use `--no-open` when you do not want LionAGI to open a browser;
 `li studio` then prints the one-time link instead.
@@ -63,15 +64,16 @@ second daemon. Use `--no-open` when you do not want LionAGI to open a browser;
 ### Authentication and browser trust
 
 By default, `LIONAGI_STUDIO_AUTH_TOKEN` is unset and the daemon requires no
-bearer token, but its API is not open to every caller that can reach it. A
-request with no `Origin` header, as from the CLI or a script, is accepted. A
-browser page is accepted when its origin is loopback (`localhost`,
-`127.0.0.0/8`, or `::1`), when it is the daemon's own origin, or when it sends
-the bearer this launch paired it with. A page on any other origin is refused
-with 401. `li studio` opens the hosted page with a one-time pairing code and
-the page exchanges that code for the bearer, which is how the hosted page works
-without a token configured. Host validation and CORS do not authenticate the
-caller and are not proof that a human approved a request.
+bearer token. A request with no `Origin` header is accepted, and browsers send
+none on some cross-site GET requests, so any client that can reach the port and
+sends no `Origin` can call the API. A browser page is accepted when its origin
+is loopback (`localhost`, `127.0.0.0/8`, or `::1`), when it is the daemon's own
+origin, or when it sends the bearer this launch paired it with. A request that
+carries an `Origin` from another site is refused with 401. `li studio` opens the
+hosted page with a one-time pairing code and the page exchanges that code for
+the bearer, which is how the hosted page works without a token configured. Host
+validation and CORS do not authenticate the caller and are not proof that a
+human approved a request.
 
 The default browser origins, `CORS_ORIGINS`, are `http://localhost:5173`,
 `http://localhost:3000`, `http://localhost:3765`, and
@@ -80,9 +82,12 @@ a pairing code; the first three are local development ports.
 
 Set `LIONAGI_STUDIO_AUTH_TOKEN` in the daemon's environment before starting it
 to require `Authorization: Bearer <token>` for API requests and the
-schema/docs endpoints. `/health` and CORS preflight remain unauthenticated.
-Pairing hands a page the configured token, so the hosted page keeps working
-once it is paired, and every other client must supply the matching bearer. The
+schema/docs endpoints. `/health`, CORS preflight, and the `POST /api/studio/pair`
+exchange remain unauthenticated; the pairing route needs no bearer because the
+one-time code is its credential. The daemon also serves the single-page app shell
+and its hashed assets without a bearer. Pairing hands a page the configured
+token, so the hosted page keeps working once it is paired, and every other
+client must supply the matching bearer. The
 bundled UI in `--docker` mode has no token-entry field either, so with a token
 set inside the container its API calls get 401; the desktop shell injects a
 token for its own daemon into its frontend.
@@ -113,8 +118,9 @@ default also leaves opening the browser to you.
 to the default, `--no-frontend`, and `--dev` modes. A non-loopback value such
 as `--host 0.0.0.0` exposes the API to other machines; with no token set, the
 daemon warns at startup when it binds `0.0.0.0`. Docker mode takes no host
-address: `li studio --docker` publishes the port on all interfaces by default,
-as described below.
+address and ignores `--host`: `li studio --docker` publishes the port on all
+interfaces by default, and the container's own warning cannot fire because the
+image binds `0.0.0.0` without setting the bind host, as described below.
 
 Docker mode pulls `ghcr.io/ohdearquant/lion-studio:latest` and serves the bundled
 UI and API on port 8765 by default. It bind-mounts `~/.lionagi` read-write at

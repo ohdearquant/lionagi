@@ -39,9 +39,11 @@ experience, use `li studio --dev`.
 | `/schedules` | Calendar, schedule editing, and execution history          |
 | `/system`    | Health, maintenance, definitions, engines, and engine runs |
 
-Legacy deep links such as `/designer` (redirects to the Library workflow tab),
-`/runs/:id`, `/playbooks/:name`, `/teams`, and `/admin/maintenance` remain
-routed to their current space.
+Legacy deep links such as `/designer` (redirects to the Library with
+`tab=workflow`, whose Workflow tab and items are hidden), `/runs/:id`,
+`/playbooks/:name`, `/teams`, and `/admin/maintenance` remain routed to their
+current space. For the hidden kinds, see the
+[Library availability note](../../../docs/reference/studio-surfaces.md#currently-unavailable-library-kinds).
 
 ## API resolution
 

@@ -40,15 +40,17 @@ Studio" section for the other launch modes (`--docker`, `--no-frontend`, `--dev`
 
 ## Auth: loopback vs everything else
 
-The default daemon binds `127.0.0.1` and runs without a configured token: the browser
-tab and the daemon are the same person's machine, and the OS user boundary is the
-security boundary. A page on another origin still has to show that `li studio` opened
-it. With no token, the daemon refuses API requests from a browser origin that is neither
-loopback nor its own unless they carry the bearer of its launch, which it keeps in
-memory only. `li studio` opens the hosted page with a one-time pairing code in the URL
-fragment (`#pair=<code>`, single use, 120 seconds); the page removes the code from the
-address bar on load, exchanges it for that bearer at `POST /api/studio/pair`, and keeps
-the bearer in memory. A reload loses it, and the page then asks for `li studio` again;
+The default daemon binds `127.0.0.1` and runs without a configured token. Loopback is
+reachable by every local account and process, and a request with no `Origin` header is
+accepted, so the OS user boundary is not a security boundary: set a token before
+starting the daemon on a shared machine. A page on another origin still has to show that
+`li studio` opened it. With no token, the daemon refuses API requests from a browser
+origin that is neither loopback nor its own unless they carry the bearer of its launch,
+which it keeps in memory only. `li studio` opens the hosted page with a one-time
+pairing code in the URL fragment (`#pair=<code>`, single use, 120 seconds); the
+page removes the code from the address bar on load, exchanges it for that bearer
+at `POST /api/studio/pair`, and keeps the bearer in memory. A reload loses it, and
+the page then asks for `li studio` again;
 with the daemon already running, that opens a freshly paired page without starting a
 second daemon.
 

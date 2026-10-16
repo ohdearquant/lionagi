@@ -55,12 +55,13 @@ _REMOTE_ORIGIN_REFUSAL = (
 def _origin_accepted_without_token(origins: list[str], raw_host: str) -> bool:
     """Whether a request may use the API when no token is configured, by its Origin.
 
-    No Origin header (a command-line or scripted client) is accepted. A browser origin is
-    accepted when its host is loopback (``localhost``, 127.0.0.0/8 or ``::1``) on any port,
-    or when it is the daemon's own origin: its authority equals the request's Host, as for
-    the SPA a daemon bound to another address serves itself. Any other origin, ``null``
-    included, is refused. CORS only decides which pages may read a response; a page on an
-    allowed origin can still act, so it cannot stand in for this check.
+    No Origin header (a command-line or scripted client, and a browser on some cross-site
+    GET requests) is accepted. A browser origin is accepted when its host is loopback
+    (``localhost``, 127.0.0.0/8 or ``::1``) on any port, or when it is the daemon's own
+    origin: its authority equals the request's Host, as for the SPA a daemon bound to
+    another address serves itself. A request that carries an Origin from another site,
+    ``null`` included, is refused. CORS only decides which pages may read a response; a
+    page on an allowed origin can still act, so it cannot stand in for this check.
     """
     if not origins:
         return True
@@ -132,9 +133,10 @@ def _emit_startup_warnings() -> None:
             )
         else:
             _log.warning(
-                "Studio running WITHOUT authentication — API requests from the command "
-                "line and from pages on this machine are accepted; a page on any other "
-                "origin is refused. Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token."
+                "Studio running WITHOUT authentication — a request that carries no Origin "
+                "header is accepted, and browsers send none on some cross-site GET "
+                "requests; a request that carries an Origin from another site is refused. "
+                "Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token."
             )
 
     if "*" in CORS_ORIGINS:

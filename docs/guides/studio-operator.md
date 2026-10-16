@@ -51,9 +51,9 @@ the conversation shows a **Permission required** card and Operator waits.
 Operator waits until you decide or the request expires, currently ten minutes
 after creation. Expiry marks the request expired and releases the waiting turn;
 it never approves the request. A separate **Auto-allow proposals** checkbox in
-the composer is off by default and saved per browser; when you turn it on,
-Operator allows each pending proposal as it arrives instead of waiting for a
-click. Leave it off to decide each request yourself.
+the composer, shown on wider screens, is off by default and saved per browser;
+when you turn it on, Operator allows each pending proposal as it arrives
+instead of waiting for a click. Leave it off to decide each request yourself.
 
 ### Follow work into Fleet and Runs
 
@@ -125,9 +125,10 @@ shipping a release, exercise the real path in a disposable project:
    incrementally and the turn completes. Open Fleet to inspect the recorded
    execution; this text-only instruction does not require an **Open run** link.
 4. Reload Studio and confirm the conversation and completed turn return.
-5. Ask Operator to create a harmless temporary file. Choose **Deny** and
-   confirm the file was not created. Ask again, choose **Allow**, and confirm
-   the file was created; then remove it.
+5. Confirm **Auto-allow proposals** is off, then ask Operator to create a
+   harmless temporary file. Choose **Deny** and confirm the file was not
+   created. Ask again, choose **Allow**, and confirm the file was created; then
+   remove it.
 6. Start a longer inspection, choose **Stop**, and confirm the conversation
    reports **Turn stopped** and inspect the cancelled execution in Fleet.
 7. From that agent run, use **Continue this run** to send a follow-up and

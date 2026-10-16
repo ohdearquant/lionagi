@@ -15,30 +15,36 @@ source checkout can run a local development frontend. In the other modes,
 `--host` sets the bind address and defaults to `127.0.0.1`, so a non-loopback
 value such as `--host 0.0.0.0` exposes the API to other machines.
 
-With `LIONAGI_STUDIO_AUTH_TOKEN` unset, API authentication is disabled: any
-request with no browser origin, as from the CLI or a script, can call the
-`/api` endpoints, subject to their normal request validation. A browser page
-is admitted only from a loopback origin, the daemon's own origin, or an origin
-that sends the bearer this launch paired it with; a page on any other origin
-gets 401. The default `CORS_ORIGINS` lists `http://localhost:5173`,
-`http://localhost:3000`, `http://localhost:3765`, and
+With `LIONAGI_STUDIO_AUTH_TOKEN` unset, API authentication is disabled: a
+request with no `Origin` header, as from the CLI or a script, can call the
+`/api` endpoints, subject to their normal request validation. Browsers also
+send no `Origin` on some cross-site GET requests, so that admission is a
+property of the request, not proof that the caller is local. A browser page is
+admitted only from a loopback origin, the daemon's own origin, or an origin
+that sends the bearer this launch paired it with; a request that carries an
+`Origin` from another site gets 401. The default `CORS_ORIGINS` lists
+`http://localhost:5173`, `http://localhost:3000`, `http://localhost:3765`, and
 `https://lion-studio.khive.ai`, and only a page on one of them can redeem a
 pairing code. Host validation and CORS do not authenticate the caller or
 establish that a human approved a request.
 
 Setting `LIONAGI_STUDIO_AUTH_TOKEN` requires the matching bearer token for
-API requests and the schema/docs endpoints; `/health` and CORS preflight
-remain unauthenticated. Pairing gives the hosted page the configured token, so
-it keeps working once paired; any other client must supply the matching bearer.
+API requests and the schema/docs endpoints; `/health`, CORS preflight, and the
+`POST /api/studio/pair` exchange remain unauthenticated, the pairing route
+guarded by its one-time code instead of a bearer, and the single-page app shell
+and its hashed assets stay public. Pairing gives the hosted page the configured
+token, so it keeps working once paired; any other client must supply the
+matching bearer.
 These behaviors follow `lionagi/studio/app.py`, `lionagi/studio/config.py`,
 `lionagi/studio/services/pairing.py`, and
 `lionagi/studio/services/operator.py`; frontend credential handling is in
 `apps/studio/frontend/src/lib/api.ts`.
 
 This split lets the interface use local agents, files, and stored execution
-history. The hosted page does not become the owner of that state. Keep the
-daemon running for Operator and automatic scheduling. Closing a browser tab
-is different from stopping a turn or shutting down the daemon.
+history. Once paired, the page can call every API route, including starting
+runs and deciding Operator requests, so pair only with a hosted client you
+trust. Keep the daemon running for Operator and automatic scheduling. Closing a
+browser tab is different from stopping a turn or shutting down the daemon.
 
 Follow [Get started with Studio](../guides/studio-getting-started.md) to
 choose a launch mode.
@@ -62,9 +68,10 @@ fire provides launch context rather than being another name for a branch.
 In Python, [`Session`](../api/session.md) owns branches and supports their
 message exchange and graph execution. [`Branch`](../api/branch.md) owns the
 conversation state used by operations such as `communicate()`, `operate()`,
-and `run()`. An in-memory Python conversation alone is not a durable Studio
-history. Task-producing CLI paths persist state that Studio can read after
-the original interaction, while saved artifacts are a separate output.
+and `run()`. See [Core concepts](../concepts.md) for those primitives as the
+library defines them. An in-memory Python conversation alone is not a durable
+Studio history. Task-producing CLI paths persist state that Studio can read
+after the original interaction, while saved artifacts are a separate output.
 
 Operator also stores its conversation and turn events in the daemon. Reloading
 the client reconstructs that history; it does not replay the instruction as a
@@ -92,8 +99,8 @@ launching an execution are separate actions.
 | --- | --- | --- |
 | Agent | A named worker profile with instructions, model and tool-related configuration. | Library agent browsing and profile controls. |
 | Playbook | A reusable YAML specification for a task or flow, including parameters and prompts. | Library shows bundled templates and installed playbooks; template detail exposes metadata, inputs, and prompt. |
-| Workflow | A stored graph design with nodes and edges. | Backend definition services exist; the Library kind and Designer surface are unavailable. |
-| Engine | A domain-specific execution pipeline and its configuration. | Engine definition services and CLI exist; the Library kind is unavailable. System links to engine-run history. |
+| Workflow | A stored graph design with nodes and edges. | Backend definition services exist; the Library kind and Designer surface are unavailable, per the [availability note](../reference/studio-surfaces.md#currently-unavailable-library-kinds). |
+| Engine | A domain-specific execution pipeline and its configuration. | Engine definition services and CLI exist; System links to engine-run history. The Library kind is unavailable, per the [availability note](../reference/studio-surfaces.md#currently-unavailable-library-kinds). |
 | Skill | A named set of instructions and supporting resources for a capability. | Library inspects installed skills and their usage. |
 | Plugin | A package of related components, such as skills and agents. | Library inspects installed plugins and their contents. |
 

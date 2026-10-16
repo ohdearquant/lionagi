@@ -529,7 +529,8 @@ class TestRemoteOriginNeedsToken:
         with caplog.at_level("WARNING", logger=app_mod.__name__):
             app_mod._emit_startup_warnings()
 
-        assert "a page on any other origin is refused" in caplog.text
+        assert "a request that carries no Origin header is accepted" in caplog.text
+        assert "a request that carries an Origin from another site is refused" in caplog.text
 
 
 @pytest.mark.integration

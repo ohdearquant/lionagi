@@ -88,7 +88,11 @@ def _retired_studio_guide_refs(page: Path, text: str) -> set[str]:
     """
     targets = re.findall(r"\[[^\]]*?\]\(\s*<?([^\s)>]+)", text, flags=re.S)
     targets += re.findall(r"(?m)^ {0,3}\[[^\]\n]+\]:\s*<?([^\s>]+)", text)
-    targets += re.findall(r"<a\s[^>]*href=[\"']([^\"']+)[\"']", text, flags=re.I)
+    # An HTML anchor may leave its href unquoted, and a bare autolink publishes
+    # the same target; both are read so neither form can hide a stale link.
+    for match in re.finditer(r"<a\s[^>]*href=(?:\"([^\"]+)\"|'([^']+)'|([^\s>\"']+))", text, re.I):
+        targets.append(next(group for group in match.groups() if group is not None))
+    targets += re.findall(r"<((?:https?://|mailto:)[^>\s]+)>", text)
     found: set[str] = set()
     for target in targets:
         link = urlsplit(target)
@@ -179,41 +183,79 @@ def test_reference_identifies_the_current_release_line() -> None:
 
 
 def test_link_guard_covers_repository_readmes() -> None:
+    """The guard must read the repository READMEs by name; a change to
+    LINK_GUARD_EXTRA_PAGES that drops one has to fail here, so the expected
+    paths are spelled out rather than compared to the set under test."""
     scanned = {page.relative_to(ROOT).as_posix() for page in _link_guard_pages()}
-    missing = [name for name in LINK_GUARD_EXTRA_PAGES if name not in scanned]
+    expected = {"README.md", "apps/studio/README.md", "apps/studio/frontend/README.md"}
+    missing = sorted(expected - scanned)
     assert not missing, f"Link guard does not scan: {missing}"
 
 
 def test_link_guard_recognizes_wrapped_labels_and_html_anchors() -> None:
-    """A regression written as a wrapped markdown label or as a raw HTML anchor
-    must be reported, not only the single-line markdown form."""
+    """A regression written as a wrapped markdown label, a raw HTML anchor
+    (quoted or unquoted), or an autolink must be reported, not only the
+    single-line markdown form."""
     page = DOCS / "guides" / "studio-operator.md"
     text = (
         "[Studio and\nschedules](studio.md)\n\n"
         '<a href="../guides/studio.md">the Studio guide</a>\n\n'
         '<p>See <a href="studio/">the guide</a>.</p>\n\n'
+        "<a href=../guides/studio/>unquoted anchor</a>\n\n"
+        "<https://example.invalid/docs/guides/studio.md>\n\n"
         "[Operator](studio-operator.md)\n"
     )
     found = _retired_studio_guide_refs(page, text)
-    assert sorted(found) == ["../guides/studio.md", "studio.md", "studio/"]
+    assert sorted(found) == [
+        "../guides/studio.md",
+        "../guides/studio/",
+        "https://example.invalid/docs/guides/studio.md",
+        "studio.md",
+        "studio/",
+    ]
 
 
-def _studio_config_default_origins() -> list[str]:
-    """The default browser origins, read from the daemon that enforces them."""
+def _studio_config_default_origins(monkeypatch) -> list[str]:
+    """The default browser origins, read from the daemon that enforces them.
+
+    ``CORS_ORIGINS`` is built at import time from the environment variable of
+    the same name, so it is cleared first: the docs describe the defaults, and
+    an exported override must not turn this contract red.
+    """
+    monkeypatch.delenv("CORS_ORIGINS", raising=False)
     import importlib
 
     config = importlib.import_module("lionagi.studio.config")
     return config.CORS_ORIGINS
 
 
-def test_studio_docs_list_every_default_browser_origin() -> None:
+def _named_origins(text: str) -> set[str]:
+    """The ``http(s)://host[:port]`` origins a trust section names."""
+    return set(re.findall(r"https?://[^\s`'\"<>,;)\]]+", text))
+
+
+def test_studio_docs_list_every_default_browser_origin(monkeypatch) -> None:
     """The trust sections must name each default origin; naming only the hosted
     origin would hide the localhost development ports that can also pair."""
-    origins = _studio_config_default_origins()
+    origins = _studio_config_default_origins(monkeypatch)
     for name in ("guides/studio-getting-started.md", "concepts/studio-model.md"):
         text = (DOCS / name).read_text()
         missing = [origin for origin in origins if origin not in text]
         assert not missing, f"{name} does not name default origins: {missing}"
+
+
+def test_studio_docs_name_only_origins_the_daemon_allows(monkeypatch) -> None:
+    """Every origin the trust sections say can pair must be one the daemon
+    admits; a documented origin the config no longer lists is a broken promise."""
+    allowed = set(_studio_config_default_origins(monkeypatch))
+    for name in ("guides/studio-getting-started.md", "concepts/studio-model.md"):
+        text = (DOCS / name).read_text()
+        paragraphs = [p for p in text.split("\n\n") if "CORS_ORIGINS" in p]
+        named: set[str] = set()
+        for paragraph in paragraphs:
+            named |= _named_origins(paragraph)
+        unexpected = sorted(named - allowed)
+        assert not unexpected, f"{name} names origins the daemon does not allow: {unexpected}"
 
 
 def test_operator_guide_names_the_shipped_auto_allow_control() -> None:
@@ -226,8 +268,32 @@ def test_operator_guide_names_the_shipped_auto_allow_control() -> None:
 
 
 def test_getting_started_names_the_bind_host_flag() -> None:
-    """The launch-mode section must name `--host`: it is the flag that sets the
-    bind address in every non-Docker mode, and the trust section depends on it."""
+    """The launch-mode section must name `--host` and the modes it applies to.
+
+    `127.0.0.1` and `` `--host` `` occur elsewhere on the page, so the
+    assertion is on the paragraph that carries the claim: rewording that
+    sentence to drop the default or a mode has to fail here."""
     text = (DOCS / "guides" / "studio-getting-started.md").read_text()
-    assert "`--host`" in text
-    assert "127.0.0.1" in text
+    paragraphs = [p for p in text.split("\n\n") if "`--host`" in p]
+    assert len(paragraphs) == 1, "`--host` must be documented in exactly one paragraph"
+    paragraph = paragraphs[0]
+    assert "defaults to `127.0.0.1`" in paragraph
+    assert "`--no-frontend`" in paragraph
+    assert "`--dev`" in paragraph
+    assert "Docker" in paragraph
+
+
+def test_surfaces_availability_note_matches_the_frontend_kind_set() -> None:
+    """The availability callout is the single owner of the Workflow/Engine
+    availability fact, so it must list exactly the kinds the frontend hides.
+
+    A change to `UNFINISHED_KINDS` that leaves the callout stale has to fail
+    here, the way the Auto-allow label is pinned against `en.json`."""
+    source = (ROOT / "apps/studio/frontend/src/routes/library.tsx").read_text()
+    match = re.search(r"UNFINISHED_KINDS\s*=\s*new Set<[^>]*>\(\[([^\]]*)\]\)", source)
+    assert match, "UNFINISHED_KINDS not found in library.tsx"
+    kinds = set(re.findall(r"\"([^\"]+)\"", match.group(1)))
+    assert kinds, "UNFINISHED_KINDS is empty; remove the availability callout"
+    callout = (DOCS / "reference/studio-surfaces.md").read_text()
+    for kind in sorted(kinds):
+        assert f"`{kind}`" in callout, f"availability callout does not name `{kind}`"
