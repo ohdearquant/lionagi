@@ -119,7 +119,7 @@ async def test_capped_parse_retries_limit_endpoint_calls(monkeypatch):
 
     monkeypatch.setattr(
         "lionagi.operations._defaults._PARSE_CALL",
-        AlcallParams(retry_attempts=3, retry_initial_delay=0, throttle_period=0),
+        AlcallParams(retry_initial_delay=0, throttle_period=0),
     )
     branch = TestBranch.from_text(["not valid JSON"] * 6)
     with pytest.warns(UserWarning, match="num_parse_retries"):

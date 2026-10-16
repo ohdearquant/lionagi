@@ -4,52 +4,13 @@
 """Tests for ReAct tool execution flows and initial invocation."""
 
 import asyncio
-from unittest.mock import patch
 
 import pytest
 
-from lionagi.operations.ReAct.utils import Analysis, ReActAnalysis
 from lionagi.protocols.messages import ActionResponse
-from lionagi.testing import LionAGIMockFactory
 from lionagi.testing import TestBranch as ScriptedBranch
 
 from ._tool_trace import tool_branch
-
-# Helper Functions and Fixtures
-
-
-def make_mocked_branch_for_react():
-    """Create a mocked Branch for ReAct testing."""
-    return LionAGIMockFactory.create_mocked_branch(
-        name="ReActTestBranch",
-        user="tester",
-        response="mocked_response",
-        model="gpt-4o-mini",
-    )
-
-
-# Test tools
-def multiply(a: float, b: float) -> float:
-    """Multiply two numbers."""
-    return a * b
-
-
-def divide(a: float, b: float) -> float:
-    """Divide two numbers."""
-    if b == 0:
-        raise ValueError("Division by zero")
-    return a / b
-
-
-def get_weather(city: str) -> dict:
-    """Get weather for a city."""
-    return {"city": city, "temp": 72, "condition": "sunny"}
-
-
-async def async_search(query: str) -> str:
-    """Async search tool."""
-    return f"Search results for: {query}"
-
 
 # 1. Tool Execution Flows
 
@@ -89,7 +50,24 @@ async def test_single_tool_invocation():
 
 
 @pytest.mark.asyncio
-async def test_multiple_tool_calls_sequential_strategy():
+@pytest.mark.parametrize(
+    "first_round",
+    [
+        pytest.param({"action_strategy": "sequential"}, id="declared-on-both-rounds"),
+        pytest.param(
+            {},
+            id="declared-on-the-second-round-only",
+            marks=pytest.mark.xfail(
+                strict=True,
+                reason=(
+                    "each round's declared action strategy should govern its own batch; "
+                    "round 1 is fixed to concurrent"
+                ),
+            ),
+        ),
+    ],
+)
+async def test_multiple_tool_calls_sequential_strategy(first_round):
     """The extension's real tool batch completes one action before starting the next."""
     trace = []
 
@@ -111,14 +89,15 @@ async def test_multiple_tool_calls_sequential_strategy():
         [
             {
                 "extension_needed": True,
-                "action_strategy": "sequential",
                 "action_requests": [{"function": "multiply", "arguments": {"a": 100, "b": 5}}],
+                **first_round,
             },
             {
+                "action_strategy": "sequential",
                 "action_requests": [
                     {"function": "divide", "arguments": {"a": 500, "b": 10}},
                     {"function": "multiply", "arguments": {"a": 2, "b": 3}},
-                ]
+                ],
             },
         ],
         [multiply, divide],

@@ -352,7 +352,7 @@ async def test_react_with_many_tools():
     responses = [m for m in branch.messages if isinstance(m, ActionResponse)]
     assert [(m.function, m.arguments, m.output) for m in responses] == [
         ("multiply", {"a": 6, "b": 7}, 42),
-        ("divide", {"a": 84, "b": 2}, 42),
+        ("divide", {"a": 84, "b": 2}, 42.0),
         ("get_weather", {"city": "SF"}, "SF: sunny"),
     ]
     api_calls = ScriptedBranch.calls(branch)

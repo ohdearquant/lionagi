@@ -312,6 +312,7 @@ async def test_react_with_async_tool_registration():
         [search],
         "Search results found",
     )
+    assert "search" in branch.acts.registry
     assert (
         await branch.ReAct(instruction="Search for test", tools=[search], max_extensions=0)
         == "Search results found"
