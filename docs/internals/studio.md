@@ -257,11 +257,15 @@ between `build_argv()` and this function gives a revoked
   outage costs two reads rather than one per listed definition. When the store
   answers, the batch failure is attributed by retrying each definition on its
   own: a definition whose own rows fail is marked unavailable without hiding
-  the other summaries on the page. A statement that fails for every definition
-  while the store answers therefore costs one read per definition -- the batch,
-  the liveness read, and one retry each -- and its failing ids are named on one
-  line per page rather than a traceback each. Only the store-wide case is two
-  reads. A store-wide read failure leaves every slice unavailable, never an
+  the other summaries on the page. A retry that fails for a reason outside the
+  definition's rows (an intermittent store error) marks that definition
+  unavailable too, so an intermittent failure can mark healthy definitions
+  unavailable for that poll. A statement that fails for every definition while
+  the store answers therefore costs N + 2 reads for N listed definitions -- the
+  batch, the liveness read, and one retry each -- and its failing ids are named
+  on one line per page rather than a traceback each; the retries' own errors are
+  not logged. Only the store-wide case is two reads. A store-wide read failure
+  leaves every slice unavailable, never an
   available empty slice. Projection failures are isolated to one schedule.
   Existing health/count queries, budget rollups, schedule-list limits, and
   filters are unchanged.
@@ -270,8 +274,9 @@ between `build_argv()` and this function gives a revoked
   A failed list load with no schedules suppresses the empty-state claim, which
   would otherwise read as a successful load that found none.
   Refreshes are single-flight with at most one queued refresh. Explicit
-  detail history keeps its separate pagination and uses the same deterministic
-  timestamp/id ordering without using this slice.
+  detail history keeps its separate pagination and does not use this slice; its
+  ordering gains the same id tie-break (`fired_at DESC, id DESC`, where it was
+  `fired_at DESC`), so it orders an exact tie the same way.
 - **`_svc_validate_action_command`** — Delegates to the subprocess validators
   so charset/allow-list rules live in one place. `build_argv` re-checks the
   allow-list again at spawn time since `LIONAGI_SCHEDULER_COMMAND_ALLOWLIST`

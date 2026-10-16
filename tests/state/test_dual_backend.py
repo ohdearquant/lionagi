@@ -1895,10 +1895,12 @@ async def test_postgres_recent_run_summary_cuts_a_tie_by_id_and_keeps_a_short_sl
     # Twenty-four runs newer than the tie group, then six runs sharing one older
     # fired_at. Only two of the six can fit the newest 26 keys, so which two the
     # per-group LIMIT keeps is decided by the id tie-break and not by the row
-    # order the store happens to return. The group is inserted in ascending id
-    # order so insertion order and the required id DESC order disagree.
+    # order the store happens to return. The group is inserted as c, a, f, e, b, d:
+    # neither that order nor its reverse puts f and e first, so a statement that
+    # drops the id tie-break fails whichever of the two orders the store returns
+    # ties in.
     tied_runs = [(f"{tied_id}-run-{index:02}", float(101 + index)) for index in range(24)]
-    tied_runs += [(f"{tied_id}-tie-{suffix}", 100.0) for suffix in "abcdef"]
+    tied_runs += [(f"{tied_id}-tie-{suffix}", 100.0) for suffix in "cafebd"]
     short_runs = [(f"{short_id}-run-{index:02}", float(100 + index)) for index in range(25)]
 
     db = StateDB(url=pg_url)

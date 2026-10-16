@@ -136,8 +136,10 @@ async function historySummary(schedule: ScheduleSummary): Promise<ScheduleRecent
 }
 
 /**
- * One list request includes recent run slices. Overlapping polls and explicit
- * refreshes share the in-flight request and queue at most one trailing refresh.
+ * One list request includes recent run slices from a daemon that serves them;
+ * a daemon that predates the field costs one history request per schedule more.
+ * Overlapping polls and explicit refreshes share the in-flight request and queue
+ * at most one trailing refresh.
  */
 export function useSchedulesData(): SchedulesData {
   const [schedules, setSchedules] = useState<ScheduleSummary[]>([]);

@@ -163,12 +163,13 @@ async def test_tied_boundary_keys_are_cut_by_id_and_the_extra_key_has_no_payload
         # Twenty-four runs newer than the tie group, then six runs sharing one
         # older fired_at. Only the two greatest ids of that group are among the
         # newest 26 keys, and only the greater of those two is displayed. The
-        # group is inserted in descending id order: insertion order and id order
-        # disagree, so a statement that drops the id tie-break cannot pass by
-        # returning the rows in the order they were written.
+        # group is inserted as c, a, f, e, b, d: neither that order nor its
+        # reverse puts f and e first, so a statement that drops the id tie-break
+        # cannot pass by returning ties in the order they were written or the
+        # reverse.
         for index in range(24):
             await create_run(db, "nightly", f"run-{index:02}", fired_at=101 + index)
-        for suffix in "fedcba":
+        for suffix in "cafebd":
             await create_run(db, "nightly", f"tie-{suffix}", fired_at=100)
         grouped, _, _ = await schedules._read_run_batch(db, ["nightly"])
         summary = (await list_rows())[0]["recent_runs_summary"]
