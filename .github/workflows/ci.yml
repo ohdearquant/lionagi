@@ -448,7 +448,10 @@ jobs:
     - name: Run seeded-daemon e2e smoke tests
       working-directory: apps/studio/frontend
       run: npm run e2e
-    - name: Upload Playwright report
+    # The bundle also carries the daemon and preview server logs from
+    # apps/studio/frontend/e2e-logs/, which is where a mid-run server failure
+    # is explained.
+    - name: Upload Playwright report and server logs
       if: failure()
       uses: actions/upload-artifact@v7
       with:
@@ -457,6 +460,7 @@ jobs:
           apps/studio/frontend/playwright-report/
           apps/studio/frontend/test-results/
           apps/studio/frontend/e2e-logs/
+        if-no-files-found: error
         retention-days: 7
 
   # Detect which conditional-job inputs changed, to gate the jobs below.

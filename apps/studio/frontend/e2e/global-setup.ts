@@ -10,9 +10,20 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // e2e/ -> frontend -> studio -> apps -> repo root
 const REPO_ROOT = path.resolve(__dirname, "../../../..");
 const FRONTEND_ROOT = path.resolve(__dirname, "..");
-// Each server's own output for the whole run, so a failed run shows why a
-// server stopped answering. CI uploads this directory when the job fails.
-const LOG_DIR = path.join(FRONTEND_ROOT, "e2e-logs");
+// Each server's output for the run, so a failed run shows why a server stopped
+// answering: `studio-daemon.log` (the `uv run` wrapper's stdio),
+// `studio-daemon-child.log` (the daemon itself), and `vite-preview.log`. CI
+// uploads this directory when the job fails. The name is also spelled in
+// .gitignore and in the CI upload path; this constant is its origin here, so a
+// rename cannot leave a copy behind in this file.
+const LOG_DIR_NAME = "e2e-logs";
+const LOG_DIR = path.join(FRONTEND_ROOT, LOG_DIR_NAME);
+// The daemon child writes its own output (uvicorn's log, and the Python stack
+// of every thread on a native crash) to this file. Setup names it through
+// CHILD_LOG_ENV so it lands in LOG_DIR and outlives the wrapper's temp dir,
+// which the wrapper deletes on stop.
+const CHILD_LOG_PATH = path.join(LOG_DIR, "studio-daemon-child.log");
+const CHILD_LOG_ENV = "LIONAGI_E2E_STUDIO_CHILD_LOG";
 
 type Proc = ChildProcessByStdio<null, Readable, Readable>;
 
@@ -26,15 +37,28 @@ function stripAnsi(text: string): string {
 
 const PORT_IN_USE_PATTERN = /EADDRINUSE|already in use/i;
 
+/** Discard the previous run's logs and recreate the directory, once, before any spawn. */
+function resetLogDir(): void {
+  fs.rmSync(LOG_DIR, { recursive: true, force: true });
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+}
+
 /**
  * Append everything *proc* writes to `e2e-logs/<name>.log`, with its start and
- * its exit code or signal. The listeners stay for the life of the process, so
- * output after the readiness line is kept too. Exit is recorded on `close`,
- * which fires after both pipes have drained.
+ * its exit code or signal. Attempts within one run append, so a port retry
+ * keeps the failed attempt's lines. The listeners stay for the life of the
+ * process, so output after the readiness line is kept too; exit is recorded on
+ * `close`, which fires after both pipes have drained.
+ *
+ * `LOG_DIR` already exists here (resetLogDir runs first), and a stream error is
+ * reported and dropped rather than thrown, so a full or unwritable e2e-logs
+ * cannot abort setup with a server already spawned and untracked.
  */
 function recordOutput(proc: Proc, name: string): Proc {
-  fs.mkdirSync(LOG_DIR, { recursive: true });
   const log = fs.createWriteStream(path.join(LOG_DIR, `${name}.log`), { flags: "a" });
+  log.on("error", (err) => {
+    console.error(`e2e log ${name}: ${String(err)}`);
+  });
   log.write(`${new Date().toISOString()} started pid=${proc.pid}\n`);
   proc.stdout.on("data", (chunk: Buffer) => log.write(chunk));
   proc.stderr.on("data", (chunk: Buffer) => log.write(chunk));
@@ -205,6 +229,10 @@ export default async function globalSetup(_config: FullConfig) {
   let daemon: Proc | undefined;
   let preview: Proc | undefined;
 
+  // Before any server is spawned: a filesystem failure here must not leave a
+  // detached daemon or preview running with no teardown handle.
+  resetLogDir();
+
   try {
     const daemonResult = await startOnFreePort(
       (port) =>
@@ -214,9 +242,17 @@ export default async function globalSetup(_config: FullConfig) {
             ["run", "python", "-m", "tests.e2e_studio.run_seeded_daemon", "--port", String(port)],
             {
               cwd: REPO_ROOT,
-              // Unbuffered, so the log holds what the daemon printed before it stopped;
-              // a native crash prints the Python stack of every thread to stderr.
-              env: { ...process.env, PYTHONFAULTHANDLER: "1", PYTHONUNBUFFERED: "1" },
+              // PYTHONUNBUFFERED keeps what the daemon printed before it stopped;
+              // PYTHONFAULTHANDLER prints the Python stack of every thread to
+              // stderr on a native crash. CHILD_LOG_ENV sends that stderr, plus
+              // uvicorn's own log, into LOG_DIR instead of the wrapper's temp
+              // dir, which the wrapper deletes on stop.
+              env: {
+                ...process.env,
+                PYTHONFAULTHANDLER: "1",
+                PYTHONUNBUFFERED: "1",
+                [CHILD_LOG_ENV]: CHILD_LOG_PATH,
+              },
               stdio: ["ignore", "pipe", "pipe"],
               detached: true,
             },

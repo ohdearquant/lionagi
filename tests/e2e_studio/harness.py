@@ -36,6 +36,13 @@ from .fixtures import seed_filesystem_fixtures, seed_state_db
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REAL_LIONAGI_HOME = Path("~/.lionagi").expanduser().resolve()
 
+# Where the daemon child's own output goes when a caller wants to keep it past
+# stop(). ``stop()`` removes the temp dir, so the Playwright setup -- whose log
+# directory becomes a failure artifact -- points this outside it. Unset, the
+# file stays beside the state db in the temp dir, which is what the pytest
+# callers in this suite read.
+CHILD_LOG_ENV = "LIONAGI_E2E_STUDIO_CHILD_LOG"
+
 _OPERATOR_SCRIPT = {
     "version": 1,
     "responses": [
@@ -165,8 +172,17 @@ class SeededDaemon:
         # pipe after startup, so uvicorn's per-request access log would fill
         # the 64KB buffer during any long-lived run and block the event loop
         # mid-write — the daemon then accepts connections and answers nothing.
+        # A file outside the temp dir survives stop(), which is what a caller
+        # collecting the log as an artifact needs. That file is appended to, not
+        # truncated: a retry within one run then keeps the failed attempt's
+        # output, the same way the wrapper's per-server log does.
         child_log_path = tmp_dir / "daemon-child.log"
-        with child_log_path.open("w", encoding="utf-8") as child_log:
+        mode = "w"
+        if override := os.environ.get(CHILD_LOG_ENV):
+            child_log_path = Path(override)
+            child_log_path.parent.mkdir(parents=True, exist_ok=True)
+            mode = "a"
+        with child_log_path.open(mode, encoding="utf-8") as child_log:
             process = subprocess.Popen(  # noqa: S603
                 [
                     sys.executable,

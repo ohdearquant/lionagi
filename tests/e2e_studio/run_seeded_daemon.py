@@ -6,7 +6,13 @@ Run as a module (so the relative import below resolves) from the repo root:
 
 Starts a seeded Studio daemon subprocess, prints one JSON line to stdout once
 it is healthy, then blocks until SIGTERM/SIGINT, tearing the daemon and its
-temp dir down on exit.
+temp dir down on exit. The daemon's own output goes to the file named by
+``LIONAGI_E2E_STUDIO_CHILD_LOG`` (see ``harness.CHILD_LOG_ENV``), which the
+Playwright setup points at its log directory so it outlives the temp dir.
+
+A daemon that exits on its own is reported rather than hidden: the process
+prints one line naming the exit code or signal and exits non-zero, so a
+daemon that died mid-run fails the run instead of looking like a clean stop.
 """
 
 from __future__ import annotations
@@ -57,7 +63,36 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         daemon.stop()
 
-    return 0
+    if stop_requested:
+        return 0
+
+    return _report_child_exit(daemon.process.returncode)
+
+
+def _report_child_exit(returncode: int | None) -> int:
+    """Print one line naming how the daemon child left, and return a non-zero status.
+
+    Reached only when the child exited on its own: the wrapper's own stop
+    returns 0 above. A child that exited 0 by itself still ended the run
+    without a stop request, so it reports 1 -- "exited cleanly" and "the
+    daemon is gone" are different things to a caller.
+    """
+    if returncode is None:
+        print("seeded studio daemon child exited on its own: code unknown", file=sys.stderr)
+        return 1
+    if returncode < 0:
+        signum = -returncode
+        try:
+            name = signal.Signals(signum).name
+        except ValueError:
+            name = "unknown"
+        print(
+            f"seeded studio daemon child exited on its own: signal={signum} ({name})",
+            file=sys.stderr,
+        )
+        return 128 + signum
+    print(f"seeded studio daemon child exited on its own: code={returncode}", file=sys.stderr)
+    return returncode or 1
 
 
 if __name__ == "__main__":
