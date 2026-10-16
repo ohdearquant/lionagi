@@ -227,6 +227,7 @@ class TestSaveAtExit:
                 "Could not serialize logs to JSON: Object is not JSON serializable",
             )
         ]
+        assert [log.content for log in dl.logs] == [{"x": 1}]
 
     def test_save_at_exit_other_error_logged_not_raised(self, tmp_path, caplog):
         dl = DataLogger(persist_dir=tmp_path, auto_save_on_exit=False)
@@ -245,6 +246,7 @@ class TestSaveAtExit:
                 "Failed to save logs on exit: permission denied",
             )
         ]
+        assert [log.content for log in dl.logs] == [{"x": 1}]
 
 
 # DataLogger.from_config

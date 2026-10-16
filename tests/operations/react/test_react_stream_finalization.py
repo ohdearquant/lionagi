@@ -323,32 +323,42 @@ async def test_react_with_many_extensions():
 
 @pytest.mark.asyncio
 async def test_react_with_many_tools():
-    """Test ReAct with many registered tools."""
-    branch = make_mocked_branch_for_react()
+    """All registered tools receive their requested arguments and persist actual results."""
+    calls = []
 
-    # Register multiple tools
-    tools = [multiply, divide, get_weather]
-    for tool in tools:
-        branch.acts.register_tool(tool)
+    def multiply(a: float, b: float) -> float:
+        """Multiply two numbers."""
+        calls.append(("multiply", a, b))
+        return a * b
 
-    assert len(branch.acts.registry) >= 3
+    def divide(a: float, b: float) -> float:
+        """Divide two numbers."""
+        calls.append(("divide", a, b))
+        return a / b
 
-    with patch("lionagi.operations.operate.operate.operate") as mock_operate:
-        analysis = ReActAnalysis(
-            analysis="Using tools",
-            extension_needed=False,
-        )
-        final = Analysis(answer="Done with tools")
+    def get_weather(city: str) -> str:
+        """Get local weather."""
+        calls.append(("get_weather", city))
+        return f"{city}: sunny"
 
-        mock_operate.side_effect = [analysis, final]
-
-        result = await branch.ReAct(
-            instruct={"instruction": "Use multiple tools"},
-            tools=True,  # Use all registered tools
-            max_extensions=0,
-        )
-
-        assert "Done with tools" in result
+    requests = [
+        {"function": "multiply", "arguments": {"a": 6, "b": 7}},
+        {"function": "divide", "arguments": {"a": 84, "b": 2}},
+        {"function": "get_weather", "arguments": {"city": "SF"}},
+    ]
+    branch = tool_branch([{"action_requests": requests}], [multiply, divide, get_weather], "Done")
+    assert await branch.ReAct(instruction="Use all tools", tools=True, max_extensions=0) == "Done"
+    assert calls == [("multiply", 6, 7), ("divide", 84, 2), ("get_weather", "SF")]
+    responses = [m for m in branch.messages if isinstance(m, ActionResponse)]
+    assert [(m.function, m.arguments, m.output) for m in responses] == [
+        ("multiply", {"a": 6, "b": 7}, 42),
+        ("divide", {"a": 84, "b": 2}, 42),
+        ("get_weather", {"city": "SF"}, "SF: sunny"),
+    ]
+    api_calls = ScriptedBranch.calls(branch)
+    assert len(api_calls) == 2
+    assert "42" in str(api_calls[-1].payload["messages"])
+    assert "SF: sunny" in str(api_calls[-1].payload["messages"])
 
 
 if __name__ == "__main__":

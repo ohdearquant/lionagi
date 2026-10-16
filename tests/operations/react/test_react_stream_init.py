@@ -67,10 +67,15 @@ async def test_single_tool_invocation():
     request = {"function": "multiply", "arguments": {"a": 6, "b": 7}}
     branch = tool_branch([{"action_requests": [request]}], [multiply], "42")
     result = await branch.ReAct(
-        instruction="What is 6 times 7?", tools=[multiply], max_extensions=0
+        instruction="What is 6 times 7?", tools=[multiply], max_extensions=0, return_analysis=True
     )
 
-    assert result == "42"
+    assert len(result) == 2
+    assert result[-1].answer == "42"
+    assert len(result[0].action_responses) == 1
+    assert result[0].action_responses[0].function == "multiply"
+    assert result[0].action_responses[0].arguments == {"a": 6, "b": 7}
+    assert result[0].action_responses[0].output == 42
     assert calls == [(6, 7)]
     responses = [m for m in branch.messages if isinstance(m, ActionResponse)]
     assert len(responses) == 1
@@ -80,46 +85,64 @@ async def test_single_tool_invocation():
     api_calls = ScriptedBranch.calls(branch)
     assert len(api_calls) == 2
     final_messages = str(api_calls[-1].payload["messages"])
-    assert "multiply" in final_messages and "42" in final_messages
+    assert "42" in final_messages
 
 
 @pytest.mark.asyncio
 async def test_multiple_tool_calls_sequential_strategy():
-    """Test ReAct specifying sequential action strategy."""
-    branch = make_mocked_branch_for_react()
+    """The extension's real tool batch completes one action before starting the next."""
+    trace = []
 
-    with patch("lionagi.operations.operate.operate.operate") as mock_operate:
-        # Round 1: First tool call with sequential strategy
-        round1 = ReActAnalysis(
-            analysis="Calculate 100 * 5",
-            extension_needed=True,
-            action_strategy="sequential",
-        )
+    async def multiply(a: float, b: float) -> float:
+        """Multiply two numbers."""
+        trace.append(("start", "multiply", a, b))
+        await asyncio.sleep(0)
+        trace.append(("end", "multiply", a, b))
+        return a * b
 
-        # Round 2: Second tool call
-        round2 = ReActAnalysis(
-            analysis="Now divide by 10",
-            extension_needed=False,
-            action_strategy="sequential",
-        )
+    async def divide(a: float, b: float) -> float:
+        """Divide two numbers."""
+        trace.append(("start", "divide", a, b))
+        await asyncio.sleep(0)
+        trace.append(("end", "divide", a, b))
+        return a / b
 
-        # Final answer
-        final = Analysis(answer="50")
-
-        mock_operate.side_effect = [round1, round2, final]
-
-        result = await branch.ReAct(
-            instruct={"instruction": "Calculate (100 * 5) / 10 using tools"},
-            max_extensions=2,
-        )
-
-        assert result == "50"
-        assert mock_operate.call_count == 3
-
-        # Verify sequential strategy was passed to operate calls
-        extension_call = mock_operate.call_args_list[1]
-        action_param = extension_call[1]["action_param"]
-        assert action_param.strategy == "sequential"
+    branch = tool_branch(
+        [
+            {
+                "extension_needed": True,
+                "action_strategy": "sequential",
+                "action_requests": [{"function": "multiply", "arguments": {"a": 100, "b": 5}}],
+            },
+            {
+                "action_requests": [
+                    {"function": "divide", "arguments": {"a": 500, "b": 10}},
+                    {"function": "multiply", "arguments": {"a": 2, "b": 3}},
+                ]
+            },
+        ],
+        [multiply, divide],
+        "50",
+    )
+    assert (
+        await branch.ReAct(instruction="Calculate (100 * 5) / 10", tools=True, max_extensions=1)
+        == "50"
+    )
+    assert trace == [
+        ("start", "multiply", 100, 5),
+        ("end", "multiply", 100, 5),
+        ("start", "divide", 500, 10),
+        ("end", "divide", 500, 10),
+        ("start", "multiply", 2, 3),
+        ("end", "multiply", 2, 3),
+    ]
+    responses = [m for m in branch.messages if isinstance(m, ActionResponse)]
+    assert [(m.function, m.output) for m in responses] == [
+        ("multiply", 500),
+        ("divide", 50),
+        ("multiply", 6),
+    ]
+    assert len(ScriptedBranch.calls(branch)) == 3
 
 
 @pytest.mark.asyncio
@@ -156,35 +179,29 @@ async def test_concurrent_action_strategy():
         "NYC": "NYC: sunny",
         "SF": "SF: sunny",
     }
+    assert len(ScriptedBranch.calls(branch)) == 2
 
 
 @pytest.mark.asyncio
 async def test_tools_parameter_variations():
-    """Test different ways to specify tools parameter."""
-    branch = make_mocked_branch_for_react()
-    branch.acts.register_tool(multiply)
+    """Implicit and explicit registered-tool selection both execute the model request."""
+    for tools in (None, True):
+        calls = []
 
-    with patch("lionagi.operations.operate.operate.operate") as mock_operate:
-        analysis = ReActAnalysis(
-            analysis="Complete",
-            extension_needed=False,
-        )
-        final = Analysis(answer="Done")
+        def multiply(a: float, b: float) -> float:
+            """Multiply two numbers."""
+            calls.append((a, b))
+            return a * b
 
-        # Test with tools=None
-        mock_operate.side_effect = [analysis, final]
-        result = await branch.ReAct(
-            instruct={"instruction": "Task"},
-            tools=None,
-            max_extensions=0,
+        branch = tool_branch(
+            [{"action_requests": [{"function": "multiply", "arguments": {"a": 6, "b": 7}}]}],
+            [multiply],
+            "42",
         )
-        assert result == "Done"
-
-        # Test with tools=True (use all registered)
-        mock_operate.side_effect = [analysis, final]
-        result = await branch.ReAct(
-            instruct={"instruction": "Task"},
-            tools=True,
-            max_extensions=0,
-        )
-        assert result == "Done"
+        assert await branch.ReAct(instruction="Multiply", tools=tools, max_extensions=0) == "42"
+        assert calls == [(6, 7)]
+        responses = [m for m in branch.messages if isinstance(m, ActionResponse)]
+        assert [(m.function, m.arguments, m.output) for m in responses] == [
+            ("multiply", {"a": 6, "b": 7}, 42)
+        ]
+        assert len(ScriptedBranch.calls(branch)) == 2

@@ -321,3 +321,4 @@ async def test_react_with_async_tool_registration():
     assert len(responses) == 1
     assert responses[0].function == "search"
     assert responses[0].output == "fixture search result"
+    assert len(ScriptedBranch.calls(branch)) == 2

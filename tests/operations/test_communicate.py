@@ -112,6 +112,24 @@ def test_prepare_communicate_kw_high_retries_capped():
 
 
 @pytest.mark.asyncio
+async def test_capped_parse_retries_limit_endpoint_calls(monkeypatch):
+    from lionagi.ln import AlcallParams
+    from lionagi.operations.parse.parse import parse
+    from lionagi.testing import TestBranch
+
+    monkeypatch.setattr(
+        "lionagi.operations._defaults._PARSE_CALL",
+        AlcallParams(retry_attempts=3, retry_initial_delay=0, throttle_period=0),
+    )
+    branch = TestBranch.from_text(["not valid JSON"] * 6)
+    with pytest.warns(UserWarning, match="num_parse_retries"):
+        kw = prepare_communicate_kw(branch, num_parse_retries=10, response_format=SomeModel)
+    with pytest.raises(ValueError, match="Failed to parse response"):
+        await parse(branch, "not valid JSON", kw["parse_param"])
+    assert len(TestBranch.calls(branch)) == 6  # Initial parse call plus five retries.
+
+
+@pytest.mark.asyncio
 async def test_communicate_updates_metadata_when_res2_is_assistant_response():
     """Lines 158-160: parse returns (out, AssistantResponse) → metadata updated."""
     from unittest.mock import AsyncMock, patch
