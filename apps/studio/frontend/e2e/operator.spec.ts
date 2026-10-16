@@ -154,7 +154,8 @@ test("Operator Deny and Allow decisions traverse the real permission route", asy
   // the wait only when the silence starts before the wait does or within about
   // 14.25s of it. Three failed reconnects behind the stall land at
   // 15_000 + 750 + 1,350 + 2,430 + 4,374 = 23,904ms only when each reconnect
-  // fails the moment it opens; a failed reconnect that itself takes f ms adds f
+  // is refused at once, before its stream opens (an opened stream resets the
+  // backoff); a failed reconnect that itself takes f ms adds f
   // to that, so three 2,500ms failures add 7,500ms and land at 31,404ms, past
   // the wait. A hung reconnect or a second silent stream can exceed 30s.
   const streamTimeout = { timeout: 30_000 };
