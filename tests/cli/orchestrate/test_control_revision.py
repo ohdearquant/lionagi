@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
+from sqlalchemy import event
 
 from lionagi.cli._runs import teardown_persist
 from lionagi.cli.monitor import _session_to_row
@@ -258,21 +259,47 @@ async def test_terminal_write_clears_phase_in_same_statement(db_path, monkeypatc
         "lionagi.state.completion_evidence.check_completion_evidence",
         lambda cwd: {"checked": False},
     )
-    status = await teardown_persist(
-        {
-            "db": db,
-            "session_id": sid,
-            "session_prog_id": row["progression_id"],
-            "shared_db_registered": False,
-        },
-        status=outcome,
-    )
+    session_updates = []
+
+    def record_session_update(conn, cursor, statement, parameters, context, executemany):
+        normalized = " ".join(statement.lower().split())
+        if normalized.startswith("update sessions set "):
+            session_updates.append(normalized)
+
+    engine = db._engine.sync_engine
+    event.listen(engine, "before_cursor_execute", record_session_update)
+    try:
+        status = await teardown_persist(
+            {
+                "db": db,
+                "session_id": sid,
+                "session_prog_id": row["progression_id"],
+                "shared_db_registered": False,
+            },
+            status=outcome,
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", record_session_update)
+        await db.close()
     assert status == outcome
     async with StateDB(db_path) as reader:
         stored = await reader.get_session(sid)
     assert stored["status"] == outcome
     assert stored["ended_at"] is not None
     assert stored["current_phase"] is None
+    written_fields = [
+        {
+            assignment.split("=", 1)[0].strip().strip('"')
+            for assignment in sql.split(" set ", 1)[1].split(" where ", 1)[0].split(",")
+        }
+        for sql in session_updates
+    ]
+    terminal_writes = [fields for fields in written_fields if "status" in fields]
+    assert len(terminal_writes) == 1, session_updates
+    assert "current_phase" in terminal_writes[0], session_updates
+    assert not any(
+        "current_phase" in fields and "status" not in fields for fields in written_fields
+    ), session_updates
 
 
 @pytest.mark.parametrize("kind", ["flow", "play"])
