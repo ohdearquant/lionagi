@@ -1496,3 +1496,37 @@ async def test_cause_counting_still_respects_the_window_and_the_status_filter():
 
     assert await state.metric_value("failed_sessions", window_start=50.0) == 2.0
     await state.close()
+
+
+@pytest.mark.parametrize("include_finished", [False, True])
+async def test_metric_value_p95_latency_excludes_cancelled_observation_time(
+    tmp_path, include_finished
+):
+    from lionagi.state.db import StateDB
+
+    async with StateDB(tmp_path / "state.db") as db:
+        await db.create_invocation(
+            {
+                "id": "cancelled",
+                "skill": "agent",
+                "status": "cancelled",
+                "started_at": 100.0,
+                "ended_at": 7300.0,
+            }
+        )
+        if include_finished:
+            for index, status in enumerate(
+                ["completed", "completed_empty", "failed", "timed_out", "aborted"]
+            ):
+                await db.create_invocation(
+                    {
+                        "id": f"finished-{index}",
+                        "skill": "agent",
+                        "status": status,
+                        "started_at": 100.0,
+                        "ended_at": 101.0 + index,
+                    }
+                )
+        assert await db.metric_value("p95_latency_ms", window_start=50.0) == (
+            5000.0 if include_finished else 0.0
+        )

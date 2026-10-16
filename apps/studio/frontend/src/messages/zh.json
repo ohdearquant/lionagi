@@ -306,7 +306,7 @@
       "invocations": "已记录的调用",
       "successRate": "已记录的成功率",
       "lastUsed": "上次跟踪到的使用",
-      "never": "无记录",
+      "never": "未记录",
       "recentInvocations": "最近更新的记录",
       "noInvocations": "没有已记录的调用。",
       "skillValidationFailed": "验证失败，请先修正以下错误再保存。",
@@ -321,7 +321,7 @@
       "pluginReadmeSection": "README",
       "yes": "是",
       "no": "否",
-      "usageCoverage": "仅显示已记录的调用；未被跟踪的使用情况未知。时间表示记录的开始时间。",
+      "usageCoverage": "此技能或插件的跟踪覆盖情况未知；这里只显示已记录的调用。成功率是已结束记录中成功完成的比例。最近记录的时间表示距上次更新的时长。",
       "usageUnavailable": "无法获取已记录的使用情况。",
       "usageUnknown": "未知"
     },

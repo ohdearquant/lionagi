@@ -600,7 +600,17 @@ class SQLAlchemyLifecycleService:
                 params[key] = expected
         for col, value in command.patch.items():
             key = f"patch_{col}"
-            set_clauses.append(f"{col} = :{key}")
+            if (
+                col == "ended_at"
+                and command.entity_type == "invocation"
+                and command.to_status == "cancelled"
+                and command.override is None
+            ):
+                # Cleanup observes cancellation; it cannot revise an end already
+                # recorded, including one written after the transition's read.
+                set_clauses.append(f"{col} = COALESCE({col}, :{key})")
+            else:
+                set_clauses.append(f"{col} = :{key}")
             params[key] = value
 
         update_sql = (

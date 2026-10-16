@@ -113,3 +113,37 @@ async def test_invocation_cancel_preserves_concurrent_terminal_transition(
             ("invocation",),
         )
         assert transitions == [{"status": status}]
+
+
+@pytest.mark.parametrize("ended_at", [0.0, 200.0])
+async def test_invocation_cancel_preserves_existing_running_end_time(
+    tmp_path, monkeypatch, ended_at
+):
+    monkeypatch.setattr(kill_mod, "time", SimpleNamespace(time=lambda: 300.0))
+    async with StateDB(tmp_path / "state.db") as db:
+        await _create_invocation(db, ended_at=ended_at)
+        await _cancel(db)
+        row = await db.get_invocation("invocation")
+        assert row["status"] == "cancelled"
+        assert row["ended_at"] == ended_at
+
+
+async def test_invocation_cancel_preserves_concurrent_running_end_time(tmp_path, monkeypatch):
+    monkeypatch.setattr(kill_mod, "time", SimpleNamespace(time=lambda: 300.0))
+    async with StateDB(tmp_path / "state.db") as db:
+        await _create_invocation(db)
+        original_update = db.update_status
+
+        async def race_update(entity_type, entity_id, **kwargs):
+            await db.update_invocation(entity_id, ended_at=200.0)
+            return await original_update(entity_type, entity_id, **kwargs)
+
+        monkeypatch.setattr(db, "update_status", race_update)
+        await _cancel(db)
+        row = await db.get_invocation("invocation")
+        assert row["status"] == "cancelled"
+        assert row["ended_at"] == 200.0
+        assert await db.fetch_all(
+            "SELECT status FROM status_transitions WHERE entity_id = ? AND previous_status IS NOT NULL",
+            ("invocation",),
+        ) == [{"status": "cancelled"}]

@@ -53,6 +53,7 @@ async def test_end_invocation_writes_terminal_status_and_ended_at_through_guard(
         reason_summary="Invocation completed.",
         source="executor",
         actor="invocation-1",
+        expected_statuses={"running"},
         extra_fields={"ended_at": 123.0},
     )
     assert result == updated

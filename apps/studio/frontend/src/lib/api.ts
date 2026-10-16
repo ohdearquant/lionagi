@@ -1688,6 +1688,8 @@ export interface InvocationListResponse {
   /** Total matching the filters with status == "completed" specifically,
    * ignoring `params.status` — always a meaningful success-rate numerator. */
   completed_total: number;
+  /** Terminal records matching skill/plugin, ignoring params.status; older servers omit it. */
+  finished_total?: number | null;
 }
 
 export interface InvocationListParams {

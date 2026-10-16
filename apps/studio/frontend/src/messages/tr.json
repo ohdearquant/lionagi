@@ -306,7 +306,7 @@
       "invocations": "Kaydedilen çağrılar",
       "successRate": "Kaydedilen başarı oranı",
       "lastUsed": "Son izlenen kullanım",
-      "never": "Kayıt yok",
+      "never": "Kaydedilmemiş",
       "recentInvocations": "Son güncellenen kayıtlar",
       "noInvocations": "Kaydedilmiş çağrı yok.",
       "skillValidationFailed": "Doğrulama başarısız oldu. Kaydetmeden önce aşağıdaki hataları düzeltin.",
@@ -321,7 +321,7 @@
       "pluginReadmeSection": "README",
       "yes": "Evet",
       "no": "Hayır",
-      "usageCoverage": "Yalnızca kaydedilen çağrılar gösterilir; izleme dışındaki kullanım bilinmez. Zamanlar kaydedilen başlangıçları gösterir.",
+      "usageCoverage": "Bu beceri veya eklentinin izleme kapsamı bilinmiyor; yalnızca kaydedilen çağrılar gösterilir. Başarı oranı, sona eren kayıtlar içindeki başarılı çalıştırmaları sayar. Son kayıtlardaki süreler güncellemeden itibaren hesaplanır.",
       "usageUnavailable": "Kaydedilen kullanım verileri alınamıyor.",
       "usageUnknown": "Bilinmiyor"
     },

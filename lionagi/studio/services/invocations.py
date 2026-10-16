@@ -13,7 +13,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from lionagi._errors import NotFoundError
-from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
+from lionagi.state.db import (
+    INVOCATION_TERMINAL_STATUSES,
+    StateDB,
+    read_only_open_supported,
+    state_db_known_absent,
+)
 from lionagi.state.health import SessionHealth, classify_session_health, worst_health
 
 from ..registry import studio_route
@@ -211,6 +216,26 @@ async def _invocation_totals(
     return row["total"], float(latest) if latest is not None else None
 
 
+async def _invocation_completion_totals(
+    connection: AsyncConnection, *, skill: str | None, plugin: str | None
+) -> tuple[int, int]:
+    """Completed and finished counts share a scope independent of the page status filter."""
+    statuses = sorted(INVOCATION_TERMINAL_STATUSES)
+    params: dict[str, Any] = {f"terminal{i}": status for i, status in enumerate(statuses)}
+    placeholders = ", ".join(f":terminal{i}" for i in range(len(statuses)))
+    query = (
+        "SELECT COUNT(CASE WHEN status = 'completed' THEN 1 END) AS completed_total, "  # noqa: S608
+        f"COUNT(CASE WHEN status IN ({placeholders}) THEN 1 END) AS finished_total "
+        "FROM invocations"
+    )
+    filters = {name: value for name, value in (("skill", skill), ("plugin", plugin)) if value}
+    if filters:
+        query += " WHERE " + " AND ".join(f"{name} = :{name}" for name in filters)
+    params.update(filters)
+    row = (await connection.execute(text(query), params)).mappings().one()
+    return row["completed_total"], row["finished_total"]
+
+
 async def count_invocations(
     *,
     skill: str | None = None,
@@ -350,6 +375,7 @@ async def list_invocations_route(
         rows: list[dict[str, Any]] = []
         total = 0
         completed_total = 0
+        finished_total = 0
         latest_started_at = None
     else:
         async with StateDB(readonly=read_only_open_supported()) as db:
@@ -369,20 +395,16 @@ async def list_invocations_route(
                     plugin=plugin,
                     status=status,
                 )
-                completed_total = await _count_invocations_from_db(
-                    db,
-                    skill=skill,
-                    plugin=plugin,
-                    status="completed",
-                    connection=connection,
+                completed_total, finished_total = await _invocation_completion_totals(
+                    connection, skill=skill, plugin=plugin
                 )
             rows = await _serialize_invocations(raw_rows, children_by_invocation)
     # Real totals, not a count of this page: `limit` caps at 200, so counting
     # `rows` instead silently plateaus there with nothing distinguishing an
     # exact count from a capped one. completed_total always means status ==
     # "completed" specifically -- it ignores the caller's own `status` filter
-    # (which scopes `total`/`rows`) so success-rate math stays meaningful
-    # even when a caller has filtered the list by some other status.
+    # (which scopes `total`/`rows`). finished_total shares that scope and counts
+    # every terminal status, including completed_empty and cancelled.
     return {
         "invocations": rows,
         "limit": limit,
@@ -390,6 +412,7 @@ async def list_invocations_route(
         "has_next": len(rows) == limit,
         "total": total,
         "completed_total": completed_total,
+        "finished_total": finished_total,
         "latest_started_at": latest_started_at,
     }
 

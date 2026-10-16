@@ -54,6 +54,7 @@ async def test_latest_start_and_totals_cover_more_than_200_records_beyond_recent
     first = await query(skill="sample")
     assert first["total"] == 240
     assert first["completed_total"] == 180
+    assert first["finished_total"] == 240
     assert first["latest_started_at"] == 339
     assert [row["started_at"] for row in first["invocations"]] == [100, 101, 102, 103, 104]
     assert first["has_next"] is True
@@ -97,7 +98,7 @@ async def test_absent_or_empty_store_reports_null_latest(db_path, exists):
             pass
     result = await query()
     assert result["invocations"] == []
-    assert result["total"] == result["completed_total"] == 0
+    assert result["total"] == result["completed_total"] == result["finished_total"] == 0
     assert result["latest_started_at"] is None
     assert db_path.exists() is exists
 
@@ -127,7 +128,7 @@ async def test_latest_count_and_page_share_snapshot_during_concurrent_write(db_p
         result = await query()
     assert inserted
     assert [row["id"] for row in result["invocations"]] == ["initial"]
-    assert result["total"] == result["completed_total"] == 1
+    assert result["total"] == result["completed_total"] == result["finished_total"] == 1
     assert result["latest_started_at"] == 100
     assert (await query())["latest_started_at"] == 500
 
@@ -154,5 +155,32 @@ async def test_count_and_latest_share_one_bounded_aggregate_query(db_path, monke
     assert len(aggregates) == 1
     assert "COUNT(*)" in aggregates[0]
     assert "LIMIT" not in aggregates[0]
-    # Page, batched child sessions, combined count/latest, completed count.
+    # Page, batched child sessions, count/latest, completed/finished counts.
     assert len([sql for sql in statements if sql.lstrip().startswith("SELECT")]) == 4
+
+
+@pytest.mark.parametrize("status_filter", [None, "running", "failed"])
+async def test_finished_count_excludes_running_and_keeps_completed_empty_separate(
+    db_path, status_filter
+):
+    statuses = [
+        "completed",
+        "completed",
+        "completed_empty",
+        "failed",
+        "timed_out",
+        "cancelled",
+        "aborted",
+        "running",
+        "running",
+        "running",
+    ]
+    async with StateDB(db_path) as db:
+        for index, status in enumerate(statuses):
+            await insert(db, f"mixed-{index}", status=status)
+        await insert(db, "other-skill", skill="sample-other")
+        await insert(db, "other-plugin", plugin="package-other")
+    result = await query(skill="sample", plugin="package", status=status_filter)
+    assert result["completed_total"] == 2
+    assert result["finished_total"] == 7
+    assert result["total"] == (10 if status_filter is None else statuses.count(status_filter))

@@ -54,11 +54,18 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-const empty = { invocations: [], total: 0, completed_total: 0, latest_started_at: null };
+const empty = {
+  invocations: [],
+  total: 0,
+  completed_total: 0,
+  finished_total: 0,
+  latest_started_at: null,
+};
 const populated = {
   invocations: Array.from({ length: 5 }, (_, index) => invocation(index)),
   total: 320,
   completed_total: 240,
+  finished_total: 300,
   latest_started_at: 1740,
 };
 
@@ -135,9 +142,11 @@ describe.each(["skill", "plugin"] as const)("%s recorded usage", (kind) => {
 
   it("describes empty results as recorded activity with unknown tracking coverage", async () => {
     await render();
-    expect(metric("Recorded invocations")).toBe("0");
-    expect(metric("Last tracked use")).toBe("No records");
-    expect(container.textContent).toContain("usage outside tracking is unknown");
+    expect(metric("Recorded invocations")).toBe("Not recorded");
+    expect(metric("Last tracked use")).toBe("Not recorded");
+    expect(container.textContent).toContain(
+      "Tracking coverage for this skill or plugin is unknown",
+    );
     expect(container.textContent).toContain("No recorded invocations.");
     expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(api.listInvocations).toHaveBeenCalledWith({ [kind]: "example", limit: 5 });
@@ -158,7 +167,7 @@ describe.each(["skill", "plugin"] as const)("%s recorded usage", (kind) => {
     );
     expect(retry).toBeDefined();
     await act(async () => retry!.click());
-    expect(metric("Recorded invocations")).toBe("0");
+    expect(metric("Recorded invocations")).toBe("Not recorded");
     expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(api.listInvocations).toHaveBeenCalledTimes(2);
     expect(kind === "skill" ? api.getSkill : api.getPlugin).toHaveBeenCalledTimes(1);
@@ -168,13 +177,13 @@ describe.each(["skill", "plugin"] as const)("%s recorded usage", (kind) => {
     api.listInvocations.mockResolvedValue(populated);
     await render();
     expect(metric("Recorded invocations")).toBe("320");
-    expect(metric("Recorded success rate")).toBe("75%");
+    expect(metric("Recorded success rate")).toBe("80%");
     expect(metric("Last tracked use")).toBe("1m");
     const rows = [...container.querySelectorAll('a[href="/fleet"]')];
     expect(rows).toHaveLength(5);
-    expect(rows[0].lastElementChild?.textContent).toBe("10m");
+    expect(rows[0].lastElementChild?.textContent).toBe("0s");
     expect(container.textContent).toContain("Recently updated records");
-    expect(container.textContent).toContain("Times show recorded starts");
+    expect(container.textContent).toContain("Recent ages show updates");
     expect(api.listInvocations).toHaveBeenCalledWith({ [kind]: "example", limit: 5 });
   });
 
@@ -191,6 +200,29 @@ describe.each(["skill", "plugin"] as const)("%s recorded usage", (kind) => {
     await render();
     expect(metric("Last tracked use")).toBe("Unknown");
     expect(metric("Recorded invocations")).toBe("320");
+  });
+
+  it("counts only completed records as successes among finished records", async () => {
+    api.listInvocations.mockResolvedValue({
+      ...populated,
+      total: 10,
+      completed_total: 2,
+      finished_total: 7,
+    });
+    await render();
+    expect(metric("Recorded success rate")).toBe("29%");
+  });
+
+  it.each([
+    { state: "absent", fields: {} },
+    { state: "null", fields: { finished_total: null } },
+    { state: "zero", fields: { finished_total: 0 } },
+  ])("does not infer success rate when finished count is $state", async ({ fields }) => {
+    const older = { ...populated } as Partial<typeof populated>;
+    delete older.finished_total;
+    api.listInvocations.mockResolvedValue({ ...older, ...fields });
+    await render();
+    expect(metric("Recorded success rate")).toBe("—");
   });
 
   it("does not display an old selection's late failure", async () => {

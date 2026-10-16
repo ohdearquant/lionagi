@@ -5,8 +5,8 @@ afterEach(() => vi.unstubAllGlobals());
 
 it.each([
   { name: "older server", aggregate: {} },
-  { name: "recorded start", aggregate: { latest_started_at: 1234 } },
-  { name: "no records", aggregate: { latest_started_at: null } },
+  { name: "recorded start", aggregate: { latest_started_at: 1234, finished_total: 300 } },
+  { name: "no records", aggregate: { latest_started_at: null, finished_total: 0 } },
 ])("preserves the additive aggregate from a $name response", async ({ aggregate }) => {
   const body: InvocationListResponse = {
     invocations: [],

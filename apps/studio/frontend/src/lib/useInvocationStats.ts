@@ -40,7 +40,9 @@ export function useInvocationStats(
       .then((res) => {
         if (!alive) return;
         const successRate =
-          res.total > 0 ? Math.round((res.completed_total / res.total) * 100) : null;
+          res.finished_total != null && res.finished_total > 0
+            ? Math.round((res.completed_total / res.finished_total) * 100)
+            : null;
         // Older servers omit the aggregate; a bounded page cannot replace it.
         const lastUsedSec = res.latest_started_at ?? null;
         setStats({ total: res.total, successRate, lastUsedSec, recent: res.invocations });

@@ -335,7 +335,7 @@ export function SkillDetail({ name, pluginName, onBack }: SkillDetailProps) {
                 {[
                   {
                     label: t("invocations"),
-                    value: statsLoading ? "—" : String(stats?.total ?? 0),
+                    value: statsLoading ? "—" : stats?.total ? String(stats.total) : t("never"),
                   },
                   {
                     label: t("successRate"),
@@ -395,7 +395,7 @@ export function SkillDetail({ name, pluginName, onBack }: SkillDetailProps) {
                             : inv.skill}
                         </span>
                         <span className="shrink-0 tabular-nums text-[length:var(--t-xs)] text-content-muted">
-                          {formatInvocationAge(inv.started_at)}
+                          {formatInvocationAge(inv.updated_at)}
                         </span>
                       </Link>
                     ))}

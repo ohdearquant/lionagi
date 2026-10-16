@@ -306,7 +306,7 @@
       "invocations": "Pemanggilan tercatat",
       "successRate": "Tingkat keberhasilan tercatat",
       "lastUsed": "Penggunaan terlacak terakhir",
-      "never": "Tidak ada catatan",
+      "never": "Tidak tercatat",
       "recentInvocations": "Catatan yang baru diperbarui",
       "noInvocations": "Tidak ada pemanggilan tercatat.",
       "skillValidationFailed": "Validasi gagal. Perbaiki kesalahan di bawah sebelum menyimpan.",
@@ -321,7 +321,7 @@
       "pluginReadmeSection": "README",
       "yes": "Ya",
       "no": "Tidak",
-      "usageCoverage": "Hanya pemanggilan tercatat yang ditampilkan; penggunaan di luar pelacakan tidak diketahui. Waktu menunjukkan awal yang tercatat.",
+      "usageCoverage": "Cakupan pelacakan keterampilan atau plugin ini tidak diketahui; hanya pemanggilan tercatat yang ditampilkan. Keberhasilan menghitung eksekusi yang berhasil di antara catatan yang telah berakhir. Waktu terbaru dihitung sejak pembaruan.",
       "usageUnavailable": "Data penggunaan tercatat tidak tersedia.",
       "usageUnknown": "Tidak diketahui"
     },

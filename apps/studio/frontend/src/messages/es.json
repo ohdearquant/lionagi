@@ -306,7 +306,7 @@
       "invocations": "Invocaciones registradas",
       "successRate": "Tasa de éxito registrada",
       "lastUsed": "Último uso registrado",
-      "never": "Sin registros",
+      "never": "Sin registrar",
       "recentInvocations": "Registros actualizados recientemente",
       "noInvocations": "No hay invocaciones registradas.",
       "skillValidationFailed": "La validación falló. Corrige los errores antes de guardar.",
@@ -321,7 +321,7 @@
       "pluginReadmeSection": "README",
       "yes": "Sí",
       "no": "No",
-      "usageCoverage": "Solo se muestran las invocaciones registradas; el uso no registrado es desconocido. Las horas indican los inicios registrados.",
+      "usageCoverage": "Se desconoce la cobertura de seguimiento de esta habilidad o complemento; solo se muestran las invocaciones registradas. El éxito cuenta las ejecuciones completadas entre los registros finalizados. Las edades recientes indican actualizaciones.",
       "usageUnavailable": "Los datos de uso registrados no están disponibles.",
       "usageUnknown": "Desconocido"
     },

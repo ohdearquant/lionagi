@@ -306,7 +306,7 @@
       "invocations": "Erfasste Aufrufe",
       "successRate": "Erfasste Erfolgsquote",
       "lastUsed": "Letzte erfasste Nutzung",
-      "never": "Keine Einträge",
+      "never": "Nicht erfasst",
       "recentInvocations": "Kürzlich aktualisierte Einträge",
       "noInvocations": "Keine erfassten Aufrufe.",
       "skillValidationFailed": "Validierung fehlgeschlagen. Behebe die Fehler unten, bevor du speicherst.",
@@ -321,7 +321,7 @@
       "pluginReadmeSection": "README",
       "yes": "Ja",
       "no": "Nein",
-      "usageCoverage": "Nur erfasste Aufrufe werden angezeigt; nicht erfasste Nutzung ist unbekannt. Die Zeiten zeigen den erfassten Beginn.",
+      "usageCoverage": "Der Erfassungsumfang für diese Fähigkeit oder dieses Plugin ist unbekannt; nur erfasste Aufrufe werden angezeigt. Die Erfolgsquote zählt erfolgreiche Abschlüsse unter den beendeten Datensätzen. Die Zeitangaben beziehen sich auf Aktualisierungen.",
       "usageUnavailable": "Erfasste Nutzungsdaten sind nicht verfügbar.",
       "usageUnknown": "Unbekannt"
     },

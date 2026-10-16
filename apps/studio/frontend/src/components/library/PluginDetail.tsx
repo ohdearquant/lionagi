@@ -245,7 +245,7 @@ export function PluginDetail({ name, onBack }: PluginDetailProps) {
                 {[
                   {
                     label: t("invocations"),
-                    value: statsLoading ? "—" : String(stats?.total ?? 0),
+                    value: statsLoading ? "—" : stats?.total ? String(stats.total) : t("never"),
                   },
                   {
                     label: t("successRate"),
@@ -302,7 +302,7 @@ export function PluginDetail({ name, onBack }: PluginDetailProps) {
                             : inv.skill}
                         </span>
                         <span className="shrink-0 tabular-nums text-[length:var(--t-xs)] text-content-muted">
-                          {formatInvocationAge(inv.started_at)}
+                          {formatInvocationAge(inv.updated_at)}
                         </span>
                       </Link>
                     ))}

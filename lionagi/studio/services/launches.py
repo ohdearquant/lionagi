@@ -319,6 +319,7 @@ async def _spawn_detached(
                     source="executor",
                     actor=inv_id,
                     metadata={},
+                    expected_statuses={"running"},
                     extra_fields={"ended_at": time.time()},
                 )
         except Exception:
@@ -350,6 +351,7 @@ async def _spawn_detached(
                 source="executor",
                 actor=inv_id,
                 metadata={},
+                expected_statuses={"running"},
                 extra_fields={"ended_at": time.time()},
             )
     except Exception:

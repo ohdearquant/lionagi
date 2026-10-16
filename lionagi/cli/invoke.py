@@ -60,7 +60,7 @@ async def _end_invocation(invocation_id: str, *, status: str, metadata: dict | N
         existing = await db.get_invocation(invocation_id)
         if existing is None:
             return None
-        await db.update_status(
+        transitioned = await db.update_status(
             "invocation",
             invocation_id,
             new_status=status,
@@ -68,8 +68,11 @@ async def _end_invocation(invocation_id: str, *, status: str, metadata: dict | N
             reason_summary=f"Invocation {status}.",
             source="executor",
             actor=invocation_id,
+            expected_statuses={"running"},
             extra_fields={"ended_at": time.time()},
         )
+        if not transitioned:
+            return await db.get_invocation(invocation_id)
         if metadata is not None:
             # Merge: preserve any metadata the skill wrote during the
             # run, overwrite per-key with the closer's payload.

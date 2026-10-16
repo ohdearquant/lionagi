@@ -4330,6 +4330,7 @@ class StateDB:
             return (time.time() - float(last_healthy)) / 60.0
 
         if metric == "p95_latency_ms":
+            # Cancellation end times may mark cleanup observation, not execution latency.
             async with self._read() as conn:
                 rows = (
                     (
@@ -4337,7 +4338,7 @@ class StateDB:
                             text(
                                 "SELECT (ended_at - started_at) AS latency_sec FROM invocations "
                                 "WHERE started_at >= :window_start AND ended_at IS NOT NULL "
-                                "AND ended_at >= started_at"
+                                "AND ended_at >= started_at AND status != 'cancelled'"
                             ),
                             {"window_start": window_start},
                         )

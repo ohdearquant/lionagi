@@ -45,16 +45,21 @@ Legacy deep links such as `/runs/:id`, `/playbooks/:name`, `/teams`, and
 
 ## Recorded usage
 
-Skill and plugin details show recorded invocations only. Zero records do not
-establish that a skill or plugin has never been used: activity outside tracking
-is unknown. Counts and success rates cover all matching records, while the
-recent list contains five records ordered by update time. Failed usage requests
-show an unavailable state with a retry action, without replacing failure with
-zero or an empty-history claim. Recent record ages use their recorded start time,
-so later completion or cleanup does not appear as a new use.
-Last tracked use is the latest recorded start across all matching records,
-independent of the five-row recent list. Older servers without this aggregate
-show Unknown for nonempty results.
+Skill and plugin details show recorded invocations only. Per-skill and per-plugin
+tracking coverage is unknown; zero records display Not recorded for both count
+and last use, without claiming that the skill or plugin has never been used.
+Counts cover all matching records. Recorded success rate divides `completed`
+records by all finished records (`completed`, `completed_empty`, `failed`,
+`timed_out`, `aborted`, and `cancelled`); running records are excluded, and empty
+completions and cancellations are not successes. No finished records, or an older
+server missing their aggregate, display an unavailable rate.
+
+The recent list contains five records ordered by update time, with ages measured
+from those updates. Failed usage requests show an unavailable state with a retry
+action, without replacing failure with zero or an empty-history claim. Last
+tracked use is the latest recorded start across all matching records, independent
+of the recent list and later completion or cleanup. Older servers without this
+aggregate show Unknown for nonempty results.
 
 ## API resolution
 

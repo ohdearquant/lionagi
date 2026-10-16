@@ -308,7 +308,7 @@
       "invocations": "Recorded invocations",
       "successRate": "Recorded success rate",
       "lastUsed": "Last tracked use",
-      "never": "No records",
+      "never": "Not recorded",
       "recentInvocations": "Recently updated records",
       "noInvocations": "No recorded invocations.",
       "skillValidationFailed": "Validation failed. Fix the errors below before saving.",
@@ -323,7 +323,7 @@
       "pluginReadmeSection": "README",
       "yes": "Yes",
       "no": "No",
-      "usageCoverage": "Only recorded invocations are shown; usage outside tracking is unknown. Times show recorded starts.",
+      "usageCoverage": "Tracking coverage for this skill or plugin is unknown; only recorded invocations are shown. Success counts completed runs among finished records. Recent ages show updates.",
       "usageUnavailable": "Recorded usage is unavailable.",
       "usageUnknown": "Unknown"
     },
