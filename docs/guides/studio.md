@@ -87,7 +87,7 @@ Publishing anywhere other than loopback exposes the daemon to everyone who can
 reach that address, and with `LIONAGI_STUDIO_AUTH_TOKEN` unset nothing else
 stands between them and the API. Set the token before publishing on another
 interface, as described in
-[Hosting the Studio frontend](../../apps/studio/frontend/HOSTING.md). The CLI
+[Hosting the Studio frontend](https://github.com/ohdearquant/lionagi/blob/main/apps/studio/frontend/HOSTING.md). The CLI
 passes it to the container as `-e LIONAGI_STUDIO_AUTH_TOKEN` — the name only,
 so docker reads the value from your environment and it never appears in the
 command line.
