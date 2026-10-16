@@ -598,6 +598,7 @@ _SESSION_DETAIL_KEYS = sorted(
         "output_tokens",
         "pause_is_held",
         "playbook_name",
+        "run_id",
         "project",
         "project_source",
         "provider",

@@ -503,6 +503,18 @@ describe("routes/library.tsx — dispatches skill/plugin kind to their own detai
     expect(src).toMatch(/t\("empty\.allPlugin"\)/);
     expect(src).toMatch(/t\("empty\.allPluginHint"\)/);
   });
+
+  it("distinguishes an empty kind from a search-filtered empty result", () => {
+    expect(src).toMatch(/const scopedItems = items\.filter/);
+    expect(src).toMatch(/search\.trim\(\)\.length > 0 && scopedItems\.length > 0/);
+    expect(src).toMatch(/t\("empty\.clearFilters"\)/);
+    expect(src).toMatch(/onClick=\{\(\) => setSearch\(""\)\}/);
+  });
+
+  it("uses the selected kind's creation label in a truly empty collection", () => {
+    expect(src).toMatch(/const createLabel =/);
+    expect(src).toMatch(/\+ \{createLabel\}/);
+  });
 });
 
 describe("SkillDetail — detail pane contract", () => {

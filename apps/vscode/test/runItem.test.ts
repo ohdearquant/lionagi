@@ -9,6 +9,7 @@ import {
   isTerminal,
   mergeRunDetail,
   RunItem,
+  runId,
   statusIcon,
 } from "../src/runs/runItem.js";
 import type { Run } from "../src/api/types.js";
@@ -82,6 +83,14 @@ describe("hasRunTree", () => {
         }),
       ),
     ).toBe(false);
+  });
+});
+
+describe("runId", () => {
+  it("returns the Session identity even when CLI-run provenance differs", () => {
+    expect(runId(run({ id: "session-1", run_id: "cli-run-1" }))).toBe(
+      "session-1",
+    );
   });
 });
 

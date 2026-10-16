@@ -9,6 +9,7 @@ import { resolveRunLabel } from "@/lib/runLabel";
 
 function makeRun(overrides: Partial<RunSummary> & { run_id: string; status: string }): RunSummary {
   const base: RunSummary = {
+    id: overrides.id ?? overrides.run_id,
     run_id: overrides.run_id,
     status: overrides.status,
     playbook_name: null,
@@ -205,6 +206,20 @@ describe("boardReducer — attention queue derivation", () => {
     expect(s.attentionItems).toHaveLength(1);
     expect(s.attentionItems[0].reason).toBe("failed");
     expect(s.attentionItems[0].kind).toBe("run");
+  });
+
+  it("keys and links a projected run by Session id, not CLI-run provenance", () => {
+    const s = dispatchOk(initialBoardState(), [
+      makeRun({
+        id: "session-1",
+        run_id: "cli-run-1",
+        status: "failed",
+        started_at: 1_000_000 - 600,
+      }),
+    ]);
+
+    expect(s.attentionItems[0].id).toBe("run:session-1");
+    expect(s.attentionItems[0].href).toBe("/runs/session-1");
   });
 
   it("failures older than 24h are excluded — they belong to History", () => {

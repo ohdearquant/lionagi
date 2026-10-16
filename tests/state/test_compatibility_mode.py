@@ -1205,15 +1205,18 @@ def test_a_closure_is_read_with_the_keys_and_objects_that_touch_it(tmp_path):
     )
     with closing(sqlite3.connect(store)) as conn:
         closure = read_closure(conn, ["Runs"])
-    assert closure.table_names == {"runs"}
-    (runs,) = closure.tables
+    # The trigger reads other, so other is part of the closure too, and the view that reads other
+    # with it.
+    assert closure.table_names == {"runs", "other"}
+    shapes = {table.name: table for table in closure.tables}
+    runs = shapes["runs"]
     assert [c.name for c in runs.columns] == ["id", "owner", "status", "note", "updated_at"]
     assert runs.checks == {"status in ('running', 'done')"}
     assert {(k.table, k.parent) for k in closure.foreign_keys} == {
         ("events", "runs"),
         ("notes", "runs"),
     }
-    assert {(o.type, o.name) for o in closure.objects} == {("trigger", "t")}
+    assert {(o.type, o.name) for o in closure.objects} == {("trigger", "t"), ("view", "v")}
 
 
 # Statement classification
@@ -1270,12 +1273,34 @@ def test_tokens_split_where_sqlite_splits_them():
     assert _sql_tokens("SELECT a\u00a0b") == [("word", "select"), ("word", "a\u00a0b")]
     assert _sql_tokens("(\u00a0runs)")[1] == ("word", "\u00a0runs")
     assert _sql_tokens('"Open"') == [("ident", "open")]
-    # Only a double-quoted token can be a string literal, so only its case is kept.
+    # Only a double-quoted token can be a string literal, and it keeps its quotes with its case.
     assert _sql_tokens('"Open" `Open` [Open]', spelled=True) == [
-        ("ident", "Open"),
+        ("ident", '"Open"'),
         ("ident", "open"),
         ("ident", "open"),
     ]
+    # A double-quoted literal keeps its quotes, so it equals only the same literal as written.
+    assert _sql_tokens('"null"', spelled=True) == [("ident", '"null"')]
+    assert _sql_tokens('CHECK (note IS NOT "null")', spelled=True)[3:] == [
+        ("word", "is"),
+        ("word", "not"),
+        ("ident", '"null"'),
+        ("punct", ")"),
+    ]
+    # A single x or X immediately before a quote is a blob literal, one token through its close.
+    assert _sql_tokens("SELECT x'41', X'af'") == [
+        ("word", "select"),
+        ("blob", "x'41'"),
+        ("punct", ","),
+        ("blob", "X'af'"),
+    ]
+    # A word ending in x before a quote is not a blob: only a whole word of one x starts one.
+    assert _sql_tokens("SELECT ax'41'") == [
+        ("word", "select"),
+        ("word", "ax"),
+        ("string", "'41'"),
+    ]
+    assert _sql_tokens("SELECT x '41'") == [("word", "select"), ("word", "x"), ("string", "'41'")]
     # Verbatim, a trigger body, a view body or a DEFAULT keeps its text as written.
     assert _sql_tokens('"Open" `Open` [Open] Open', verbatim=True) == [
         ("ident", '"Open"'),
@@ -1482,3 +1507,186 @@ async def test_a_body_that_quotes_a_name_in_another_case_is_refused(object_sql, 
     with pytest.raises(StateCompatibilityRefused, match="is not in the profile"):
         await db.open()
     assert db._engine is None
+
+
+# A literal keeps its quotes, a blob is one token, and a trigger's order counts (D2)
+
+
+async def _refused_against(reference: Path, store: Path) -> str:
+    """The reference store is admitted against its own closure; the other store is refused."""
+    profile = _profile(reference)
+    await (await _open(reference, profile)).close()
+    db = _RunsDB(store, compatibility=profile)
+    with pytest.raises(StateCompatibilityRefused, match="does not match the profile") as caught:
+        await db.open()
+    assert db._engine is None
+    return caught.value.reason
+
+
+_NOTE_COLUMN = "    note TEXT,"
+_STATUS_LINE = "status TEXT NOT NULL CHECK (status IN ('running', 'done'))"
+
+
+def _literal_schema(kind: str, spelling: str) -> str:
+    """The synthetic schema with one definition written as *spelling* for the *kind* of site."""
+    if kind == "check keyword":
+        return _SCHEMA.replace(_NOTE_COLUMN, f"    {spelling},", 1)
+    if kind == "index predicate":
+        return _SCHEMA + spelling
+    return _SCHEMA.replace(_STATUS_LINE, spelling, 1)
+
+
+_LITERAL_PAIRS = {
+    "check keyword": ("note TEXT CHECK (note IS NOT NULL)", 'note TEXT CHECK (note IS NOT "null")'),
+    "index predicate": (
+        "CREATE UNIQUE INDEX once_note ON runs (note) WHERE updated_at IS NULL;\n",
+        'CREATE UNIQUE INDEX once_note ON runs (note) WHERE updated_at IS "null";\n',
+    ),
+    "literal list": (
+        'status TEXT NOT NULL CHECK (status IN ("running", "done"))',
+        'status TEXT NOT NULL CHECK (status IN ("running, done"))',
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("reference_sql", "store_sql"), _LITERAL_PAIRS.values(), ids=_LITERAL_PAIRS
+)
+async def test_a_double_quoted_literal_keeps_its_quotes(reference_sql, store_sql, tmp_path):
+    """A double-quoted token that names no column is a string literal, so it equals only the
+    same literal written the same way: a keyword, or a list a comma splits two ways, in another
+    spelling is another definition."""
+    kind = next(k for k, pair in _LITERAL_PAIRS.items() if pair[0] == reference_sql)
+    reference = _store(tmp_path / "reference.db", _literal_schema(kind, reference_sql))
+    store = _store(tmp_path / "managed.db", _literal_schema(kind, store_sql))
+    reason = await _refused_against(reference, store)
+    assert "runs" in reason
+
+
+@pytest.mark.parametrize(
+    ("spelling",), [(p[1],) for p in _LITERAL_PAIRS.values()], ids=_LITERAL_PAIRS
+)
+async def test_the_same_literal_on_both_sides_is_admitted(spelling, tmp_path):
+    """Two stores spelling the same double-quoted literal the same way are admitted."""
+    kind = next(k for k, pair in _LITERAL_PAIRS.items() if pair[1] == spelling)
+    schema = _literal_schema(kind, spelling)
+    reference = _store(tmp_path / "reference.db", schema)
+    store = _store(tmp_path / "managed.db", schema)
+    db = await _open(store, _profile(reference))
+    await db.close()
+
+
+_BLOB_VIEW = "CREATE VIEW live AS SELECT x{}'41' FROM runs;\n"
+_WORD_VIEW = "CREATE VIEW live AS SELECT {}'41' FROM wax;\n"
+_WAX = "CREATE TABLE wax (ax TEXT);\n"
+
+
+@pytest.mark.parametrize("gap", ["", " "], ids=["blob first", "bare word first"])
+async def test_a_blob_literal_is_not_a_word_and_a_string(gap, tmp_path):
+    """``x'41'`` is one blob token, so it never equals ``x '41'``, a column aliased as ``'41'``."""
+    other = " " if gap == "" else ""
+    reference = _store(tmp_path / "reference.db", _SCHEMA + _BLOB_VIEW.format(gap))
+    store = _store(tmp_path / "managed.db", _SCHEMA + _BLOB_VIEW.format(other))
+    reason = await _refused_against(reference, store)
+    assert "view live" in reason
+
+
+async def test_a_word_ending_in_x_before_a_quote_is_not_a_blob(tmp_path):
+    """Only a whole word of one ``x`` starts a blob, so ``ax '41'`` is the column ``ax`` and the
+    string ``'41'``, and whitespace between them is set aside as for any other two tokens."""
+    reference = _store(tmp_path / "reference.db", _SCHEMA + _WAX + _WORD_VIEW.format("ax "))
+    store = _store(tmp_path / "managed.db", _SCHEMA + _WAX + _WORD_VIEW.format("ax"))
+    db = await _open(store, _profile(reference))
+    await db.close()
+
+
+_TRIGGER_A = (
+    "CREATE TRIGGER fa AFTER INSERT ON events BEGIN "
+    "UPDATE runs SET note = 'a' WHERE id = NEW.run_id; END;\n"
+)
+_TRIGGER_B = (
+    "CREATE TRIGGER fb AFTER INSERT ON events BEGIN "
+    "UPDATE runs SET note = 'b' WHERE id = NEW.run_id; END;\n"
+)
+
+
+async def test_two_triggers_in_the_other_order_are_refused(tmp_path):
+    """SQLite fires a table's triggers in the order it created them, so the same two triggers in
+    another order are another closure."""
+    reference = _store(tmp_path / "reference.db", _SCHEMA + _TRIGGER_A + _TRIGGER_B)
+    store = _store(tmp_path / "managed.db", _SCHEMA + _TRIGGER_B + _TRIGGER_A)
+    with closing(sqlite3.connect(reference)) as conn:
+        closure = read_closure(conn, ["runs", "events"])
+    assert {(o.name, o.position) for o in closure.objects} == {("fa", 0), ("fb", 1)}
+    reason = await _refused_against(reference, store)
+    assert "position" in reason
+
+
+async def test_two_triggers_in_the_same_order_are_admitted(tmp_path):
+    reference = _store(tmp_path / "reference.db", _SCHEMA + _TRIGGER_A + _TRIGGER_B)
+    store = _store(tmp_path / "managed.db", _SCHEMA + _TRIGGER_A + _TRIGGER_B)
+    db = await _open(store, _profile(reference))
+    await db.close()
+
+
+_GATE = "CREATE VIEW gate AS SELECT 1 AS ok{where};\n"
+_GATE_TRIGGER = (
+    "CREATE TRIGGER guard BEFORE INSERT ON runs WHEN EXISTS (SELECT 1 FROM gate) "
+    "BEGIN SELECT RAISE(ABORT, 'frozen'); END;\n"
+)
+
+
+async def test_a_view_a_closure_trigger_reads_is_part_of_the_closure(tmp_path):
+    """A closure trigger that reads a view the closure does not name still reads it, so what that
+    view holds is compared."""
+    reference = _store(tmp_path / "reference.db", _SCHEMA + _GATE.format(where="") + _GATE_TRIGGER)
+    store = _store(
+        tmp_path / "managed.db", _SCHEMA + _GATE.format(where=" WHERE 0") + _GATE_TRIGGER
+    )
+    reason = await _refused_against(reference, store)
+    assert "view gate" in reason
+
+
+async def test_the_same_view_a_closure_trigger_reads_is_admitted(tmp_path):
+    schema = _SCHEMA + _GATE.format(where=" WHERE 1") + _GATE_TRIGGER
+    reference = _store(tmp_path / "reference.db", schema)
+    store = _store(tmp_path / "managed.db", schema)
+    db = await _open(store, _profile(reference))
+    await db.close()
+
+
+async def test_a_chain_of_views_a_closure_trigger_reads_is_followed(tmp_path):
+    """The closure is a fixed point: a trigger reads ``a``, ``a`` reads ``b``, and a difference in
+    ``b`` refuses the store."""
+    tail = (
+        "CREATE VIEW b AS SELECT 1 AS ok;\n"
+        "CREATE VIEW a AS SELECT ok FROM b;\n"
+        "CREATE TRIGGER guard BEFORE INSERT ON runs WHEN EXISTS (SELECT 1 FROM a) "
+        "BEGIN SELECT RAISE(ABORT, 'frozen'); END;\n"
+    )
+    other = tail.replace("SELECT 1 AS ok;", "SELECT 1 AS ok WHERE 0;", 1)
+    reference = _store(tmp_path / "reference.db", _SCHEMA + tail)
+    store = _store(tmp_path / "managed.db", _SCHEMA + other)
+    reason = await _refused_against(reference, store)
+    assert "view b" in reason
+
+
+async def test_a_table_only_a_closure_trigger_reads_is_compared(tmp_path):
+    """A table a closure object reads joins the closure, so a difference in it refuses the store
+    even though the profile writes nothing there."""
+    tail = (
+        "CREATE TABLE seq (id INTEGER PRIMARY KEY, counter TEXT);\n"
+        "CREATE TRIGGER bump AFTER INSERT ON runs BEGIN "
+        "UPDATE seq SET counter = NEW.status; END;\n"
+    )
+    reference = _store(tmp_path / "reference.db", _SCHEMA + tail)
+    store = _store(
+        tmp_path / "managed.db",
+        _SCHEMA + tail.replace("counter TEXT", "counter TEXT NOT NULL", 1),
+    )
+    with closing(sqlite3.connect(reference)) as conn:
+        closure = read_closure(conn, ["runs", "events"])
+    assert "seq" in closure.table_names
+    assert set(_WRITES) == {"runs", "events"}
+    reason = await _refused_against(reference, store)
+    assert "column seq.counter" in reason

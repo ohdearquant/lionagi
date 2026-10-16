@@ -118,6 +118,55 @@ async def test_orchestrator_gets_the_same_empty_server_set(tmp_run):
 
 
 @pytest.mark.asyncio
+async def test_setup_persists_execution_provenance(tmp_run, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    import lionagi.casts.catalog as catalog
+    import lionagi.cli._runs as runs_mod
+    from lionagi import Branch
+
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(orch_mod, "allocate_run", runs_mod.allocate_run)
+    monkeypatch.setattr(
+        orch_mod,
+        "build_imodel_from_spec",
+        lambda *a, **kw: SimpleNamespace(
+            endpoint=SimpleNamespace(config=SimpleNamespace(provider="claude_code", kwargs={}))
+        ),
+    )
+    monkeypatch.setattr(orch_mod, "resolve_persisted_effort", lambda *a, **kw: None)
+    monkeypatch.setattr(catalog, "_load_packaged_pack", lambda **_: object())
+    monkeypatch.setattr(
+        orch_mod,
+        "AgentSpec",
+        SimpleNamespace(compose=lambda *a, **kw: object()),
+    )
+
+    async def fake_create_agent(*a, **kw):
+        return Branch(name="orchestrator")
+
+    monkeypatch.setattr(orch_mod, "create_agent", fake_create_agent)
+
+    env = await setup_orchestration(
+        pattern_name="Fanout",
+        model_spec="claude_code/sonnet",
+        agent_name=None,
+        save_dir=None,
+        cwd=str(target_dir),
+        yolo=False,
+        verbose=False,
+        effort=None,
+        theme=None,
+    )
+
+    manifest = env.run.read_manifest()
+    assert manifest["cwd"] == str(target_dir.resolve())
+    assert manifest["mcp_config_reason"] == "no_mcp_config_found"
+
+
+@pytest.mark.asyncio
 async def test_no_config_found_hands_over_nothing_and_says_nothing(tmp_run):
     """The contrast case: no flag and no config to find. The worker is handed
     no set at all and keeps its own discovery, so no MCP argument is emitted."""
@@ -467,7 +516,9 @@ async def test_job_control_in_a_submitted_runs_snapshot_is_still_withheld(tmp_ru
 
     snapshot = tmp_path / "job" / "mcp.json"
     snapshot.parent.mkdir()
-    _write_mcp_server_snapshot(snapshot, _CONTROL_AND_KNOWLEDGE, source=tmp_run / ".mcp.json")
+    _write_mcp_server_snapshot(
+        snapshot, _CONTROL_AND_KNOWLEDGE, source=tmp_run / ".mcp.json", searched_from=tmp_run
+    )
 
     env = await _setup(no_mcp_config=False, mcp_config=str(snapshot))
     branch, _, _, _ = await build_worker_branch(
