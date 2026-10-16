@@ -79,6 +79,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   releases read High). An effort that is not a string also counts as none (earlier releases
   read a number as an unknown effort, which gave Medium, or High on Pro, and raised `TypeError`
   on a list or dict).
+- `close_shared_db()` raises a `RuntimeError` naming each handle it could not close, with the
+  error that handle's `close()` raised, instead of suppressing every error and returning as if
+  the sweep were done. A handle whose close is refused by another event loop, or whose close is
+  cancelled, stays in the shared registry so a later lookup or sweep still reaches it; run
+  teardown logs the refusal as it logs a failed `StateDB.close()`.
 
 ### Fixed
 

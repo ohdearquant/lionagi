@@ -604,10 +604,13 @@ _COMPAT_INSERTED: ContextVar[list[tuple[str, Any]] | None] = ContextVar(
     "lionagi_state_compat_inserted", default=None
 )
 
-# The handle whose open() call has got past that handle's open lock and is running _open() in this
-# task, else None. A context variable rather than an attribute: a second open() on the same handle
-# waits behind the first, and the waiter must not read the holder's call as its own (StateDB.open,
-# StateDB.__aenter__).
+# The handle a context entry is opening: ``__aenter__`` marks this with the handle, and ``open()``
+# reads and clears it before it waits on the open lock. It tells this call whether the failure
+# cleanup is its own, since ``__aexit__`` never runs when an entry fails (StateDB.open,
+# StateDB.__aenter__). A context variable rather than an attribute, so a second entry waiting behind
+# another open keeps its own; there is one variable for the whole task, not one per handle, but it
+# is consumed before the first await, so an open made from a task this open starts, or one nested
+# inside a schema, never reads another call's mark.
 _OPEN_CALL: ContextVar[Any] = ContextVar("lionagi_state_open_call", default=None)
 
 
@@ -754,15 +757,25 @@ class StateDB:
     async def open(self) -> None:
         """Open this handle, one call at a time (see ``_holding_open_lock``).
 
-        ``_OPEN_CALL`` names this handle for the call that got past the lock, so a caller whose
-        open fails can tell whether it opened anything: an entry that only waited behind another
-        open and then failed opened nothing, and a cleanup it runs must leave that call's engine
-        alone.
+        A context entry marks ``_OPEN_CALL`` with this handle just before it calls here, and this
+        call reads and clears the mark before it waits: an entry whose ``__aenter__`` fails runs no
+        ``__aexit__``, and only the call that got past the open lock has an engine to dispose.
+        Running that cleanup under the lock means a queued open cannot build an engine that the
+        cleanup then disposes. A plain call keeps a later failure's engine, as it always has.
         """
-        _OPEN_CALL.set(None)
-        async with self._holding_open_lock():
-            _OPEN_CALL.set(self)
-            await self._open()
+        context_entry = _OPEN_CALL.get() is self
+        try:
+            _OPEN_CALL.set(None)
+            async with self._holding_open_lock():
+                try:
+                    await self._open()
+                except BaseException:
+                    if context_entry:
+                        with CancelScope(shield=True):
+                            await self._close()
+                    raise
+        finally:
+            _OPEN_CALL.set(None)
 
     @asynccontextmanager
     async def _holding_open_lock(self):
@@ -1078,18 +1091,11 @@ class StateDB:
             self._engine = None
 
     async def __aenter__(self) -> StateDB:
-        try:
-            await self.open()
-        except BaseException:
-            # __aexit__ is not entered when __aenter__ fails, so dispose the partially opened engine
-            # here rather than letting its driver worker outlive the failure. Only the call that got
-            # past the open lock opened one: an entry that waited behind another open and was then
-            # cancelled or failed opened nothing, and close() would wait for that open to finish and
-            # then dispose the engine it had just built.
-            if _OPEN_CALL.get() is self:
-                with CancelScope(shield=True):
-                    await self.close()
-            raise
+        # __aexit__ does not run when __aenter__ fails, so the entry marks its own open call:
+        # open() disposes what its own call opened under the lock it holds, rather than letting the
+        # driver worker outlive the failure or disposing an engine a queued open built.
+        _OPEN_CALL.set(self)
+        await self.open()
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
@@ -7119,7 +7125,12 @@ def _copy_state(path: str, suffix: str) -> tuple | None:
 # connection here may hold, so each stays open until the process exits, as SQLite keeps its own
 # descriptor of a file open while its connections here hold locks on it. Two costs follow from
 # that: each distinct store copied keeps one descriptor open for the life of the process, and a
-# store deleted after it was copied keeps its disk space allocated until the process exits.
+# store deleted after it was copied keeps its disk space allocated until the process exits. An open
+# that races another on one store opens its own descriptor before it finds the filed one: it is kept
+# open as well and is not filed, so that one race costs a second descriptor no entry can find. The
+# descriptors count against the process's open-file limit, so a long run that copies very many
+# distinct stores spends one of that limit's slots per store, and can meet `EMFILE` where a run that
+# copies fewer does not.
 _COPY_DESCRIPTORS: dict[tuple[int, int], int] = {}
 _COPY_DESCRIPTORS_LOCK = threading.Lock()
 
@@ -7271,10 +7282,11 @@ def _refuse_native_beside_compatibility(url: str) -> None:
 async def register_shared_db(db: StateDB) -> None:
     """Adopt a caller-owned StateDB as the shared instance, closing any prior one for its url.
 
-    A native writer is refused for a store this process holds open in compatibility mode.
+    A native writer is refused for a store this process holds open in compatibility mode. The
+    handle being displaced is closed before the entry is replaced: a close this loop cannot make is
+    raised, and the registry keeps the handle that is still open rather than filing one with no
+    entry to reach it by.
     """
-    import contextlib
-
     gen = _SHARED_CLOSE_GEN
     async with _holding_shared_lock():
         if _SHARED_CLOSE_GEN != gen:
@@ -7284,8 +7296,7 @@ async def register_shared_db(db: StateDB) -> None:
         key = _shared_key(db)
         existing = _SHARED.get(key)
         if existing is not None and existing is not db:
-            with contextlib.suppress(Exception):
-                await existing.close()
+            await existing.close()
         _SHARED[key] = db
 
 
@@ -7304,9 +7315,9 @@ def _describe_a_shared_handle(db: StateDB) -> str:
 async def close_shared_db() -> None:
     """Close and forget every shared StateDB; callers must quiesce get_shared_db() first.
 
-    Every handle the sweep can close is closed, and the ones it cannot are raised together once it
-    is done: a handle a close from another event loop refuses would otherwise be reported as
-    closed while it keeps its engine.
+    Every handle the sweep can close is closed and forgotten, and one whose close raises any error
+    is kept in the registry and raised together with the others once the sweep is done: reported as
+    closed, it would keep its engine with nothing left to reach it by.
     """
     global _SHARED_OPEN_LOCK, _SHARED_CLOSE_GEN  # noqa: PLW0603
 
@@ -7327,20 +7338,34 @@ async def close_shared_db() -> None:
 
 
 async def _sweep_shared_handles() -> list[tuple[StateDB, Exception]]:
-    """Close every registered handle, returning the ones that refused with the refusal."""
-    instances = list(_SHARED.values())
+    """Close every registered handle, returning the ones whose close raised, with the error.
+
+    The registry is emptied before the first close, so a get_shared_db() racing the sweep meets the
+    lock rather than a handle being closed, and a handle that did not close is filed again under
+    its key: one a close from another event loop refuses, or whose close is cancelled, would
+    otherwise stay open with no entry a later lookup or sweep could reach it by."""
+    remaining = list(_SHARED.items())
     _SHARED.clear()
     refused: list[tuple[StateDB, Exception]] = []
-    for db in instances:
+    while remaining:
+        key, db = remaining.pop(0)
         try:
             await db.close()
         except Exception as exc:  # noqa: BLE001 -- collected and raised after the sweep
+            _SHARED[key] = db
             refused.append((db, exc))
+        except BaseException:
+            # The close was cancelled: this handle and every one still to close stay open, so they
+            # keep their entries rather than being left unreachable.
+            _SHARED[key] = db
+            for later_key, later in remaining:
+                _SHARED[later_key] = later
+            raise
     return refused
 
 
 def _raise_refused_closes(refused: list[tuple[StateDB, Exception]]) -> None:
-    """Raise once for every handle a sweep could not close, naming each one and its refusal."""
+    """Raise once for every handle a sweep could not close, naming each one and why."""
     if not refused:
         return
     named = "; ".join(f"{_describe_a_shared_handle(db)}: {exc}" for db, exc in refused)

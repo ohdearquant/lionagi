@@ -390,6 +390,78 @@ async def test_a_cancelled_context_entry_leaves_the_open_it_waited_on_usable(tmp
     await handle.close()
 
 
+async def test_a_cancelled_context_entry_leaves_a_queued_open_its_engine(tmp_path, monkeypatch):
+    """A second open queued behind a context entry that is then cancelled keeps the engine it
+    builds: the entry's failure cleanup disposes only what its own entry opened."""
+    store = tmp_path / "state.db"
+    seed = StateDB(store)
+    await seed.open()
+    await seed.close()
+    original = StateDB._apply_schema
+    entered = asyncio.Event()
+    calls: list[int] = []
+
+    async def schema(self):
+        calls.append(1)
+        if len(calls) == 1:
+            entered.set()
+            await asyncio.sleep(60)
+        await original(self)
+
+    monkeypatch.setattr(StateDB, "_apply_schema", schema)
+    handle = StateDB(store)
+    entry = asyncio.ensure_future(handle.__aenter__())
+    await asyncio.wait_for(entered.wait(), timeout=10)
+    queued = asyncio.ensure_future(handle.open())
+    await asyncio.sleep(0.2)
+    assert handle._open_lock_users == 2, "the second open is waiting on the entry's open"
+
+    entry.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await entry
+    await asyncio.wait_for(queued, timeout=10)
+
+    assert handle._engine is not None, (
+        "the cancelled entry disposed the engine the open queued behind it then built"
+    )
+    assert await handle.fetch_all("SELECT 1")
+    await handle.close()
+    assert handle._engine is None
+
+
+async def test_a_failed_context_entry_leaves_a_queued_open_its_engine(tmp_path, monkeypatch):
+    """The same when the entry's schema raises instead of being cancelled."""
+    store = tmp_path / "state.db"
+    seed = StateDB(store)
+    await seed.open()
+    await seed.close()
+    original = StateDB._apply_schema
+    calls: list[int] = []
+
+    async def schema(self):
+        calls.append(1)
+        if len(calls) == 1:
+            await asyncio.sleep(0.3)
+            raise RuntimeError("the entry's schema failed")
+        await original(self)
+
+    monkeypatch.setattr(StateDB, "_apply_schema", schema)
+    handle = StateDB(store)
+    entry = asyncio.ensure_future(handle.__aenter__())
+    await asyncio.sleep(0.05)
+    queued = asyncio.ensure_future(handle.open())
+    with pytest.raises(RuntimeError, match="the entry's schema failed"):
+        await entry
+    await asyncio.wait_for(queued, timeout=10)
+
+    assert handle._engine is not None, (
+        "the failed entry disposed the engine the open queued behind it then built"
+    )
+    assert await handle.fetch_all("SELECT 1")
+    await handle.close()
+    assert handle._engine is None
+
+
 def _close_on_another_loop(handle: StateDB) -> object:
     """Run ``handle.close()`` on a fresh event loop in a worker thread; return what it did."""
     outcome: dict = {}
