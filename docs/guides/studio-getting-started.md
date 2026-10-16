@@ -48,7 +48,13 @@ li studio
 The default starts the API daemon at `http://127.0.0.1:8765` and opens the hosted
 web client at [lion-studio.khive.ai](https://lion-studio.khive.ai). The hosted
 page is the frontend; execution and stored history remain on your machine.
-Keep the command running while using Studio or its scheduler.
+Keep the command running while using Studio or its scheduler. `li studio` opens the page
+with a one-time pairing code, which is how the daemon knows the page came from
+you: a code works once, within two minutes. If you reload the page or open the
+hosted address yourself, the page asks you to run `li studio` again; with the
+daemon already running, that opens a newly paired page without starting a
+second daemon. Use `--no-open` when you do not want LionAGI to open a browser;
+`li studio` then prints the one-time link instead.
 
 ### Authentication and browser trust
 
