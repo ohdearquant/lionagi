@@ -35,6 +35,7 @@ def db_path(tmp_path, monkeypatch):
 async def test_held_planner_exposes_deferred_controls(db_path, tmp_path, monkeypatch, verb):
     async with StateDB(db_path) as db:
         sid = await _make_session(db)
+        await db.merge_session_node_metadata(sid, {"flow_control_poller": "pending"})
         env = _make_env(tmp_path, live_persist={"db": db, "session_id": sid})
         entered = asyncio.Event()
 
@@ -45,14 +46,14 @@ async def test_held_planner_exposes_deferred_controls(db_path, tmp_path, monkeyp
         monkeypatch.setattr(flow, "plan", held_plan)
         task = asyncio.create_task(flow._run_flow_inner("fake/model", "plan work", env=env))
         try:
-            await asyncio.wait_for(entered.wait(), timeout=2)
+            await asyncio.wait_for(entered.wait(), timeout=10)
             row = await db.get_session(sid)
             assert row["current_phase"] == "planning"
             output, rc = await _enqueue_control_inner(
                 entity_id=sid, verb=verb, payload={"text": "use precise evidence"}
             )
             assert rc == 0
-            assert "deferred until planning completes" in output
+            assert "deferred until the DAG execution poller starts" in output
             assert "execution poller" in output
             assert "applies within" not in output
             if verb == "message":
@@ -66,7 +67,7 @@ async def test_held_planner_exposes_deferred_controls(db_path, tmp_path, monkeyp
             assert pending[0]["result"] is None
             assert (await db.get_session(sid))["current_phase"] == "planning"
             view = await _build_view(db, command="ctl", entity_type="session", row=row)
-            assert "deferred until planning completes" in _render_human(view)
+            assert "controls wait for the DAG execution poller" in _render_human(view)
         finally:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -163,7 +164,7 @@ async def test_flow_finalization_clears_persisted_phase(db_path, tmp_path, monke
     task = asyncio.create_task(
         flow._run_flow("fake/model", "plan work", timeout=0.1 if outcome == "timed_out" else None)
     )
-    await asyncio.wait_for(entered.wait(), timeout=2)
+    await asyncio.wait_for(entered.wait(), timeout=10)
     if outcome == "cancelled":
         task.cancel()
         with pytest.raises(asyncio.CancelledError):

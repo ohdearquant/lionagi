@@ -1078,9 +1078,9 @@ async def _teardown_common(
                 metadata=metadata,
                 expected_statuses={pre_write_status},
                 extra_fields=(
-                    {"ended_at": ended_at}
+                    {"ended_at": ended_at, "current_phase": None}
                     if duration_ms is None
-                    else {"ended_at": ended_at, "duration_ms": duration_ms}
+                    else {"ended_at": ended_at, "duration_ms": duration_ms, "current_phase": None}
                 ),
             )
             if not written:

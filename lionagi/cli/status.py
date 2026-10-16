@@ -475,8 +475,10 @@ def _render_human(view: dict[str, Any]) -> str:
         lines.append("")
         if not view["terminal"]:
             lines.append(_dim("  -- pending controls --"))
-            if view["current_phase"] == "planning":
-                lines.append("  deferred until planning completes and the execution poller runs")
+            lines.append(
+                "  flow/play controls wait for the DAG execution poller; "
+                "none will be applied after it stops"
+            )
         elif any(
             str(c.get("result") or "").startswith("applying") for c in view["pending_controls"]
         ):

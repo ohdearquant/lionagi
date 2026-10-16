@@ -25,5 +25,6 @@ def test_monitor_help_explains_flow_entity_types():
     assert "Use `session` for flow runs" in help_text
     assert "`invocation` for registered invocation records" in help_text
     reference = (Path(__file__).parents[2] / "docs" / "cli-reference.md").read_text()
-    assert "li monitor --type session" in reference
-    assert "Flow runs are sessions" in reference
+    controls = reference.split("### `li o ctl`", 1)[1].split("\n---", 1)[0]
+    assert "li monitor --type session" in controls
+    assert "Flow runs are sessions" in controls

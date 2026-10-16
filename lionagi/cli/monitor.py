@@ -438,13 +438,11 @@ def _session_to_row(sess: dict[str, Any]) -> dict[str, Any]:
         "status": sess.get("status") or "?",
         # Older terminal records can retain a phase from their live execution.
         "phase": (
-            "-"
-            if sess.get("status") in SESSION_TERMINAL_STATUSES
-            else sess.get("current_phase")
-            or sess.get("agent_name")
-            or sess.get("playbook_name")
-            or "-"
-        ),
+            None if sess.get("status") in SESSION_TERMINAL_STATUSES else sess.get("current_phase")
+        )
+        or sess.get("agent_name")
+        or sess.get("playbook_name")
+        or "-",
         "elapsed": _elapsed(
             sess.get("started_at"),
             sess.get("ended_at"),

@@ -581,24 +581,42 @@ statements; a session can go terminal between them. The insert re-checks the
 running condition so it — not the earlier read — is what decides admission,
 avoiding a control queued against a run whose consumer has already exited.
 
-Flow/play sessions persist `planning` before calling the planner. Controls
-queued in that phase are explicitly deferred until planning completes and
-`_execute_dag` starts its poller. The approximately two-second poll interval
-is not a delivery deadline or a guarantee of application before the first
-operation. Applied pause/resume closes/opens the executor gate at operation
-boundaries and persists `paused`/`executing`; in-flight operations continue.
-Messages affect only operations prepared after delivery and are rejected
-when no operations remain pending. Agent legs instead drain at their next
-turn boundary, which can be far later than two seconds into a provider call.
+Flow/play sessions persist `planning` before calling the planner. Their scalar
+`node_metadata.flow_control_poller` declaration records `pending`, `active`, then
+`stopped`, using the existing metadata merge helper. Pending controls wait until
+`_execute_dag` starts its poller, regardless of a stale or NULL phase. Stopped
+consumers refuse new controls; missing declarations are refused as predating
+control-delivery tracking. Agent turn-end drain declarations are unchanged.
+The stopped marker follows existing background stop/settlement, so its telemetry
+await cannot skip exchange shutdown. Marker writes remain best-effort; a failed
+write may leave a stale active marker. Enqueue explicitly says no control will be
+applied after the poller stops. The approximately two-second interval is neither
+a deadline nor a guarantee before the first operation.
 
-Flow finalization clears the persisted live phase inside its cancellation
-shield before closing persistence. Status and monitor also suppress stale
-live phases on terminal records written by older runners. Neither a queued
-pause nor a queued resume changes the phase before the executor applies it.
+Applied pause/resume closes/opens the gate and writes `paused`/`executing`, retrying
+one failed phase write without replaying the executor action. Two failures leave
+the existing best-effort stale-telemetry limit. The pause gate precedes concurrency
+limiter admission: operations already past it, including those waiting for limiter
+capacity, may still start. In-flight operations continue. Messages affect only
+operations prepared after delivery and are rejected when none remain pending.
+Agent legs drain at the next turn boundary, which can be far later than two seconds
+into a provider call.
 
-Control targets must resolve to a recorded session, invocation, play or run.
-Use the printed session ID or an invocation registered with `li invoke start`;
-a self-chosen `--invocation` value does not register an alias. In monitor,
+Teardown carries `current_phase=None` in the authoritative terminal status UPDATE.
+Only `current_phase` was added to the two session status-patch allowlists; unrelated
+fields remain refused. There is no separate awaited phase clear before teardown.
+The existing cancellation shield covers cooperative scopes, not native task
+cancellation: repeated native cancellation can still interrupt the pre-existing
+teardown before it commits. A committed terminal update clears the phase atomically.
+Status/monitor normalize historical terminal phases while retaining the agent or
+playbook name fallback. Queuing a control does not change the applied phase.
+
+Control actions accept an exact recorded session/invocation/play/run ID or an
+unambiguous 8-character hex prefix. Read-only status retains broader prefix lookup.
+Foreground flow prints its full persisted Session ID before planning; background
+launch prints the full ID assigned to its child. `--invocation` is validated against
+the real invocation row before setup/planning and before background spawn; register
+with `li invoke start` first. It does not register an alias. In monitor,
 `--type session` includes flow sessions; `--type invocation` selects registered
 invocations. The row label `flow` is not a monitor entity-type filter.
 

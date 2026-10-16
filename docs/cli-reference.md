@@ -333,18 +333,32 @@ li o ctl msg ID "Prioritize correctness over breadth"
 using context-mode operator steering. Use `li o ctl SUBCOMMAND --help` for the
 command-specific ID and JSON options.
 
-Use the session ID printed by the running flow, or an invocation ID registered
-with `li invoke start`. Supplying a self-chosen `--invocation` value does not
-register a new invocation or create a control-target alias.
+Foreground flows print `Session: <full ID>` after recording the session, before
+planning. Background launch prints the full session ID assigned to its child.
+Control actions accept an exact recorded session, invocation, play or run ID, or
+an unambiguous 8-character hex prefix. Shorter prefixes remain available to
+`status`, which does not act on a run. An exact stored ID need not be a UUID.
+`--invocation` must name an existing invocation registered with `li invoke start`;
+unknown values fail before flow setup/planning or background launch, rather than
+silently disabling persistence. The flag does not register an alias.
 
-During `planning`, controls remain queued until planning completes and the DAG
-execution poller runs. That poller checks about every two seconds during execution;
-it does not interrupt the planner or guarantee delivery before the first operation.
-Pause/resume gate new operations at operation boundaries; operations already
-running finish normally. Messages affect only operations prepared after delivery
-and are rejected if no operations remain pending. Check `status` to distinguish a
-queued control from an applied one. Applied pause/resume changes the live phase to
-`paused`/`executing`; terminal flows have no live phase.
+While a flow is waiting for DAG execution, controls are deferred until its DAG
+execution poller starts, including pre-planning, graph construction and resumed
+run windows. The poller checks about every two seconds during DAG execution;
+this is not a delivery deadline or a guarantee before the first operation.
+Controls will not be applied after the poller stops. Flows whose poller has
+stopped, and older flows without control-delivery tracking, refuse new controls.
+Marker writes are best-effort: a failed stop-marker write can leave a stale active
+marker, so enqueue is never a delivery guarantee. Check `status` for application.
+
+Pause/resume acts at operation boundaries before the concurrency limiter.
+Operations already past the pause gate, including those waiting for limiter
+capacity, may still start; running operations are not interrupted. Messages affect
+only operations prepared after delivery and are rejected if none remain pending.
+Applied pause/resume writes `paused`/`executing` with one retry after a phase-write
+failure; repeated write failure can leave telemetry stale. Terminal status and
+phase clearing share one write. Flow runs are sessions: use
+`li monitor --type session`, or `--type invocation` for registered invocations.
 
 ---
 

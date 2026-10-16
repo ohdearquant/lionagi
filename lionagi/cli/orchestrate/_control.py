@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """`li o ctl pause|resume|msg` — enqueue session_controls rows for a running flow.
 
-Pure writers: resolve the target session (id/invocation id/play id/run id,
-same shapes `li o ctl status` accepts) and insert one row into
+Pure writers: resolve an exact session/invocation/play/run ID or an unambiguous
+eight-character hex prefix, then insert one row into
 session_controls; do not wait for it to apply. See
 ``docs/internals/cli.md`` (`_control.py`) for consumer wiring and admission
 gating.
@@ -47,8 +47,19 @@ _CONSUMER_KINDS_BY_VERB: dict[str, frozenset[str]] = {
 
 
 async def _resolve_session(db: Any, entity_id: str) -> dict[str, Any] | None:
-    """Resolve a session/invocation/play id (or unambiguous prefix) to the
-    backing session row, mirroring `li o ctl status`'s generic resolution."""
+    """Resolve an exact ID or an unambiguous eight-character printed prefix.
+
+    Status may search shorter prefixes, but an action must not mistake a label
+    for a partial ID of another run. Exact registered IDs can be any length.
+    """
+    if len(entity_id) != 8 or any(char not in "0123456789abcdefABCDEF" for char in entity_id):
+        exact = False
+        for table in ("sessions", "invocations", "plays", "branches"):
+            if await db.fetch_one(f"SELECT id FROM {table} WHERE id = ?", (entity_id,)):  # noqa: S608
+                exact = True
+                break
+        if not exact and not await db.get_sessions_for_run(entity_id):
+            return None
     target = await _resolve_any_target(db, entity_id)
     if target is None:
         return None
@@ -71,6 +82,16 @@ def _runner_drains_controls(session: dict[str, Any]) -> bool:
         except (ValueError, TypeError):
             return False
     return bool(meta.get("drains_controls")) if isinstance(meta, dict) else False
+
+
+def _flow_control_poller_state(session: dict[str, Any]) -> str | None:
+    meta = session.get("node_metadata") or {}
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except (TypeError, ValueError):
+            return None
+    return meta.get("flow_control_poller") if isinstance(meta, dict) else None
 
 
 async def _enqueue_control_inner(
@@ -143,6 +164,18 @@ async def _enqueue_control_inner(
                 "so the control would sit pending forever",
                 EXIT_UNKNOWN,
             )
+        poller_state = _flow_control_poller_state(session) if kind in {"flow", "play"} else None
+        if kind in {"flow", "play"} and poller_state not in {"pending", "active"}:
+            reason = (
+                "its DAG execution poller has stopped"
+                if poller_state == "stopped"
+                else "it predates control-delivery tracking or has no confirmed DAG poller state"
+            )
+            return (
+                f"session {session_id[:8]} cannot accept {verb}: {reason}; "
+                "no control will be queued for a consumer that is not confirmed",
+                EXIT_UNKNOWN,
+            )
         control_id = await db.insert_session_control(
             session_id=session_id, verb=verb, payload=payload
         )
@@ -167,14 +200,18 @@ async def _enqueue_control_inner(
         landing = "lands as a continuation turn once the run's current turn ends"
     else:
         landing = (
-            "deferred until planning completes and the execution poller runs; "
-            if session.get("current_phase") == "planning"
+            "deferred until the DAG execution poller starts; "
+            if poller_state == "pending"
             else "execution poller checks about every 2s during DAG execution; "
+        )
+        landing += (
+            "controls will not be applied after the poller stops; delivery is not guaranteed; "
         )
         landing += (
             "context reaches only operations prepared after delivery"
             if verb == "message"
-            else "pause/resume gates new operations at operation boundaries; "
+            else "pause/resume acts at operation boundaries before the concurrency limiter; "
+            "operations already past the gate may still start; "
             "running operations are not interrupted"
         )
     return (

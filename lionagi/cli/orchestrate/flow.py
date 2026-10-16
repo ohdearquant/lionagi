@@ -200,6 +200,21 @@ class FlowPlanError(LionError):
     """Orchestrator failed to produce a usable plan."""
 
 
+async def _validate_flow_invocation(invocation_id: str) -> None:
+    """Reject a dangling invocation before setup can degrade persistence."""
+    from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
+
+    registered = False
+    if not state_db_known_absent():
+        async with StateDB(readonly=read_only_open_supported()) as db:
+            registered = await db.get_invocation(invocation_id) is not None
+    if not registered:
+        raise FlowPlanError(
+            f"--invocation {invocation_id!r} is not a registered invocation ID; "
+            "register one with `li invoke start` and use its exact ID"
+        )
+
+
 async def _persist_session_phase(env, phase: str | None) -> None:
     """Best-effort write of the live execution phase to the session row."""
     ctx = getattr(env, "_live_persist", None)
@@ -220,6 +235,18 @@ async def _persist_node_metadata_patch(db, session_id: str, patch: dict) -> None
     exactly the race that used to lose one side's patch.
     """
     await db.merge_session_node_metadata(session_id, patch)
+
+
+async def _persist_control_poller_state(env, state: str) -> None:
+    """Publish flow/play consumer availability through existing scalar metadata."""
+    ctx = getattr(env, "_live_persist", None)
+    if ctx and ctx.get("db"):
+        try:
+            await _persist_node_metadata_patch(
+                ctx["db"], ctx["session_id"], {"flow_control_poller": state}
+            )
+        except Exception as exc:  # noqa: BLE001 — metadata stays best-effort
+            logger.debug("control poller state %s could not be persisted: %s", state, exc)
 
 
 # ── Artifact-contract text — shared by planned legs and spawned nodes ─────────
@@ -327,6 +354,17 @@ _DRAIN_RECANCEL_SECONDS = 0.1
 # would race the executor's task-group teardown) — see TeamLifecycleCoordinator.
 
 
+async def _persist_applied_control_phase(db, session_id: str, phase: str) -> None:
+    """Retry one failed phase write without replaying the executor action."""
+    for attempt in range(2):
+        try:
+            await db.update_session(session_id, current_phase=phase)
+            return
+        except Exception as exc:  # noqa: BLE001 — phase telemetry stays best-effort
+            if attempt:
+                logger.debug("control phase write failed after retry: %s", exc)
+
+
 async def _apply_session_control(db, executor, row: dict) -> str | None:
     """Apply one session_controls row against *executor*. Returns the
     finalize result, or None if left untouched (mid-apply from a prior
@@ -343,14 +381,12 @@ async def _apply_session_control(db, executor, row: dict) -> str | None:
     try:
         if verb == "pause":
             executor.pause()
-            with contextlib.suppress(Exception):
-                await db.update_session(row["session_id"], current_phase="paused")
+            await _persist_applied_control_phase(db, row["session_id"], "paused")
             return await _finalize_applied(db, control_id)
 
         if verb == "resume":
             executor.resume()
-            with contextlib.suppress(Exception):
-                await db.update_session(row["session_id"], current_phase="executing")
+            await _persist_applied_control_phase(db, row["session_id"], "executing")
             return await _finalize_applied(db, control_id)
 
         if verb == "message":
@@ -2066,6 +2102,7 @@ async def _execute_dag(
             add_dir.append(project_root)
 
     t_exec = time.monotonic()
+    await _persist_control_poller_state(env, "active")
     _hb_task = _asyncio.ensure_future(_heartbeat_loop())
     _ctl_task = _asyncio.ensure_future(_control_poll_loop())
     _exchange = getattr(env, "exchange", None)
@@ -2121,6 +2158,9 @@ async def _execute_dag(
                     _exch_task.result()
                 # Route any final outbox sends left over after the last collect tick.
                 await _exchange.collect_all()
+            # Telemetry must not add an await ahead of mandatory background
+            # stops/settlement; a native cancellation here cannot skip them.
+            await _persist_control_poller_state(env, "stopped")
         except BaseException as exc:
             _cancelled = _cancelled or isinstance(exc, _asyncio.CancelledError)
             if _dag_exc is not None and isinstance(exc, _asyncio.CancelledError):
@@ -2750,6 +2790,9 @@ async def _run_flow(
     if legacy_kwargs:
         raise TypeError(f"_run_flow() got unexpected keyword arguments: {list(legacy_kwargs)}")
 
+    if invocation_id is not None:
+        await _validate_flow_invocation(invocation_id)
+
     _started_at = time.time()
     _invocation_kind = "play" if playbook_name else "flow"
     # The directory this run resolves its MCP config from: the launching
@@ -2882,7 +2925,10 @@ async def _run_flow(
     # Every flow run stamps its own run_id into node_metadata so a later
     # --resume can resolve this session back to a checkpoint; a resumed run
     # additionally links to the run it resumed from.
-    _extra_node_metadata: dict = {"run_id": env.run.run_id}
+    _extra_node_metadata: dict = {
+        "run_id": env.run.run_id,
+        "flow_control_poller": "pending",
+    }
     if resume_checkpoint is not None and resume_checkpoint.get("session_id"):
         _extra_node_metadata["resumed_from"] = resume_checkpoint["session_id"]
 
@@ -2908,6 +2954,12 @@ async def _run_flow(
         artifact_contract=artifact_contract,
         extra_node_metadata=_extra_node_metadata,
     )
+
+    if env._live_persist is not None:
+        from .._logging import hint
+
+        session_id = env._live_persist["session_id"]
+        hint(f"Session: {session_id}  →  li o ctl status {session_id[:8]}")
 
     inner_kw = dict(
         env=env,
@@ -2955,9 +3007,9 @@ async def _run_flow(
         raise
     finally:
         with CancelScope(shield=True):
-            # Execution and its control poller have stopped. Clear the live
-            # phase before teardown closes the database, including cancellation.
-            await _persist_session_phase(env, None)
+            # Teardown clears the live phase in its terminal status UPDATE.
+            # This shield covers cooperative cancel scopes; native task.cancel
+            # can still interrupt the existing teardown before that commit.
             effective_status = await stop_live_persist(env, status=_terminal_status)
             if effective_status != _terminal_status:
                 _terminal_status = effective_status
