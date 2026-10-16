@@ -110,6 +110,7 @@ def test_catalog_entries_cover_claude_codex_and_gemini_with_a_fable_entry():
             "codex",
             {"none", "low", "medium", "high", "xhigh", "max"},
         ),
+        ("gemini-4-argon", "Gemini 4 Argon", "gemini_code", {"low", "medium", "high"}),
         ("gemini-3.8-flash", "Gemini 3.8 Flash", "gemini_code", {"low", "medium", "high"}),
     ],
 )
@@ -121,6 +122,11 @@ def test_catalog_includes_current_model_rows(model, label, provider, efforts):
 
 
 # ── resolve_selection() ─────────────────────────────────────────────────────
+
+
+def test_gemini_4_argon_is_the_first_gemini_code_model():
+    gemini = [entry["id"] for entry in catalog_entries() if entry["provider"] == "gemini_code"]
+    assert gemini[0] == "gemini-4-argon"
 
 
 def test_resolve_selection_rejects_an_unknown_model():

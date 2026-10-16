@@ -1141,7 +1141,15 @@ compat even though the underlying binary is `agy`.
   `model` (a concrete agy display name) wins over `effort` by default. `reapply_effort=True`
   exists specifically to let a new `effort` replace the suffix baked into a *persisted* prior
   resolution (e.g. `li agent -r ... --effort ...`), while a `model` the caller explicitly typed
-  in the current turn still wins regardless.
+  in the current turn still wins regardless. A free-form name that is neither a listed alias nor
+  an exact display name, and contains `pro`, `flash`, `gemini` or `argon`, picks its family in
+  this order: Pro (3.1 Pro); a dotted version it spells out, with a one- or two-digit major and
+  any number of dotted parts (3.8 or 3.6 Flash, any other 3.5 Flash; a date such as `2026.10` or
+  a three-digit number is not a version); `argon` or a major version 4 that is not part of a
+  longer number and is followed by neither a letter nor a numeral of any script, nor by a dot and
+  one of those (4 Argon); otherwise 3.5 Flash. Its tier comes from a
+  `low` / `high` / `xhigh` / `max` word in the name, else Medium (Low for Pro). Any other name
+  passes through unchanged for agy to reject.
 - **No per-tool stdout events.** `stream_gemini_cli`'s `on_tool_use`/`on_tool_result`
   callbacks are accepted for interface parity with other CLI providers but never fire in this
   transport, because `agy`'s json output surfaces no per-tool events on stdout (they exist only
