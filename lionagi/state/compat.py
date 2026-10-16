@@ -1855,6 +1855,14 @@ class _Guard:
             if action == sqlite3.SQLITE_UPDATE:
                 if db_name == "main" and state.write_txn and (table, _fold(arg2 or "")) in updates:
                     return ok
+                if db_name == "main" and table == "sqlite_master":
+                    # SQLite 3.40.1 asks about an UPDATE of each sqlite_master column while it
+                    # connects a table-valued function such as json_each (3.45.1 and 3.53.1 do
+                    # not), and a denial fails the statement with "vtable constructor failed".
+                    # A statement that updates sqlite_master is still refused, by SQLite: the
+                    # schema table cannot be written unless writable_schema is on, and this
+                    # authorizer denies that PRAGMA.
+                    return ok
                 return denied(f"UPDATE of {db_name}.{table}.{arg2}")
             name = _ACTION_NAMES.get(action, f"action {action}")
             return denied(" ".join(str(part) for part in (name, arg1, arg2) if part))

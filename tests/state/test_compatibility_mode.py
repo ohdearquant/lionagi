@@ -23,6 +23,7 @@ from lionagi.state.compat import (
     CompatibilityProfile,
     StateCompatibilityRefused,
     TableWrites,
+    _ConnectionState,
     _operation,
     _sql_tokens,
     _statement_kind,
@@ -1073,6 +1074,62 @@ async def test_the_authorizer_denies_what_reaches_sqlite_past_the_engine(
     assert _rows(store, "SELECT * FROM other") == digest_rows
     assert _rows(store, "SELECT count(*) FROM runs") == [(0,)]
     assert _rows(store, "PRAGMA journal_mode") == [("wal",)]
+
+
+async def test_a_table_valued_function_is_read_on_a_new_connection(store, reference):
+    """A new connection connects json_each the first time a statement names it. SQLite
+    3.40.1 asks the authorizer about an update of sqlite_master while it does, and denying
+    that fails the read with "vtable constructor failed"."""
+    db = await _open(store, _profile(reference))
+    try:
+        await db._engine.dispose()
+        assert await _raw(db, "SELECT value FROM json_each('[1, 2]')") == [(1,), (2,)]
+    finally:
+        await db.close()
+
+
+class _OutsideATransaction:
+    in_transaction = False
+
+
+async def test_the_authorizer_allows_only_the_schema_table_update_sqlite_asks_about(
+    store, reference
+):
+    """Pinned on every SQLite version, since only some versions ask."""
+    db = await _open(store, _profile(reference))
+    try:
+        state = _ConnectionState()
+        authorize = db._compat._authorizer(state, _OutsideATransaction())
+        for column in ("type", "name", "tbl_name", "rootpage", "sql"):
+            allowed = authorize(sqlite3.SQLITE_UPDATE, "sqlite_master", column, "main", None)
+            assert allowed == sqlite3.SQLITE_OK
+        assert not state.denied
+        assert (
+            authorize(sqlite3.SQLITE_UPDATE, "sqlite_master", "sql", "temp", None)
+            == sqlite3.SQLITE_DENY
+        )
+        assert authorize(sqlite3.SQLITE_UPDATE, "runs", "status", "main", None) == (
+            sqlite3.SQLITE_DENY
+        )
+    finally:
+        await db.close()
+
+
+async def test_an_update_of_the_schema_table_is_refused(store, reference):
+    """The authorizer lets an update of sqlite_master through, so SQLite's own rule refuses
+    it: the schema table is read-only unless writable_schema is on, and that PRAGMA is
+    denied, read or set."""
+    schema = _rows(store, "SELECT type, name, sql FROM sqlite_master ORDER BY name")
+    db = await _open(store, _profile(reference))
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="may not be modified"):
+            await _raw(db, "UPDATE sqlite_master SET sql = sql")
+        for statement in ("PRAGMA writable_schema", "PRAGMA writable_schema = ON"):
+            with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+                await _raw(db, statement)
+    finally:
+        await db.close()
+    assert _rows(store, "SELECT type, name, sql FROM sqlite_master ORDER BY name") == schema
 
 
 async def test_every_new_connection_carries_the_authorizer(store, reference):
