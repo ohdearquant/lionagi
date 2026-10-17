@@ -115,7 +115,7 @@ mcp = [
     # and the `li mcp` server, which serves over stdio (not an HTTP transport),
     # so this floors the version we resolve rather than turning on any
     # server-side transport protection.
-    "mcp>=1.28.1",
+    "mcp>=1.30.0",
 ]
 
 rich = [
