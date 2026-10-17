@@ -1,10 +1,43 @@
 # ADR-0041: Agent specification and Branch construction boundary
 
-- **Status**: Accepted
+- **Status**: Accepted, amended 2026-10-17 (see Amendment 1)
 - **Kind**: Retrospective
 - **Area**: agent-roles
 - **Date**: 2026-07-09
 - **Relations**: supersedes v0-0078, v0-0100
+
+## Amendment 1 (2026-10-17) — an API-model `li agent` leg binds the read tools only
+
+`li agent` refused every model that is not a CLI provider. A CLI provider runs its own tool loop,
+so the whole leg is one `operate` call; an API model has no loop of its own, and one call would
+be one model turn. The coding tools `create_agent` registers run inside this process with its
+permissions. `guard_paths` and `guard_destructive` are pre-hooks on a tool call; they are not an
+operating-system boundary, and nothing on this path stands where a CLI provider's own sandbox
+stands.
+
+Decision:
+
+- `AgentSpec` gains `coding_tools: tuple[str, ...] | None = None`, the coding tools step 6 of D2
+  binds when `tools` names `"coding"`. `None` binds the default set, as before.
+  `context_management=False` still removes `context` from either set.
+- `li agent` builds an API-model leg through `create_agent` only when its agent profile declares
+  `api_tools: read`. The spec binds `coding_tools=("reader", "search", "context")`, the secure
+  guards scoped to the leg's working directory, the profile's `role:` (default `reviewer`), and
+  no MCP server. The leg runs `Branch.ReAct(tools=True, max_extensions=N)`, with `N` from the
+  profile's `max_extensions` (a whole number from 1 to 100, default 10), under the leg's
+  `--timeout`.
+- `read` is the only tool set. Any other `api_tools` value, `--preset coding` and `--image` are
+  refused before a run exists, and a profile without the key is refused as before. Tools that
+  write files or run commands are offered to an API model only by a later decision that runs
+  them inside an operating-system sandbox.
+- The branch records the tool set and bound under `metadata["api_launch"]` and is written to the
+  run's branches directory after every turn. A resume runs the loop again from that record; a
+  non-CLI branch without it keeps the earlier path. Queued operator messages drain at turn end as
+  further turns of the loop.
+
+Limits: `search` checks the path it is given, not each file a recursive search reaches, so it
+reads names `reader` refuses (`.env`, private keys) inside the working directory. The loop's
+action protocol is lionagi's JSON action request, not a provider's native tool calling.
 
 ## Context
 
@@ -116,6 +149,7 @@ class AgentSpec(HooksMixin):
     mcp_servers: list[str] | None = None
     mcp_config_path: str | None = None
     context_management: bool = True
+    coding_tools: tuple[str, ...] | None = None  # Amendment 1
 
     @classmethod
     def compose(
@@ -208,7 +242,8 @@ The materialization sequence is normative as-built behavior:
 3. allocate Branch
 4. compose and install the system message
 5. append PermissionPolicy as "security_pre:*" on the passed spec
-6. register requested built-in/coding tools and attach their hooks
+6. register requested built-in/coding tools (`coding_tools` selects the coding set, Amendment 1)
+   and attach their hooks
 7. discover and register MCP tools
 8. grant the resolved emission Operable, when non-empty
 9. return Branch
