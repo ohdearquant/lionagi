@@ -106,6 +106,19 @@ async def _seed(db_path: Path, tmp_dir: Path) -> None:
         await db.close()
 
 
+class DaemonExitedEarly(RuntimeError):
+    """The daemon child exited before it answered /health.
+
+    Carries the child's own ``returncode`` so a caller can name the code or
+    signal (``128 + signum`` for a signal death) without re-reading a process
+    that teardown has already signalled.
+    """
+
+    def __init__(self, message: str, returncode: int | None) -> None:
+        super().__init__(message)
+        self.returncode = returncode
+
+
 @dataclass
 class SeededDaemon:
     """A running Studio daemon subprocess + the temp dir backing it."""
@@ -116,6 +129,12 @@ class SeededDaemon:
     port: int
     process: subprocess.Popen
     child_log_path: Path | None = None
+    # Byte offset in ``child_log_path`` where this attempt's output starts. The
+    # log is appended to across a retry, so an early-exit error built from the
+    # whole file would quote a failed attempt's output (and an "address already
+    # in use" from attempt 1 would drive attempt 2's port retry). Recorded
+    # before spawn; stays 0 for a caller that built the object directly.
+    child_log_offset: int = 0
 
     @property
     def base_url(self) -> str:
@@ -182,6 +201,10 @@ class SeededDaemon:
             child_log_path = Path(override)
             child_log_path.parent.mkdir(parents=True, exist_ok=True)
             mode = "a"
+        # Size before this attempt writes, so _wait_healthy reports only its own
+        # output: the file is opened append, and a retry shares it with the
+        # attempt that failed on the port.
+        child_log_offset = child_log_path.stat().st_size if child_log_path.exists() else 0
         with child_log_path.open(mode, encoding="utf-8") as child_log:
             process = subprocess.Popen(  # noqa: S603
                 [
@@ -208,6 +231,7 @@ class SeededDaemon:
             port=port,
             process=process,
             child_log_path=child_log_path,
+            child_log_offset=child_log_offset,
         )
         try:
             daemon._wait_healthy(ready_timeout)
@@ -224,9 +248,10 @@ class SeededDaemon:
             if self.process.poll() is not None:
                 output = ""
                 if self.child_log_path is not None and self.child_log_path.exists():
-                    output = self.child_log_path.read_text(encoding="utf-8")
-                raise RuntimeError(
-                    f"seeded daemon exited early (code={self.process.returncode}):\n{output}"
+                    output = self._read_child_output()
+                raise DaemonExitedEarly(
+                    f"seeded daemon exited early (code={self.process.returncode}):\n{output}",
+                    self.process.returncode,
                 )
             try:
                 with urllib.request.urlopen(url, timeout=2) as resp:  # noqa: S310
@@ -237,7 +262,17 @@ class SeededDaemon:
             time.sleep(0.25)
         raise TimeoutError(f"seeded daemon never became healthy at {url}: {last_err}")
 
-    def stop(self, *, timeout: float = 10.0) -> None:
+    def _read_child_output(self) -> str:
+        """This attempt's slice of the child log, from the pre-spawn offset."""
+        assert self.child_log_path is not None
+        with self.child_log_path.open("rb") as handle:
+            handle.seek(self.child_log_offset)
+            return handle.read().decode("utf-8", errors="replace")
+
+    def stop(self, *, timeout: float = 5.0) -> None:
+        # Bounded below the Playwright setup's own 10 s SIGKILL fallback: a
+        # wrapper stop that waits less than that finishes reporting before the
+        # setup gives up on the process group.
         if self.process.poll() is None:
             with contextlib.suppress(ProcessLookupError):
                 self.process.send_signal(signal.SIGTERM)

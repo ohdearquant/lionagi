@@ -16,6 +16,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 from . import harness, run_seeded_daemon
 from .harness import SeededDaemon
 
@@ -155,3 +157,155 @@ def test_wrapper_returns_zero_for_a_requested_stop(monkeypatch, tmp_path: Path, 
     err = capsys.readouterr().err
     assert "child exited" not in err
     assert "killed by signal" not in err
+
+
+def test_wait_healthy_reads_only_this_attempts_child_output(monkeypatch, tmp_path: Path) -> None:
+    """A retry appends to one child log; an early-exit error must not quote the failed attempt."""
+    child_log = tmp_path / "studio-daemon-child.log"
+    child_log_offset = len(b"attempt 1: address already in use\n")
+    child_log.write_bytes(b"attempt 1: address already in use\n")
+    monkeypatch.setenv(CHILD_LOG_ENV, str(child_log))
+
+    async def skip_seed(_db_path: Path, _tmp_dir: Path) -> None:
+        pass
+
+    class ExitedProcess:
+        returncode = 1
+
+        def poll(self) -> int:
+            return self.returncode
+
+    def exit_with_a_new_error(_args, *, env, stdout, **_kwargs):
+        assert env[CHILD_LOG_ENV] == str(child_log)
+        stdout.write("attempt 2: an unrelated failure\n")
+        return ExitedProcess()
+
+    monkeypatch.setattr(harness, "_seed", skip_seed)
+    monkeypatch.setattr(harness.subprocess, "Popen", exit_with_a_new_error)
+
+    with pytest.raises(RuntimeError, match="seeded daemon exited early") as exc_info:
+        SeededDaemon.start(port=1, ready_timeout=0.01)
+
+    message = str(exc_info.value)
+    assert "attempt 2: an unrelated failure" in message
+    assert "address already in use" not in message
+    assert child_log.stat().st_size > child_log_offset
+
+
+def test_wrapper_reports_a_child_that_exited_before_a_requested_stop(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """A requested stop must not turn a daemon that had already died into a clean stop."""
+
+    class DiedProcess:
+        """Still up when the loop checks, gone by the time the stop is read."""
+
+        returncode: int | None = None
+
+        def __init__(self) -> None:
+            self.polls = 0
+
+        def poll(self) -> int | None:
+            self.polls += 1
+            if self.polls == 1:
+                return None
+            self.returncode = 4
+            return self.returncode
+
+        def send_signal(self, _signum: int) -> None:
+            pass
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+        def kill(self) -> None:
+            pass
+
+    daemon = _stub_daemon(tmp_path, DiedProcess())
+    monkeypatch.setattr(run_seeded_daemon.SeededDaemon, "start", lambda **_kwargs: daemon)
+
+    # Stand in for the SIGTERM the e2e teardown sends: call the handler the
+    # wrapper installed, so no real signal is raised.
+    def stop_during_sleep(_seconds: float) -> None:
+        handler = signal.getsignal(signal.SIGTERM)
+        assert callable(handler)
+        handler(signal.SIGTERM, None)
+
+    monkeypatch.setattr(run_seeded_daemon, "time", types.SimpleNamespace(sleep=stop_during_sleep))
+
+    assert run_seeded_daemon.main(["--port", "4321"]) == 4
+    assert "code=4" in capsys.readouterr().err
+
+
+def test_wrapper_reports_a_failure_before_the_daemon_is_ready(monkeypatch, capsys) -> None:
+    """A daemon that never answers /health fails the run on one line, not a traceback."""
+
+    async def skip_seed(_db_path: Path, _tmp_dir: Path) -> None:
+        pass
+
+    class ExitedProcess:
+        returncode = 2
+
+        def poll(self) -> int:
+            return self.returncode
+
+    def exit_before_ready(_args, *, env, stdout, **_kwargs):
+        stdout.write("address already in use\n")
+        return ExitedProcess()
+
+    monkeypatch.setattr(harness, "_seed", skip_seed)
+    monkeypatch.setattr(harness.subprocess, "Popen", exit_before_ready)
+
+    assert run_seeded_daemon.main(["--port", "4321", "--ready-timeout", "0.01"]) == 1
+    err = capsys.readouterr().err
+    assert "failed before ready" in err
+    assert "seeded daemon exited early" in err
+    assert "code=2" in err
+
+
+def test_wrapper_asks_a_running_child_for_a_thread_dump_before_stopping_it(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A hung daemon's stacks must reach the child log before the group is stopped."""
+    if not hasattr(signal, "SIGUSR1"):
+        pytest.skip("SIGUSR1 is POSIX-only")
+
+    sent: list[int] = []
+
+    class RecordingProcess:
+        returncode: int | None = None
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def send_signal(self, signum: int) -> None:
+            sent.append(signum)
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.returncode = 0
+            return 0
+
+        def kill(self) -> None:
+            pass
+
+    daemon = _stub_daemon(tmp_path, RecordingProcess())
+    monkeypatch.setattr(run_seeded_daemon.SeededDaemon, "start", lambda **_kwargs: daemon)
+
+    slept: list[float] = []
+
+    def stop_on_the_first_sleep(_seconds: float) -> None:
+        slept.append(_seconds)
+        if len(slept) == 1:
+            handler = signal.getsignal(signal.SIGTERM)
+            assert callable(handler)
+            handler(signal.SIGTERM, None)
+
+    monkeypatch.setattr(
+        run_seeded_daemon, "time", types.SimpleNamespace(sleep=stop_on_the_first_sleep)
+    )
+
+    assert run_seeded_daemon.main(["--port", "4321"]) == 0
+
+    dump_signal = int(signal.SIGUSR1)
+    assert dump_signal in sent
+    assert sent.index(dump_signal) < sent.index(int(signal.SIGTERM))
