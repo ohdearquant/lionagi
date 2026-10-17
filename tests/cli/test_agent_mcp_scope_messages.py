@@ -8,6 +8,8 @@ sees. So the text has to stay leg-scoped.
 
 import logging
 
+import pytest
+
 from lionagi.cli._logging import _WARN_LOGGER_NAME
 from lionagi.cli._mcp_resolve import McpResolution
 from lionagi.cli.agent import _report_mcp_resolution
@@ -73,3 +75,24 @@ def test_a_declared_empty_set_is_not_warned_about():
     )
 
     assert messages == []
+
+
+@pytest.mark.parametrize("forwarded", [False, True])
+def test_a_named_config_listing_no_servers_is_not_reported(forwarded, monkeypatch):
+    """A named config with an empty server list is the same choice as
+    `--no-mcp-config`: the spawn hands the empty set over exclusively, so a
+    warning that the set is "not carried" contradicts it, and a hint counting
+    zero servers tells the caller nothing they did not state."""
+    resolution = McpResolution({}, None, "/tmp/.mcp.json", "/tmp", explicit=True)
+    assert resolution.declared_empty
+
+    hints: list[str] = []
+    monkeypatch.setattr("lionagi.cli.agent.hint", hints.append)
+    messages = _capture_warnings(
+        lambda: _report_mcp_resolution(
+            resolution, provider="claude_code", cwd="/tmp", forwarded=forwarded
+        )
+    )
+
+    assert messages == []
+    assert hints == []

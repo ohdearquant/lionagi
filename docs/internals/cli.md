@@ -113,11 +113,12 @@ other value makes the file unusable. The child's own directory stays the one a r
 `McpResolution.declared_empty` separates a set of no servers that the caller gave from one that
 was not found. `--no-mcp-config` and a named config listing no servers are answers: every spawn
 path (plain, `--preset`/role, resumed) hands the leg an exclusive empty set, so its CLI loads
-none of its own servers either. A search that found nothing, or found a config declaring no
-servers, leaves a new leg to what its CLI discovers; a resumed leg keeps the servers its earlier
-run was handed. The one exception is a codex leg whose servers' `env` or `http_headers` went
-through a generated profile: that file is removed when the run that wrote it exits, so the resume
-is refused, naming the profile, rather than handing codex a profile whose file is gone.
+none of its own servers either, and the launch prints nothing about it. A search that found
+nothing, or found a config declaring no servers, leaves a new leg to what its CLI discovers; a
+resumed leg keeps the servers its earlier run was handed. The one exception is a codex leg whose
+servers' `env` or `http_headers` went through a generated profile: that file is removed when the
+run that wrote it exits, so the resume is refused, naming the profile, rather than handing codex
+a profile whose file is gone.
 
 A resumed or continued `li agent` leg that names neither flag replays the MCP choice its branch
 was launched with. A new branch records that choice once, in `branch.metadata` under

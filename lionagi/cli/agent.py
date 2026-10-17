@@ -510,6 +510,9 @@ def _report_mcp_resolution(
     """
     from lionagi.cli._logging import warn
 
+    if resolution.declared_empty:
+        return  # --no-mcp-config or a named config listing no servers: chosen, not degraded
+
     if resolution.servers is not None:
         if forwarded:
             names = ", ".join(sorted(resolution.servers))
@@ -521,9 +524,6 @@ def _report_mcp_resolution(
             "its own provider resolves for itself."
         )
         return
-
-    if resolution.reason is None:
-        return  # --no-mcp-config: chosen, not degraded
 
     target = cwd or os.getcwd()
     warn(
