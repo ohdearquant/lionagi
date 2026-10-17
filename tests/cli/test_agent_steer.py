@@ -1358,6 +1358,79 @@ async def test_the_sweep_survives_the_teardown_closing_the_handle_it_was_given(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("compatibility", [True, False], ids=["compatibility", "native"])
+async def test_the_runner_does_not_sweep_a_store_in_compatibility_mode(
+    temp_db_path, tmp_path, monkeypatch, compatibility
+):
+    """A store in compatibility mode holds control rows this run did not create, which the
+    profile does not let it write, and the sweep's own handle would open the store natively;
+    so the runner leaves the sweep out there. A native run still sweeps."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.cli.agent import _run_agent
+    from lionagi.service.manager import iModelManager
+    from lionagi.state.compat import Closure, CompatibilityProfile
+
+    profile = CompatibilityProfile(
+        name="agent-records", version=1, closure=Closure(tables=()), writes={}, operations={"run"}
+    )
+    swept: list[str] = []
+
+    async def fake_operate(self, instruction=None, **kw):
+        return "done"
+
+    async def fake_setup(*a, **kw):
+        return {
+            "db": SimpleNamespace(compatibility=profile if compatibility else None),
+            "session_id": "s1",
+        }
+
+    async def fake_teardown(ctx, *, status="completed", **kw):
+        return status
+
+    async def no_drain(*a, **kw):
+        return None
+
+    async def record_sweep(live):
+        swept.append(live["session_id"])
+
+    monkeypatch.setattr(Branch, "operate", fake_operate)
+    monkeypatch.setattr(iModelManager, "shutdown", AsyncMock())
+    monkeypatch.setattr(agent_mod, "resolve_persisted_effort", lambda *a, **kw: None)
+    monkeypatch.setattr(agent_mod, "setup_agent_persist", fake_setup)
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", fake_teardown)
+    monkeypatch.setattr(agent_mod, "_drain_pending_steers", no_drain)
+    monkeypatch.setattr(agent_mod, "_tombstone_pending_steers", record_sweep)
+    monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
+    monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
+    monkeypatch.setattr(
+        agent_mod,
+        "_provenance",
+        SimpleNamespace(
+            resolve_model_spec=lambda p, m: f"{p}/{m}",
+            agent_definition_hash=lambda n: "abc",
+        ),
+    )
+    monkeypatch.setattr(
+        agent_mod,
+        "allocate_run",
+        lambda: SimpleNamespace(
+            run_id="20260802T000000-compatrun",
+            artifact_root=tmp_path / "artifacts",
+            stream_dir=tmp_path / "stream",
+            branches_dir=tmp_path / "branches",
+        ),
+    )
+
+    await _run_agent("claude", "do the thing")
+
+    assert swept == ([] if compatibility else ["s1"])
+
+
+@pytest.mark.asyncio
 async def test_the_cli_runner_declares_its_drain_so_its_own_runs_stay_steerable(
     temp_db_path, tmp_path, monkeypatch
 ):

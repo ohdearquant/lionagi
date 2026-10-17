@@ -48,6 +48,8 @@ from typing import Any
 from sqlalchemy import event
 from sqlalchemy.exc import DBAPIError
 
+from lionagi.ln.concurrency._compat import BaseExceptionGroup
+
 __all__ = (
     "Closure",
     "ColumnShape",
@@ -58,7 +60,9 @@ __all__ = (
     "StateCompatibilityRefused",
     "TableShape",
     "TableWrites",
+    "is_compatibility_store",
     "read_closure",
+    "refusal_in",
 )
 
 
@@ -87,6 +91,45 @@ class StateCompatibilityRefused(RuntimeError):  # noqa: N818 -- the name ADR-012
 
     def __reduce__(self):
         return (type(self), (self.operation, self.profile, self.reason, self.committed))
+
+
+def refusal_in(error: BaseException | None) -> StateCompatibilityRefused | None:
+    """The store refusal *error* is, or carries inside exception groups however deeply nested.
+
+    Task groups and callback collectors wrap failures, so a refusal can arrive beside a
+    cancellation or another error; a plain ``isinstance`` on the outermost exception would read
+    that group as an ordinary failure.
+    """
+    if isinstance(error, StateCompatibilityRefused):
+        return error
+    if isinstance(error, BaseExceptionGroup):
+        for item in error.exceptions:
+            found = refusal_in(item)
+            if found is not None:
+                return found
+    return None
+
+
+def is_compatibility_store(db: Any) -> bool:
+    """Whether *db* is a store opened in compatibility mode, by the profile it was opened with.
+
+    A store sets ``compatibility`` to its :class:`CompatibilityProfile`, or to ``None``; any other
+    object on that attribute (a test double, a store from another version) is not evidence of
+    compatibility mode, so callers take the native path.
+    """
+    return isinstance(getattr(db, "compatibility", None), CompatibilityProfile)
+
+
+# ADR-0128 D7: the `schema_meta` row naming the application whose migrations own a store's schema.
+# The managing application writes its own name there when it creates the store. A native open
+# refuses a store that names another application, and compatibility mode admits only such a store,
+# so every store compatibility mode writes to is one that a native open refuses in any process.
+_LINEAGE_KEY = "lineage"
+_NATIVE_LINEAGE = "lionagi"
+
+
+def _names_another_application(lineage: Any) -> bool:
+    return lineage is not None and lineage != _NATIVE_LINEAGE
 
 
 # SQL tokens
@@ -2049,6 +2092,7 @@ class _Guard:
             return connection.exec_driver_sql(sql).fetchall()
 
         try:
+            self._check_lineage(fetch)
             self._check_store(fetch, "admission", "open")
             self._check_owner(connection, "admission", "open")
             self.schema_version = int(fetch("PRAGMA schema_version")[0][0])
@@ -2056,6 +2100,29 @@ class _Guard:
             raise
         except (sqlite3.Error, DBAPIError) as exc:
             raise self.refusal(f"the store could not be read: {exc}", operation="open") from exc
+
+    def _check_lineage(self, fetch: _Fetch) -> None:
+        present = fetch(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
+        )
+        row = fetch("SELECT value FROM schema_meta WHERE key = 'lineage'") if present else []
+        lineage = row[0][0] if row else None
+        named = isinstance(lineage, str) and bool(lineage.strip())
+        if not named or not _names_another_application(lineage):
+            # Without a row naming its manager, a native open in another process would migrate
+            # the store under this one's writes (ADR-0128 D7). A name is text: a BLOB or a number
+            # names no application.
+            if lineage is None:
+                shown = "no lineage row"
+            elif not isinstance(lineage, str):
+                shown = f"a lineage that is not text ({type(lineage).__name__})"
+            else:
+                shown = f"lineage {lineage[:80]!r}"
+            raise self.refusal(
+                f"admission: the store's schema_meta has {shown}; compatibility mode admits only "
+                "a store whose managing application names itself there when it creates the store",
+                "open",
+            )
 
     def _check_owner(self, connection, when: str, operation: str | None) -> None:
         rule = self.profile.owner
@@ -2182,6 +2249,14 @@ class _Guard:
                 return denied(f"INSERT INTO {db_name}.{table}")
             if action == sqlite3.SQLITE_UPDATE:
                 if db_name == "main" and state.write_txn and (table, _fold(arg2 or "")) in updates:
+                    return ok
+                if db_name == "main" and table == "sqlite_master":
+                    # SQLite 3.40.1 asks about an UPDATE of each sqlite_master column while it
+                    # connects a table-valued function such as json_each (3.45.1 and 3.53.1 do
+                    # not), and a denial fails the statement with "vtable constructor failed".
+                    # A statement that updates sqlite_master is still refused, by SQLite: the
+                    # schema table cannot be written unless writable_schema is on, and this
+                    # authorizer denies that PRAGMA.
                     return ok
                 return denied(f"UPDATE of {db_name}.{table}.{arg2}")
             name = _ACTION_NAMES.get(action, f"action {action}")

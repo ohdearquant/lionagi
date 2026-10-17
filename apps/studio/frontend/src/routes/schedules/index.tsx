@@ -13,7 +13,7 @@ import ScheduleCards from "@/components/schedules/ScheduleCards";
 import SchedulesTable from "@/components/schedules/SchedulesTable";
 import ScheduleDetailModal from "@/components/schedules/ScheduleDetailModal";
 import SchedulesCalendar from "@/components/schedules/SchedulesCalendar";
-import { useSchedulesData } from "@/components/schedules/data";
+import { recentRunsUnavailable, useSchedulesData } from "@/components/schedules/data";
 
 export interface ScheduleRouteSearch {
   create?: string;
@@ -105,6 +105,7 @@ function SchedulesSpace() {
   const t = useTranslations("schedules");
   const tDaemon = useTranslations("daemon");
   const { schedules, runs, nowMs, loading, error, refresh } = useSchedulesData();
+  const unavailable = schedules.filter(recentRunsUnavailable);
   const [view, setView] = useState<View>("cards");
   const [showModal, setShowModal] = useState(false);
   const search = Route.useSearch();
@@ -170,12 +171,21 @@ function SchedulesSpace() {
         </div>
       </header>
 
-      {error && (
+      {(error || unavailable.length > 0) && (
         <div
           role="alert"
           className="mx-4 mb-3 flex flex-wrap items-center justify-between gap-3 rounded border border-status-error/30 bg-status-error-bg px-3 py-2 text-body text-content-secondary sm:mx-6"
         >
-          <span>{t("loadError")}</span>
+          <span>
+            {[
+              error ? t("loadError") : null,
+              unavailable.length > 0
+                ? `${t("recentRunsUnavailable")}: ${unavailable.map((s) => s.name).join(", ")}`
+                : null,
+            ]
+              .filter(Boolean)
+              .join(" ")}
+          </span>
           <Button variant="secondary" size="sm" onClick={refresh}>
             {tDaemon("retry")}
           </Button>
@@ -185,7 +195,9 @@ function SchedulesSpace() {
       {loading ? (
         <TableSkeleton />
       ) : schedules.length === 0 ? (
-        <SchedulesEmptyState onNew={() => setShowModal(true)} />
+        error ? null : (
+          <SchedulesEmptyState onNew={() => setShowModal(true)} />
+        )
       ) : view === "cards" ? (
         <ScheduleCards
           schedules={schedules}

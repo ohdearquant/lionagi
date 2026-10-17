@@ -6,22 +6,29 @@
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import json
 import logging
 import math
+import os
 import re
 import shutil
 import sqlite3
 import struct
+import tempfile
+import threading
 import time
 import uuid
+import weakref
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode
 
 from sqlalchemy import JSON, MetaData, bindparam, event, inspect, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.schema import CreateTable
@@ -30,11 +37,20 @@ from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
 from lionagi.config import settings
 from lionagi.libs.path_safety import check_path_safe as _check_path_safe
 from lionagi.ln import json_dumps as _json_dumps
-from lionagi.ln.concurrency import CancelScope, Lock, get_cancelled_exc_class, shield
-from lionagi.state.compat import CompatibilityProfile, _operation, _sql_tokens, _statement_kind
+from lionagi.ln.concurrency import CancelScope, Lock, get_cancelled_exc_class, run_sync, shield
+from lionagi.state.compat import (
+    _LINEAGE_KEY,
+    CompatibilityProfile,
+    StateCompatibilityRefused,
+    _names_another_application,
+    _operation,
+    _sql_tokens,
+    _statement_kind,
+)
 from lionagi.state.compat import _Guard as _CompatibilityGuard
 from lionagi.state.compat import _quote as _quote_identifier
 from lionagi.state.engine import (
+    SQLITE_BUSY_TIMEOUT_MS,
     dialect_of,
     make_compatibility_engine,
     make_engine,
@@ -171,6 +187,10 @@ class SchemaTooNewError(RuntimeError):
     """``schema_meta.version`` is higher than ``SCHEMA_VERSION``; only a writable open raises it."""
 
 
+class ForeignLineageError(RuntimeError):
+    """``schema_meta.lineage`` names another application; only a writable native open raises it."""
+
+
 class BackupNotTrustworthyError(RuntimeError):
     """A pre-rebuild backup was not trustworthy, so the rebuild aborts."""
 
@@ -183,8 +203,6 @@ def state_db_file() -> Path | None:
     url = normalize_state_db_url(raw)
     if dialect_of(url) != "sqlite":
         return None
-    from sqlalchemy.engine import make_url
-
     database = make_url(url).database
     if not database or database == ":memory:":
         return None
@@ -503,6 +521,9 @@ def _validate_enum(
         raise ValueError(f"Invalid {name} {value!r}; {adr} vocabulary is {sorted(allowed)}")
 
 
+_SCHEMA_META_GUARD_ROWS = "SELECT key, value FROM schema_meta WHERE key IN ('lineage', 'version')"
+
+
 def _install_begin_immediate(sync_engine) -> None:
     @event.listens_for(sync_engine, "connect")
     def _on_connect(dbapi_conn, _rec):
@@ -585,6 +606,15 @@ _COMPAT_INSERTED: ContextVar[list[tuple[str, Any]] | None] = ContextVar(
     "lionagi_state_compat_inserted", default=None
 )
 
+# The handle a context entry is opening: ``__aenter__`` marks this with the handle, and ``open()``
+# reads and clears it before it waits on the open lock. It tells this call whether the failure
+# cleanup is its own, since ``__aexit__`` never runs when an entry fails (StateDB.open,
+# StateDB.__aenter__). A context variable rather than an attribute, so a second entry waiting behind
+# another open keeps its own; there is one variable for the whole task, not one per handle, but it
+# is consumed before the first await, so an open made from a task this open starts, or one nested
+# inside a schema, never reads another call's mark.
+_OPEN_CALL: ContextVar[Any] = ContextVar("lionagi_state_open_call", default=None)
+
 
 class StateDB:
     """Async SQLAlchemy state layer for sessions, branches, messages, and progressions."""
@@ -615,8 +645,36 @@ class StateDB:
         self.compatibility = compatibility
         self._compat: _CompatibilityGuard | None = None
         # The rows this handle's compatibility-mode operations created, by table: the first
-        # profile writes only rows its run creates (ADR-0128 D4).
+        # profile writes only rows its run creates (ADR-0128 D4). A handle shared by several
+        # runs of one owner counts their rows together.
         self._compat_created: dict[str, set[Any]] = {}
+        # The (device, inode) of the file a compatibility handle holds open, so a native open in
+        # this process is refused for that file however its URL spells it.
+        self._held_file: tuple[int, int] | None = None
+        # The (device, inode) of the file a writable native handle has open, so compatibility
+        # admission in this process is refused while that handle's connections can still write.
+        self._native_file: tuple[int, int] | None = None
+        # Whether a connection of this handle's writable engine has read the store (ADR-0128 D7).
+        self._connection_read = False
+        # Whether this handle's current engine has finished opening, schema included. A plain
+        # open that fails after its connection read the store keeps its engine but never reaches
+        # its schema, so a later call that finds that engine completes the open instead of
+        # returning over a store whose schema never ran.
+        self._schema_applied = False
+        # Whether a close() of this handle is in progress. Set on entry to _close(), before the
+        # disposal, and cleared only once the engine is gone: a close a second native cancel
+        # interrupts leaves the engine set and this flag set, so the next open or close finishes
+        # that disposal rather than opening over it.
+        self._closing = False
+        # One open at a time: a native open reads the store in a worker thread before its engine
+        # exists, so two opens running together would each build an engine and lose one.
+        self._open_lock: Lock = Lock()
+        # The event loop whose open() or close() holds or waits on _open_lock, and how many do.
+        # The lock wakes a waiter only on the loop that holds it, so a call from another loop is
+        # refused rather than left waiting.
+        self._open_lock_guard = threading.Lock()
+        self._open_lock_loop: asyncio.AbstractEventLoop | None = None
+        self._open_lock_users = 0
         if compatibility is None and owner is not None:
             raise ValueError("an owner is written in compatibility mode only")
         if compatibility is not None:
@@ -709,10 +767,90 @@ class StateDB:
     # Connection lifecycle
 
     async def open(self) -> None:
+        """Open this handle, one call at a time (see ``_holding_open_lock``).
+
+        A context entry marks ``_OPEN_CALL`` with this handle just before it calls here, and this
+        call reads and clears the mark before it waits: an entry whose ``__aenter__`` fails runs no
+        ``__aexit__``, and only the call that got past the open lock has an engine to dispose.
+        Running that cleanup under the lock means a queued open cannot build an engine that the
+        cleanup then disposes. A plain call keeps a later failure's engine, as it always has, and
+        the next call that finds that engine completes the open, its schema included.
+        """
+        context_entry = _OPEN_CALL.get() is self
+        try:
+            _OPEN_CALL.set(None)
+            async with self._holding_open_lock():
+                try:
+                    await self._open()
+                except BaseException:
+                    if context_entry:
+                        # The shield keeps a cancellation from reaching the disposal, but a
+                        # second native cancel delivered while the disposal is in progress still
+                        # escapes it and leaves ``_engine`` set; the disposal is entered again by
+                        # the next open or close.
+                        with CancelScope(shield=True):
+                            await self._close()
+                    raise
+        finally:
+            _OPEN_CALL.set(None)
+
+    @asynccontextmanager
+    async def _holding_open_lock(self):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # another async library, where the engine cannot run anyway
+            loop = None
+        with self._open_lock_guard:
+            if self._open_lock_users and self._open_lock_loop is not loop:
+                raise RuntimeError(
+                    "this StateDB is being opened or closed on another event loop; call open() "
+                    "and close() on that loop"
+                )
+            self._open_lock_loop = loop
+            self._open_lock_users += 1
+        try:
+            async with self._open_lock:
+                yield
+        finally:
+            with self._open_lock_guard:
+                self._open_lock_users -= 1
+                if not self._open_lock_users:
+                    self._open_lock_loop = None
+
+    async def _open(self) -> None:
+        if self._closing:
+            # A close was interrupted after it had discarded this handle but before it disposed
+            # the engine; finish it here, so this open builds over a disposed engine rather than
+            # one a live disposal still holds.
+            await self._close()
         if self._engine is not None:
+            if self._schema_applied:
+                return
+            # An engine kept by an open that failed after its connection read the store: its
+            # schema never ran, so this call completes the open rather than reporting success
+            # over a store with no schema. A store this process holds in compatibility mode, or
+            # one whose lineage row names another application, refuses here as the fresh path
+            # does, and that refusal disposes the kept engine rather than leaving it open and
+            # registered.
+            try:
+                if self._compat is None:
+                    held = _open_in_compatibility_mode(self.url)
+                    if held is not None:
+                        raise held._compat.refusal(
+                            "this process holds the store in compatibility mode, and a native "
+                            "open would apply this package's schema to it",
+                            "open",
+                        )
+                await self._apply_schema()
+            except (ForeignLineageError, StateCompatibilityRefused):
+                with CancelScope(shield=True):
+                    await self._close()
+                raise
+            self._schema_applied = True
             return
         if self._compat is not None:
             await self._open_compatibility()
+            self._schema_applied = True
             return
         if self.dialect == "sqlite":
             p = self.path
@@ -734,11 +872,139 @@ class StateDB:
             # No make_engine(), no _install_begin_immediate(), no _apply_schema(): every one of
             # those mutates the file.
             self._engine = make_readonly_engine(self.url)
+            self._schema_applied = True
             return
-        self._engine = make_engine(self.url)
+        held = _open_in_compatibility_mode(self.url)
+        if held is not None:
+            # A native open applies this package's schema, and this process holds the store for
+            # another application that manages it (ADR-0128 D1).
+            raise held._compat.refusal(
+                "this process holds the store in compatibility mode, and a native open would "
+                "apply this package's schema to it",
+                "open",
+            )
         if self.dialect == "sqlite":
+            # The file and its lineage row are read before any writable connection exists, so a
+            # refusal from those reads changes no file of the store, and each new writable
+            # connection reads them again before its settings change the file, for a row written
+            # in between (ADR-0128 D7).
+            await run_sync(self._read_lineage_without_writing, _held_files())
+            self._connection_read = False
+            self._native_file = None
+            self._engine = make_engine(self.url, before_settings=self._refuse_a_managed_store)
             _install_begin_immediate(self._engine.sync_engine)
-        await self._apply_schema()
+        else:
+            self._engine = make_engine(self.url)
+        try:
+            await self._apply_schema()
+            self._schema_applied = True
+        except BaseException as exc:
+            # A refused open, or one whose first connection never read the store (a lock held past
+            # the busy timeout, a file that is not a database), leaves no engine, so a caller that
+            # keeps the object can open it again. After any other failure the engine stays, as
+            # before.
+            unread = self.dialect == "sqlite" and not self._connection_read
+            if unread or isinstance(exc, (ForeignLineageError, StateCompatibilityRefused)):
+                with CancelScope(shield=True):
+                    await self._close()
+            raise
+
+    def _refuse_a_managed_store(self, dbapi_conn) -> None:
+        """Refuse a writable native connection to a file this process holds in compatibility
+        mode, or whose ``lineage`` row names another application, before its settings change the
+        file. Only reads: a hot rollback journal is rolled back by the first read, as on any
+        writable SQLite open."""
+        cursor = dbapi_conn.cursor()
+        try:
+            cursor.execute("PRAGMA database_list")
+            opened = next((row[2] for row in cursor.fetchall() if row[1] == "main"), "")
+            self._refuse_a_held_file(opened, _held_files())
+            cursor.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
+            )
+            lineage = None
+            if cursor.fetchone() is not None:
+                cursor.execute("SELECT value FROM schema_meta WHERE key = ?", (_LINEAGE_KEY,))
+                row = cursor.fetchone()
+                lineage = row[0] if row else None
+        finally:
+            cursor.close()
+        self._raise_if_foreign_lineage(lineage)
+        self._connection_read = True
+        # The file the connection opened, however the URL spells it, so compatibility admission
+        # in this process is refused for that file while this handle is open. Registered as soon
+        # as a connection has read the store: an open that fails after this keeps its engine.
+        self._native_file = _file_identity(opened) if opened else None
+        if self._native_file is not None:
+            _OPEN_NATIVE.add(self)
+
+    def _read_lineage_without_writing(self, held: tuple) -> None:
+        """Refuse a file this process holds in compatibility mode, or a store whose ``lineage`` row
+        names another application, before any writable connection opens it (ADR-0128 D7).
+
+        No file of the store is written. The file is read immutable first: SQLite takes no lock and
+        reads no journal, log or index. Beside a rollback journal that begins with a journal header,
+        as one an interrupted transaction leaves does, the file can hold part of that transaction, so
+        the row is read instead from a private copy of the file and the journal, which SQLite rolls
+        back. When a write-ahead log with frames is beside it, whatever the file's own row says,
+        the row is read again read-only with ``readonly_shm``, which reads the log through its
+        ``-shm`` index without writing to it, and, when there is no index or that read fails, from
+        a private copy of the file and the log. A copy the store committed or checkpointed under is
+        taken again from the start, a bounded number of times. A read that fails decides nothing
+        here: the writable connection reads the row again before its settings.
+        """
+        from sqlalchemy.dialects.sqlite.aiosqlite import SQLiteDialect_aiosqlite
+
+        try:
+            (filename,), options = SQLiteDialect_aiosqlite().create_connect_args(make_url(self.url))
+        except Exception:  # noqa: BLE001 -- make_engine reports a URL it cannot open
+            return
+        uri = bool(options.get("uri"))
+        target = _read_only_uri(filename, uri, immutable=True)
+        if target is None:
+            return
+        for _ in range(_COPY_ATTEMPTS):
+            read = _read_lineage(target)
+            if read is None:
+                return
+            opened, lineage = read
+            self._refuse_a_held_file(opened, held)
+            if not opened:
+                return
+            if _journal_has_a_header(opened):
+                current = _read_lineage_from_a_copy(opened, "-journal")
+            elif _log_has_frames(opened):
+                # The log is read whatever the file shows: a row it holds is the store's row.
+                reread = _read_lineage(_read_only_uri(filename, uri, immutable=False))
+                current = _UNREAD if reread is None else reread[1]
+                if current is _UNREAD:
+                    current = _read_lineage_from_a_copy(opened, "-wal")
+            else:
+                current = _UNREAD
+            if current is not _MOVED:
+                break
+        else:
+            # Every copy saw the store commit or checkpoint under it. The file's own read stands,
+            # and the writable connection's read decides the rest, as for a copy that cannot be
+            # made or read.
+            current = _UNREAD
+        if current is not _UNREAD:
+            lineage = current
+        if lineage is not _UNREAD:
+            self._raise_if_foreign_lineage(lineage)
+
+    @staticmethod
+    def _refuse_a_held_file(filename: str, held: tuple) -> None:
+        identity = _file_identity(filename) if filename else None
+        if identity is None:
+            return
+        for file, handle in held:
+            if file == identity:
+                raise handle._compat.refusal(
+                    "this process holds the store in compatibility mode, and a native open would "
+                    "apply this package's schema to it",
+                    "open",
+                )
 
     async def _open_compatibility(self) -> None:
         # Never _apply_schema(), create_all, a rebuild, a backfill or a version stamp: the store's
@@ -748,19 +1014,34 @@ class StateDB:
         p = self.path
         if p is None or str(p) == ":memory:":
             raise guard.refusal("compatibility mode opens an existing store file", "open")
-        if not p.exists():
+        # SQLAlchemy opens the absolute path of a SQLite URL's database, resolved lexically, so
+        # that is the path checked: through a symlink, `..` names another file.
+        lexical = os.path.abspath(p)
+        if not os.path.exists(lexical):
             raise guard.refusal(
                 f"no store at {mask_credentials(str(p))}; compatibility mode never creates one",
                 "open",
             )
+        identity = _file_identity(lexical)
+        for native in list(_OPEN_NATIVE):
+            if native._engine is not None and native._native_file == identity:
+                # Its connections write without the profile, and those already open would never
+                # read the guard (ADR-0128 D7).
+                raise guard.refusal(
+                    "this process holds the store open natively, and that handle's connections "
+                    "write without the profile",
+                    "open",
+                )
         self._engine = make_compatibility_engine(self.url, guard)
         try:
             async with self.read_snapshot() as conn:
                 await conn.run_sync(guard.admit)
         except BaseException:
             with CancelScope(shield=True):
-                await self.close()
+                await self._close()
             raise
+        self._held_file = _file_identity(lexical)
+        _OPEN_COMPAT.add(self)
 
     def _refuse_in_compatibility(self, operation: str, reason: str) -> None:
         if self._compat is not None:
@@ -799,6 +1080,23 @@ class StateDB:
                 "rows its run creates"
             )
 
+    async def _require_owned(self, conn, table: str, row_id: Any, what: str) -> None:
+        """Refuse, inside the writing transaction, when the row no longer carries the owner."""
+        clause, owner = self._owner_predicate(table)
+        if not clause:
+            return
+        found = (
+            await conn.execute(
+                text(f"SELECT 1 FROM {_quote_identifier(table)} WHERE id = :_id{clause}"),  # noqa: S608
+                {"_id": row_id, **owner},
+            )
+        ).first()
+        if found is None:
+            raise self._compat.refusal(
+                f"{what} {row_id!r} does not belong to {self._compat.owner!r}; an update never "
+                "reaches another owner's row"
+            )
+
     async def _insert_new_row(
         self, conn, table: str, values: dict[str, Any], json_columns: tuple[str, ...] = ()
     ) -> None:
@@ -828,19 +1126,31 @@ class StateDB:
         _COMPAT_INSERTED.get().append((table, values["id"]))
 
     async def close(self) -> None:
+        # An open in progress on this loop finishes first, so close() never returns before an
+        # engine it would have disposed exists; one in progress on another loop refuses it.
+        async with self._holding_open_lock():
+            await self._close()
+
+    async def _close(self) -> None:
+        # Marked before anything is discarded, and cleared only once the engine is gone: a second
+        # native cancel delivered while the shielded disposal below is in progress escapes it and
+        # leaves the engine set, and this flag is how the next open or close knows to enter the
+        # disposal again rather than open over the engine it left.
+        self._closing = True
+        self._schema_applied = False
+        _OPEN_COMPAT.discard(self)
+        _OPEN_NATIVE.discard(self)
         if self._engine is not None:
             await self._engine.dispose()
             self._engine = None
+        self._closing = False
 
     async def __aenter__(self) -> StateDB:
-        try:
-            await self.open()
-        except BaseException:
-            # __aexit__ is not entered when __aenter__ fails, so dispose the partially opened engine
-            # here rather than letting its driver worker outlive the failure.
-            with CancelScope(shield=True):
-                await self.close()
-            raise
+        # __aexit__ does not run when __aenter__ fails, so the entry marks its own open call:
+        # open() disposes what its own call opened under the lock it holds, rather than letting the
+        # driver worker outlive the failure or disposing an engine a queued open built.
+        _OPEN_CALL.set(self)
+        await self.open()
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
@@ -1034,6 +1344,23 @@ class StateDB:
 
     # Schema management
 
+    def _store_named_for_an_operator(self) -> str:
+        # Masked: on a server-backed store this is the connection URL, and the refusals that name
+        # it fire on routine mistakes (upgrade order, a path pointed at another application's store).
+        if self.dialect == "sqlite" and self.path is not None:
+            return mask_credentials(str(self.path))
+        return mask_db_url(self.url)
+
+    def _raise_if_foreign_lineage(self, lineage: Any) -> None:
+        if not _names_another_application(lineage):
+            return
+        raise ForeignLineageError(
+            f"{self._store_named_for_an_operator()} names {str(lineage)[:80]!r} as the application "
+            "that manages its schema, and opening it for writing would apply this package's "
+            "schema to it. Open it read-only to inspect it, or in compatibility mode with a "
+            "profile for that application."
+        )
+
     def _raise_if_schema_too_new(self, recorded: str | None) -> None:
         if recorded is None:
             return
@@ -1045,13 +1372,7 @@ class StateDB:
             return
         if recorded_n <= int(SCHEMA_VERSION):
             return
-        # Named for an operator, so masked: on a server-backed store this is the connection URL, and
-        # this refusal fires on a routine upgrade-order mistake.
-        where = (
-            mask_credentials(str(self.path))
-            if self.dialect == "sqlite" and self.path is not None
-            else mask_db_url(self.url)
-        )
+        where = self._store_named_for_an_operator()
         raise SchemaTooNewError(
             f"{where} records schema version {recorded} but this version of lionagi "
             f"applies schema version {SCHEMA_VERSION}. It was written by a later "
@@ -1061,7 +1382,8 @@ class StateDB:
         )
 
     async def _refuse_newer_schema(self, conn) -> None:
-        """Refuse to open a database stamped with a version above SCHEMA_VERSION."""
+        """Refuse to open a database another application manages or stamped with a version above
+        SCHEMA_VERSION, reading both under the write lock and the lineage first."""
         if self.dialect == "postgresql":
             # The version table may not exist yet, so a row lock cannot serialize first-time schema
             # creation; this database-local lock predates any schema object.
@@ -1071,11 +1393,12 @@ class StateDB:
             )
         if not await conn.run_sync(lambda c: inspect(c).has_table("schema_meta")):
             return
-        query = "SELECT value FROM schema_meta WHERE key = 'version'"
+        query = _SCHEMA_META_GUARD_ROWS
         if self.dialect == "postgresql":
             query += " FOR UPDATE"
-        row = (await conn.execute(text(query))).mappings().first()
-        self._raise_if_schema_too_new(row["value"] if row else None)
+        meta = dict((await conn.execute(text(query))).all())
+        self._raise_if_foreign_lineage(meta.get(_LINEAGE_KEY))
+        self._raise_if_schema_too_new(meta.get("version"))
 
     async def _refuse_newer_sqlite_schema(self, driver) -> None:
         """Check the version through a raw driver holding BEGIN IMMEDIATE."""
@@ -1086,10 +1409,9 @@ class StateDB:
         ).fetchone()
         if table is None:
             return
-        row = await (
-            await driver.execute("SELECT value FROM schema_meta WHERE key = 'version'")
-        ).fetchone()
-        self._raise_if_schema_too_new(row[0] if row else None)
+        meta = dict(await (await driver.execute(_SCHEMA_META_GUARD_ROWS)).fetchall())
+        self._raise_if_foreign_lineage(meta.get(_LINEAGE_KEY))
+        self._raise_if_schema_too_new(meta.get("version"))
 
     async def _apply_schema(self) -> None:
         self._refuse_in_compatibility("migration", "the store's schema belongs to its manager")
@@ -1186,6 +1508,9 @@ class StateDB:
                     existing = await conn.run_sync(
                         lambda c, t=table: [col["name"] for col in inspect(c).get_columns(t)]
                     )
+            except (ForeignLineageError, StateCompatibilityRefused):
+                # A new connection's own refusal (ADR-0128 D7), not a failed inspection.
+                raise
             except Exception as exc:  # noqa: BLE001
                 _log.error(
                     "failed to inspect migration columns for table %r: %r",
@@ -2549,9 +2874,10 @@ class StateDB:
     async def _append_to_progression_in_tx(
         self, conn, progression_id: str, message_id: str
     ) -> None:
+        clause, owner = self._owner_predicate("progressions")
         await conn.execute(
-            text(self._progression_append_sql(self.dialect)),
-            {"v": message_id, "id": progression_id},
+            text(self._progression_append_sql(self.dialect) + clause),
+            {"v": message_id, "id": progression_id, **owner},
         )
 
     # Sessions
@@ -3145,11 +3471,13 @@ class StateDB:
         at: float | None = None,
     ) -> None:
         ts = at if at is not None else time.time()
+        clause, owner = self._owner_predicate("sessions")
         await conn.execute(
-            text(self._touch_activity_sql(self.dialect)),
-            {"ts": ts, "id": session_id},
+            text(self._touch_activity_sql(self.dialect) + clause),
+            {"ts": ts, "id": session_id, **owner},
         )
 
+    @_operation("persist_live_message")
     async def _persist_live_message(
         self,
         msg: dict[str, Any],
@@ -3163,7 +3491,25 @@ class StateDB:
     ) -> None:
         """Atomically persist one live message and its immediate bookkeeping."""
         self._validate_message(msg)
+        if self._compat is not None:
+            # A live message joins only the session, progressions and branch this run
+            # created.
+            self._require_created("sessions", session_id, "session")
+            for progression_id in (branch_progression_id, session_progression_id):
+                if progression_id is not None:
+                    self._require_created("progressions", progression_id, "progression")
+            if system_branch_id is not None:
+                self._require_created("branches", system_branch_id, "branch")
         async with self._tx() as conn:
+            if self._compat is not None:
+                for table, row_id, what in (
+                    ("sessions", session_id, "session"),
+                    ("progressions", branch_progression_id, "progression"),
+                    ("progressions", session_progression_id, "progression"),
+                    ("branches", system_branch_id, "branch"),
+                ):
+                    if row_id is not None:
+                        await self._require_owned(conn, table, row_id, what)
             await self._insert_message_in_tx(conn, msg)
             if branch_progression_id is not None:
                 await self._append_to_progression_in_tx(conn, branch_progression_id, msg["id"])
@@ -4391,7 +4737,7 @@ class StateDB:
             conds.append(f"status IN ({placeholders})")
             params.update({f"status{i}": s for i, s in enumerate(statuses)})
         query = "SELECT * FROM schedule_runs WHERE " + " AND ".join(conds)  # noqa: S608
-        query += " ORDER BY fired_at DESC LIMIT :limit OFFSET :offset"
+        query += " ORDER BY fired_at DESC, id DESC LIMIT :limit OFFSET :offset"
         params["limit"] = limit
         params["offset"] = offset
         async with self._read() as conn:
@@ -5317,9 +5663,10 @@ class StateDB:
             sets_parts.append(f'"{k}" = :{k}')
             if k in json_fields:
                 bind_params.append(bindparam(k, type_=JSON))
-        params = dict(fields)
+        clause, owner = self._owner_predicate("branches")
+        params = {**fields, **owner}
         params["_id"] = branch_id
-        stmt = text(f"UPDATE branches SET {', '.join(sets_parts)} WHERE id = :_id")  # noqa: S608
+        stmt = text(f"UPDATE branches SET {', '.join(sets_parts)} WHERE id = :_id{clause}")  # noqa: S608
         if bind_params:
             stmt = stmt.bindparams(*bind_params)
         await conn.execute(stmt, params)
@@ -6679,6 +7026,50 @@ _SHARED_TEARDOWN_RACE = (
     "shared StateDB was torn down while this call was pending; quiesce "
     "get_shared_db()/register_shared_db() callers before close_shared_db()"
 )
+# The event loop whose call holds or waits on _SHARED_OPEN_LOCK, and how many do: the lock wakes a
+# waiter only on the loop that holds it, so a call from another loop is refused rather than left
+# waiting for a wake that never comes.
+_SHARED_LOCK_GUARD = threading.Lock()
+_SHARED_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
+_SHARED_LOCK_USERS = 0
+_SHARED_LOCK_OTHER_LOOP = (
+    "the shared state registry is being opened, registered or closed on another event loop; call "
+    "get_shared_db(), register_shared_db() and close_shared_db() on that loop"
+)
+
+
+@asynccontextmanager
+async def _holding_shared_lock():
+    """Hold the shared-registry lock, refusing a call made from another event loop.
+
+    The same guard StateDB's own open lock uses: the lock belongs to the loop that holds or waits
+    on it, and a call from any other loop would wait for a wake only that loop's release can send,
+    so such a call is refused at once with a ``RuntimeError`` naming the other loop rather than
+    left to time out with the registry emptied. The user count rises before the wait and falls on
+    every way out, cancellation included.
+    """
+    global _SHARED_LOCK_LOOP, _SHARED_LOCK_USERS, _SHARED_OPEN_LOCK  # noqa: PLW0603
+
+    if _SHARED_OPEN_LOCK is None:
+        _SHARED_OPEN_LOCK = Lock()
+    lock = _SHARED_OPEN_LOCK
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:  # another async library, where the engine cannot run anyway
+        loop = None
+    with _SHARED_LOCK_GUARD:
+        if _SHARED_LOCK_USERS and _SHARED_LOCK_LOOP is not loop:
+            raise RuntimeError(_SHARED_LOCK_OTHER_LOOP)
+        _SHARED_LOCK_LOOP = loop
+        _SHARED_LOCK_USERS += 1
+    try:
+        async with lock:
+            yield
+    finally:
+        with _SHARED_LOCK_GUARD:
+            _SHARED_LOCK_USERS -= 1
+            if not _SHARED_LOCK_USERS:
+                _SHARED_LOCK_LOOP = None
 
 
 def _shared_key(db: StateDB) -> str | tuple[str, str, CompatibilityProfile | None, str | None]:
@@ -6688,25 +7079,274 @@ def _shared_key(db: StateDB) -> str | tuple[str, str, CompatibilityProfile | Non
     return (db.url, db.mode, db.compatibility, owner)
 
 
+# Every compatibility handle open in this process, registered as the shared handle or not. While
+# one is open on a store, a native open of that store refuses, and so does the shared lookup unless
+# it can hand out the compatibility handle itself.
+_OPEN_COMPAT: weakref.WeakSet[StateDB] = weakref.WeakSet()
+# Every writable native handle open on a SQLite file in this process. While one is open on a
+# store, compatibility admission of that store refuses.
+_OPEN_NATIVE: weakref.WeakSet[StateDB] = weakref.WeakSet()
+
+
+def _file_identity(path: str) -> tuple[int, int] | None:
+    """The (device, inode) of the file at *path*, or None when there is no such file."""
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return stat.st_dev, stat.st_ino
+
+
+def _held_files() -> tuple:
+    """The (device, inode) and the handle of every file this process holds in compatibility mode,
+    read on the calling thread so a worker thread never iterates the registry."""
+    return tuple(
+        (held._held_file, held)
+        for held in list(_OPEN_COMPAT)
+        if held._engine is not None and held._held_file is not None
+    )
+
+
+def _read_only_uri(filename: str, uri: bool, *, immutable: bool) -> str | None:
+    """A URI opening the file SQLAlchemy's SQLite dialect opens as *filename*, read-only:
+    ``immutable`` reads the file alone, otherwise its log is read with it through the log's
+    existing ``-shm`` index, which is never written. None for an in-memory or temporary
+    database."""
+    if uri:
+        # SQLite ends the file name at a `#`, and reads nothing after it.
+        location, _, query = filename.partition("#")[0].partition("?")
+        parameters = parse_qsl(query, keep_blank_values=True)
+        if location in ("file:", "file::memory:") or ("mode", "memory") in parameters:
+            return None
+        parameters = [
+            (k, v)
+            for k, v in parameters
+            if k not in ("mode", "immutable", "nolock", "readonly_shm")
+        ]
+    else:
+        if filename in ("", ":memory:"):
+            return None
+        try:
+            location = Path(filename).as_uri()
+        except ValueError:
+            return None
+        parameters = []
+    if immutable:
+        parameters.append(("immutable", "1"))
+    else:
+        parameters += [("mode", "ro"), ("readonly_shm", "1")]
+    return f"{location}?{urlencode(parameters)}"
+
+
+# A store whose file opened but whose `lineage` row could not be read.
+_UNREAD = object()
+# A copy of the file and its journal or log that the store committed or checkpointed under, so the
+# two may not be of one state; the read is taken again, up to _COPY_ATTEMPTS times.
+_MOVED = object()
+_COPY_ATTEMPTS = 3
+# The first eight bytes of a rollback journal's header. A commit deletes, truncates or zeroes it.
+_JOURNAL_HEADER = bytes.fromhex("d9d505f920a163d7")
+
+
+def _journal_has_a_header(path: str) -> bool:
+    """Whether the rollback journal beside *path* begins with a journal header: an interrupted
+    transaction's does, and so does a transaction's still in progress."""
+    try:
+        with open(f"{path}-journal", "rb") as journal:
+            return journal.read(len(_JOURNAL_HEADER)) == _JOURNAL_HEADER
+    except OSError:
+        return False
+
+
+def _log_has_frames(path: str) -> bool:
+    try:
+        return os.path.getsize(f"{path}-wal") > 0
+    except OSError:
+        return False
+
+
+def _read_lineage_from_a_copy(path: str, suffix: str) -> Any:
+    """The ``lineage`` row of a private copy of the file at *path* and of its ``-journal`` or
+    ``-wal``, read on a writable connection, so SQLite rolls the copy's journal back or reads the
+    copy's log and never touches the originals. The copy is made in a new directory under the
+    system's temporary directory, which only this user can read, and removed before this returns;
+    a process killed while it copies leaves the copy there. ``_MOVED`` when the store committed or
+    checkpointed while it was copied, ``_UNREAD`` when the copy or its read fails."""
+    try:
+        with tempfile.TemporaryDirectory(prefix="lionagi-lineage-") as scratch:
+            copy = os.path.join(scratch, "store.db")
+            before = _copy_state(path, suffix)
+            _copy_store_file(path, copy)
+            shutil.copyfile(f"{path}{suffix}", f"{copy}{suffix}")
+            if before is None or _copy_state(path, suffix) != before:
+                return _MOVED
+            read = _read_lineage(Path(copy).as_uri())
+    except (OSError, sqlite3.Error):
+        return _UNREAD
+    return _UNREAD if read is None else read[1]
+
+
+def _copy_state(path: str, suffix: str) -> tuple | None:
+    """What changes when the store commits or checkpoints between the copy of its file and the
+    copy of its journal or log: the file's inode, the journal's or log's inode, and the log's header
+    (a checkpoint that resets or truncates the log rewrites it) or the journal header's magic and
+    nonce (a commit removes, truncates or zeroes the journal, and a new transaction writes a new
+    header). None when the journal or log cannot be read."""
+    side = f"{path}{suffix}"
+    try:
+        with open(side, "rb") as handle:
+            header = handle.read(32)
+            inodes = (os.stat(path).st_ino, os.fstat(handle.fileno()).st_ino)
+    except OSError:
+        return None
+    return inodes, header if suffix == "-wal" else header[:8] + header[12:16]
+
+
+# Descriptors this process opened on a store's file to copy it, one per file, never closed: closing
+# any descriptor of a file drops every POSIX lock this process holds on that file, which another
+# connection here may hold, so each stays open until the process exits, as SQLite keeps its own
+# descriptor of a file open while its connections here hold locks on it. Two costs follow from
+# that: each distinct store copied keeps one descriptor open for the life of the process, and a
+# store deleted after it was copied keeps its disk space allocated until the process exits. The
+# opens are serialised by `_COPY_DESCRIPTORS_LOCK`, so an open never races another; a descriptor
+# that finds one already filed stays open and unfiled, which needs the file replaced between the
+# `stat` and the `open`, so the open costs a second descriptor no entry can find. The descriptors
+# count against the process's open-file limit, so a long run that copies very many distinct stores
+# spends one of that limit's slots per store, and an `EMFILE` reached there makes
+# `_read_lineage_from_a_copy` return `_UNREAD`, so the writable connection's own read of the row
+# decides.
+_COPY_DESCRIPTORS: dict[tuple[int, int], int] = {}
+_COPY_DESCRIPTORS_LOCK = threading.Lock()
+
+
+def _copy_store_file(path: str, copy: str) -> None:
+    """Copy the file at *path* to *copy* byte for byte, whatever its pages hold, through a
+    descriptor of the file this process keeps open, so the copy closes no descriptor of it. On
+    Windows a lock belongs to the handle that took it, and the file is copied as usual."""
+    if os.name == "nt":
+        shutil.copyfile(path, copy)
+        return
+    descriptor = _copy_descriptor(path)
+    with open(copy, "wb") as target:
+        offset = 0
+        while chunk := os.pread(descriptor, 1 << 20, offset):
+            target.write(chunk)
+            offset += len(chunk)
+
+
+def _copy_descriptor(path: str) -> int:
+    """A descriptor this process keeps open on the file at *path*, opening one if none is filed.
+
+    The descriptor is never closed, since closing any descriptor of a file drops every POSIX lock
+    this process holds on it. So each distinct store copied keeps one descriptor open for the life
+    of the process, and a store deleted after it was copied keeps its disk space allocated until
+    the process exits. The opens are serialised by ``_COPY_DESCRIPTORS_LOCK``, so the one that
+    stays open and unfiled needs the file replaced between the ``stat`` and the ``open``.
+    """
+    with _COPY_DESCRIPTORS_LOCK:
+        found = os.stat(path)
+        descriptor = _COPY_DESCRIPTORS.get((found.st_dev, found.st_ino))
+        if descriptor is None:
+            descriptor = os.open(path, os.O_RDONLY)
+            opened = os.fstat(descriptor)
+            # A file replaced between the stat and the open is filed under the file it opened;
+            # a descriptor that finds one already filed there stays open, as every one here does,
+            # and cannot be closed by this process without dropping the locks it holds on that file.
+            descriptor = _COPY_DESCRIPTORS.setdefault((opened.st_dev, opened.st_ino), descriptor)
+        return descriptor
+
+
+def _read_lineage(uri: str) -> tuple[str, Any] | None:
+    """The file SQLite opened for *uri* and that file's ``lineage`` row (``_UNREAD`` when the file
+    opened but the row could not be read), or None when the file could not be opened."""
+    try:
+        conn = sqlite3.connect(uri, uri=True, timeout=SQLITE_BUSY_TIMEOUT_MS / 1000)
+    except sqlite3.Error:
+        return None
+    try:
+        # A file an interrupted transaction left beside a hot journal can list a table whose pages
+        # it does not hold yet, and SQLite refuses to load such a schema; this skips that entry
+        # rather than the whole read. On a read-only connection it still writes nothing.
+        conn.execute("PRAGMA writable_schema = ON")
+        rows = conn.execute("PRAGMA database_list").fetchall()
+        opened = next((row[2] for row in rows if row[1] == "main"), "")
+    except sqlite3.Error:
+        conn.close()
+        return None
+    try:
+        table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
+        ).fetchone()
+        if table is None:
+            return opened, None
+        row = conn.execute(
+            "SELECT value FROM schema_meta WHERE key = ?", (_LINEAGE_KEY,)
+        ).fetchone()
+        return opened, row[0] if row else None
+    except sqlite3.Error:
+        return opened, _UNREAD
+    finally:
+        conn.close()
+
+
+def _open_in_compatibility_mode(url: str) -> StateDB | None:
+    """A compatibility handle this process holds open on *url*, registered or not, else None."""
+    for db in list(_OPEN_COMPAT):
+        if db.url == url and db._engine is not None:
+            return db
+    return None
+
+
+def _held_in_compatibility_mode(url: str) -> StateDB | None:
+    """The compatibility handle registered for *url*, or None when no such handle is registered.
+
+    Each registered handle differs in its profile or its owner, so it writes under rules or for
+    an owner of its own; a caller that names only the store cannot say which it means, and when
+    more than one is registered that lookup is refused.
+    """
+    held = [db for key, db in _SHARED.items() if isinstance(key, tuple) and key[0] == url]
+    if len(held) > 1:
+        raise held[0]._compat.refusal(
+            f"{len(held)} compatibility handles are registered for this store, each with its own "
+            "profile or owner, and a caller that names only the store does not say which one "
+            "it writes through",
+            operation="open",
+        )
+    return held[0] if held else None
+
+
 async def get_shared_db(path: str | Path | None = None) -> StateDB:
-    """Return the process-wide open StateDB for *path* (default: DEFAULT_DB_PATH)."""
-    global _SHARED_OPEN_LOCK  # noqa: PLW0603
+    """Return the process-wide open StateDB for *path* (default: DEFAULT_DB_PATH).
+
+    A store this process holds in compatibility mode is never handed out natively here: a native
+    open applies this package's schema to a store another application manages (ADR-0128 D1). The
+    registered compatibility handle is returned instead, before any native handle registered for
+    the same store, so what the caller writes meets the profile (Appendix A.2). A store with more
+    than one compatibility handle registered is refused, and so is one this process holds open in
+    compatibility mode without registering it, since the caller cannot be given that handle.
+    """
     # Resolve the key through StateDB's own cascade so a monkeypatched DEFAULT_DB_PATH is honored;
     # normalize_state_db_url(None) would bypass it to the real home db.
     url = StateDB(path).url
     key = url
+    held = _held_in_compatibility_mode(url)
+    if held is not None:
+        return held
+    _refuse_native_beside_compatibility(url)
     if key in _SHARED:
         return _SHARED[key]
-    if _SHARED_OPEN_LOCK is None:
-        _SHARED_OPEN_LOCK = Lock()
-    lock = _SHARED_OPEN_LOCK
     gen = _SHARED_CLOSE_GEN
-    async with lock:
+    async with _holding_shared_lock():
         # A close_shared_db() swept the registry while we waited on this lock;
         # refuse to resurrect the singleton rather than leak a fresh worker.
         if _SHARED_CLOSE_GEN != gen:
             raise RuntimeError(_SHARED_TEARDOWN_RACE)
-        # Double-checked: another coroutine may have opened it while we waited.
+        # Double-checked: another coroutine may have opened it while we waited, or registered a
+        # compatibility handle for it.
+        held = _held_in_compatibility_mode(url)
+        if held is not None:
+            return held
+        _refuse_native_beside_compatibility(url)
         if key not in _SHARED:
             db = StateDB(url=url)
             await db.open()
@@ -6714,23 +7354,38 @@ async def get_shared_db(path: str | Path | None = None) -> StateDB:
     return _SHARED[key]
 
 
-async def register_shared_db(db: StateDB) -> None:
-    """Adopt a caller-owned StateDB as the shared instance, closing any prior one for its url."""
-    global _SHARED_OPEN_LOCK  # noqa: PLW0603
-    import contextlib
+def _refuse_native_beside_compatibility(url: str) -> None:
+    held = _open_in_compatibility_mode(url)
+    if held is not None:
+        raise held._compat.refusal(
+            "this process holds the store open in compatibility mode without sharing that "
+            "handle, and a native handle would write to it outside the profile",
+            "open",
+        )
 
-    if _SHARED_OPEN_LOCK is None:
-        _SHARED_OPEN_LOCK = Lock()
-    lock = _SHARED_OPEN_LOCK
+
+async def register_shared_db(db: StateDB) -> None:
+    """Adopt a caller-owned StateDB as the shared instance, closing any prior one for its url.
+
+    A native writer is refused for a store this process holds open in compatibility mode.
+
+    The handle being displaced is closed before the entry is replaced. Any error that close raises
+    reaches the caller, not just a refusal, and the registry keeps the handle that is still open
+    rather than filing one with no entry to reach it by. A caller that registers for a run takes
+    that error as a setup failure: both ``setup_agent_persist`` and orchestration admission disable
+    persistence for the run, record it degraded and leave it running, and only a
+    ``StateCompatibilityRefused`` fails the run with the refusal as its reason.
+    """
     gen = _SHARED_CLOSE_GEN
-    async with lock:
+    async with _holding_shared_lock():
         if _SHARED_CLOSE_GEN != gen:
             raise RuntimeError(_SHARED_TEARDOWN_RACE)
+        if db.mode == "native":
+            _refuse_native_beside_compatibility(db.url)
         key = _shared_key(db)
         existing = _SHARED.get(key)
         if existing is not None and existing is not db:
-            with contextlib.suppress(Exception):
-                await existing.close()
+            await existing.close()
         _SHARED[key] = db
 
 
@@ -6741,29 +7396,69 @@ def unregister_shared_db(db: StateDB) -> None:
         del _SHARED[key]
 
 
-async def close_shared_db() -> None:
-    """Close and forget every shared StateDB; callers must quiesce get_shared_db() first."""
-    global _SHARED_OPEN_LOCK, _SHARED_CLOSE_GEN  # noqa: PLW0603
-    import contextlib
+def _describe_a_shared_handle(db: StateDB) -> str:
+    """A shared handle for a message: the store it opens, masked, and the mode it was opened in."""
+    return f"{mask_db_url(db.url)} ({db.mode})"
 
-    lock = _SHARED_OPEN_LOCK
-    if lock is None:
-        # No open ever happened in this loop (opens create the lock first).
-        instances = list(_SHARED.values())
-        _SHARED.clear()
-        _SHARED_CLOSE_GEN += 1
-        for db in instances:
-            with contextlib.suppress(Exception):
-                await db.close()
-        return
+
+async def close_shared_db() -> None:
+    """Close and forget every shared StateDB; callers must quiesce get_shared_db() first.
+
+    Every handle the sweep can close is closed and forgotten, and one whose close raises any error
+    is kept in the registry and raised together with the others once the sweep is done: reported as
+    closed, it would keep its engine with nothing left to reach it by.
+    """
+    global _SHARED_OPEN_LOCK, _SHARED_CLOSE_GEN, _SHARED_LOCK_USERS  # noqa: PLW0603
+
     # Hold the open lock so an in-flight get_shared_db()/register_shared_db() cannot repopulate
     # _SHARED after the sweep; bump the generation and null the lock last, so a waiter that raced
-    # this close refuses to resurrect it.
-    async with lock:
-        instances = list(_SHARED.values())
-        _SHARED.clear()
-        for db in instances:
-            with contextlib.suppress(Exception):
-                await db.close()
+    # this close refuses to resurrect it. Every sweep takes the lock, the one after a refused close
+    # included: that close kept its handle registered and left the lock unset, and a sweep that ran
+    # without a lock over that entry would let a lookup register a second handle for the store,
+    # which the sweep would then return over or the re-file below would orphan. The lock is unset
+    # only by the last caller waiting on it: a sweep queued behind this one captured this lock
+    # while this one held it, so nulling it here would send that queued sweep's own lookup to a
+    # fresh lock, running beside the queued sweep instead of behind it.
+    async with _holding_shared_lock():
+        refused = await _sweep_shared_handles()
         _SHARED_CLOSE_GEN += 1
-        _SHARED_OPEN_LOCK = None
+        if _SHARED_LOCK_USERS == 1:
+            _SHARED_OPEN_LOCK = None
+    _raise_refused_closes(refused)
+
+
+async def _sweep_shared_handles() -> list[tuple[StateDB, Exception]]:
+    """Close every registered handle, returning the ones whose close raised, with the error.
+
+    The registry is emptied before the first close, so a get_shared_db() racing the sweep meets the
+    lock rather than a handle being closed, and a handle that did not close is filed again under
+    its key: one a close from another event loop refuses, or whose close is cancelled, would
+    otherwise stay open with no entry a later lookup or sweep could reach it by."""
+    remaining = list(_SHARED.items())
+    _SHARED.clear()
+    refused: list[tuple[StateDB, Exception]] = []
+    while remaining:
+        key, db = remaining.pop(0)
+        try:
+            await db.close()
+        except Exception as exc:  # noqa: BLE001 -- collected and raised after the sweep
+            _SHARED[key] = db
+            refused.append((db, exc))
+        except BaseException:
+            # The close was cancelled: this handle and every one still to close stay open, so they
+            # keep their entries rather than being left unreachable.
+            _SHARED[key] = db
+            for later_key, later in remaining:
+                _SHARED[later_key] = later
+            raise
+    return refused
+
+
+def _raise_refused_closes(refused: list[tuple[StateDB, Exception]]) -> None:
+    """Raise once for every handle a sweep could not close, naming each one and why."""
+    if not refused:
+        return
+    named = "; ".join(f"{_describe_a_shared_handle(db)}: {exc}" for db, exc in refused)
+    raise RuntimeError(
+        f"{len(refused)} shared StateDB handle(s) could not be closed: {named}"
+    ) from (refused[0][1])
