@@ -65,6 +65,7 @@ async def chat(
         chat_param,
         ins=provider_ins or ins,
         context_blocks=context_report.blocks if context_report else None,
+        imodel=imodel,
     )
 
     if not chat_param._is_sentinel(chat_param.include_token_usage_to_model):
@@ -72,7 +73,10 @@ async def chat(
 
     await emit_api_pre_call(branch, imodel)
     try:
-        api_call = await imodel.invoke(**kw)
+        from lionagi.service.imodel import _branch_routing_context
+
+        with _branch_routing_context(branch.id, imodel):
+            api_call = await imodel.invoke(**kw)
     except BaseException as exc:
         # BaseException (asyncio.CancelledError included): cancellation mid-invoke
         # must still pair with a post emission, or a hook-bus observer sees an open span.

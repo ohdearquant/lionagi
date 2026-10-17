@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, text
 
 from lionagi.state.db import StateDB
 
@@ -135,11 +135,15 @@ async def test_busy_timeout_eventually_returns_locked_error(
 # fanout: reads must not queue behind a held writer lock
 
 
-async def test_many_concurrent_reads_survive_a_held_write_lock(db_path: Path):
+async def test_many_concurrent_reads_survive_a_held_write_lock(db_path: Path, monkeypatch):
     """A pile of concurrent readers -- standing in for many `li` processes
     checking session state during a wide fanout -- must all complete while a
     separate connection holds the SQLite writer lock, instead of queuing
     behind it and burning the busy-timeout budget one at a time."""
+    from lionagi.state import engine as engine_mod
+
+    # Keep the comparison independent of a deployment's timeout setting.
+    monkeypatch.setattr(engine_mod, "SQLITE_BUSY_TIMEOUT_MS", 5000)
     seed = StateDB(db_path)
     await seed.open()
     await seed.insert_message(_make_msg())
@@ -147,6 +151,12 @@ async def test_many_concurrent_reads_survive_a_held_write_lock(db_path: Path):
 
     db = StateDB(db_path)
     await db.open()
+    statements = []
+
+    def record_sql(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement.strip().upper())
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", record_sql)
     try:
         import sqlite3
 
@@ -162,8 +172,13 @@ async def test_many_concurrent_reads_survive_a_held_write_lock(db_path: Path):
             blocker.rollback()
             blocker.close()
         assert all(rows == [{"n": 1}] for rows in results)
-        assert elapsed < 1.0, f"20 concurrent reads took {elapsed}s behind a held write lock"
+        assert sum(sql.startswith("SELECT") for sql in statements) == 20
+        assert not any(sql.startswith("BEGIN IMMEDIATE") for sql in statements)
+        # Allow hosted-runner scheduling noise, while staying below even one
+        # blocked writer's pinned 5s busy wait. SQL tracing also pins the cause.
+        assert elapsed < 4.0, f"20 concurrent reads took {elapsed}s behind a held write lock"
     finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", record_sql)
         await db.close()
 
 

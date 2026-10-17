@@ -7,7 +7,7 @@ import asyncio
 import pytest
 
 from lionagi.protocols.generic.event import Event, EventStatus
-from lionagi.protocols.generic.processor import Processor
+from lionagi.protocols.generic.processor import Executor, Processor
 
 
 class _OkEvent(Event):
@@ -397,3 +397,30 @@ class TestProcessorJoin:
         await asyncio.wait_for(p.join(), timeout=2.0)
         assert p.queue.empty()
         assert event.status == EventStatus.COMPLETED
+
+
+class _Exec(Executor):
+    processor_type = _Proc
+
+
+class TestExecutorForward:
+    @pytest.mark.asyncio
+    async def test_forward_skips_an_id_whose_event_left_the_pile(self):
+        executor = _Exec(
+            processor_config={
+                "queue_capacity": 10,
+                "capacity_refresh_time": 0.01,
+                "concurrency_limit": 2,
+            }
+        )
+        await executor.start()
+        gone, kept = _OkEvent(), _OkEvent()
+        await executor.append(gone)
+        await executor.append(kept)
+        executor.pile.pop(gone.id)
+
+        await executor.forward()
+
+        assert gone.status == EventStatus.PENDING
+        assert kept.status == EventStatus.COMPLETED
+        assert len(executor.pending) == 0

@@ -70,7 +70,10 @@ the call ended:
   Always reduced to a class-name-only summary, never the raw message.
 - `tokens`: typed numeric usage summary (`input_tokens`/`output_tokens`
   ints); `None` when the shape is unrecognized or the call never produced
-  one. Never the raw provider usage mapping.
+  one. Never the raw provider usage mapping. A count that a routed account
+  masked, because its text held a run of the key, is text by then and reads
+  as 0; with neither count left, the summary has no tokens. The account's
+  ledger prices the provider's own count.
 
 ## Run stream cleanup cascade
 
@@ -289,6 +292,70 @@ nobody reads, and would pass cleanly forever if it did. Only a recorded
 transcript is evidence about the real CLI; an authored one is evidence
 about the model of it encoded in the parser.
 
+## Codex call markup in a turn's final message
+
+**`providers/openai/codex.py`**
+
+A model served through the CLI can write a tool call into its reply as text,
+in the model's own call markup, instead of making the call. The CLI accepts
+that text as the turn's final message and still ends the turn with
+`turn.completed`, so the run would otherwise be recorded as completed although
+the agent stopped mid-task and the call never ran. When a turn ends — or the
+stream ends without a turn end — and the turn's last text with visible content
+carries call markup outside code, the parser marks the session failed
+(`session.is_error`, with a `session.result` saying the model wrote a call as
+text and the run stopped before it ran) and emits an error `StreamChunk` whose
+metadata carries `call_markup_in_text: True`. When the turn ends with
+`turn.completed`, the usage `result` chunk for that turn is still emitted
+beside it; the stream-end path has no turn to report usage for. A streamed run
+raises on that error chunk; a non-streamed call returns the session marked
+failed, as it does for any failed turn, and does not raise.
+
+Only the turn's last text is read: markup in an earlier message was superseded
+by a later one, a completed call after the message clears it, and a message
+with no visible text leaves the text it followed in place. Text inside code
+is a quotation of the markup rather than a call, so a call the model writes
+inside code completes the turn and never runs.
+
+The check parses the text as CommonMark with markdown-it-py
+(`MarkdownIt("commonmark")`, a core dependency for this reason) and looks for
+markup only in what a reader sees as prose: the text of paragraphs and
+headings, link and image text, and raw HTML. Code spans, fenced code blocks
+and indented code blocks are left out wherever quotes and lists put them, a
+fence that nothing closes included: it runs to the end of its container, as
+CommonMark reads it, and its information string is not shown. Link
+destinations and titles and link reference definitions are not shown as text
+either, so they are not read. Where a fence inside a list item closes or
+ends, which list markers interrupt a paragraph, setext underlines, tab stops
+and lazy continuation lines are all the parser's reading, not a second one
+kept beside it. Each block is matched on
+its own, and a code span separates the prose on either side of it, so no tag
+is pieced together across a block boundary or a span. The parser normalises
+line ends, so CRLF text reads like LF text. A legacy
+`result`/`response`/`session.end` event's own text is read like a message:
+markup in it fails the turn at the stream end, and text that is not a string
+is not read. A tag in plain prose fails the reply as well; a reply that needs
+to name one writes it between backticks. An HTML entity that spells the tag
+names one too, since it reads as the tag on screen, but only where the
+reference ends with a semicolon and names a real entity: a bare `&lt` is
+literal text. The markup itself is the tuple `_TOOL_CALL_MARKUP_PATTERNS`, one
+compiled pattern per call markup the CLI can surface; another model's markup
+is supported by adding one entry there. The patterns match markup tags only —
+never the word DSML or a bare `|` in ordinary prose.
+
+One choice goes past CommonMark and errs toward failing a turn that was fine:
+raw HTML is read as prose, the text of a `<pre>` or `<code>` element included.
+Two err the other way, toward completing the turn as it completed before this
+check existed. Text at the parser's nesting limit is not read: the limit is
+20 levels, and a list and its item count as one each, so text inside 20 nested
+quotes or 10 nested lists is dropped. And a message longer than 16,000
+characters (`_MARKUP_CHECK_MAX_CHARS`) is not read at all. That bounds the
+parse: the slowest text found for the parser is a paragraph of unclosed inline
+HTML openers (`<?`, `<!--`, `<![CDATA[`), whose time grows with the square of
+its length, and at that length it takes about half a second. A legacy
+`result` event's text is read as written, before any whitespace is trimmed,
+as a message's text is.
+
 ## Codex turn-completed usage delta
 
 **`providers/openai/codex.py`**
@@ -415,8 +482,13 @@ Every CLI provider's request model wraps its `env` and `on_spawn` fields in
 `Redacted` at the top of every model-level `mode="before"` validator
 (`redact_runtime_fields_in_place`), so a rejected request never carries a
 child environment or a bound callback into `str(err)`, `err.errors()`, or
-`err.json()`. This matters because pydantic keeps a failing validator's raw
-input on the error — `repr=False`/`exclude` on a field don't help, since a
+`err.json()`. The Codex request model wraps its `config_overrides` the same
+way, through `_redact_codex_runtime_fields_in_place`, because a `-c` override
+holds the same kind of token a child environment does; its field validator
+then refuses a key that is not a string by position and type, as the `env`
+validator does, since pydantic would quote such a key. This matters because
+pydantic keeps a failing validator's raw input on the error —
+`repr=False`/`exclude` on a field don't help, since a
 model-level validator holds the whole raw mapping regardless of per-field
 settings. `Redacted` deliberately isn't a mapping, so serialization sees no
 structure to walk, and it refuses (`TypeError`, not `ValueError` — pydantic

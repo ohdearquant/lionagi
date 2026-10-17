@@ -24,6 +24,7 @@ from lionagi.protocols.messages import (
     Instruction,
 )
 from lionagi.providers._provider_errors import WorkerLivenessError, classify_provider_error
+from lionagi.service.accounts._pricing import CACHE_WRITE_LIFETIMES, cache_write_split
 
 from .._api_hooks import emit_api_post_call, emit_api_pre_call, emit_api_stream_chunk
 from .._turn_origin import consume_turn_origin
@@ -148,7 +149,6 @@ async def _stream_with_liveness(
     if liveness_timeout is None and idle_timeout is None:
         api_call = await model.create_event(**kw)
         api_call_holder.append(api_call)
-        await model.executor.append(api_call)
         agen = _stream_with_deadline(model, api_call, stream_deadline)
         try:
             async for chunk in agen:
@@ -179,7 +179,6 @@ async def _stream_with_liveness(
     attempts = max_attempts if liveness_timeout is not None else 1
     for attempt in range(attempts):
         api_call = await model.create_event(**kw)
-        await model.executor.append(api_call)
         if api_call_holder:
             api_call_holder[0] = api_call
         else:
@@ -328,15 +327,53 @@ _RESULT_META_DELTA_KEYS = ("total_cost_usd", "num_turns")
 def _accumulate_result_meta(result_meta: dict, metadata: dict) -> None:
     """Merge a "result" chunk's metadata into the in-progress accumulator.
 
-    Numeric usage/cost/turn fields are summed; everything else is overwritten
-    with the latest value.
+    Numeric usage/cost/turn fields are summed -- including the parts of the
+    nested ``usage.cache_creation`` cache-write lifetime map, which a provider
+    may split across chunks; everything else is overwritten with the latest
+    value. Each chunk's own split is read with
+    ``service.accounts._pricing.cache_write_split`` against that chunk's own
+    cache-write total, so a sequence of chunks gives the same answer a single
+    report with the summed counts would give. See the cache-write lifetime
+    rule in docs/internals/core.md (``session/``).
     """
     for key, value in metadata.items():
         if key == "usage" and isinstance(value, dict):
             usage = result_meta.setdefault("usage", {})
             for uk, uv in value.items():
-                if isinstance(uv, (int, float)) and not isinstance(uv, bool):
-                    usage[uk] = usage.get(uk, 0) + uv
+                if uk == "cache_creation":
+                    if uv is None:
+                        # Like an absent key: this chunk states no split.
+                        continue
+                    # The cache-write lifetime split is a nested map: one
+                    # result chunk may report the five-minute writes and the
+                    # next the one-hour writes, so its parts are summed like
+                    # the flat counters rather than replaced. The chunk's own
+                    # split is first read against that chunk's own total with
+                    # the shared rule; a chunk whose split is not a valid one,
+                    # a value that is not a mapping included, leaves the merged
+                    # part uncertifiable (None), which the reader rejects. A
+                    # chunk with no split adds no part.
+                    merged = usage.setdefault(uk, {})
+                    if not isinstance(merged, dict):
+                        usage[uk] = merged = {}
+                    chunk_split = cache_write_split(value)
+                    for index, lifetime in enumerate(CACHE_WRITE_LIFETIMES):
+                        if merged.get(lifetime) is None and lifetime in merged:
+                            continue  # an earlier chunk already broke this part
+                        part = chunk_split[index] if chunk_split is not None else None
+                        if part is None:
+                            merged[lifetime] = None
+                        elif isinstance(merged.get(lifetime), int):
+                            merged[lifetime] = merged[lifetime] + part
+                        else:
+                            merged[lifetime] = part
+                elif isinstance(uv, (int, float)) and not isinstance(uv, bool):
+                    previous = usage.get(uk, 0)
+                    if isinstance(previous, (int, float)) and not isinstance(previous, bool):
+                        usage[uk] = previous + uv
+                    # Otherwise an earlier chunk reported this counter as a
+                    # non-count; it stays as reported, so the reader still
+                    # rejects it instead of reading a later count alone.
                 else:
                     usage[uk] = uv
         elif (
@@ -714,9 +751,12 @@ async def run(
                 raise
             except RuntimeError as _exc:
                 # ProviderError is a RuntimeError subclass — avoid double-wrapping; re-raise if already classified.
+                # A write the store refused in compatibility mode is no provider failure, and keeps
+                # its type (ADR-0128 D6).
                 from lionagi.providers._provider_errors import ProviderError
+                from lionagi.state.compat import StateCompatibilityRefused
 
-                if isinstance(_exc, ProviderError):
+                if isinstance(_exc, (ProviderError, StateCompatibilityRefused)):
                     _run_exc = _exc
                     raise
                 classified = classify_provider_error(str(_exc))

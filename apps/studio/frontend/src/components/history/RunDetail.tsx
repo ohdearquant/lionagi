@@ -24,6 +24,7 @@ import StatusVerdictChips from "@/components/ui/StatusVerdictChips";
 import { useOverlayFocus } from "@/lib/useOverlayFocus";
 import ExpectedArtifacts from "@/components/runs/ExpectedArtifacts";
 import ResumeRun from "@/components/history/ResumeRun";
+import { useReportOperatorProject } from "@/components/operator/OperatorProjectContext";
 import RunStepCard, { extractFilePaths } from "@/components/RunStepCard";
 import { IconChevronDown, IconChevronRight } from "@/components/ui/icons";
 import { ApiError, getInvocation, getSession, streamSession, streamSignals } from "@/lib/api";
@@ -1934,6 +1935,12 @@ export default function RunDetail({ id }: RunDetailProps) {
   // every unrelated RunDetail rerender.
   const noopLayoutHeight = useCallback(() => {}, []);
   const [error, setError] = useState<string | null>(null);
+  // Scope follows the loaded run, not the fetch's health: an error raised
+  // after this run's detail loaded (a failed older-page fetch, a failed
+  // reload) still leaves the human on this run's route, so the project it
+  // reports stays the project this turn may be scoped to. A run whose detail
+  // never loaded has no session, so it stays unscoped either way.
+  useReportOperatorProject(session?.id === id ? id : null, session?.project);
   const bottomRef = useRef<HTMLDivElement>(null);
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
   // Cross-view selection (ADR-0113 D6): the step a graph-node click resolved
@@ -1975,8 +1982,7 @@ export default function RunDetail({ id }: RunDetailProps) {
   }, []);
   // ADR-0113 D6: the selected node is URL-addressable the same way `view`
   // is — read once at mount (never re-read after) and restored against the
-  // first session load's branches. `initialNodeAppliedRef` bounds that
-  // restore to the run that was live when the component first mounted, so
+  // original run's branches. Capture that run before any fetch resolves, so
   // a later run swap (the Fleet view keeps this component mounted and only
   // changes `id`) never re-applies a stale deep link onto the new run.
   const [initialUrlNodeKey] = useState<string | null>(() =>
@@ -1985,6 +1991,15 @@ export default function RunDetail({ id }: RunDetailProps) {
       : new URLSearchParams(window.location.search).get(RUN_DETAIL_NODE_QUERY_KEY),
   );
   const initialNodeAppliedRef = useRef(false);
+  // The run the effect below last reset the selection for, or null before its
+  // first pass. A ref rather than the `id` comparison beside it: a switch away
+  // and back reaches the mount id again while the reader is looking at the
+  // other run's selection, so `id === initialNodeRunId` cannot tell the two
+  // visits apart. Comparing the previous id also keeps the first mount's own
+  // pass (which runs twice under StrictMode) from clearing a pending link out
+  // of the URL before its run has had a chance to answer.
+  const selectionRunRef = useRef<string | null>(null);
+  const [initialNodeRunId] = useState(id);
   const writeSelectedNodeToUrl = useCallback((key: string | null) => {
     if (typeof window === "undefined") return;
     const url = new URL(window.location.href);
@@ -2030,9 +2045,26 @@ export default function RunDetail({ id }: RunDetailProps) {
   const suppressAutoScrollRef = useRef(false);
   const initialScrollDoneRef = useRef(false);
   const olderSentinelRef = useRef<HTMLDivElement>(null);
+  // The visit the pane is currently showing, bumped by the mount effect on
+  // every id change. The Fleet view keeps this component mounted and swaps
+  // `id`, so a response for a run the reader has left can land after the
+  // switch; a request takes this token before it starts and checks it before
+  // it writes, or run A's header and rows reappear under run B's URL. The run
+  // id alone is not enough: leaving A for B and returning to A reaches the
+  // same id again but not the same visit, so a request from the first visit
+  // would match the second and overwrite the reader's own fresh read.
+  const visitTokenRef = useRef(0);
+  // The same visit as state, for the one handler that has to compare the
+  // visit it was made for against the visit now on screen. A ref cannot
+  // answer that: the handler is created during render, and reading a ref's
+  // `current` while rendering is what the ref is not for. Depending on this
+  // instead re-creates the handler once per visit, so the copy it closes over
+  // is the visit it belongs to.
+  const [visitToken, setVisitToken] = useState(0);
 
   useEffect(() => {
     if (!id) return;
+    let cancelled = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset stale state before async fetch; setState only fires in the effect body synchronously, not in callbacks
     setSession(null);
     setRunGraph(null);
@@ -2052,19 +2084,37 @@ export default function RunDetail({ id }: RunDetailProps) {
     setOlderLoadFailed(false);
     setOlderCursor(null);
     initialScrollDoneRef.current = false;
+    // A resume accepted on a run this pane has since left is no longer this
+    // pane's business: the watch it starts polls the resumed invocation, and
+    // carrying it into a later visit would restart that poll for a run the
+    // reader is no longer looking at (and never asked to see resumed).
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset stale state before async fetch; setState only fires in the effect body synchronously, not in callbacks
+    setResumeWatch(null);
     // The Fleet view keeps this component mounted and swaps `id` — the
     // selection is scoped to the run it was made on, so a run switch must
-    // drop it rather than let it read as the new run's selection.
-    // `initialNodeAppliedRef` only flips true once the FIRST run's session
-    // has resolved (below), so this leaves the deep-link restore below
-    // untouched on that very first load.
-    if (initialNodeAppliedRef.current) {
+    // drop it rather than let it read as the new run's selection. Every id
+    // change after the first mount clears it, including a switch back to the
+    // run this component mounted with: that selection was made on the other
+    // run's graph, and this run's pending deep link (below) is restored from
+    // scratch once its response lands.
+    // The clear does not consume a still-pending deep link — the link was
+    // read for the mount run, so returning to it before its first response
+    // lands still restores it. Each response is gated on
+    // `id === initialNodeRunId` below instead, which is what keeps the
+    // original run's node off a different run.
+    if (selectionRunRef.current !== null && selectionRunRef.current !== id) {
       setSelectedStepKey(null);
       setUnmatchedNodeId(null);
       writeSelectedNodeToUrl(null);
     }
+    selectionRunRef.current = id;
+    visitTokenRef.current += 1;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset stale state before async fetch; setState only fires in the effect body synchronously, not in callbacks
+    setVisitToken(visitTokenRef.current);
     getSession(id)
       .then((s) => {
+        if (cancelled) return;
+        if (s.id !== id) throw new Error("Session response does not match the selected session");
         setSession(s);
         setOlderCursor(s.message_next_cursor ?? null);
         const ss = (s.status ?? "").toLowerCase();
@@ -2088,9 +2138,9 @@ export default function RunDetail({ id }: RunDetailProps) {
               ? new Set([s.branches[0].name || s.branches[0].id.slice(0, 8)])
               : null;
         // Restore a deep-linked node selection against THIS run's branches,
-        // once only, ever — a later run swap must not reapply it (see the
-        // clear-on-id-change block above).
-        if (!initialNodeAppliedRef.current) {
+        // once only, ever, and only for the run the link was read for — a
+        // response for another run must not apply it (see the block above).
+        if (!initialNodeAppliedRef.current && id === initialNodeRunId) {
           initialNodeAppliedRef.current = true;
           if (initialUrlNodeKey) {
             const match = matchGraphNodeToBranch(initialUrlNodeKey, s.branches);
@@ -2117,8 +2167,13 @@ export default function RunDetail({ id }: RunDetailProps) {
           });
         }
       })
-      .catch((e: unknown) => setError(String(e)));
-  }, [id, initialUrlNodeKey, writeSelectedNodeToUrl]);
+      .catch((e: unknown) => {
+        if (!cancelled) setError(String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [id, initialNodeRunId, initialUrlNodeKey, writeSelectedNodeToUrl]);
 
   useEffect(() => {
     if (!id || !resumeWatch || resumeWatch.run_id !== id) return;
@@ -2329,8 +2384,13 @@ export default function RunDetail({ id }: RunDetailProps) {
     loadingOlderRef.current = true;
     setLoadingOlder(true);
     suppressAutoScrollRef.current = true;
+    const visit = visitTokenRef.current;
     getSession(id, { messageCursor: cursor })
       .then((older) => {
+        // The reader may have switched runs while this page was in flight: a
+        // response for a run that is no longer on screen must not set its
+        // cursor or merge its rows into the newly selected run.
+        if (visitTokenRef.current !== visit) return;
         setOlderCursor(older.message_next_cursor ?? null);
         setSession((prev) => {
           if (!prev) return prev;
@@ -2353,6 +2413,12 @@ export default function RunDetail({ id }: RunDetailProps) {
         });
       })
       .catch((e: unknown) => {
+        // The reader may have switched runs while this page was in flight.
+        // This failure is about the run the request was made for — an error
+        // state replaces the whole pane, and a refusal takes the run it is
+        // about off its own cursor — so it must not be written over a run the
+        // reader did not ask it for.
+        if (visitTokenRef.current !== visit) return;
         // A stale anchor (HTTP 400) means the branch's progression moved on
         // and this cursor no longer resolves — surface the dead-end instead
         // of retrying the same broken request on every scroll-up tick.
@@ -2363,6 +2429,13 @@ export default function RunDetail({ id }: RunDetailProps) {
         setError(String(e));
       })
       .finally(() => {
+        // The visit this page was asked for is the one whose busy state this
+        // clears. A page from an earlier visit settles whenever its own
+        // request does, which can be while the run now on screen has a page of
+        // its own in flight — clearing that run's busy state here would
+        // re-enable its control and let the reader ask for the same page
+        // twice.
+        if (visitTokenRef.current !== visit) return;
         loadingOlderRef.current = false;
         setLoadingOlder(false);
       });
@@ -2373,13 +2446,30 @@ export default function RunDetail({ id }: RunDetailProps) {
     suppressAutoScrollRef.current = true;
     setOlderLoadFailed(false);
     setLoadingOlder(true);
+    // The visit this reload was asked for. A run id alone cannot tell a
+    // reload of the run now on screen from a reload of an earlier visit to
+    // it, so a reader who leaves and returns would see the first visit's
+    // snapshot land on the second.
+    const visit = visitTokenRef.current;
     getSession(id)
       .then((fresh) => {
+        // A reload started on one run and finished after a switch must not
+        // replace the view with the run the reader has left.
+        if (visitTokenRef.current !== visit) return;
         setOlderCursor(fresh.message_next_cursor ?? null);
         setSession(fresh);
       })
-      .catch((e: unknown) => setError(String(e)))
-      .finally(() => setLoadingOlder(false));
+      .catch((e: unknown) => {
+        if (visitTokenRef.current !== visit) return;
+        setError(String(e));
+      })
+      .finally(() => {
+        // Same as the older-page finally: the busy state belongs to the visit
+        // that asked for this reload, not to whichever visit is on screen when
+        // its response settles.
+        if (visitTokenRef.current !== visit) return;
+        setLoadingOlder(false);
+      });
   }, [id]);
 
   // Scroll-up trigger: an always-mounted sentinel just above the message
@@ -2417,13 +2507,26 @@ export default function RunDetail({ id }: RunDetailProps) {
 
   const handleResumed = useCallback(
     async (result: RunResumeResponse) => {
+      // The reader may have left this run while the resume was being accepted
+      // (or left and come back to it), so the pane may no longer be the one
+      // this handler belongs to. A resume is a state change for the run it was
+      // accepted on: marking the run now on screen live would give it a live
+      // badge and a wait-for-events pane for a continuation it never received.
+      // The visit, not the run id, tells the two apart: leaving a run and
+      // returning to it reaches the same id but not the same visit.
+      if (visitTokenRef.current !== visitToken) return;
       setDone(false);
       setLive(true);
       setResumeWatch(result);
       try {
         const fresh = await getSession(id);
+        // The refresh is a second chance for the reader to have moved on, and
+        // the snapshot it carries describes the run the resume was accepted
+        // on. Writing it over the run now on screen would put that run's name
+        // and rows back under the current one.
+        if (visitTokenRef.current !== visitToken) return;
         setSession((previous) =>
-          previous && previous.id === fresh.id ? mergeCompletedSession(previous, fresh) : fresh,
+          previous && previous.id === fresh.id ? mergeCompletedSession(previous, fresh) : previous,
         );
       } catch {
         // The accepted resume remains visible in ResumeRun. The existing SSE
@@ -2431,7 +2534,7 @@ export default function RunDetail({ id }: RunDetailProps) {
         // refresh races a transient daemon disconnect.
       }
     },
-    [id],
+    [id, visitToken],
   );
 
   // Confirming a proposal records the intent locally; derivePausePhase

@@ -724,3 +724,30 @@ def test_every_required_ci_exclusion_has_a_workflow_lane() -> None:
     assert 'uv run pytest -m "performance"' in performance_job
     assert "continue-on-error" not in performance_job
     assert "run: scripts/ci.sh test-python-quarantine" in workflow
+
+
+def test_every_job_has_a_timeout_and_every_suite_step_stops_before_its_job() -> None:
+    # Runs on a pushed branch share one concurrency group and are never
+    # cancelled, so a single hung job holds that branch's CI for the six-hour
+    # default. A suite step stops before its job so the failure telemetry and
+    # the peak-RSS report still run inside the job's limit.
+    import yaml
+
+    jobs = yaml.safe_load(CI_WORKFLOW.read_text())["jobs"]
+    assert {"test", "quarantine", "lint", "ci-gate"} <= set(jobs)
+    unbounded = [name for name, job in jobs.items() if not job.get("timeout-minutes")]
+    assert unbounded == [], f"jobs without timeout-minutes: {unbounded}"
+
+    suite_steps = [
+        (name, job["timeout-minutes"], step)
+        for name, job in jobs.items()
+        for step in job.get("steps", [])
+        if re.search(r"scripts/ci\.sh test-python", str(step.get("run", "")))
+    ]
+    assert {name for name, _, _ in suite_steps} >= {"test", "quarantine"}
+    late = [
+        (name, step.get("name"))
+        for name, job_limit, step in suite_steps
+        if not 0 < step.get("timeout-minutes", 0) < job_limit
+    ]
+    assert late == [], f"suite steps that do not stop before their job: {late}"

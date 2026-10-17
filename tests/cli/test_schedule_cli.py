@@ -6,11 +6,39 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import logging
+import urllib.parse
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+@contextlib.contextmanager
+def _cli_warnings():
+    """Collect the CLI warning channel as it is emitted.
+
+    The channel is a logger, not stderr directly, so a raise/apply refusal reads
+    from it rather than from capsys. Its handlers are swapped for the duration
+    because a test that drives ``main()`` leaves the channel in whatever state
+    configure_cli_logging() set.
+    """
+    logger = logging.getLogger("lionagi.cli.warn")
+    messages: list[str] = []
+    handler = logging.Handler()
+    handler.emit = lambda record: messages.append(record.getMessage())
+    saved = (logger.level, logger.propagate, list(logger.handlers))
+    logger.handlers = [handler]
+    logger.propagate = False
+    logger.setLevel(logging.WARNING)
+    try:
+        yield messages
+    finally:
+        logger.setLevel(saved[0])
+        logger.propagate = saved[1]
+        logger.handlers[:] = saved[2]
 
 
 def test_schedule_subparser_registered():
@@ -770,6 +798,49 @@ def test_schedule_list_api_error_returns_1(monkeypatch):
     assert result == 1
 
 
+def _host_of(url: str) -> str:
+    return urllib.parse.urlsplit(url).hostname or ""
+
+
+def _port_of(url: str) -> int:
+    port = urllib.parse.urlsplit(url).port
+    assert port is not None
+    return port
+
+
+def _authority_of(url: str) -> str:
+    return url.removeprefix("http://").removeprefix("https://")
+
+
+def _guard_admits_host(host_header: str) -> bool:
+    """Whether the daemon's Host guard admits *host_header*.
+
+    Uses the ambient ``LIONAGI_STUDIO_HOST`` -- the value the URL under test was
+    built from -- and calls the real middleware in-process; no server is started.
+    """
+    import asyncio
+
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+
+    from lionagi.studio.app import validate_host_header
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/schedules",
+            "headers": [(b"host", host_header.encode())],
+        }
+    )
+
+    async def call_next(_request):
+        return JSONResponse({"ok": True})
+
+    response = asyncio.run(validate_host_header(request, call_next))
+    return response.status_code != 400
+
+
 def test_base_url_default(monkeypatch):
     """_base_url returns the default when no env vars are set."""
     monkeypatch.delenv("LIONAGI_STUDIO_URL", raising=False)
@@ -795,12 +866,232 @@ def test_base_url_respects_studio_port(monkeypatch):
 def test_base_url_respects_studio_host(monkeypatch):
     """_base_url reflects LIONAGI_STUDIO_HOST when set."""
     monkeypatch.delenv("LIONAGI_STUDIO_URL", raising=False)
-    monkeypatch.setenv("LIONAGI_STUDIO_HOST", "0.0.0.0")
+    monkeypatch.setenv("LIONAGI_STUDIO_HOST", "192.168.1.5")
     monkeypatch.setenv("LIONAGI_STUDIO_PORT", "8765")
 
     from lionagi.studio.cli import _base_url
 
-    assert _base_url() == "http://0.0.0.0:8765"
+    assert _base_url() == "http://192.168.1.5:8765"
+
+
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [
+        # An unspecified address names no address a client can open, so the URL
+        # says the loopback address of the same family, which the daemon admits.
+        ("0.0.0.0", "http://127.0.0.1:8765"),
+        ("::", "http://[::1]:8765"),
+        ("::1", "http://[::1]:8765"),
+        ("2001:db8::1", "http://[2001:db8::1]:8765"),
+    ],
+)
+def test_base_url_maps_an_unspecified_host_and_brackets_ipv6(monkeypatch, host, expected):
+    """A URL needs the address a client connects to, and an IPv6 literal in
+    brackets -- `http://::1:8765` parses as the IPv6 address `::1:8765` at no
+    port, which then raises. The Host here is the one the URL sends when a
+    schedule command reaches the daemon through it."""
+    monkeypatch.delenv("LIONAGI_STUDIO_URL", raising=False)
+    monkeypatch.setenv("LIONAGI_STUDIO_HOST", host)
+    monkeypatch.delenv("LIONAGI_STUDIO_PORT", raising=False)
+
+    from lionagi.studio.cli import _base_url
+
+    url = _base_url()
+    assert url == expected
+    # The URL must parse with the port attached; an unbracketed IPv6 literal
+    # swallows the port as another address group and raises here instead.
+    assert _host_of(url) == _host_of(expected)
+    assert _port_of(url) == 8765
+    # And the daemon's Host guard admits the authority the URL carries.
+    assert _guard_admits_host(_authority_of(url))
+
+
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [
+        # A blank value is the loopback default, not a URL with no host: the one
+        # built from "" is `http://:8765`, which does not parse.
+        ("", "http://127.0.0.1:8765"),
+        ("   ", "http://127.0.0.1:8765"),
+        ("[]", "http://127.0.0.1:8765"),
+        ("[ ]", "http://127.0.0.1:8765"),
+        # A name that is not an address keeps its brackets off the URL.
+        ("[localhost]", "http://localhost:8765"),
+        ("LOCALHOST", "http://localhost:8765"),
+        # An IPv4-mapped address is the IPv4 address a client connects to; the
+        # IPv6 spelling of it is one the daemon's Host grammar refuses.
+        ("::ffff:127.0.0.1", "http://127.0.0.1:8765"),
+        ("::ffff:192.168.1.5", "http://192.168.1.5:8765"),
+        ("[::ffff:c0a8:105]", "http://192.168.1.5:8765"),
+        # An unspecified IPv4-mapped address is an unspecified IPv4 address.
+        ("::ffff:0.0.0.0", "http://127.0.0.1:8765"),
+        # An IPv6 literal is bracketed in its canonical spelling.
+        ("2001:0db8::1", "http://[2001:db8::1]:8765"),
+        ("[2001:db8::1]", "http://[2001:db8::1]:8765"),
+        ("[fe80::1]", "http://[fe80::1]:8765"),
+    ],
+)
+def test_base_url_builds_a_parsable_url_the_host_guard_admits(monkeypatch, host, expected):
+    """Every spelling of a bind host yields one URL: parsable with its port, and
+    one whose authority the daemon admits under the very value it was built from.
+
+    The URL's host is also the `Host` header a request through it sends, so a URL
+    the guard refuses is a link to a 400 however it is opened.
+    """
+    monkeypatch.delenv("LIONAGI_STUDIO_URL", raising=False)
+    monkeypatch.delenv("LIONAGI_STUDIO_PORT", raising=False)
+    monkeypatch.setenv("LIONAGI_STUDIO_HOST", host)
+
+    from lionagi.studio.cli import _base_url
+
+    url = _base_url()
+    assert url == expected
+    assert _host_of(url) == _host_of(expected)
+    assert _port_of(url) == 8765
+    assert _guard_admits_host(_authority_of(url)), (
+        f"the daemon refuses Host {_authority_of(url)!r} with {host!r} set"
+    )
+
+
+# Every spelling of a bind host a reader has to agree on. Grouped by what the
+# value names: the unspecified addresses, the loopback ones, the mapped forms of
+# both, concrete unicast addresses in canonical and non-canonical spellings, a
+# zone that names a local interface, and the values that are names or blanks.
+_BIND_HOST_SPELLINGS = [
+    # unspecified
+    "0.0.0.0",
+    "::",
+    "[::]",
+    "0:0:0:0:0:0:0:0",
+    "[0:0:0:0:0:0:0:0]",
+    "::0",
+    "0000::0000",
+    "::ffff:0.0.0.0",
+    "[::ffff:0.0.0.0]",
+    "::ffff:0:0",
+    "[::ffff:0:0]",
+    "0:0:0:0:0:ffff:0:0",
+    # loopback
+    "127.0.0.1",
+    "[127.0.0.1]",
+    "127.0.0.2",
+    "::1",
+    "[::1]",
+    "0:0:0:0:0:0:0:1",
+    "[0:0:0:0:0:0:0:1]",
+    "::ffff:127.0.0.1",
+    "[::ffff:127.0.0.1]",
+    "::ffff:7f00:1",
+    "[::ffff:7f00:1]",
+    "localhost",
+    "LOCALHOST",
+    "[localhost]",
+    "sub.localhost",
+    # IPv4-mapped unicast
+    "::ffff:192.168.1.5",
+    "[::ffff:192.168.1.5]",
+    "::ffff:c0a8:105",
+    "[::ffff:c0a8:105]",
+    # concrete unicast, canonical and non-canonical, bracketed and padded
+    "192.168.1.5",
+    " 192.168.1.5 ",
+    "[192.168.1.5]",
+    "2001:db8::1",
+    "[2001:db8::1]",
+    " 2001:db8::1 ",
+    "2001:DB8::1",
+    "2001:0db8::1",
+    "[2001:0db8::1]",
+    "2001:db8:0:0:0:0:0:1",
+    # link-local
+    "fe80::1",
+    "[fe80::1]",
+    "fe80:0000::1",
+    # blanks and names
+    "",
+    "   ",
+    "[]",
+    "[ ]",
+    "studio.example.com",
+    "STUDIO.EXAMPLE.COM",
+    " studio.example.com ",
+    "[studio.example.com]",
+    # a bare IPv6 literal that carries a trailing group, which is an address and
+    # not an address-and-port
+    "::1:8765",
+]
+
+
+@pytest.mark.parametrize("host", _BIND_HOST_SPELLINGS, ids=repr)
+def test_base_url_agrees_with_the_host_guard_for_every_spelling(monkeypatch, host):
+    """For every spelling of the bind host, the URL `_base_url()` builds parses
+    with its port, and the authority it carries is one the daemon's Host guard
+    admits under that same value.
+
+    The URL is the one a request through it uses as its `Host`, so the two
+    readers of one variable have to agree on what it names. They used to each
+    strip, unbracket and lowercase for themselves, so a spelling one understood
+    and the other did not was a link that answered 400.
+    """
+    monkeypatch.delenv("LIONAGI_STUDIO_URL", raising=False)
+    monkeypatch.delenv("LIONAGI_STUDIO_PORT", raising=False)
+    monkeypatch.setenv("LIONAGI_STUDIO_HOST", host)
+
+    from lionagi.studio.cli import _base_url
+
+    url = _base_url()
+    authority = _authority_of(url)
+    assert _host_of(url), f"{host!r} built a URL with no host: {url!r}"
+    assert _port_of(url) == 8765, url
+    assert _guard_admits_host(authority), (
+        f"the daemon refuses Host {authority!r} with LIONAGI_STUDIO_HOST={host!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [
+        # A zone names one local interface, so it stays a bracketed IPv6 literal
+        # and the Host grammar refuses it (`%` is not a digit or `:`).
+        ("fe80::1%eth0", "[fe80::1%eth0]"),
+        ("[fe80::1%eth0]", "[fe80::1%eth0]"),
+        ("fe80::1%en0", "[fe80::1%en0]"),
+    ],
+    ids=repr,
+)
+def test_base_url_leaves_a_zoned_address_to_the_daemon(monkeypatch, host, expected):
+    """A zone names a local interface rather than an address a URL can carry, so
+    `_url_authority` hands the daemon the bracketed literal and the Host grammar
+    refuses it. The grammar is deliberately not loosened for a zone, so the two
+    readers do not meet for one; that is pinned here rather than asserted away.
+    """
+    monkeypatch.delenv("LIONAGI_STUDIO_URL", raising=False)
+    monkeypatch.setenv("LIONAGI_STUDIO_HOST", host)
+
+    from lionagi.studio.cli import _url_authority
+
+    authority = _url_authority(host)
+    assert authority == expected
+    assert _guard_admits_host(authority) is False
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1:8765", "[::1]:8765"], ids=repr)
+def test_base_url_returns_a_value_carrying_a_port_as_the_name_it_is(monkeypatch, host):
+    """An address and a port in one string is not an address, so `_url_authority`
+    returns it as the name it is -- with no brackets invented around it -- and the
+    URL built from it is not parsable. That value is not a bind host (`--host`
+    refuses it, so the CLI never writes it), and the decided reading is that the
+    normalizer returns a value it cannot parse as a name rather than guessing
+    which half was the host.
+    """
+    monkeypatch.delenv("LIONAGI_STUDIO_URL", raising=False)
+    monkeypatch.setenv("LIONAGI_STUDIO_HOST", host)
+
+    from lionagi.studio.cli import _base_url, _url_authority
+
+    assert _url_authority(host) == host
+    with pytest.raises(ValueError):
+        _port_of(_base_url())
 
 
 def test_base_url_studio_url_takes_precedence(monkeypatch):
@@ -1978,7 +2269,7 @@ def agent_profile_cwd(tmp_path, monkeypatch):
     agents_dir.mkdir(parents=True)
     (agents_dir / "reviewer.md").write_text("---\nmodel: anthropic/claude-sonnet-5\n---\nBody.\n")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(providers_mod, "_find_lionagi_dirs", lambda: [agents_dir.parent])
+    monkeypatch.setattr(providers_mod, "_find_lionagi_dirs", lambda cwd=None: [agents_dir.parent])
     return tmp_path
 
 
@@ -2025,15 +2316,16 @@ def test_schedule_validate_valid_file_exits_zero(agent_profile_cwd, capsys):
     assert "VALID" in capsys.readouterr().out
 
 
-def test_schedule_validate_invalid_file_exits_nonzero(agent_profile_cwd, capsys):
+def test_schedule_validate_invalid_file_exits_nonzero(agent_profile_cwd):
     from lionagi.studio.cli import run_schedule
 
     manifest = _write_manifest(agent_profile_cwd)
     manifest.write_text(manifest.read_text().replace("reviewer", "ghost-profile"))
     args = _parse_schedule_args(["validate", str(manifest)])
-    result = run_schedule(args)
+    with _cli_warnings() as warnings:
+        result = run_schedule(args)
     assert result == 1
-    assert "does not exist" in capsys.readouterr().err
+    assert any("does not exist" in message for message in warnings)
 
 
 def test_schedule_validate_missing_file_exits_nonzero(capsys):
@@ -2081,6 +2373,198 @@ def test_schedule_apply_then_idempotent_reapply(agent_profile_cwd, temp_state_db
     out2 = capsys.readouterr().out
     assert result2 == 0
     assert "Applied atomically: 0 created, 0 updated, 1 unchanged" in out2
+    assert "adopt" not in out2
+
+
+def test_schedule_apply_reports_a_model_change_and_only_a_model_change(
+    agent_profile_cwd, temp_state_db, capsys
+):
+    from lionagi.studio.cli import run_schedule
+
+    profile = agent_profile_cwd / ".lionagi" / "agents" / "reviewer.md"
+    manifest = _write_manifest(agent_profile_cwd)
+    assert run_schedule(_parse_schedule_args(["apply", str(manifest)])) == 0
+    capsys.readouterr()
+
+    # The profile's model moves: the update names the stored and the new model.
+    profile.write_text("---\nmodel: anthropic/claude-sonnet-5-5\n---\nBody.\n")
+    assert run_schedule(_parse_schedule_args(["apply", str(manifest), "--dry-run"])) == 0
+    assert (
+        "UPDATE     demo/nightly-review  "
+        "model=anthropic/claude-sonnet-5 -> anthropic/claude-sonnet-5-5\n"
+    ) in capsys.readouterr().out
+    assert run_schedule(_parse_schedule_args(["apply", str(manifest), "--dry-run", "--json"])) == 0
+    (entry,) = json.loads(capsys.readouterr().out)["plan"]
+    assert entry["action"] == "UPDATE"
+    assert entry["model_change"] == {
+        "from": "anthropic/claude-sonnet-5",
+        "to": "anthropic/claude-sonnet-5-5",
+    }
+
+    # The model stays and the prompt moves: the update says nothing about a model.
+    profile.write_text("---\nmodel: anthropic/claude-sonnet-5\n---\nBody.\n")
+    manifest.write_text(manifest.read_text().replace("check things", "check more"))
+    assert run_schedule(_parse_schedule_args(["apply", str(manifest), "--dry-run"])) == 0
+    out = capsys.readouterr().out
+    assert "UPDATE     demo/nightly-review\n" in out
+    assert "model=" not in out
+    assert run_schedule(_parse_schedule_args(["apply", str(manifest), "--dry-run", "--json"])) == 0
+    (entry,) = json.loads(capsys.readouterr().out)["plan"]
+    assert entry["action"] == "UPDATE"
+    assert "model_change" not in entry
+
+
+def _write_global_manifest(cwd, *, name="automation", with_cwd=True) -> Path:
+    manifest = Path(cwd) / f"{name}.yaml"
+    execution = f"    execution:\n      cwd: {cwd}\n" if with_cwd else ""
+    manifest.write_text(
+        f"""
+apiVersion: lionagi.io/v1alpha1
+kind: ScheduleSet
+metadata:
+  name: {name}
+  project: demo
+  scope: global
+schedules:
+  nightly-review:
+    trigger:
+      cron:
+        expression: "0 2 * * *"
+        timezone: America/New_York
+    target:
+      kind: agent
+      profile: reviewer
+      prompt: "check things"
+{execution}"""
+    )
+    return manifest
+
+
+@pytest.mark.parametrize("verb", ["validate", "apply"])
+def test_a_global_set_labels_a_member_error_with_its_own_prefix(
+    agent_profile_cwd, temp_state_db, verb
+):
+    from lionagi.studio.cli import run_schedule
+
+    manifest = _write_global_manifest(agent_profile_cwd, with_cwd=False)
+    with _cli_warnings() as warnings:
+        assert run_schedule(_parse_schedule_args([verb, str(manifest)])) == 1
+    assert warnings[0].startswith("INVALID  global/nightly-review  ")
+    assert all("demo/" not in message for message in warnings)
+
+
+def test_a_global_set_labels_a_plan_error_with_its_prefix_once(agent_profile_cwd, temp_state_db):
+    from lionagi.studio.cli import run_schedule
+
+    first = _write_global_manifest(agent_profile_cwd, name="first")
+    assert run_schedule(_parse_schedule_args(["apply", str(first)])) == 0
+    second = _write_global_manifest(agent_profile_cwd, name="second")
+    with _cli_warnings() as warnings:
+        assert run_schedule(_parse_schedule_args(["apply", str(second)])) == 1
+    assert warnings[0].startswith("INVALID  global/nightly-review  ")
+    assert all(
+        "global/global/" not in message and "demo/global/" not in message for message in warnings
+    )
+
+
+def _create_unowned_schedule(cwd, *, name="nightly-review", **overrides):
+    import asyncio
+
+    from lionagi.state.db import StateDB
+
+    profile_name = next(
+        path.stem
+        for path in (cwd / ".lionagi" / "agents").glob("*.md")
+        if "model:" in path.read_text()
+    )
+
+    async def _seed():
+        async with StateDB() as db:
+            row = {
+                "id": "legacy00001",
+                "name": name,
+                "enabled": 1,
+                "trigger_type": "cron",
+                "cron_expr": "0 2 * * *",
+                "effective_timezone": "America/New_York",
+                "action_kind": "agent",
+                "action_model": "anthropic/claude-sonnet-5",
+                "action_prompt": "check things",
+                "action_agent": profile_name,
+                "action_cwd": str(cwd),
+                "action_project": "demo",
+                "action_command_args": [],
+                "missed_fire_policy": "skip",
+                "overlap_policy": "skip",
+            }
+            row.update(overrides)
+            await db.create_schedule(row)
+
+    asyncio.run(_seed())
+
+
+def test_schedule_apply_adopt_dry_run_reports_existing_row(
+    agent_profile_cwd, temp_state_db, capsys, monkeypatch
+):
+    from lionagi.studio.cli import run_schedule
+
+    monkeypatch.setattr("lionagi.studio.config.SCHEDULER_TZ", "America/New_York")
+    manifest = _write_manifest(agent_profile_cwd)
+    _create_unowned_schedule(agent_profile_cwd)
+
+    plain = run_schedule(_parse_schedule_args(["apply", str(manifest), "--dry-run"]))
+    out = capsys.readouterr().out
+    assert plain == 0
+    assert "CREATE" in out and "ADOPT" not in out
+
+    adopting = run_schedule(_parse_schedule_args(["apply", str(manifest), "--dry-run", "--adopt"]))
+    out = capsys.readouterr().out
+    assert adopting == 0
+    assert "ADOPT      demo/nightly-review  adopts existing row nightly-review" in out
+    assert "Plan: 0 create, 1 adopt, 0 update" in out
+
+    as_json = run_schedule(
+        _parse_schedule_args(["apply", str(manifest), "--dry-run", "--adopt", "--json"])
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert as_json == 0
+    assert payload["plan"] == [
+        {
+            "name": "demo/nightly-review",
+            "action": "ADOPT",
+            "detail": None,
+            "adopted_from": "nightly-review",
+        }
+    ]
+
+
+def test_schedule_apply_without_adopt_names_the_required_flag(agent_profile_cwd, temp_state_db):
+    from lionagi.studio.cli import run_schedule
+
+    manifest = _write_manifest(agent_profile_cwd)
+    _create_unowned_schedule(agent_profile_cwd, name="demo/nightly-review")
+
+    with _cli_warnings() as warnings:
+        result = run_schedule(_parse_schedule_args(["apply", str(manifest)]))
+    assert result == 1
+    assert any("--adopt" in message for message in warnings)
+
+
+def test_schedule_apply_adopt_refusal_reports_the_changed_column(
+    agent_profile_cwd, temp_state_db, monkeypatch
+):
+    from lionagi.studio.cli import run_schedule
+
+    monkeypatch.setattr("lionagi.studio.config.SCHEDULER_TZ", "America/New_York")
+    manifest = _write_manifest(agent_profile_cwd)
+    _create_unowned_schedule(agent_profile_cwd, cron_expr="17 4 * * *")
+
+    with _cli_warnings() as warnings:
+        result = run_schedule(_parse_schedule_args(["apply", str(manifest), "--adopt"]))
+    assert result == 1
+    joined = " ".join(warnings)
+    assert "cron_expr" in joined
+    assert "17 4 * * *" in joined and "0 2 * * *" in joined
 
 
 def test_schedule_apply_json_output_shape(agent_profile_cwd, temp_state_db, capsys):
@@ -2092,4 +2576,52 @@ def test_schedule_apply_json_output_shape(agent_profile_cwd, temp_state_db, caps
     payload = json.loads(capsys.readouterr().out)
     assert result == 0
     assert payload["dry_run"] is True
-    assert payload["plan"] == [{"name": "demo/nightly-review", "action": "CREATE", "detail": None}]
+    assert payload["plan"] == [
+        {
+            "name": "demo/nightly-review",
+            "action": "CREATE",
+            "detail": None,
+        }
+    ]
+
+
+def test_schedule_apply_refusal_names_each_row_once(agent_profile_cwd, temp_state_db, monkeypatch):
+    from lionagi.studio.cli import run_schedule
+
+    monkeypatch.setattr("lionagi.studio.config.SCHEDULER_TZ", "America/New_York")
+    manifest = _write_manifest(agent_profile_cwd)
+    _create_unowned_schedule(
+        agent_profile_cwd,
+        on_success={"kind": "agent", "agent": "publisher", "prompt": "ship it"},
+    )
+
+    with _cli_warnings() as warnings:
+        result = run_schedule(_parse_schedule_args(["apply", str(manifest), "--adopt"]))
+    assert result == 1
+    joined = " ".join(warnings)
+    assert "INVALID  demo/nightly-review  " in joined
+    assert "demo/demo/" not in joined
+
+
+def test_schedule_apply_dry_run_prints_a_refused_row_through_the_warning_channel(
+    agent_profile_cwd, temp_state_db, capsys, monkeypatch
+):
+    """A plan's refused rows are emitted like every other refusal this CLI reports,
+    through the warning channel, while the rest of the plan stays ordinary output."""
+    from lionagi.studio.cli import run_schedule
+
+    monkeypatch.setattr("lionagi.studio.config.SCHEDULER_TZ", "America/New_York")
+    manifest = _write_manifest(agent_profile_cwd)
+    _create_unowned_schedule(agent_profile_cwd, cron_expr="17 4 * * *")
+
+    with _cli_warnings() as warnings:
+        result = run_schedule(
+            _parse_schedule_args(["apply", str(manifest), "--dry-run", "--adopt"])
+        )
+    out = capsys.readouterr().out
+    assert result == 1
+    assert any(message.startswith("ERROR      demo/nightly-review  ") for message in warnings)
+    assert any("cron_expr" in message for message in warnings)
+    # The refused line is not duplicated onto stdout, and the plan summary stays there.
+    assert "ERROR      " not in out
+    assert "Plan: 0 create, 0 update, 0 unchanged, 0 disable" in out

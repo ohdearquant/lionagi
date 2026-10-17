@@ -310,6 +310,13 @@ async def confirm_operator_proposal(
     proposal_id: str,
     body: ConfirmProposalRequest,
 ) -> dict[str, Any]:
+    """Allow a pending Operator proposal.
+
+    Without ``LIONAGI_STUDIO_AUTH_TOKEN``, any process that can reach the daemon's
+    listener, including programs run by other local accounts, can allow or deny
+    Operator proposals. The permission prompt is a workflow safeguard, not
+    isolation from local programs; set a token on a shared machine.
+    """
     try:
         return await get_operator_coordinator().decide(
             conversation_id,
@@ -332,6 +339,13 @@ async def decide_operator_proposal(
     proposal_id: str,
     body: DecideProposalRequest,
 ) -> dict[str, Any]:
+    """Allow or deny a pending Operator proposal.
+
+    Without ``LIONAGI_STUDIO_AUTH_TOKEN``, any process that can reach the daemon's
+    listener, including programs run by other local accounts, can allow or deny
+    Operator proposals. The permission prompt is a workflow safeguard, not
+    isolation from local programs; set a token on a shared machine.
+    """
     try:
         return await get_operator_coordinator().decide(
             conversation_id,

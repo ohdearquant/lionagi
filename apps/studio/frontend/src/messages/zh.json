@@ -303,12 +303,12 @@
       "engineMaxDepth": "最大深度",
       "engineMaxAgents": "最大智能体数",
       "loadFailed": "（版本加载失败）",
-      "invocations": "调用次数",
-      "successRate": "成功率",
-      "lastUsed": "最近使用",
-      "never": "从未",
-      "recentInvocations": "最近调用",
-      "noInvocations": "暂无调用记录。",
+      "invocations": "已记录的调用",
+      "successRate": "已记录的成功率",
+      "lastUsed": "上次跟踪到的使用",
+      "never": "未记录",
+      "recentInvocations": "最近更新的记录",
+      "noInvocations": "没有已记录的调用。",
       "skillValidationFailed": "验证失败，请先修正以下错误再保存。",
       "pluginOwnedSkillHint": "该技能随插件一起提供 — 请直接编辑插件文件来修改它。",
       "readOnly": "只读",
@@ -320,7 +320,10 @@
       "pluginHooksSection": "钩子配置",
       "pluginReadmeSection": "README",
       "yes": "是",
-      "no": "否"
+      "no": "否",
+      "usageCoverage": "此技能或插件的跟踪覆盖情况未知；这里只显示已记录的调用。成功率是已结束记录中成功完成的比例。最近记录的时间表示距上次更新的时长。",
+      "usageUnavailable": "无法获取已记录的使用情况。",
+      "usageUnknown": "未知"
     },
     "template": {
       "badge": "内置",
@@ -666,6 +669,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "近期运行记录不可用",
     "title": "计划任务",
     "subtitle": "基于 cron、固定间隔与 GitHub 触发的常驻自动化",
     "calendar": "日历",

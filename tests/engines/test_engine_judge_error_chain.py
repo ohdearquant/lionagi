@@ -445,3 +445,88 @@ async def test_a_refusal_one_link_away_is_raised_beside_a_branch_longer_than_the
     error.__cause__ = _linear_chain(150, RuntimeError("the end of a long branch"))
     raised, _, _ = await _judge_outside_the_handler(error)
     assert raised is refusal
+
+
+async def test_a_containment_refusal_naming_an_unreadable_override_is_raised_by_the_judge(
+    tmp_path,
+):
+    """A contained request refuses an override key containment cannot read with the type a
+    containment refusal carries, so a judge that catches that type refuses the request instead
+    of reading its failure as a pass."""
+    from lionagi._errors import ContainmentRefusedError
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    request = CodexCodeRequest(
+        prompt="hi", repo=tmp_path, contain_account_integrations=True
+    ).model_copy(update={"config_overrides": {"a b": 1}})
+    with pytest.raises(ContainmentRefusedError) as refused:
+        request.as_cmd_args()
+
+    raised, allowed, events = await _judge_outside_the_handler(refused.value)
+
+    assert raised is not None, "the judge read the containment refusal as a pass"
+    assert isinstance(raised, ContainmentRefusedError)
+    assert "is not a TOML key" in str(raised)
+    assert allowed is None
+    assert events == []
+
+
+async def test_a_containment_refusal_naming_an_unreadable_override_keeps_the_type_at_spawn(
+    tmp_path, monkeypatch
+):
+    """The same refusal, raised where the process would start, still carries the type the
+    judge reads as a refusal rather than as a pass. No process is started."""
+    from lionagi._errors import ContainmentRefusedError
+    from lionagi.providers import _cli_subprocess
+    from lionagi.providers.openai import codex as codex_mod
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    def spawned(*_args, **_kwargs):
+        raise AssertionError("the Codex CLI was started")
+
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
+    monkeypatch.setattr(_cli_subprocess.asyncio, "create_subprocess_exec", spawned)
+    request = CodexCodeRequest(
+        prompt="hi", repo=tmp_path, contain_account_integrations=True
+    ).model_copy(update={"config_overrides": {"a b": 1}})
+
+    with pytest.raises(ContainmentRefusedError) as refused:
+        async for _ in codex_mod._ndjson_from_cli(request):
+            pass
+
+    raised, allowed, events = await _judge_outside_the_handler(refused.value)
+
+    assert isinstance(raised, ContainmentRefusedError)
+    assert "is not a TOML key" in str(raised)
+    assert allowed is None
+    assert events == []
+
+
+async def test_a_construction_refusal_naming_an_unreadable_override_is_raised_by_the_judge(
+    tmp_path,
+):
+    """A key containment cannot read refuses the request at construction. That refusal is a
+    CLIInputRefusedError, so pydantic does not wrap it, and it carries a containment refusal
+    as its cause, so a judge whose engine is built over such a key raises instead of passing."""
+    from lionagi._errors import CLIInputRefusedError, ContainmentRefusedError
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    with pytest.raises(CLIInputRefusedError) as refused:
+        CodexCodeRequest(
+            prompt="hi",
+            repo=tmp_path,
+            contain_account_integrations=True,
+            config_overrides={"a b": 1},
+        )
+
+    assert type(refused.value.__cause__) is ContainmentRefusedError
+    assert str(refused.value.__cause__) == str(refused.value)
+    assert "a b" not in str(refused.value)
+
+    raised, allowed, events = await _judge_outside_the_handler(refused.value)
+
+    assert isinstance(raised, ContainmentRefusedError)
+    assert "is not a TOML key" in str(raised)
+    assert allowed is None
+    assert events == []

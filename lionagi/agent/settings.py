@@ -10,15 +10,20 @@ import importlib
 import json
 import logging
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import Any
+
+from anyio.lowlevel import checkpoint_if_cancelled
 
 from lionagi.ln import (
     aterminate_process_group,
     capture_group_witnesses,
     observe_process_group_leader,
     prepare_process_group_env,
+    terminate_process_group,
 )
+from lionagi.ln.concurrency import shield
 
 __all__ = (
     "apply_hooks_from_settings",
@@ -224,6 +229,102 @@ async def _wait_proc(proc: asyncio.subprocess.Process, grace: float = 2.0) -> No
         logger.debug("Timed out waiting for process %s to exit", proc.pid, exc_info=True)
 
 
+def _hook_group_witnesses(
+    proc: Any, leader_created: float | None, group_marker: str
+) -> tuple[tuple[int, float], ...]:
+    """Members that prove the hook's group is still the one it spawned.
+
+    The spawn marker lets a surviving member stand in for a leader that has already
+    exited, which is the usual case when the hook returned while a process it started
+    still holds its pipes.
+    """
+    if leader_created is None:
+        return ()
+    return capture_group_witnesses(
+        proc,
+        expected_leader_created=leader_created,
+        expected_marker=group_marker,
+    )
+
+
+async def _end_hook_group(proc: Any, leader_created: float | None, group_marker: str) -> None:
+    """Kill a hook child and the process group it leads, then wait for the child.
+
+    The kill is sent before the first suspension point, so it reaches the group even
+    when the hook's own task is being cancelled. The wait is shielded from a cancelled
+    scope; a second native cancellation can cut it short, and the event loop's child
+    watcher still reaps the killed child.
+    """
+    group_witnesses = _hook_group_witnesses(proc, leader_created, group_marker)
+    await aterminate_process_group(proc, grace=None, group_witnesses=group_witnesses)
+    await shield(_wait_proc, proc)
+
+
+async def _spawn_hook(
+    argv: list[str], env: dict[str, str], group_marker: str
+) -> tuple[asyncio.subprocess.Process, float | None]:  # type: ignore[name-defined]
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+        env=env,
+    )
+    return proc, observe_process_group_leader(
+        getattr(proc, "pid", None),
+        expected_marker=group_marker,
+    )
+
+
+def _end_abandoned_hook(group_marker: str, spawn: asyncio.Future) -> None:
+    """Kill the group of a hook whose caller was cancelled while it was being spawned.
+
+    Runs as the spawn task's done-callback, after the caller has already unwound, so
+    the kill is synchronous and the loop's child watcher reaps the child.
+    """
+    if spawn.cancelled() or spawn.exception() is not None:
+        return
+    proc, leader_created = spawn.result()
+    terminate_process_group(
+        proc,
+        grace=None,
+        group_witnesses=_hook_group_witnesses(proc, leader_created, group_marker),
+    )
+
+
+async def _run_hook(argv: list[str], payload: bytes) -> tuple[int | None, bytes]:
+    """Run one hook command to completion and return its exit code and stderr.
+
+    Whatever ends the exchange early (a timeout, a failed exchange, a cancelled tool
+    call) kills the hook's whole process group before the exception leaves, so
+    neither the hook nor anything it started keeps running with side effects after
+    the hook is given up on.
+    """
+    child_env, group_marker = prepare_process_group_env()
+    proc = None
+    leader_created = None
+    try:
+        # Shielded: the OS has started the child before the spawn call returns, so a
+        # cancellation landing inside it would otherwise lose the only handle to that
+        # child's group. The done-callback kills the group once the handle arrives.
+        spawn = asyncio.ensure_future(_spawn_hook(argv, child_env, group_marker))
+        try:
+            proc, leader_created = await asyncio.shield(spawn)
+        except BaseException:
+            spawn.add_done_callback(partial(_end_abandoned_hook, group_marker))
+            raise
+        _, stderr_bytes = await asyncio.wait_for(proc.communicate(payload), timeout=10)
+    except BaseException:
+        if proc is not None:
+            await _end_hook_group(proc, leader_created, group_marker)
+            # A scope cancelled during the shielded wait is delivered here, so it
+            # is not replaced by the error the caller turns this exception into.
+            await checkpoint_if_cancelled()
+        raise
+    return proc.returncode, stderr_bytes
+
+
 def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) -> Callable:
     """Create an async hook running an argv command; pre-hooks raise PermissionError on non-zero exit."""
     if not isinstance(command_template, list) or not all(
@@ -246,48 +347,19 @@ def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) ->
 
         async def shell_pre_hook(tn: str, action: str, args: dict) -> dict | None:
             argv = _render_argv(args)
-            proc = None
-            leader_created = None
-            child_env, group_marker = prepare_process_group_env()
+            # The payload is serialized before the child exists, so a value that
+            # cannot be serialized refuses the call without leaving a child behind.
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    *argv,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    start_new_session=True,
-                    env=child_env,
-                )
-                leader_created = observe_process_group_leader(
-                    getattr(proc, "pid", None),
-                    expected_marker=group_marker,
-                )
-                _, stderr_bytes = await asyncio.wait_for(
-                    proc.communicate(json.dumps(args).encode()),
-                    timeout=10,
-                )
+                payload = json.dumps(args).encode()
+            except Exception as e:
+                raise PermissionError(f"Hook execution error: {e}") from e
+            try:
+                returncode, stderr_bytes = await _run_hook(argv, payload)
             except asyncio.TimeoutError as err:
-                # Kill the whole process group so lingering children can't
-                # continue side effects after the hook times out.
-                if proc is not None:
-                    group_witnesses = (
-                        capture_group_witnesses(
-                            proc,
-                            expected_leader_created=leader_created,
-                        )
-                        if leader_created is not None
-                        else ()
-                    )
-                    await aterminate_process_group(
-                        proc,
-                        grace=None,
-                        group_witnesses=group_witnesses,
-                    )
-                    await _wait_proc(proc)
                 raise PermissionError(f"Hook timed out: {argv[0]!r}") from err
             except Exception as e:
                 raise PermissionError(f"Hook execution error: {e}") from e
-            if proc.returncode != 0:
+            if returncode != 0:
                 msg = stderr_bytes.decode(errors="replace").strip() or f"Hook blocked: {argv[0]!r}"
                 raise PermissionError(msg)
             return None
@@ -298,44 +370,15 @@ def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) ->
 
         async def shell_post_hook(tn: str, action: str, args: dict, result: dict) -> dict | None:
             argv = _render_argv({**args, **result})
-            proc = None
-            leader_created = None
-            child_env, group_marker = prepare_process_group_env()
+            # Serialized before the child exists, as in the pre-hook.
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    *argv,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    start_new_session=True,
-                    env=child_env,
-                )
-                leader_created = observe_process_group_leader(
-                    getattr(proc, "pid", None),
-                    expected_marker=group_marker,
-                )
-                await asyncio.wait_for(
-                    proc.communicate(json.dumps(result).encode()),
-                    timeout=10,
-                )
+                payload = json.dumps(result).encode()
+            except Exception as exc:
+                logger.warning("hook subprocess error (swallowed)", exc_info=exc)
+                return None
+            try:
+                await _run_hook(argv, payload)
             except asyncio.TimeoutError as exc:
-                # Kill process group on post-hook timeout so no delayed side effects
-                # occur after the hook is silently dropped.
-                if proc is not None:
-                    group_witnesses = (
-                        capture_group_witnesses(
-                            proc,
-                            expected_leader_created=leader_created,
-                        )
-                        if leader_created is not None
-                        else ()
-                    )
-                    await aterminate_process_group(
-                        proc,
-                        grace=None,
-                        group_witnesses=group_witnesses,
-                    )
-                    await _wait_proc(proc)
                 logger.warning("hook subprocess timed out (swallowed)", exc_info=exc)
             except Exception as exc:
                 logger.warning("hook subprocess error (swallowed)", exc_info=exc)

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Protocol, get_args
 
 from sqlalchemy import JSON, bindparam, text
 
+from ..compat import _quote
 from ..reasons import VALID_REASON_CODES
 from . import LifecycleNotFoundError, LifecycleValidationError
 from .callbacks import (
@@ -40,6 +41,20 @@ class _TxProvider(Protocol):
     dialect: str
 
     def _tx(self) -> Any: ...
+
+    def _owner_values(self, table: str) -> dict[str, str]: ...
+
+    async def _require_owned(self, conn: Any, table: str, row_id: Any, what: str) -> None: ...
+
+    async def _prepare_status_patch(
+        self,
+        conn: Any,
+        entity_type: str,
+        entity_id: str,
+        patch: Mapping[str, Any],
+        *,
+        fill_only_if_absent: frozenset[str] = ...,
+    ) -> Mapping[str, Any]: ...
 
 
 def _json_list(evidence_refs: tuple) -> list:
@@ -147,15 +162,16 @@ class SQLAlchemyLifecycleService:
 
         transition_id = uuid.uuid4().hex
         now = time.time()
+        owner_columns, owner_params, owner_values = self._owner_insert("status_transitions")
         await connection.execute(
             text(
-                "INSERT INTO status_transitions "
+                "INSERT INTO status_transitions "  # noqa: S608 -- the owner column is quoted
                 "(id, entity_type, entity_id, previous_status, status, "
                 " reason_code, reason_summary, evidence_refs, "
-                " source, actor, created_at, metadata) "
+                f" source, actor, created_at, metadata{owner_columns}) "
                 "VALUES (:id, :entity_type, :entity_id, NULL, :status, "
                 " :reason_code, :reason_summary, :evidence_refs, "
-                " :source, :actor, :created_at, :metadata)"
+                f" :source, :actor, :created_at, :metadata{owner_params})"
             ).bindparams(
                 bindparam("evidence_refs", type_=JSON),
                 bindparam("metadata", type_=JSON),
@@ -172,11 +188,28 @@ class SQLAlchemyLifecycleService:
                 "actor": command.actor.id,
                 "created_at": now,
                 "metadata": dict(command.reason.metadata),
+                **owner_values,
             },
         )
         return transition_id
 
-    async def transition(self, command: TransitionCommand) -> TransitionOutcome:
+    def _owner_insert(self, table: str) -> tuple[str, str, dict[str, str]]:
+        """The owner columns, placeholders and values an insert into *table* adds.
+
+        A store whose rows carry an owner gets it on every row lifecycle writes (ADR-0128 D5);
+        natively there is none.
+        """
+        owned = self._db._owner_values(table)
+        columns = "".join(f", {_quote(name)}" for name in owned)
+        placeholders = "".join(f", :_owner{i}" for i in range(len(owned)))
+        return columns, placeholders, {f"_owner{i}": v for i, v in enumerate(owned.values())}
+
+    async def transition(
+        self,
+        command: TransitionCommand,
+        *,
+        fill_only_if_absent: frozenset[str] = frozenset(),
+    ) -> TransitionOutcome:
         if command.reason.code not in VALID_REASON_CODES:
             raise LifecycleValidationError(
                 f"invalid reason_code: {command.reason.code!r}; must be one of "
@@ -203,6 +236,7 @@ class SQLAlchemyLifecycleService:
             enforce_edges=True,
             undeclared_edge_mode="reject",
             write_reason_columns=policy.reason_columns,
+            fill_only_if_absent=fill_only_if_absent,
         )
 
     async def _emit_terminal_event(
@@ -237,6 +271,8 @@ class SQLAlchemyLifecycleService:
         undeclared_edge_mode: str = "raise",
         raise_on_unguarded_conflict: bool = False,
         write_reason_columns: bool = True,
+        fill_only_if_absent: frozenset[str] = frozenset(),
+        owned_links: tuple[tuple[str, str, str], ...] = (),
     ) -> TransitionOutcome:
         policy = self._registry.get(command.entity_type)
 
@@ -277,6 +313,29 @@ class SQLAlchemyLifecycleService:
         )
 
         async with self._db._tx() as conn:
+            # In compatibility mode a row that no longer carries the owner is refused here,
+            # before any read decides the transition; natively this does nothing.
+            await self._db._require_owned(
+                conn, policy.table, command.entity_id, command.entity_type
+            )
+            # A session update names links (a message it references, an invocation it adopts);
+            # each is checked here, in the same transaction and before the status is read, so a
+            # link that changed hands is refused before the status the update asked for is
+            # written, rather than after it has committed (ADR-0128 D5).
+            for table, row_id, what in owned_links:
+                await self._db._require_owned(conn, table, row_id, what)
+            # A status change carries its node_metadata into this same transaction, where the
+            # store merges it by key rather than letting the patch below write it whole
+            # (ADR-0128 D6); natively the patch is unchanged.
+            prepared = await self._db._prepare_status_patch(
+                conn,
+                command.entity_type,
+                command.entity_id,
+                command.patch,
+                fill_only_if_absent=fill_only_if_absent,
+            )
+            if prepared is not command.patch:
+                command = replace(command, patch=prepared)
             guard_cols = list(extra_guard)
             # A caller may guard one of the duration-basis columns. Keep the
             # SELECT unique, but never let that guard disable the terminal-end
@@ -373,13 +432,16 @@ class SQLAlchemyLifecycleService:
                     rejected = True
 
             if rejected:
+                owner_columns, owner_params, owner_values = self._owner_insert("admin_events")
                 await conn.execute(
                     text(
-                        "INSERT INTO admin_events "
-                        "(id, created_at, action, target_id, details, actor) "
-                        "VALUES (:id, :created_at, :action, :target_id, :details, :actor)"
+                        "INSERT INTO admin_events "  # noqa: S608 -- the owner column is quoted
+                        f"(id, created_at, action, target_id, details, actor{owner_columns}) "
+                        "VALUES (:id, :created_at, :action, :target_id, :details, "
+                        f":actor{owner_params})"
                     ).bindparams(bindparam("details", type_=JSON)),
                     {
+                        **owner_values,
                         "id": uuid.uuid4().hex[:12],
                         "created_at": now,
                         "action": "status_transition_rejected",
@@ -517,13 +579,16 @@ class SQLAlchemyLifecycleService:
             # cannot commit a false-positive audit record.
             if override_admin_event:
                 assert command.override is not None
+                owner_columns, owner_params, owner_values = self._owner_insert("admin_events")
                 await conn.execute(
                     text(
-                        "INSERT INTO admin_events "
-                        "(id, created_at, action, target_id, details, actor) "
-                        "VALUES (:id, :created_at, :action, :target_id, :details, :actor)"
+                        "INSERT INTO admin_events "  # noqa: S608 -- the owner column is quoted
+                        f"(id, created_at, action, target_id, details, actor{owner_columns}) "
+                        "VALUES (:id, :created_at, :action, :target_id, :details, "
+                        f":actor{owner_params})"
                     ).bindparams(bindparam("details", type_=JSON)),
                     {
+                        **owner_values,
                         "id": uuid.uuid4().hex[:12],
                         "created_at": now,
                         "action": "status_transition_override",
@@ -567,13 +632,31 @@ class SQLAlchemyLifecycleService:
         so both the ordinary and override paths share it. Returns the new
         transition id, or ``None`` on a zero-row UPDATE (conflict).
         """
+        # An invocation's cancellation records an observation: cleanup cannot
+        # revise an end time or a reason another writer already recorded for the
+        # same terminal fact, including one recorded after this transition read
+        # the row. A first cancellation (previous status not yet terminal) writes
+        # both; a later one keeps what is stored and only appends its history.
+        observed_cancel = (
+            command.entity_type == "invocation"
+            and command.to_status == "cancelled"
+            and command.override is None
+        )
+        revise_recorded_cancel = observed_cancel and previous_status == command.to_status
         set_clauses = ["status = :status", "updated_at = :now"]
         if write_reason_columns:
-            set_clauses[1:1] = [
-                "status_reason_code = :reason_code",
-                "status_reason_summary = :reason_summary",
-                "status_evidence_refs = :evidence_refs",
-            ]
+            if revise_recorded_cancel:
+                set_clauses[1:1] = [
+                    "status_reason_code = COALESCE(status_reason_code, :reason_code)",
+                    "status_reason_summary = COALESCE(status_reason_summary, :reason_summary)",
+                    "status_evidence_refs = COALESCE(status_evidence_refs, :evidence_refs)",
+                ]
+            else:
+                set_clauses[1:1] = [
+                    "status_reason_code = :reason_code",
+                    "status_reason_summary = :reason_summary",
+                    "status_evidence_refs = :evidence_refs",
+                ]
         where_clauses = [
             "id = :id",
             "(status = :previous_status OR (status IS NULL AND :previous_status IS NULL))",
@@ -600,8 +683,15 @@ class SQLAlchemyLifecycleService:
                 params[key] = expected
         for col, value in command.patch.items():
             key = f"patch_{col}"
-            set_clauses.append(f"{col} = :{key}")
+            if observed_cancel and col == "ended_at":
+                set_clauses.append(f"{col} = COALESCE({col}, :{key})")
+            else:
+                set_clauses.append(f"{col} = :{key}")
             params[key] = value
+        # In compatibility mode the update reaches only the owner's row (ADR-0128 D5).
+        for i, (col, owner) in enumerate(self._db._owner_values(table).items()):
+            where_clauses.append(f"{_quote(col)} = :_owner_guard{i}")
+            params[f"_owner_guard{i}"] = owner
 
         update_sql = (
             f"UPDATE {table} SET {', '.join(set_clauses)} "  # noqa: S608
@@ -615,15 +705,16 @@ class SQLAlchemyLifecycleService:
             return None
 
         transition_id = uuid.uuid4().hex
+        owner_columns, owner_params, owner_values = self._owner_insert("status_transitions")
         await conn.execute(
             text(
-                "INSERT INTO status_transitions "
+                "INSERT INTO status_transitions "  # noqa: S608 -- the owner column is quoted
                 "(id, entity_type, entity_id, previous_status, status, "
                 " reason_code, reason_summary, evidence_refs, "
-                " source, actor, created_at, metadata) "
+                f" source, actor, created_at, metadata{owner_columns}) "
                 "VALUES (:id, :entity_type, :entity_id, :previous_status, :status, "
                 " :reason_code, :reason_summary, :evidence_refs, "
-                " :source, :actor, :created_at, :metadata)"
+                f" :source, :actor, :created_at, :metadata{owner_params})"
             ).bindparams(
                 bindparam("evidence_refs", type_=JSON),
                 bindparam("metadata", type_=JSON),
@@ -641,6 +732,7 @@ class SQLAlchemyLifecycleService:
                 "actor": command.actor.id,
                 "created_at": now,
                 "metadata": dict(command.reason.metadata),
+                **owner_values,
             },
         )
         return transition_id
