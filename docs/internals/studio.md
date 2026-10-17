@@ -28,13 +28,23 @@ answers it first.
 schema requests (401) from a browser origin that is neither loopback
 (`localhost`, 127.0.0.0/8, `::1`; an IPv4-mapped address is judged as its IPv4
 address) nor the daemon's own origin (Origin authority equal to the request's
-Host, as for the SPA a daemon bound to another address serves itself). A
-request without an Origin header, as from the CLI or a script, passes; `null`,
+Host, as for the SPA a daemon bound to another address serves itself). `null`,
 a second Origin header, or an origin carrying userinfo, a path, a query or a
 fragment is refused. CORS only decides which pages may read a response, so it
 cannot stand in for this check.
 
-Such an origin is admitted only with the launch bearer (`launch_access.py`),
+A request without an Origin header is judged by its `Sec-Fetch-Site`
+(`_fetch_site_accepted_without_origin`), because a browser sends no Origin on a
+GET or HEAD made outside CORS (an image, a script, a top-level navigation) from
+any site. With no `Sec-Fetch-Site`, as from the CLI or a script, it passes; so
+do `none` (a typed address or a bookmark) and `same-origin` (the SPA the daemon
+serves). `same-site`, `cross-site`, any other value and a second header are
+refused like a foreign origin. A browser that sends no `Sec-Fetch-Site` is not
+told apart from a script. The SPA shell and its assets stay public, so a link
+from another site still opens Studio.
+
+A refused origin, or a request without one refused by its `Sec-Fetch-Site`, is
+admitted only with the launch bearer (`launch_access.py`),
 minted per process and held in memory, never put in the environment or written
 anywhere. A page receives it by pairing. `li studio` mints a one-time code, or
 asks a daemon already running on the port for one over
