@@ -1,0 +1,141 @@
+# ADR-0131: Operator decisions require a launcher-issued decision capability
+
+- **Status**: Proposed
+- **Kind**: Aspirational
+- **Implementation-status**: not-started
+- **Area**: studio
+- **Date**: 2026-10-17
+- **Relations**: changes the Studio daemon's route contract for the two Operator decision routes and
+  the pairing routes (a versioned, breaking security-contract change, D7); keeps the no-token
+  admission rule of the daemon's middleware unchanged for every other route; read with ADR-0076 (the
+  daemon's route registry and local control plane)
+
+Purpose: in a daemon without `LIONAGI_STUDIO_AUTH_TOKEN`, any process that can reach the listener can
+allow or deny an Operator proposal, so a run whose automatically allowed tool can make HTTP requests
+to the daemon can approve its own proposals. This record makes a decision require a capability that
+only the process that launched the daemon can hand to a page, and that no HTTP request can obtain.
+
+## Context
+
+**P1 — the decision routes check no principal.** `confirm_operator_proposal` and
+`decide_operator_proposal` (`lionagi/studio/services/operator.py:308-341`) call the coordinator's
+`decide()` (`lionagi/studio/operator/coordinator.py:1018`), which claims the proposal in the store
+(`lionagi/studio/operator/store.py:1932`). The proposal's hash and version bind what is decided, not
+who decides. With no token configured, the middleware admits a request that carries no `Origin` and
+no `Sec-Fetch-Site` (`lionagi/studio/app.py:56`, `:99`), so a command-line client, a script and a
+tool's HTTP request are all admitted.
+
+**P2 — a code that pairs a page can be minted by any such request.** `POST
+/api/studio/pairing-codes` (`lionagi/studio/services/pairing.py:28-46`) mints a 120-second code
+(`lionagi/studio/launch_access.py:33`, `:49`) for a request without browser provenance, and `POST
+/api/studio/pair` (`pairing.py:48`) redeems it for the daemon's one process-wide bearer
+(`launch_access.py:43`, `:63`). A test pins that the command line can mint and that the minted code
+redeems (`tests/studio/test_hosted_hardening.py:966`). The CLI uses that route to pair a page with a
+daemon that is already running (`lionagi/studio/cli.py:261`). So pairing is not a boundary: a tool
+that can send HTTP can mint, redeem with a forged `Origin`, and decide.
+
+**P3 — the page keeps its bearer in memory only.** The frontend holds the paired bearer in a module
+variable (`apps/studio/frontend/src/lib/pairing.ts:14`); a reload loses it. Nothing reachable over
+HTTP can read it.
+
+**P4 — the permission bridge reads storage, not HTTP.** The provider-permission bridge polls the
+proposal's status from the store whose path it is given (`lionagi/studio/operator/permission_mcp.py`),
+so whatever the decision routes record is what a run waiting on a permission sees.
+
+## Decision
+
+**D1 — decision authority is separate from API admission.** Deciding a proposal requires a
+**decision capability**: a random 256-bit secret, stored by the daemon only as its hash, bound to a
+random principal id, the daemon's start epoch, the frontend origin it was redeemed from, and the
+scope `operator:decide`. API admission (the token, the no-token middleware rule) is unchanged and no
+longer sufficient to decide. `LIONAGI_STUDIO_AUTH_TOKEN` admits requests as today and cannot decide
+or mint.
+
+**D2 — only the launching process issues a pairing code.** The daemon mints a code in process before it
+serves, and the launcher delivers it in the URL fragment of the page it opens, as today. The HTTP
+mint route is retired: it answers 410 after admission, whatever the headers or token. A later
+`li studio` against a daemon that is already running cannot obtain a code: it tells the operator to
+use the page already paired or to stop and restart the daemon, and it never stops a running daemon
+itself. Redemption (`POST /api/studio/pair`) stays an HTTP route: a code is single-use, expires after
+120 seconds, is bound to the origins the launcher named, and is consumed atomically; a daemon restart
+invalidates every code and capability.
+
+**D3 — a redeemed code yields one capability per redemption.** Redemption returns the admission bearer
+as today and, separately, the decision capability. The page keeps the capability in `sessionStorage`
+(it survives a reload of that tab, is gone with the tab, and is not readable over HTTP). It expires
+eight hours after redemption and on explicit disconnect; no ordinary request renews it. Two tabs
+paired by two codes hold two capabilities; a duplicated tab shares one. The principal names a
+redemption, not a person.
+
+**D4 — `decide()` requires a verified principal.** The page sends the capability in an
+`X-Studio-Decision-Token` header on the two decision requests only, to the API origin it was paired
+with. The route resolves it to a principal and passes that principal to `decide()`, which revalidates
+it at the claim and records the principal id, epoch and issuance method with the decision in the
+same transaction. No caller can pass an identity string. A missing, unknown, expired or revoked
+capability is refused with 401 and `{"detail": {"code": "operator_auth_required", "message": "Pair
+this page to decide", "retryable": false}}`; a valid capability from the wrong origin or without the
+scope with 403 and `operator_forbidden` in the same envelope. Reads the page needs before pairing,
+`/health` and `OPTIONS` stay as they are. Historical decisions stay unattributed.
+
+**D5 — launch paths deliver codes or decide nothing.** The default, `--no-frontend`, `--dev` and
+hosted launches deliver the code for their exact origins. The desktop shell delivers it over its own
+launcher channel, never in a page's static script. A Docker launch has no channel the record
+accepts yet (container output and the container's environment are readable by what runs inside
+it), so a Docker daemon serves with decisions disabled until an adapter is specified in its own
+record; its refusals say so.
+
+**D6 — what B stops and what it does not.** Stopped: a tool, script or other local account that can
+only make HTTP requests, and a page that was not paired, can neither allow nor deny a proposal, with
+known ids and hashes, a forged `Origin` or `Sec-Fetch-Site`, or the admission token. Not stopped: a
+stolen capability; script running in a paired page (an extension, a compromised dependency); code
+running as the same OS user that reads a browser profile or process memory or writes the store
+directly; and any other daemon route, whose admission is unchanged. B does not prove that a human
+clicked; it proves that the launcher's page did. Egress containment of tools is not required for the
+HTTP-only guarantee and is required for anything broader.
+
+**D7 — the contract is versioned and fails closed.** `/health` and an OpenAPI extension publish
+`operatorDecisionContract: 2`. A page that does not find version 2 does not offer decisions. There is
+no opt-out: a deployment that wants the old behaviour has none. The release notes, the route contract
+and the Studio pages state the new header, the two refusals, the retired mint route, the reconnect
+rule and the token's narrower meaning.
+
+## Landing order
+
+1. D7's marker and D1's capability store, with the decision routes still accepting today's requests.
+2. D2: issuance at launch, the 410 mint route, the reconnect message; D3: redemption returns the
+   capability; the frontend stores and sends it.
+3. D4: the principal check in `decide()` and the refusals. From this step the contract is version 2.
+4. D5's adapters, one launch path per change.
+
+## Tests that prove it
+
+- The attack, end to end: with a real pending permission proposal, a client that sends only HTTP reads
+  its ids, tries to mint (absent and forged headers, with and without the admission token), tries to
+  redeem with a forged `Origin`, and tries to allow and to deny. Every step is refused, the proposal
+  stays pending, the bridge never sees `allow`, and nothing executes. A paired page's decision is the
+  positive control. Repeated for an application proposal and for an already-decided one.
+- Mint: 410 for every header combination and for the admission token; the test that pins the
+  command-line mint today (`tests/studio/test_hosted_hardening.py:966`) is replaced by this one.
+- Codes: unknown, expired, wrong origin, replayed and from a previous daemon start are refused; two
+  concurrent redemptions of one code yield one capability; a refused wrong-origin attempt does not
+  consume a valid code.
+- Capability: expiry, disconnect and restart each refuse a later decision; a capability sent to
+  another origin, or with a redirect, is refused; reads and `/health` work without it.
+- `decide()` called directly without a verified principal fails before touching the store; a decision
+  and its audit row commit together or not at all; a revoked capability cannot claim; a concurrent
+  replay executes once.
+- A page that reads contract version 1, or none, offers no decision.
+- Docker launch: decisions refused with the stated reason.
+
+## Run-contract impact
+
+The decision rows gain the principal id, epoch and issuance method (a store change, versioned with
+the store's own migration). The route contract changes as D4 and D7 state. Readers of both are told
+before the release that ships step 3.
+
+## Out of scope
+
+- A reconnect channel that lets a second `li studio` pair a page with a running daemon.
+- A Docker adapter.
+- Authority for any route other than the two decision routes, and isolation of tools from the store
+  or the browser profile.
