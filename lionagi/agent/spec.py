@@ -77,6 +77,8 @@ class AgentSpec(HooksMixin):
     mcp_servers: list[str] | None = None
     mcp_config_path: str | None = None
     context_management: bool = True
+    # The coding tools to bind when `tools` names "coding"; None binds the default set.
+    coding_tools: tuple[str, ...] | None = None
     khive_injection: Any = None
     # Codex only: turn the signed-in account's apps and plugins off for this
     # agent's endpoint by default (a call can still lift it; see create_agent).

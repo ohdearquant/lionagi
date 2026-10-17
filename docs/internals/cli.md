@@ -1127,6 +1127,45 @@ own branch and not the `will_auto_resume` computed earlier in teardown: that one
 the effective status is applied, so suppressing on it could silence a leg that then does not
 recurse.
 
+**`_run_agent` API-model tool loop** — a CLI provider runs its own tool loop, so one
+`branch.operate` call is the whole leg. An API model (`anthropic/...`, `openai/...`) has none, so
+`li agent` runs lionagi's: `Branch.ReAct(tools=True, max_extensions=N)` over the branch's tools,
+bounded as a whole by `--timeout` (`anyio.fail_after`; past it the run ends `timed_out`). The path
+is opt-in per profile and refused otherwise, with the same "only supports CLI endpoints" error as
+before plus a pointer to the opt-in:
+
+- `api_tools: read` — the only tool set: `reader`, `search` and `context`, bound through
+  `create_agent` with `AgentSpec.coding_tools` and the path guard on `reader` scoped to `cwd`
+  (`search` resolves its path inside the workspace itself, and leaves out the matches of any
+  file whose path holds a name the reader refuses, such as `.env`; it reads each match from the
+  NUL grep writes after the file name, so a name holding a newline is read whole, and skips
+  binary files, so no notice names a matching file). Tools that write files or run
+  commands are not offered: they would run with this process's own permissions, and this path
+  has no operating-system sandbox. Any other value is refused before a run exists.
+- `max_extensions` — rounds after the first, a whole number from 1 to 100 (default 10).
+
+`--preset coding` and `--image` are refused for an API model. The leg is handed no MCP server.
+A profile's `khive_injection` keeps its recall on the leg, and its writeback is turned off
+(`_recall_only`): the read set runs in this process, so writeback would store file text in khive.
+An API model is built from its model spec alone: the display options `-v` and `--theme` are CLI
+endpoint settings and are not put on its request, so its key and endpoint stay its own.
+The Anthropic endpoint requires an output limit, so an API leg on it sets `max_tokens` (8192)
+unless the endpoint's settings already carry one. The default role is `reviewer` (a
+declared `role:` key still wins).
+
+The branch records `{"tools", "max_extensions"}` under `metadata["api_launch"]`; the snapshot is
+written to the run's branches dir after every turn, however the turn ends, so `li agent -r`
+finds it and runs the loop again from that record. A stored branch keeps its messages, not its
+tools, so the resume binds the read set again, guarded to its own working directory; a profile's
+current `max_extensions` replaces the recorded bound, and a resume without `-a` runs on the
+recorded one. A resume under a profile that no longer declares `api_tools`, or with `--image`,
+or of a record naming a tool set or a bound this version does not run, is refused before a run
+exists, and the display options stay off the resumed model's request too. A non-CLI branch without the record runs the earlier
+`branch.operate` path unchanged. Queued operator messages drain as further turns of the loop
+(`_drain_pending_steers(run_turn=...)`), on the budget the deadline leaves. Messages persist
+through the same branch-level hooks as a CLI leg; there is no stream dir, since nothing streams
+from a subprocess.
+
 ## `_agent_depth.py` — inherited agent-depth env marker
 
 `LIONAGI_AGENT_DEPTH` (integer string; unset/`0` = top-level, `>=1` = spawned worker) lets an

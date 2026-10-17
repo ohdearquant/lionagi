@@ -624,7 +624,13 @@ def _register_coding_tools(branch: Branch, spec: AgentSpec) -> None:
 
     workspace_root = Path(spec.cwd) if spec.cwd else Path.cwd()
     context_management = getattr(spec, "context_management", True)
-    tools = None if context_management else tuple(t for t in DEFAULT_CODING_TOOLS if t != "context")
+    selected = getattr(spec, "coding_tools", None)
+    if selected is None:
+        tools = (
+            None if context_management else tuple(t for t in DEFAULT_CODING_TOOLS if t != "context")
+        )
+    else:
+        tools = tuple(t for t in selected if context_management or t != "context")
     toolkit = CodingToolkit(workspace_root=workspace_root, tools=tools)
 
     for key, handlers in spec.hook_handlers.items():
