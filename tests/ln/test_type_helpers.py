@@ -75,7 +75,7 @@ def test_type_helpers_preserve_lazy_pydantic_import():
         "assert 'pydantic' in sys.modules\n"
     )
     result = subprocess.run(
-        [sys.executable, "-I", "-c", code], capture_output=True, text=True, timeout=30
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=30
     )
     assert result.returncode == 0, result.stderr
 
