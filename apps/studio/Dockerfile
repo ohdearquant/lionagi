@@ -24,7 +24,8 @@
 # 0.0.0.0 and :: name no single address a client connects to; a client
 # elsewhere on the network reaches the daemon by one of the machine's real
 # addresses, so LIONAGI_STUDIO_HOST must name that address or the daemon
-# admits only the loopback names.
+# admits only the loopback names. The wildcard is never an admitted Host, so a
+# request that names it answers 400.
 
 # ── Stage 1: Build frontend ──────────────────────────────────────────────────
 # Pinned to BUILDPLATFORM on purpose. This stage emits /build/dist, a static

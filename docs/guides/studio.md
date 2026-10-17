@@ -67,11 +67,13 @@ li studio --dev          # source checkout with frontend hot reload
 
 `li studio --docker` publishes the container's port on the address `--host`
 names, which defaults to `127.0.0.1`, so only this machine reaches the
-container. On `--docker` that address has to be an IP address literal
-(`127.0.0.1`, `0.0.0.0`, `192.168.1.5`, `::1`); a hostname is refused before
-docker runs, because docker does not resolve one in the host half of a port
-mapping. A bare IPv6 address is read whole, so an IPv6 address carrying a port
-must be bracketed (`[::1]:8765`), or the port would read as part of the address.
+container. `--host` takes an address, not an address and port: the port comes
+from `--port`, and a value carrying one (`[::1]:8765`) is refused before docker
+runs. On `--docker` that address also has to be an IP address literal
+(`127.0.0.1`, `0.0.0.0`, `192.168.1.5`, `::1`); a hostname is refused too,
+because docker does not resolve one in the host half of a port mapping. A bare
+IPv6 address is read whole, so `::1:8765` is the eight-group address
+`::1:8765`, not `::1` at port `8765`.
 To publish on another interface, either pass `--host` that address, or run the
 image with your own `docker run -p`:
 
@@ -106,7 +108,9 @@ reaches it there and sends that address as `Host` is admitted. `0.0.0.0` and
 `::` name no single address a client connects to, so a client elsewhere on the
 network reaches the daemon by one of the machine's real addresses and must send
 that address as `Host`: set `LIONAGI_STUDIO_HOST` on the container to it, or the
-daemon admits only the loopback names `localhost`, `127.0.0.1` and `::1`.
+daemon admits only the loopback names `localhost`, `127.0.0.1` and `::1`. The
+wildcard itself is never an admitted `Host`: it is refused like any other name
+no page is opened at, so `Host: [::]:8765` answers 400.
 
 In a second terminal, confirm daemon reachability:
 

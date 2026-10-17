@@ -118,17 +118,41 @@ def _collect_cors_methods(application: FastAPI) -> list[str]:
     return sorted(methods)
 
 
+def _host_reaches_other_machines(bind_host: str) -> bool:
+    """Whether a bind on *bind_host* is reachable from another machine.
+
+    True for anything that is not loopback: a wildcard (`0.0.0.0`, `::`) binds
+    every interface and a concrete address is reachable from the network it sits
+    on. `localhost` and every loopback address (`127.0.0.0/8`, `::1`) are the
+    only names that stay on this machine. An unparseable name is treated as
+    reachable, since a bind the daemon cannot classify must not read as safe.
+    """
+    host = (bind_host or "").strip()
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1].strip()
+    if host == "localhost" or host.endswith(".localhost"):
+        return False
+    try:
+        return not ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return True
+
+
 def _emit_startup_warnings() -> None:
     """Emit security warnings once at startup — no-op if conditions are safe."""
     token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
     if not token:
         bind_host = os.getenv("LIONAGI_STUDIO_HOST", HOST)
-        if bind_host == "0.0.0.0":  # noqa: S104
+        # A bind on anything but loopback is reachable from other machines, so the
+        # warning has to name the address and say who can reach it; naming only
+        # 0.0.0.0 understated `::`, which binds every interface too.
+        if _host_reaches_other_machines(bind_host):
+            where = (bind_host or "").strip() or "every interface"
             _log.warning(
-                "Studio running WITHOUT authentication on host 0.0.0.0 — "
-                "API requests that carry no browser origin are accepted from any "
-                "network interface. This is unsafe in containers or cloud deployments. "
-                "Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token."
+                f"Studio running WITHOUT authentication on host {where} — a page "
+                "on any machine that can reach that address is accepted, so other "
+                "machines can reach this Studio. This is unsafe in containers or cloud "
+                "deployments. Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token."
             )
         else:
             _log.warning(
@@ -319,6 +343,27 @@ def _parse_host_authority(raw_host: str) -> str | None:
     return host.lower() if host else None
 
 
+def _is_unspecified_bind_host(bind_host: str) -> bool:
+    """Whether *bind_host* names every interface rather than one address.
+
+    A wildcard (`0.0.0.0`, `::`, or an IPv6 spelling of one) binds all of them, so
+    it is not an address a page is opened at and must not widen the admitted Host
+    set. Judged by `ipaddress`, not by matching the literal `0.0.0.0`: `::` binds
+    the same interfaces and the string test let it through. A blank value is
+    unspecified too -- there is no name to admit. A value that is not an address
+    at all is left to the caller, which admits it as the operator's chosen name.
+    """
+    host = (bind_host or "").strip()
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1].strip()
+    if not host:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_unspecified
+    except ValueError:
+        return False
+
+
 async def validate_host_header(request: Request, call_next):
     """Reject requests whose Host header doesn't match an expected value —
     defends against DNS rebinding; see docs/internals/studio.md.
@@ -326,7 +371,7 @@ async def validate_host_header(request: Request, call_next):
     hostname = _parse_host_authority(request.headers.get("host", ""))
     bind_host = os.getenv("LIONAGI_STUDIO_HOST", HOST)
     allowed_hosts = {"localhost", "127.0.0.1", "::1"}
-    if bind_host not in ("127.0.0.1", "localhost", "::1", "0.0.0.0", ""):  # noqa: S104
+    if not _is_unspecified_bind_host(bind_host):
         allowed_hosts.add(bind_host.lower())
     if hostname is None or hostname not in allowed_hosts:
         return JSONResponse(

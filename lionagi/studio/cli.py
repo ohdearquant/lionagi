@@ -77,8 +77,9 @@ def _add_studio_flags(parser: argparse.ArgumentParser, *, suppress_defaults: boo
         help=(
             "Host to bind (default: 127.0.0.1). --docker also publishes the "
             "container port on this host, so anything else there exposes the "
-            "daemon to that interface. An IPv6 address is read whole, so one "
-            "carrying a port must be bracketed: [::1]:8765."
+            "daemon to that interface. This is an IP address, not an address "
+            "with a port: the port is --port, and a value carrying a port is "
+            "refused."
         ),
     )
     parser.add_argument(
@@ -384,8 +385,9 @@ def _published_host(host: str) -> str:
         address = ipaddress.ip_address(stripped)
     except ValueError:
         raise ValueError(
-            f"--host {host!r} is not an IP address; --docker publishes the container "
-            "port on an address such as 127.0.0.1, 0.0.0.0, 192.168.1.5 or ::1"
+            f"--host {host!r} is not an IP address; --host takes an address, not an "
+            "address with a port (the port is --port). --docker publishes the "
+            "container port on an address such as 127.0.0.1, 0.0.0.0, 192.168.1.5 or ::1"
         ) from None
     if getattr(address, "scope_id", None) is not None:
         raise ValueError(
@@ -441,10 +443,16 @@ def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
     ensure_lionagi_dir(lionagi_home)
 
     print(f"Pulling {_STUDIO_IMAGE}...")
-    pull = subprocess.run(  # noqa: S603
-        ["docker", "pull", _STUDIO_IMAGE],  # noqa: S607
-        capture_output=True,
-    )
+    try:
+        pull = subprocess.run(  # noqa: S603
+            ["docker", "pull", _STUDIO_IMAGE],  # noqa: S607
+            capture_output=True,
+        )
+    except KeyboardInterrupt:
+        # Ctrl-C during the pull stops the launch before anything runs, exactly
+        # as it does during the run; the interrupt is not a failed launch.
+        print("\nStopping Lion Studio...")
+        return 0
     if pull.returncode != 0:
         stderr = pull.stderr.decode(errors="replace").strip()
         print(f"Warning: docker pull failed: {stderr}", file=sys.stderr)
@@ -463,8 +471,8 @@ def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
     # The published address is passed to the daemon: it admits a request whose
     # Host is the address it is reached by. A wildcard is passed too, so the
     # container's startup warning names the same address the publish does. It
-    # adds no client-reachable Host: 0.0.0.0 is never an allowed name, and ::
-    # is not an address a client connects to.
+    # adds no admitted Host: an unspecified address binds every interface and is
+    # never a name a page is opened at, so the daemon refuses it as a Host.
     env_args += ["-e", f"LIONAGI_STUDIO_HOST={published}"]
 
     claude_plugins = Path.home() / ".claude" / "plugins"
@@ -937,6 +945,27 @@ _warned_api_suffix = False
 _SCHEDULE_API_TIMEOUT_SECONDS = 10.0
 
 
+def _url_authority(host: str) -> str:
+    """*host* as the authority of a URL: something a client can connect to.
+
+    An unspecified address (`0.0.0.0`, `::`) names no host a client opens, so a
+    URL built on it is one the daemon refuses as a Host: it maps to the loopback
+    address of the same family. An IPv6 literal is bracketed, or its own colons
+    read as the port separator and the URL fails to parse. Anything else is left
+    as the caller wrote it.
+    """
+    stripped = host.strip()
+    if stripped.startswith("[") and stripped.endswith("]"):
+        stripped = stripped[1:-1].strip()
+    try:
+        address = ipaddress.ip_address(stripped)
+    except ValueError:
+        return host
+    if address.is_unspecified:
+        return "[::1]" if address.version == 6 else "127.0.0.1"
+    return f"[{stripped}]" if address.version == 6 else stripped
+
+
 def _base_url() -> str:
     if url := os.environ.get("LIONAGI_STUDIO_URL"):
         url = url.rstrip("/")
@@ -956,7 +985,7 @@ def _base_url() -> str:
         return url
     host = os.environ.get("LIONAGI_STUDIO_HOST", "127.0.0.1")
     port = os.environ.get("LIONAGI_STUDIO_PORT", "8765")
-    return f"http://{host}:{port}"
+    return f"http://{_url_authority(host)}:{port}"
 
 
 def _is_schedule_request_timeout(exc: OSError) -> bool:

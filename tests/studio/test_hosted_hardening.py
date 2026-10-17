@@ -153,6 +153,22 @@ class TestHostHeaderValidation:
         resp = client.get("/api/sessions/", headers={"Host": "evil.example.com"})
         assert resp.status_code == 400
 
+    def test_the_wildcard_bind_host_is_refused_on_an_api_origin_request(
+        self, monkeypatch, tmp_path, make_client
+    ):
+        """A page whose origin is the wildcard it was bound to does not get the
+        API: `::` is not a name a browser opens Studio at, so a request naming it
+        as its own Host is refused before any origin is considered."""
+        monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+        monkeypatch.setenv("LIONAGI_STUDIO_HOST", "::")
+        client = make_client()
+
+        resp = client.get(
+            "/api/plugins", headers={"Host": "[::]:8765", "Origin": "http://[::]:8765"}
+        )
+
+        assert resp.status_code == 400
+
     def test_configured_non_loopback_bind_host_accepted(self, monkeypatch, tmp_path, make_client):
         """When the operator explicitly binds to a routable host/hostname,
         that value (with any port) is accepted, alongside loopback."""
@@ -170,6 +186,27 @@ class TestHostHeaderValidation:
 
         resp = client.get("/health", headers={"Host": "0.0.0.0:8765"})
         assert resp.status_code == 400
+
+    @pytest.mark.parametrize(
+        ("bind_host", "refused_hosts"),
+        [
+            ("0.0.0.0", ["0.0.0.0:8765", "0.0.0.0"]),
+            ("::", ["[::]:8765", "[::]"]),
+        ],
+    )
+    def test_an_unspecified_bind_host_is_refused_for_every_spelling(
+        self, monkeypatch, tmp_path, make_client, bind_host, refused_hosts
+    ):
+        """An unspecified address (`0.0.0.0`, `::`) binds every interface; it is
+        never a name a page is opened at, so it is not an admitted Host in either
+        spelling. Admitting it would let any page reach the API by naming the
+        wildcard, and would leave the published-URL checks unable to fail."""
+        monkeypatch.setenv("LIONAGI_STUDIO_HOST", bind_host)
+        client = make_client()
+
+        for refused in refused_hosts:
+            resp = client.get("/health", headers={"Host": refused})
+            assert resp.status_code == 400, f"{refused} was admitted with {bind_host!r} set"
 
     @pytest.mark.parametrize(
         "malformed_host",

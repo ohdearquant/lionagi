@@ -71,6 +71,11 @@ def _bind_host_from_argv(argv: list[str]) -> str:
     return "127.0.0.1"
 
 
+def _host_header(host: str) -> str:
+    """*host* as a browser sends it in a Host header: an IPv6 literal in brackets."""
+    return f"[{host}]" if ":" in host else host
+
+
 def _printed_host(out: str) -> str:
     """The host of the `Lion Studio:` URL the CLI prints."""
     prefix = "Lion Studio: http://"
@@ -353,9 +358,17 @@ def test_the_printed_host_is_admitted_by_the_daemon(docker_run, capsys, host):
     invoke, _, _ = docker_run
     argv = invoke("--host", host)
     printed = _printed_host(capsys.readouterr().out)
-    assert _guard_admits(f"{printed}:8765", _bind_host_from_argv(argv)), (
-        f"the daemon refuses Host {printed}:8765 with {_bind_host_from_argv(argv)!r} set"
+    bind_host = _bind_host_from_argv(argv)
+    assert _guard_admits(f"{printed}:8765", bind_host), (
+        f"the daemon refuses Host {printed}:8765 with {bind_host!r} set"
     )
+    if bind_host in ("0.0.0.0", "::"):
+        # The check above only fails for a wildcard if the wildcard itself is
+        # refused: a URL that regressed to `[::]` would otherwise still be
+        # admitted and turn no assertion red.
+        assert not _guard_admits(f"{_host_header(host)}:8765", bind_host), (
+            f"the daemon admits Host {_host_header(host)}:8765 with {bind_host!r} set"
+        )
 
 
 def test_the_publish_spec_normalizes_an_ipv4_mapped_address():
@@ -378,3 +391,60 @@ def test_a_mapped_address_reaches_the_daemon_as_its_ipv4_form(docker_run, capsys
     assert "LIONAGI_STUDIO_HOST=192.168.1.5" in argv
     assert "Lion Studio: http://192.168.1.5:8765" in capsys.readouterr().out
     assert _guard_admits("192.168.1.5:8765", _bind_host_from_argv(argv))
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "::"])
+def test_a_wildcard_bind_host_is_not_admitted_as_a_host(docker_run, host):
+    """The address the CLI publishes on may be a wildcard, but the wildcard is not
+    a name a page is opened at, so the daemon must never accept it back as a Host.
+    Admitting one would let any page reach the API by naming the wildcard, and it
+    would leave the printed-URL checks unable to fail for it."""
+    invoke, _, _ = docker_run
+    invoke("--host", host)
+
+    assert not _guard_admits(f"{_host_header(host)}:8765", host)
+    assert not _guard_admits(_host_header(host), host)
+
+
+@pytest.mark.parametrize("host", ["[::1]:8765", "127.0.0.1:8765"])
+def test_an_address_carrying_a_port_names_the_port_flag(docker_run, host, capsys):
+    """`--host` takes an address, not an address and port, so a value carrying a
+    port is refused with a message that says where the port goes."""
+    from lionagi.cli.main import main
+
+    _, captured, _ = docker_run
+    assert main(["studio", "--docker", "--host", host]) == 2
+    assert captured == [], f"docker ran with a publish docker rejects: {captured}"
+    err = capsys.readouterr().err
+    assert "--port" in err, err
+
+
+def test_an_interrupt_during_the_pull_is_not_a_failed_launch(tmp_path, monkeypatch, capsys):
+    """Ctrl-C while docker pulls stops the launch the way one during the run does:
+    `li studio --docker` returns 0 instead of letting the interrupt escape."""
+    import lionagi.studio.cli as studio_module
+
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(studio_module, "_has_docker", lambda: True)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:2] == ["docker", "pull"]:
+            raise KeyboardInterrupt
+
+        class Result:
+            returncode = 0
+            stderr = b""
+
+        return Result()
+
+    monkeypatch.setattr(studio_module.subprocess, "run", fake_run)
+    from lionagi.cli.main import main
+
+    escaped: BaseException | None = None
+    rc = None
+    try:
+        rc = main(["studio", "--docker"])
+    except KeyboardInterrupt as exc:
+        escaped = exc
+    assert escaped is None, "a KeyboardInterrupt during docker pull escaped the launch"
+    assert rc == 0

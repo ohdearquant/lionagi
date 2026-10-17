@@ -238,6 +238,50 @@ class TestEscalatedWarningOnWildcardBind:
         )
 
 
+class TestEscalatedWarningNamesEveryNonLoopbackBind:
+    @pytest.mark.parametrize("bind_host", ["0.0.0.0", "::", "192.168.1.5"])
+    def test_a_non_loopback_bind_warns_that_other_machines_can_reach_it(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bind_host: str
+    ) -> None:
+        """A bind on anything but loopback reaches other machines, so the warning
+        names the address it bound and says those machines can reach its pages.
+        An IPv6 wildcard is one of them, not a quieter case."""
+        monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+        monkeypatch.setenv("LIONAGI_STUDIO_HOST", bind_host)
+
+        with _spy_logger(_STUDIO_APP_LOGGER) as records:
+            with _lifespan_client(monkeypatch, tmp_path):
+                pass
+
+        warnings = records.warnings()
+        named = [m for m in warnings if bind_host in m]
+        assert named, f"no warning names the bind address {bind_host!r}; got {warnings!r}"
+        assert any("other machines" in m for m in named), (
+            f"the warning for {bind_host!r} does not say other machines can reach it: {named!r}"
+        )
+
+    @pytest.mark.parametrize("bind_host", ["127.0.0.1", "::1", "localhost"])
+    def test_a_loopback_bind_keeps_the_local_only_warning(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bind_host: str
+    ) -> None:
+        """A loopback bind is reachable from this machine only, and the warning
+        still says so -- loopback is not a mildly-wider interface."""
+        monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+        monkeypatch.setenv("LIONAGI_STUDIO_HOST", bind_host)
+
+        with _spy_logger(_STUDIO_APP_LOGGER) as records:
+            with _lifespan_client(monkeypatch, tmp_path):
+                pass
+
+        warnings = records.warnings()
+        assert any("on this machine" in m for m in warnings), (
+            f"no local-only warning for the loopback bind {bind_host!r}; got {warnings!r}"
+        )
+        assert not any("other machines" in m for m in warnings), (
+            f"a loopback bind {bind_host!r} warned that other machines can reach it: {warnings!r}"
+        )
+
+
 # CORS method set is bounded (not '*')
 
 
