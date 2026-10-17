@@ -1903,7 +1903,7 @@ def test_a_profile_model_the_launch_refuses_is_refused_at_declaration(agent_prof
     with pytest.raises(ScheduleSetError) as excinfo:
         resolve_schedule_set(parse_schedule_set(manifest), agent_profile)
     ((name, message),) = excinfo.value.errors
-    assert name == "nightly"
+    assert name == "demo/nightly"
     assert "'anthropic/claude-sonnet-5[1m]' (from profile 'wide')" in message
     assert "cannot be passed to a scheduled launch" in message
 
@@ -1923,7 +1923,7 @@ def test_a_profile_model_that_is_not_text_is_refused_naming_the_profile(agent_pr
     with pytest.raises(ScheduleSetError) as excinfo:
         resolve_schedule_set(parse_schedule_set(manifest), agent_profile)
     ((name, message),) = excinfo.value.errors
-    assert name == "nightly"
+    assert name == "demo/nightly"
     assert "target.agent model 123 (from profile 'numbered') is not a model name" in message
 
 
@@ -1935,7 +1935,7 @@ def test_a_model_with_a_trailing_newline_is_refused_at_declaration(agent_profile
     with pytest.raises(ScheduleSetError) as excinfo:
         resolve_schedule_set(parse_schedule_set(manifest), agent_profile)
     ((name, message),) = excinfo.value.errors
-    assert name == "nightly"
+    assert name == "demo/nightly"
     assert "'anthropic/claude-sonnet-5\\n' (from target.model)" in message
     assert "cannot be passed to a scheduled launch" in message
 

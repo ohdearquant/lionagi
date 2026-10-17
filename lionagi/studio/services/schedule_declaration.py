@@ -804,6 +804,7 @@ def resolve_schedule_set(doc: ScheduleSetDocument, manifest_dir: Path) -> dict[s
     """Resolve every member. Raises ``ScheduleSetError`` aggregating every
     failing member's message -- callers must not write anything on error."""
     is_global = doc.metadata.scope == "global"
+    prefix = "global" if is_global else doc.metadata.project
     resolved: dict[str, ResolvedMember] = {}
     errors: list[tuple[str, str]] = []
     for name, member in doc.schedules.items():
@@ -816,7 +817,11 @@ def resolve_schedule_set(doc: ScheduleSetDocument, manifest_dir: Path) -> dict[s
                 is_global=is_global,
             )
         except ValueError as exc:
-            errors.append((name, str(exc)))
+            # Every raise site carries the qualified name, so a caller reading
+            # ``ScheduleSetError.errors`` (the text lines and the --json payload
+            # alike) sees one naming scheme rather than a bare member key here and
+            # a qualified name from the plan errors.
+            errors.append((f"{prefix}/{name}", str(exc)))
     if errors:
         raise ScheduleSetError(errors)
     return resolved

@@ -146,6 +146,10 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Fixed
 
+- `li schedule validate` and `li schedule apply` name every invalid schedule as `<project>/<name>`
+  (`global/<name>` for a global set), in the text lines and in `--json` alike. A resolution error
+  used to carry the bare member name, so `--json` reported it unqualified while plan errors were
+  qualified.
 - A scheduled playbook launch passes the args its schedule declares (`action_playbook_args`, or
   the args of the resolved playbook target), as in `li play audit --depth 2`. It used to launch the
   bare playbook, and adopting a declared playbook schedule with args was refused for that reason.
