@@ -20,8 +20,10 @@ import dataclasses
 import os
 from pathlib import Path
 
+import pydantic
 import pytest
 
+from lionagi._errors import CLIInputRefusedError
 from lionagi.providers.openai import codex as codex_mod
 from lionagi.providers.openai.codex import CodexCodeRequest, toml_override_value
 
@@ -771,6 +773,153 @@ def test_the_claude_code_env_refuses_a_value_whose_class_answers_str():
 
     assert "entry 1 (value is _ValueWhoseClassAnswersStr)" in str(refused.value)
     _carries_no_secret(refused.value)
+
+
+# ── construction reduces env and override keys to plain text ──────────────────
+
+
+class _SubText(str):
+    """A ``str`` subclass with no readers of its own, standing in for any str subclass a
+    caller passes in the runtime fields."""
+
+
+class _TextWhoseBufferHoldsALoneSurrogate(_SubText):
+    """A ``str`` subclass whose buffer holds a lone surrogate (U+D800) that no encoder the
+    spawn uses can carry, refused by position and type, never quoted."""
+
+
+class _TextWhoseEncoderAnswersTheSpawnBytes(_SubText):
+    """A ``str`` subclass whose own ``encode`` answers other bytes than its buffer holds. The
+    spawn encodes this value, so the text construction stores must be the text of the bytes the
+    encoder answers, never the buffer a pydantic ``dict[str, str]`` check would reject the
+    subclass for."""
+
+    def __new__(cls, buffer: str, sent: bytes):
+        obj = super().__new__(cls, buffer)
+        obj._sent = sent
+        return obj
+
+    def encode(self, *args, **kwargs):  # noqa: ARG002
+        return self._sent
+
+
+def _every_rendering_of(error: BaseException) -> str:
+    """``str``, ``repr``, ``args`` and ``errors()``/``json()`` of one error, or of the parts it
+    can give: ``json()`` on an error holding a lone surrogate itself raises, so each reader is
+    tried and skipped when it fails rather than failing the test with its own error."""
+    parts = [str(error), repr(error), *(repr(part) for part in getattr(error, "args", ()))]
+    for attribute in ("json", "errors"):
+        reader = getattr(error, attribute, None)
+        if callable(reader):
+            try:
+                parts.append(str(reader()))
+            except Exception:  # noqa: BLE001
+                pass
+    return " ".join(parts)
+
+
+def _the_error_and_its_chain_show_no_secret(error: BaseException) -> None:
+    """Every rendering of ``error``, its ``errors()``/``json()``, and its whole chain."""
+    text = _every_rendering_of(error)
+    pending = [error.__context__, error.__cause__]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        text += " " + _every_rendering_of(current)
+        object_value = getattr(current, "object", None)
+        if object_value is not None:
+            text += " " + repr(object_value)
+        pending.extend([current.__context__, current.__cause__])
+    assert SECRET not in text
+
+
+def test_a_codex_env_value_that_is_a_plain_str_subclass_is_stored_as_plain_text(tmp_path):
+    """A ``str`` subclass carrying a POSIX surrogate escape passes the encodability check, so
+    ``dict(value)`` would keep the subclass and pydantic, running strict UTF-8 on it, would
+    reject it with a ``ValidationError`` quoting the value. The validator returns plain text,
+    so the request builds and the stored env is what the spawn encodes."""
+    escaped = SECRET + os.fsdecode(b"\xff")
+    request = CodexCodeRequest(prompt="hi", repo=tmp_path, env={"K": _SubText(escaped)})
+
+    assert type(request.env["K"]) is str
+    assert request.env["K"] == escaped
+
+
+def test_a_claude_code_env_value_that_is_a_plain_str_subclass_is_stored_as_plain_text():
+    """The shared env reduction returns plain text for the Claude Code request too."""
+    from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
+
+    escaped = SECRET + os.fsdecode(b"\xff")
+    request = ClaudeCodeRequest(prompt="hi", env={"K": _SubText(escaped)})
+
+    assert type(request.env["K"]) is str
+    assert request.env["K"] == escaped
+
+
+def test_an_env_value_whose_own_encode_answers_other_bytes_is_stored_as_the_spawn_reads_it(
+    tmp_path,
+):
+    """A value whose own ``encode`` answers different bytes than its buffer holds is stored as
+    the text of the bytes the spawn would send, so construction and the spawn read one env. Its
+    buffer holds a lone surrogate, so a check that read the buffer instead would refuse it."""
+    value = _TextWhoseEncoderAnswersTheSpawnBytes(SECRET + "\ud800", b"ok")
+
+    request = CodexCodeRequest(prompt="hi", repo=tmp_path, env={"K": value})
+
+    assert type(request.env["K"]) is str
+    assert request.env["K"] == "ok"
+    assert request.env == codex_mod._plain_request(request).env
+
+
+def test_an_env_value_the_spawn_cannot_encode_is_refused_by_position_and_type(tmp_path):
+    """A value holding a lone surrogate is refused by position and type, with none of its text
+    on the refusal, its ``args`` or its chain."""
+    value = _TextWhoseBufferHoldsALoneSurrogate(SECRET + "\ud800")
+
+    with pytest.raises(TypeError) as refused:
+        CodexCodeRequest(prompt="hi", repo=tmp_path, env={"HOME": "/h", "K": value})
+
+    assert "entry 1" in str(refused.value)
+    assert refused.value.__context__ is None
+    assert refused.value.__cause__ is None
+    _the_error_and_its_chain_show_no_secret(refused.value)
+
+
+def test_a_config_override_key_that_is_a_plain_str_subclass_is_refused_by_size_or_text(
+    tmp_path,
+):
+    """A ``str`` subclass key carrying a lone surrogate is reduced with ``str.__str__`` before
+    pydantic validates the mapping, so it reaches the input check and is refused as an input
+    the CLI cannot take, rather than quoted in a ``ValidationError``."""
+    key = _SubText(SECRET + "\ud800")
+
+    with pytest.raises(CLIInputRefusedError) as refused:
+        CodexCodeRequest(prompt="hi", repo=tmp_path, config_overrides={key: "v"})
+
+    assert not isinstance(refused.value, pydantic.ValidationError)
+    assert str(refused.value) == (
+        "The key of the config override entry 0 holds a character strict UTF-8 cannot "
+        "encode: a lone surrogate cannot be passed to the Codex CLI."
+    )
+    _the_error_and_its_chain_show_no_secret(refused.value)
+
+
+def test_an_over_limit_override_is_refused_by_size_not_as_a_validation_error(tmp_path):
+    """A reduced override reaches the turn-input check, so an entry past the argument limit is
+    refused as an input the CLI cannot take, by size, rather than quoted in a validation error
+    or handed to exec."""
+    with pytest.raises(CLIInputRefusedError, match="config override entry 0") as refused:
+        CodexCodeRequest(
+            prompt="hi",
+            repo=tmp_path,
+            config_overrides={_SubText("k"): "v" * (1_048_576 + 1)},
+        )
+
+    assert not isinstance(refused.value, pydantic.ValidationError)
+    assert "argument of 1,048," in str(refused.value) or "or more" in str(refused.value)
 
 
 # ── the environment and the four path fields are in the snapshot ──────────────

@@ -26,6 +26,7 @@ from lionagi.providers._cli_subprocess import (
     SpawnedProcess,
     build_declarative_cli_args,
     discover_cli,
+    env_as_the_spawn_encodes_it,
     ndjson_from_cli,
     print_readable,
     raise_if_env_is_not_a_string_map,
@@ -318,12 +319,15 @@ class ClaudeCodeRequest(BaseModel):
             raise TypeError(
                 f"env must be a mapping of strings to strings, got {type(value).__name__}"
             )
-        # Checked on the plain copy that is returned: a mapping whose iteration
-        # and storage disagree would otherwise pass the check with one set of
-        # keys and hand pydantic another.
+        # Checked and reduced on the plain copy that is returned: a mapping whose iteration
+        # and storage disagree would otherwise pass the check with one set of keys and hand
+        # pydantic another, and a ``str`` subclass left in place is rejected by pydantic —
+        # which runs strict UTF-8 on a subclass and quotes it, a credential among others, into
+        # the validation error. The copy is read exactly as the spawn encodes it, so the text
+        # returned here is the text the child receives.
         value = dict(value)
         raise_if_env_is_not_a_string_map(value)
-        return value
+        return env_as_the_spawn_encodes_it(value)
 
     @field_validator("on_spawn", mode="before")
     @classmethod

@@ -974,12 +974,15 @@ class CodexCodeRequest(BaseModel):
             raise TypeError(
                 f"env must be a mapping of strings to strings, got {type(value).__name__}"
             )
-        # Checked on the plain copy that is returned: a mapping whose iteration
-        # and storage disagree would otherwise pass the check with one set of
-        # keys and hand pydantic another.
+        # Checked and reduced on the plain copy that is returned: a mapping whose iteration
+        # and storage disagree would otherwise pass the check with one set of keys and hand
+        # pydantic another, and a ``str`` subclass left in place is rejected by pydantic —
+        # which runs strict UTF-8 on a subclass and quotes it, a credential among others, into
+        # the validation error. The copy is read exactly as the spawn encodes it, so the text
+        # returned here is the text the child receives.
         value = dict(value)
         raise_if_env_is_not_a_string_map(value)
-        return value
+        return env_as_the_spawn_encodes_it(value)
 
     @field_validator("on_spawn", mode="before")
     @classmethod
@@ -1015,12 +1018,11 @@ class CodexCodeRequest(BaseModel):
             # TypeError, not ValueError: pydantic quotes a ValueError's rejected
             # input verbatim into the validation error.
             raise TypeError(f"config_overrides must be a mapping, got {type(value).__name__}")
-        # The keys are checked on the plain copy that is returned, as env's are,
-        # so a mapping whose iteration and storage disagree cannot pass the check
-        # with one set of keys and hand pydantic another. Refused by position and
-        # type: pydantic would quote a key it cannot validate as a string, and a
-        # key can hold a secret as a value can. A bytes key is refused too rather
-        # than decoded.
+        # The keys are checked on the plain copy that is returned, as env's are, so a mapping
+        # whose iteration and storage disagree cannot pass the check with one set of keys and
+        # hand pydantic another. Refused by position and type: pydantic would quote a key it
+        # cannot validate as a string, and a key can hold a secret as a value can. A bytes key
+        # is refused too rather than decoded.
         value = dict(value)
         unnamed = [
             f"entry {index} (key is {type(key).__name__})"
@@ -1032,7 +1034,12 @@ class CodexCodeRequest(BaseModel):
                 "config_overrides keys must be strings; these entries are not: "
                 + ", ".join(unnamed)
             )
-        return value
+        # Each key is read once, through ``str.__str__``, into an exact ``str``: a ``str``
+        # subclass key left in place is rejected by pydantic — which runs strict UTF-8 on a
+        # subclass and quotes the key, which can hold a credential, into the validation error.
+        # A key the spawn cannot encode then reaches the input check, which refuses the
+        # request as an input the CLI cannot take rather than as a validation error.
+        return {str.__str__(key): item for key, item in value.items()}
 
     # ── system prompt (order 40) ──────────────────────────────────
     system_prompt: str | None = None
