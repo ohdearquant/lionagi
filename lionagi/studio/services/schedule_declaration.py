@@ -28,7 +28,6 @@ import hashlib
 import json
 import re
 import time
-import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +37,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lionagi._paths import _find_git_root
+from lionagi.ln import short_id
 from lionagi.state.db import (
     INVOCATION_TERMINAL_STATUSES,
     ScheduleOwnershipConflictError,
@@ -784,7 +784,7 @@ async def create_quick_schedule(
             ]
         )
 
-    schedule_id = uuid.uuid4().hex[:12]
+    schedule_id = short_id(12)
     now = time.time()
     row = {
         "id": schedule_id,
@@ -1822,7 +1822,7 @@ async def apply_schedule_set(
             resolved = entry.resolved
             creates.append(
                 {
-                    "id": uuid.uuid4().hex[:12],
+                    "id": short_id(12),
                     "name": entry.qualified_name,
                     "managed_by": "declaration",
                     "owner_key": owner_key,

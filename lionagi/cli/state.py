@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from lionagi._auto import CliDeclaration, auto_register
+from lionagi.ln import short_id
 from lionagi.state.content_pruned import CONTENT_PRUNED_KEY, pruned_content_sql
 from lionagi.state.session_naming import resolve_display_name
 
@@ -1330,7 +1331,7 @@ async def _import_teams() -> dict[str, int]:
             counts["teams"] += 1
 
             for msg in data.get("messages") or []:
-                msg_id = msg.get("id") or uuid.uuid4().hex[:12]
+                msg_id = msg.get("id") or short_id(12)
                 to = msg.get("to") or []
                 if isinstance(to, str):
                     recipient = to or "all"
