@@ -18,7 +18,6 @@ class GroqAudioTranscriptionEndpoint(Endpoint):
     def __init__(self, config=None, **kwargs):
         if config is None:
             kwargs.setdefault("timeout", 120)
-            kwargs.setdefault("max_retries", 3)
         super().__init__(config, **kwargs)
 
     async def _call(self, payload: dict, headers: dict, **kwargs):

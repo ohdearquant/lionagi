@@ -57,20 +57,10 @@ def _get_provider_windows(provider: str) -> dict[str, int] | None:
 
 def _all_provider_windows():
     """Yield CONTEXT_WINDOWS dicts for all known providers."""
-    import importlib
-
-    for provider_lower, module_path in _PROVIDER_MODULES.items():
-        if provider_lower in _provider_cache:
-            yield _provider_cache[provider_lower]
-            continue
-        try:
-            mod = importlib.import_module(module_path)
-            windows = getattr(mod, "CONTEXT_WINDOWS", None)
-            if isinstance(windows, dict):
-                _provider_cache[provider_lower] = windows
-                yield windows
-        except ImportError:
-            continue
+    for provider_lower in _PROVIDER_MODULES:
+        windows = _get_provider_windows(provider_lower)
+        if windows is not None:
+            yield windows
 
 
 def _longest_prefix_match(model_name: str, windows: dict[str, int]) -> int | None:
