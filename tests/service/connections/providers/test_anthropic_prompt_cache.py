@@ -9,6 +9,7 @@ import os
 from unittest.mock import patch
 
 import pytest
+from pydantic import BaseModel
 
 from lionagi.providers.anthropic.messages import AnthropicMessagesEndpoint
 from lionagi.service.imodel import iModel
@@ -574,3 +575,104 @@ async def test_a_chat_without_the_option_folds_the_system_text_as_before():
         assert "system" not in payload
         assert SYSTEM in json.dumps(payload["messages"][0])
         assert _marks(payload) == []
+
+
+# --- ADR-0127 D2: the tool set renders once, in the system block ---
+
+
+def lookup_order(order_id: str) -> str:
+    """Find an order by its id."""
+    return order_id
+
+
+class _Review(BaseModel):
+    approved: bool
+
+
+class _Summary(BaseModel):
+    summary: str
+
+
+def _texts(messages):
+    """Each message as role and text, without the marks the adapter places on the last one."""
+    out = []
+    for message in messages:
+        content = message["content"]
+        if isinstance(content, list):
+            content = "".join(block.get("text", "") for block in content)
+        out.append((message["role"], content))
+    return out
+
+
+async def _operate_payloads(**config):
+    with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-anthropic-key"}):
+        model = iModel(provider="anthropic", model=MODEL, max_tokens=100, **config)
+    branch = Branch(system=SYSTEM, chat_model=model, tools=[lookup_order])
+    sent = []
+    build = model.endpoint.create_payload
+
+    def spy(*args, **kwargs):
+        payload, headers = build(*args, **kwargs)
+        sent.append(copy.deepcopy(payload))
+        return payload, headers
+
+    async def call(*_args, **_kwargs):
+        return copy.deepcopy(RESPONSE)
+
+    with (
+        patch.object(model.endpoint, "create_payload", side_effect=spy),
+        patch.object(model.endpoint, "call", side_effect=call),
+    ):
+        await branch.operate(
+            instruction="review the order",
+            response_format=_Review,
+            actions=True,
+            tools=True,
+            skip_validation=True,
+        )
+        await branch.operate(
+            instruction="review it again",
+            response_format=_Review,
+            actions=True,
+            tools=True,
+            skip_validation=True,
+        )
+        await branch.operate(
+            instruction="summarize", response_format=_Summary, skip_validation=True
+        )
+    return sent
+
+
+@pytest.mark.asyncio
+async def test_the_tool_section_is_in_the_system_block_of_every_request():
+    sent = await _operate_payloads(prompt_caching=True)
+
+    assert len(sent) == 3
+    for payload in sent:
+        assert SYSTEM in payload["system"][0]["text"]
+        assert "Find an order by its id." in payload["system"][-1]["text"]
+        assert payload["system"][-1]["cache_control"] == ONE_HOUR
+        assert json.dumps(payload).count("Find an order by its id.") == 1
+    assert sent[0]["system"] == sent[1]["system"] == sent[2]["system"]
+
+
+@pytest.mark.asyncio
+async def test_each_request_is_a_prefix_of_the_next_when_the_last_call_changes_its_format():
+    sent = await _operate_payloads(prompt_caching=True)
+
+    for earlier, later in zip(sent, sent[1:], strict=False):
+        assert _texts(later["messages"])[: len(earlier["messages"])] == _texts(earlier["messages"])
+    assert "summary" in _texts(sent[2]["messages"])[-1][1]
+    assert "approved" in _texts(sent[2]["messages"])[0][1]
+
+
+@pytest.mark.asyncio
+async def test_without_the_option_the_tools_render_in_the_turn_as_before():
+    sent = await _operate_payloads()
+
+    assert len(sent) == 3
+    for payload in sent:
+        assert "system" not in payload
+    assert "Find an order by its id." in _texts(sent[0]["messages"])[-1][1]
+    assert "Find an order by its id." not in _texts(sent[2]["messages"])[-1][1]
+    assert "approved" not in _texts(sent[2]["messages"])[0][1]
