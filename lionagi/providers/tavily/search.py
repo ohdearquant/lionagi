@@ -3,10 +3,9 @@
 
 from __future__ import annotations
 
-from enum import Enum
-
 from pydantic import BaseModel, ConfigDict, Field
 
+from lionagi.ln.types import Enum
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 
@@ -91,7 +90,6 @@ class TavilySearchEndpoint(Endpoint):
     def __init__(self, config: EndpointConfig = None, **kwargs):
         if config is None:
             kwargs.setdefault("timeout", 120)
-            kwargs.setdefault("max_retries", 3)
         super().__init__(config=config, **kwargs)
 
 
@@ -100,5 +98,4 @@ class TavilyExtractEndpoint(Endpoint):
     def __init__(self, config: EndpointConfig = None, **kwargs):
         if config is None:
             kwargs.setdefault("timeout", 120)
-            kwargs.setdefault("max_retries", 3)
         super().__init__(config=config, **kwargs)

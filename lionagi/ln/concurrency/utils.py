@@ -5,9 +5,11 @@ import inspect
 import logging
 import signal
 import threading
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from concurrent.futures import Future as _ThreadFuture
+from contextlib import contextmanager
 from functools import cache, partial
+from types import FrameType
 from typing import Any, ParamSpec, TypeVar
 
 import anyio
@@ -27,6 +29,7 @@ __all__ = (
     "current_time",
     "SigtermInterrupt",
     "sigterm_received",
+    "temporary_signal_handlers",
 )
 
 
@@ -73,6 +76,47 @@ def consume_sigterm_received() -> bool:
 class SigtermInterrupt(BaseException):
     """Raised by run_async() when SIGTERM arrives mid-run; subclasses
     BaseException (not KeyboardInterrupt) so ``except Exception:`` can't swallow it."""
+
+
+def _restore_signal_handlers(installed: list[tuple[int, Any]]) -> None:
+    # Each restore stands alone: a failure on one signal must not strand
+    # the others, and failures log rather than raise (this often runs
+    # while an exception is already propagating).
+    for signum, prior in installed:
+        try:
+            signal.signal(signum, prior)
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "could not restore the previous handler for signal %s; it "
+                "remains overridden for the rest of this process",
+                signum,
+                exc_info=True,
+            )
+
+
+@contextmanager
+def temporary_signal_handlers(
+    handler: Callable[[int, FrameType | None], Any],
+    signals: Sequence[int] = (signal.SIGINT, signal.SIGTERM),
+) -> Iterator[None]:
+    """Install *handler* for *signals* inside the block and give each back on exit.
+
+    Takes over a signal on the same terms as ``run_async``: only on the main
+    thread, and only when its current handler can be reinstalled afterwards.
+    See docs/internals/agent-runtime.md#signal-handler-takeover-and-restore.
+    """
+    installed: list[tuple[int, Any]] = []
+    try:
+        if threading.current_thread() is threading.main_thread():
+            for signum in dict.fromkeys(signals):
+                prior = signal.getsignal(signum)
+                if prior is None:
+                    continue
+                signal.signal(signum, handler)
+                installed.append((signum, prior))
+        yield
+    finally:
+        _restore_signal_handlers(installed)
 
 
 # Installs temporary SIGINT/SIGTERM handlers that cancel the inner task via
@@ -152,19 +196,7 @@ def run_async(coro: Awaitable[T]) -> T:
     try:
         thread.join()
     finally:
-        # Each restore stands alone: a failure on one signal must not strand
-        # the others, and failures log rather than raise (this often runs
-        # while an exception is already propagating).
-        for signum, prior in installed:
-            try:
-                signal.signal(signum, prior)
-            except Exception:
-                logging.getLogger(__name__).warning(
-                    "could not restore the previous handler for signal %s; it "
-                    "remains overridden for the rest of this process",
-                    signum,
-                    exc_info=True,
-                )
+        _restore_signal_handlers(installed)
 
     if _cancel_requested.is_set():
         raise KeyboardInterrupt

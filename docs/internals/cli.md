@@ -869,8 +869,8 @@ but never bind to a row this run did not create.
 **`_do_engine_run` BaseException handling** — `asyncio.CancelledError` and
 `KeyboardInterrupt` are `BaseException` paths that bypass the `except Exception` handler.
 Mark the row cancelled before re-raising so Studio doesn't show it as permanently "running".
-`run_async()` (`lionagi/ln/concurrency/utils.py:86`) cancels the task on SIGINT and then raises
-`KeyboardInterrupt` at `:108`; re-raising here preserves that exit-code behavior (interpreter
+`run_async()` (`lionagi/ln/concurrency/utils.py:124`) cancels the task on SIGINT (`:175`) and then raises
+`KeyboardInterrupt` at `:202`; re-raising here preserves that exit-code behavior (interpreter
 default for SIGINT).
 
 **`_do_engine_run` export_dir sourcing** — serializes the result to stdout as JSON.
@@ -1539,7 +1539,10 @@ clearing, no table), meant for a harness to poll `li monitor run <id>` as a back
 rather than hand-rolling raw sqlite polling against the live WAL-mode `state.db`. Separate code
 path from `_watch_loop` (the human dashboard) — this one blocks until specific `schedule_runs`
 go terminal, then exits with a meaningful code. Ticks via per-call `run_async` (not one
-long-lived `asyncio.sleep` loop) so both SIGINT and SIGTERM get a clean exit.
+long-lived `asyncio.sleep` loop) so both SIGINT and SIGTERM get a clean exit: a signal between
+ticks sets the wait's own flag, and one inside a tick surfaces from `run_async` as
+`KeyboardInterrupt` or `SigtermInterrupt`, which the wait catches. Its own handlers are installed
+with `temporary_signal_handlers` and given back when the wait returns.
 
 **Chain-following** (default on; `--no-chain` to opt out): the scheduler can fire a child run
 from a terminal run's schedule `on_success`/`on_fail` (engine records `chain_parent_id`/
@@ -1639,7 +1642,7 @@ on expiry, whatever is still pending is reported the same way an interrupt would
 exit code is whatever the *initial* bounded set already resolved to; new runs discovered during
 the tail print their own lines but don't feed the final aggregate.
 
-**`_run_tick` KeyboardInterrupt handling** — `run_async` raises a bare `KeyboardInterrupt` when
-SIGINT lands during its own call (it installs a temporary handler for that duration — see
-`run_async`'s docstring in `ln/concurrency/utils.py`). Treated exactly like `interrupted` being
-set between ticks: no traceback, no half-updated state, just the same clean stop.
+**`_run_tick` interrupt handling** — `run_async` raises a bare `KeyboardInterrupt` when SIGINT,
+or `SigtermInterrupt` when SIGTERM, lands during its own call (it installs a temporary handler
+for that duration — see `run_async`'s docstring in `ln/concurrency/utils.py`). Either is treated
+exactly like `interrupted` being set between ticks: no traceback, no half-updated state.
