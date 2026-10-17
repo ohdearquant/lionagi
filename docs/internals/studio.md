@@ -28,13 +28,23 @@ answers it first.
 schema requests (401) from a browser origin that is neither loopback
 (`localhost`, 127.0.0.0/8, `::1`; an IPv4-mapped address is judged as its IPv4
 address) nor the daemon's own origin (Origin authority equal to the request's
-Host, as for the SPA a daemon bound to another address serves itself). A
-request without an Origin header, as from the CLI or a script, passes; `null`,
+Host, as for the SPA a daemon bound to another address serves itself). `null`,
 a second Origin header, or an origin carrying userinfo, a path, a query or a
 fragment is refused. CORS only decides which pages may read a response, so it
 cannot stand in for this check.
 
-Such an origin is admitted only with the launch bearer (`launch_access.py`),
+A request without an Origin header is judged by its `Sec-Fetch-Site`
+(`_fetch_site_accepted_without_origin`), because a browser sends no Origin on a
+GET or HEAD made outside CORS (an image, a script, a top-level navigation) from
+any site. With no `Sec-Fetch-Site`, as from the CLI or a script, it passes; so
+do `none` (a typed address or a bookmark) and `same-origin` (the SPA the daemon
+serves). `same-site`, `cross-site`, any other value and a second header are
+refused like a foreign origin. A browser that sends no `Sec-Fetch-Site` is not
+told apart from a script. The SPA shell and its assets stay public, so a link
+from another site still opens Studio.
+
+A refused origin, or a request without one refused by its `Sec-Fetch-Site`, is
+admitted only with the launch bearer (`launch_access.py`),
 minted per process and held in memory, never put in the environment or written
 anywhere. A page receives it by pairing. `li studio` mints a one-time code, or
 asks a daemon already running on the port for one over
@@ -562,6 +572,26 @@ chained follow-up actions have no v1 equivalent and must be redesigned as a
 flow by hand. Declaration/cli re-export (`managed_by IN ('cli',
 'declaration')`) simply re-validates each row's already-typed
 `authored_spec` back into a `ScheduleMember`.
+
+`resolve_member` reads an `execution.project` written as YAML null (`null`,
+`~` or a blank value) as no project; an omitted project or an empty string
+inherits `metadata.project` (none under `scope: global`). The managed export
+writes each member's project from the row's stored `action_project` (`null` when
+it has none) rather than as authored: the export's document is project-scoped
+even for a global set, so an omitted or empty project written back would
+re-apply under the export's project. Reading the null as "inherit" did the same
+for a row stored without a project. Either way the re-applied row changed its
+project, which is the fallback execution root it uses only when its own stored
+`action_cwd` is unusable and, for the `agent` and `flow_yaml` targets a
+declaration produces, the `--project` its command receives. A row that a
+null-spelled member had given the document's project loses both on its next
+apply: with no project and an `action_cwd` that is set and is not an existing
+absolute directory, the scheduler refuses the fire
+(`SchedulerCwdInheritRefusedError`) where it would have run in the project's
+registered path, if that path was usable; with no usable path the fire was refused
+before as well. A row whose `action_cwd` is an existing absolute directory still
+runs there, and its `agent` or `flow_yaml` command, now without `--project`, takes
+the project detected in that directory.
 
 Round-trip identity across export/re-apply rests on three helpers.
 `_effective_project` picks the project namespace a row is grouped under:

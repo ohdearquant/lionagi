@@ -96,6 +96,23 @@ def _origin_accepted_without_token(origins: list[str], raw_host: str) -> bool:
     return address.is_loopback
 
 
+def _fetch_site_accepted_without_origin(sec_fetch_sites: list[str]) -> bool:
+    """Whether a request with no Origin header may use the API when no token is configured.
+
+    A browser sends no Origin on a GET or HEAD it makes outside CORS: an image, a script or
+    a top-level navigation, from any site. It does send ``Sec-Fetch-Site``, and only
+    ``none`` (a typed address or a bookmark) and ``same-origin`` (the SPA this daemon
+    serves) are accepted. A request without the header, from a command-line or scripted
+    client or an older browser, is accepted. ``same-site``, ``cross-site``, any other value
+    and a second header are refused.
+    """
+    if not sec_fetch_sites:
+        return True
+    if len(sec_fetch_sites) > 1:
+        return False
+    return sec_fetch_sites[0].strip().lower() in ("none", "same-origin")
+
+
 def _bearer_matches(presented: str, token: str) -> bool:
     """Constant-time comparison of a presented Authorization header against the
     expected bearer. `compare_digest` only accepts ASCII-only str, so a header
@@ -477,14 +494,16 @@ def create_app() -> FastAPI:
         if path in _PUBLIC_PATHS or is_public_static or is_pairing:
             return await call_next(request)
         presented = request.headers.get("authorization") or ""
+        origins = request.headers.getlist("origin")
         if token:
             if not _bearer_matches(presented, token):
                 return JSONResponse({"detail": "Unauthorized"}, status_code=401)
-        elif not _origin_accepted_without_token(
-            request.headers.getlist("origin"), request.headers.get("host", "")
+        elif not _origin_accepted_without_token(origins, request.headers.get("host", "")) or (
+            not origins
+            and not _fetch_site_accepted_without_origin(request.headers.getlist("sec-fetch-site"))
         ):
-            # A page on another origin is accepted with the bearer this launch
-            # handed it through pairing.
+            # A page on another origin, or one whose browser sent no Origin, is
+            # accepted with the bearer this launch handed it through pairing.
             bearer = launch_bearer()
             if bearer is None or not _bearer_matches(presented, bearer):
                 return JSONResponse({"detail": _REMOTE_ORIGIN_REFUSAL}, status_code=401)
