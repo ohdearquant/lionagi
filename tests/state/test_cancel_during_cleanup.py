@@ -7,11 +7,9 @@ The first cancel makes SQLAlchemy discard the connection and close it gracefully
 which waits for the statement still running on the driver thread. A second cancel
 interrupts that wait, and SQLAlchemy falls back to stopping the driver. These tests
 pin that the read or write still ends as a cancellation, the pooled connection and
-StateDB's write lock are released, and no cleanup task is left behind. A write
-cancelled before it took SQLite's own write lock leaves the store taking the next
-write. One cancelled after it took that lock leaves it held until the abandoned
-connection is garbage collected, as it does after a single cancel; that is outside
-what these tests pin.
+StateDB's write lock are released, and no cleanup task is left behind. A cancelled
+transaction must also release SQLite's own write lock while the task and its
+traceback still retain the unfinished cursor.
 
 aiosqlite releases before 0.22.1 have no ``stop()``, so SQLAlchemy cannot fall back
 to one and its graceful close ends by itself a moment later. The StateDB tests run
@@ -242,6 +240,61 @@ async def test_two_cancels_inside_a_transaction_end_as_a_cancellation(tmp_path: 
         await _wait_until(lambda: _other_tasks() == [])
         assert _other_tasks() == []
     finally:
+        await db.close()
+
+
+@pytest.mark.parametrize("cancels", [1, 2], ids=["single-cancel", "second-cancel"])
+async def test_cancelled_transaction_releases_sqlite_lock_with_its_traceback_retained(
+    tmp_path: Path, cancels: int
+):
+    """Completed cancellation must release SQLite's lock before traceback collection."""
+    path = tmp_path / "state.db"
+    db = StateDB(path)
+    blocker = None
+    task = None
+    retained = []
+    try:
+        await db.open()
+        await db.execute("CREATE TABLE probe (x INTEGER)")
+        blocker = await _install_blocker(db)
+
+        async def write() -> None:
+            try:
+                async with db.transaction() as conn:
+                    await conn.execute(text("INSERT INTO probe (x) VALUES (1)"))
+                    await conn.execute(text("SELECT block()"))
+            except asyncio.CancelledError as exc:
+                retained.append(exc)
+                raise
+
+        task = asyncio.create_task(write())
+        assert await _wait_until(blocker.entered.is_set), "statement never reached block()"
+        for _ in range(cancels):
+            task.cancel()
+            await asyncio.sleep(0.05)
+        blocker.release.set()
+        done, _ = await asyncio.wait({task}, timeout=10)
+        assert task in done and task.cancelled()
+        assert retained and retained[0].__traceback__ is not None
+        assert db._engine.pool.checkedout() == 0
+
+        # This is SQLite's own writer reservation, independent of the pool and
+        # StateDB's Python lock. Keep both the task and its exception alive.
+        external = sqlite3.connect(path, timeout=0, isolation_level=None)
+        try:
+            external.execute("BEGIN IMMEDIATE")
+            external.execute("ROLLBACK")
+        finally:
+            external.close()
+        assert await db.fetch_all("SELECT x FROM probe") == []
+        await db.execute("INSERT INTO probe (x) VALUES (2)")
+        assert await db.fetch_all("SELECT x FROM probe") == [{"x": 2}]
+    finally:
+        if blocker is not None:
+            blocker.release.set()
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.wait({task}, timeout=10)
         await db.close()
 
 
