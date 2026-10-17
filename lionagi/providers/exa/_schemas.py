@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-from enum import Enum
-
 from pydantic import BaseModel, ConfigDict, Field
+
+from lionagi.ln.types import Enum
 
 
 class LivecrawlType(str, Enum):

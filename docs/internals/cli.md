@@ -870,8 +870,8 @@ but never bind to a row this run did not create.
 **`_do_engine_run` BaseException handling** — `asyncio.CancelledError` and
 `KeyboardInterrupt` are `BaseException` paths that bypass the `except Exception` handler.
 Mark the row cancelled before re-raising so Studio doesn't show it as permanently "running".
-`run_async()` (`lionagi/ln/concurrency/utils.py:86`) cancels the task on SIGINT and then raises
-`KeyboardInterrupt` at `:108`; re-raising here preserves that exit-code behavior (interpreter
+`run_async()` (`lionagi/ln/concurrency/utils.py:124`) cancels the task on SIGINT (`:175`) and then raises
+`KeyboardInterrupt` at `:202`; re-raising here preserves that exit-code behavior (interpreter
 default for SIGINT).
 
 **`_do_engine_run` export_dir sourcing** — serializes the result to stdout as JSON.
@@ -1126,6 +1126,45 @@ delivery is idempotent so those two reaches cannot both fire. The condition is t
 own branch and not the `will_auto_resume` computed earlier in teardown: that one is read before
 the effective status is applied, so suppressing on it could silence a leg that then does not
 recurse.
+
+**`_run_agent` API-model tool loop** — a CLI provider runs its own tool loop, so one
+`branch.operate` call is the whole leg. An API model (`anthropic/...`, `openai/...`) has none, so
+`li agent` runs lionagi's: `Branch.ReAct(tools=True, max_extensions=N)` over the branch's tools,
+bounded as a whole by `--timeout` (`anyio.fail_after`; past it the run ends `timed_out`). The path
+is opt-in per profile and refused otherwise, with the same "only supports CLI endpoints" error as
+before plus a pointer to the opt-in:
+
+- `api_tools: read` — the only tool set: `reader`, `search` and `context`, bound through
+  `create_agent` with `AgentSpec.coding_tools` and the path guard on `reader` scoped to `cwd`
+  (`search` resolves its path inside the workspace itself, and leaves out the matches of any
+  file whose path holds a name the reader refuses, such as `.env`; it reads each match from the
+  NUL grep writes after the file name, so a name holding a newline is read whole, and skips
+  binary files, so no notice names a matching file). Tools that write files or run
+  commands are not offered: they would run with this process's own permissions, and this path
+  has no operating-system sandbox. Any other value is refused before a run exists.
+- `max_extensions` — rounds after the first, a whole number from 1 to 100 (default 10).
+
+`--preset coding` and `--image` are refused for an API model. The leg is handed no MCP server.
+A profile's `khive_injection` keeps its recall on the leg, and its writeback is turned off
+(`_recall_only`): the read set runs in this process, so writeback would store file text in khive.
+An API model is built from its model spec alone: the display options `-v` and `--theme` are CLI
+endpoint settings and are not put on its request, so its key and endpoint stay its own.
+The Anthropic endpoint requires an output limit, so an API leg on it sets `max_tokens` (8192)
+unless the endpoint's settings already carry one. The default role is `reviewer` (a
+declared `role:` key still wins).
+
+The branch records `{"tools", "max_extensions"}` under `metadata["api_launch"]`; the snapshot is
+written to the run's branches dir after every turn, however the turn ends, so `li agent -r`
+finds it and runs the loop again from that record. A stored branch keeps its messages, not its
+tools, so the resume binds the read set again, guarded to its own working directory; a profile's
+current `max_extensions` replaces the recorded bound, and a resume without `-a` runs on the
+recorded one. A resume under a profile that no longer declares `api_tools`, or with `--image`,
+or of a record naming a tool set or a bound this version does not run, is refused before a run
+exists, and the display options stay off the resumed model's request too. A non-CLI branch without the record runs the earlier
+`branch.operate` path unchanged. Queued operator messages drain as further turns of the loop
+(`_drain_pending_steers(run_turn=...)`), on the budget the deadline leaves. Messages persist
+through the same branch-level hooks as a CLI leg; there is no stream dir, since nothing streams
+from a subprocess.
 
 ## `_agent_depth.py` — inherited agent-depth env marker
 
@@ -1501,7 +1540,10 @@ clearing, no table), meant for a harness to poll `li monitor run <id>` as a back
 rather than hand-rolling raw sqlite polling against the live WAL-mode `state.db`. Separate code
 path from `_watch_loop` (the human dashboard) — this one blocks until specific `schedule_runs`
 go terminal, then exits with a meaningful code. Ticks via per-call `run_async` (not one
-long-lived `asyncio.sleep` loop) so both SIGINT and SIGTERM get a clean exit.
+long-lived `asyncio.sleep` loop) so both SIGINT and SIGTERM get a clean exit: a signal between
+ticks sets the wait's own flag, and one inside a tick surfaces from `run_async` as
+`KeyboardInterrupt` or `SigtermInterrupt`, which the wait catches. Its own handlers are installed
+with `temporary_signal_handlers` and given back when the wait returns.
 
 **Chain-following** (default on; `--no-chain` to opt out): the scheduler can fire a child run
 from a terminal run's schedule `on_success`/`on_fail` (engine records `chain_parent_id`/
@@ -1601,7 +1643,7 @@ on expiry, whatever is still pending is reported the same way an interrupt would
 exit code is whatever the *initial* bounded set already resolved to; new runs discovered during
 the tail print their own lines but don't feed the final aggregate.
 
-**`_run_tick` KeyboardInterrupt handling** — `run_async` raises a bare `KeyboardInterrupt` when
-SIGINT lands during its own call (it installs a temporary handler for that duration — see
-`run_async`'s docstring in `ln/concurrency/utils.py`). Treated exactly like `interrupted` being
-set between ticks: no traceback, no half-updated state, just the same clean stop.
+**`_run_tick` interrupt handling** — `run_async` raises a bare `KeyboardInterrupt` when SIGINT,
+or `SigtermInterrupt` when SIGTERM, lands during its own call (it installs a temporary handler
+for that duration — see `run_async`'s docstring in `ln/concurrency/utils.py`). Either is treated
+exactly like `interrupted` being set between ticks: no traceback, no half-updated state.

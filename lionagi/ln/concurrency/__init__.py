@@ -32,6 +32,7 @@ from .utils import (
     run_sync,
     sigterm_received,
     sleep,
+    temporary_signal_handlers,
 )
 
 ConcurrencyEvent = Event
@@ -78,4 +79,5 @@ __all__ = (
     "sleep",
     "SigtermInterrupt",
     "sigterm_received",
+    "temporary_signal_handlers",
 )

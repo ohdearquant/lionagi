@@ -44,6 +44,7 @@ dataclass directly.
 | `mcp_servers` | `list[str] \| None` | `None` | MCP server names to load from `.mcp.json` |
 | `mcp_config_path` | `str \| None` | `None` | Explicit path to `.mcp.json` (overrides auto-discovery) |
 | `context_management` | `bool` | `True` | Include the coding toolkit's context tool and prompt guidance |
+| `coding_tools` | `tuple[str, ...] \| None` | `None` | The coding tools to bind when `tools` names `"coding"`; `None` binds the default set |
 
 `mcp_servers` and `mcp_config_path` are not `compose()` keyword arguments — set them as
 attributes after building the spec:

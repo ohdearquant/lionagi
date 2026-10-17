@@ -1820,7 +1820,7 @@ def test_watch_loop_recomputes_since_every_tick(monkeypatch: pytest.MonkeyPatch)
 
     handlers: dict[int, Any] = {}
     monkeypatch.setattr(
-        monitor_mod.signal, "signal", lambda signum, handler: handlers.setdefault(signum, handler)
+        signal, "signal", lambda signum, handler: handlers.setdefault(signum, handler)
     )
 
     ticks = iter([100.0, 200.0])
@@ -1984,7 +1984,7 @@ def test_watch_mode_sigint_clean(temp_db_path: Path, monkeypatch: pytest.MonkeyP
 
     handlers: dict[int, Any] = {}
     monkeypatch.setattr(
-        monitor_mod.signal,
+        signal,
         "signal",
         lambda signum, handler: handlers.__setitem__(signum, handler),
     )
