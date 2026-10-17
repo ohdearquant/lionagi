@@ -189,8 +189,7 @@ def _emit_startup_warnings() -> None:
                 "requests with neither Origin nor Sec-Fetch-Site are accepted from "
                 "other machines that can reach that address. This is unsafe in "
                 "containers or cloud deployments. Set LIONAGI_STUDIO_AUTH_TOKEN to "
-                "require a bearer token. "
-                + _OPEN_MODE_DECISION_NOTICE
+                "require a bearer token. " + _OPEN_MODE_DECISION_NOTICE
             )
         else:
             _log.warning(
