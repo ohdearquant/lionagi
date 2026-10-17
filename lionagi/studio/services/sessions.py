@@ -338,7 +338,7 @@ class SessionFilter:
         self.search = search
         self.kinds = kinds
 
-    def where(self) -> tuple[str, list[Any]]:
+    def where(self, *, user_label_available: bool = True) -> tuple[str, list[Any]]:
         clauses: list[str] = []
         params: list[Any] = []
         # A mirrored CLI transcript attributed to the run that spawned it as
@@ -354,13 +354,19 @@ class SessionFilter:
             params.append(_escape_like(self.playbook))
         if self.search:
             escaped = _escape_like(self.search)
+            name_columns = ["s.name", "s.agent_name"]
+            if user_label_available:
+                name_columns.append("s.user_label")
             clauses.append(
-                "(LOWER(COALESCE(s.name, '')) LIKE '%' || LOWER(?) || '%' "
-                f"ESCAPE '{_LIKE_ESCAPE_CHAR}' "
-                "OR LOWER(COALESCE(s.agent_name, '')) LIKE '%' || LOWER(?) || '%' "
-                f"ESCAPE '{_LIKE_ESCAPE_CHAR}')"
+                "("
+                + " OR ".join(
+                    f"LOWER(COALESCE({column}, '')) LIKE '%' || LOWER(?) || '%' "
+                    f"ESCAPE '{_LIKE_ESCAPE_CHAR}'"
+                    for column in name_columns
+                )
+                + ")"
             )
-            params.extend([escaped, escaped])
+            params.extend([escaped] * len(name_columns))
         if self.statuses:
             ordered = sorted(self.statuses)
             placeholders = ",".join("?" for _ in ordered)
@@ -401,8 +407,11 @@ async def count_sessions(where: SessionFilter | None = None) -> int:
     require_file_store()
     if not store_exists():
         return 0
-    clause, params = (where or SessionFilter()).where()
     async with _open_db(store_path()) as db:
+        user_label = await _user_label_selection(db, alias="s")
+        clause, params = (where or SessionFilter()).where(
+            user_label_available=user_label != "NULL AS user_label"
+        )
         cur = await db.execute(
             f"SELECT COUNT(*) AS n FROM sessions s {clause}",  # noqa: S608
             params,
@@ -458,7 +467,6 @@ async def list_sessions(
 
     limit = max(1, min(int(limit), MAX_SESSION_PAGE))
     offset = max(0, int(offset))
-    clause, params = (where or SessionFilter()).where()
     order_by = _SESSION_SORTS.get(sort, _SESSION_SORTS["recent"])
 
     async with _open_db(store_path()) as db:
@@ -470,6 +478,9 @@ async def list_sessions(
             await _ensure_table(db)
         approximate_end = await _approximate_end_selection(db, alias="s")
         user_label = await _user_label_selection(db, alias="s")
+        clause, params = (where or SessionFilter()).where(
+            user_label_available=user_label != "NULL AS user_label"
+        )
         cur = await db.execute(
             f"""
             WITH page AS (

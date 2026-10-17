@@ -780,6 +780,8 @@ def _classify_phantom(
 
 
 async def list_phantom_sessions(*, stale_hours: float = 1.0) -> list[dict[str, Any]]:
+    from .sessions import _user_label_selection
+
     require_file_store()
     if not store_exists():
         return []
@@ -787,14 +789,16 @@ async def list_phantom_sessions(*, stale_hours: float = 1.0) -> list[dict[str, A
     stale_seconds = stale_hours * 3600
     phantoms: list[dict[str, Any]] = []
     async with _open_db(store_path()) as db:
+        user_label = await _user_label_selection(db)
         cur = await db.execute(
-            """
-            SELECT id, name, playbook_name, started_at, updated_at, artifacts_path,
+            f"""
+            SELECT id, name, {user_label}, playbook_name, agent_name, show_play_name,
+                   started_at, updated_at, artifacts_path,
                    status, node_metadata
             FROM sessions
             WHERE status = 'running'
             ORDER BY updated_at DESC
-            """
+            """  # noqa: S608 — selection is a fixed column name or NULL
         )
         rows = await cur.fetchall()
     # One scan, one answer per artifact root: sessions repeat their roots
@@ -823,7 +827,7 @@ async def list_phantom_sessions(*, stale_hours: float = 1.0) -> list[dict[str, A
             phantoms.append(
                 {
                     "session_id": row["id"],
-                    "playbook": row["playbook_name"] or row["name"],
+                    "playbook": resolve_display_name(dict(row)),
                     "started_at": row["started_at"],
                     "updated_at": row["updated_at"] or 0.0,
                     "artifacts_path": row["artifacts_path"],

@@ -24,7 +24,9 @@ project those rows ran under. To keep the project, name it in those members.
 - Studio sessions can set or clear an explicit display label through
   `PUT /api/sessions/{session_id}`. Labels take precedence in session list and
   detail names without changing activity timestamps; clearing a label restores
-  the existing fallback name. The store adds nullable `sessions.user_label`.
+  the existing fallback name. Operator renames change this explicit label, and
+  search, run references, proposals and CLI displays use it. The store adds
+  nullable `sessions.user_label`.
 - `lionagi.ln.concurrency.temporary_signal_handlers(handler, signals=(SIGINT, SIGTERM))`, a
   context manager that installs one handler for the length of a block and restores each prior
   handler on exit. Like `run_async`, it installs nothing off the main thread and leaves alone a

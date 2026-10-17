@@ -169,7 +169,9 @@ updated_at                  REAL
   `updated_at`, and `last_message_at`. A stored label takes precedence in list and
   detail display names; clearing it restores the existing fallback chain. Labels are
   stripped, limited to 160 characters, and reject Unicode categories Cc, Cf, Zl, and
-  Zp. Null or an empty stripped label clears the override.
+  Zp. Null or an empty stripped label clears the override. The session PUT route
+  and an approved Operator run rename use this setter. Search and run-reference
+  resolution match labels within the same project scope as other names.
 - `allocate_run` creates `branches/` and `stream/`, but does not create the artifact
   directory unless the caller invokes `ensure_artifact_root` or work writes there.
 - `agent_artifact_dir` requires a safe path component and verifies containment after

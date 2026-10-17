@@ -1460,8 +1460,10 @@ it launches a new invocation that either continues an `agent` run's branch
 with a new instruction (`li agent -r`) or replays a `play`/`flow`/`show-play`
 run's persisted checkpoint (`li o flow --resume`), and the two argument
 shapes are mutually exclusive because the checkpoint owns the plan for the
-second kind. `rename_session` renames a run's own record; it is
-deliberately separate from renaming the Operator conversation itself
+second kind. `rename_session` writes the approved name to the run's explicit
+`user_label` through the dedicated setter. It replaces a previous label without
+changing the system name or activity timestamps. This is separate from
+renaming the Operator conversation itself
 (`OperatorStore.update_conversation`), since one conversation can discuss
 many runs across its life.
 
@@ -1470,7 +1472,7 @@ many runs across its life.
 `run_progress.py::resolve_run` (reused by `run_findings.py`,
 `resume_run.py`, and `rename_session.py`) and `cancel_run.py`'s own
 `_resolve_run` both accept the same reference vocabulary: an exact run/session
-id, an id prefix, a name or playbook substring (minimum 3
+id, an id prefix, a label, name or playbook substring (minimum 3
 characters), or the literal `"current"`. Id/prefix resolution reuses
 `lionagi.cli._util.fetch_unique_row`, the same primitive `li kill` uses, so
 a reference this tool accepts resolves identically to one typed at the CLI.
