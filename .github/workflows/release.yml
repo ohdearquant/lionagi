@@ -3,39 +3,85 @@ name: Release
 on:
   release:
     types: [published]
-  # Manual re-publish of the container image for a version whose release run
-  # did not push one. Three releases have lost their image and none of them
-  # could get it back, because a release-triggered run is the only thing that
-  # builds the image and a release publishes exactly once. Re-running the old
-  # run does not help: it rebuilds the tag's tree, which is the tree that
-  # failed. Dispatch at a ref that carries the fix instead.
-  #
-  # The wheel is never re-published this way -- see the deploy job's guard.
-  # Dispatch at a ref whose content matches the version being named, or the
-  # image will not match the wheel already on PyPI.
+  # Repair an image using this workflow on the default branch, while testing
+  # and building the exact source that published the requested wheel.
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish the image for, without the leading v (e.g. 0.35.1)"
+        description: "Published version to repair from the default branch, without v (e.g. 0.35.1)"
         required: true
         type: string
 
 permissions:
   contents: read
-  packages: write
+
+env:
+  DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+  INPUT_VERSION: ${{ inputs.version }}
+  RELEASE_TAG: ${{ github.event.release.tag_name }}
+  RELEASE_ID: ${{ github.event.release.id }}
+  RELEASE_ACTION: ${{ github.event.action }}
 
 jobs:
-  test:
-    # This repository also publishes lion1, under tags of its own (lion1-v*).
-    # Only a lionagi release, a v* tag, publishes lionagi's wheel and image;
-    # every later job needs this one, so skipping it skips them all.
+  source:
+    permissions:
+      contents: read
+      actions: read
+    # Only the lionagi v-prefixed release tag namespace belongs here.
     if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v')
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      sha: ${{ steps.release.outputs.sha }}
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/setup-python@v7
+      with:
+        python-version: '3.12'
+    - name: Validate the release and resolve its source
+      id: release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python scripts/resolve_image_release.py
+
+  test:
+    permissions:
+      contents: read
+    needs: source
     runs-on: ubuntu-latest
     strategy:
       matrix:
         python-version: ['3.10', '3.11', '3.12', '3.13']
     steps:
+    - name: Require the resolved source commit
+      shell: bash
+      env:
+        RESOLVED_SHA: ${{ needs.source.outputs.sha }}
+      run: |
+        if [[ ! "${RESOLVED_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+          echo '::error::the release did not resolve a full source commit'
+          exit 1
+        fi
+    # Check out the release's tag ref, never a commit computed by an earlier job:
+    # a release event carries the tag, and a manual repair names the published
+    # version's tag. The next step then requires that tag to be the commit the
+    # source job resolved and validated.
     - uses: actions/checkout@v7
+      with:
+        ref: ${{ github.event_name == 'release' && github.ref || format('refs/tags/v{0}', inputs.version) }}
+        persist-credentials: false
+    - name: Require the checked-out tag to be the resolved source
+      shell: bash
+      env:
+        RESOLVED_SHA: ${{ needs.source.outputs.sha }}
+      run: |
+        if [[ "$(git rev-parse HEAD)" != "${RESOLVED_SHA}" ]]; then
+          echo '::error::the checked-out tag is not the resolved source commit'
+          exit 1
+        fi
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v7
       with:
@@ -57,17 +103,35 @@ jobs:
         uv run pytest --asyncio-mode=auto --maxfail=1 --disable-warnings tests/
 
   deploy:
-    needs: test
+    permissions:
+      contents: read
+    needs: [source, test]
     # Publishing the wheel belongs to the release that created the version, and
     # to nothing else. A manual dispatch exists to republish an image for a
     # version that already shipped, so its wheel is already on PyPI; letting
     # this job run would attempt a duplicate upload and fail the run for a
-    # reason unrelated to what was asked for. The docker job depends on test
-    # rather than on this, so skipping here does not skip the image.
+    # reason unrelated to what was asked for. The image job checks PyPI after
+    # this job finishes, including when the client reports failure after PyPI
+    # has accepted the wheel.
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
+    # Bound the wheel build and upload so a stalled step cannot hold the image
+    # job, which waits on this job, for GitHub's default job limit.
+    timeout-minutes: 30
     steps:
+    - name: Require the resolved source commit
+      shell: bash
+      env:
+        RESOLVED_SHA: ${{ needs.source.outputs.sha }}
+      run: |
+        if [[ ! "${RESOLVED_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+          echo '::error::the release did not resolve a full source commit'
+          exit 1
+        fi
     - uses: actions/checkout@v7
+      with:
+        ref: ${{ needs.source.outputs.sha }}
+        persist-credentials: false
     - name: Set up Python
       uses: actions/setup-python@v7
       with:
@@ -93,10 +157,52 @@ jobs:
       run: uv run twine upload dist/*
 
   docker:
-    needs: test
+    needs: [source, test, deploy]
+    if: ${{ !cancelled() && needs.source.result == 'success' && needs.test.result == 'success' && (github.event_name == 'release' || github.event_name == 'workflow_dispatch') }}
+    # Keep the PyPI decision, image push and digest verification in one slot.
+    concurrency:
+      group: lion-studio-image
+      cancel-in-progress: false
+    timeout-minutes: 60
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    outputs:
+      digest: ${{ steps.image.outputs.digest }}
+      publish_latest: ${{ steps.release.outputs.publish_latest }}
     steps:
+    - name: Require the resolved source commit
+      shell: bash
+      env:
+        RESOLVED_SHA: ${{ needs.source.outputs.sha }}
+      run: |
+        if [[ ! "${RESOLVED_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+          echo '::error::the release did not resolve a full source commit'
+          exit 1
+        fi
+    # Keep current workflow helpers separate from an older release's source.
     - uses: actions/checkout@v7
+      with:
+        ref: ${{ github.sha }}
+        path: .release-control
+        persist-credentials: false
+    - uses: actions/checkout@v7
+      with:
+        ref: ${{ needs.source.outputs.sha }}
+        path: source
+        persist-credentials: false
+    - uses: actions/setup-python@v7
+      with:
+        python-version: '3.12'
+    - name: Revalidate the source and published wheel
+      id: release
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RESOLVED_SHA: ${{ needs.source.outputs.sha }}
+        RESOLVED_VERSION: ${{ needs.source.outputs.version }}
+      run: python .release-control/scripts/resolve_image_release.py --prepare-image
 
     - name: Set up QEMU
       uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1  # v4
@@ -121,115 +227,54 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    # On a release, the ref name is the tag and stripping the v gives the
-    # version. On a dispatch the ref name is whatever branch was dispatched, so
-    # the input is the only thing that knows the version and it is required.
-    # Refusing an empty result matters more than it looks: an unset version
-    # silently tags the image ":" and "latest", which publishes a broken tag
-    # under a name that reads as success.
-    - name: Resolve version
-      id: version
-      env:
-        INPUT_VERSION: ${{ inputs.version }}
-      run: |
-        set -euo pipefail
-        version="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
-        if [ -z "${version}" ]; then
-          echo "::error::could not resolve a version from inputs or ${GITHUB_REF_NAME}"
-          exit 1
-        fi
-        echo "version=${version}" >> "$GITHUB_OUTPUT"
-
     - name: Build and push Docker image (multi-arch)
+      id: image
       uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7
       with:
-        context: .
-        file: apps/studio/Dockerfile
+        context: ./source
+        file: source/apps/studio/Dockerfile
         push: true
         platforms: linux/amd64,linux/arm64
         tags: |
-          ghcr.io/ohdearquant/lion-studio:latest
-          ghcr.io/ohdearquant/lion-studio:${{ steps.version.outputs.version }}
+          ghcr.io/ohdearquant/lion-studio:${{ needs.source.outputs.version }}
+          ${{ steps.release.outputs.publish_latest == 'true' && 'ghcr.io/ohdearquant/lion-studio:latest' || '' }}
+        labels: |
+          org.opencontainers.image.version=${{ needs.source.outputs.version }}
+          org.opencontainers.image.revision=${{ needs.source.outputs.sha }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
-  # Reads the tag back from the registry rather than trusting the push step's
-  # exit, because those are different claims and the second is the one a user
-  # depends on. Its own job so it still runs when the docker job failed or was
-  # cancelled, which is how both missing images happened, and so an absent image
-  # fails something whose name says what is missing.
+    - name: Verify the published image digest
+      if: ${{ !cancelled() && steps.image.outcome != 'skipped' }}
+      env:
+        VERSION: ${{ needs.source.outputs.version }}
+        EXPECTED_DIGEST: ${{ steps.image.outputs.digest }}
+        PUBLISH_LATEST: ${{ steps.release.outputs.publish_latest }}
+      run: bash .release-control/scripts/verify_release_image.sh
+
+  # The registry read moved into the docker job, so it runs in the same
+  # concurrency slot as the push. This job keeps a named image-verification gate
+  # over the docker job's result: a skipped, cancelled or failed image job, or a
+  # build that produced no valid digest, still fails here rather than ending the
+  # run green.
   verify-image:
-    needs: docker
-    if: ${{ always() && needs.docker.result != 'skipped' }}
+    permissions:
+      contents: read
+    needs: [source, docker]
+    if: ${{ always() && needs.source.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
-    # On a release, the ref name is the tag and stripping the v gives the
-    # version. On a dispatch the ref name is whatever branch was dispatched, so
-    # the input is the only thing that knows the version and it is required.
-    # Refusing an empty result matters more than it looks: an unset version
-    # silently tags the image ":" and "latest", which publishes a broken tag
-    # under a name that reads as success.
-    - name: Resolve version
-      id: version
+    - name: Require successful image publication and verification
+      shell: bash
       env:
-        INPUT_VERSION: ${{ inputs.version }}
+        DOCKER_RESULT: ${{ needs.docker.result }}
+        EXPECTED_DIGEST: ${{ needs.docker.outputs.digest }}
       run: |
-        set -euo pipefail
-        version="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
-        if [ -z "${version}" ]; then
-          echo "::error::could not resolve a version from inputs or ${GITHUB_REF_NAME}"
+        if [ "${DOCKER_RESULT}" != success ]; then
+          echo '::error::image publication or digest verification did not succeed'
           exit 1
         fi
-        echo "version=${version}" >> "$GITHUB_OUTPUT"
-
-    - name: Verify the image is in the registry
-      env:
-        VERSION: ${{ steps.version.outputs.version }}
-      run: |
-        set -euo pipefail
-        repo=ohdearquant/lion-studio
-
-        list_tags() {
-          local token
-          token="$(curl -sSf "https://ghcr.io/token?scope=repository:${repo}:pull" | jq -r '.token')" || return 1
-          curl -sSf -H "Authorization: Bearer ${token}" \
-            "https://ghcr.io/v2/${repo}/tags/list" | jq -r '.tags[]?'
-        }
-
-        query_ok=0
-        count=0
-
-        # A newly pushed tag can take a moment to appear, so give it a few tries
-        # before calling it absent.
-        for attempt in 1 2 3 4 5; do
-          if tags="$(list_tags)"; then
-            query_ok=1
-          else
-            query_ok=0
-            tags=""
-          fi
-          count="$(printf '%s\n' "${tags}" | grep -c . || true)"
-
-          # Positive control. An absence only means something if the query that
-          # reported it finished and returned some other tag. Both halves are
-          # needed: an empty listing and a missing tag read identically, and a
-          # read that dies partway leaves output behind, so output alone would
-          # let a broken read be reported as a missing image. Status and content
-          # are separate claims and this asks for both.
-          if [ "${query_ok}" -eq 0 ] || [ "${count}" -eq 0 ]; then
-            echo "Attempt ${attempt}: could not list tags for ${repo}."
-          elif printf '%s\n' "${tags}" | grep -qxF "${VERSION}"; then
-            echo "ghcr.io/${repo}:${VERSION} is present; ${count} tags listed."
-            exit 0
-          else
-            echo "Attempt ${attempt}: ${count} tags listed, ${VERSION} not among them."
-          fi
-          sleep 15
-        done
-
-        if [ "${query_ok}" -eq 0 ] || [ "${count}" -eq 0 ]; then
-          echo "::error::Could not list tags for ${repo}. This check cannot tell a missing image from a broken read, so it is failing rather than passing."
-        else
-          echo "::error::ghcr.io/${repo}:${VERSION} is not in the registry. The registry answered with ${count} other tags, so this is the image missing rather than the check failing. Check the docker job for why the push did not land."
+        if [[ ! "${EXPECTED_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+          echo '::error::the image build did not produce a valid digest'
+          exit 1
         fi
-        exit 1

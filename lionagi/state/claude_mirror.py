@@ -435,9 +435,8 @@ async def link_engine_child_session(
     if existing is None:
         return False
     await db.update_session(sid, name=name)
-    # Flat scalar on node_metadata, so the atomic merge applies (nested-object
-    # values would trip the merge's dialect-parity guard — see
-    # link_escalation_session below).
+    # A flat scalar merges into node_metadata without touching the other keys
+    # another writer stored; see link_escalation_session below.
     await db.merge_session_node_metadata(sid, {"engine_parent_run_id": parent_run_id})
     return True
 
@@ -482,10 +481,8 @@ async def link_escalation_session(
         fields["project"] = project
         fields["project_source"] = project_source
     await db.update_session(sid, **fields)
-    # escalated_from_session is a flat scalar, so this can go through the
-    # atomic merge (unlike the lineage/import-tally writers elsewhere in the
-    # mirror, which stamp a nested-object value and would trip the merge's
-    # dialect-parity guard) — closing the same read-modify-write clobber the
-    # sweep fix closes, at no cost.
+    # escalated_from_session is a flat scalar, so this merges into
+    # node_metadata rather than rewriting the column — closing the same
+    # read-modify-write clobber the sweep fix closes, at no cost.
     await db.merge_session_node_metadata(sid, {"escalated_from_session": parent_op_id})
     return True

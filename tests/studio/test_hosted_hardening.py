@@ -749,7 +749,8 @@ class TestRemoteOriginNeedsToken:
         with caplog.at_level("WARNING", logger=app_mod.__name__):
             app_mod._emit_startup_warnings()
 
-        assert "a page on any other origin is refused" in caplog.text
+        assert "Sec-Fetch-Site none/same-origin pass" in caplog.text
+        assert "Origin outside loopback/the daemon needs the paired bearer" in caplog.text
 
 
 @pytest.mark.integration
