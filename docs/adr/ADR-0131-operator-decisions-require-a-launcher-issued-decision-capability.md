@@ -13,7 +13,8 @@
 Purpose: in a daemon without `LIONAGI_STUDIO_AUTH_TOKEN`, any process that can reach the listener can
 allow or deny an Operator proposal, so a run whose automatically allowed tool can make HTTP requests
 to the daemon can approve its own proposals. This record makes a decision require a capability that
-only the process that launched the daemon can hand to a page, and that no HTTP request can obtain.
+only the daemon mints, handed to a page by its launcher or, for a reconnect, over a channel only the
+daemon's own OS user can open, and that no HTTP request can obtain.
 
 ## Context
 
@@ -51,14 +52,24 @@ scope `operator:decide`. API admission (the token, the no-token middleware rule)
 longer sufficient to decide. `LIONAGI_STUDIO_AUTH_TOKEN` admits requests as today and cannot decide
 or mint.
 
-**D2 — only the launching process issues a pairing code.** The daemon mints a code in process before it
-serves, and the launcher delivers it in the URL fragment of the page it opens, as today. The HTTP
-mint route is retired: it answers 410 after admission, whatever the headers or token. A later
-`li studio` against a daemon that is already running cannot obtain a code: it tells the operator to
-use the page already paired or to stop and restart the daemon, and it never stops a running daemon
-itself. Redemption (`POST /api/studio/pair`) stays an HTTP route: a code is single-use, expires after
-120 seconds, is bound to the origins the launcher named, and is consumed atomically; a daemon restart
-invalidates every code and capability.
+**D2 — codes are minted in process, at launch or over a same-user reconnect channel, never over
+HTTP.** The daemon mints a code in process before it serves, and the launcher delivers it in the URL
+fragment of the page it opens, as today. The HTTP mint route is retired: it answers 410 after
+admission, whatever the headers or token. Redemption (`POST /api/studio/pair`) stays an HTTP route: a
+code is single-use, expires after 120 seconds, is bound to the origins the launcher named, and is
+consumed atomically; a daemon restart invalidates every code and capability.
+
+A later `li studio` against a daemon that is already running obtains its code over the **reconnect
+channel**, so a closed tab never leaves a pending proposal undecidable: the daemon listens on a unix
+socket in its state directory, created with mode 0600 inside a 0700 directory before it serves and
+removed at exit (a socket file left by a daemon that no longer runs is replaced at start). On each
+connection the daemon reads the peer's user id from the socket (`SO_PEERCRED`, `getpeereid`) and
+refuses any id other than its own; for its own user it mints one code in process, under every code
+rule above, and returns it on the socket, which carries nothing else. The CLI opens a page with that
+code as a launch does, and never stops a running daemon itself. The channel is not an HTTP route and
+no TCP listener serves it. Any process running as the daemon's own OS user can obtain a code through
+it, which D6 already places outside the guarantee. On a platform without unix sockets there is no
+reconnect, and the CLI says to restart the daemon.
 
 **D3 — a redeemed code yields one capability per redemption.** Redemption returns the admission bearer
 as today and, separately, the decision capability. The page keeps the capability in `sessionStorage`
@@ -102,8 +113,11 @@ rule and the token's narrower meaning.
 ## Landing order
 
 1. D7's marker and D1's capability store, with the decision routes still accepting today's requests.
-2. D2: issuance at launch, the 410 mint route, the reconnect message; D3: redemption returns the
-   capability; the frontend stores and sends it.
+2. D2: issuance at launch and the 410 mint route; D3: redemption returns the capability; the frontend
+   stores and sends it.
+
+   2b. D2's reconnect channel, with the CLI's reconnect moved from the HTTP mint to it. It ships in
+   the same release as step 2's 410, so no released daemon is without a reconnect, and before step 3.
 3. D4: the principal check in `decide()` and the refusals. From this step the contract is version 2.
 4. D5's adapters, one launch path per change.
 
@@ -119,6 +133,11 @@ rule and the token's narrower meaning.
 - Codes: unknown, expired, wrong origin, replayed and from a previous daemon start are refused; two
   concurrent redemptions of one code yield one capability; a refused wrong-origin attempt does not
   consume a valid code.
+- Reconnect: with a pending proposal and its paired tab closed, a second `li studio` pairs a new page
+  through the socket and that page decides the proposal, with the waiting run still alive; a peer with
+  another user id is refused; the socket is mode 0600 in a 0700 directory and gone after exit; its
+  code obeys every code rule above; no HTTP request, with any headers or the admission token, obtains
+  a code.
 - Capability: expiry, disconnect and restart each refuse a later decision; a capability sent to
   another origin, or with a redirect, is refused; reads and `/health` work without it.
 - `decide()` called directly without a verified principal fails before touching the store; a decision
@@ -135,7 +154,6 @@ before the release that ships step 3.
 
 ## Out of scope
 
-- A reconnect channel that lets a second `li studio` pair a page with a running daemon.
 - A Docker adapter.
 - Authority for any route other than the two decision routes, and isolation of tools from the store
   or the browser profile.
