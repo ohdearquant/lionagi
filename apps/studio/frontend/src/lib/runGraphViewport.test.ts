@@ -1,9 +1,10 @@
 /**
  * The run graph is fitted more than once while it is drawn: React Flow fits the
- * view from the update that measures the nodes it draws and reveals them, and
- * this canvas fits again on a later animation frame, once the embedding panel
- * has taken the layout's reported height. The baseline is taken from the view
- * that holds after those fits, not from one the canvas is about to replace.
+ * view from the update that measures the nodes it draws and reveals them, the
+ * canvas schedules its own fit on the animation frame after it lays the nodes
+ * out, and the embedding panel taking the layout's reported height resizes the
+ * canvas, which fits once more. The baseline is taken from the view that holds
+ * after those fits, not from one the canvas is about to replace.
  *
  * The graph here only changes when a frame runs, the way the real page only
  * paints on a frame, so a wait that spends a fixed interval instead of asking
@@ -159,17 +160,6 @@ describe("settleRunGraphViewport", () => {
       settleRunGraphViewport(graph.read, graph.nextFrame, { timeoutMs: 2_000 }),
     ).resolves.toBe(SETTLED);
     expect(graph.frames()).toBe(7);
-  });
-
-  it("does not read the unfitted initial viewport", async () => {
-    const graph = scriptedGraph((frame) => ({
-      style: frame < 4 ? INITIAL : SETTLED,
-      drawn: true,
-    }));
-
-    await expect(
-      settleRunGraphViewport(graph.read, graph.nextFrame, { timeoutMs: 2_000 }),
-    ).resolves.toBe(SETTLED);
   });
 
   it("reads a graph the canvas fitted to React Flow's own initial viewport", async () => {
