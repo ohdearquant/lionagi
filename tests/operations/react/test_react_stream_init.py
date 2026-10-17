@@ -13,13 +13,32 @@ from lionagi.testing import TestBranch as ScriptedBranch
 from ._tool_trace import tool_branch
 
 
+class _ToolOrderMismatch(AssertionError):
+    """The only failure the strict tool-order cases expect."""
+
+
+def _assert_tool_order(trace, expected):
+    if trace != expected:
+        raise _ToolOrderMismatch(f"tool execution order: {trace!r} != {expected!r}")
+
+
+def _require_react_result(branch, result, *, answer, outputs, model_calls):
+    if result != answer:
+        pytest.fail(f"wrong ReAct answer: {result!r} != {answer!r}")
+    actual = [(m.function, m.output) for m in branch.messages if isinstance(m, ActionResponse)]
+    if actual != outputs:
+        pytest.fail(f"wrong ActionResponse outputs: {actual!r} != {outputs!r}")
+    calls = ScriptedBranch.calls(branch)
+    if len(calls) != model_calls:
+        pytest.fail(f"wrong model-call count: {len(calls)} != {model_calls}")
+    return calls
+
+
 def _each_ran_once(trace, expected):
     """Fail outright unless every expected trace entry occurred exactly once.
 
-    The ordering tests below are strict xfails that accept an AssertionError, so a
-    tool that never ran, or ran twice, would also read as the expected failure. A
-    pytest failure is not an AssertionError, so it reports a broken precondition
-    as a failure instead.
+    The ordering tests below expect only _ToolOrderMismatch. A pytest failure
+    reports a missing, repeated or wrong-argument call as a broken precondition.
     """
     if sorted(trace) != sorted(expected):
         pytest.fail(f"tools did not each run once: {trace!r}")
@@ -72,7 +91,7 @@ async def test_single_tool_invocation():
             id="declared-on-the-second-round-only",
             marks=pytest.mark.xfail(
                 strict=True,
-                raises=AssertionError,
+                raises=_ToolOrderMismatch,
                 reason=(
                     "an analysis turn's declared action strategy should govern its own "
                     "tool batch, but the batch takes the strategy of the analysis before it"
@@ -117,9 +136,15 @@ async def test_multiple_tool_calls_sequential_strategy(first_round):
         [multiply, divide],
         "50",
     )
-    assert (
-        await branch.ReAct(instruction="Calculate (100 * 5) / 10", tools=True, max_extensions=1)
-        == "50"
+    result = await branch.ReAct(
+        instruction="Calculate (100 * 5) / 10", tools=True, max_extensions=1
+    )
+    api_calls = _require_react_result(
+        branch,
+        result,
+        answer="50",
+        outputs=[("multiply", 500), ("divide", 50), ("multiply", 6)],
+        model_calls=3,
     )
     expected = [
         ("start", "multiply", 100, 5),
@@ -130,24 +155,16 @@ async def test_multiple_tool_calls_sequential_strategy(first_round):
         ("end", "multiply", 2, 3),
     ]
     _each_ran_once(trace, expected)
-    assert trace == expected
-    responses = [m for m in branch.messages if isinstance(m, ActionResponse)]
-    assert [(m.function, m.output) for m in responses] == [
-        ("multiply", 500),
-        ("divide", 50),
-        ("multiply", 6),
-    ]
-    api_calls = ScriptedBranch.calls(branch)
-    assert len(api_calls) == 3
     final_messages = str(api_calls[-1].payload["messages"])
-    assert "output: 50.0" in final_messages
-    assert "output: 6" in final_messages
+    if "output: 50.0" not in final_messages or "output: 6" not in final_messages:
+        pytest.fail(f"final model request lost tool outputs: {final_messages!r}")
+    _assert_tool_order(trace, expected)
 
 
 @pytest.mark.asyncio
 @pytest.mark.xfail(
     strict=True,
-    raises=AssertionError,
+    raises=_ToolOrderMismatch,
     reason=(
         "an analysis turn's declared action strategy should govern its own tool batch, "
         "but the first batch always runs concurrently"
@@ -184,7 +201,10 @@ async def test_first_round_declared_sequential_runs_in_order():
         [first, second],
         "done",
     )
-    assert await branch.ReAct(instruction="Run both", tools=True, max_extensions=0) == "done"
+    result = await branch.ReAct(instruction="Run both", tools=True, max_extensions=0)
+    _require_react_result(
+        branch, result, answer="done", outputs=[("first", 3), ("second", 7)], model_calls=2
+    )
     expected = [
         ("start", "first", 1, 2),
         ("end", "first", 1, 2),
@@ -192,13 +212,13 @@ async def test_first_round_declared_sequential_runs_in_order():
         ("end", "second", 3, 4),
     ]
     _each_ran_once(trace, expected)
-    assert trace == expected
+    _assert_tool_order(trace, expected)
 
 
 @pytest.mark.asyncio
 @pytest.mark.xfail(
     strict=True,
-    raises=AssertionError,
+    raises=_ToolOrderMismatch,
     reason=(
         "an analysis turn's declared action strategy should govern its own tool batch, "
         "but a batch takes the strategy of the analysis before it"
@@ -215,9 +235,9 @@ async def test_later_round_declared_concurrent_overlaps():
 
     async def slow(name: str) -> str:
         """Record a call that yields before finishing."""
-        trace.append(("start", name))
+        trace.append(("start", "slow", name))
         await asyncio.sleep(0)
-        trace.append(("end", name))
+        trace.append(("end", "slow", name))
         return name
 
     branch = tool_branch(
@@ -237,19 +257,23 @@ async def test_later_round_declared_concurrent_overlaps():
         [single, slow],
         "Both cities are sunny",
     )
-    assert (
-        await branch.ReAct(instruction="Compare weather", tools=True, max_extensions=1)
-        == "Both cities are sunny"
+    result = await branch.ReAct(instruction="Compare weather", tools=True, max_extensions=1)
+    _require_react_result(
+        branch,
+        result,
+        answer="Both cities are sunny",
+        outputs=[("single", 3), ("slow", "NYC"), ("slow", "SF")],
+        model_calls=3,
     )
     expected = [
         ("single", 1, 2),
-        ("start", "NYC"),
-        ("start", "SF"),
-        ("end", "NYC"),
-        ("end", "SF"),
+        ("start", "slow", "NYC"),
+        ("start", "slow", "SF"),
+        ("end", "slow", "NYC"),
+        ("end", "slow", "SF"),
     ]
     _each_ran_once(trace, expected)
-    assert trace == expected
+    _assert_tool_order(trace, expected)
 
 
 @pytest.mark.asyncio
