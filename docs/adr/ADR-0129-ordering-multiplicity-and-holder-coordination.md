@@ -7,7 +7,7 @@
 - **Date**: 2026-10-16
 - **Relations**: extends ADR-0002 (UUID-keyed ordered collection model), whose D4 and D6 leave the
   two questions decided here open and whose delta rows 3 and 4 carry the code work; revises ADR-0006
-  D4 and ADR-0004 D5, which rely on the collection locks this record removes
+  D4, ADR-0004 D5, and ADR-0092 D3, which rely on the collection locks this record removes
 
 ## Context
 
@@ -19,8 +19,10 @@ keeps describing the code.
 
 **P1 — one ordering class carries two rules and applies them per method.** `Progression`
 (`lionagi/protocols/generic/progression.py:139`) is a single class whose duplicate behavior depends
-on the method called. Construction, `include` (`:270-286`, set-like), `exclude` (`:288-300`, removes
-every occurrence), and membership (`:200-205`, "at least once") behave as a set; `append`
+on the method called. `include` (`:270-286`, set-like), `exclude` (`:288-300`, removes every
+occurrence), and membership (`:200-205`, "at least once") behave as a set; construction
+(`:186-188` returns `deque(validate_order(value))` unchanged, so a repeated id is kept, as the edge
+case in `tests/protocols/generic/test_progression_edge_cases.py:58-62` shows), `append`
 (`:302-314`), `extend` (`:364-369`), `insert` (`:392-398`), `+=` (`:379-381`), and positional
 assignment (`:225-244`) store additional positions for an id already present. A reader cannot tell
 from a signature whether a call may duplicate an id, and neither can a caller that holds the object
@@ -41,17 +43,29 @@ to a model-typed field. A caller that keeps `prog` can append a second position 
 with `prog.append(uid)` and change the collection's order without touching the collection.
 
 **P4 — every collection type carries locks its holder cannot see the cost of.** `Pile` owns an RLock
-and an AnyIO lock (`pile.py:208-209`), exposes both as properties (`:538-547`), and enters them
-through one ordered protocol (`:549-564`) from async entry and iteration (`:857-875`, `:631-637`),
-async adaptation (`:902-903`), and `adump` (`:994-1013`). `Flow` owns a third RLock for its own
-methods (`lionagi/protocols/generic/flow.py:36-41`, rebuilt at `:132`). A lock acquired for the
-duration of one method cannot make a caller's read-then-act sequence atomic, and the two Pile locks
-do not exclude each other by themselves, which ADR-0002 D6 records.
+and an AnyIO lock (`pile.py:208-209`) and reaches them through three shapes: `@synchronized`
+(`lionagi/ln/_utils.py:384-393`) takes the RLock alone, `@async_synchronized` (`:396-425`) takes the
+AnyIO lock and then spins on the RLock with a non-blocking acquire and a 0.5 ms sleep, and the
+`_both_locks` context manager (`pile.py:555-564`) does the same for an unscoped region. The two
+locks therefore do exclude each other: an async method and a `@synchronized` method on the same
+`Pile` never run together, in one thread or across threads, and ADR-0002 D6 records the mechanism.
+`@synchronized` decorates 19 methods: `__setitem__` (`pile.py:274`), `pop` (`:282`), `include`
+(`:303`), `exclude` (`:309`), `clear` (`:323`), `update` (`:328`), `insert` (`:341`), `append`
+(`:345`), `get` (`:349`), `keys` (`:358`), `values` (`:362`), `items` (`:366`), `is_empty` (`:370`),
+`size` (`:374`), `__getitem__` (`:394`), `__contains__` (`:398`), `__len__` (`:402`), `__bool__`
+(`:407`), and `filter` (`:643`). `@async_synchronized` decorates 8: `asetitem` (`:566`), `apop`
+(`:575`), `aremove` (`:584`), `ainclude` (`:592`), `aexclude` (`:602`), `aclear` (`:610`), `aupdate`
+(`:614`), and `aget` (`:622`). The undecorated helpers `_setitem` (`:707`), `_get` (`:749`), `_pop`
+(`:782`), and `_insert` (`:826`) are not lock sites of their own. `Flow` owns a third RLock for its
+own methods (`lionagi/protocols/generic/flow.py:36-41`, rebuilt at `:132`). What a per-method lock
+still cannot do is make a caller's read-then-act sequence atomic.
 
 **P5 — the holders are invisible in the type, and two sites await inside it.** `Session` holds
 `branches`, `MessageManager` holds `messages`, `Exchange` holds `flows`, `DataLogger` holds `logs`,
-`Executor` holds its event pile, and `Flow` holds its named views. Because coordination lives inside
-the type, none of those holders states what it protects or for how long. Two call sites hold a
+`Executor` holds its event pile, `InMemoryStore` holds its item `Pile`
+(`lionagi/protocols/memory.py:53-82`, shared across a session's branches at
+`lionagi/session/session.py:100-103`), and `Flow` holds its named views. Because coordination lives
+inside the type, none of those holders states what it protects or for how long. Two call sites hold a
 collection lock across an await: `Session.asplit` awaits `Branch.aclone` inside `async with
 self.branches` (`lionagi/session/session.py:279-284`), and that callee takes the message pile lock
 (`lionagi/session/branch.py:519-521`); `Pile.adapt_to_async` awaits the adapter inside the both-lock
@@ -80,11 +94,12 @@ A `Progression`'s multiplicity is fixed by its type, and two types state the two
 
 | Type | Rule |
 |------|------|
-| Unique order (the order a collection installs) | Holds exactly the store's ids, one position each. No mutator can add a second position for an id that is already there. |
+| Unique order (the order a collection installs) | Holds exactly the store's ids, one position each. Construction and every mutator reject a second position for an id that is already there. |
 | Repeated order (a standalone sequence) | Holds every stored position. `append`, `extend`, `insert`, `+=`, and positional assignment store another position for an id already present. |
 
 ```text
 unique order
+  construct([uids]) -> rejects a supplied uid repeated in the sequence
   append(uid)     -> rejects a resident uid
   extend([uids])  -> rejects a resident uid
   insert(i, uid)  -> rejects a resident uid
@@ -92,6 +107,7 @@ unique order
   include(uid)    -> set-like, no second position
   exclude(uid)    -> removes every occurrence
 repeated order
+  construct([uids]) -> keeps every supplied uid, repeated ones included
   append / extend / insert / += / order[i] = uid -> stores another position
   include(uid)    -> set-like, no second position
   exclude(uid)    -> removes every occurrence
@@ -106,12 +122,14 @@ is never handed the other by accident.
 - The unique order holds exactly the collection's ids, one position each, as ADR-0002 D1 requires,
   and equality between the store's keys and the order is the type's invariant rather than the
   constructor's check.
-- Every mutator of the unique order rejects a second position for a resident id with the error the
-  collection raises today (`pile.py:826-835`, `:707-747`).
+- Both construction and every mutator of the unique order reject a second position for a resident id
+  with the error the collection raises today (`pile.py:129-138` for construction, `:826-835` and
+  `:707-747` for the mutators); construction is named because it is the one path that stores a
+  supplied sequence after checking only the collection's own keys.
 - The repeated order stores a second position for `append`, `extend`, `insert`, `+=`, and positional
   assignment, and construction, membership, and serialization agree with that rule; this is the
-  shipped `Progression` behavior (`progression.py:302-314`, `:364-369`, `:392-398`, `:379-381`,
-  `:225-244`).
+  shipped `Progression` behavior (`progression.py:186-188`, `:302-314`, `:364-369`, `:392-398`,
+  `:379-381`, `:225-244`).
 - `include` is set-like and `exclude` removes every occurrence on both types, so the two types
   differ only in what a position-storing mutator may do.
 - **Pile construction copies the caller's order.** When `order` is an order instance, the collection
@@ -160,9 +178,11 @@ holder's, exercised where the holder lives.
   - `Session` over `branches` (`lionagi/session/session.py:74-76`, `:279-284`);
   - `MessageManager` over `messages` (`lionagi/protocols/messages/manager.py:73-75`, `:77-90`);
   - `Exchange` over `flows` (`lionagi/session/exchange.py:87-110`);
-  - `DataLogger` over `logs` (`lionagi/protocols/generic/log.py:244-247`, `:291-300`);
+  - `DataLogger` over `logs` (`lionagi/protocols/generic/log.py:244-247`, `:291-325`);
   - `Executor` over its event pile and pending order
     (`lionagi/protocols/generic/processor.py:199-204`);
+  - `InMemoryStore` over its item `Pile` (`memory.py:53-82`), which owns no lock today and relies
+    on `Pile.ainclude`/`aget`; under D2 it takes its own lock for `store` and `retrieve`;
   - `Flow` over its named views (`flow.py:138-247`).
 - **Four of those sites are synchronous holders, and two sites genuinely wait.** `Session`'s
   `ainclude_branches` (`session.py:74-76`) takes the lock and calls the synchronous
@@ -188,6 +208,11 @@ holder's, exercised where the holder lives.
     without deadlocking (`:379-381`) — keeps its observable behavior, because callbacks still run
     after the insertion, and restates its reason as the holder's critical section ending before the
     callback snapshot.
+  - ADR-0092 D3 (`Accepted`) keeps `InMemoryStore` on a `Pile` and records that `Pile.ainclude()`
+    and `aget()` supply the synchronization
+    (`docs/adr/ADR-0092-minimal-branch-and-session-memory-store.md:261-264`). With no Pile lock,
+    `InMemoryStore` is the holder of that `Pile` and takes its own lock for `store` and `retrieve`,
+    the same treatment as `MessageManager`.
   - ADR-0004 D5 (`Accepted`) presumes the Pile locks: its backing Piles "have their own locks, but
     direct Pile mutation is not coordinated with the Graph lock" and strengthening it "requires
     closing direct mutation paths and coordinating Graph and Pile locks"
@@ -205,7 +230,7 @@ holder's, exercised where the holder lives.
 | `Executor.pile` | `processor.py:201-204` | unique |
 | `MessageManager.messages` | `manager.py:47-52` | unique |
 | `MessageManager` typed views (`assistant_responses`, `actions`, `action_requests`, `action_responses`, `instructions`) | `manager.py:453-490` | unique: each access builds a fresh filtered Pile (`pile.py:1015-1053`) whose own default order is a unique order |
-| `Branch.progression` when `metadata["current_progression"]` is set | `branch.py:247-254`; built at `lionagi/tools/context/context.py:142-149` | repeated: a standalone order the context tool appends to, evicts from, and inserts into (`context.py:297-298`, `:317`, `:343`) |
+| `Branch.progression`, both forms | `branch.py:247-254`: the `metadata["current_progression"]` subset, built at `lionagi/tools/context/context.py:142-149`, or `MessageManager.progression` when it is unset | unique: the subset is seeded from the full order and the context tool never appends a duplicate to it (`context.py:334-335` skips ids already active before `:343`), `branch.py:249` calls it a subset, and ADR-0007 D2 rejects a duplicate id in the selected history (`docs/adr/ADR-0007-canonical-turn-request-compilation-boundary.md:218-219`) |
 | `Exchange` mailbox views `outbox` and `inbox_<sender>` | `exchange.py:53`, `:148-153` | repeated: standalone orders held by per-owner Flows; the `progressions` Pile that indexes them is itself a collection, and therefore unique over the view objects |
 
 - ADR-0003 D5's `pending` (the set-like `include` in "Executor owns live Events and pending order",
@@ -223,9 +248,10 @@ for both contexts — are compared below.
 - Copying the caller's order on construction closes the alias in P3 at the cost of one copy per
   construction from an existing order; construction from a plain sequence is unchanged in shape.
 - Removing the interior locks removes a deadlock class and the cross-thread spin from every async
-  entry, and it removes the guarantee ADR-0002 D6 records for a caller that holds a collection
-  across an await. Each named holder moves onto the holder rule or onto the snapshot, which is work
-  in the callers rather than a change to the ordering types.
+  entry, and it gives up the per-method mutual exclusion ADR-0002 D6 records; that exclusion never
+  spanned a caller's read-then-act sequence, so nothing a caller could already rely on across an
+  await is lost. Each named holder moves onto the holder rule or onto the snapshot, which is work in
+  the callers rather than a change to the ordering types.
 - A snapshot copies the ids and nothing else, so a reader that takes several snapshots pays for each
   and a holder that owns the collection pays nothing extra; a reader that needs the items as well
   does its own lookups on the ids, which can miss an item removed after the snapshot.
@@ -257,17 +283,17 @@ carries the split.
 A universal set-like order would simplify membership and align standalone sequences with
 collections. It would remove the ability to represent repeated sequence visits and would change
 `append`, `extend`, `insert`, and already serialized data. It lost because the repeated order is
-meaning-bearing where it is used: the context tool builds an active view over the full record, and
-mailbox orders carry one entry per delivery.
+meaning-bearing where it is used: `Flow` views take the same UUID again on every `add_item`
+(`flow.py:226-229`, ADR-0002 D5), and mailbox orders carry one entry per delivery.
 
 ### Keep the two locks and publish their contract
 
 A published lock contract would document what the type does today. It cannot give a caller a
 linearizable mixed thread/async view or a stable snapshot, because each lock is held for the
-duration of one method, so a caller's read-then-act sequence spans several acquisitions; and, as
-ADR-0002 D6 records, the two locks do not exclude each other by themselves. Documenting the limit
-does not remove it, and the cost of holding a collection across real work stays hidden inside the
-type.
+duration of one method, so a caller's read-then-act sequence spans several acquisitions and the
+two locks, which do exclude each other, protect no more than one method at a time. Documenting the
+limit does not remove it, and the cost of holding a collection across real work stays hidden inside
+the type.
 
 ### One lock for both contexts
 

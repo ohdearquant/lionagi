@@ -403,26 +403,35 @@ _lock: threading.RLock
 _async_lock: lionagi.ln.concurrency.Lock  # wraps anyio.Lock
 ```
 
-The `synchronized` decorator acquires only `_lock`; `async_synchronized` acquires only
-`_async_lock`.
+`synchronized` (in `lionagi/ln/_utils.py`) takes the RLock alone. `async_synchronized` takes the
+AnyIO lock and then acquires the RLock with a non-blocking spin (a short sleep between attempts), so
+it never blocks the event loop while a sync thread holds `_lock`; because it holds both, an async
+method and a `synchronized` method on the same `Pile` exclude each other, in one thread and across
+threads. `_both_locks` (`pile.py:555-564`) applies the same ordered pair to an unscoped region.
 
 **Exact semantics**:
 
-- Sync `pop`, `include`, `exclude`, `clear`, `update`, `insert`, `append`, and `get` acquire the
-  RLock. Direct `__setitem__`, `remove`'s membership test, `__getitem__`, iteration, key/value/item
-  snapshots, filtering, and direct public-field mutation are not uniformly protected.
-- Async mutation/read wrappers acquire the AnyIO lock. Several then call a sync decorated method,
-  acquiring the RLock inside the async lock; `asetitem`, `apop`, `aclear`, and `aget` call private
-  helpers directly and do not all share that nested locking shape.
-- The sync and async locks do not exclude each other by themselves. A sync caller holding only the
-  RLock and an async caller on a helper guarded only by the AnyIO lock can overlap.
-- Sync iteration snapshots only Progression order. Async iteration snapshots order while holding the
-  async lock, releases it, and then performs live dictionary lookups.
+- Sync `__setitem__`, `pop`, `include`, `exclude`, `clear`, `update`, `insert`, `append`, `get`,
+  `keys`, `values`, `items`, `is_empty`, `size`, `__getitem__`, `__contains__`, `__len__`, `__bool__`,
+  and `filter` acquire the RLock through `synchronized`; each acquires it for the duration of that
+  one call. `__iter__` takes the RLock directly to snapshot the order. `remove` and the set-style
+  operators (`__ior__`, `__or__`, `__ixor__`, `__xor__`, `__iand__`, `__and__`) call decorated
+  methods but are not themselves one critical section, and direct public-field mutation is
+  unprotected.
+- Async mutation/read wrappers acquire the AnyIO lock and then the RLock, in that order. Undecorated
+  helpers such as `_setitem`, `_get`, `_pop`, and `_insert` are not lock sites on their own and
+  inherit whatever their caller holds.
+- The two locks do exclude each other by design, so a sync caller and an async caller never overlap
+  in a decorated method. The spin loop is the mechanism, and it is bounded by the sync critical
+  section it waits on. A caller that takes the `async_lock` property alone gets task-level
+  serialization only, not the cross-thread boundary `async_synchronized` and `_both_locks` provide.
+- Sync iteration snapshots only Progression order. Async iteration snapshots order under
+  `_both_locks`, releases them, and then performs live dictionary lookups.
 - Pickle restoration and deep copy create fresh lock instances; locks are not serialized or shared
   with the copy.
-- `adump` snapshots dictionary UUIDs and a DataFrame under the async lock, writes outside the lock,
-  and, when `clear=True`, later removes only the snapshotted UUIDs. Items added during the write are
-  retained.
+- `adump` snapshots dictionary UUIDs and a DataFrame under `_both_locks`, writes outside the locks,
+  and, when `clear=True`, later removes only the snapshotted UUIDs under a second `_both_locks`
+  region (`pile.py:994-1013`). Items added during the write are retained.
 - Synchronous `dump(clear=True)` is format-dependent in the shipped control flow: Parquet reaches
   the final `clear()` call, while JSON-lines and CSV return immediately after their writer and do
   not clear. Async `adump(clear=True)` applies the snapshot removal after all three supported
@@ -475,8 +484,8 @@ code work.
 |---|---|---|---|
 | 1 | Fix Pile UUID-string reference normalization in `to_list_type`; acceptance requires valid UUID strings to work as one-item references on the paths that fail today — `__getitem__`, `__setitem__`, `exclude`, and `order=` at construction — with regression coverage (`get` and `pop` already route through `validate_order` and work). | S | #2012 |
 | 2 | ~~Define one public Pile-item contract and align the exported Observable protocol with it~~ — **Resolved 2026-07-20**: the structural protocol is deleted, the nominal ABC is the sole contract, exported as `Observable`, enforced by item-type validation, with extension tests in `tests/protocols/test_observable_protocol.py`. | M | #2017 |
-| 3 | ~~Decide and enforce Progression multiplicity semantics for standalone Progressions, Pile default order, and Flow named views; acceptance requires append, extend, insert, serialization, and membership behavior to match the documented rule~~ — **Narrowed 2026-10-16; the rule is decided in ADR-0129 D1**: split the one ordering type into a unique order and a repeated order, with Pile's default order, standalone sequences, and serialization following the rule their type names. Acceptance requires the unique order to reject a resident id from `append`, `extend`, `insert`, `+=`, and positional assignment with the error the Pile raises today, while the repeated order stores a second position for each; `include` to stay set-like and `exclude` to remove every occurrence on both; `Pile(order=<order instance>)` to build its own order, so a test that appends to the caller's instance observes `pile.progression` unchanged; and a Pile round trip to reconstruct each type with its own multiplicity intact. | M | (filled at issue-open time) |
-| 4 | ~~Publish and enforce Pile synchronization and snapshot semantics; acceptance requires every public mutator and read API to be audited against a stated sync, async, and mixed-context contract, with stable snapshot APIs where live traversal is unsafe~~ — **Narrowed 2026-10-16; the design is decided in ADR-0129 D2**: remove the Pile and Flow locks, add the snapshot value, and move each affected holder onto the holder rule. Acceptance requires `Pile` to expose no lock (no `lock` or `async_lock` attribute and no lock private field), and `Pile.snapshot()` to return a tuple of ids equal to the order at call time and unchanged by later mutation; each named holder — `Session` over `branches`, `MessageManager` over `messages`, `Exchange` over `flows`, `DataLogger` over `logs`, `Executor` over its event pile, and `Flow` over its named views — to pass a test that exercises its concurrent path without a collection lock, including the two sites that await while holding one today (`Session.asplit`, `Pile.adapt_to_async`). | M | (filled at issue-open time) |
+| 3 | ~~Decide and enforce Progression multiplicity semantics for standalone Progressions, Pile default order, and Flow named views; acceptance requires append, extend, insert, serialization, and membership behavior to match the documented rule~~ — **Narrowed 2026-10-16; the rule is decided in ADR-0129 D1**: split the one ordering type into a unique order and a repeated order, with Pile's default order, standalone sequences, and serialization following the rule their type names. Acceptance requires the unique order to reject a resident id from construction and from `append`, `extend`, `insert`, `+=`, and positional assignment with the error the Pile raises today (construction is named because `Progression(order=[uid, uid])` keeps the duplicate today, `progression.py:186-188`), while the repeated order stores a second position for each; `include` to stay set-like and `exclude` to remove every occurrence on both; `Pile(order=<order instance>)` to build its own order, so a test that appends to the caller's instance observes `pile.progression` unchanged; and an ordering and Pile/Flow round trip to reconstruct each type with its own multiplicity intact. | M | (filled at issue-open time) |
+| 4 | ~~Publish and enforce Pile synchronization and snapshot semantics; acceptance requires every public mutator and read API to be audited against a stated sync, async, and mixed-context contract, with stable snapshot APIs where live traversal is unsafe~~ — **Narrowed 2026-10-16; the design is decided in ADR-0129 D2**: remove the Pile and Flow locks, add the snapshot value, and move each affected holder onto the holder rule. Acceptance requires `Pile` to expose no lock (no `lock` or `async_lock` attribute and no lock private field), and `Pile.snapshot()` to return a tuple of ids equal to the order at call time and unchanged by later mutation; each named holder — `Session` over `branches`, `MessageManager` over `messages`, `Exchange` over `flows`, `DataLogger` over `logs`, `Executor` over its event pile, `InMemoryStore` over its item `Pile`, and `Flow` over its named views — to pass a test that exercises its concurrent path without a collection lock, including the two sites that await while holding one today (`Session.asplit`, `Pile.adapt_to_async`). | M | (filled at issue-open time) |
 | 5 | Define and enforce Progression ownership in `Flow.add_item`; acceptance requires instance, UUID, and name references to follow one documented residency rule, reject invalid ownership before item insertion, and never mutate an external view accidentally. | S | (filled at issue-open time) |
 | 6 | Make `Pile.dump(clear=True)` consistent across JSON-lines, CSV, and Parquet; acceptance requires every format either to clear the same documented pre-write snapshot after success or to retain it, with failure-path tests. | S | (filled at issue-open time) |
 
