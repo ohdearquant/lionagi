@@ -104,7 +104,7 @@ limits.
 | Frame protocol | D2: Use a version-1 envelope with conversation-wide monotonic sequence and typed payloads. |
 | Destinations and tools | D3: Generate destinations from ADR-0080 and expose tools as typed ADR-0078 application adapters. |
 | Proposal and confirmation | D4: Execute risky commands only through expiring, refreshed, idempotent, durably audited proposals. |
-| Client effects | D5: Require typed validation and acknowledgement before an emitted effect is considered applied. |
+| Client effects | D5: Require typed validation and acknowledgement before an emitted UI-command effect is considered applied. |
 | Transport and auth | D6: Use HTTP submit/cancel/ack plus authenticated fetch SSE; allow tickets only as short-lived one-use credentials. |
 | Replay, errors, and context | D7: Persist frames before delivery, replay by durable cursor, bound model context, and publish stable error codes. |
 | Degraded operation | D8: Fail closed when mutation audit is unavailable while allowing visibly degraded read-only explanation. |
@@ -132,6 +132,7 @@ CREATE TABLE studio_operator_conversations (
   id                 TEXT PRIMARY KEY,
   project            TEXT,
   title              TEXT,
+  description        TEXT,
   status             TEXT NOT NULL DEFAULT 'active'
                      CHECK(status IN ('active', 'archived', 'deleted')),
   next_sequence      INTEGER NOT NULL DEFAULT 1,
@@ -209,6 +210,12 @@ CREATE TABLE studio_operator_effects (
 Exact persistence semantics:
 
 - Conversation ids, request ids, proposal ids, and effect ids are UUID strings.
+- `description` is nullable presentation metadata. Reads and lists return it; updates
+  preserve an omitted field, and null or an empty stripped description clears it.
+  Description-only updates preserve the title. Descriptions are stripped and limited
+  to 2000 characters; Unicode categories Cf, Zl, and Zp are rejected, as are Cc
+  characters other than newline and tab. Forks copy the description and retain it
+  independently of later edits to either conversation.
 - `sequence` is monotonic across the whole conversation, not reset per request. A single
   StateDB transaction increments `next_sequence` and inserts each frame, preventing
   duplicates during concurrent delivery.
@@ -352,9 +359,14 @@ class OperatorToolSpec(BaseModel):
 Exact semantics:
 
 - Read, navigate, and draft tools may execute during the turn. Read tools call ADR-0078
-  application queries; navigate/draft tools emit acknowledged effects.
-- Mutate, execute, and admin tools never execute during model tool handling. They create D4
-  proposals.
+  application queries; UI navigation and prefill effects require client acknowledgement.
+- Mutate, execute, and admin tools for application resources create D4 proposals.
+- `update_conversation` may update presentation metadata for the authenticated turn's own
+  conversation. An explicitly different conversation id, a finished turn, or a mismatched
+  active request is refused before a row or effect is written. The tool's optional title
+  is stripped, contains 1 to 512 characters when supplied, and rejects Unicode categories
+  Cc, Cf, Zl, and Zp. Its omission preserves the title. The REST title policy remains
+  unchanged.
 - No tool spec contains a raw URL, shell command, SQL statement, or file path for the model
   to choose.
 - Tool input/output is Pydantic-validated with `extra="forbid"`.
@@ -414,6 +426,15 @@ Proposal cancellation and expiry are terminal. They do not mutate state. A new m
 must create a new proposal with a new hash and idempotency key.
 
 ### D5 — Declarative effects require client acknowledgement
+
+An own-conversation metadata update is applied by the server. The conversation change
+and the `conversation_updated` effect row with status `applied` persist together in
+the tool's transaction. The tool writes no frame; the provider's native `tool_result`
+is the call's only result frame and carries its provider call id. The client re-reads
+the conversation and list when that successful result arrives, or when the turn ends
+after such a call without a result. A provider failure after the write leaves the
+change and applied effect durable. This update requires no browser acknowledgement.
+The acknowledgement rules below apply to emitted UI commands.
 
 The acknowledgement endpoint accepts:
 
@@ -623,8 +644,8 @@ expiry, idempotency, audit-failure, EOF, and cancellation tests.
   complexity.
 - Confirmation is slower than calling a model-authored endpoint directly. That delay buys
   refreshed targets, explicit human intent, audit, and idempotency.
-- Clients must acknowledge effects and persist cursors locally; a simple text-only client
-  may ignore effects but must render them as unapplied.
+- Clients must acknowledge UI-command effects and persist cursors locally; a simple text-only
+  client may ignore those effects but must render them as unapplied.
 - Full history remains available to the operator while model context stays bounded.
 - Reversing the version-1 envelope after clients persist cursors is expensive and requires a
   version negotiation/migration decision.

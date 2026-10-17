@@ -6,7 +6,7 @@
 Covers two things that the individual handler test files do not:
 one, that `_TOOL_HANDLERS` still contains every tool it held before this
 change plus every tool this change adds; two, that each newly added
-handler never reaches a write-shaped method on the store it is given,
+read-only handler never reaches a write-shaped method on the store it is given,
 proving the "read-only" contract by exercising the handler rather than
 by reading its source.
 """
@@ -65,6 +65,9 @@ NEWLY_ADDED_TOOL_NAMES = frozenset(
     }
 )
 
+NEWLY_ADDED_MUTATING_TOOL_NAMES = frozenset({"update_conversation"})
+
+
 RUN_CONTROL_TOOL_NAMES = frozenset(
     {
         "pause_run",
@@ -90,7 +93,12 @@ def test_proposal_backed_run_control_tools_are_all_registered():
 
 
 def test_registry_holds_no_unexpected_tool_names():
-    expected = PRE_EXISTING_TOOL_NAMES | NEWLY_ADDED_TOOL_NAMES | RUN_CONTROL_TOOL_NAMES
+    expected = (
+        PRE_EXISTING_TOOL_NAMES
+        | NEWLY_ADDED_TOOL_NAMES
+        | NEWLY_ADDED_MUTATING_TOOL_NAMES
+        | RUN_CONTROL_TOOL_NAMES
+    )
     registered = set(application_mcp._TOOL_HANDLERS.keys())
 
     # Exact equality, deliberately. Tolerating extra names would give up the
@@ -104,7 +112,7 @@ def test_registry_holds_no_unexpected_tool_names():
         f"  listed but not registered: {sorted(expected - registered)}\n"
         "A name in the first list means a tool was added. That is not a "
         "failure on its own: confirm the tool is meant to be reachable, then "
-        "add its name to NEWLY_ADDED_TOOL_NAMES. A name in the second list "
+        "add its name to the appropriate read-only or mutating set. A name in the second list "
         "means a tool the Operator used to offer is gone, which withdraws a "
         "capability and should be a decision rather than a side effect."
     )

@@ -25,6 +25,7 @@ import anyio
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from .cancel_run import CANCEL_RUN_DESCRIPTION, CancelRunInput, cancel_run
+from .conversation_metadata import UpdateConversationInput
 from .redact import (
     MESSAGE_BYTE_CAP,
     PER_ITEM_TEXT_CAP,
@@ -48,7 +49,7 @@ from .run_control import (
 from .run_detail import RunDetailInput, run_detail
 from .run_findings import RunFindingsInput, run_findings
 from .run_progress import RunProgressInput, run_progress
-from .store import OperatorStore
+from .store import OperatorConflictError, OperatorNotFoundError, OperatorStore
 
 OperatorSpace = Literal[
     "mission",
@@ -247,6 +248,7 @@ _TOOL_MODELS: dict[str, type[BaseModel]] = {
     "cancel_run": CancelRunInput,
     "resume_run": ResumeRunInput,
     "rename_run": RenameSessionInput,
+    "update_conversation": UpdateConversationInput,
     "pause_run": PauseRunInput,
     "release_run_pause": ReleaseRunPauseInput,
     "steer_run": SteerRunInput,
@@ -350,6 +352,12 @@ _TOOL_DESCRIPTIONS = {
     "cancel_run": CANCEL_RUN_DESCRIPTION,
     "resume_run": RESUME_RUN_DESCRIPTION,
     "rename_run": RENAME_SESSION_DESCRIPTION,
+    "update_conversation": (
+        "Update the title or short description of this Operator conversation. "
+        "Only this turn's own conversation can be changed. Omitted fields stay unchanged; "
+        "a blank or null description clears it. The result reports the durable applied "
+        "change, without requesting a browser action or renaming a run."
+    ),
     "pause_run": PAUSE_RUN_DESCRIPTION,
     "release_run_pause": RELEASE_RUN_PAUSE_DESCRIPTION,
     "steer_run": STEER_RUN_DESCRIPTION,
@@ -397,6 +405,21 @@ def _identity() -> tuple[OperatorStore, str, str]:
     if not db_path or not conversation_id or not request_id:
         raise RuntimeError("Studio application bridge is missing its durable turn identity")
     return OperatorStore(db_path), conversation_id, request_id
+
+
+async def update_conversation(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Update the authenticated turn's own conversation through the shared store service."""
+    args = UpdateConversationInput.model_validate(arguments)
+    store, conversation_id, request_id = _identity()
+    if args.conversation_id is not None and args.conversation_id != conversation_id:
+        return {"updated": False, "reason": "conversation_mismatch"}
+    fields = args.model_dump(include=args.model_fields_set - {"conversation_id"})
+    try:
+        return await store.update_conversation_from_turn(conversation_id, request_id, **fields)
+    except OperatorConflictError as exc:
+        return {"updated": False, "reason": (exc.details or {}).get("code", "turn_not_active")}
+    except OperatorNotFoundError:
+        return {"updated": False, "reason": "not_found"}
 
 
 def public_project(value: Any) -> str | None:
@@ -1237,6 +1260,7 @@ _TOOL_HANDLERS = {
     "cancel_run": cancel_run,
     "resume_run": resume_run,
     "rename_run": rename_session,
+    "update_conversation": update_conversation,
     "pause_run": pause_run,
     "release_run_pause": release_run_pause,
     "steer_run": steer_run,

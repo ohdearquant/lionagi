@@ -1185,7 +1185,9 @@ async def _resolve_session_run(db: Any, raw_id: str) -> dict[str, Any] | None:
 
 
 def _format_session_wait_line(row: dict[str, Any]) -> str:
-    name = row.get("agent_name") or row.get("invocation_kind") or "session"
+    from lionagi.state.session_naming import resolve_display_name
+
+    name = resolve_display_name(row)
     artifacts = row.get("artifacts_path") or "-"
     return f"{row['id']}  name={name}  status={row['status']}  artifacts={artifacts}"
 

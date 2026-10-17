@@ -37,6 +37,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from lionagi.state.session_naming import resolve_display_name
+
 from .redact import public_project, scrub_text
 from .run_progress import resolve_run
 from .store import OperatorNotFoundError, OperatorStore
@@ -251,7 +253,7 @@ def _proposal_summary(session: dict[str, Any], verb: str, payload: dict[str, Any
     parts = [f"{action} run {session['id'][:12]}"]
     if project := public_project(session.get("project")):
         parts.append(f"project {project}")
-    if name := session.get("name"):
+    if name := resolve_display_name(session):
         parts.append(f"named '{scrub_text(str(name))[:160]}'")
     if verb == "message" and payload:
         parts.append(f"message '{scrub_text(str(payload['text']))[:160]}'")

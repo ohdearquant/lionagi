@@ -417,8 +417,10 @@ async def _build_view(
         last_activity = row.get("updated_at")
 
     if entity_type == "session":
+        from lionagi.state.session_naming import resolve_display_name
+
         project = row.get("project")
-        label = row.get("agent_name")
+        label = resolve_display_name(row)
         invocation_id = row.get("invocation_id")
     elif entity_type == "invocation":
         project = (primary_session or {}).get("project")
