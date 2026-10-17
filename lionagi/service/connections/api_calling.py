@@ -6,9 +6,12 @@ import logging
 from pydantic import Field, PrivateAttr, model_validator
 from typing_extensions import Self
 
+from lionagi._errors import ProviderStreamError
+
 from ..hooks.hooked_event import HookedEvent
 from ..token_budget import lookup_context_window
-from .endpoint import Endpoint
+from ..types.stream_chunk import StreamChunk
+from .endpoint import Endpoint, _call_failure_detail
 
 logger = logging.getLogger(__name__)
 
@@ -131,16 +134,34 @@ class APICalling(HookedEvent):
         )
 
     async def _core_stream(self):
+        """Yield the endpoint's chunks; a stream whose provider reported the call failed
+        raises ``ProviderStreamError`` once it ends.
+
+        The provider may say the call failed inside a stream it accepted with HTTP 200
+        (the endpoint marks that chunk ``call_failed``). The chunk is still yielded and
+        the stream read to its end, then the call fails, so ``Event.stream`` records it
+        as FAILED rather than COMPLETED and a consumer reading the call sees the cause.
+        """
         scope_kwargs = (
             {"_routing_scope": self._routing_scope} if self._routing_scope is not None else {}
         )
+        failure: StreamChunk | None = None
         async for i in self.endpoint.stream(
             request=self.payload,
             extra_headers=self.headers if self.headers else None,
             **scope_kwargs,
             **self.call_kwargs,
         ):
+            if failure is None and isinstance(i, StreamChunk) and i.metadata.get("call_failed"):
+                failure = i
             yield i
+        if failure is not None:
+            raw = failure.metadata.get("raw")
+            raise ProviderStreamError(
+                f"The provider reported a failed call inside its stream: "
+                f"{_call_failure_detail(failure)}",
+                details={"event": raw} if isinstance(raw, dict) else None,
+            )
 
     @property
     def request(self) -> dict:

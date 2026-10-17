@@ -2157,6 +2157,20 @@ async def test_held_thinking_reaches_the_consumer_before_the_blocks_signature(
             ],
             "stream_error",
         ),
+        (
+            [_sse([_MESSAGE_START]), b'event: error\ndata: {"message":"upstream"}\n\n'],
+            "stream_error",
+        ),
+        (
+            [
+                b"event: message_start\ndata: "
+                + json.dumps(_MESSAGE_START).encode()
+                + b"\nevent: error\ndata: "
+                + json.dumps({"type": "error", "error": {"type": "overloaded_error"}}).encode()
+                + b"\n"
+            ],
+            "stream_error",
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -2171,6 +2185,76 @@ async def test_a_stream_ending_before_message_stop_records_why(
     assert chunks
     row = _attempts(path)[0]
     assert row[2:] == ("open", None, reason)
+
+
+@pytest.mark.parametrize(
+    "wire",
+    [
+        pytest.param(b'event: error\ndata: {"message":"upstream"}\n\n', id="named-only-by-sse"),
+        pytest.param(b"event: error\ndata: upstream gateway error\n\n", id="plain-text"),
+        pytest.param(
+            b"event: message_start\ndata: "
+            + json.dumps(_MESSAGE_START).encode()
+            + b"\nevent: error\ndata: "
+            + json.dumps(
+                {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}
+            ).encode()
+            + b"\n",
+            id="no-blank-lines",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_routed_stream_error_named_by_its_sse_event_fails_the_call(
+    monkeypatch, tmp_path, wire
+):
+    from lionagi.protocols.generic.event import EventStatus
+
+    _install_accounts(monkeypatch, tmp_path)
+    model, _ = _model(monkeypatch, [StubResponse(pieces=[wire])])
+    call = await model.create_event(**REQUEST, stream=True)
+    chunks = []
+    try:
+        with pytest.raises(ValueError):
+            async for chunk in model.stream(api_call=call):
+                chunks.append(chunk)
+    finally:
+        await model.close()
+
+    assert call.status is EventStatus.FAILED
+    failed = [chunk for chunk in chunks if chunk.metadata.get("call_failed")]
+    assert len(failed) == 1
+    assert chunks[-1] is failed[0]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_routed_stream_reports_the_error_text_the_consumer_was_shown(
+    monkeypatch, tmp_path
+):
+    from lionagi.protocols.generic.event import EventStatus
+
+    _install_accounts(monkeypatch, tmp_path)
+    # The key's run starts in a text delta and ends in the error event, so only the
+    # stream's text redaction, which joins the two, can see it.
+    wire = _sse(
+        [_delta("text_delta", "text", CANARY[13:20]), {"type": "error", "error": CANARY[20:24]}]
+    )
+    model, _ = _model(monkeypatch, [StubResponse(pieces=[wire])])
+    call = await model.create_event(**REQUEST, stream=True)
+    chunks = []
+    try:
+        with pytest.raises(ValueError) as caught:
+            async for chunk in model.stream(api_call=call):
+                chunks.append(chunk)
+    finally:
+        await model.close()
+
+    assert call.status is EventStatus.FAILED
+    assert chunks[-1].type == "error"
+    assert CANARY[20:24] not in chunks[-1].content
+    assert chunks[-1].content in str(caught.value)
+    assert CANARY[20:24] not in str(caught.value)
+    assert CANARY[20:24] not in str(call.execution.error)
 
 
 @pytest.mark.parametrize(

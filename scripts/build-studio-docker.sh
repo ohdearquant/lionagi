@@ -20,11 +20,16 @@ if [[ "${1:-}" == "--push" ]]; then
     echo "Done: ${IMAGE}:${TAG}"
 elif [[ "${1:-}" == "--run" ]]; then
     echo "Running ${IMAGE}:${TAG}..."
-    echo "  UI:  http://localhost:3000"
-    echo "  API: http://localhost:8765"
+    echo "  UI:  http://127.0.0.1:3000"
+    echo "  API: http://127.0.0.1:8765"
+    # Loopback host halves, as `li studio --docker` publishes: the image binds
+    # 0.0.0.0 inside the container, and a bare PORT:PORT mapping would put that
+    # on every host interface, where anyone on the network reaches an
+    # unauthenticated daemon. Publish on another address only with
+    # LIONAGI_STUDIO_AUTH_TOKEN set.
     docker run --rm \
-        -p 8765:8765 \
-        -p 3000:3000 \
+        -p 127.0.0.1:8765:8765 \
+        -p 127.0.0.1:3000:3000 \
         -v "${HOME}/.lionagi:/root/.lionagi" \
         --name lion-studio \
         "${IMAGE}:${TAG}"
