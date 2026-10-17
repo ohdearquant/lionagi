@@ -3924,3 +3924,38 @@ async def test_a_run_cannot_update_a_branch_another_run_created(store):
         await second.close()
 
     assert _rows(store, "SELECT model FROM branches WHERE id = 'b1'") == [(None,)]
+
+
+class _ExtendsAProgression(StateDB):
+    """Drive the batched progression append the way its own operation would."""
+
+    @_operation("insert_message")
+    async def extend_progression(self, progression_id: str, message_ids: list[str]) -> None:
+        async with self._tx() as conn:
+            await self._extend_progression_in_tx(conn, progression_id, message_ids)
+
+
+async def test_the_batched_progression_append_keeps_the_owner_predicate(store):
+    """The batched rewrite (behind insert_messages) applies the same owner predicate on
+    its read and its rewrite as the per-message append: this run's own progression is
+    extended, and a progression another owner's run owns is read as absent, not rewritten.
+    """
+    _execute(
+        store,
+        f"INSERT INTO progressions (id, created_at, collection, {OWNER}) "
+        "VALUES ('p-other', 0, '[]', 'principal:b')",
+    )
+
+    handle = _ExtendsAProgression(store, compatibility=_profile(store), owner="principal:a")
+    await handle.open()
+    try:
+        await handle.create_progression("p-mine")
+        await handle.extend_progression("p-mine", ["m1", "m2"])
+        await handle.extend_progression("p-other", ["m-other"])
+    finally:
+        await handle.close()
+
+    assert _rows(store, "SELECT collection FROM progressions WHERE id = 'p-mine'") == [
+        ('["m1","m2"]',)
+    ]
+    assert _rows(store, "SELECT collection FROM progressions WHERE id = 'p-other'") == [("[]",)]

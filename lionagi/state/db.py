@@ -3034,11 +3034,15 @@ class StateDB:
     async def _extend_progression_in_tx(
         self, conn, progression_id: str, message_ids: Sequence[str]
     ) -> None:
+        # The same owner predicate the per-message append applies, on both the read and the
+        # rewrite: a progression another owner's run owns is not this run's to extend, so it is
+        # read as absent rather than rewritten. Natively the predicate is empty.
+        clause, owner = self._owner_predicate("progressions")
         row = (
             (
                 await conn.execute(
-                    text(self._progression_collection_for_update_sql(self.dialect)),
-                    {"id": progression_id},
+                    text(self._progression_collection_for_update_sql(self.dialect) + clause),
+                    {"id": progression_id, **owner},
                 )
             )
             .mappings()
@@ -3073,8 +3077,8 @@ class StateDB:
         if not added:
             return
         await conn.execute(
-            text("UPDATE progressions SET collection = :col WHERE id = :id"),
-            {"col": _to_json_column([*current, *added]), "id": progression_id},
+            text("UPDATE progressions SET collection = :col WHERE id = :id" + clause),
+            {"col": _to_json_column([*current, *added]), "id": progression_id, **owner},
         )
 
     # Sessions
