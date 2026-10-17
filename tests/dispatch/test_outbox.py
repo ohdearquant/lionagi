@@ -65,6 +65,20 @@ def _capture_argv_script(out_path: Path) -> list[str]:
     ]
 
 
+async def test_a_notify_template_past_its_timeout_takes_the_timeout_branch():
+    """``asyncio.wait_for`` raises ``asyncio.TimeoutError``, which is not the builtin
+    ``TimeoutError`` before Python 3.11; the timeout branch, which kills the child, must
+    run there too, so the error names the timeout rather than an execution error."""
+    from lionagi.dispatch.outbox import _exec_notify_template
+
+    template = [sys.executable, "-c", "import time; time.sleep(60)", "{deliver_to}"]
+    ok, error = await _exec_notify_template(
+        template, payload_json="{}", deliver_to="seat-1", timeout=1.0
+    )
+    assert ok is False
+    assert error.startswith("notify template timed out after 1.0s")
+
+
 # ── backoff ───────────────────────────────────────────────────────────────────
 
 
