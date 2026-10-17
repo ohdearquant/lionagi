@@ -601,10 +601,92 @@ statements; a session can go terminal between them. The insert re-checks the
 running condition so it — not the earlier read — is what decides admission,
 avoiding a control queued against a run whose consumer has already exited.
 
-Landing time is a property of the consumer, not the verb: a flow/play poller
-renders queued context before the next op (~2s poll interval), while an
-agent leg only drains at its next turn boundary, which can be far later than
-2s into a long provider call.
+Flow/play sessions persist `planning` before calling the planner. Their scalar
+`node_metadata.flow_control_poller` declaration records `pending`, `active`, then
+`stopped`, using the existing metadata merge helper. Pending controls wait until
+`_execute_dag` starts its poller, regardless of a stale or NULL phase. Stopped
+consumers refuse new controls; missing declarations are refused as predating
+control-delivery tracking. Agent turn-end drain declarations are unchanged.
+The stopped marker is published before the DAG poll loop is cancelled; once it
+commits, admission refuses new controls. The marker write's budget bounds the
+caller, not the store, and it is shielded against cooperative cancellation only:
+a cooperative write is cancelled at the budget, while one parked in the store
+driver's busy wait cannot be interrupted from Python and keeps the writer lock
+until that call returns, bounded by the busy timeout
+(`LIONAGI_SQLITE_BUSY_TIMEOUT_MS`, 5 s by default). A control admitted before it
+commits
+(while the write runs, after it outlives its budget, or after a native
+cancellation interrupts the wait) may never be applied once the loop is gone, so
+`_run_flow`'s teardown closes every control still queued and unclaimed as
+`rejected: run reached terminal status before its DAG poller applied the control`
+after the session's terminal status is written -- and it closes them even if a
+later teardown step fails after that commit, since the status write is what makes
+them undeliverable -- as the agent runner closes its undelivered steers; a claimed
+row is left to its claimant. Marker writes remain
+best-effort, and a failed write may leave a stale active marker; it admits nothing
+once the session is terminal, because the insert also requires a running session.
+Enqueue re-checks the marker and the running status in the same statement that
+inserts the control, so a run that lost its poller or ended between the admission
+read and the write refuses, and the refusal says which.
+Enqueue explicitly says no control will be applied after the poller stops. The
+approximately two-second interval is neither a deadline nor a guarantee before
+the first operation.
+
+Applied pause/resume closes/opens the gate and writes `paused`/`executing`, retrying
+one failed phase write without replaying the executor action. Two failures leave
+the existing best-effort stale-telemetry limit. The pause gate precedes concurrency
+limiter admission: operations already past it, including those waiting for limiter
+capacity, may still start. In-flight operations continue. Messages affect only
+operations prepared after delivery and are rejected when none remain pending.
+Agent legs drain at the next turn boundary, which can be far later than two seconds
+into a provider call.
+
+The writers below carry `current_phase=None` in their terminal status UPDATE:
+teardown, the setup-failure sweep, the `li kill` writer, the doctor sweep, the
+monitor's linked-engine reconcile, the engine runner, the studio reapers and the
+studio admin transition. The transcript mirrors write no phase. The SESSION_END
+hook (`hooks/builtins.py`) does not: when it is the writer that terminalizes a
+row it writes the status without clearing the phase, and a row it finds already
+terminal still takes the usage columns it carries, written without the status or
+the phase, which is why reads normalize a stored phase on a terminal row rather
+than relying on every writer. `current_phase` was
+added to the two session status-patch allowlists; unrelated fields remain refused.
+The existing cancellation shield covers cooperative scopes, not native task
+cancellation: repeated native cancellation can still interrupt the pre-existing
+teardown before it commits, and a SIGKILLed process runs no writer at all, which
+is why reads still normalize a stored phase on a terminal row. Status/monitor
+normalize historical terminal phases while retaining the agent or playbook name
+fallback. Queuing a control does not change the applied phase.
+
+The teardown close above closes an unclaimed flow control on the flow's own
+teardown; an agent run closes its own undelivered steers the same way, at its
+turn-end teardown. `li kill`, the doctor sweep and the studio reapers
+end a session without sweeping its control queue, and a SIGKILLed process runs no
+teardown at all, so a control queued before one of those ends a run stays pending;
+`li o ctl status` renders it on a terminal row as never landed, and
+`li o ctl resolve` closes only a row a consumer claimed and never reported back.
+Whether those paths should sweep is a separate decision this change does not take.
+
+Control actions accept an exact recorded session/invocation/play/run ID, an
+unambiguous 8-character hex prefix, or an unambiguous run-id prefix that reaches
+the `T` after the date (ADR-0108, Amendment 2). Any other string is an exact id:
+shorter than eight characters or containing a non-hex character, it enters the
+prefix search only when it reaches that `T` and prefixes a recorded run id. Before
+the `T` a run id is all digits, so a number or a date never acts on a run, and an
+eight-digit date is searched only as a printed hex prefix — unless a recorded
+run id also begins with those digits, which makes the string ambiguous and
+refused. A string that prefixes
+both a run id and a session, invocation, play or branch id is refused as
+ambiguous. A label therefore cannot match another run's session, invocation or
+play. Read-only status keeps its broader run-id prefix lookup, but it shares the
+resolver and so it too refuses a string that begins both spaces rather than
+returning one of them.
+Foreground flow prints its full persisted Session ID before planning; background
+launch prints the full ID assigned to its child. `--invocation` is validated against
+the real invocation row before setup/planning and before background spawn; register
+with `li invoke start` first. It does not register an alias. In monitor,
+`--type session` includes flow sessions; `--type invocation` selects registered
+invocations. The row label `flow` is not a monitor entity-type filter.
 
 ### `_finalize.py` — the exclusive claim over closing a manifest round
 
@@ -890,15 +972,28 @@ current_phase, progress_completed, progress_total, model, provider,
 project, last_activity_at, session_id, branch_id, invocation_id, label,
 degraded, degraded_reason,
 status_reason_code, status_reason_summary, status_evidence_refs,
-pending_controls
+pending_controls, pending_controls_note
 ```
 
 Exit codes: `0` terminal-success, `1` terminal-failure, `3` still running/active, `2` lookup
 failed (unknown id, or state.db unreachable; also argparse's own usage-error code).
 
-`pending_controls`: unapplied `session_controls` rows (id, verb, created_at) for the resolved
+`current_phase` describes live execution (`planning`, `executing`, `paused`, or
+`synthesizing`). It is null when the requested entity or its backing session is
+terminal, including older records that still store a live phase.
+
+`pending_controls`: unapplied `session_controls` rows for the resolved
 session, oldest first — queued via `li o ctl pause|resume|msg`, then consumed by the control
-poller while a flow runs. `[]` when no backing session or nothing queued.
+poller while a flow runs. Each row carries its id, verb and created_at, its claim (`result`,
+`claimed_at`) when a consumer took it, `never_landed` when the row is unclaimed on a terminal
+run, and `remedy`, the one command that can still deliver it — set only for the kinds that
+have such a command (an agent run's `li agent -r`), `null` otherwise. `[]` when no backing
+session or nothing queued.
+
+`pending_controls_note`: one sentence naming how a queued control for this session would be
+delivered — the flow/play DAG execution poller or, for an agent run, its next turn boundary —
+or `null` when the surface has no consumer to name. Chosen from the row, because the consumer
+is a property of the session kind, not of the queue.
 
 **`_resolve_session_by_branch_id`** — branches/sessions schema note. There is no `branch_id`
 column on `sessions` — `branches` is a separate table, and `branches.session_id` is a NOT NULL
@@ -924,12 +1019,10 @@ of hanging indefinitely.
 record whose backing session shows no sign the normal teardown path (`persist_session_end` /
 `SESSION_END` hook) ever ran — a proxy for an orphan/limit-exit that forced a "completed"
 status. Deliberately narrower than a literal "`current_phase` non-terminal OR `duration_ms` is
-NULL" check: `current_phase` is only ever written as "executing"/"synthesizing"
-(`lionagi/cli/orchestrate/flow.py`) and is never reset to a terminal marker on any path, healthy
-or not, so alone it would flag every successful flow/play run. `duration_ms` is never populated
-by the CLI teardown path at all (`_collect_branch_usage`'s return has no `duration_ms` key) —
-checking it alone would flag every completed session, healthy or not. `num_turns` IS populated
-by that path (`persist_session_end` receives it from `_collect_branch_usage`, default 0, not
+NULL" check: older successful flow/play records can retain a live phase, and older teardown
+paths left duration unset. Current flow finalization clears the phase, and terminal display
+suppresses legacy phases; neither field alone proves whether usage was recorded. `num_turns`
+is populated by that path (`persist_session_end` receives it from `_collect_branch_usage`, default 0, not
 None), so its absence is a real signal — scoped to `source_kind='live'` because mirrored Claude
 Code transcripts (`source_kind='imported_fs'`) use a dormancy-based "completed" with no usage
 metrics by design (`lionagi/state/claude_mirror.reconcile_session_status`) and must not be
