@@ -56,7 +56,7 @@ class FieldModel(Params):
         converted = self._convert_kwargs_to_params(**kwargs)
         Params.__init__(self, **converted)
 
-    def _validate(self) -> None:
+    def _validate(self, _stacklevel: int = 3) -> None:
         Params._validate(self)
 
         if not self._is_sentinel(self.base_type):
@@ -82,7 +82,7 @@ class FieldModel(Params):
                     f"FieldModel has {len(self.metadata)} metadata items, "
                     f"exceeding recommended limit of {METADATA_LIMIT}. "
                     "Consider simplifying the field definition.",
-                    stacklevel=3,
+                    stacklevel=_stacklevel,
                 )
 
     @classmethod
@@ -165,7 +165,8 @@ class FieldModel(Params):
         new_instance = object.__new__(type(self))
         object.__setattr__(new_instance, "base_type", base_type)
         object.__setattr__(new_instance, "metadata", metadata)
-        new_instance._validate()
+        # One frame deeper than the factory method, so a warning names its caller.
+        new_instance._validate(_stacklevel=4)
         return new_instance
 
     def as_nullable(self) -> Self:

@@ -3,7 +3,7 @@
 
 from pydantic import BaseModel, JsonValue
 
-from lionagi.ln import Undefined, copy, is_same_dtype, to_list
+from lionagi.ln import Undefined, copy, to_list
 
 from .validate_boolean import validate_boolean
 
@@ -34,7 +34,7 @@ def validate_same_dtype_flat_list(
         to_list_kwargs["dropna"] = True
     value = to_list(value, **to_list_kwargs)
 
-    if not is_same_dtype(value, dtype):
+    if not all(isinstance(i, dtype) for i in value):
         raise ValueError(f"List must contain only {dtype.__name__} values.")
 
     return value

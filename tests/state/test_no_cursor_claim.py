@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import copy
+import pickle
 
 from lionagi.state.db import NO_CURSOR_CLAIM, NoCursorClaim
 
@@ -22,3 +23,7 @@ def test_copies_of_the_sentinel_are_the_sentinel():
 def test_the_sentinel_is_truthy_and_names_itself():
     assert bool(NO_CURSOR_CLAIM) is True
     assert repr(NO_CURSOR_CLAIM) == "NO_CURSOR_CLAIM"
+
+
+def test_a_pickled_sentinel_comes_back_as_the_sentinel():
+    assert pickle.loads(pickle.dumps(NO_CURSOR_CLAIM)) is NO_CURSOR_CLAIM

@@ -166,6 +166,9 @@ class NoCursorClaim(SingletonType):
     def __repr__(self) -> str:
         return "NO_CURSOR_CLAIM"
 
+    def __reduce__(self):
+        return "NO_CURSOR_CLAIM"
+
 
 class ScheduleOwnershipConflictError(RuntimeError):
     """A ScheduleSet update no longer matches the row state it planned against."""
