@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { settleRunGraphViewport } from "../src/lib/runGraphViewport";
 
 const SMOKE_SCHEDULE_NAME = "e2e-smoke-nightly-report";
 const SMOKE_SESSION_NAME = "e2e-smoke-completed-run";
@@ -65,7 +66,41 @@ test("expanded run graph keeps the keyboard inside it and hands it back", async 
   const expand = page.getByRole("button", { name: "Expand execution graph", exact: true });
   await expect(expand).toBeVisible();
   const inlineViewport = page.locator("#run-dag .react-flow__viewport").first();
-  const inlineTransform = await inlineViewport.getAttribute("style");
+  await expect(page.locator("#run-dag .react-flow__node").first()).toBeVisible();
+  // The panel takes the layout's reported height in the same commit that lays the
+  // nodes out and this canvas fits the view on the frame that follows, and the
+  // panel then resizes the canvas, which fits it once more, so the viewport can
+  // hold the view from before those fits for a while. The baseline is taken from
+  // the view that holds once every node is drawn — the state React Flow reveals a
+  // node in when it has measured it, and fits the view from — and the wait is
+  // spent on real frames, which is where the later fits run.
+  const inlineTransform = await settleRunGraphViewport(
+    () => {
+      // The style and the nodes are read in one round trip, so both describe the
+      // same frame: read separately, a fit landing between them would report a
+      // settled transform beside nodes it drew, and the hold would restart on
+      // the next read.
+      return inlineViewport.evaluate((viewport) => {
+        const nodes = Array.from(
+          viewport.closest("#run-dag")?.querySelectorAll(".react-flow__node") ?? [],
+        );
+        return {
+          style: viewport.getAttribute("style"),
+          // React Flow holds a node at `visibility: hidden` until it has measured
+          // it, and fits the view from the update that measures the last one, so
+          // "every node visible" is the graph React Flow has fitted.
+          drawn:
+            nodes.length > 0 &&
+            nodes.every((node) => getComputedStyle(node).visibility !== "hidden"),
+        };
+      });
+    },
+    async () => {
+      await page.evaluate(
+        () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
+      );
+    },
+  );
 
   await expand.click();
   const dialog = page.getByRole("dialog", { name: "Execution graph", exact: true });
@@ -89,7 +124,7 @@ test("expanded run graph keeps the keyboard inside it and hands it back", async 
   await expect(dialog).toBeHidden();
   await expect(expand).toBeFocused();
   await expect(page.locator("#main-content")).toHaveCSS("overflow-y", "auto");
-  await expect(inlineViewport).toHaveAttribute("style", inlineTransform ?? "");
+  await expect(inlineViewport).toHaveAttribute("style", inlineTransform);
 
   await expand.click();
   await dialog.getByRole("button", { name: "Collapse execution graph", exact: true }).click();

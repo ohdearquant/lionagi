@@ -145,6 +145,26 @@ class TestMessengerBindSend:
         assert "Sent to alice" in result
         assert len(branch._included) == 1
 
+    def test_send_list_delivers_one_message_to_each_recipient(self):
+        ex = Exchange()
+        m = LionMessenger(exchange=ex)
+        branch = _make_branch(ex)
+        alice_id, bob_id = uuid4(), uuid4()
+        ex.register(alice_id)
+        ex.register(bob_id)
+        tool = m.bind(branch, roster={"alice": alice_id, "bob": bob_id})
+        result = tool.func_callable(action="send", to=["alice", "bob"], content="hey")
+        assert result == "Sent to alice; Sent to bob"
+        assert ex.collect_sync(branch.id) == 2
+        for recipient in (alice_id, bob_id):
+            (delivered,) = ex.receive(recipient)
+            assert (delivered.sender, delivered.recipient, delivered.content) == (
+                branch.id,
+                recipient,
+                "hey",
+            )
+        assert len(branch._included) == 2
+
     def test_send_list_recipients_partial_unknown(self):
         ex = Exchange()
         m = LionMessenger(exchange=ex)
