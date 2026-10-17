@@ -99,6 +99,10 @@ project those rows ran under. To keep the project, name it in those members.
   contents give no key -- a cycle a container, struct or model holds, which the content key
   reports as `TypeError`, or a value nested past the recursion limit -- is compared the same
   way, so a struct or model that holds itself no longer escapes as a serializer error. A
+  `memoryview` in a mapping or model is keyed by the bytes it holds, as a bytes object is,
+  because its string is its address; `hash_obj` reads it the same way. Under the base
+  `DataClass` equality, a field holding a Pydantic model or msgspec struct that holds itself
+  compares unequal, as other cyclic values do, rather than raising the serializer's error. A
   `DataClass` value is never compared with a plain mapping: the two are deduplicated in
   separate branches, so a pair that only the `DataClass` equality would join across the two
   stays two values. Equality-only values are compared pairwise, so a list of n such values costs
