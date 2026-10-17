@@ -346,6 +346,12 @@ Exact turn semantics:
 The budget therefore limits injected text sent to the model, not the stored history and not the
 cost of calling providers.
 
+**Amended by ADR-0127:** for providers that accept a native system block and cache by prompt
+prefix and only while the prompt-caching option is on: context blocks gathered for a conversation
+stay in the request, unchanged, as the system blocks after the stable block, instead of appearing only on
+the instruction whose history first carries them; threading stays call-local. With the option off
+nothing here changes.
+
 ### D5 — `ProviderReport` is a mutable-list, task-local diagnostic with a compatibility fallback
 
 The shipped report contract is:
