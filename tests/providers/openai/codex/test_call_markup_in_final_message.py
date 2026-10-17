@@ -27,6 +27,7 @@ not a tag.
 from __future__ import annotations
 
 import contextlib
+import time
 from unittest.mock import patch
 
 import pytest
@@ -1372,10 +1373,69 @@ async def test_an_entity_without_a_semicolon_names_no_tag():
 
 @pytest.mark.asyncio
 async def test_a_thematic_break_ends_the_paragraph_before_it():
-    """A run of `-` on its own line is a thematic break, so the stray backtick
-    above it quotes nothing and the markup after it is prose."""
-    text = f'Stray ` backtick\n---\n<{BAR}DSML{BAR} invoke name="x">'
+    """A run of `*` on its own line is a thematic break, so the backtick above
+    it and the one after the markup pair with nothing and the markup is prose."""
+    text = f'Stray ` backtick\n***\n<{BAR}DSML{BAR} invoke name="x"> `'
     chunks, session = await _parse([_agent_message(text), _turn_completed()])
 
     assert session.is_error is True, f"a thematic break did not end the paragraph: {text!r}"
     assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # The outer span opens first, so the single backticks inside it are its text.
+        f'`` `a` <{BAR}DSML{BAR} invoke name="x"> ``',
+        f'``` `a` ``b`` <{BAR}DSML{BAR} invoke name="x"> ```',
+    ],
+)
+@pytest.mark.asyncio
+async def test_markup_inside_a_span_holding_shorter_runs_is_code(text):
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is False, f"markup inside an outer code span was read: {text!r}"
+    assert _markup_errors(chunks) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f'> - ```\n>   <{BAR}DSML{BAR} invoke name="x">\n>   ```',
+        f'- - ```\n    <{BAR}DSML{BAR} invoke name="x">\n    ```',
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_fence_in_a_nested_item_holds_lines_indented_to_that_item(text):
+    """An item's content column counts from where its marker line starts inside
+    the containers before it."""
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is False, f"a nested item's fence body was read: {text!r}"
+    assert _markup_errors(chunks) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f'# Heading `\n<{BAR}DSML{BAR} invoke name="x"> `',
+        f'> ```xml\n<{BAR}DSML{BAR} invoke name="x"> ```',
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_line_that_is_a_block_of_its_own_pairs_no_backtick_after_it(text):
+    """A heading, and a fence opener that never closes, are one-line blocks, so
+    their backticks do not hide markup on the next line."""
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is True, f"markup after a one-line block was hidden: {text!r}"
+    assert len(_markup_errors(chunks)) == 1
+
+
+def test_code_spans_cost_stays_near_linear_in_the_runs():
+    from lionagi.providers.openai.codex import _strip_code_spans
+
+    segment = "\\`` " * 40_000
+    started = time.perf_counter()
+    _strip_code_spans(segment)
+    assert time.perf_counter() - started < 2.0

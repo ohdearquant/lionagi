@@ -328,8 +328,9 @@ three spaces of indentation after its containers, and a blockquote marker or a
 list marker before it puts the fence in that container, so a fence inside a
 list item or a quote is code like any other. Its body and closer stay in the
 same containers: the first non-blank line that drops a quote marker or that
-is indented less than the list item's content ends the fence, and a line
-carrying a further container of its own is body text rather than a closer, so
+is indented less than the list item's content ends the fence (the content
+column counts from where the item's marker line starts inside the containers
+before it), and a line carrying a further container of its own is body text rather than a closer, so
 a line outside the opener's quote does not close a quoted fence and a quoted
 line does not close a fence outside a quote. An indented line cannot
 interrupt an open paragraph, so four spaces after a paragraph line — or after
@@ -337,11 +338,14 @@ a list or quote line — are that paragraph's text and not code, while four
 spaces under a heading or a blank line are an indented code block. A list marker interrupts an open paragraph only as a
 bullet, or as `1.` or `1)`, followed by an item; any other ordered marker
 continues the paragraph. A setext underline (`=` or `-` under a paragraph
-line) ends that paragraph. An inline span stays within one paragraph — a blank
-line, an ATX heading, a thematic break, a setext underline, a fence line and
-an indented code line all end the paragraph before them — and closes on the
-next backtick run of its own length; a backtick a backslash escapes opens no
-span, and it may close one. A legacy `result`/`response`/`session.end` event's
+line) ends that paragraph. A heading, a thematic break and a fence line that
+never closes are blocks of one line, so the paragraph after them starts fresh.
+An inline span stays within one paragraph — a blank line, an ATX heading, a
+thematic break, a setext underline, a fence line and an indented code line all
+end the paragraph before them. Backtick runs are read left to right: a run
+opens a span that closes on the next run of its own length, and the runs
+between are the span's text; a backtick a backslash escapes opens no span, and
+it may close one. A legacy `result`/`response`/`session.end` event's
 own text is read like a message: markup in it fails the turn at the stream
 end, and text that is not a string is not read. A tag in plain prose fails the
 reply as well; a reply that needs to name one writes it between backticks.
@@ -353,15 +357,16 @@ surface; another model's markup is supported by adding one entry there. The
 patterns match markup tags only — never the word DSML or a bare `|` in
 ordinary prose.
 
-Two cases this reader leaves to the side, both erring toward failing a turn
-that was fine and neither letting markup a reader would see as prose pass: a
-fence that never closes inside its container is not read as code, so the text
-after its opener is read and markup there fails the turn; and a line indented
+A fence that never closes inside its container is not read as code, so the
+text after its opener is read and markup there fails the turn: that case errs
+toward failing a turn that was fine. Three cases err the other way, toward
+completing the turn as it completed before this check existed: a line indented
 four spaces under a bare, empty list marker reads as an indented code block,
-because the item's content column is not carried past its own marker line.
-Neither case can pass markup as a completed turn, which is the failure this
-check exists to prevent; a turn that was fine and is failed is the direction
-they take.
+because the item's content column is not carried past its own marker line; a
+setext underline is read only where a paragraph is open outside any container;
+and a tab after a quote or list marker is counted from that marker rather than
+from the line's start. Nesting of quotes, lists and tabs beyond what this
+section describes is read approximately.
 
 ## Codex turn-completed usage delta
 

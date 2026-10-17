@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import bisect
 import contextlib
 import html.entities
 import json
@@ -162,11 +163,15 @@ _TOOL_CALL_MARKUP_PATTERNS: tuple[re.Pattern[str], ...] = (
 # cannot interrupt an open paragraph, so four spaces after a paragraph line
 # are that paragraph's text and not code. A list marker interrupts a paragraph
 # only as a bullet, or as `1.` or `1)`, followed by an item; any other ordered
-# marker continues the open paragraph. Two cases this reader leaves to the
-# side, both erring toward failing a turn that was fine: a line indented four
-# spaces under a bare, empty list marker reads as an indented code block,
-# because the item's content column is not carried past its own marker line;
-# and a setext underline is read only where a paragraph is open.
+# marker continues the open paragraph. Three cases this reader leaves to the
+# side err the other way, toward completing a turn as it completed before
+# this check: a line indented four spaces under a bare, empty list marker
+# reads as an indented code block, because the item's content column is not
+# carried past its own marker line; a setext underline is read only where a
+# paragraph is open outside any container; and a tab after a quote or list
+# marker is counted from that marker rather than from the line's start. More
+# generally, nesting of quotes, lists and tabs beyond what this comment
+# describes is read approximately.
 _QUOTE_MARKER_RE = re.compile(r" {0,3}>[ \t]?")
 _LIST_MARKER_RE = re.compile(r" {0,3}(?P<marker>[-+*]|\d{1,9}[.)])(?P<gap>[ \t]+|$)")
 _ATX_HEADING_RE = re.compile(r"^#{1,6}(?:[ \t]|$)")
@@ -214,7 +219,8 @@ def _scan_markers(line: str) -> tuple[list[tuple[str, int, str]], str]:
     """The block containers ``line`` opens, and the rest of the line after them.
 
     A quote marker is ``("quote", 0, "")``; a list marker is ``("list", col,
-    marker)`` where ``col`` is the column the item's content starts at. Markers
+    marker)`` where ``col`` is the column the item's content starts at, counted
+    from the end of the containers before it. Markers
     are read until neither kind matches, so a quote inside a list item, a list
     inside a quote and any nesting of the two are all read.
     """
@@ -228,7 +234,10 @@ def _scan_markers(line: str) -> tuple[list[tuple[str, int, str]], str]:
             continue
         m = _LIST_MARKER_RE.match(line, pos)
         if m is not None:
-            col = pos + _column(line[pos : m.end()])
+            # The content column counts from where this item's marker line
+            # starts inside its outer containers, which is where a later
+            # line's indentation is counted from as well.
+            col = _column(line[pos : m.end()])
             containers.append(("list", col, m["marker"]))
             pos = m.end()
             continue
@@ -351,13 +360,14 @@ def _find_fence_closer(
 def _strip_code_spans(segment: str) -> str:
     """Replace every inline code span in ``segment`` with a space.
 
-    A span opens on a run of backticks and closes on the next run of the same
-    length, where a run is read as written: a backtick that a backslash escapes
-    is literal text and opens no span, and the backticks after it in the same
-    run are a run of their own, while a closer is the next run of the length
-    that is looked for and a backslash inside an open span is that span's text.
-    The runs are read once, so the cost is linear in the number of runs however
-    many open without closing.
+    The runs of backticks are read left to right. A run opens a span that
+    closes on the next run of the same length, and the runs between them are
+    the span's text; a run with no later run of its length is literal text,
+    and reading goes on with the next run. A backtick that a backslash escapes
+    is literal text, and the backticks after it in the same run are a run of
+    their own; a backslash inside an open span is that span's text, so a
+    closer is never escaped. Each opener finds its closer by one lookup, so
+    the cost stays near linear however many runs open without closing.
     """
     if "`" not in segment:
         return segment
@@ -377,28 +387,28 @@ def _strip_code_spans(segment: str) -> str:
             backslashes += 1
             j -= 1
         runs.append((start, i - start, bool(backslashes % 2)))
-    openers: list[tuple[int, int]] = []
+    by_length: dict[int, list[int]] = {}
+    for k, (_, length, _) in enumerate(runs):
+        by_length.setdefault(length, []).append(k)
     spans: list[tuple[int, int]] = []
-    for start, length, escaped in runs:
-        closing = next(
-            (k for k, (open_length, _) in enumerate(openers) if open_length == length), None
-        )
-        if closing is not None:
-            spans.append((openers[closing][1], start + length))
-            # The runs inside the span are its text and pair with nothing.
-            del openers[closing:]
-            continue
+    k = 0
+    while k < len(runs):
+        start, length, escaped = runs[k]
         if escaped:
-            if length == 1:
-                continue
-            openers.append((length - 1, start + 1))
+            start, length = start + 1, length - 1
+        later = by_length.get(length, ())
+        at = bisect.bisect_right(later, k)
+        if length == 0 or at == len(later):
+            k += 1
             continue
-        openers.append((length, start))
+        closer = later[at]
+        spans.append((start, runs[closer][0] + length))
+        k = closer + 1
     if not spans:
         return segment
     out: list[str] = []
     pos = 0
-    for start, end in sorted(spans):
+    for start, end in spans:
         out.append(segment[pos:start])
         out.append(" ")
         pos = end
@@ -439,8 +449,11 @@ def _strip_code_regions(text: str) -> str:
     Markup inside code is being shown, not written as a call, so the regions
     are dropped before the markup patterns are matched. Line ends are
     normalised first, so a CRLF blank line ends a span and a CRLF fence line
-    closes a block. The lines are read once, so the cost is linear in the
-    number of lines.
+    closes a block. The lines are read in two passes, and a fence opener's
+    closer is looked for only when a later line could close it; openers inside
+    a container that never close there are each scanned to the container's
+    end, so many of them in one long container cost time quadratic in its
+    length.
     """
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     lines = text.split("\n")
@@ -486,11 +499,12 @@ def _strip_code_regions(text: str) -> str:
                 i = closer + 1
                 continue
             # The fence never closes inside its container, so it is not code,
-            # but its line still starts a block: the backtick runs it would
+            # but its line is a block of its own: the backtick runs it would
             # have opened on do not pair with later runs.
             _flush()
             current.append(content)
-            paragraph_open = True
+            _flush()
+            paragraph_open = False
             i += 1
             continue
 
@@ -503,8 +517,10 @@ def _strip_code_regions(text: str) -> str:
             continue
 
         if _ATX_HEADING_RE.match(content) or _THEMATIC_BREAK_RE.match(content):
+            # A heading or a break is one line and a block of its own.
             _flush()
             current.append(content)
+            _flush()
             paragraph_open = False
             i += 1
             continue
