@@ -227,8 +227,11 @@ class TestLookupContextWindow:
             tb._provider_cache.pop("_bad_test_provider", None)
 
     def test_all_provider_windows_yields_each_providers_lookup_in_order(self, monkeypatch):
-        """Iterating every provider gives what the per-provider lookup gives, the same
-        cached objects, and skips a module without a CONTEXT_WINDOWS dict."""
+        """Iterating every provider goes through the per-provider lookup: in table order,
+        a cached table is read rather than re-imported, a loaded table is cached, and a
+        module that fails to import or has no CONTEXT_WINDOWS dict is skipped uncached."""
+        import importlib
+
         import lionagi.service.token_budget as tb
         from lionagi.service.token_budget import _all_provider_windows
 
@@ -242,14 +245,16 @@ class TestLookupContextWindow:
                 "anthropic": tb._PROVIDER_MODULES["anthropic"],
             },
         )
+        cached_openai = {"cached-only-model": 1}
+        monkeypatch.setattr(tb, "_provider_cache", {"openai": cached_openai})
 
         yielded = list(_all_provider_windows())
 
-        assert [id(w) for w in yielded] == [
-            id(_get_provider_windows("openai")),
-            id(_get_provider_windows("anthropic")),
-        ]
-        assert "_no_windows" not in tb._provider_cache
+        anthropic = importlib.import_module(tb._PROVIDER_MODULES["anthropic"]).CONTEXT_WINDOWS
+        assert len(yielded) == 2
+        assert yielded[0] is cached_openai
+        assert yielded[1] is anthropic
+        assert tb._provider_cache == {"openai": cached_openai, "anthropic": anthropic}
 
 
 class TestGetContextWindowModelLookup:
