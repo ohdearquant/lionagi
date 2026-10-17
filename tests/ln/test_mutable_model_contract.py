@@ -317,41 +317,140 @@ class SelfHashedChild(DataClass):
         return hash(self.child)
 
 
-def test_dataclass_dedup_falls_back_to_equality_when_a_key_cannot_be_taken():
-    """A value whose own hash reads state it no longer carries cannot be keyed, so it
-    is compared by identity and equality instead of raising."""
+def test_dataclass_dedup_does_not_hide_a_hash_that_reads_absent_state():
+    """A value whose own ``__hash__`` reads state it no longer carries is a bug in that
+    ``__hash__``: only ``TypeError`` means "unhashable", so this one propagates rather
+    than being swallowed as a keyless value."""
 
-    deleted, live = Keyed(1), Keyed(1)
+    deleted = Keyed(1)
     del deleted.k
-    result = to_list([deleted, deleted, live], flatten=True, unique=True)
-    assert result[0] is deleted
-    assert result[1] is live
+    with pytest.raises(AttributeError):
+        to_list([deleted], flatten=True, unique=True)
+    with pytest.raises(AttributeError):
+        fields._validate_listable_field(None, [deleted])
 
 
-def test_operation_dedup_falls_back_to_equality_when_a_key_cannot_be_taken():
-    deleted, live = Keyed(1), Keyed(1)
-    del deleted.k
-    result = fields._validate_listable_field(None, [deleted, deleted, live])
-    assert result[0] is deleted
-    assert result[1] is live
+def test_dataclass_dedup_does_not_hide_a_hash_that_recurses_without_end():
+    """A value whose own ``__hash__`` descends into a cycle without end raises
+    ``RecursionError``; that is a bug in the ``__hash__`` and it propagates."""
 
-
-def test_dataclass_dedup_falls_back_to_equality_when_a_hash_recurses_without_end():
     cyclic = SelfHashedChild()
     cyclic.child = cyclic
-    assert to_list([cyclic, cyclic], flatten=True, unique=True) == [cyclic]
-
-
-def test_operation_dedup_falls_back_to_equality_when_a_hash_recurses_without_end():
-    cyclic = SelfHashedChild()
-    cyclic.child = cyclic
-    assert fields._validate_listable_field(None, [cyclic, cyclic]) == [cyclic]
+    with pytest.raises(RecursionError):
+        to_list([cyclic], flatten=True, unique=True)
+    with pytest.raises(RecursionError):
+        fields._validate_listable_field(None, [cyclic])
 
 
 def _cyclic_output():
     cyclic: list = []
     cyclic.append(cyclic)
     return fields.ActionResponseModel(output=cyclic)
+
+
+class _UnserializableMapping(dict):
+    """A mapping whose contents cannot be read for a structural key."""
+
+    def items(self):
+        raise ValueError("contents cannot be read")
+
+
+class TaggedEqual(HashableModel):
+    """Equal to any tagged value at the same ``x``, whatever else it holds."""
+
+    x: int = 1
+    extra: object = None
+
+    def __eq__(self, other):
+        return isinstance(other, TaggedEqual) and self.x == other.x
+
+
+@pytest.mark.parametrize("keyed_first", [False, True], ids=["keyed-first", "keyless-first"])
+def test_mapping_dedup_compares_a_keyless_mapping_with_a_keyable_equal_one(keyed_first):
+    """A mapping whose content key cannot be taken is compared against every kept value,
+    keyed mappings included, so equal contents are one value in either order. A keyed
+    mapping is compared against the keyless values as well, so neither order keeps it
+    twice."""
+
+    keyable, keyless = {"a": 1}, _UnserializableMapping(a=1)
+    assert keyable == keyless
+    first, second = (keyable, keyless) if keyed_first else (keyless, keyable)
+    result = to_list([first, second], flatten=True, unique=True)
+    assert len(result) == 1
+    assert result[0] is first
+
+
+@pytest.mark.parametrize("keyed_first", [False, True], ids=["keyed-first", "keyless-first"])
+def test_mapping_dedup_compares_a_keyless_model_with_a_keyable_equal_one(keyed_first):
+    """A Pydantic model is a mapping-like value whose content key follows its own
+    equality, so the same rule reads a keyable and a keyless instance as one value."""
+
+    cyclic: list = []
+    cyclic.append(cyclic)
+    keyable, keyless = TaggedEqual(x=1), TaggedEqual(x=1, extra=cyclic)
+    assert keyable == keyless
+    first, second = (keyable, keyless) if keyed_first else (keyless, keyable)
+    result = to_list([first, second], flatten=True, unique=True)
+    assert len(result) == 1
+    assert result[0] is first
+
+
+def _cyclic_mapping():
+    mapping: dict = {}
+    mapping["self"] = mapping
+    return mapping
+
+
+def _distinct_cyclic_outputs():
+    first: list = []
+    first.append(first)
+    second: list = []
+    second.append(second)
+    return fields.ActionResponseModel(output=first), fields.ActionResponseModel(output=second)
+
+
+def test_dedup_keeps_two_distinct_cyclic_mappings_instead_of_raising():
+    """Two distinct cyclic mappings raise ``RecursionError`` from comparing them; that
+    comparison counts as unequal, so both are kept rather than the error escaping."""
+
+    first, second = _cyclic_mapping(), _cyclic_mapping()
+    assert to_list([first, second], flatten=True, unique=True) == [first, second]
+    assert fields._validate_listable_field(None, [first, second]) == [first, second]
+
+
+def test_dedup_keeps_two_distinct_cyclic_models_instead_of_raising():
+    """Two distinct models whose output recurses compare with an unbounded descent; the
+    comparison counts as unequal and both are kept."""
+
+    first, second = _distinct_cyclic_outputs()
+    assert to_list([first, second], flatten=True, unique=True) == [first, second]
+    assert fields._validate_listable_field(None, [first, second]) == [first, second]
+
+
+def test_structural_hash_of_a_cyclic_value_reports_unhashable():
+    """A cyclic container reports ``TypeError`` from the content key instead of
+    descending to the recursion limit, the same failure a value reports when it cannot
+    be keyed."""
+
+    from lionagi.ln import hash_dict
+
+    for cyclic in (_cyclic_mapping(),):
+        with pytest.raises(TypeError, match="cyclic"):
+            hash_dict(cyclic)
+    self_referencing: list = []
+    self_referencing.append(self_referencing)
+    with pytest.raises(TypeError, match="cyclic"):
+        hash_dict(self_referencing)
+
+
+def test_structural_hash_of_a_value_that_repeats_a_shared_object_is_unchanged():
+    """A value that holds the same object twice without holding itself is not cyclic:
+    its representation is built, and it equals the representation of a copy."""
+
+    from lionagi.ln import hash_dict
+
+    shared = [1, 2]
+    assert hash_dict({"a": shared, "b": shared}) == hash_dict({"a": [1, 2], "b": [1, 2]})
 
 
 def test_dedup_falls_back_to_equality_when_a_model_cannot_be_keyed():

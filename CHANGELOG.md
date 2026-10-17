@@ -22,12 +22,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 - Deduplicating operation fields keeps the first of equal values. A value that can be keyed is
   grouped by its own hash and compared only inside that group, so two action outputs that
-  compare equal are one value even when they print differently; a mapping or model value, and
-  a value whose hash reads state it no longer carries or recurses into itself, has no key and
-  is compared pairwise with every kept value. An output whose `==` gives no single truth value,
-  such as an array or a data frame, is kept as a separate value instead of raising, and so is
-  an action request whose arguments hold one; an `AttributeError`, `TypeError`, `ValueError` or
-  unhashable-structural error from a value's own `__eq__` reads as unequal the same way.
+  compare equal are one value even when they print differently; a mapping or model value has no
+  key and is compared pairwise with every kept value. An output whose `==` gives no single truth
+  value, such as an array or a data frame, is kept as a separate value instead of raising, and so
+  is an action request whose arguments hold one; an `AttributeError`, `RecursionError`,
+  `TypeError`, `ValueError` or unhashable-structural error from a value's own `__eq__` reads as
+  unequal the same way.
   `to_list(..., unique=True)` keeps the first of equal `DataClass` values. It groups values that
   keep the base equality by a transient hash of their declared field state, taken during
   deduplication and not stored, groups a value whose class defines its own equality by its own
@@ -40,12 +40,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   taken falls back to the equality path rather than raising: a `DataClass` value whose field
   state cannot be hashed, such as one holding a writable memoryview, is compared with the kept
   values that define their own equality and is kept as a separate value unless it is the same
-  object or a kept value's own equality calls it equal; a value whose own hash reads a deleted
-  field or recurses into itself has no key and is compared by identity and equality, including
-  a mapping whose structural hash cannot be taken. A `DataClass` value is never compared with a
-  plain mapping: the two are deduplicated in separate branches, so a pair that only the
-  `DataClass` equality would join across the two stays two values. Equality-only values are
-  compared pairwise, so a list of n such values costs up to n*(n-1)/2 comparisons.
+  object or a kept value's own equality calls it equal; a value whose own hash reports itself
+  unhashable with `TypeError` has no key and is compared by identity and equality. A mapping
+  or model value in the plain `unique=True` branch that cannot be keyed is compared against
+  every kept value, the keyed ones included, and a keyed one is compared against the keyless
+  ones too, so a keyless and a keyable value that are equal are one value in either order. A
+  `DataClass` value is never compared with a plain mapping: the two are deduplicated in
+  separate branches, so a pair that only the `DataClass` equality would join across the two
+  stays two values. Equality-only values are compared pairwise, so a list of n such values costs
+  up to n*(n-1)/2 comparisons. A value's own `__hash__` is read exactly as a `set` reads it:
+  only `TypeError` means the value is unhashable and takes the equality path, and any other
+  error from it, such as one that reads a field the value no longer carries, is a bug in that
+  `__hash__` and propagates.
 - The Antigravity (`gemini_code` / `gemini-code` / `gemini-cli`) backend knows the Gemini 4 Argon
   family that `agy models` now lists: `gemini-4-argon` (and `gemini-4`, `argon`) resolves to
   `Gemini 4 Argon (High)`, the `-low` / `-medium` / `-high` suffixes and `--effort` pick the tier,

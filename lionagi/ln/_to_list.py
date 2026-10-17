@@ -56,13 +56,16 @@ def _equal_either_way(left: Any, right: Any) -> bool:
     A value such as an array or a data frame gives no single truth value for
     ``==``, and a value's own ``__eq__`` may refuse a pair: with ``AttributeError``
     when it reads a field the other value does not carry, with ``TypeError`` or
-    ``ValueError``, or with ``UnhashableStructuralValueError`` when the base equality
-    cannot key a state. Each of those reads as unequal in the direction that raised,
-    as ``DataClass.__eq__`` reads its own uncomparable state, so an unreadable state on
-    one side does not decide the answer; any other error propagates. The comparison is
-    asked inside the guard that reads it, so a result without one truth value is never
-    tested bare. A non-transitive pair can still make the result depend on the order
-    the values arrive in.
+    ``ValueError``, with ``RecursionError`` when it descends into a cycle without end,
+    or with ``UnhashableStructuralValueError`` when the base equality cannot key a
+    state. Each of those reads as unequal in the direction that raised, as
+    ``DataClass.__eq__`` reads its own uncomparable state, so an unreadable state on one
+    side does not decide the answer; any other error propagates. Counting a comparison
+    that raises as unequal keeps both values rather than letting an unreadable pair
+    decide the result, so two distinct cyclic values are two values and neither is lost.
+    The comparison is asked inside the guard that reads it, so a result without one truth
+    value is never tested bare. A non-transitive pair can still make the result depend on
+    the order the values arrive in.
     """
     if left is right:
         return True
@@ -70,7 +73,13 @@ def _equal_either_way(left: Any, right: Any) -> bool:
         try:
             if one == other:
                 return True
-        except (AttributeError, TypeError, ValueError, UnhashableStructuralValueError):
+        except (
+            AttributeError,
+            RecursionError,
+            TypeError,
+            ValueError,
+            UnhashableStructuralValueError,
+        ):
             continue
     return False
 
@@ -88,15 +97,17 @@ def _dataclass_content_key(value: DataClass) -> int | None:
 
 
 def _own_content_key(value: DataClass) -> int | None:
-    """A value's own hash, or ``None`` when it cannot be taken.
+    """A value's own hash, or ``None`` when the value reports itself unhashable.
 
-    A value whose own ``__hash__`` reads state it no longer carries, or one that
-    recurses into itself, gives no key to group by; it falls back to the equality
-    path rather than raising.
+    Only ``TypeError`` means "unhashable, use the equality path", exactly as the ``i not
+    in seen`` membership test and a ``set`` read it. Any other error from a value's own
+    ``__hash__`` -- a name it no longer carries, a descent into a cycle without end --
+    is a bug in that ``__hash__``, and it propagates rather than being hidden as "no
+    key".
     """
     try:
         return hash(value)
-    except (AttributeError, RecursionError, TypeError, ValueError):
+    except TypeError:
         return None
 
 
@@ -191,15 +202,17 @@ def _dedupe_operation_fields(values: Iterable) -> list:
 def _operation_content_key(value: Any) -> int | None:
     """A value's own hash, or ``None`` when it must be compared pairwise.
 
-    The same failures that make a value unkeyable in ``to_list`` make it keyless
-    here: a mapping or model value, a hash that reads absent state, and a hash
-    that recurses into itself all fall back to pairwise comparison.
+    A mapping or model value has no key here, because its hash would follow mutable
+    contents; it is compared by identity and equality instead. A value that reports
+    itself unhashable with ``TypeError`` has no key and is compared the same way. Any
+    other error from a value's own ``__hash__`` is a bug in that ``__hash__`` and
+    propagates.
     """
     if isinstance(value, _MAP_LIKE):
         return None
     try:
         return hash(value)
-    except (AttributeError, RecursionError, TypeError, ValueError):
+    except TypeError:
         return None
 
 
@@ -280,8 +293,16 @@ def to_list(
         _dedupe_dataclasses(processed, dataclass_kept)
         kept_dataclasses = {id(value) for value in dataclass_kept}
         seen: set = set()
-        unhashable_buckets: dict[Any, list] = {}
-        unkeyed: list = []
+        # A mapping or model value is keyed by a structural hash of its contents, so
+        # equal contents share a bucket; a value whose content key cannot be taken
+        # carries no key. A keyed value is compared inside its bucket and against every
+        # kept keyless value; a keyless value is compared against every kept value,
+        # every bucket and the keyless list included, because nothing it carries says
+        # which bucket it could equal. Values that carry a hash of their own keep the
+        # native set's bucket-only comparison above.
+        keyed: dict[int, list] = {}
+        keyless: list = []
+        processed_ids: set[int] = set()
         emitted_dataclasses: set[int] = set()
         out: list = []
         for i in processed:
@@ -291,29 +312,36 @@ def to_list(
                     out.append(i)
                 continue
             try:
-                if i not in seen:
-                    seen.add(i)
-                    out.append(i)
+                duplicate = i in seen
             except TypeError:
-                # Unhashable item (e.g. a dict): bucket by structural hash, then
-                # confirm identity-or-equality within the bucket, mirroring the
-                # identity-first fast path native set membership gives above. A
-                # structural hash that cannot be taken -- a cyclic value, or state
-                # that will not serialize -- joins the keyless bucket, where every
-                # kept value is asked.
-                if not isinstance(i, _MAP_LIKE):
-                    raise ValueError(
-                        "Unhashable type encountered in list unique value processing."
-                    ) from None
-                try:
-                    hash_value = hash_dict(i)
-                except (AttributeError, RecursionError, TypeError, ValueError):
-                    bucket = unkeyed
-                else:
-                    bucket = unhashable_buckets.setdefault(hash_value, [])
-                if not any(_equal_either_way(existing, i) for existing in bucket):
-                    bucket.append(i)
-                    out.append(i)
+                # Unhashable item (e.g. a dict or a model): mirror the identity-first
+                # fast path native set membership gives, over the content key.
+                duplicate = None
+            if duplicate is False:
+                seen.add(i)
+                out.append(i)
+                continue
+            if duplicate is True or id(i) in processed_ids:
+                continue
+            processed_ids.add(id(i))
+            if not isinstance(i, _MAP_LIKE):
+                raise ValueError(
+                    "Unhashable type encountered in list unique value processing."
+                ) from None
+            try:
+                key = hash_dict(i)
+            except (AttributeError, TypeError, ValueError):
+                # The contents give no key -- a cycle, or state that will not
+                # serialize -- so this value is compared against every kept value.
+                bucket = keyless
+                compared: Iterable = chain(chain.from_iterable(keyed.values()), keyless)
+            else:
+                bucket = keyed.setdefault(key, [])
+                compared = chain(bucket, keyless)
+            if any(_equal_either_way(existing, i) for existing in compared):
+                continue
+            bucket.append(i)
+            out.append(i)
         return out
 
     return processed
