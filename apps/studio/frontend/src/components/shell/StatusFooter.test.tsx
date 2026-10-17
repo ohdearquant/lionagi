@@ -19,9 +19,12 @@ import StatusFooter, { HEALTH_PROBE_TIMEOUT_MS, STATS_INITIAL_DELAY_MS } from ".
 import enMessages from "@/messages/en.json";
 
 const getStats = vi.fn();
+const apiConfig = vi.hoisted(() => ({ base: "http://127.0.0.1:8765" }));
 
 vi.mock("@/lib/api", () => ({
-  resolveApiBase: () => "http://127.0.0.1:8765",
+  get API_BASE() {
+    return apiConfig.base;
+  },
   getStats: (...args: unknown[]) => getStats(...args),
 }));
 
@@ -87,6 +90,7 @@ describe("StatusFooter DB reading", () => {
   let root: Root | null = null;
 
   beforeEach(() => {
+    apiConfig.base = "http://127.0.0.1:8765";
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.useFakeTimers();
     container = document.createElement("div");
@@ -120,6 +124,14 @@ describe("StatusFooter DB reading", () => {
     expect(span.className).toContain("text-status-warning");
     // Numbers only, so the reason survives in every locale.
     expect(span.getAttribute("title")).toBe("8.5 GB / 500.0 MB");
+  });
+
+  it("shows the page origin when health requests use the same-origin base", async () => {
+    apiConfig.base = "";
+    getStats.mockResolvedValue(statsWith({ size_bytes: 120 * MB }));
+    root = await mountFooter(container);
+    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe("/health");
+    expect(container.textContent).toContain(window.location.origin);
   });
 
   it("leaves the reading unmarked when the store is under its threshold", async () => {

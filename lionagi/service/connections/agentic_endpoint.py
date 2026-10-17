@@ -38,7 +38,7 @@ class AgenticEndpoint(Endpoint):
     def session_id(self, value: str | None):
         self._session_id = value
 
-    def _create_http_session(self):
+    def _create_http_session(self, client_kwargs=None):
         raise NotImplementedError("Agentic endpoints do not use HTTP sessions")
 
     async def _call_aiohttp(self, *a, **kw):

@@ -161,7 +161,16 @@ class HookBus:
         await self._record(point, kwargs)
 
     async def emit(self, point: HookPoint | str, /, **kwargs: Any) -> None:
-        """Fire handlers sequentially; exceptions logged, not propagated."""
+        """Fire handlers sequentially; exceptions logged, not propagated.
+
+        A write the store refused in compatibility mode
+        (``StateCompatibilityRefused``, from a handler or from the message retry
+        flush before ``SESSION_END``) is the one exception raised: it ends the
+        emit, so later handlers do not run, and the signal is recorded with the
+        refusal first.
+        """
+        from lionagi.state.compat import refusal_in  # noqa: PLC0415
+
         point = _normalize_point(point)
         if point in _BLOCKING_POINTS:
             await self.blocking_emit(point, **kwargs)
@@ -176,8 +185,20 @@ class HookBus:
                     await maybe_await(handler(**kwargs))
                 except StopHook:
                     break
-                except Exception:  # noqa: BLE001 — hook isolation invariant
+                except Exception as exc:  # noqa: BLE001 — hook isolation invariant
+                    if refusal_in(exc) is not None:
+                        # A write the store refused in compatibility mode, alone or inside a
+                        # group, stops the run instead of leaving it unpersisted (ADR-0128 D6).
+                        raise
                     logger.exception("Hook failed: %s", point.value)
+        except Exception as exc:
+            refusal = refusal_in(exc)
+            if refusal is None:
+                raise
+            await self._record(
+                point, {**kwargs, "exception": f"{type(refusal).__name__}: {refusal}"}
+            )
+            raise
         finally:
             _emitting_bus.reset(token)
         # MESSAGE_ADD is represented on the signal bus by MessageAdded (emitted
@@ -191,12 +212,26 @@ class HookBus:
 
         Returns whether every queue emptied. The queues report their own losses,
         so this is for a caller that can do something about it rather than the
-        record that it happened.
+        record that it happened. A queue the store refuses in compatibility mode
+        raises that refusal, once every queue has been flushed.
         """
+        from lionagi.state.compat import StateCompatibilityRefused  # noqa: PLC0415
+
         flushed = True
+        refusal = None
         for retry_queue in getattr(self, "_message_retry_queues", {}).values():
-            if not await retry_queue.flush_final():
-                flushed = False
+            try:
+                if not await retry_queue.flush_final():
+                    flushed = False
+            except StateCompatibilityRefused as exc:
+                if refusal is None:
+                    refusal = exc
+                else:
+                    # The first refusal is raised; each later one is logged, so none goes
+                    # unreported.
+                    logger.error("Message flush refused another queue: %s", exc)
+        if refusal is not None:
+            raise refusal
         return flushed
 
 

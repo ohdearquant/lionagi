@@ -23,17 +23,6 @@ def _content_hash(content):
     return compute_hash(content, none_as_valid=True)
 
 
-def _frozen_datetime(fixed):
-    """A datetime subclass whose now() always returns `fixed`."""
-
-    class _Frozen(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return fixed
-
-    return _Frozen
-
-
 class TestNodeConfigDefaults:
     """NodeConfig default values and basic construction."""
 
@@ -374,11 +363,11 @@ class TestNodeTouch:
         t0 = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
         t1 = datetime(2024, 6, 1, 12, 0, 5, tzinfo=timezone.utc)
         monkeypatch.setattr(element_mod, "now_utc", lambda: t0)
-        monkeypatch.setattr(node_mod, "datetime", _frozen_datetime(t0))
+        monkeypatch.setattr(node_mod, "now_utc", lambda: t0)
         cls = create_node("Tracked", track_updated_at=True)
         t = cls(content="x")
         assert t.created_at == t0.timestamp()
-        monkeypatch.setattr(node_mod, "datetime", _frozen_datetime(t1))
+        monkeypatch.setattr(node_mod, "now_utc", lambda: t1)
         t.touch()
         # updated_at reflects the touch() clock (t1) and orders strictly after the
         # node's actual construction time (created_at), not an arbitrary constant.
