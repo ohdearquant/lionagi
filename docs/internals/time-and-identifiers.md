@@ -17,3 +17,10 @@ For example, `parse_duration("30m")` returns `1800.0`, and
 `parse_duration("1.5h", allow_float=True)` returns `5400.0`. A caller requiring
 an integer return value or a narrower textual format must enforce that contract
 at its own boundary.
+
+Elapsed time inside an async backend can be read with
+`lionagi.ln.concurrency.current_time()`. CLI stream result parsers use it for
+duration accounting under either asyncio or Trio. Operator heartbeat deadlines
+and scheduler recovery deadlines also use it, while their existing asyncio task
+and polling operations retain their backend requirements. Synchronous elapsed
+time measurements continue to use `time.monotonic()`.

@@ -17,7 +17,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from lionagi.ln import coerce_created_at, short_id
-from lionagi.ln.concurrency import ExceptionGroup
+from lionagi.ln.concurrency import ExceptionGroup, current_time
 from lionagi.state.db import (
     NO_CURSOR_CLAIM,
     SESSION_TERMINAL_STATUSES,
@@ -908,9 +908,8 @@ class SchedulerEngine:
                     # A cancel that arrives meanwhile is absorbed here, since it would end
                     # this wait early: stop() is awaiting this task, so a cancel of stop()'s
                     # own caller reaches it.
-                    loop = asyncio.get_running_loop()
-                    deadline = loop.time() + _RECOVERY_UNWIND_SECONDS
-                    while not passes.done() and (left := deadline - loop.time()) > 0:
+                    deadline = current_time() + _RECOVERY_UNWIND_SECONDS
+                    while not passes.done() and (left := deadline - current_time()) > 0:
                         with contextlib.suppress(asyncio.CancelledError):
                             await asyncio.wait({passes}, timeout=left)
                     if not passes.done():

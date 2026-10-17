@@ -63,6 +63,9 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Changed
 
+- CLI stream result parsers measure elapsed time with the active async backend's
+  clock, so the Gemini, Codex and Pi parsers can finish under Trio. Operator
+  heartbeat deadlines and scheduler recovery deadlines use the same clock helper.
 - `li studio --docker` publishes the daemon's port on the address `--host` names, loopback
   (`127.0.0.1`) by default, where it published on every host interface, so with
   `LIONAGI_STUDIO_AUTH_TOKEN` unset other machines on the network could reach the API. The

@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import logging
 import math
@@ -20,6 +19,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lionagi import ln
 from lionagi.libs.path_safety import check_paths_safe, contain_paths_in_root
+from lionagi.ln.concurrency import current_time
 from lionagi.ln.concurrency.utils import maybe_await
 from lionagi.providers._agentic_handlers import AgenticHandlersMixin
 from lionagi.providers._cli_subprocess import (
@@ -570,7 +570,7 @@ async def stream_gemini_cli(
     if session is None:
         session = CLISession()
     theme = request.cli_display_theme or "light"
-    _start = asyncio.get_running_loop().time()
+    _start = current_time()
 
     saw_object = False
     teardown_error_emitted = False
@@ -702,7 +702,7 @@ async def stream_gemini_cli(
     if session.num_turns is None:
         session.num_turns = 1
     if session.duration_ms is None:
-        session.duration_ms = int((asyncio.get_running_loop().time() - _start) * 1000)
+        session.duration_ms = int((current_time() - _start) * 1000)
 
     if on_final:
         await maybe_await(on_final(session))
