@@ -159,16 +159,16 @@ async def test_first_round_declared_sequential_runs_in_order():
 
     async def first(a: float, b: float) -> float:
         """Record an in-order call."""
-        trace.append(("start", "first"))
+        trace.append(("start", "first", a, b))
         await asyncio.sleep(0)
-        trace.append(("end", "first"))
+        trace.append(("end", "first", a, b))
         return a + b
 
     async def second(a: float, b: float) -> float:
         """Record an in-order call."""
-        trace.append(("start", "second"))
+        trace.append(("start", "second", a, b))
         await asyncio.sleep(0)
-        trace.append(("end", "second"))
+        trace.append(("end", "second", a, b))
         return a + b
 
     branch = tool_branch(
@@ -186,10 +186,10 @@ async def test_first_round_declared_sequential_runs_in_order():
     )
     assert await branch.ReAct(instruction="Run both", tools=True, max_extensions=0) == "done"
     expected = [
-        ("start", "first"),
-        ("end", "first"),
-        ("start", "second"),
-        ("end", "second"),
+        ("start", "first", 1, 2),
+        ("end", "first", 1, 2),
+        ("start", "second", 3, 4),
+        ("end", "second", 3, 4),
     ]
     _each_ran_once(trace, expected)
     assert trace == expected
@@ -209,7 +209,8 @@ async def test_later_round_declared_concurrent_overlaps():
     trace = []
 
     async def single(a: float, b: float) -> float:
-        """Return a single sum."""
+        """Record a call with its arguments and return the sum."""
+        trace.append(("single", a, b))
         return a + b
 
     async def slow(name: str) -> str:
@@ -241,6 +242,7 @@ async def test_later_round_declared_concurrent_overlaps():
         == "Both cities are sunny"
     )
     expected = [
+        ("single", 1, 2),
         ("start", "NYC"),
         ("start", "SF"),
         ("end", "NYC"),
@@ -325,13 +327,20 @@ async def test_a_scripted_tool_run_registers_no_exit_log_dump(monkeypatch):
 
     registered = []
     monkeypatch.setattr(atexit, "register", lambda func, *a, **k: registered.append(func))
+    calls = []
 
     def add(a: int, b: int) -> int:
         """Add two numbers."""
+        calls.append((a, b))
         return a + b
 
     request = {"function": "add", "arguments": {"a": 1, "b": 2}}
     branch = tool_branch([{"action_requests": [request]}], [add], "3")
-    assert await branch.ReAct(instruction="Add", tools=True, max_extensions=0) == "3"
+    result = await branch.ReAct(instruction="Add", tools=True, max_extensions=0)
+    api_calls = ScriptedBranch.calls(branch)
+    assert len(api_calls) == 2
+    assert result == "3"
+    assert calls == [(1, 2)]
     assert [m.output for m in branch.messages if isinstance(m, ActionResponse)] == [3]
+    assert "output: 3" in str(api_calls[-1].payload["messages"])
     assert registered == []
