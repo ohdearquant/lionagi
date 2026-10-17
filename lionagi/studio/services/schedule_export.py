@@ -36,6 +36,7 @@ from lionagi.studio.services.schedule_declaration import (
     Target,
     Trigger,
     resolve_member,
+    row_cron_timezone,
 )
 
 # managed_by is NULL for every row created before the declaration layer; the
@@ -177,9 +178,15 @@ def _convert_legacy_trigger(row: dict[str, Any]) -> Trigger:
         expr = row.get("cron_expr")
         if not expr:
             raise ValueError("trigger_type='cron' row has no cron_expr")
-        # Legacy rows never persisted a timezone (that field is new with the
-        # declaration layer); UTC is the documented default for conversion.
-        tz = row.get("resolved_timezone") or "UTC"
+        # A row without a stored zone fires in the scheduler daemon's default,
+        # which this process need not share; the declaration must carry the
+        # zone the row actually fires in, or nothing.
+        tz = row_cron_timezone(row)
+        if tz is None:
+            raise ValueError(
+                "trigger_type='cron' row stores no timezone and no scheduler has recorded "
+                "the zone it fires in; start the scheduler once so it records one"
+            )
         return Trigger(cron=CronTrigger(expression=expr, timezone=tz))
     if kind == "interval":
         secs = row.get("interval_sec")
@@ -247,6 +254,12 @@ def _convert_legacy_target(row: dict[str, Any], *, flows_dir: Path, manifest_dir
         name = row.get("action_playbook")
         if not name:
             raise ValueError("action_kind='play' row has no action_playbook")
+        if row.get("action_prompt"):
+            raise ValueError(
+                "action_kind='play' row has an action_prompt, which the scheduled launch "
+                "passes to the play, but a playbook target has no field to carry it -- "
+                "dropping it would silently change fire behavior"
+            )
         return PlaybookTarget(kind="playbook", name=name, args={})
     if kind == "flow_yaml":
         content = row.get("action_flow_yaml")
@@ -475,8 +488,11 @@ def build_managed_export_document(
             continue
         authored = dict(authored)
         execution = dict(authored.get("execution") or {})
-        if not execution.get("project") and row.get("action_project"):
-            execution["project"] = row["action_project"]
+        # The member carries the project the row runs with, whatever the author
+        # wrote: an omitted or empty project resolved against a document that the
+        # export does not reproduce (a global one, or another document's project),
+        # and written back as it was it would resolve differently on re-apply.
+        execution["project"] = row.get("action_project") or None
         authored["execution"] = execution
         try:
             member = ScheduleMember.model_validate(authored)

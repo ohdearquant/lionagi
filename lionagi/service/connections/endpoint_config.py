@@ -12,8 +12,10 @@ from pydantic import (
     Field,
     PrivateAttr,
     SecretStr,
+    SerializerFunctionWrapHandler,
     field_serializer,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -76,11 +78,20 @@ class EndpointConfig(BaseModel):
     openai_compatible: bool = False
     requires_tokens: bool = False
     context_window: int | None = None
+    # Prompt-cache placement (ADR-0127): read by the endpoint, never sent in a request body. It
+    # changes a request only on an endpoint that declares prefix caching of a native system block.
+    prompt_caching: bool = False
     kwargs: dict = Field(default_factory=dict)
     client_kwargs: dict = Field(default_factory=dict)
     allow_local_network: bool = False
     serialize_by_alias: bool = False
     _api_key: str | None = PrivateAttr(None)
+    _api_key_explicit: bool = PrivateAttr(default=False)
+
+    def __init__(self, **data: Any) -> None:
+        api_key_explicit = "api_key" in data
+        super().__init__(**data)
+        self._api_key_explicit = api_key_explicit
 
     @model_validator(mode="before")
     def _validate_kwargs(cls, data: dict):
@@ -167,6 +178,16 @@ class EndpointConfig(BaseModel):
         """
         return {k: val for k, val in v.items() if k not in _UNWRITTEN_KWARG_NAMES}
 
+    @model_serializer(mode="wrap")
+    def _omit_prompt_caching_when_off(self, handler: SerializerFunctionWrapHandler):
+        # A config dump is stored with every model a branch records, so a dump with the option
+        # off stays the one written before the option existed; a stored config without the key
+        # loads with the default, and a dump with the option on keeps it for the reload.
+        data = handler(self)
+        if isinstance(data, dict) and not self.prompt_caching:
+            data.pop("prompt_caching", None)
+        return data
+
     def __iter__(self):
         """Applies the same exclusion on the ``dict(config)``/
         ``list(config)`` path, which bypasses the field serializer above. See
@@ -199,6 +220,8 @@ class EndpointConfig(BaseModel):
         for key, value in kwargs.items():
             if hasattr(self, key):
                 setattr(self, key, value)
+                if key == "api_key":
+                    self._api_key_explicit = True
             else:
                 self.kwargs[key] = value
 

@@ -9,7 +9,7 @@ import os
 import re
 import time
 
-from lionagi._errors import EmptyOutgoingContentError, LionError
+from lionagi._errors import CLIInputRefusedError, EmptyOutgoingContentError, LionError
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.ln.concurrency import CancelScope, create_task_group, move_on_after
 from lionagi.orchestration import plan
@@ -171,6 +171,18 @@ async def _run_fanout(
     teardown path settles on) reaches the caller's exit code instead of being
     silently dropped in favour of a hardcoded success.
     """
+    if invocation_id is not None:
+        # The same check `li o flow` makes, and for the same reason: an
+        # unregistered id here would silently disable persistence while the
+        # caller believes the run is grouped under a real invocation. Refused
+        # before setup so nothing has been spawned when it fails.
+        from .flow import FlowPlanError, _validate_flow_invocation
+
+        try:
+            await _validate_flow_invocation(invocation_id)
+        except FlowPlanError as exc:
+            raise FanoutPlanError(str(exc)) from exc
+
     stamp_worker_depth()
     _started_at = time.time()
     env = await setup_orchestration(
@@ -342,11 +354,13 @@ async def _run_fanout_inner(
         )
     except EmptyOutgoingContentError:
         raise
-    except ValueError as exc:
+    except (ValueError, CLIInputRefusedError) as exc:
         # plan() raises a bare ValueError when the orchestrator still
         # overshoots max_tasks after the cap was stated in guidance — mirror
         # `li o flow`'s FlowPlanError translation so this reaches the CLI's
-        # clean-failure exit path instead of escaping as a raw traceback.
+        # clean-failure exit path instead of escaping as a raw traceback. A
+        # CLIInputRefusedError is what a request the CLI cannot take raises at
+        # construction, and it reaches here the same way.
         raise FanoutPlanError(str(exc)) from exc
     t_decompose = time.monotonic() - t0
     if not assignments:

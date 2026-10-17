@@ -27,6 +27,7 @@ from lionagi._paths import ensure_lionagi_dir
 from lionagi.cli._argtypes import JsonArgument
 from lionagi.cli._logging import log_error, warn
 from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES
+from lionagi.studio._host import normalize_host
 
 _STUDIO_IMAGE = "ghcr.io/ohdearquant/lion-studio:latest"
 _HOSTED_URL = "https://lion-studio.khive.ai"
@@ -74,7 +75,13 @@ def _add_studio_flags(parser: argparse.ArgumentParser, *, suppress_defaults: boo
     parser.add_argument(
         "--host",
         default=_default("127.0.0.1"),
-        help="Host to bind (default: 127.0.0.1)",
+        help=(
+            "Host to bind (default: 127.0.0.1). --docker also publishes the "
+            "container port on this host, so anything else there exposes the "
+            "daemon to that interface. This is an IP address, not an address "
+            "with a port: the port is --port, and a value carrying a port is "
+            "refused."
+        ),
     )
     parser.add_argument(
         "--frontend-port",
@@ -108,7 +115,10 @@ def _add_studio_flags(parser: argparse.ArgumentParser, *, suppress_defaults: boo
         "--docker",
         action="store_true",
         default=_default(False),
-        help="Run the bundled frontend + backend via Docker",
+        help=(
+            "Run the bundled frontend + backend via Docker. The port is "
+            "published on --host (loopback by default)"
+        ),
     )
     mode.add_argument(
         "--no-frontend",
@@ -345,24 +355,125 @@ def _start_backend_only(host: str, port: int) -> int:
     return 0
 
 
+_STUDIO_CONTAINER_PORT = 8765
+
+
+def _published_host(host: str) -> str:
+    """The address ``--docker`` publishes the container's port on, named by *host*.
+
+    Brackets are stripped first, so a bracketed blank is as blank as a bare one:
+    a blank host is the loopback default rather than a request to publish
+    everywhere, since an empty host half means every interface to docker, the
+    opposite of what an unset flag asks for. What is left has to be an IP
+    address literal. Docker does not resolve a name in the host half of a
+    mapping, and it cannot publish on an address that carries a port or an IPv6
+    zone, so each of those is refused here with a message instead of failing
+    inside docker.
+
+    An IPv4-mapped IPv6 address (``::ffff:192.168.1.5``) is returned as the
+    IPv4 address it maps, since that is what a client reaches it as and what the
+    daemon's Host grammar accepts -- `normalize_host` does that unwrapping, so the
+    spelling in brackets and the compressed spelling reach the same address.
+
+    Raises:
+        ValueError: *host* is not an address the port can be published on.
+    """
+    normalized = normalize_host(host)
+    if not normalized:
+        return "127.0.0.1"
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        raise ValueError(
+            f"--host {host!r} is not an IP address; --host takes an address, not an "
+            "address with a port (the port is --port). --docker publishes the "
+            "container port on an address such as 127.0.0.1, 0.0.0.0, 192.168.1.5 or ::1"
+        ) from None
+    if getattr(address, "scope_id", None) is not None:
+        raise ValueError(
+            f"--host {host!r} carries an IPv6 zone, which names a local interface: "
+            "--docker cannot publish a port on it"
+        ) from None
+    # An IPv4-mapped IPv6 address is the IPv4 address in another spelling; a
+    # browser sends the IPv4 form, which is also the form the daemon admits.
+    return str(address)
+
+
+def _bracketed(address: str) -> str:
+    """*address* as a URL authority or a port mapping needs it: an IPv6 literal
+    in brackets, since its own colons would otherwise read as a separator."""
+    return f"[{address}]" if ":" in address else address
+
+
+def _printed_host(published: str) -> str:
+    """The host to print in the Studio URL for the address *published*.
+
+    A wildcard (``0.0.0.0`` or ``::``) names no address a browser can open, and
+    the daemon refuses it as a Host, so the URL says ``localhost``, which it
+    admits. Any other address is printed as published, an IPv6 literal in
+    brackets.
+    """
+    if ipaddress.ip_address(published).is_unspecified:
+        return "localhost"
+    return _bracketed(published)
+
+
+def _docker_publish_spec(host: str, api_port: int) -> str:
+    """The ``-p`` value publishing the container's port on *host* at *api_port*.
+
+    A host half is always written: a bare ``PORT:PORT`` mapping publishes on
+    every host interface, which puts an unauthenticated daemon on the local
+    network.
+
+    Raises:
+        ValueError: *host* is not an address the port can be published on.
+    """
+    return f"{_bracketed(_published_host(host))}:{api_port}:{_STUDIO_CONTAINER_PORT}"
+
+
 def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
+    try:
+        publish_spec = _docker_publish_spec(host, api_port)
+        published = _published_host(host)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
     lionagi_home = Path.home() / ".lionagi"
     ensure_lionagi_dir(lionagi_home)
 
     print(f"Pulling {_STUDIO_IMAGE}...")
-    pull = subprocess.run(  # noqa: S603
-        ["docker", "pull", _STUDIO_IMAGE],  # noqa: S607
-        capture_output=True,
-    )
+    try:
+        pull = subprocess.run(  # noqa: S603
+            ["docker", "pull", _STUDIO_IMAGE],  # noqa: S607
+            capture_output=True,
+        )
+    except KeyboardInterrupt:
+        # Ctrl-C during the pull stops the launch before anything runs, exactly
+        # as it does during the run; the interrupt is not a failed launch.
+        print("\nStopping Lion Studio...")
+        return 0
     if pull.returncode != 0:
         stderr = pull.stderr.decode(errors="replace").strip()
         print(f"Warning: docker pull failed: {stderr}", file=sys.stderr)
         print("Trying to use cached image...", file=sys.stderr)
 
     print()
-    print(f"Lion Studio: http://localhost:{api_port}")
+    print(f"Lion Studio: http://{_printed_host(published)}:{api_port}")
     print("Press Ctrl+C to stop")
     print()
+
+    env_args: list[str] = []
+    if os.environ.get("LIONAGI_STUDIO_AUTH_TOKEN"):
+        # The name alone: docker reads the value from this process's environment,
+        # so the token reaches the container without entering the argument list.
+        env_args += ["-e", "LIONAGI_STUDIO_AUTH_TOKEN"]
+    # The published address is passed to the daemon: it admits a request whose
+    # Host is the address it is reached by. A wildcard is passed too, so the
+    # container's startup warning names the same address the publish does. It
+    # adds no admitted Host: an unspecified address binds every interface and is
+    # never a name a page is opened at, so the daemon refuses it as a Host.
+    env_args += ["-e", f"LIONAGI_STUDIO_HOST={published}"]
 
     claude_plugins = Path.home() / ".claude" / "plugins"
     docker_cmd = [
@@ -370,7 +481,11 @@ def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
         "run",
         "--rm",
         "-p",
-        f"{api_port}:8765",
+        # The image's uvicorn binds 0.0.0.0 inside the container, which is what
+        # makes the published port reachable at all; the host half of this
+        # mapping, not that bind, decides who can reach it.
+        publish_spec,
+        *env_args,
         "-v",
         f"{lionagi_home}:/root/.lionagi",
     ]
@@ -411,14 +526,17 @@ def _start_docker(host: str, api_port: int, frontend_port: int) -> int:
     docker_cmd.extend(["--name", "lion-studio", _STUDIO_IMAGE])
 
     try:
-        subprocess.run(docker_cmd, check=False)  # noqa: S603
+        run = subprocess.run(docker_cmd, check=False)  # noqa: S603
     except KeyboardInterrupt:
         print("\nStopping Lion Studio...")
         subprocess.run(  # noqa: S603
             ["docker", "stop", "lion-studio"],  # noqa: S607
             capture_output=True,
         )
-    return 0
+        return 0
+    # docker's own exit status, so a refused publish (a non-zero run) is not
+    # reported as a successful launch.
+    return run.returncode
 
 
 def _start_local(
@@ -827,6 +945,34 @@ _warned_api_suffix = False
 _SCHEDULE_API_TIMEOUT_SECONDS = 10.0
 
 
+def _url_authority(host: str) -> str:
+    """*host* as the authority of a URL: something a client can connect to.
+
+    An unspecified address (`0.0.0.0`, `::`) names no host a client opens, so a
+    URL built on it is one the daemon refuses as a Host: it maps to the loopback
+    address of the same family. An IPv6 literal is bracketed, or its own colons
+    read as the port separator and the URL fails to parse. Anything else is left
+    as the caller wrote it.
+
+    Every value is read through `normalize_host` first, so a URL is built from the
+    address the value names rather than from its spelling: a blank value is a URL
+    with no host at all (`http://:8765` does not even parse), `[localhost]` is a
+    bracketed name, and an IPv4-mapped address is the IPv4 address a client
+    connects to. The authority here is also the Host the URL sends, so each of
+    these has to be one the daemon's Host guard admits under the same value.
+    """
+    normalized = normalize_host(host)
+    if not normalized:
+        return "127.0.0.1"
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        return normalized
+    if address.is_unspecified:
+        return "[::1]" if address.version == 6 else "127.0.0.1"
+    return f"[{normalized}]" if address.version == 6 else normalized
+
+
 def _base_url() -> str:
     if url := os.environ.get("LIONAGI_STUDIO_URL"):
         url = url.rstrip("/")
@@ -846,7 +992,7 @@ def _base_url() -> str:
         return url
     host = os.environ.get("LIONAGI_STUDIO_HOST", "127.0.0.1")
     port = os.environ.get("LIONAGI_STUDIO_PORT", "8765")
-    return f"http://{host}:{port}"
+    return f"http://{_url_authority(host)}:{port}"
 
 
 def _is_schedule_request_timeout(exc: OSError) -> bool:
@@ -1422,7 +1568,10 @@ def _cmd_validate_set(args: argparse.Namespace) -> int:
             )
         else:
             for name, message in exc.errors:
-                print(f"INVALID  {doc.metadata.project}/{name}  {message}", file=sys.stderr)
+                # Plan errors carry the qualified name; resolution errors the member name.
+                prefix = "global" if doc.metadata.scope == "global" else doc.metadata.project
+                label = name if name.startswith(f"{prefix}/") else f"{prefix}/{name}"
+                warn(f"INVALID  {label}  {message}")
         return 1
 
     if args.as_json:
@@ -1454,7 +1603,15 @@ def _fmt_plan_line(entry, set_ref: str) -> str:
         extra = f"  model={model}" if model else ""
         return f"CREATE     {e.qualified_name}{extra}  cwd={cwd}"
     if e.action == "UPDATE":
+        if e.model_change is not None:
+            stored, declared = e.model_change
+            return f"UPDATE     {e.qualified_name}  model={stored} -> {declared}"
         return f"UPDATE     {e.qualified_name}"
+    if e.action == "ADOPT":
+        origin = (
+            f"  adopts existing row {e.adopted_from}" if e.adopted_from else "  adopts existing row"
+        )
+        return f"ADOPT      {e.qualified_name}{origin}"
     if e.action == "UNCHANGED":
         return f"UNCHANGED  {e.qualified_name}"
     if e.action == "DISABLE":
@@ -1496,7 +1653,10 @@ def _cmd_apply_set(args: argparse.Namespace) -> int:
             )
         else:
             for name, message in exc.errors:
-                print(f"INVALID  {doc.metadata.project}/{name}  {message}", file=sys.stderr)
+                # Plan errors carry the qualified name; resolution errors the member name.
+                prefix = "global" if doc.metadata.scope == "global" else doc.metadata.project
+                label = name if name.startswith(f"{prefix}/") else f"{prefix}/{name}"
+                warn(f"INVALID  {label}  {message}")
         return 1
 
     has_errors = any(e.action == "ERROR" for e in plan)
@@ -1507,7 +1667,22 @@ def _cmd_apply_set(args: argparse.Namespace) -> int:
                     "dry_run": bool(args.dry_run),
                     "set": set_ref,
                     "plan": [
-                        {"name": e.qualified_name, "action": e.action, "detail": e.detail}
+                        {
+                            "name": e.qualified_name,
+                            "action": e.action,
+                            "detail": e.detail,
+                            **({"adopted_from": e.adopted_from} if e.adopted_from else {}),
+                            **(
+                                {
+                                    "model_change": {
+                                        "from": e.model_change[0],
+                                        "to": e.model_change[1],
+                                    }
+                                }
+                                if e.model_change is not None
+                                else {}
+                            ),
+                        }
                         for e in plan
                     ],
                 },
@@ -1517,19 +1692,29 @@ def _cmd_apply_set(args: argparse.Namespace) -> int:
         )
     else:
         for entry in plan:
-            stream = sys.stderr if entry.action == "ERROR" else sys.stdout
-            print(_fmt_plan_line(entry, set_ref), file=stream)
+            # A refused entry goes through the CLI's warning channel, as every
+            # other refusal here does; the rest of the plan is ordinary output.
+            if entry.action == "ERROR":
+                warn(_fmt_plan_line(entry, set_ref))
+            else:
+                print(_fmt_plan_line(entry, set_ref))
         created = sum(1 for e in plan if e.action == "CREATE")
+        adopted = sum(1 for e in plan if e.action == "ADOPT")
         updated = sum(1 for e in plan if e.action == "UPDATE")
         unchanged = sum(1 for e in plan if e.action == "UNCHANGED")
         disabled = sum(1 for e in plan if e.action == "DISABLE")
+        # The adopt count appears only when there is one, so output without
+        # --adopt reads as it did before adoption existed.
         if args.dry_run:
+            adopt_part = f"{adopted} adopt, " if adopted else ""
             print(
-                f"Plan: {created} create, {updated} update, {unchanged} unchanged, {disabled} disable"
+                f"Plan: {created} create, {adopt_part}{updated} update, "
+                f"{unchanged} unchanged, {disabled} disable"
             )
         elif not has_errors:
+            adopt_part = f"{adopted} adopted, " if adopted else ""
             print(
-                f"Applied atomically: {created} created, {updated} updated, "
+                f"Applied atomically: {created} created, {adopt_part}{updated} updated, "
                 f"{unchanged} unchanged, {disabled} disabled"
             )
     return 1 if has_errors else 0
@@ -2289,7 +2474,11 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
     apply_p.add_argument(
         "--adopt",
         action="store_true",
-        help="Migrate a same-named row owned by another set/quick-create into this set. Not yet supported.",
+        help=(
+            "Take an existing unowned row into this set in place, keeping its id and history. "
+            "Refuses unless the member declares the row's behavior, compared by how the "
+            "scheduler acts on each column, enablement included."
+        ),
     )
     apply_p.add_argument("--json", dest="as_json", action="store_true", help="Emit JSON.")
 

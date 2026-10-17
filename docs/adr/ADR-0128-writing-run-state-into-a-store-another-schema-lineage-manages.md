@@ -78,8 +78,8 @@ compatibility mode `open()`:
   leaves SQLite's automatic PASSIVE checkpoint at its default; manual checkpoints refuse (D6);
 - disposes the engine and leaves the object unopened when admission fails, so a failed open cannot be
   reused as a writer;
-- keys any shared handle by URL, mode and profile, so a native and a compatibility handle on one file
-  are never the same object.
+- keys any shared handle by URL, mode, profile and owner, so a native and a compatibility handle on
+  one file, and two compatibility handles writing different owners, are never the same object.
 
 Read paths that only read (status, list, detail) open read-only regardless of mode.
 
@@ -197,7 +197,68 @@ and by a native migration that has recognized the store. Native migration requir
 version and the expected shape together; a store without the key is adopted only if its shape is one
 lionagi's own history produced. Compatibility mode reads the store's metadata and never writes
 `version`, `lineage` or any backfill key. Non-numeric, missing and equal version values are
-classified explicitly rather than falling through a numeric comparison.
+classified explicitly rather than falling through a numeric comparison. Native initialization does
+not write `lineage = 'lionagi'` yet, and native migration does not yet require the key: today a
+store with no `lineage` row opens and migrates natively as before, so the refusal below covers
+only a store whose managing application wrote its row.
+
+A store another application manages carries a `lineage` row naming that application. The managing
+application writes it when it creates the store, in the transaction that creates its schema, and the
+row is the admission contract: compatibility mode admits only a store whose `lineage` row is present
+and names an application other than lionagi. lionagi never writes the row into a store it does not
+manage. A compatibility open that wrote it on first use would leave every native open before that
+write, in any process, free to migrate the store.
+
+A writable native `StateDB` open refuses a store whose `lineage` row names another application,
+raising `ForeignLineageError`; this is what refuses a writable `StateDB` open in a second process of
+a store this process holds in compatibility mode. On SQLite the row is read before any writable
+connection exists, from the file SQLAlchemy opens for the URL however the URL spells the path, and
+those reads write no file of the store: the file, its rollback journal, its write-ahead log and the
+log's `-shm` index keep their bytes and modification times, whether or not another process has the
+store open. The first read opens the file immutable, so SQLite takes no lock and reads no journal,
+log or index; a table an interrupted transaction left half-written is skipped rather than failing
+the read. Beside a rollback journal that begins with a journal header, as one an interrupted
+transaction leaves does, the file can hold part of that transaction, a row it deleted or one it
+wrote, so the row is read instead from a private copy of the file and the journal, which SQLite rolls
+back. When a non-empty write-ahead log is beside the file, whatever row the file shows, the row is
+read again read-only with `readonly_shm`, which reads the log through its existing `-shm` index and
+never writes to it; when there is no index, or that read fails, the row is read from a private copy
+of the file and the log. A private copy is made in a new directory under the system's temporary
+directory (Python's `tempfile`), which only the user running lionagi can read, and the directory is
+removed before the read returns; a process killed while it copies leaves the copy in that directory.
+The file is copied byte for byte, whatever its pages hold, through a descriptor this process keeps
+open for each file it copies and never closes, since closing any descriptor of a file drops every
+lock this process holds on it, which another connection here may hold; two costs follow from that:
+each distinct store copied keeps one descriptor open for the life of the process, and a store deleted
+after it was copied keeps its disk space allocated until the process exits. On Windows, where a lock
+belongs to the handle that took it, the file is copied as usual. A copy the store committed or
+checkpointed under, seen as a changed journal or log header, is taken again from the first read, a
+bounded number of times; when every copy sees the store move, the file's own row stands and the
+writable connection decides the rest. A copy costs a read of the whole file, and is made only beside
+such a journal or a log without a readable index.
+
+A read that fails decides nothing; the writable connection then decides. Each writable connection
+reads the row again right after its busy timeout, before the connection settings of P2 and before
+any statement of `_apply_schema()`, which refuses a row written between the first reads and the
+writable connection. A connection that refuses is closed. That read is the writable connection's,
+and it is the case in which a refused open can change a file of the store: by the time it refuses,
+the connection may have rolled back a hot rollback journal, as on any writable open, built the
+`-shm` index or recorded its read in it, and, if no other connection has the store open when it
+closes, SQLite folds the log into the file. It happens only when the row was written after the reads
+before the writable connection, or when those reads could not read it (a file SQLite cannot open
+read-only, a copy that cannot be made or read, or a store that moved under every copy). A refused
+open, and an open whose first connection never read the store, leaves no engine. A connection a
+native handle opened before the row was written is not asked again; only its later connections read
+the row. Every transaction of `_apply_schema()` that writes reads the row again under its write
+lock, ahead of the version, so a store whose `lineage` names another application and whose version
+is above `SCHEMA_VERSION` is refused on its lineage by any of these checks.
+
+While a writable native handle in this process has a file open, compatibility mode does not admit
+that file: the handle's connections write without the profile, and those already open would never
+read the row. The file is the one the handle's connection opened, by its device and inode, however
+the handle's URL spells the path. A native handle in another process is not visible to that check. These refusals cover
+writable opens through `StateDB`. A read-only `StateDB` open applies nothing and is not checked, and
+Studio's `open_db` and other code that connects to the file natively are not covered.
 
 ### D8: acceptance
 
@@ -231,6 +292,10 @@ Public tests use synthetic profiles. A deployment proves its own profile in its 
 - The aiosqlite floor rises to 0.22.0 (D3).
 - Turning compatibility writes off is the rollback. Restoring a backup over a store the managing
   application is still writing is not.
+- No production caller opens a store in compatibility mode until the native refusal of D7 ships,
+  since before it a native open in another process can migrate a store this process is writing.
+  None does today: the mode is reached only by passing a profile to `StateDB`, and no command,
+  server or configuration passes one.
 
 ## Alternatives considered
 
@@ -266,6 +331,25 @@ before any data or DDL statement. Every step `_apply_schema()` runs ahead of its
 `schedules`, `invocations`, `schedule_runs` and `definitions`) either finds nothing to do or checks
 the version first inside its own `BEGIN IMMEDIATE`. The connection settings of P2 are applied before
 any of it. Compatibility mode (D1) runs none of these steps.
+
+A writable native `StateDB` open of a store whose `lineage` row names another application raises
+`ForeignLineageError` (D7) before any writable connection exists, leaving the store file, its
+journal, its log and its `-shm` index as they were: beside a journal an interrupted transaction left,
+or when the row is only in the log and the log has no readable index, the row is read from a private
+copy in a temporary directory that is removed before the read returns, and otherwise a row only in
+the log is read through the index without writing it. A row written after those reads, or one they
+could not read, is refused by the writable connection's first read, before the connection settings
+of P2 and before any statement of `_apply_schema()`; by then that connection may have rolled back a
+hot journal, written the index, or, closing as the store's last connection, folded the log into the
+file. Wherever the lineage and the version are both read, the lineage is checked
+first. While this process holds a store open in compatibility mode, a writable native open of that
+file from this process is refused before any writable connection exists, whatever the row says and
+however the URL spells the path: by the URL before an engine exists, and by the file's device and
+inode on the first read. While a writable native handle in this process has a file open,
+compatibility admission of that file is refused, the file being the one that handle's connection
+opened, however its URL spells the path. These refusals cover writable `StateDB` opens; a
+read-only open applies nothing and is not checked, and Studio's `open_db` and other code that
+connects to the file natively are not covered.
 
 ### A.1 Entry points
 
@@ -303,20 +387,24 @@ the previous one committed.
 | teardown `update_status` (lifecycle transition) | a `SELECT` of the status columns (Postgres `FOR UPDATE`), `UPDATE sessions` guarded on the expected previous status, `INSERT INTO status_transitions`, and `INSERT INTO admin_events` on the rejected and override paths | compare-and-set on status; no owner predicate | one | only this run's session; owner on the transition and any admin event; override refuses in compatibility mode |
 | terminal callbacks | after commit, in process: handlers registered on the terminal callback registry run; `li` registers one when `notify.on_terminal` is configured, and it runs an external command and records its outcome in the run directory | none | after commit, outside any transaction | no store statement; admitted unchanged |
 | session and branch signals at setup | `SESSION_START` and `BRANCH_CREATE` are emitted before the observer's sink is bound, so neither reaches `session_signals` today | n/a | n/a | unchanged; the manifest does not add them |
-| `persist_session_start` (the default `SESSION_START` handler) | a `get_session` read, and nothing more when the session is missing or terminal; when its reason is not yet `run.started.ok`: the `update_status` transition to `running` as above, then `UPDATE sessions SET` the provenance columns the event carries (`model`, `provider`, `effort`, `agent_name`, `agent_hash`, `invocation_id`), `started_at = COALESCE(started_at, :now)` and `updated_at`; when it already is, only that `UPDATE` | by id; `started_at` keeps the first value written; no owner predicate | the transition in one, the `UPDATE` after its commit | only this run's session; `started_at` written only when null; the owner on the transition (D5); `invocation_id` only when that invocation belongs to the same owner |
-| `persist_branch_provenance` (the default `BRANCH_CREATE` handler) | `UPDATE branches SET model, provider, agent_name WHERE id`, each as the event carries it, a missing one as `NULL` | by id only | one | only this run's branch |
-| `persist_branch_end` (the default `BRANCH_END` handler, through `finalize_branch`) | for a terminal status only: `UPDATE branches SET status, ended_at WHERE id AND (status IS NULL OR status = 'running')` | by id, guarded on a status that is not yet terminal | one | only this run's branch; the guard kept |
-| `persist_session_end` (the default `SESSION_END` handler) | a `get_session` read; when the session is not terminal: the `update_status` transition to the event's status as above, carrying `ended_at`, `duration_ms` and, when the event has an error, `node_metadata` read, merged with `error` in Python and written whole; then `UPDATE sessions SET` the usage columns the event carries (`input_tokens`, `output_tokens`, `total_cost_usd`, `num_turns`) and `updated_at`; when the session is already terminal, the usual order since teardown writes the status first, only `UPDATE sessions SET` those usage columns, `duration_ms` and `updated_at` | by id; no owner predicate | the transition in one, the `UPDATE` after its commit | only this run's session; `node_metadata` written by key merge, never whole; the owner on the transition (D5) |
+| `persist_session_start` (the default `SESSION_START` handler) | nothing when the run hands its handle to the emit (the agent setup does: the session row it created carries every column below); otherwise a `get_session` read, and nothing more when the session is missing or terminal; when its reason is not yet `run.started.ok`: the `update_status` transition to `running` as above, then `UPDATE sessions SET` the provenance columns the event carries (`model`, `provider`, `effort`, `agent_name`, `agent_hash`, `invocation_id`), `started_at = COALESCE(started_at, :now)` and `updated_at`; when it already is, only that `UPDATE` | by id; `started_at` keeps the first value written; no owner predicate | the transition in one, the `UPDATE` after its commit | only this run's session; `started_at` written only when null; the owner on the transition (D5); `invocation_id` only when that invocation belongs to the same owner |
+| `persist_branch_provenance` (the default `BRANCH_CREATE` handler) | nothing when the run hands its handle to the emit (the agent setup does: the branch row it created carries these columns); otherwise `UPDATE branches SET model, provider, agent_name WHERE id`, each as the event carries it, a missing one as `NULL` | by id only | one | only this run's branch |
+| `persist_branch_end` (the default `BRANCH_END` handler, through `finalize_branch`) | for a terminal status only: `UPDATE branches SET status, ended_at WHERE id AND (status IS NULL OR status = 'running')` | by id, guarded on a status that is not yet terminal; with the owner predicate in compatibility mode | one | only this run's branch; the guard kept; in compatibility mode the branch must be one this run created and the UPDATE carries the owner predicate (D5) |
+| `persist_session_end` (the default `SESSION_END` handler) | a `get_session` read; when the session is not terminal: the `update_status` transition to the event's status as above, carrying `ended_at`, `duration_ms` and, when the event has an error, `node_metadata` read, merged with `error` in Python and written whole; then `UPDATE sessions SET` the usage columns the event carries (`input_tokens`, `output_tokens`, `total_cost_usd`, `num_turns`) and `updated_at`; when the teardown handed its handle to the emit, only `UPDATE sessions SET` those usage columns (the teardown owns the terminal status and writes it once the emits have run); when the session is already terminal and no handle was handed over, the same usage-only `UPDATE` | by id; no owner predicate | the transition in one, the `UPDATE` after its commit | only this run's session; `node_metadata` written by key merge, never whole; the owner on the transition (D5) |
 | steer tombstone sweep (`li agent`, after teardown) | `list_pending_session_controls` for the session, then for each control no consumer claimed `UPDATE session_controls SET applied_at, result WHERE id AND result IS NULL` | by id, guarded on an unclaimed control | one per control | only this run's session's controls; the guard kept |
 
-The four default hook handlers take their store from `_db()` in `lionagi/hooks/builtins.py`, the
-process's shared handle looked up by the store's URL. The profile admits their rows only through the
-run's own compatibility handle. A lookup that opens a second, native handle on the same file meets
-A.0's refusal before any statement: the hook bus logs the failure, no write lands, and the run loses
-`started_at` (so teardown cannot derive the session's `duration_ms`), the provenance columns, the
-branch's terminal status and the session's usage columns, with no refusal a caller sees. The steer
-tombstone sweep is the same class: it opens its own native `StateDB()` on the store instead of
-taking the run's handle, so its row is admitted on the same terms.
+The four default hook handlers take their store from `_db()` in `lionagi/hooks/builtins.py`. When a
+run emits a lifecycle event it hands its own open handle to the handler on the event, so the handler
+writes through the run's handle and meets whatever the profile requires of that run; only an emit
+that carries no handle falls back to the process's shared handle looked up by the store's URL. The
+agent setup hands its handle to the `SESSION_START` and `BRANCH_CREATE` emits it makes, and those
+two handlers then write nothing, since the rows the setup created carry every column they write; a
+teardown hands its handle to the `BRANCH_END` and `SESSION_END` emits it makes. So the default
+handlers never open or reach a second handle for that run, and a branch row another principal owns
+is left untouched. A handler that does fall back to a URL lookup whose store the process holds in
+compatibility mode meets A.0's refusal before any statement. The steer tombstone sweep is a
+different class: it opens its own native `StateDB()` on the store instead of taking the run's
+handle, so its row is admitted on the same terms.
 
 ### A.3 Reader invariants the profile keeps
 

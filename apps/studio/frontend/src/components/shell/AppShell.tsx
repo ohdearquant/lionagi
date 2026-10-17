@@ -6,6 +6,7 @@ import CommandPalette from "./CommandPalette";
 import StatusFooter from "./StatusFooter";
 import TopBar from "./TopBar";
 import OperatorPanel from "@/components/operator/OperatorPanel";
+import { OperatorProjectProvider } from "@/components/operator/OperatorProjectContext";
 import { applyTheme, getTheme, THEME_CHANGE_EVENT } from "@/lib/theme";
 import { SCROLL_LOCK_ATTRIBUTE } from "@/lib/overlayStack";
 
@@ -19,7 +20,15 @@ function getOperatorOpen(): boolean {
   return window.localStorage.getItem("studio:operator-visibility") !== "closed";
 }
 
-export default function AppShell({ children, onLocaleChange }: Props) {
+export default function AppShell(props: Props) {
+  return (
+    <OperatorProjectProvider>
+      <ShellContent {...props} />
+    </OperatorProjectProvider>
+  );
+}
+
+function ShellContent({ children, onLocaleChange }: Props) {
   const t = useTranslations("shell");
   const [dark, setDark] = useState(() => getTheme() === "dark");
   const [paletteOpen, setPaletteOpen] = useState(false);

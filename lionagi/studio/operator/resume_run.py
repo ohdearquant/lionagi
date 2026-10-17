@@ -47,7 +47,7 @@ RESUME_RUN_DESCRIPTION = (
     "reopening the old run's status. Works on a run in any status, including "
     "completed, failed, or cancelled ones. Goes through a human approval "
     "flow; it is never automatic, and a denied proposal starts nothing. "
-    "Accepts a run UUID, an 8+ hex id prefix, a name substring (minimum 3 "
+    "Accepts a run UUID, an id prefix, a name substring (minimum 3 "
     "characters), or 'current' for the run open when this instruction was "
     "sent. Ambiguous references return candidates rather than guessing."
 )

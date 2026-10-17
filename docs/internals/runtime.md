@@ -10,6 +10,17 @@ now carries a 1-2 line pointer; this file carries the substance. Organized by mo
 
 ### `state/engine.py`
 
+- SQLite engines default to a native connection factory that rolls back an open
+  transaction before closing. Cancellation can leave a statement cursor retained
+  in SQLAlchemy's traceback after its pooled connection has been discarded.
+  [SQLite's deferred close](https://www.sqlite.org/c3ref/close.html) can then keep
+  the transaction and writer reservation alive until that statement is finalized.
+  Explicit rollback runs on the driver's thread before native close, releasing
+  the reservation without depending on traceback collection. Writable and
+  read-only engines and Studio's `open_db()` share this factory. Explicit engine
+  connection factories and other `connect_args` remain caller-controlled. A
+  rollback error is logged and native close still runs; committed rows are
+  unaffected.
 - `make_readonly_engine()` — read-only `AsyncEngine` over an **existing** SQLite file, opened
   through SQLite's own URI read-only mode (`mode=ro`), not through `make_engine()`. This
   matters because: (1) no schema/PRAGMA write ever reaches the file — the OS-level open is
@@ -20,6 +31,14 @@ now carries a 1-2 line pointer; this file carries the substance. Organized by mo
   rejects any write statement) are set. SQLite only — a genuinely read-only Postgres
   connection should use a read-only DB role instead; there is no equivalent "connect without
   side effects" mode to fake at this layer for Postgres.
+- `make_compatibility_engine()` — the engine of a compatibility-mode open (ADR-0128) of an
+  existing SQLite store that another application manages. Each connection sets only
+  connection-local PRAGMAs (`busy_timeout`, `synchronous`, `foreign_keys`), reads `journal_mode`
+  and refuses unless it is already `wal`, and carries the guard's SQLite authorizer before any
+  application statement; a connection that cannot be set up that way is closed and the refusal
+  raised. The driver's statement cache is off (`cached_statements=0`) because the authorizer runs
+  only when SQLite prepares a statement, and one of its decisions (no COMMIT of a transaction in
+  which a statement was denied) depends on the transaction, not on the statement text.
 - `has_wal_reset_fix()` — SQLite documents a data race between a starting checkpoint and a
   commit that resets the WAL file: the checkpoint misses the reset, mis-sets a WAL-index
   header field, and a later checkpoint then skips part of the committed transaction,
@@ -27,6 +46,126 @@ now carries a 1-2 line pointer; this file carries the substance. Organized by mo
   3.51.2, fixed in 3.51.3 with backports on the 3.44 and 3.50 branches. Exposure needs two
   connections writing or checkpointing at the same instant, which is exactly what this store
   does — hence the startup warning when an unfixed SQLite is linked.
+
+### `state/compat.py`
+
+Compatibility mode (ADR-0128): `StateDB(path, compatibility=profile)` writes runs into a store
+whose schema another application manages, and never migrates, stamps or reconfigures it.
+
+- **Admission.** `open()` requires an existing store file. Inside one read snapshot it reads the
+  structure of the profile's tables (`read_closure()`: columns from `PRAGMA table_xinfo`, unique
+  keys, CHECK constraints, table options, every foreign key into or out of the tables, and the
+  closure's triggers and views) and refuses unless it equals the profile's closure. What joins the
+  closure is a fixed point: a trigger or view whose SQL may name one of the tables, in any
+  spelling and a quoted string included, joins, and so does one whose SQL may name another object of
+  the closure; a virtual table joins as a table of the closure and is compared like one when its
+  `CREATE VIRTUAL TABLE` statement names a table of the closure (for fts3, fts4 and fts5 in a
+  `content=` argument, which is the only one of theirs that names a table; for any other module in
+  any argument token, bare, single-quoted or double-quoted), and when a closure object reads it or
+  the caller names it; either way the tables its arguments name and its shadow tables (every table
+  named `<virtual table>_...`, a superset of the module's own) join with it, and a virtual table
+  the closure neither names nor reads stays out of it; only a table or a view is read through a
+  body, so a word that names an index or a trigger pulls nothing in; a
+  view or a table a closure object reads joins in turn, until nothing new joins, and a table only
+  the store's closure reaches is refused as not in the profile. A trigger's place
+  among the closure triggers on its own table that fire on the same event and timing is part of
+  the closure, since SQLite fires those in an order fixed by when they were created; triggers
+  for different events or timings may be created in any order.
+  `store_versions` narrows the stores a profile is tried on; a version never admits on its own. A
+  failed admission disposes the engine, so the object stays unopened. A write transaction compares
+  `PRAGMA schema_version` with the admitted value once it holds the writer, and re-reads the
+  closure when it moved: a change elsewhere in the store re-admits, a change to the closure
+  refuses. Each table's definitions are also compared as its SQL spells them (whitespace,
+  comments, identifier quotes and the case of ASCII letters in names aside, as SQLite resolves
+  names), so a collation, a generated column's expression, a `DEFERRABLE` key or `AUTOINCREMENT`
+  that PRAGMA output leaves out is compared too, and a unique index a CREATE INDEX made is
+  compared by its terms' SQL. A `DEFAULT` value, a trigger body and a view body are instead
+  compared as written, with only whitespace and comments set aside: every token keeps its case and
+  its quote characters, and a store whose default, trigger or view differs from the profile's in
+  case or in quoting is refused even where SQLite would read the two alike. A double-quoted token
+  in a table's or an index's definition is read as a name where SQLite reads a name: after a dot,
+  after a word that takes a name (`REFERENCES`, `ON`, `COLLATE`, `CONSTRAINT` and the like), in
+  the column list after `REFERENCES <table>`, or immediately before a `(`, which makes it a
+  function's name, or in a column's type a sized type's name, rather than a string. Everywhere
+  else it is a string literal when it names no column, and a literal keeps its quotes and equals
+  only the same literal written the same way; a token in a type position with no size, as in
+  `id "TEXT"`, is compared the same way, so quoting a type name is refused against the bare type
+  even though SQLite reads it as the type name. A sized one (`id "VARCHAR"(10)`) opens a
+  parenthesis, so its definition equals the bare `VARCHAR(10)`, and it is refused by its column's
+  type instead, which SQLite reports without the size. A single-quoted token after `REFERENCES`
+  is the table's name, and a single-quoted token in the column list after `REFERENCES <table>` is
+  a name too, since SQLite's grammar takes a string in both places; anywhere else it is compared as
+  the string it spells, so a single-quoted name SQLite also reads as a name elsewhere
+  (`COLLATE 'NOCASE'`) is refused against the bare spelling. A quoted name that a bare word would
+  read as a value in an expression (`"null"`,
+  `"current_date"`, `"current_time"`, `"current_timestamp"`) or as the `NOT` operator (`"not"`),
+  or that a bare word cannot spell (a name holding a quote, a space or punctuation, or starting
+  with a digit), equals only the same name quoted, never the bare word, though a plain quoted
+  name like `"status"` equals its bare spelling. A blob literal (`x'41'`) is a token of its own.
+  A virtual table's definition is its module's name, read between its quotes and compared without
+  regard to case as SQLite looks it up, and the text of each argument in order, from its first
+  token to its last as written, since SQLite hands the module that text: a reordered or repeated
+  argument differs, `content= 'events'` differs from `content='events'` (fts4 reads the first as a
+  table whose name starts with a space and a quote), the spacing around an argument does not
+  count, `USING fts4("x"(1))` and `USING fts4(x(1))` differ in their quotes, `USING "fts4"(x)` is
+  `USING fts4(x)`, and `fts3(x)` and `fts4(x)` differ. The mode fails closed, since whether SQLite reads a quoted token as a name or
+  as a string literal depends on the scope it appears in and on the connection's
+  double-quoted-string setting. A table whose constraints declare any conflict resolution but
+  ABORT (`ON CONFLICT REPLACE`, `ROLLBACK`, `IGNORE` or `FAIL`), or a trigger or view that names
+  one (`INSERT OR REPLACE`,
+  `REPLACE INTO`, `RAISE(IGNORE)` and the like), is refused, in the store or in the profile: the
+  authorizer cannot see a row a REPLACE resolution deletes or a transaction a ROLLBACK resolution
+  ends.
+- **Operations.** A StateDB method marked as an operation the profile names runs inside that
+  operation's scope (a context variable, so code the operation calls inherits it). The scope ends
+  when the operation returns, even for a task the operation started. `_tx()` and the
+  engine's begin listener refuse a transaction outside a scope; `execute()` and `transaction()`
+  refuse, and `fetch_all()`/`fetch_one()` refuse anything but a read.
+- **Statements.** Every statement SQLAlchemy sends is checked: outside an operation only reads,
+  read PRAGMAs and transaction control pass; inside one only INSERT and UPDATE (directly or after a
+  `WITH`), never with a conflict clause but `OR ABORT` or with `RETURNING`; savepoints are
+  refused. A write is refused once SQLite has rolled back the transaction its operation opened.
+  A statement sent to the driver directly passes none of these checks, and only the authorizer
+  sees it, without its conflict clause: an INSERT OR REPLACE sent that way inside an operation's
+  transaction deletes the row it conflicts with, and nothing refuses it.
+- **Authorizer.** The ceiling on every connection, seeing statements that reach SQLite by any
+  path: INSERT only into tables the profile inserts into, UPDATE only of its update columns, both
+  only on `main` and only inside a transaction the guard opened and that is still open (a BEGIN
+  the guard did not send clears its mark or, inside an open transaction, is denied and poisons
+  it); reads; a short PRAGMA list; any function but
+  `load_extension`. Everything else is `SQLITE_DENY`, never `SQLITE_IGNORE`.
+- **A denial poisons its transaction.** Any refusal or denial inside a write transaction makes
+  its COMMIT fail, even when the caller caught the error; the transaction then rolls back.
+- **A run's rows.** With an `OwnerRule`, a run writes only rows it creates: an insert refuses an
+  id that exists and writes the configured owner; a row an operation links to or updates must be
+  one this handle created in a transaction that committed (a session's invocation link is checked
+  by owner alone, as `create_session` checks it), an update first checks inside its
+  transaction that the row still carries the owner, and the UPDATE itself carries the owner
+  predicate. `update_session` merges `node_metadata` by top-level key inside its transaction
+  instead of writing it whole, with or without a status change in the same call, so a key the
+  payload omits keeps its stored value and a nested object under a key the payload sends replaces
+  the stored object there; a stored or given `node_metadata` that is not a JSON object is refused.
+  `merge_session_node_metadata` instead keeps a stored value that is not a JSON object under
+  `_discarded_node_metadata` rather than losing it. `update_status` moves only the run's session, never
+  by override, and writes the owner on the transition and on any admin event it records.
+- **Refusals** raise `StateCompatibilityRefused(operation, profile, reason, committed)`;
+  `committed` names the operation's transactions that had already committed. A signal write the
+  store refuses is not counted among the sink's dropped signals: teardown fails the run with that
+  refusal, and its reason names the operations the same teardown already committed. A refusal
+  the lifecycle emits record while they run fails the run the same way, because teardown writes
+  the terminal status only after those emits. `vacuum()`,
+  `checkpoint()` and the migration path refuse before any statement runs.
+- Native and read-only handles are shared by url, as before; a compatibility handle is keyed by
+  `(url, mode, profile, owner)`, so a native and a compatibility handle on one file, and two
+  compatibility handles writing different owners, are never the same object.
+- While this process holds a store open in compatibility mode, a native open of that store
+  refuses (a read-only open is left alone), and so does registering a native handle for it as
+  the shared one. `get_shared_db()` returns the registered compatibility handle, ahead of any
+  native handle registered for the same store, so a caller naming only the store (a default
+  hook handler reached by an emit that carries no handle) writes through the profile. It refuses when more than one compatibility handle
+  is registered for the store, and when the compatibility handle is open but not registered.
+  Another process is not covered: its native open applies this package's schema unless the
+  store is at a later one (ADR-0128 Appendix A.0).
 
 ### `state/health.py`
 
@@ -807,15 +946,17 @@ nothing in the module assumes a dedicated action_kind.
 
 ### `hooks/builtins.py`
 
-`persist_session_end()` — in the normal CLI flow, `teardown_persist()` always stamps the
-terminal status via `_teardown_common()`'s `update_status()` call before emitting
-`SESSION_END`, so the session row is already terminal by the time this handler runs. In that
-case only pure usage fields are written (input/output tokens, cost, turns, duration) — the
-status/reason_code/ended_at transition is skipped (avoids a duplicate `status_transitions` row
-and a double-fire clobbering an already-recorded status), and `node_metadata` is left
-untouched since `_teardown_common()` already owns it for a terminal row and `update_session()`
-does a plain column SET, not a merge (writing `{"error": ...}` here would clobber richer
-existing data). Related: `persist_session_start`'s explicit `reason_code` on the "running"
+`persist_session_end()` — in the normal CLI flow, `teardown_persist()` writes the terminal
+status itself through `_teardown_common()`'s decision, but only after it has emitted
+`BRANCH_END` and `SESSION_END`; the emits hand this handler the run's own handle, so it knows
+the teardown owns the terminal write and records only pure usage fields (input/output tokens,
+cost, turns, duration), leaving the status, its reason and the end time to that single write.
+This keeps a refusal the emits record from landing after a status the run had already written,
+and avoids a duplicate `status_transitions` row (a double-fire clobbering an
+already-recorded status); `node_metadata` is left untouched since `_teardown_common()` already
+owns it and `update_session()` does a plain column SET, not a merge (writing `{"error": ...}`
+here would clobber richer existing data). An emit that carries no handle (a direct bus emit)
+stamps the status itself, as before. Related: `persist_session_start`'s explicit `reason_code` on the "running"
 transition avoids tripping a deprecation shim that would otherwise raise and get swallowed by
 the bus, silently dropping all the provenance fields passed alongside it.
 

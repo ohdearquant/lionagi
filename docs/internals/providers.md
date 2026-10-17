@@ -70,7 +70,10 @@ the call ended:
   Always reduced to a class-name-only summary, never the raw message.
 - `tokens`: typed numeric usage summary (`input_tokens`/`output_tokens`
   ints); `None` when the shape is unrecognized or the call never produced
-  one. Never the raw provider usage mapping.
+  one. Never the raw provider usage mapping. A count that a routed account
+  masked, because its text held a run of the key, is text by then and reads
+  as 0; with neither count left, the summary has no tokens. The account's
+  ledger prices the provider's own count.
 
 ## Run stream cleanup cascade
 
@@ -494,8 +497,13 @@ Every CLI provider's request model wraps its `env` and `on_spawn` fields in
 `Redacted` at the top of every model-level `mode="before"` validator
 (`redact_runtime_fields_in_place`), so a rejected request never carries a
 child environment or a bound callback into `str(err)`, `err.errors()`, or
-`err.json()`. This matters because pydantic keeps a failing validator's raw
-input on the error — `repr=False`/`exclude` on a field don't help, since a
+`err.json()`. The Codex request model wraps its `config_overrides` the same
+way, through `_redact_codex_runtime_fields_in_place`, because a `-c` override
+holds the same kind of token a child environment does; its field validator
+then refuses a key that is not a string by position and type, as the `env`
+validator does, since pydantic would quote such a key. This matters because
+pydantic keeps a failing validator's raw input on the error —
+`repr=False`/`exclude` on a field don't help, since a
 model-level validator holds the whole raw mapping regardless of per-field
 settings. `Redacted` deliberately isn't a mapping, so serialization sees no
 structure to walk, and it refuses (`TypeError`, not `ValueError` — pydantic
