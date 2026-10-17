@@ -27,6 +27,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from lionagi.ln.types import Unset, UnsetType
 from lionagi.state import db as state_db_mod
 
 from ..services._db import open_db, require_file_store
@@ -164,10 +165,6 @@ MAX_TURN_PAYLOAD_BYTES = 8 * 1024 * 1024
 # so this bounds what a long-lived conversation accumulates.
 MAX_REPORTING_VIEWS_PER_CONVERSATION = 8
 TRUNCATION_FRAME_TYPE = "truncation"
-
-# Distinguishes "field omitted from a partial update" from "field explicitly
-# set to None/False" -- title in particular is legitimately nullable.
-_UNSET: Any = object()
 
 # Returned by ``_append_frame_in_tx`` when the frame was folded into the turn's
 # truncation summary: a row was written, but there is no frame to return, which
@@ -522,20 +519,20 @@ class OperatorStore:
         self,
         conversation_id: str,
         *,
-        title: str | None | object = _UNSET,
-        pinned: bool | object = _UNSET,
-        status: str | object = _UNSET,
+        title: str | None | UnsetType = Unset,
+        pinned: bool | UnsetType = Unset,
+        status: str | UnsetType = Unset,
     ) -> dict[str, Any]:
         """Apply a partial update: rename, pin/unpin, and/or archive/reactivate.
 
-        Only the fields the caller actually names (not left at ``_UNSET``) are
+        Only the fields the caller actually names (not left at ``Unset``, which is distinct from ``None``: a title is legitimately nullable) are
         touched, so a rename never disturbs the pin state and vice versa.
         Archiving is refused while a turn is in flight, matching the delete
         restriction: it removes the conversation from the active list rather
         than interrupting work in progress.
         """
         await self.ensure_schema()
-        if status is not _UNSET and status not in ("active", "archived"):
+        if status is not Unset and status not in ("active", "archived"):
             raise OperatorConflictError(f"Unsupported conversation status '{status}'")
         now = time.time()
         async with open_db(str(self.path())) as db:
@@ -555,13 +552,13 @@ class OperatorStore:
                 raise OperatorConflictError("Cannot archive a conversation with an active turn")
             sets: list[str] = []
             params: list[Any] = []
-            if title is not _UNSET:
+            if title is not Unset:
                 sets.append("title=?")
                 params.append(title)
-            if pinned is not _UNSET:
+            if pinned is not Unset:
                 sets.append("pinned=?")
                 params.append(1 if pinned else 0)
-            if status is not _UNSET:
+            if status is not Unset:
                 sets.append("status=?")
                 params.append(status)
                 sets.append("archived_at=?")

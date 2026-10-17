@@ -299,3 +299,11 @@ class TestGetDefaultFieldChaining:
 
         assert result == [first, distinct]
         assert result[0] is first
+
+
+def test_a_default_spec_is_built_once_and_shared():
+    """Structure and Step read one immutable Spec per standard field."""
+    from lionagi.operations.fields import _get_default_spec
+
+    for kind in ("reason", "action_required", "action_requests", "action_responses"):
+        assert _get_default_spec(kind) is _get_default_spec(kind)

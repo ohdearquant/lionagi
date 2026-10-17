@@ -67,7 +67,7 @@ def load_hooks_for_agent(
             point = HookPoint(point_str)
         except ValueError as exc:
             raise ValueError(
-                f"Unknown hook point {point_str!r}; valid: {sorted(p.value for p in HookPoint)}"
+                f"Unknown hook point {point_str!r}; valid: {sorted(HookPoint.allowed())}"
             ) from exc
         if not isinstance(handler_names, list):
             raise ValueError(

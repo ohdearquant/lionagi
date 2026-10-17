@@ -3,13 +3,14 @@
 
 from __future__ import annotations
 
-from enum import Enum
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from lionagi.libs.path_safety import is_protected_name
 from lionagi.libs.path_safety import resolve_workspace_path as _resolve_workspace_path
 from lionagi.ln.concurrency import run_sync
+from lionagi.ln.types import Enum
 from lionagi.protocols.action.tool import Tool
 
 from .._subprocess import _subprocess_sync
@@ -99,6 +100,30 @@ def _validate_search_path(path: str, workspace_root: str | None) -> tuple[str, s
     return str(resolved), None
 
 
+def _visible_grep_lines(stdout: str) -> list[str]:
+    """grep's ``path\\0line:text`` rows as ``path:line:text``, without the rows
+    of a file whose path holds a protected name (``.env``, a private key).
+
+    The reader refuses those files by name, and a recursive search reaches
+    them as well, so their lines are left out here. A file name can hold a
+    newline but never a NUL, so each row is read from its NUL: the name is
+    everything since the previous row, the line runs to the next newline.
+    Text with no NUL after it is not a row and is dropped.
+    """
+    rows: list[str] = []
+    start = 0
+    while (nul := stdout.find("\0", start)) != -1:
+        end = stdout.find("\n", nul + 1)
+        if end == -1:
+            end = len(stdout)
+        path, rest = stdout[start:nul], stdout[nul + 1 : end]
+        start = end + 1
+        if any(is_protected_name(part) for part in Path(path).parts):
+            continue
+        rows.append(f"{path}:{rest}")
+    return rows
+
+
 def _grep_sync(
     pattern: str,
     path: str,
@@ -110,11 +135,14 @@ def _grep_sync(
     if err:
         return SearchResponse(success=False, error=err, count=0)
 
-    cmd = ["grep", "-rn", "-E", pattern, resolved_path]
+    # -e: a pattern that starts with "-" is a pattern, never an option.
+    # --null ends each file name with a NUL, so a row's file is read exactly.
+    # -I skips binary files, whose one-line notice carries no NUL to read by.
+    cmd = ["grep", "-rnI", "--null", "-E", "-e", pattern, resolved_path]
     if include:
         cmd += ["--include", include]
 
-    result = _subprocess_sync(cmd, False, 30.0, None)  # noqa: S603  # argv fixed: [grep, -rn, -E, <pattern>, <validated-path>]; shell=False
+    result = _subprocess_sync(cmd, False, 30.0, None)  # noqa: S603  # argv fixed: [grep, -rnI, --null, -E, -e, <pattern>, <validated-path>]; shell=False
 
     if result.get("timed_out"):
         return SearchResponse(success=False, error="grep timed out", count=0)
@@ -126,7 +154,7 @@ def _grep_sync(
             success=False, error=result["stderr"].strip() or f"grep exited with code {rc}", count=0
         )
 
-    lines = [line for line in result["stdout"].splitlines() if line][:max_results]
+    lines = _visible_grep_lines(result["stdout"])[:max_results]
     return SearchResponse(
         success=True,
         content="\n".join(lines),

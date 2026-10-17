@@ -4,10 +4,11 @@
 from __future__ import annotations
 
 import warnings
-from enum import Enum
 from typing import Any, Literal, Union
 
 from pydantic import BaseModel, Field, model_validator
+
+from lionagi.ln.types import Enum
 
 warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
 

@@ -3,10 +3,10 @@
 
 """Incremental graph builder for multi-stage operations."""
 
-from enum import Enum
 from typing import Any
 
 from lionagi._errors import OperationError
+from lionagi.ln.types import Enum
 from lionagi.models.note import Note
 from lionagi.operations.node import create_operation
 from lionagi.protocols.graph.edge import Edge

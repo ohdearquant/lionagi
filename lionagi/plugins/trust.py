@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from enum import Enum
 from pathlib import Path
 from typing import Any
+
+from lionagi.ln.types import Enum
 
 from ._user_settings import locked_user_settings, read_user_settings
 from .discovery import DiscoveredPlugin

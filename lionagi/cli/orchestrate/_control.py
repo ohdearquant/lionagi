@@ -254,6 +254,14 @@ async def _enqueue_control_inner(
     )
 
 
+def _db_busy_on_write() -> tuple[str, int]:
+    return (
+        f"state.db busy (no write within {_DB_BUSY_TIMEOUT_S:.0f}s) — "
+        "another writer may be holding a long transaction; try again",
+        EXIT_UNKNOWN,
+    )
+
+
 async def _enqueue_control(
     *, entity_id: str, verb: str, payload: dict[str, Any] | None
 ) -> tuple[str, int]:
@@ -263,11 +271,7 @@ async def _enqueue_control(
             timeout=_DB_BUSY_TIMEOUT_S,
         )
     except (TimeoutError, asyncio.TimeoutError):  # 3.10 support: not aliased until 3.11
-        return (
-            f"state.db busy (no write within {_DB_BUSY_TIMEOUT_S:.0f}s) — "
-            "another writer may be holding a long transaction; try again",
-            EXIT_UNKNOWN,
-        )
+        return _db_busy_on_write()
 
 
 def _dispatch_control(*, entity_id: str, verb: str, payload: dict[str, Any] | None) -> int:
@@ -356,16 +360,19 @@ def run_ctl_resolve(args: argparse.Namespace) -> int:
     """
     from lionagi.ln.concurrency import run_async
 
-    output, exit_code = run_async(
-        asyncio.wait_for(
-            _resolve_control_inner(
-                control_id=args.control_id,
-                outcome=args.outcome,
-                actor=getattr(args, "actor", None),
-            ),
-            timeout=_DB_BUSY_TIMEOUT_S,
+    try:
+        output, exit_code = run_async(
+            asyncio.wait_for(
+                _resolve_control_inner(
+                    control_id=args.control_id,
+                    outcome=args.outcome,
+                    actor=getattr(args, "actor", None),
+                ),
+                timeout=_DB_BUSY_TIMEOUT_S,
+            )
         )
-    )
+    except (TimeoutError, asyncio.TimeoutError):  # 3.10 support: not aliased until 3.11
+        output, exit_code = _db_busy_on_write()
     if exit_code == EXIT_UNKNOWN:
         log_error(output)
     else:

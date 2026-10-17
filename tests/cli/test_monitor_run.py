@@ -871,6 +871,77 @@ async def test_dispatch_wait_interrupted_during_resolve_returns_exit_running(
 
 
 @pytest.mark.asyncio
+async def test_dispatch_wait_gives_back_the_signal_handlers_it_took_over(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The wait's SIGINT/SIGTERM handlers must not outlive the wait: a caller
+    that installed its own keeps them once the wait returns."""
+    import signal
+
+    import lionagi.ln.concurrency as concurrency_mod
+
+    async with StateDB():
+        pass
+
+    def _fake_run_async(coro: Any) -> Any:
+        coro.close()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(concurrency_mod, "run_async", _fake_run_async)
+
+    def callers_handler(signum: int, frame: Any) -> None:
+        pass
+
+    saved = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        for s in saved:
+            signal.signal(s, callers_handler)
+        assert _dispatch_wait(["some-id"], interval=5.0, follow=False) == EXIT_RUNNING
+        after = {s: signal.getsignal(s) for s in saved}
+    finally:
+        for s, prior in saved.items():
+            signal.signal(s, prior)
+
+    assert after == {s: callers_handler for s in saved}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_wait_sigterm_inside_a_tick_returns_exit_running(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """run_async turns a SIGTERM that lands inside its call into
+    SigtermInterrupt. The wait stops as it does for SIGINT and reports the run
+    still in progress, instead of letting the exception escape."""
+    import signal
+
+    import lionagi.ln.concurrency as concurrency_mod
+    from lionagi.ln.concurrency import SigtermInterrupt
+
+    async with StateDB() as db:
+        sched_id = await _make_schedule(db)
+        run_id = await _make_schedule_run(db, sched_id, status="running")
+
+    real_run_async = concurrency_mod.run_async
+    calls = {"n": 0}
+
+    def _fake_run_async(coro: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 2:  # call 1 resolves the run, call 2 is the first tick
+            coro.close()
+            raise SigtermInterrupt("SIGTERM during a tick")
+        return real_run_async(coro)
+
+    monkeypatch.setattr(concurrency_mod, "run_async", _fake_run_async)
+
+    saved = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        assert _dispatch_wait([run_id], interval=0.05, follow=False) == EXIT_RUNNING
+    finally:
+        for s, prior in saved.items():
+            signal.signal(s, prior)
+
+
+@pytest.mark.asyncio
 async def test_dispatch_wait_keyboard_interrupt_after_tick_mutates_state_still_reports_failure(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

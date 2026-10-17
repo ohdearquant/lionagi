@@ -7,7 +7,6 @@ import logging
 import os
 import sys
 from collections.abc import AsyncGenerator
-from dataclasses import fields
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -838,7 +837,7 @@ async def run(
 def _promote_to_run_param(chat_param: ChatParam) -> RunParam:
     if isinstance(chat_param, RunParam):
         return chat_param
-    kw = {f.name: getattr(chat_param, f.name) for f in fields(ChatParam)}
+    kw = {k: getattr(chat_param, k) for k in ChatParam.field_names()}
     return RunParam(**kw)
 
 

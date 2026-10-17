@@ -76,7 +76,7 @@ the credential (`lionagi/service/connections/endpoint_config.py:90`).
 
 **P2 — A logical call is not a billable attempt.** The path is Branch chat →
 `iModel.invoke` → `APICalling` → endpoint HTTP transport
-(`lionagi/operations/chat/chat.py:75`, `lionagi/service/imodel.py:389`,
+(`lionagi/operations/chat/chat.py:79`, `lionagi/service/imodel.py:562`,
 `lionagi/service/connections/api_calling.py:116`). HTTP retry happens inside the
 endpoint, below that event boundary (`lionagi/service/connections/endpoint.py:304`,
 `lionagi/service/connections/endpoint.py:382`). Response JSON returns directly;
@@ -222,7 +222,7 @@ without `security` needs no keychain when env/dotenv resolves the chosen name.
 
 Only request-local header construction unwraps the secret. Routed
 `create_payload` and `APICalling.headers` contain no account key; they must not use
-the current eager header path (`lionagi/service/imodel.py:269`,
+the current eager header path (`lionagi/service/imodel.py:270`,
 `lionagi/service/connections/endpoint.py:128`). For routed calls, explicit
 `api_key`, authentication headers, client-level authentication/trace callbacks,
 custom hosts and
@@ -252,8 +252,8 @@ A Session contains independent Branch scopes, rather than imposing one account.
 
 Standalone iModel calls use `("imodel", str(imodel.id), "anthropic")`; a direct
 endpoint instance uses a fresh private UUID scope. iModel serialization already
-preserves its id (`lionagi/service/imodel.py:493`,
-`lionagi/service/imodel.py:524`). Direct endpoints have
+preserves its id (`lionagi/service/imodel.py:693`,
+`lionagi/service/imodel.py:726`). Direct endpoints have
 no durable resume promise. A model reused for independent conversations must be
 invoked through separate Branches or separate iModel identities.
 

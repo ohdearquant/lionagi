@@ -7,10 +7,11 @@ Money is integer nanodollars throughout; no value here holds key material.
 
 from __future__ import annotations
 
-import enum
 from dataclasses import dataclass
 from typing import Literal
 from uuid import UUID
+
+from lionagi.ln.types import Enum
 
 __all__ = (
     "INT64_MAX",
@@ -36,7 +37,7 @@ ScopeKind = Literal["branch", "imodel", "endpoint"]
 SettleResult = Literal["settled", "already_settled", "still_open"]
 
 
-class RouterErrorCode(str, enum.Enum):
+class RouterErrorCode(str, Enum):
     CREDENTIAL_MISSING = "credential_missing"
     CREDENTIAL_INVALID = "credential_invalid"
     CREDENTIAL_LOOKUP_FAILED = "credential_lookup_failed"

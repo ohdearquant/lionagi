@@ -15,6 +15,10 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Added
 
+- `lionagi.ln.concurrency.temporary_signal_handlers(handler, signals=(SIGINT, SIGTERM))`, a
+  context manager that installs one handler for the length of a block and restores each prior
+  handler on exit. Like `run_async`, it installs nothing off the main thread and leaves alone a
+  signal whose handler was installed outside Python.
 - A compatibility open mode for `StateDB` (ADR-0128): `StateDB(path, compatibility=profile)`
   writes into a SQLite store whose schema another application manages without migrating,
   stamping or reconfiguring it. A `CompatibilityProfile` declares the exact structure of the
@@ -167,6 +171,30 @@ project those rows ran under. To keep the project, name it in those members.
   already did. They used to resolve a full id on such a turn with no project check, so the turn
   could propose changing a run in another project, and the found or not-found answer told it
   whether that id existed. The read tools still resolve a full id on such a turn.
+- A dispatch notify command that ran past its timeout was killed as a single process, so anything
+  it started kept running, and nothing waited for the command to exit. On Python 3.10, where the timeout
+  raises `asyncio.TimeoutError` rather than the builtin `TimeoutError`, it was not killed at all
+  and was reported as an execution error with an empty message. A cancelled delivery also left it
+  running. A timeout now reports as a timeout on every supported version, and a timeout, a failed
+  exchange or a cancelled delivery kills the command's whole process group and waits for the
+  command to exit.
+- `li o ctl resolve` reports a busy `state.db` and exits unknown, as queueing a control does,
+  instead of failing with a timeout traceback.
+- `li monitor run` replaced the SIGINT and SIGTERM handlers with its own and never put them back,
+  so in a process that called it they outlived the wait. It also replaced a handler installed
+  outside Python, which can never be reinstalled. A SIGTERM that arrived during a poll escaped the
+  wait as `SigtermInterrupt`, where SIGINT stopped it with the in-progress exit code. The wait now
+  restores the handlers it took when it returns, leaves one it could not give back alone, and
+  stops on SIGTERM as it does on SIGINT.
+- A settings shell hook (`hooks.pre` / `hooks.post` with a `command`) runs in a session of its
+  own, so cancelling the tool call it guards left the hook and anything it started running, and an
+  error while exchanging data with it did the same. The hook's process group is now killed on
+  cancellation and on any such error, as it already was on a timeout, including when the hook
+  itself has exited while a process it started still holds its output open, and when the
+  cancellation arrives while the hook is being started. A pre-hook payload, or a
+  post-hook result, that cannot be serialized to JSON was found only after the hook had been
+  started, and that hook was never stopped; it is now serialized first, so the pre-hook refuses the
+  call and the post-hook is skipped without starting anything.
 - A streamed HTTP call whose provider said, inside a stream it had accepted with HTTP 200, that
   the call failed (an `error` event, `response.failed` with or without a nested error, a chat
   completion chunk carrying an error) ended `COMPLETED`, so neither `iModel.stream()` nor a direct

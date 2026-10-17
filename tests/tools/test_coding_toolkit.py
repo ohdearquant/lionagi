@@ -274,6 +274,109 @@ async def test_search_rejects_path_outside_workspace(tmp_path, action, pattern):
     assert "escapes workspace" in result["error"]
 
 
+async def test_search_reads_a_leading_dash_as_a_pattern_not_an_option(tmp_path):
+    # As an option, "-f<file>" would read the patterns from a file outside the workspace.
+    patterns = tmp_path.parent / f"{tmp_path.name}_patterns"
+    patterns.write_text("SECRET\n")
+    (tmp_path / "notes.txt").write_text("SECRET\n")
+    _, _, tools = _make_toolkit(tmp_path)
+
+    result = await _tool_fn(tools, "search")(action="grep", pattern=f"-f{patterns}", path=".")
+
+    assert result["success"] is True
+    assert result["total_matches"] == 0
+
+
+async def test_search_leaves_out_files_the_reader_refuses_by_name(tmp_path):
+    (tmp_path / ".env").write_text("TOKEN=one\n")
+    (tmp_path / "keys").mkdir()
+    (tmp_path / "keys" / "ID_RSA").write_text("TOKEN=two\n")
+    (tmp_path / "notes.txt").write_text("TOKEN=three\n")
+    _, _, tools = _make_toolkit(tmp_path)
+
+    result = await _tool_fn(tools, "search")(action="grep", pattern="TOKEN", path=".")
+
+    assert result["success"] is True
+    assert result["total_matches"] == 1
+    assert result["content"] == f"{tmp_path / 'notes.txt'}:1:TOKEN=three"
+
+
+async def test_search_does_not_follow_a_symlink_out_of_the_workspace(tmp_path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (tmp_path / "outside.txt").write_text("TOKEN=file\n")
+    (tmp_path / "outdir").mkdir()
+    (tmp_path / "outdir" / "f.txt").write_text("TOKEN=dir\n")
+    (workspace / "link.txt").symlink_to(tmp_path / "outside.txt")
+    (workspace / "linkdir").symlink_to(tmp_path / "outdir")
+    (workspace / "in.txt").write_text("TOKEN=in\n")
+    _, _, tools = _make_toolkit(workspace)
+
+    result = await _tool_fn(tools, "search")(action="grep", pattern="TOKEN", path=".")
+
+    assert result["success"] is True
+    assert result["content"] == f"{workspace / 'in.txt'}:1:TOKEN=in"
+
+
+async def test_search_skips_binary_files_and_reads_names_across_a_newline(tmp_path):
+    (tmp_path / ".env").write_bytes(b"TOKEN=one\x00\n")
+    (tmp_path / "blob.bin").write_bytes(b"TOKEN=two\x00\n")
+    (tmp_path / "sub\ndir").mkdir()
+    (tmp_path / "sub\ndir" / ".env").write_text("TOKEN=three\n")
+    odd = tmp_path / "odd\nname.txt"
+    odd.write_text("TOKEN=four\n")
+    _, _, tools = _make_toolkit(tmp_path)
+
+    result = await _tool_fn(tools, "search")(action="grep", pattern="TOKEN", path=".")
+
+    assert result["success"] is True
+    assert result["total_matches"] == 1
+    assert result["content"] == f"{odd}:1:TOKEN=four"
+
+
+async def test_search_asks_grep_to_skip_binary_files(tmp_path, monkeypatch):
+    import lionagi.tools.coding as coding_mod
+
+    seen = []
+
+    def run(cmd, *args, **kwargs):
+        seen.append(cmd)
+        return {"returncode": 1, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(coding_mod, "_subprocess_sync", run)
+    _, _, tools = _make_toolkit(tmp_path)
+
+    await _tool_fn(tools, "search")(action="grep", pattern="TOKEN", path=".")
+
+    flags = seen[0][1 : seen[0].index("-e")]
+    assert any(f.startswith("-") and not f.startswith("--") and "I" in f for f in flags)
+
+
+@pytest.mark.parametrize(
+    "partial",
+    ["", "a.py\x001:TOKEN\n"],
+    ids=["nothing-read", "some-rows-read"],
+)
+async def test_search_reports_a_timed_out_grep_as_a_failure(tmp_path, monkeypatch, partial):
+    import lionagi.tools.coding as coding_mod
+
+    def run(cmd, *args, **kwargs):
+        # The shape _subprocess_sync returns on a timeout.
+        return {
+            "stdout": partial + "\n\n[... output truncated at 100000 bytes ...]\n",
+            "stderr": "Command timed out after 30.0s",
+            "returncode": -1,
+            "timed_out": True,
+        }
+
+    monkeypatch.setattr(coding_mod, "_subprocess_sync", run)
+    _, _, tools = _make_toolkit(tmp_path)
+
+    result = await _tool_fn(tools, "search")(action="grep", pattern="TOKEN", path=".")
+
+    assert result == {"success": False, "error": "grep timed out"}
+
+
 async def test_coding_toolkit_reader_rejects_workspace_escape(tmp_path):
     """ReaderTool rejects paths that escape the workspace root."""
     secret = tmp_path.parent / "secret.txt"
