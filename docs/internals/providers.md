@@ -321,10 +321,14 @@ The check parses the text as CommonMark with markdown-it-py
 (`MarkdownIt("commonmark")`, a core dependency for this reason) and looks for
 markup only in what a reader sees as prose: the text of paragraphs and
 headings, link and image text, and raw HTML. Code spans, fenced code blocks
-and indented code blocks are left out wherever quotes and lists put them, so
-where a fence inside a list item closes, which list markers interrupt a
-paragraph, setext underlines, tab stops and lazy continuation lines are all the
-parser's reading, not a second one kept beside it. Each block is matched on
+and indented code blocks are left out wherever quotes and lists put them, a
+fence that nothing closes included: it runs to the end of its container, as
+CommonMark reads it, and its information string is not shown. Link
+destinations and titles and link reference definitions are not shown as text
+either, so they are not read. Where a fence inside a list item closes or
+ends, which list markers interrupt a paragraph, setext underlines, tab stops
+and lazy continuation lines are all the parser's reading, not a second one
+kept beside it. Each block is matched on
 its own, and a code span separates the prose on either side of it, so no tag
 is pieced together across a block boundary or a span. The parser normalises
 line ends, so CRLF text reads like LF text. A legacy
@@ -339,17 +343,16 @@ compiled pattern per call markup the CLI can surface; another model's markup
 is supported by adding one entry there. The patterns match markup tags only —
 never the word DSML or a bare `|` in ordinary prose.
 
-Two choices go past CommonMark, and both err toward failing a turn that was
-fine. A fenced code block that never closes runs to the end of its container
-in CommonMark; here its information string and its text are read again as
-Markdown, so markup after an opener that nothing closes fails the turn (and a
-line indented four spaces after such an opener reads as an indented code
-block, as it would without the opener). Raw HTML is read as prose, the text of
-a `<pre>` or `<code>` element included. One case errs the other way, toward
-completing the turn as it completed before this check existed: text at the
-parser's nesting limit is not read. The limit is 20 levels, and a list and its
-item count as one each, so text inside 20 nested quotes or 10 nested lists is
-dropped.
+One choice goes past CommonMark and errs toward failing a turn that was fine:
+raw HTML is read as prose, the text of a `<pre>` or `<code>` element included.
+Two err the other way, toward completing the turn as it completed before this
+check existed. Text at the parser's nesting limit is not read: the limit is
+20 levels, and a list and its item count as one each, so text inside 20 nested
+quotes or 10 nested lists is dropped. And a message longer than 64,000
+characters (`_MARKUP_CHECK_MAX_CHARS`) is not read at all. That bounds the
+parse: on text built to be slow for the parser, such as a long run of unclosed
+brackets, it takes about half a second at that length, and its time grows
+faster than the length past it.
 
 ## Codex turn-completed usage delta
 
