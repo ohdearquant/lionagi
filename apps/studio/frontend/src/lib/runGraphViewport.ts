@@ -1,11 +1,13 @@
 /**
  * Taking the inline run graph's viewport transform once its view has settled.
  *
- * The graph is fitted more than once while it is drawn: React Flow fits the view
- * from the update that measures the nodes it draws and reveals them, and this
- * canvas fits again on a later animation frame, once the embedding panel has
- * taken the layout's reported height. A transform read while that later fit is
- * still pending is not the view the graph settles on.
+ * The graph is fitted more than once while it is drawn. React Flow fits the view
+ * from the update that measures the nodes it draws and reveals them. The canvas
+ * hands the embedding panel the layout's height in the same commit that lays the
+ * nodes out and schedules its own fit on the animation frame that follows; the
+ * panel takes that height on a later render, which resizes the canvas and
+ * schedules one more fit. A transform read while any of those fits is still
+ * pending is not the view the graph settles on.
  *
  * The wait between reads is paced by animation frames rather than by wall-clock
  * time. A fit is itself scheduled on a frame, and frame callbacks run in the
@@ -39,7 +41,17 @@ export interface RunGraphViewportRead {
   drawn: boolean;
 }
 
-/** Consecutive frames a transform must hold across before it is read. */
+/**
+ * Frames a view's hold is measured over, not counting the read that starts it: a
+ * view is read once it has read the same on `SETTLED_RUN_GRAPH_FRAMES + 1`
+ * consecutive frames.
+ *
+ * The value is a margin over the frames the graph's own fits can take, not a
+ * number those fits yield. React Flow fits the view from the update that measures
+ * the last node; the resize the panel's new height causes, with the canvas' fit
+ * that follows it, spans at most two frames. Holding across more frames than that
+ * waits out any fit either can schedule.
+ */
 export const SETTLED_RUN_GRAPH_FRAMES = 3;
 
 /** How long to wait for the view to come to rest, in milliseconds. */
@@ -70,7 +82,7 @@ export function parseRunGraphViewportTransform(style: string): RunGraphViewportT
 }
 
 export interface SettleRunGraphViewportOptions {
-  /** Consecutive frames a transform must hold across. */
+  /** Frames a transform must read the same across, not counting the first read. */
   stableFrames?: number;
   /** How long to wait for the view to come to rest, in milliseconds. */
   timeoutMs?: number;
@@ -83,12 +95,16 @@ export interface SettleRunGraphViewportOptions {
  * The read and the frame are injected, so the same wait paces a page — a real
  * animation frame, the graph's real nodes — and a test's scripted reads.
  *
- * The viewport is read once every node is drawn and the transform has held
- * across frames. The graph being drawn is what says React Flow's own fit has
+ * The viewport is read once every node is drawn and the transform has read the
+ * same across frames. The graph being drawn is what says React Flow's own fit has
  * run; holding is what says no later fit is still pending. Holding decides the
  * read rather than a difference from any particular transform, because a fit
  * whose result is React Flow's initial view is still a fit, and requiring the
  * transform to move away from it would fail a graph that lands there.
+ *
+ * A read taken while the nodes are still hidden is not a frame of that hold: the
+ * fits above replace the view read then, so the hold restarts until the graph is
+ * drawn.
  *
  * A viewport that is not on screen yet is not a settled read. A style whose
  * transform is not one this reader parses is an error rather than something to
@@ -114,15 +130,22 @@ export async function settleRunGraphViewport(
     } else {
       lastRead = style;
       const current = parseRunGraphViewportTransform(style);
-      const unchanged =
-        previous !== null &&
-        current.x === previous.x &&
-        current.y === previous.y &&
-        current.zoom === previous.zoom;
-      previous = current;
-      held = unchanged ? held + 1 : 0;
-      if (drawn && held >= requiredFrames) {
-        return style;
+      if (!drawn) {
+        // The view read before the graph is drawn is one the fits still pending
+        // replace, so it is not a frame of the hold.
+        previous = null;
+        held = 0;
+      } else {
+        const unchanged =
+          previous !== null &&
+          current.x === previous.x &&
+          current.y === previous.y &&
+          current.zoom === previous.zoom;
+        previous = current;
+        held = unchanged ? held + 1 : 0;
+        if (held >= requiredFrames) {
+          return style;
+        }
       }
     }
     if (Date.now() > deadline) {

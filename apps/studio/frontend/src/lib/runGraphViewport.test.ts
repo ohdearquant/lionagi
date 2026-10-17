@@ -23,6 +23,7 @@ import {
 const INITIAL = "transform: translate(0px, 0px) scale(1);";
 const FIRST_FIT = "transform: translate(50px, 20px) scale(0.5);";
 const SETTLED = "transform: translate(112px, 80.5px) scale(1);";
+const SETTLED_WITHOUT_SPACE = "transform: translate(112px,80.5px) scale(1);";
 
 /**
  * A graph whose viewport takes its shape on the frame it is asked for, so
@@ -95,11 +96,11 @@ describe("settleRunGraphViewport", () => {
   });
 
   it("does not read a view that held for fewer frames than the canvas' later fit can take", async () => {
-    // The intermediate view lasts two frames; the canvas' fit lands on the third
-    // and replaces it, so a read that settles in fewer than three frames returns
-    // a view the graph is about to leave.
+    // The intermediate view holds for three frames; the canvas' later fit lands
+    // on the fourth and replaces it. A read that settles in fewer frames than
+    // the bound returns a view the graph is about to leave.
     const graph = scriptedGraph((frame) => ({
-      style: frame < 2 ? FIRST_FIT : SETTLED,
+      style: frame <= 3 ? FIRST_FIT : SETTLED,
       drawn: true,
     }));
 
@@ -115,6 +116,49 @@ describe("settleRunGraphViewport", () => {
       settleRunGraphViewport(graph.read, graph.nextFrame, { timeoutMs: 2_000 }),
     ).resolves.toBe(SETTLED);
     expect(graph.frames()).toBeGreaterThanOrEqual(5);
+  });
+
+  it("does not count frames read before every node is drawn toward the hold", async () => {
+    // React Flow's own fit lands with the last node's measurement, and this
+    // canvas fits again a frame or two later, so the view read while the nodes
+    // are still hidden is one that fit replaces. Those frames are not frames of
+    // the hold: the view is read on the eighth frame here, not on the fourth the
+    // hold would reach if it had counted them.
+    const graph = scriptedGraph((frame) => ({
+      style: frame < 5 ? INITIAL : SETTLED,
+      drawn: frame >= 4,
+    }));
+
+    await expect(
+      settleRunGraphViewport(graph.read, graph.nextFrame, { timeoutMs: 2_000 }),
+    ).resolves.toBe(SETTLED);
+    expect(graph.frames()).toBe(8);
+  });
+
+  it("counts two spellings of one view as the same view", async () => {
+    // This canvas writes the same view as `translate(112px, 80.5px) scale(1)` and
+    // as `translate(112px,80.5px) scale(1)`. The transform is parsed into its
+    // numbers, so alternating the spellings does not restart the hold; comparing
+    // the serialized strings would never settle on this graph.
+    const spellings = [SETTLED, SETTLED_WITHOUT_SPACE];
+    const graph = scriptedGraph((frame) => ({ style: spellings[frame % 2], drawn: true }));
+
+    await expect(
+      settleRunGraphViewport(graph.read, graph.nextFrame, { timeoutMs: 2_000 }),
+    ).resolves.toBe(SETTLED);
+    expect(graph.frames()).toBe(4);
+  });
+
+  it("restarts the hold when the viewport leaves the screen mid-stream", async () => {
+    const graph = scriptedGraph((frame) => ({
+      style: frame === 3 ? null : SETTLED,
+      drawn: true,
+    }));
+
+    await expect(
+      settleRunGraphViewport(graph.read, graph.nextFrame, { timeoutMs: 2_000 }),
+    ).resolves.toBe(SETTLED);
+    expect(graph.frames()).toBe(7);
   });
 
   it("does not read the unfitted initial viewport", async () => {
@@ -183,6 +227,14 @@ describe("the run graph spec's wait", () => {
 
   it("counts the graph drawn from the nodes React Flow has revealed", () => {
     expect(spec).toMatch(/visibility !== "hidden"/);
+  });
+
+  it("reads the viewport's style and its nodes in one round trip", () => {
+    // Read separately, a fit landing between the two reads reports a settled
+    // transform beside the nodes it drew, which is not a state the page held.
+    expect(spec).toMatch(/inlineViewport\.evaluate\(/);
+    expect(spec).not.toMatch(/await inlineViewport\.getAttribute\("style"\)/);
+    expect(spec).not.toMatch(/evaluateAll\(/);
   });
 
   it("waits on the page's animation frames between reads", () => {
