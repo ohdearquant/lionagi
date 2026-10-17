@@ -243,6 +243,31 @@ class TestLookupContextWindow:
         finally:
             tb._PROVIDER_MODULES = original
 
+    def test_all_provider_windows_yields_each_providers_lookup_in_order(self, monkeypatch):
+        """Iterating every provider gives what the per-provider lookup gives, the same
+        cached objects, and skips a module without a CONTEXT_WINDOWS dict."""
+        import lionagi.service.token_budget as tb
+        from lionagi.service.token_budget import _all_provider_windows
+
+        monkeypatch.setattr(
+            tb,
+            "_PROVIDER_MODULES",
+            {
+                "openai": tb._PROVIDER_MODULES["openai"],
+                "_no_windows": "lionagi.service.token_budget",
+                "_bad_mod": "nonexistent.module.xyz",
+                "anthropic": tb._PROVIDER_MODULES["anthropic"],
+            },
+        )
+
+        yielded = list(_all_provider_windows())
+
+        assert [id(w) for w in yielded] == [
+            id(_get_provider_windows("openai")),
+            id(_get_provider_windows("anthropic")),
+        ]
+        assert "_no_windows" not in tb._provider_cache
+
 
 class TestGetContextWindowModelLookup:
     def test_resolves_model_from_kwargs(self):
