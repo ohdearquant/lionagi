@@ -3940,6 +3940,8 @@ async def test_the_batched_progression_append_keeps_the_owner_predicate(store):
     its read and its rewrite as the per-message append: this run's own progression is
     extended, and a progression another owner's run owns is read as absent, not rewritten.
     """
+    from sqlalchemy import event
+
     _execute(
         store,
         f"INSERT INTO progressions (id, created_at, collection, {OWNER}) "
@@ -3951,11 +3953,34 @@ async def test_the_batched_progression_append_keeps_the_owner_predicate(store):
     try:
         await handle.create_progression("p-mine")
         await handle.extend_progression("p-mine", ["m1", "m2"])
-        await handle.extend_progression("p-other", ["m-other"])
+        statements = []
+
+        def spy(conn, cursor, statement, parameters, context, executemany):
+            statements.append(statement)
+
+        event.listen(handle._engine.sync_engine, "before_cursor_execute", spy)
+        try:
+            await handle.extend_progression("p-other", ["m-other"])
+        finally:
+            event.remove(handle._engine.sync_engine, "before_cursor_execute", spy)
     finally:
         await handle.close()
+
+    # Read as absent: the read carries the predicate, so no rewrite is even attempted.
+    assert any(s.lstrip().startswith("SELECT collection FROM progressions") for s in statements)
+    assert not [s for s in statements if s.lstrip().upper().startswith("UPDATE PROGRESSIONS")]
 
     assert _rows(store, "SELECT collection FROM progressions WHERE id = 'p-mine'") == [
         ('["m1","m2"]',)
     ]
     assert _rows(store, "SELECT collection FROM progressions WHERE id = 'p-other'") == [("[]",)]
+
+
+@pytest.mark.parametrize("dialect", ["sqlite", "postgresql"])
+def test_the_progression_read_puts_the_owner_conjunct_inside_the_where_clause(dialect):
+    """The owner conjunct joins the WHERE clause; on a dialect that row-locks the read it
+    comes before FOR UPDATE, never after it."""
+    clause = ' AND "owner_principal_id" = :_compat_owner'
+    sql = StateDB._progression_collection_for_update_sql(dialect, clause)
+    head = "SELECT collection FROM progressions WHERE id = :id" + clause
+    assert sql == (head if dialect == "sqlite" else head + " FOR UPDATE")

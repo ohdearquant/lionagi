@@ -2990,12 +2990,12 @@ class StateDB:
         )
 
     @staticmethod
-    def _progression_collection_for_update_sql(dialect: str) -> str:
+    def _progression_collection_for_update_sql(dialect: str, clause: str = "") -> str:
         # SQLite's BEGIN IMMEDIATE already holds the writer reservation for the whole transaction;
         # elsewhere the row lock keeps a concurrent append from being lost between read and write.
         if dialect == "sqlite":
-            return "SELECT collection FROM progressions WHERE id = :id"
-        return "SELECT collection FROM progressions WHERE id = :id FOR UPDATE"
+            return "SELECT collection FROM progressions WHERE id = :id" + clause  # noqa: S608 -- owner predicate
+        return "SELECT collection FROM progressions WHERE id = :id" + clause + " FOR UPDATE"  # noqa: S608 -- owner predicate, before the lock clause
 
     async def insert_messages(
         self,
@@ -3041,7 +3041,7 @@ class StateDB:
         row = (
             (
                 await conn.execute(
-                    text(self._progression_collection_for_update_sql(self.dialect) + clause),
+                    text(self._progression_collection_for_update_sql(self.dialect, clause)),
                     {"id": progression_id, **owner},
                 )
             )
