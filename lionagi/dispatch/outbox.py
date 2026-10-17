@@ -153,8 +153,6 @@ async def _exec_notify_template(
             timeout=timeout,
         )
     except (TimeoutError, asyncio.TimeoutError):
-        # Before Python 3.11, asyncio.wait_for raises asyncio.TimeoutError, which is
-        # not the builtin TimeoutError, so both are caught to reach the kill below.
         if proc is not None:
             try:
                 proc.kill()
