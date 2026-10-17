@@ -778,6 +778,10 @@ async def test_planning_dag_clones_keep_injection(monkeypatch, tmp_path, spawn_b
             assert spawned.providers.stats["blocks_injected"] == 0
             assert spawned.msgs.last_response is not None
             assert spawned.metadata["clone_from"] is planned[0]
+            # The provider is still registered on the child, so the zero above
+            # comes from the cadence, not from a child with no provider.
+            assert planned[0].providers.names
+            assert spawned.providers.names == planned[0].providers.names
 
     assert namespaces == [f"planningengine:{run.run_id}"] * expected_recalls
 
@@ -927,18 +931,21 @@ async def test_planning_clones_keep_the_worker_role_for_injection(
     ], queries
     assert "role=agent " not in queries
 
-    provider = workers[0].providers._entries[0].provider
-    written = await provider.writeback(
-        workers[0],
-        [
-            ActionResponseModel(function="bash", arguments={}, output={"error": "fail"}),
-            ActionResponseModel(function="bash", arguments={}, output={"stdout": "ok"}),
-        ],
-    )
-    assert written == 1
-    ops = call_khive.await_args.args[0]
-    assert f'"agent:{workers[0].name}"' in ops
-    assert '"agent:agent"' not in ops
+    # The first planned worker and the last node (the spawned child when there
+    # is one) each write back under their own role.
+    for worker in (workers[0], workers[-1]):
+        provider = worker.providers._entries[0].provider
+        written = await provider.writeback(
+            worker,
+            [
+                ActionResponseModel(function="bash", arguments={}, output={"error": "fail"}),
+                ActionResponseModel(function="bash", arguments={}, output={"stdout": "ok"}),
+            ],
+        )
+        assert written == 1
+        ops = call_khive.await_args.args[0]
+        assert f'"agent:{worker.name}"' in ops
+        assert '"agent:agent"' not in ops
 
 
 @pytest.mark.asyncio
