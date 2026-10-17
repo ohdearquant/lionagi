@@ -157,7 +157,7 @@ project those rows ran under. To keep the project, name it in those members.
   running. A timeout now reports as a timeout on every supported version, and a timeout, a failed
   exchange or a cancelled delivery kills the command's whole process group and waits for the
   command to exit.
-  `li o ctl resolve` reports a busy `state.db` and exits unknown, as queueing a control does,
+- `li o ctl resolve` reports a busy `state.db` and exits unknown, as queueing a control does,
   instead of failing with a timeout traceback.
 - `li monitor run` replaced the SIGINT and SIGTERM handlers with its own and never put them back,
   so in a process that called it they outlived the wait. It also replaced a handler installed
