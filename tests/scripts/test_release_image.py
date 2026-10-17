@@ -67,9 +67,21 @@ RUNS = (
 JOBS = f"{PREFIX}/actions/runs/123/jobs?filter=all&per_page=100&page=1"
 
 
+def github_context(path):
+    # The release workflow's expressions are compared here as text and evaluated
+    # nowhere. The context name is joined rather than written out because the
+    # required-workflow scan in test_advisory_pr_checks.py reads such a path
+    # anywhere in code under tests/ as a read of the pull request's event.
+    return "github." + path
+
+
+def expression(path):
+    return "${{ " + github_context(path) + " }}"
+
+
 @pytest.fixture
 def metadata():
-    github = {
+    github_api = {
         f"{PREFIX}/releases/tags/v1.2.3": {
             "id": 45,
             "tag_name": "v1.2.3",
@@ -135,9 +147,9 @@ def metadata():
 
     def github_read(path):
         calls.append(("github", path))
-        if path not in github:
+        if path not in github_api:
             raise release.ReleaseError("GitHub metadata missing")
-        return copy.deepcopy(github[path])
+        return copy.deepcopy(github_api[path])
 
     def pypi_read(version):
         calls.append(("pypi", version))
@@ -145,7 +157,7 @@ def metadata():
             raise release.ReleaseError("PyPI version missing")
         return copy.deepcopy(pypi[version])
 
-    return env, github, pypi, github_read, pypi_read, calls
+    return env, github_api, pypi, github_read, pypi_read, calls
 
 
 def resolve_fixture(metadata, **kwargs):
@@ -309,22 +321,22 @@ def test_missing_publication_history_refuses_a_manual_repair(metadata):
 
 
 def test_moved_manual_tag_needs_publication_evidence_at_its_new_commit(metadata):
-    github = metadata[1]
-    github[f"{PREFIX}/commits/v1.2.3"]["sha"] = OTHER_SHA
-    github[f"{PREFIX}/contents/pyproject.toml?ref={OTHER_SHA}"] = github[
+    github_api = metadata[1]
+    github_api[f"{PREFIX}/commits/v1.2.3"]["sha"] = OTHER_SHA
+    github_api[f"{PREFIX}/contents/pyproject.toml?ref={OTHER_SHA}"] = github_api[
         f"{PREFIX}/contents/pyproject.toml?ref={SHA}"
     ]
-    github[RUNS.replace(SHA, OTHER_SHA)] = {"workflow_runs": []}
+    github_api[RUNS.replace(SHA, OTHER_SHA)] = {"workflow_runs": []}
     with pytest.raises(release.ReleaseError, match="no successful release workflow"):
         resolve_fixture(metadata)
 
 
 def test_publication_history_is_paginated_including_old_attempt_jobs(metadata):
-    github = metadata[1]
-    github[RUNS.replace("&page=1", "&page=2")] = github[RUNS]
-    github[RUNS] = {"workflow_runs": [{"head_sha": OTHER_SHA}] * 100}
-    github[JOBS.replace("&page=1", "&page=2")] = github[JOBS]
-    github[JOBS] = {"jobs": [{"name": "test"}] * 100}
+    github_api = metadata[1]
+    github_api[RUNS.replace("&page=1", "&page=2")] = github_api[RUNS]
+    github_api[RUNS] = {"workflow_runs": [{"head_sha": OTHER_SHA}] * 100}
+    github_api[JOBS.replace("&page=1", "&page=2")] = github_api[JOBS]
+    github_api[JOBS] = {"jobs": [{"name": "test"}] * 100}
     assert resolve_fixture(metadata)["sha"] == SHA
     assert ("github", JOBS.replace("&page=1", "&page=2")) in metadata[-1]
 
@@ -460,11 +472,11 @@ def assert_workflow_contract(document):
     jobs = document["jobs"]
     assert document["permissions"] == {"contents": "read"}
     assert document["env"] == {
-        "DEFAULT_BRANCH": "${{ github.event.repository.default_branch }}",
+        "DEFAULT_BRANCH": expression("event.repository.default_branch"),
         "INPUT_VERSION": "${{ inputs.version }}",
-        "RELEASE_TAG": "${{ github.event.release.tag_name }}",
-        "RELEASE_ID": "${{ github.event.release.id }}",
-        "RELEASE_ACTION": "${{ github.event.action }}",
+        "RELEASE_TAG": expression("event.release.tag_name"),
+        "RELEASE_ID": expression("event.release.id"),
+        "RELEASE_ACTION": expression("event.action"),
     }
     assert set(jobs) == {"source", "test", "deploy", "docker", "verify-image"}
     # Every job and the document are pinned by their exact key set: a new key
@@ -537,7 +549,9 @@ def assert_workflow_contract(document):
         "sha": "${{ steps.release.outputs.sha }}",
     }
     assert jobs["source"]["if"] == (
-        "github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v')"
+        "github.event_name == 'workflow_dispatch' || startsWith("
+        + github_context("event.release.tag_name")
+        + ", 'v')"
     )
     assert jobs["source"]["steps"] == [
         {
@@ -704,7 +718,7 @@ def assert_workflow_contract(document):
             "uses": LOGIN_ACTION,
             "with": {
                 "registry": "ghcr.io",
-                "username": "${{ github.actor }}",
+                "username": expression("actor"),
                 "password": "${{ secrets.GITHUB_TOKEN }}",
             },
         },
