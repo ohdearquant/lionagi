@@ -226,6 +226,145 @@ def test_the_callers_messages_are_left_as_handed_in():
     assert "cache_control" not in request["messages"][-1]["content"][0]
 
 
+@pytest.mark.parametrize("prompt_caching", [True, False], ids=["on", "off"])
+def test_the_callers_request_is_left_as_handed_in(prompt_caching):
+    """A request reused for a second payload, as a retry or a second call would, builds the same."""
+    request = _request(system_blocks=["more stable text"])
+    before = copy.deepcopy(request)
+    endpoint = _filtered(prompt_caching=prompt_caching)
+
+    first, _ = endpoint.create_payload(request)
+    second, _ = endpoint.create_payload(request)
+
+    assert request == before
+    assert json.dumps(first) == json.dumps(second)
+
+
+def test_system_blocks_passed_beside_the_request_are_stable_blocks():
+    payload, _ = _filtered(prompt_caching=True).create_payload(
+        _request(), system_blocks=["more stable text"]
+    )
+
+    assert payload["system"] == [
+        {"type": "text", "text": SYSTEM},
+        {"type": "text", "text": "more stable text", "cache_control": ONE_HOUR},
+    ]
+
+
+def test_a_payload_built_again_from_itself_is_unchanged():
+    """A streamed call builds its payload a second time from the first one."""
+    endpoint = _filtered(prompt_caching=True)
+    payload, _ = endpoint.create_payload(_request(system_blocks=["more stable text"]))
+
+    again, _ = endpoint.create_payload(copy.deepcopy(payload))
+
+    assert json.dumps(again) == json.dumps(payload)
+
+
+def test_stable_text_with_nothing_visible_is_not_a_block():
+    request = _request(system_blocks=["   ", "\n", "kept"])
+    request["messages"][0]["content"] = "  "
+
+    payload, _ = _filtered(prompt_caching=True).create_payload(request)
+
+    assert payload["system"] == [{"type": "text", "text": "kept", "cache_control": ONE_HOUR}]
+
+
+def test_a_single_string_of_system_blocks_is_one_block():
+    payload, _ = _filtered(prompt_caching=True).create_payload(_request(system_blocks="abc"))
+
+    assert payload["system"] == [
+        {"type": "text", "text": SYSTEM},
+        {"type": "text", "text": "abc", "cache_control": ONE_HOUR},
+    ]
+
+
+def test_a_block_list_system_message_keeps_its_blocks():
+    request = _request()
+    request["messages"][0]["content"] = [
+        {"type": "text", "text": "part one"},
+        {"type": "text", "text": "part two"},
+    ]
+    before = copy.deepcopy(request)
+
+    payload, _ = _filtered(prompt_caching=True).create_payload(request)
+
+    assert payload["system"] == [
+        {"type": "text", "text": "part one"},
+        {"type": "text", "text": "part two", "cache_control": ONE_HOUR},
+    ]
+    assert request == before
+
+
+def test_a_native_system_field_is_the_stable_text():
+    request = _request(system="native system text")
+    request["messages"] = request["messages"][1:]
+
+    payload, _ = _filtered(prompt_caching=True).create_payload(request)
+
+    assert payload["system"] == [
+        {"type": "text", "text": "native system text", "cache_control": ONE_HOUR}
+    ]
+    assert _marks(payload) == [ONE_HOUR, FIVE_MINUTES]
+
+
+def test_the_turn_mark_skips_a_thinking_block():
+    request = _request()
+    request["messages"].append(
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "an answer"},
+                {"type": "thinking", "thinking": "worked out", "signature": "sig"},
+                {"type": "redacted_thinking", "data": "opaque"},
+            ],
+        }
+    )
+
+    payload, _ = _unfiltered(prompt_caching=True).create_payload(request)
+
+    assert payload["messages"][-1]["content"] == [
+        {"type": "text", "text": "an answer", "cache_control": FIVE_MINUTES},
+        {"type": "thinking", "thinking": "worked out", "signature": "sig"},
+        {"type": "redacted_thinking", "data": "opaque"},
+    ]
+
+
+def test_a_turn_of_thinking_alone_takes_no_mark():
+    request = _request()
+    request["messages"].append(
+        {
+            "role": "assistant",
+            "content": [{"type": "thinking", "thinking": "worked out", "signature": "sig"}],
+        }
+    )
+
+    payload, _ = _unfiltered(prompt_caching=True).create_payload(request)
+
+    assert _marks(payload) == [ONE_HOUR]
+
+
+@pytest.mark.parametrize("caller_marks", [2, 3, 4])
+def test_marks_the_caller_placed_count_toward_the_four(caller_marks):
+    request = _request()
+    request["messages"] = [request["messages"][0]] + [
+        {
+            "role": "user" if i % 2 == 0 else "assistant",
+            "content": [{"type": "text", "text": f"turn {i}", "cache_control": FIVE_MINUTES}],
+        }
+        for i in range(caller_marks)
+    ]
+    request["messages"].append({"role": "user", "content": "last question"})
+
+    payload, _ = _unfiltered(prompt_caching=True).create_payload(request)
+
+    marks = _marks(payload)
+    assert len(marks) == 4
+    # The one-hour mark is placed first while there is room, so it comes before every other mark.
+    assert (marks[0] == ONE_HOUR) is (caller_marks < 4)
+    assert ("cache_control" in payload["messages"][-1]["content"][-1]) is (caller_marks < 3)
+
+
 # --- option on, declaration absent ---
 
 

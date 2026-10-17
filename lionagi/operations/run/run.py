@@ -469,7 +469,6 @@ async def run(
             param,
             ins=provider_ins or ins,
             context_blocks=context_report.blocks if context_report else None,
-            imodel=branch.chat_model,
         )
 
         # Committed before yielding: a consumer receiving this Instruction must

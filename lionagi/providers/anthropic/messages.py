@@ -334,26 +334,78 @@ def _mask_content_runs(body: Any, key: Any) -> Any:
     return body
 
 
-def _place_prompt_cache(payload: dict, stable_blocks: list[str]) -> None:
+# The Messages API takes at most four cache marks per request and refuses one on a thinking block.
+_MAX_CACHE_MARKS = 4
+_UNMARKABLE_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking"})
+
+
+def _system_blocks(content: Any) -> list[dict]:
+    """System content as a list of block copies: a string, a block, or a list of either.
+
+    A text block with no visible text is dropped, since the API refuses one.
+    """
+    if isinstance(content, str | dict):
+        content = [content]
+    if not isinstance(content, list | tuple):
+        return []
+    blocks = []
+    for item in content:
+        block = {"type": "text", "text": item} if isinstance(item, str) else item
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text" and not (
+            isinstance(block.get("text"), str) and block["text"].strip()
+        ):
+            continue
+        blocks.append(dict(block))
+    return blocks
+
+
+def _cache_mark_count(payload: dict) -> int:
+    blocks = [*(payload.get("tools") or ()), *(payload.get("system") or ())]
+    for message in payload.get("messages") or ():
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, list):
+            blocks.extend(content)
+    return sum(1 for block in blocks if isinstance(block, dict) and "cache_control" in block)
+
+
+def _place_prompt_cache(payload: dict, stable_blocks: list[dict]) -> None:
     """Write the stable blocks as the native system field and mark the segment ends (ADR-0127 D5).
 
     One one-hour mark ends the stable segment, on its last block; one five-minute mark goes on the
-    last block of the last message, the end of the turn segment. The last message is copied before
-    it is marked, so the caller's message list is left as it was handed in.
+    last block of the last message that can carry one, the end of the turn segment. A mark that
+    would take the request past the API's four is not placed; a block that already carries a mark
+    has it replaced. The last message is copied before it is marked, so the caller's message list
+    is left as it was handed in.
     """
     if stable_blocks:
-        system = [{"type": "text", "text": text} for text in stable_blocks]
-        system[-1]["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
-        payload["system"] = system
+        payload["system"] = stable_blocks
+    marks = _cache_mark_count(payload)
+    if stable_blocks and ("cache_control" in stable_blocks[-1] or marks < _MAX_CACHE_MARKS):
+        marks += "cache_control" not in stable_blocks[-1]
+        stable_blocks[-1]["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
     messages = payload.get("messages")
-    if not messages:
+    if not messages or not isinstance(messages[-1], dict):
         return
     content = messages[-1].get("content")
     if isinstance(content, str):
-        content = [{"type": "text", "text": content}] if content else []
-    if not isinstance(content, list) or not content or not isinstance(content[-1], dict):
+        content = [{"type": "text", "text": content}] if content.strip() else []
+    if not isinstance(content, list):
         return
-    content = [*content[:-1], {**content[-1], "cache_control": {"type": "ephemeral"}}]
+    index = next(
+        (
+            i
+            for i in range(len(content) - 1, -1, -1)
+            if isinstance(content[i], dict)
+            and content[i].get("type") not in _UNMARKABLE_BLOCK_TYPES
+        ),
+        None,
+    )
+    if index is None or ("cache_control" not in content[index] and marks >= _MAX_CACHE_MARKS):
+        return
+    marked = {**content[index], "cache_control": {"type": "ephemeral"}}
+    content = [*content[:index], marked, *content[index + 1 :]]
     payload["messages"] = [*messages[:-1], {**messages[-1], "content": content}]
 
 
@@ -1066,8 +1118,15 @@ class AnthropicMessagesEndpoint(Endpoint):
         extra_headers: dict | None = None,
         **kwargs,
     ):
-        request_dict = request if isinstance(request, dict) else request.model_dump()
+        if isinstance(request, dict):
+            # A copy: the system message and the system blocks are taken off it below, and the
+            # caller's request is left as it was handed in.
+            request = request_dict = dict(request)
+        else:
+            request_dict = request.model_dump()
         system_blocks = request_dict.pop("system_blocks", None)
+        if "system_blocks" in kwargs:
+            system_blocks = kwargs.pop("system_blocks")
         prompt_cache_control = request_dict.get("cache_control")
         if self._account_routing_enabled() and request_dict.get("service_tier") not in (
             None,
@@ -1102,9 +1161,9 @@ class AnthropicMessagesEndpoint(Endpoint):
             # ADR-0127 D5: this placement replaces the last-message mark `cache_control` would add.
             # The flag keeps its other meaning, the response memo in Endpoint.call.
             payload.pop("cache_control", None)
-            stable = [
-                text for text in ([system] if system else []) + list(system_blocks or []) if text
-            ]
+            # As below, a system message takes the place of a native `system` field.
+            stable = _system_blocks(system if system else payload.get("system"))
+            stable += _system_blocks(system_blocks)
             _place_prompt_cache(payload, stable)
             return (payload, headers)
 
