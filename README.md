@@ -201,7 +201,7 @@ Bahasa Indonesia, Português (Brasil), 한국어, Türkçe, اردو, Tiếng Vi
 li studio             # default: starts the local daemon and opens
                       # https://lion-studio.khive.ai — nothing is built locally
 li studio --docker    # self-contained: auto-pulls ghcr.io/ohdearquant/lion-studio
-                      # UI + API → http://localhost:8765
+                      # UI + API → http://127.0.0.1:8765 (published on --host)
 li studio --no-frontend  # backend API only, no UI
 li studio --dev       # from a source checkout: backend + in-repo frontend, hot reload
 ```

@@ -45,6 +45,21 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Changed
 
+- `li studio --docker` publishes the daemon's port on the address `--host` names, loopback
+  (`127.0.0.1`) by default, where it published on every host interface, so with
+  `LIONAGI_STUDIO_AUTH_TOKEN` unset other machines on the network could reach the API. The
+  container's own bind inside the image is unchanged; the host half of the port mapping is what
+  decides who can reach it. Pass `--host` an IP address to publish there, which exposes the
+  daemon to that interface, or run the image with your own `docker run -p`; a name, an address
+  carrying a port or an IPv6 zone is now refused before docker runs; `--host` takes the address
+  and `--port` the port. The published address is passed to the container as
+  `LIONAGI_STUDIO_HOST`, so the daemon admits requests to it; `0.0.0.0` and
+  `::` name no single address a client connects to, so a client elsewhere reaches the daemon by
+  one of the machine's real addresses and that address must be the variable's value. The daemon's
+  `Host` check is a DNS-rebinding guard, not access control: it reads the header, never the source
+  address, so the bearer token is the access control. When `LIONAGI_STUDIO_AUTH_TOKEN` is set in
+  the environment, the container now receives it (by name, so the value stays out of the argument
+  list).
 - The Antigravity (`gemini_code` / `gemini-code` / `gemini-cli`) backend knows the Gemini 4 Argon
   family that `agy models` now lists: `gemini-4-argon` (and `gemini-4`, `argon`) resolves to
   `Gemini 4 Argon (High)`, the `-low` / `-medium` / `-high` suffixes and `--effort` pick the tier,
