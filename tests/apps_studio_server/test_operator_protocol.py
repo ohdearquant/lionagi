@@ -11,6 +11,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 from starlette.requests import Request
@@ -3927,3 +3928,244 @@ def test_rename_session_input_still_rejects_empty_whitespace_and_over_length(nam
 
     with pytest.raises(ValidationError):
         RenameSessionInput.model_validate({"run": "some-run", "name": name})
+
+
+async def _start_proposal_turn(
+    path: Path,
+    *,
+    command_type: str = "launch",
+    command: dict[str, Any] | None = None,
+    risk: str = "execute",
+) -> tuple[OperatorStore, str, str, dict[str, Any]]:
+    """A running turn holding one pending proposal on a complete state DB."""
+    from lionagi.state.db import StateDB
+
+    async with StateDB(path):
+        pass
+    store = OperatorStore(path)
+    cid = (await store.create_conversation())["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="run the approved command",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    request_id = accepted["requestId"]
+    assert await store.mark_running(request_id)
+    proposal = await store.create_proposal(
+        cid,
+        request_id,
+        command_type=command_type,
+        command=command or {"action_kind": "play", "action_playbook": "nightly-audit"},
+        risk=risk,
+        summary="Run the approved command",
+    )
+    return store, cid, request_id, proposal
+
+
+def _record_post_commit_appends(
+    monkeypatch, store: OperatorStore
+) -> list[tuple[str, dict[str, Any]]]:
+    """Record every frame a decision or expiry writes through the ordinary
+    post-commit path.
+
+    A frame that lands there is exposed to the gap: the proposal's new status
+    is already visible, so a permission poller can finish the turn first and
+    the append stores nothing. An outcome that must never be lost is written in
+    the transaction instead, which is why this list has to stay empty for a
+    decision and its expiry.
+    """
+    written: list[tuple[str, dict[str, Any]]] = []
+    original = store.append_frame
+
+    async def wrapper(conversation_id, request_id, frame_type, payload):
+        written.append((frame_type, payload))
+        return await original(conversation_id, request_id, frame_type, payload)
+
+    monkeypatch.setattr(store, "append_frame", wrapper)
+    return written
+
+
+def _confirmation_states(frames: list[dict[str, Any]]) -> list[str]:
+    return [frame["payload"].get("state") for frame in frames if frame["type"] == "confirmation"]
+
+
+@pytest.mark.asyncio
+async def test_a_finished_turn_keeps_the_result_it_committed(tmp_path, monkeypatch):
+    """A command's terminal status and the frames that report its outcome are
+    one write, so a turn that finishes the moment the result is visible still
+    carries the executed confirmation and the result. A separate later append
+    reaches a finished turn and stores nothing."""
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    store, cid, request_id, proposal = await _start_proposal_turn(path)
+    await store.decide_proposal(
+        cid,
+        proposal["id"],
+        allow=True,
+        expected_command_hash=proposal["commandHash"],
+        expected_target_version=None,
+        claim_execution=True,
+    )
+    result = {"href": "/runs/child", "run_id": "child"}
+    await store.complete_proposal(proposal["id"], status="succeeded", result=result)
+    # The turn finishes here, in the gap a permission poller would use.
+    await store.finish_turn(request_id, outcome="completed")
+
+    stored = await store.list_frames(cid)
+    assert stored[-1]["type"] == "done"
+    assert _confirmation_states(stored) == ["required", "confirmed", "executed"]
+    tool_results = [
+        frame
+        for frame in stored
+        if frame["type"] == "tool_result" and frame["payload"].get("callId") == proposal["id"]
+    ]
+    assert [frame["payload"] for frame in tool_results] == [
+        {"callId": proposal["id"], "ok": True, "result": result}
+    ]
+    assert tool_results[0]["sequence"] < stored[-1]["sequence"]
+    # The append a caller used to rely on reaches the finished turn and is
+    # refused, which is exactly the loss the in-transaction write prevents.
+    assert (
+        await store.append_frame(
+            cid,
+            request_id,
+            "confirmation",
+            {"proposalId": proposal["id"], "state": "executed"},
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_finished_turn_keeps_the_failure_it_committed(tmp_path, monkeypatch):
+    """A failed command commits its tool result with the failure status, so a
+    turn that finishes in the same gap still reports why it failed."""
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    store, cid, request_id, proposal = await _start_proposal_turn(path)
+    await store.decide_proposal(
+        cid,
+        proposal["id"],
+        allow=True,
+        expected_command_hash=proposal["commandHash"],
+        expected_target_version=None,
+        claim_execution=True,
+    )
+    detail = {"invocationId": None}
+    await store.complete_proposal(
+        proposal["id"],
+        status="failed",
+        error_code="service_failure",
+        result={"message": "Application command failed", "details": detail},
+    )
+    await store.finish_turn(request_id, outcome="completed")
+
+    stored = await store.list_frames(cid)
+    assert stored[-1]["type"] == "done"
+    results = [
+        frame
+        for frame in stored
+        if frame["type"] == "tool_result" and frame["payload"].get("callId") == proposal["id"]
+    ]
+    assert len(results) == 1
+    result = results[0]
+    assert result["payload"]["ok"] is False
+    assert result["payload"]["error"]["code"] == "service_failure"
+    assert result["payload"]["error"]["details"] == detail
+    assert result["sequence"] < stored[-1]["sequence"]
+
+
+@pytest.mark.asyncio
+async def test_a_finished_turn_keeps_the_denial_it_committed(tmp_path, monkeypatch):
+    """A denial commits its cancelled confirmation and denial error with the
+    status, so a turn that finishes in the same gap still shows the refusal."""
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    store, cid, request_id, proposal = await _start_proposal_turn(
+        path,
+        command_type="provider_permission",
+        command={"toolName": "Bash", "input": {"command": "git status"}, "toolUseId": "t1"},
+    )
+    written = _record_post_commit_appends(monkeypatch, store)
+    await store.decide_proposal(
+        cid,
+        proposal["id"],
+        allow=False,
+        expected_command_hash=proposal["commandHash"],
+        expected_target_version=None,
+    )
+    # The cancelled confirmation and denial error are already durable, so the
+    # denial writes nothing through the post-commit path the poller can beat.
+    assert written == []
+    await store.finish_turn(request_id, outcome="completed")
+
+    stored = await store.list_frames(cid)
+    assert stored[-1]["type"] == "done"
+    assert _confirmation_states(stored) == ["required", "cancelled"]
+    denial = next(
+        frame
+        for frame in stored
+        if frame["type"] == "error" and frame["payload"]["error"]["code"] == "denied"
+    )
+    assert denial["sequence"] < stored[-1]["sequence"]
+    assert (await store.get_proposal(proposal["id"]))["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_a_finished_turn_keeps_the_expiry_it_committed(tmp_path, monkeypatch):
+    """Expiry moves a proposal out of pending, so its confirmation has the
+    same ordering requirement as a decision."""
+    from lionagi.studio.services._db import open_db
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    store, cid, request_id, proposal = await _start_proposal_turn(
+        path,
+        command_type="provider_permission",
+        command={"toolName": "Bash", "input": {"command": "git status"}, "toolUseId": "t1"},
+    )
+    async with open_db(str(store.path())) as db:
+        await db.execute(
+            "UPDATE studio_operator_proposals SET expires_at=0 WHERE id=?",
+            (proposal["id"],),
+        )
+        await db.commit()
+    written = _record_post_commit_appends(monkeypatch, store)
+    await store.expire_proposal(proposal["id"])
+    assert written == []
+    await store.finish_turn(request_id, outcome="completed")
+
+    stored = await store.list_frames(cid)
+    assert stored[-1]["type"] == "done"
+    assert _confirmation_states(stored) == ["required", "expired"]
+
+
+@pytest.mark.asyncio
+async def test_a_finished_turn_keeps_the_native_tool_confirmation_it_committed(
+    tmp_path, monkeypatch
+):
+    """A confirmed provider proposal terminalized by a native tool result has
+    the same ordering requirement as an application command."""
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    store, cid, request_id, proposal = await _start_proposal_turn(
+        path,
+        command_type="provider_permission",
+        command={"toolName": "Write", "input": {"file_path": "a.txt"}, "toolUseId": "t1"},
+        risk="mutate",
+    )
+    await store.decide_proposal(
+        cid,
+        proposal["id"],
+        allow=True,
+        expected_command_hash=proposal["commandHash"],
+        expected_target_version=None,
+    )
+    completed = await store.complete_provider_permission(request_id, "t1", ok=True)
+    assert completed is not None and completed["status"] == "succeeded"
+    await store.finish_turn(request_id, outcome="completed")
+
+    stored = await store.list_frames(cid)
+    assert stored[-1]["type"] == "done"
+    assert _confirmation_states(stored) == ["required", "confirmed", "executed"]

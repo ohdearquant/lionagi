@@ -146,6 +146,10 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Fixed
 
+- The Studio operator stores a proposal's outcome frame (the `confirmation`, `error` or
+  `tool_result` the conversation shows for it) in the same transaction that decides, expires or
+  completes the proposal. The frame used to be appended after that commit, so a turn that finished
+  in between kept the decision with no record of its outcome in its frame history.
 - The Studio operator's `cancel_run`, `rename_session` and `resume_run` tools refuse with
   `missing_owner_context` on a turn that has an owner but no declared project, before resolving the
   reference, a full run id and `"current"` included, as `run_control` (pause, resume, message)
