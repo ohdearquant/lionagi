@@ -262,3 +262,53 @@ def test_current_turn_is_last_message_with_trailing_action_context():
     last = kw["messages"][-1]["content"]
     assert "the current prompt" in last
     assert "a distinctive action result" in last
+
+
+# The prompt-caching option (ADR-0127 D3): the system text becomes its own block
+
+
+class _Endpoint:
+    def __init__(self, places_prompt_cache):
+        self.places_prompt_cache = places_prompt_cache
+
+
+class _Model:
+    def __init__(self, places_prompt_cache):
+        self.endpoint = _Endpoint(places_prompt_cache)
+
+
+def test_a_caching_endpoint_takes_the_system_text_as_a_stable_block():
+    branch = Branch(system="you are a careful editor")
+    branch.msgs.add_message(instruction="an earlier question")
+    branch.msgs.add_message(assistant_response="an earlier answer")
+
+    _ins, kw = _prepare_run_kwargs(branch, "the current prompt", ChatParam(), imodel=_Model(True))
+
+    assert kw["system_blocks"] == [branch.msgs.system.rendered]
+    assert all(
+        "you are a careful editor" not in str(message["content"]) for message in kw["messages"]
+    )
+    assert "an earlier question" in str(kw["messages"][0]["content"])
+    assert "the current prompt" in str(kw["messages"][-1]["content"])
+
+
+@pytest.mark.parametrize("imodel", [None, _Model(False)], ids=["no-model", "not-declared"])
+def test_without_the_placement_the_system_text_is_folded_as_before(imodel):
+    branch = Branch(system="you are a careful editor")
+    branch.msgs.add_message(instruction="an earlier question")
+    branch.msgs.add_message(assistant_response="an earlier answer")
+
+    _ins, kw = _prepare_run_kwargs(branch, "the current prompt", ChatParam(), imodel=imodel)
+    _ins, plain = _prepare_run_kwargs(branch, "the current prompt", ChatParam())
+
+    assert "system_blocks" not in kw
+    assert "you are a careful editor" in str(kw["messages"][0]["content"])
+    assert kw == plain
+
+
+def test_a_caching_endpoint_without_a_system_message_gets_no_stable_block():
+    branch = Branch()
+
+    _ins, kw = _prepare_run_kwargs(branch, "hello", ChatParam(), imodel=_Model(True))
+
+    assert "system_blocks" not in kw

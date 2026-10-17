@@ -178,10 +178,15 @@ def _prepare_run_kwargs(
     *,
     ins: Instruction | None = None,
     context_blocks: Sequence[str] | None = None,
+    imodel: Any = None,
     _use_render_cache: bool = True,
 ) -> tuple[Instruction, dict]:
     if ins is None:
         ins = _build_instruction(branch, instruction, param)
+
+    # ADR-0127 D3: an endpoint that places the prompt cache takes the system text as its own
+    # block, so it is not folded into the first instruction. Off, the fold is unchanged.
+    places_cache = bool(getattr(getattr(imodel, "endpoint", None), "places_prompt_cache", False))
 
     _use_ins_content = None
     _contents: list[_PreparedContent] = []
@@ -283,6 +288,8 @@ def _prepare_run_kwargs(
 
                 g = minimal_yaml(g).strip()
             injected = "\n".join(context_blocks) if context_blocks else ""
+            if places_cache:
+                return injected + g
             return branch.msgs.system.rendered + injected + g
 
         if len(_contents) == 0:
@@ -303,6 +310,8 @@ def _prepare_run_kwargs(
             _contents.append(_PreparedContent(content=content_to_append))
 
     kw = (param.imodel_kw or {}).copy()
+    if places_cache and branch.msgs.system and branch.msgs.system.rendered:
+        kw["system_blocks"] = [branch.msgs.system.rendered]
 
     # The current turn's content is always the last entry appended to
     # `_contents` above; captured explicitly by index for the guard below,
