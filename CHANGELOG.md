@@ -15,6 +15,10 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Added
 
+- `lionagi.ln.short_id(n=12)` returns a UUID4 hexadecimal prefix with an explicit
+  integer length from 1 to 32; boolean and out-of-range lengths raise `ValueError`.
+- `lionagi.ln.parse_duration` parses positive finite durations in lowercase `s`, `m`,
+  `h` and `d`, with optional fractional values, bare seconds and an inclusive maximum.
 - `lionagi.ln.concurrency.temporary_signal_handlers(handler, signals=(SIGINT, SIGTERM))`, a
   context manager that installs one handler for the length of a block and restores each prior
   handler on exit. Like `run_async`, it installs nothing off the main thread and leaves alone a
