@@ -666,6 +666,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "Son çalıştırmalar kullanılamıyor",
     "title": "zamanlamalar",
     "subtitle": "cron, interval ve GitHub tetikleyicilerinde kalıcı otomasyonlar",
     "calendar": "takvim",

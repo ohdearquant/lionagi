@@ -28,13 +28,23 @@ answers it first.
 schema requests (401) from a browser origin that is neither loopback
 (`localhost`, 127.0.0.0/8, `::1`; an IPv4-mapped address is judged as its IPv4
 address) nor the daemon's own origin (Origin authority equal to the request's
-Host, as for the SPA a daemon bound to another address serves itself). A
-request without an Origin header, as from the CLI or a script, passes; `null`,
+Host, as for the SPA a daemon bound to another address serves itself). `null`,
 a second Origin header, or an origin carrying userinfo, a path, a query or a
 fragment is refused. CORS only decides which pages may read a response, so it
 cannot stand in for this check.
 
-Such an origin is admitted only with the launch bearer (`launch_access.py`),
+A request without an Origin header is judged by its `Sec-Fetch-Site`
+(`_fetch_site_accepted_without_origin`), because a browser sends no Origin on a
+GET or HEAD made outside CORS (an image, a script, a top-level navigation) from
+any site. With no `Sec-Fetch-Site`, as from the CLI or a script, it passes; so
+do `none` (a typed address or a bookmark) and `same-origin` (the SPA the daemon
+serves). `same-site`, `cross-site`, any other value and a second header are
+refused like a foreign origin. A browser that sends no `Sec-Fetch-Site` is not
+told apart from a script. The SPA shell and its assets stay public, so a link
+from another site still opens Studio.
+
+A refused origin, or a request without one refused by its `Sec-Fetch-Site`, is
+admitted only with the launch bearer (`launch_access.py`),
 minted per process and held in memory, never put in the environment or written
 anywhere. A page receives it by pairing. `li studio` mints a one-time code, or
 asks a daemon already running on the port for one over
@@ -209,6 +219,76 @@ between `build_argv()` and this function gives a revoked
 
 ## lionagi/studio/services/schedules.py
 
+- **Recent-run list contract v1** — `GET /api/schedules/?include_recent_runs=true` adds optional
+  `recent_runs_summary` to each definition: `{version: 1, limit: 25, status,
+  has_next, runs}`. Available slices contain up to 25 occurrences in
+  `fired_at DESC, id DESC` order, including chain children and every status.
+  `has_next: true` means older history exists; fewer than 25 with
+  `has_next: false` is a complete short slice, and an available empty slice
+  means no run rows were found. A failed slice has `status: "unavailable"`,
+  `has_next: null`, and `runs: []`, and so does a slice whose version the client
+  does not support. A row that omits the field altogether -- a daemon that
+  predates it -- is read through that definition's own history endpoint and
+  marked unavailable only when that read fails; that read asks for one row past
+  the displayed count so it can state `has_next` truthfully, and the client
+  holds the result to the same rules as a field-bearing slice. None of these is
+  evidence of empty history. That read is one request per such definition, so a
+  page whose daemon omits the field costs the list request plus one history
+  request each; only a page the daemon answers with the field costs a single
+  request.
+  The flag defaults to false; Mission, operator MCP, and machine list callers
+  retain their existing response and do not compute these histories.
+  One batched statement selects at most 26 keys per listed definition through
+  a per-group ordered `LIMIT 26`, then loads occurrence payloads and error
+  details only for its displayed 25. The statement's collection functions are
+  dialect-specific: SQLite aggregates and expands the keys with
+  `json_group_array`/`json_each`, PostgreSQL with `jsonb_agg` and
+  `jsonb_array_elements_text ... WITH ORDINALITY`. Each group uses the
+  schedule/time index, and the limit is applied after the ordering: a set of
+  runs that share one `fired_at` at the boundary is read in full to be
+  ordered by id, so a tie group is not a constant-cost read however many rows
+  it holds.
+  Invocation and session evidence is joined in two additional set queries.
+  All linked sessions participate in the existing outcome reducer; session
+  count is not capped because an omitted active child could change its verdict.
+  Public rows retain occurrence status, timestamps, exit code, and chain depth;
+  error classification uses the same reconciled outcome as detail history.
+  Occurrence status is not a combined child-session status. An unreported child
+  failure need not produce an error class when the occurrence has no error text;
+  the detail view retains the separate reconciled outcome.
+  On the field path, raw error text, prompts, event payloads, and artifact
+  paths stay withheld. A row read through the older daemon's history endpoint
+  arrives as the wider run view that endpoint serves, so the client projects
+  each row onto the fields the list contract's slice carries -- dropping
+  duration, artifact paths, session ids, and the reconciled outcome -- which
+  leaves a field-path row and a fallback row the same shape. The raw error text
+  stays withheld there too.
+  A shared batch read failure is followed by one liveness read that does not
+  touch the failing statement. When that read fails too the failure is treated
+  as store-wide, and every slice is left unavailable without a read each, so an
+  outage costs two reads rather than one per listed definition. When the store
+  answers, the batch failure is attributed by retrying each definition on its
+  own: a definition whose own rows fail is marked unavailable without hiding
+  the other summaries on the page. A retry that fails for a reason outside the
+  definition's rows (an intermittent store error) marks that definition
+  unavailable too, so an intermittent failure can mark healthy definitions
+  unavailable for that poll. A statement that fails for every definition while
+  the store answers therefore costs N + 2 reads for N listed definitions -- the
+  batch, the liveness read, and one retry each -- and its failing ids are named
+  on one line per page rather than a traceback each; the retries' own errors are
+  not logged. Only the store-wide case is two reads. A store-wide read failure
+  leaves every slice unavailable, never an
+  available empty slice. Projection failures are isolated to one schedule.
+  Existing health/count queries, budget rollups, schedule-list limits, and
+  filters are unchanged.
+  Cards and table mark an unavailable schedule's own row; the shared banner
+  names every unavailable schedule for all views, including the calendar.
+  A failed list load with no schedules suppresses the empty-state claim, which
+  would otherwise read as a successful load that found none.
+  Refreshes are single-flight with at most one queued refresh. Explicit
+  detail history keeps its separate pagination and does not use this slice; its
+  ordering gains the same id tie-break (`fired_at DESC, id DESC`, where it was
+  `fired_at DESC`), so it orders an exact tie the same way.
 - **`_svc_validate_action_command`** — Delegates to the subprocess validators
   so charset/allow-list rules live in one place. `build_argv` re-checks the
   allow-list again at spawn time since `LIONAGI_SCHEDULER_COMMAND_ALLOWLIST`
@@ -562,6 +642,26 @@ chained follow-up actions have no v1 equivalent and must be redesigned as a
 flow by hand. Declaration/cli re-export (`managed_by IN ('cli',
 'declaration')`) simply re-validates each row's already-typed
 `authored_spec` back into a `ScheduleMember`.
+
+`resolve_member` reads an `execution.project` written as YAML null (`null`,
+`~` or a blank value) as no project; an omitted project or an empty string
+inherits `metadata.project` (none under `scope: global`). The managed export
+writes each member's project from the row's stored `action_project` (`null` when
+it has none) rather than as authored: the export's document is project-scoped
+even for a global set, so an omitted or empty project written back would
+re-apply under the export's project. Reading the null as "inherit" did the same
+for a row stored without a project. Either way the re-applied row changed its
+project, which is the fallback execution root it uses only when its own stored
+`action_cwd` is unusable and, for the `agent` and `flow_yaml` targets a
+declaration produces, the `--project` its command receives. A row that a
+null-spelled member had given the document's project loses both on its next
+apply: with no project and an `action_cwd` that is set and is not an existing
+absolute directory, the scheduler refuses the fire
+(`SchedulerCwdInheritRefusedError`) where it would have run in the project's
+registered path, if that path was usable; with no usable path the fire was refused
+before as well. A row whose `action_cwd` is an existing absolute directory still
+runs there, and its `agent` or `flow_yaml` command, now without `--project`, takes
+the project detected in that directory.
 
 Round-trip identity across export/re-apply rests on three helpers.
 `_effective_project` picks the project namespace a row is grouped under:

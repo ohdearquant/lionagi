@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
+from lionagi import ln
 from lionagi.ln.concurrency import maybe_await
 
 __all__ = (
@@ -100,7 +100,7 @@ def _hook_name(hook: Callable) -> str:
 def _snapshot(value: Any) -> Any:
     """Return an isolated copy, or a sentinel when isolation is impossible."""
     try:
-        return deepcopy(value)
+        return ln.copy(value)
     except Exception:  # noqa: BLE001 - an uncopyable value is rare and non-fatal
         return _SNAPSHOT_FAILED
 
