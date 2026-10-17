@@ -401,23 +401,22 @@ class TestStoreProbe:
             blocker.close()
 
     def test_a_caller_that_gives_up_first_also_leaves_nothing_running(self, seeded, monkeypatch):
-        """The same cleanup, with the cancellation coming from outside.
+        """An abandoned probe finishes cleanup before returning to its caller.
 
-        Readiness is served inside a request, and a request can be abandoned:
-        the client disconnects, the daemon shuts down, an outer deadline fires.
-        Then the probe's own cleanup runs with a cancellation already active
-        around it, and an unprotected close is cancelled before it reaches the
-        connection. The previous test cannot see this — there the probe absorbs
-        its own timeout, so by the time cleanup runs nothing is cancelling any
-        more and the close completes either way.
+        In the pinned aiosqlite 0.22.1, close() queues its close operation
+        before awaiting it, and its finally block queues the worker's stop
+        even when cancelled. Queuing those operations does not mean the worker
+        has reached them. The shielded probe awaits close before returning;
+        the join then waits for any remaining worker thread to exit. Without
+        the shield, the probe returns without awaiting that queued close, and
+        the worker is still blocked in its locked read when the join ends.
 
-        The assertion is deliberately immediate. Left alone the thread does go
-        away eventually: dropping the last reference to the connection runs a
-        finalizer that stops the worker once its statement gives up. Waiting for
-        that is what makes the difference invisible, and it is not the behaviour
-        being asked for — a finalizer completing a close against an event loop
-        that has since closed is the failure, not the recovery. What the probe
-        owes its caller is a connection already closed by the time it returns.
+        The blocking writer stays locked through the join. Keep the configured
+        busy timeout beyond the caller deadline plus the join, with another
+        full join interval as headroom. The chosen 1 s timeout leaves 700 ms
+        beyond the 50 ms caller deadline and 250 ms join; the assertion below
+        prevents shortening that separation silently. This is a conservative
+        constraint on the test settings, not a measured scheduling boundary.
         """
         import threading
 
@@ -426,44 +425,47 @@ class TestStoreProbe:
 
         from lionagi.studio.services import admin as admin_svc
 
+        caller_deadline_s = 0.05
+        busy_timeout_ms = 1_000
+        join_bound_s = 0.25
+        busy_timeout_s = busy_timeout_ms / 1_000
+        assert busy_timeout_s > caller_deadline_s + 2 * join_bound_s, (
+            "probe busy timeout must exceed caller deadline plus two worker join bounds"
+        )
+
         db_path, _ = seeded
 
-        def _workers() -> int:
-            return sum(
-                1
+        def _workers() -> set:
+            return {
+                t
                 for t in threading.enumerate()
                 if _is_live_connection_worker(t, _connection_worker_thread)
-            )
+            }
 
         blocker = _hold_the_write_lock(db_path)
         try:
             before = _workers()
 
             async def _abandon():
-                with anyio.move_on_after(0.05):
-                    # Long enough that the caller's deadline is the one that
-                    # fires, short enough that the cleanup's own bounded wait
-                    # for the locked read to give up does not dominate the test.
-                    await admin_svc.store_probe(timeout_ms=1000)
+                with anyio.move_on_after(caller_deadline_s):
+                    await admin_svc.store_probe(timeout_ms=busy_timeout_ms)
 
             anyio.run(_abandon)
-            # Read immediately, and deliberately so -- see this test's
-            # docstring. What the probe owes an abandoned caller is a
-            # connection already closed by the time it returns, so any
-            # settling window here would accept the exact regression the
-            # test exists to catch: an unshielded close that lets the worker
-            # outlive the probe and finish later on its own.
-            assert _workers() == before, "a connection worker outlived an abandoned probe"
+            # Join newly started workers while the writer stays locked; see
+            # the docstring for why the configured timing separates the paths.
+            started = _workers() - before
+            for worker in started:
+                worker.join(join_bound_s)
+            leaked = [worker for worker in started if worker.is_alive()]
+            assert not leaked, "a connection worker outlived an abandoned probe"
         finally:
             blocker.rollback()
             blocker.close()
 
-        # Same coincidence as the previous test: by assertion time a
-        # correctly-cleaned-up worker is already gone from
-        # threading.enumerate(), so this passes whether or not the predicate
-        # checks is_alive(). Splice in a terminating-but-not-alive stand-in
-        # and confirm _workers() -- the same computation the assertion above
-        # relies on -- does not count it as live.
+        # The join above has finished and asserted that no newly started
+        # worker is alive. That alone does not show that the predicate checks
+        # is_alive(), so splice in a terminating-but-not-alive stand-in and
+        # confirm the same _workers() computation does not count it as live.
         real_enumerate = threading.enumerate
 
         class _TerminatingWorker:

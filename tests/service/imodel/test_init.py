@@ -968,10 +968,11 @@ class TestReportedServedModel:
                 'data: {"type":"response.created","response":{"id":"r1","model":"gpt-served-2"}}',
                 "gpt-served-2",
             ),
-            # A result chunk is never read.
+            # The Responses API's own terminal event is read: it is the provider's
+            # event, never a CLI run record.
             (
                 'data: {"type":"response.completed","response":{"model":"gpt-served-3"}}',
-                None,
+                "gpt-served-3",
             ),
             ('data: {"id":"c2","choices":[{"delta":{"content":"hi"}}]}', None),
             # A failed response, an in-stream error chunk and an error event name a
@@ -1028,6 +1029,13 @@ class TestReportedServedModel:
             # A CLI text or result chunk carrying a model is not a report.
             (StreamChunk(type="text", content="x", metadata={"model": "echoed"}), None),
             (StreamChunk(type="result", metadata={"model": "requested"}), None),
+            # A result chunk is read only for the Responses terminal event.
+            (
+                StreamChunk(
+                    type="result", metadata={"raw": {"type": "turn.completed", "model": "r"}}
+                ),
+                None,
+            ),
             (StreamChunk(type="system", metadata={"model": "  "}), None),
             (StreamChunk(type="system", metadata={"raw": {"model": 7}}), None),
             (StreamChunk(type="system", metadata={"model": "cli-x", "status": "failed"}), None),
@@ -1142,8 +1150,10 @@ class TestReportedServedModel:
         base_imodel.provider_metadata["served_model"] = "from-an-earlier-call"
         api_call = await base_imodel.create_event(messages=[{"role": "user", "content": "Hello"}])
         with patch.object(base_imodel.endpoint, "stream", return_value=mock_stream()):
-            [chunk async for chunk in base_imodel.stream(api_call=api_call)]
+            with pytest.raises(ValueError, match="failed call inside its stream: upstream"):
+                [chunk async for chunk in base_imodel.stream(api_call=api_call)]
 
+        assert api_call.status == EventStatus.FAILED
         assert "served_model" not in api_call.metadata
         assert "served_model" not in base_imodel.provider_metadata
 
@@ -1176,8 +1186,36 @@ class TestReportedServedModel:
         model.provider_metadata["served_model"] = "from-an-earlier-call"
         api_call = await model.create_event(messages=[{"role": "user", "content": "Hello"}])
         with patch.object(model.endpoint, "stream", return_value=mock_stream()):
+            with pytest.raises(ValueError, match="failed call inside its stream"):
+                [chunk async for chunk in model.stream(api_call=api_call)]
+
+        assert api_call.status == EventStatus.FAILED
+        assert "served_model" not in api_call.metadata
+        assert "served_model" not in model.provider_metadata
+
+    @pytest.mark.parametrize("concurrency_limit", [None, 2])
+    @pytest.mark.asyncio
+    async def test_no_model_named_after_a_failure_is_recorded(self, concurrency_limit):
+        # A CLI stream's chunks carry no call_failed mark, so the call itself still
+        # completes; the model a later chunk names must not stand in for the failed one.
+        model = iModel(
+            provider="openai",
+            model="gpt-4.1-mini",
+            api_key="test-key",
+            concurrency_limit=concurrency_limit,
+        )
+
+        async def mock_stream():
+            yield StreamChunk(type="system", metadata={"model": "cli-first"})
+            yield StreamChunk(type="error", content="session failed", is_error=True)
+            yield StreamChunk(type="system", metadata={"model": "cli-later"})
+
+        model.provider_metadata["served_model"] = "from-an-earlier-call"
+        api_call = await model.create_event(messages=[{"role": "user", "content": "Hello"}])
+        with patch.object(model.endpoint, "stream", return_value=mock_stream()):
             [chunk async for chunk in model.stream(api_call=api_call)]
 
+        assert api_call.status == EventStatus.COMPLETED
         assert "served_model" not in api_call.metadata
         assert "served_model" not in model.provider_metadata
 
@@ -1319,19 +1357,21 @@ class TestReportedServedModel:
         started = asyncio.Event()
         sent = []
 
-        async def forward():
-            # The call exists and is in executor.pending; nothing has been sent.
+        async def enqueue(_event):
+            # invoke sends only its own call: the call exists and is being queued to the
+            # processor; nothing has been sent.
             started.set()
             if failure == "raised":
-                raise RuntimeError("the queue could not be forwarded")
+                raise RuntimeError("the call could not be queued")
             await asyncio.Event().wait()
 
         async def call(*_args, **_kwargs):
             sent.append(True)
             return {"model": "unreachable", "response": "x"}
 
+        await base_imodel.executor.start()
         with (
-            patch.object(base_imodel.executor, "forward", side_effect=forward),
+            patch.object(base_imodel.executor.processor, "enqueue", side_effect=enqueue),
             patch.object(base_imodel.endpoint, "call", side_effect=call),
         ):
             task = asyncio.create_task(

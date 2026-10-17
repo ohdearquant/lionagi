@@ -2,12 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections.abc import Callable
-from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 from pydantic import Field, PrivateAttr, field_serializer, field_validator
 
+from lionagi import ln
 from lionagi.ln.types import DataClass, ModelConfig
 
 from .._concepts import Sendable
@@ -488,7 +488,7 @@ def _content_has_untracked_mutable(content: Any) -> bool:
 def _copy_rendered(rendered: Any) -> Any:
     """Keep cached structured content isolated from provider-side mutation."""
     if isinstance(rendered, list | dict):
-        return deepcopy(rendered)
+        return ln.copy(rendered)
     return rendered
 
 

@@ -26,6 +26,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,6 +36,13 @@ from .fixtures import seed_filesystem_fixtures, seed_state_db
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REAL_LIONAGI_HOME = Path("~/.lionagi").expanduser().resolve()
+
+# Where the daemon child's own output goes when a caller wants to keep it past
+# stop(). ``stop()`` removes the temp dir, so the Playwright setup -- whose log
+# directory becomes a failure artifact -- points this outside it. Unset, the
+# file stays beside the state db in the temp dir, which is what the pytest
+# callers in this suite read.
+CHILD_LOG_ENV = "LIONAGI_E2E_STUDIO_CHILD_LOG"
 
 _OPERATOR_SCRIPT = {
     "version": 1,
@@ -99,6 +107,46 @@ async def _seed(db_path: Path, tmp_dir: Path) -> None:
         await db.close()
 
 
+class DaemonExitedEarly(RuntimeError):
+    """The daemon child exited before it answered /health.
+
+    Carries the child's own ``returncode`` so a caller can name the code or
+    signal (``128 + signum`` for a signal death) without re-reading a process
+    that teardown has already signalled.
+    """
+
+    def __init__(self, message: str, returncode: int | None) -> None:
+        super().__init__(message)
+        self.returncode = returncode
+
+
+class DaemonStopRequested(RuntimeError):
+    """A stop was requested while the daemon was still starting.
+
+    Raised by ``_wait_healthy`` so a startup stops promptly instead of waiting
+    out the ready timeout; ``SeededDaemon.start`` stops the child through the
+    usual path and sets ``had_to_kill`` on the exception it raises.
+    """
+
+    had_to_kill: bool = False
+
+
+def _ask_for_a_thread_dump(process: subprocess.Popen) -> None:
+    """Ask a still-running child to dump every thread's stack to its own log.
+
+    The daemon registers ``faulthandler`` on SIGUSR1 (see
+    ``tests.e2e_studio.studio_app``), so a hung daemon's stacks land in the
+    child log -- the file the Playwright setup keeps as a failure artifact --
+    before it is killed. POSIX only; skipped where the signal does not exist.
+    """
+    dump_signal = getattr(signal, "SIGUSR1", None)
+    if dump_signal is None:
+        return
+    with contextlib.suppress(ProcessLookupError, OSError):
+        process.send_signal(dump_signal)
+        time.sleep(0.5)
+
+
 @dataclass
 class SeededDaemon:
     """A running Studio daemon subprocess + the temp dir backing it."""
@@ -109,6 +157,12 @@ class SeededDaemon:
     port: int
     process: subprocess.Popen
     child_log_path: Path | None = None
+    # Byte offset in ``child_log_path`` where this attempt's output starts. The
+    # log is appended to across a retry, so an early-exit error built from the
+    # whole file would quote a failed attempt's output (and an "address already
+    # in use" from attempt 1 would drive attempt 2's port retry). Recorded
+    # before spawn; stays 0 for a caller that built the object directly.
+    child_log_offset: int = 0
 
     @property
     def base_url(self) -> str:
@@ -121,6 +175,7 @@ class SeededDaemon:
         host: str = "127.0.0.1",
         port: int | None = None,
         ready_timeout: float = 30.0,
+        stop_requested: Callable[[], bool] | None = None,
     ) -> SeededDaemon:
         tmp_dir = Path(tempfile.mkdtemp(prefix="lionagi-e2e-studio-"))
         db_path = tmp_dir / "state.db"
@@ -165,8 +220,21 @@ class SeededDaemon:
         # pipe after startup, so uvicorn's per-request access log would fill
         # the 64KB buffer during any long-lived run and block the event loop
         # mid-write — the daemon then accepts connections and answers nothing.
+        # A file outside the temp dir survives stop(), which is what a caller
+        # collecting the log as an artifact needs. That file is appended to, not
+        # truncated: a retry within one run then keeps the failed attempt's
+        # output, the same way the wrapper's per-server log does.
         child_log_path = tmp_dir / "daemon-child.log"
-        with child_log_path.open("w", encoding="utf-8") as child_log:
+        mode = "w"
+        if override := os.environ.get(CHILD_LOG_ENV):
+            child_log_path = Path(override)
+            child_log_path.parent.mkdir(parents=True, exist_ok=True)
+            mode = "a"
+        # Size before this attempt writes, so _wait_healthy reports only its own
+        # output: the file is opened append, and a retry shares it with the
+        # attempt that failed on the port.
+        child_log_offset = child_log_path.stat().st_size if child_log_path.exists() else 0
+        with child_log_path.open(mode, encoding="utf-8") as child_log:
             process = subprocess.Popen(  # noqa: S603
                 [
                     sys.executable,
@@ -192,25 +260,37 @@ class SeededDaemon:
             port=port,
             process=process,
             child_log_path=child_log_path,
+            child_log_offset=child_log_offset,
         )
         try:
-            daemon._wait_healthy(ready_timeout)
-        except Exception:
-            daemon.stop()
+            daemon._wait_healthy(ready_timeout, stop_requested=stop_requested)
+        except Exception as exc:
+            # Stop the child the same way as any other teardown, and carry
+            # whether that had to kill it: a startup timeout dumps the child's
+            # stacks from inside stop(), before the child is killed, and a stop
+            # requested mid-startup is reported as a requested stop.
+            exc.had_to_kill = daemon.stop()
             raise
         return daemon
 
-    def _wait_healthy(self, timeout: float) -> None:
+    def _wait_healthy(
+        self, timeout: float, *, stop_requested: Callable[[], bool] | None = None
+    ) -> None:
         deadline = time.monotonic() + timeout
         url = f"{self.base_url}/health"
         last_err: Exception | None = None
         while time.monotonic() < deadline:
+            # A teardown signal during startup must not be waited out to the
+            # full ready timeout: the caller is already stopping the run.
+            if stop_requested is not None and stop_requested():
+                raise DaemonStopRequested(f"seeded daemon stop requested while starting at {url}")
             if self.process.poll() is not None:
                 output = ""
                 if self.child_log_path is not None and self.child_log_path.exists():
-                    output = self.child_log_path.read_text(encoding="utf-8")
-                raise RuntimeError(
-                    f"seeded daemon exited early (code={self.process.returncode}):\n{output}"
+                    output = self._read_child_output()
+                raise DaemonExitedEarly(
+                    f"seeded daemon exited early (code={self.process.returncode}):\n{output}",
+                    self.process.returncode,
                 )
             try:
                 with urllib.request.urlopen(url, timeout=2) as resp:  # noqa: S310
@@ -221,15 +301,35 @@ class SeededDaemon:
             time.sleep(0.25)
         raise TimeoutError(f"seeded daemon never became healthy at {url}: {last_err}")
 
-    def stop(self, *, timeout: float = 10.0) -> None:
+    def _read_child_output(self) -> str:
+        """This attempt's slice of the child log, from the pre-spawn offset."""
+        assert self.child_log_path is not None
+        with self.child_log_path.open("rb") as handle:
+            handle.seek(self.child_log_offset)
+            return handle.read().decode("utf-8", errors="replace")
+
+    def stop(self, *, timeout: float = 5.0) -> bool:
+        """Stop the daemon child, returning True when it had to be killed.
+
+        Bounded below the Playwright setup's own 10 s SIGKILL fallback: a
+        wrapper stop that waits less than that finishes reporting before the
+        setup gives up on the process group. A child that ignores SIGTERM is
+        asked for a thread dump first -- a hung daemon's stacks are only useful
+        in the log the caller keeps, and this is the one path a hung child
+        takes -- then killed, and the caller reports the kill.
+        """
+        had_to_kill = False
         if self.process.poll() is None:
             with contextlib.suppress(ProcessLookupError):
                 self.process.send_signal(signal.SIGTERM)
             try:
                 self.process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
+                _ask_for_a_thread_dump(self.process)
+                had_to_kill = True
                 with contextlib.suppress(ProcessLookupError):
                     self.process.kill()
                 with contextlib.suppress(subprocess.TimeoutExpired):
                     self.process.wait(timeout=5)
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
+        return had_to_kill

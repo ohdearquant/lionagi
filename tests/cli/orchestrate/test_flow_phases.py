@@ -1289,7 +1289,8 @@ class _SlowStatusDB(_FakeDB):
     Each branch status that lands is recorded in ``landed``, and ``write_started`` is set when
     a delayed write begins. With ``ignores_cancel``, a write that never returns also absorbs
     every cancel and goes on waiting, until ``release`` is set. ``cancels`` counts the cancels
-    the writes that never return receive.
+    the writes that never return receive, and ``cancels_by`` splits that count by write: branch
+    ``status``, the control poller's ``marker`` and every other session ``metadata`` write.
     """
 
     def __init__(self):
@@ -1301,8 +1302,13 @@ class _SlowStatusDB(_FakeDB):
         self.ignores_cancel = False
         self.release = asyncio.Event()
         self.cancels = 0
+        self.cancels_by = {"status": 0, "marker": 0, "metadata": 0}
 
-    async def _wait(self, delay):
+    def _cancelled(self, kind):
+        self.cancels += 1
+        self.cancels_by[kind] += 1
+
+    async def _wait(self, delay, kind):
         if delay == 0.0:
             return
         self.write_started.set()
@@ -1310,23 +1316,24 @@ class _SlowStatusDB(_FakeDB):
             try:
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
-                self.cancels += 1
+                self._cancelled(kind)
                 if not self.ignores_cancel:
                     raise
                 while not self.release.is_set():
                     try:
                         await self.release.wait()
                     except asyncio.CancelledError:
-                        self.cancels += 1
+                        self._cancelled(kind)
                 raise
         await asyncio.sleep(delay)
 
     async def update_branch(self, branch_id, **kw):
-        await self._wait(self.status_delay)
+        await self._wait(self.status_delay, "status")
         self.landed.append(kw["status"])
 
     async def merge_session_node_metadata(self, session_id, patch):
-        await self._wait(self.metadata_delay)
+        kind = "marker" if set(patch) == {"flow_control_poller"} else "metadata"
+        await self._wait(self.metadata_delay, kind)
         await super().merge_session_node_metadata(session_id, patch)
 
 
@@ -1790,7 +1797,11 @@ async def test_a_metadata_write_that_ignores_every_cancel_is_abandoned_after_the
         task.result()
         # the node's started and completed segments, each cancelled once
         assert "abandoned 2 segment-metadata task(s)" in caplog.text
-        assert db.cancels == 2
+        assert db.cancels_by["metadata"] == 2
+        # the control poller's two marker writes stall on the same store and are each cancelled
+        # once after their own budget
+        assert db.cancels_by["marker"] == 2
+        assert db.cancels == 4
     finally:
         db.release.set()
         await asyncio.sleep(0.05)

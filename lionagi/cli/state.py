@@ -1210,7 +1210,9 @@ async def _doctor(
                     source="admin",
                     actor="doctor",
                     expected_statuses={"running"},
-                    extra_fields={"ended_at": _time.time()},
+                    # ended_at and the phase clear ride one statement with the
+                    # status, so a swept row cannot keep the live phase it had.
+                    extra_fields={"ended_at": _time.time(), "current_phase": None},
                 )
                 if transitioned:
                     swept_count += 1
