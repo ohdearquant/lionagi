@@ -125,9 +125,8 @@ async def persist_session_end(
     already_terminal = row.get("status") in SESSION_TERMINAL_STATUSES
 
     fields: dict[str, Any] = {}
-    if not already_terminal:
-        if not teardown_owns_status:
-            fields["ended_at"] = time.time()
+    if not already_terminal and not teardown_owns_status:
+        fields["ended_at"] = time.time()
         if error is not None:
             # Pre-serialize (raw SQL param, no JSON bindparam) and merge
             # onto existing node_metadata rather than clobbering it.

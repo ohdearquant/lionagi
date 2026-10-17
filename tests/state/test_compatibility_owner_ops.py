@@ -3735,3 +3735,117 @@ def test_the_read_only_uri_ends_the_file_name_where_sqlite_does():
     assert _read_only_uri("file:/stores/a.db?vfs=unix#part", True, immutable=False) == (
         "file:/stores/a.db?vfs=unix&mode=ro&readonly_shm=1"
     )
+
+
+def _profile_that_admits_agent_setup(store: Path):
+    """The test profile admitting the writes a fresh agent setup makes, branch provenance included."""
+    from lionagi.state.compat import CompatibilityProfile, TableWrites
+
+    base = _profile(store)
+    writes = dict(base.writes)
+    sessions = writes["sessions"]
+    writes["sessions"] = TableWrites(
+        insert=sessions.insert,
+        update=sessions.update
+        | {
+            "started_at",
+            "model",
+            "provider",
+            "effort",
+            "agent_name",
+            "agent_hash",
+            "invocation_id",
+        },
+        unwritten=sessions.unwritten,
+    )
+    branches = writes["branches"]
+    writes["branches"] = TableWrites(
+        insert=branches.insert,
+        update=branches.update | {"model", "provider", "agent_name"},
+        unwritten=branches.unwritten,
+    )
+    return CompatibilityProfile(
+        name=base.name,
+        version=base.version,
+        closure=base.closure,
+        writes=writes,
+        operations=base.operations,
+        owner=base.owner,
+    )
+
+
+async def test_agent_setup_completes_on_a_compatibility_store(tmp_path, monkeypatch):
+    """A fresh agent run's setup is served by the profile: the session and branch rows are written,
+    and the lifecycle handlers that run at setup write through the run's own handle."""
+    from lionagi.cli import _runs
+    from lionagi.session.branch import Branch
+    from lionagi.state import db as db_mod
+
+    store = await _managed_store(tmp_path / "managed.db")
+    profile = _profile_that_admits_agent_setup(store)
+    handle = StateDB(store, compatibility=profile, owner="principal:a")
+    await handle.open()
+
+    async def compatibility_store(*_args, **_kwargs):
+        return handle
+
+    monkeypatch.setattr(_runs, "_open_shared_db", compatibility_store)
+    monkeypatch.setattr(
+        "lionagi.cli.kill.current_pid_markers",
+        lambda: {
+            "pid": 1,
+            "pid_create_time": 0.0,
+            "pid_host": "test",
+            "pid_boot_time": 0.0,
+            "process_identity_mode": "local",
+        },
+    )
+    try:
+        branch = Branch(name="main")
+        ctx = await _runs.setup_agent_persist(
+            branch,
+            agent_name="fixture-agent",
+            model="fixture-model",
+            provider="fixture-provider",
+            project="fixture-project",
+            share_db=False,
+        )
+
+        assert ctx is not None
+        assert _rows(store, "SELECT COUNT(*) FROM sessions") == [(1,)]
+        assert _rows(store, f"SELECT name, model, {OWNER} FROM branches") == [
+            ("main", "fixture-model", "principal:a")
+        ]
+        assert _rows(store, "SELECT status FROM sessions") == [("running",)]
+    finally:
+        await handle.close()
+
+
+async def test_a_run_cannot_update_a_branch_another_run_created(store):
+    """Compatibility mode reaches only branch rows the writing run created: a second handle for the
+    same owner refuses an update to the first run's branch instead of overwriting its columns."""
+    base = _profile_that_admits_agent_setup(store)
+    profile = CompatibilityProfile(
+        name=base.name,
+        version=base.version,
+        closure=base.closure,
+        writes=base.writes,
+        operations=base.operations | {"update_branch"},
+        owner=base.owner,
+    )
+    first = StateDB(store, compatibility=profile, owner="principal:a")
+    await first.open()
+    try:
+        await _setup_run(first)
+    finally:
+        await first.close()
+
+    second = StateDB(store, compatibility=profile, owner="principal:a")
+    await second.open()
+    try:
+        with pytest.raises(StateCompatibilityRefused, match="was not created by this run"):
+            await second.update_branch("b1", model="clobbered-by-another-run")
+    finally:
+        await second.close()
+
+    assert _rows(store, "SELECT model FROM branches WHERE id = 'b1'") == [(None,)]

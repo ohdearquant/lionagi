@@ -1694,8 +1694,9 @@ async def test_merge_session_node_metadata_treats_a_stored_json_null_as_absent(d
 
 
 async def test_merge_session_node_metadata_replaces_under_a_top_level_key(db: StateDB):
-    """The merge is by top-level key: a scalar in the patch replaces the stored object under that
-    key rather than merging into it, and a key the patch does not name keeps its stored object."""
+    """The merge is the RFC 7396 merge patch: a scalar in the patch replaces the stored value under
+    that key rather than merging into it, and a key the patch does not name keeps its stored value.
+    A nested object in the patch merges into the stored object instead of replacing it."""
     s = await _make_session(db, status="running")
     await _seed_node_metadata(
         db, s["id"], '{"khive_injection": {"other": 1}, "untouched": {"keep": true}}'

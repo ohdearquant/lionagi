@@ -691,3 +691,243 @@ async def test_the_terminal_status_write_happens_once(db, store):
     assert result == "completed", (result, ctx.get("terminal_reason"))
     assert writes["n"] == 1, f"the terminal status write ran {writes['n']} times"
     assert _rows(store, "SELECT status FROM sessions WHERE id = 's1'") == [("completed",)]
+
+
+def _profile_without_node_metadata_grant(store: Path):
+    """The teardown profile that admits the usage columns but not ``sessions.node_metadata``."""
+    from lionagi.state.compat import CompatibilityProfile, TableWrites
+
+    base = _profile_with_branch_finalization(store)
+    writes = dict(base.writes)
+    sessions = writes["sessions"]
+    writes["sessions"] = TableWrites(
+        insert=sessions.insert,
+        update=sessions.update - {"node_metadata"},
+        unwritten=sessions.unwritten,
+    )
+    return CompatibilityProfile(
+        name=base.name,
+        version=base.version,
+        closure=base.closure,
+        writes=writes,
+        operations=base.operations,
+        owner=base.owner,
+    )
+
+
+async def test_a_failed_teardown_writes_the_terminal_status_without_a_node_metadata_grant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The lifecycle emit a teardown owns writes no error into ``node_metadata``, so a profile that
+    admits no such column still takes the terminal status write."""
+    from lionagi.cli import _runs
+    from lionagi.session.session import Session
+    from lionagi.state import db as db_mod
+
+    store = await _managed_store(tmp_path / "managed.db")
+    monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", store)
+    handle = StateDB(
+        store, compatibility=_profile_without_node_metadata_grant(store), owner="principal:a"
+    )
+    await handle.open()
+    try:
+        await _setup_run(handle)
+        ctx = {
+            "db": handle,
+            "session_id": "s1",
+            "session_prog_id": "sp",
+            "session": Session(),
+            "shared_db_registered": False,
+            "branch": SimpleNamespace(id="b1"),
+        }
+        result = await _runs.teardown_persist(ctx, status="failed", exception=RuntimeError("boom"))
+        stored = _rows(store, "SELECT status, node_metadata FROM sessions WHERE id = 's1'")
+    finally:
+        await db_mod.close_shared_db()
+
+    assert result == "failed", (result, ctx.get("terminal_reason"))
+    assert ctx.get("store_refusal") is None, repr(ctx.get("store_refusal"))
+    assert stored[0][0] == "failed", stored
+    assert "error" not in (stored[0][1] or ""), stored
+
+
+async def test_a_concurrent_node_metadata_update_survives_a_failed_teardown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The handler reads the session before the teardown writes; a write another writer lands
+    between those points is not merged over from that earlier read."""
+    from lionagi.cli import _runs
+    from lionagi.session.session import Session
+    from lionagi.state import db as db_mod
+
+    store = await _managed_store(tmp_path / "managed.db")
+    monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", store)
+    handle = StateDB(
+        store, compatibility=_profile_with_branch_finalization(store), owner="principal:a"
+    )
+    await handle.open()
+    try:
+        await _setup_run(handle)
+        _execute(
+            store,
+            """UPDATE sessions SET node_metadata = '{"managed": "v1"}' WHERE id = 's1'""",
+        )
+
+        real_get_session = handle.get_session
+        real_finalize_branch = handle.finalize_branch
+        in_session_end = {"active": False}
+
+        async def finalize_branch_then_mark(*args, **kwargs):
+            result = await real_finalize_branch(*args, **kwargs)
+            in_session_end["active"] = True
+            return result
+
+        async def get_session_with_concurrent_write(session_id: str):
+            row = await real_get_session(session_id)
+            if in_session_end["active"]:
+                in_session_end["active"] = False
+                _execute(
+                    store,
+                    """UPDATE sessions SET node_metadata = '{"managed": "v2", "fresh": "kept"}'
+                       WHERE id = 's1'""",
+                )
+            return row
+
+        handle.finalize_branch = finalize_branch_then_mark  # type: ignore[method-assign]
+        handle.get_session = get_session_with_concurrent_write  # type: ignore[method-assign]
+
+        ctx = {
+            "db": handle,
+            "session_id": "s1",
+            "session_prog_id": "sp",
+            "session": Session(),
+            "shared_db_registered": False,
+            "branch": SimpleNamespace(id="b1"),
+        }
+        result = await _runs.teardown_persist(ctx, status="failed", exception=RuntimeError("boom"))
+        ((raw,),) = _rows(store, "SELECT node_metadata FROM sessions WHERE id = 's1'")
+    finally:
+        await db_mod.close_shared_db()
+
+    assert result == "failed", (result, ctx.get("terminal_reason"))
+    assert json.loads(raw) == {"managed": "v2", "fresh": "kept"}
+
+
+async def test_a_registered_branch_with_no_messages_does_not_fail_the_teardown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fanout registers each worker lazily; a worker that produced no message has no branch row,
+    so the teardown emits no BRANCH_END write for it and still closes the session."""
+    from lionagi import Branch
+    from lionagi.cli import _runs
+    from lionagi.cli.orchestrate import _orchestration
+    from lionagi.cli.orchestrate._orchestration import setup_orchestration_persist
+    from lionagi.session.session import Session
+    from lionagi.state import db as db_mod
+    from lionagi.state.compat import CompatibilityProfile, TableWrites
+
+    store = await _managed_store(tmp_path / "managed.db")
+    monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", store)
+    base = _profile_with_branch_finalization(store)
+    writes = dict(base.writes)
+    sessions = writes["sessions"]
+    writes["sessions"] = TableWrites(
+        insert=sessions.insert,
+        update=sessions.update | {"current_phase"},
+        unwritten=sessions.unwritten,
+    )
+    profile = CompatibilityProfile(
+        name=base.name,
+        version=base.version,
+        closure=base.closure,
+        writes=writes,
+        operations=base.operations | {"finalize_branch"},
+        owner=base.owner,
+    )
+    handle = StateDB(store, compatibility=profile, owner="principal:a")
+    await handle.open()
+
+    async def compatibility_store(*_args, **_kwargs):
+        return handle
+
+    monkeypatch.setattr(_orchestration, "_open_shared_db", compatibility_store)
+    monkeypatch.setattr(
+        "lionagi.cli.kill.current_pid_markers",
+        lambda: {
+            "pid": 1,
+            "pid_create_time": 0.0,
+            "pid_host": "test",
+            "pid_boot_time": 0.0,
+            "process_identity_mode": "local",
+        },
+    )
+    try:
+        session = Session()
+        used = Branch(user=str(session.id), name="used")
+        unused = Branch(user=str(session.id), name="unused-worker")
+        session.branches.include(used)
+        session.branches.include(unused)
+        session.default_branch = used
+
+        ctx = await setup_orchestration_persist(
+            session,
+            branches=[used, unused],
+            invocation_kind="fanout",
+            model="fixture-model",
+            provider="fixture-provider",
+            project="fixture-project",
+        )
+        assert ctx is not None
+        result = await _runs.teardown_persist(ctx, status="completed")
+        stored = _rows(store, "SELECT status FROM sessions WHERE id = ?", (str(session.id),))
+    finally:
+        await db_mod.close_shared_db()
+
+    assert result == "completed", (result, ctx.get("terminal_reason"))
+    assert ctx.get("store_refusal") is None, repr(ctx.get("store_refusal"))
+    assert stored == [("completed",)], stored
+
+
+async def test_teardown_signals_carry_no_store_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The observer record of a lifecycle emit keeps the event's data but not the run's handle, so
+    no closed store is retained on the observer flow or serialized into a stored signal."""
+    from lionagi.cli import _runs
+    from lionagi.hooks.bus import HookSignal
+    from lionagi.session.session import Session
+    from lionagi.state import db as db_mod
+
+    store = await _managed_store(tmp_path / "managed.db")
+    monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", store)
+    handle = StateDB(
+        store, compatibility=_profile_with_branch_finalization(store), owner="principal:a"
+    )
+    await handle.open()
+    try:
+        await _setup_run(handle)
+        session = Session()
+        session.observer.bind_db_persistence("s1", db=handle)
+        ctx = {
+            "db": handle,
+            "session_id": "s1",
+            "session_prog_id": "sp",
+            "session": session,
+            "shared_db_registered": False,
+            "branch": SimpleNamespace(id="b1"),
+        }
+        result = await _runs.teardown_persist(ctx, status="completed")
+        signals = [item for item in session.observer.flow.items if isinstance(item, HookSignal)]
+        payloads = [
+            json.loads(payload)
+            for (payload,) in _rows(
+                store, "SELECT payload FROM session_signals WHERE session_id = 's1'"
+            )
+        ]
+    finally:
+        await db_mod.close_shared_db()
+
+    assert result == "completed", (result, ctx.get("terminal_reason"))
+    assert signals, "the teardown recorded no lifecycle signals"
+    assert all("db" not in signal.kwargs for signal in signals), signals
+    assert all("db" not in payload.get("kwargs", {}) for payload in payloads), payloads

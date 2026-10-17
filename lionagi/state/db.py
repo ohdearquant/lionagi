@@ -6117,11 +6117,22 @@ class StateDB:
             )
         return self._row_to_dict(row) if row else None
 
+    @_operation("update_branch")
     async def update_branch(self, branch_id: str, **fields: Any) -> None:
+        """Update a branch row.
+
+        In compatibility mode the branch must be one this run created and still carry the run's
+        owner, and the UPDATE carries the owner predicate, as the other branch writes do
+        (ADR-0128 D5), so a run never rewrites a branch another run created.
+        """
         _validate_columns(fields, _BRANCH_COLUMNS)
         if not fields:
             return
+        if self._compat is not None:
+            self._require_created("branches", branch_id, "branch")
         async with self._tx() as conn:
+            if self._compat is not None:
+                await self._require_owned(conn, "branches", branch_id, "branch")
             await self._update_branch_in_tx(conn, branch_id, **fields)
 
     async def _update_branch_in_tx(self, conn, branch_id: str, **fields: Any) -> None:

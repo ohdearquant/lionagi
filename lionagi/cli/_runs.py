@@ -733,6 +733,19 @@ def _run_may_clear_current_phase(db: StateDB) -> bool:
     return sessions is not None and "current_phase" in sessions.update
 
 
+def _branch_end_is_this_runs(db: StateDB, branch_id: str) -> bool:
+    """Whether a BRANCH_END write for *branch_id* is this run's to make.
+
+    Orchestration registers each worker lazily, so a registered worker that produced no message
+    has no branch row. Natively every branch is the run's, as before; in compatibility mode a
+    branch row another run created is not written, and emitting for a row this run did not create
+    would refuse the whole teardown (ADR-0128 D5).
+    """
+    if db.mode != "compatibility":
+        return True
+    return branch_id in getattr(db, "_compat_created", {}).get("branches", ())
+
+
 def _terminal_status_extra_fields(
     db: StateDB, *, ended_at: float, duration_ms: float | None
 ) -> dict[str, Any]:
@@ -1357,6 +1370,8 @@ async def teardown_persist(
             if final_status in SESSION_TERMINAL_STATUSES:
                 _end_at = time.time()
                 for _b in [_branch] if _branch is not None else _hook_branches:
+                    if not _branch_end_is_this_runs(db, str(_b.id)):
+                        continue
                     await session_obj.hooks.emit(
                         HookPoint.BRANCH_END,
                         branch_id=str(_b.id),
@@ -1918,6 +1933,10 @@ async def setup_agent_persist(
 
             from lionagi.hooks.bus import HookPoint
 
+            # The session and branch rows above already carry every field these handlers
+            # write, so no store handle is handed to them: their writes would repeat what
+            # this setup committed, and in compatibility mode a repeated write needs profile
+            # grants and an operation name the setup itself does not require.
             await session.hooks.emit(
                 HookPoint.SESSION_START,
                 session_id=session_id,
@@ -1927,7 +1946,6 @@ async def setup_agent_persist(
                 agent_name=agent_name,
                 agent_hash=_provenance.agent_definition_hash(agent_name),
                 invocation_id=invocation_id,
-                db=db,
             )
             await session.hooks.emit(
                 HookPoint.BRANCH_CREATE,
@@ -1935,7 +1953,6 @@ async def setup_agent_persist(
                 model=model,
                 provider=provider,
                 agent_name=agent_name,
-                db=db,
             )
 
         new_msg_ids: list = []
