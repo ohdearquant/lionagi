@@ -174,22 +174,54 @@ def _runner_drains_controls(session: dict[str, Any]) -> bool:
     return bool(metadata.get("drains_controls")) if isinstance(metadata, dict) else False
 
 
+_CONTROL_DELIVERY_MARKERS = frozenset({"pending", "active"})
+
+
+def _flow_control_poller_state(session: dict[str, Any]) -> str | None:
+    """The declared DAG-poller availability for a flow/play session, or ``None``.
+
+    Mirrors ``cli/orchestrate/_control.py``'s reader of the same field: a
+    missing or unparsable declaration reads as unknown, which is refused
+    alongside ``stopped``.
+    """
+    metadata = session.get("node_metadata") or {}
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except (TypeError, ValueError):
+            return None
+    return metadata.get("flow_control_poller") if isinstance(metadata, dict) else None
+
+
 def session_has_control_consumer(session: dict[str, Any]) -> bool:
     """Whether a control queued against this session would ever be drained.
 
-    Only agent sessions can fail this. The agent runner stamps ``run_id`` on
-    the sessions it creates and declares ``drains_controls`` when it starts, so
-    an agent row missing either is a mirrored or imported session that no
-    lionagi run owns. A control admitted for one sits pending forever with
-    nobody to deliver or close it.
+    An agent session fails this when the runner did not declare a drain: the
+    agent runner stamps ``run_id`` on the sessions it creates and writes
+    ``drains_controls`` when it starts, so a row missing either is a mirrored
+    or imported session that no lionagi run owns.
+
+    A flow/play session fails it unless its DAG poller declared itself live
+    (``pending`` or ``active``). A poller that has stopped delivers nothing
+    more, and a row without the declaration predates control-delivery
+    tracking, so neither has a consumer for a newly queued control. The CLI's
+    own admission refuses both and a control admitted for one would sit
+    pending forever with nobody to deliver or close it.
 
     Exported because the read surfaces have to answer the same question the
     admission below answers. A Studio client that offers a steer this would
     refuse gets a control that can never queue, so the offer and the refusal
     read from one rule rather than from two that can drift apart.
+
+    A session of any other kind (an engine run, or no recorded kind) has no
+    consumer for any verb, so it fails too; admission refuses it as
+    ``unsupported_kind``.
     """
-    if session.get("invocation_kind") != "agent":
-        return True
+    kind = session.get("invocation_kind")
+    if kind in {"flow", "play"}:
+        return _flow_control_poller_state(session) in _CONTROL_DELIVERY_MARKERS
+    if kind != "agent":
+        return False
     return bool(session.get("run_id")) and _runner_drains_controls(session)
 
 
@@ -426,6 +458,10 @@ async def execute_run_control_command(
             verb=verb,
             payload=payload,
             project=project,
+            # The admission above reads the delivery marker; the write re-checks
+            # it so a run that lost its poller in between refuses the control
+            # instead of queueing it against a consumer that is already gone.
+            require_live_flow_poller=True,
         )
     if control_id is None:
         # insert_session_control's own admission condition is the final
@@ -433,8 +469,16 @@ async def execute_run_control_command(
         # the run being reassigned to another project between the check above
         # and this insert. The check above still runs, because it is what
         # distinguishes the refusal reasons for the caller; it is not what
-        # enforces ownership.
-        raise ValueError("run is no longer running")
+        # enforces ownership. The insert does not say which condition failed,
+        # so the row is read again to name it.
+        async with StateDB() as db:
+            after = await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        if after is None or after.get("project") != project:
+            raise ValueError("run not found")
+        refusal = _admission_refusal(dict(after), verb)
+        if refusal == "not_running":
+            raise ValueError("run is no longer running")
+        raise ValueError(f"run cannot consume this control ({refusal or 'refused at the write'})")
     return {
         "status": "queued",
         "session_id": session_id,

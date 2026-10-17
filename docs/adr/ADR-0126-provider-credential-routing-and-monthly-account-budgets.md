@@ -1,11 +1,53 @@
 # ADR-0126: Provider credential routing and monthly account budgets
 
-- **Status**: Accepted (2026-10-12)
+- **Status**: Accepted, amended 2026-10-14 (see Amendment 1)
 - **Kind**: Aspirational
 - **Implementation-status**: not-started
 - **Area**: service-providers
 - **Date**: 2026-10-12
 - **Relations**: extends ADR-0027; follows ADR-0119 and ADR-0125 D1 and D8 (carries lion1 ADR-0024 and lion1 ADR-0028 by concept); keeps ADR-0029 D4's retry classes; preserves the boundaries of ADR-0028, ADR-0030 and ADR-0043
+
+## Amendment 1 (2026-10-14) — what a stream's mask can tell from other text
+
+D2 requires stream chunks scrubbed of the chosen key, including a key split across chunks, with
+masks that reveal no key characters. A masker cannot tell a few characters of the key from other
+text, so the stream path matches runs: a character is masked when it lies in a run of eight or more
+characters that occurs anywhere in the key, in one of the joins the stream path makes of one
+message's text. The joins are each delta kind across the message, the quoted text of its citations,
+the text of the chunks a consumer receives, by chunk type and all of it in order, and every piece in
+order. Every other string value of an event is matched on its own.
+
+Decision: D2's scrubbing is met, in those joins, for every run of eight or more characters of the
+key (the whole key, for a shorter key) and for every beginning of the key longer than its public
+`sk-ant-` prefix. Five limits follow and are accepted: closing the first two would mean masking
+ordinary text that shares a few characters with the key, or holding text until the stream ends, and
+closing the fourth would mean a join for every set of chunk types a consumer might join.
+
+- A key whose runs of fewer than eight characters have other characters between them, such as the
+  key written in seven-character pieces separated by spaces, within one event or across events, is
+  sent in those pieces.
+- A join's held run of fewer than eight characters is sent at a pause, an event that carries no
+  text into that join; if the key continues after the pause, the rest of the run is masked. A
+  beginning of the key is masked once it is longer than `sk-ant-`, which every Anthropic key starts
+  with, so those seven characters can appear before its mask; a key that does not start with
+  `sk-ant-` has its first character masked wherever it appears.
+- Text that is not the key is masked where it holds a run of eight characters from the key, or a
+  beginning of the key past `sk-ant-` such as `sk-ant-api03-`.
+- A consumer that joins the text of some chunk types and not others, such as text and thinking
+  without the error chunk between them, makes a join the stream path does not match, so a run of
+  the key split across that join's parts can be sent.
+- An event's object names and numbers are matched for runs as their text, like every other string
+  value; the chunk a consumer receives masks a whole key wherever one lies in the text it shows.
+
+A response that is not streamed reaches its caller only with status 200 and only as parsed JSON;
+every whole key in it is masked, the text, thinking and quoted text of its content are matched for
+runs as joins of each kind and all in order (a bare string item counts as text), and every other
+string, a dict name and a number alike, is matched for runs on its own, as its text. A run split
+between one of the joined strings and any other string, such as a tool input value, a redacted
+block, a citation title or a signature, is therefore matched in each string on its own and left
+unmasked. Unlike a stream it does not mask a beginning of the key shorter than eight characters,
+since it can read the whole text first. A routed call that asks for another response mode is
+refused with `unsupported_pricing` before it is sent.
 
 ## Requirements
 
@@ -196,7 +238,7 @@ are replaced with sanitized errors without raw request-info,
 header objects or exception chains. Responses/chunks are scrubbed of the chosen
 key before hooks, logging or yield, including a key split across stream chunks;
 the stream redactor must retain enough boundary context. Masks reveal no key
-characters. Verify with a
+characters (for the stream path, as bounded by Amendment 1). Verify with a
 canary in validation errors, repr/dumps, cache keys, HTTP errors and echoed bodies.
 
 ### D3 — One binding per conversation and provider

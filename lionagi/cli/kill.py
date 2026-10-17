@@ -485,6 +485,12 @@ async def _persist_cancel(
             evidence_refs=[evidence],
             source="admin",
             actor="user",
+            # A session's live phase ends with its terminal status, in this one
+            # statement: a kill can land on a row a SIGKILLed flow left at its
+            # last phase, and a separate clear would be a second write that can
+            # be skipped. Invocations have no phase column, so only sessions
+            # carry it.
+            extra_fields={"current_phase": None} if entity_type == "session" else None,
         )
     except TransitionRejectedError:
         # The entity went terminal between the pre-check and this write —

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any, ClassVar
 
 import orjson
@@ -11,6 +10,7 @@ from pydantic import BaseModel, field_serializer, field_validator
 
 from lionagi._class_registry import LION_CLASS_REGISTRY
 from lionagi.adapters._base import Adaptable, AsyncAdaptable
+from lionagi.ln import now_utc
 from lionagi.ln.types import DataClass
 
 from .._concepts import Relational
@@ -123,7 +123,7 @@ class Node(Element, Relational, AsyncAdaptable, Adaptable):
             return
 
         if config.track_updated_at:
-            ts = datetime.now(tz=timezone.utc).isoformat()
+            ts = now_utc().isoformat()
             if self._has_real_field("updated_at"):
                 self.updated_at = ts
             else:
@@ -156,7 +156,7 @@ class Node(Element, Relational, AsyncAdaptable, Adaptable):
                 "Enable with NodeConfig(soft_delete=True)."
             )
 
-        ts = datetime.now(tz=timezone.utc).isoformat()
+        ts = now_utc().isoformat()
 
         if self._has_real_field("is_deleted"):
             self.is_deleted = True

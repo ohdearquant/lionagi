@@ -69,6 +69,7 @@ class EndpointMeta:
     def create_config(self, **overrides: Any):
         from .endpoint_config import EndpointConfig
 
+        api_key_explicit = "api_key" in overrides
         is_agentic = self.endpoint_type == EndpointType.AGENTIC
         api_key: Any = "internal" if is_agentic else None
         if not is_agentic and self.api_key_env and "api_key" not in overrides:
@@ -91,7 +92,9 @@ class EndpointMeta:
             method="POST",
         )
         defaults.update(overrides)
-        return EndpointConfig(**defaults)
+        config = EndpointConfig(**defaults)
+        config._api_key_explicit = api_key_explicit
+        return config
 
 
 class _RegistryEntry:

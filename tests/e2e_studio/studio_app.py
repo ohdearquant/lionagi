@@ -10,12 +10,23 @@ command.
 from __future__ import annotations
 
 import asyncio
+import faulthandler
+import signal
+import sys
 
 from lionagi.studio.operator import coordinator as coordinator_module
 from lionagi.studio.operator.coordinator import OperatorCoordinator
 from lionagi.studio.operator.types import OperatorEngineEvent, OperatorEngineTurn
 
 _EXECUTED_MARKERS: set[str] = set()
+
+# `faulthandler.register` is POSIX-only, so a hang is only dumpable where the
+# signal exists. Registered on the child's own stderr, which the harness sends
+# to the child log the Playwright setup keeps as a failure artifact: when the
+# wrapper stops a daemon that stopped answering, it sends SIGUSR1 first, so
+# the stacks of every thread land there before the process is killed.
+if hasattr(signal, "SIGUSR1"):
+    faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)
 
 
 async def _execute_harmless_command(

@@ -97,6 +97,12 @@ def _typed_usage(tokens: dict | None) -> dict[str, int] | None:
     Only ``input_tokens``/``output_tokens`` (or their ``prompt_tokens``/
     ``completion_tokens`` synonyms) survive, coerced to ``int``; everything
     else is dropped. ``None`` when neither count is present.
+
+    A routed response whose count held a run of its account key carries that
+    count as masked text, which is not a number, so it reads here as absent
+    and a masked count reads as 0; with neither count left, the summary has no
+    tokens. The attempt itself is priced from the provider's own count before
+    masking.
     """
     if not isinstance(tokens, dict):
         return None
