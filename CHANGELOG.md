@@ -6,6 +6,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Upgrading from 0.35.5
+
+`li schedule apply` now reads a member's `execution.project` written as YAML null as no
+project (see Changed). A project-scoped document applied with an earlier release whose
+members write their project as null plans an `UPDATE` on its next apply that removes the
+project those rows ran under. To keep the project, name it in those members.
+
+### Added
+
+- A compatibility open mode for `StateDB` (ADR-0128): `StateDB(path, compatibility=profile)`
+  writes into a SQLite store whose schema another application manages without migrating,
+  stamping or reconfiguring it. A `CompatibilityProfile` declares the exact structure of the
+  tables it depends on, the columns it inserts and updates, and the operations it serves; the store
+  is admitted only when that structure matches, every connection carries a default-deny SQLite
+  authorizer, and anything outside the profile raises `StateCompatibilityRefused`. The minimum
+  aiosqlite version rises to 0.22.0, the first release that exposes `set_authorizer`.
+
 ### Changed
 
 - The Antigravity (`gemini_code` / `gemini-code` / `gemini-cli`) backend knows the Gemini 4 Argon
@@ -56,6 +73,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   releases read High). An effort that is not a string also counts as none (earlier releases
   read a number as an unknown effort, which gave Medium, or High on Pro, and raised `TypeError`
   on a list or dict).
+- `li schedule apply` reads a member's `execution.project` written as YAML null
+  (`project: null`, `project: ~` or a blank `project:`) as no project. Earlier
+  releases gave that member the document's `metadata.project` in a project-scoped
+  document, so re-applying an export of a row stored without a project gave the
+  row the export's project. An omitted project, or `project: ""`, still inherits
+  the document's `metadata.project` in a project-scoped document (a global one
+  has none). A project-scoped document already applied whose member writes its
+  project as null in any of those spellings plans an `UPDATE` on its next apply
+  that removes the project the member ran under. Such a row also loses the
+  project's registered path as its fallback working directory: if its stored
+  `cwd` is set and is not an existing absolute directory, and the project's
+  registered path is usable, it is refused when it fires instead of running there
+  (with no usable project path it was refused already). A row whose `cwd` is an
+  existing absolute directory runs there, and an `agent` or `flow_yaml` run then
+  takes its project from the one detected in that directory, since its command no
+  longer receives `--project`. `li schedule export` writes every member's stored
+  project, `null` included.
 
 ### Fixed
 
