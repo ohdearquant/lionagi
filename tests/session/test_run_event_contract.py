@@ -872,6 +872,27 @@ def test_anthropic_split_with_an_integral_float_part_is_not_a_count():
     assert price_usage(CURRENT_REVISION, frozenset({"5m", "1h"}), "claude-opus-5-5", report) is None
 
 
+def test_anthropic_integral_float_cache_write_total_is_not_a_count():
+    """The cache-write total is read with the same count test as a split's
+    parts: 200.0 is not a count, with or without a split beside it, so it
+    reads 0 and the report is not valid -- and ``price_usage`` refuses the
+    same report."""
+    unsplit = {
+        "input_tokens": 1,
+        "output_tokens": 1,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 200.0,
+    }
+    split = {**unsplit, "cache_creation": {"ephemeral_5m_input_tokens": 200}}
+    for report in (unsplit, split):
+        usage = _collect_branch_usage(_branch_with_usage_dicts(dict(report)))
+        assert usage["cache_write_tokens"] == 0
+        assert usage["cache_write_5m_tokens"] == 0
+        assert usage["cache_write_1h_tokens"] == 0
+        assert usage["usage_valid"] is False
+        assert price_usage(CURRENT_REVISION, frozenset({"5m"}), "claude-opus-5-5", report) is None
+
+
 def test_anthropic_split_of_integers_agrees_with_price_usage():
     """One rule reads a report's split for every consumer: the identical
     integer split that ``RunEnd`` reports also prices, with the same

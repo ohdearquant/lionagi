@@ -45,12 +45,13 @@ project those rows ran under. To keep the project, name it in those members.
 - `RunEnd` and the run usage totals report cache writes by lifetime, `cache_write_5m_tokens` and
   `cache_write_1h_tokens`, read from Anthropic's `usage.cache_creation`; `cache_write_tokens` stays
   the total. The lifetimes are reported only when they cover the whole `cache_write_tokens` total
-  they sit beside; otherwise both read 0. A report that carries no split, or any non-Anthropic
-  shape, reads 0 for both and stays valid, and so does a split that covers part of the total only
+  they sit beside; otherwise both read 0. A report that carries no split (another provider's
+  shape, or an Anthropic report without `cache_creation`) reads 0 for both and stays valid, and so does a split that covers part of the total only
   because the provider left (some of) its writes unsplit -- a claude_code flat split short of a
   larger whole-tree `modelUsage` total, or a branch mixing split and unsplit messages. A split the
   provider did claim that cannot be a count, or that does not sum to the total of the same report,
-  zeroes both and marks the usage invalid.
+  zeroes both and marks the usage invalid, as does a cache-write total that is not a non-negative
+  integer (an integral float such as `200.0` included).
 
 ### Changed
 

@@ -159,7 +159,8 @@ breaking field removal/rename; adding a field (with a default) is non-breaking.
   is False when an OpenAI-style report violates the token-count invariants (a
   negative prompt total, or `cached_tokens` greater than `prompt_tokens`), and
   when an Anthropic-style `cache_creation_input_tokens` cannot be a token
-  count (a fractional float, a numeric-looking string, a bool, a negative):
+  count (a float, an integral one such as `200.0` included, a numeric-looking
+  string, a bool, a negative, None):
   it then reads as 0 so no split can be certified against it, though the other
   Anthropic fields keep the plain `int(...)` reading they had;
   the returned numbers are still clamped into a safe, non-negative shape so a
@@ -182,8 +183,12 @@ breaking field removal/rename; adding a field (with a default) is non-breaking.
 
   Within one report, a split that is present but not valid is a fault: both
   lifetimes read 0 and `usage_valid` is False. An empty split map against a
-  non-zero total is such a fault. A report with no `cache_creation` at all
-  claims no split, is not a fault, and reports both lifetimes as 0. Across
+  non-zero total is such a fault. A report with no `cache_creation` at all,
+  or with `cache_creation: null`, claims no split, is not a fault, and reports
+  both lifetimes as 0. Across result chunks, a chunk whose split is not valid
+  (a `cache_creation` that is not a mapping included) leaves the merged
+  lifetimes uncertifiable, and a counter one chunk reports as a non-count
+  stays as reported, so the merged report is rejected as that chunk would be. Across
   messages, branches, and the flat-versus-whole-tree comparison, lifetimes
   that cover only part of the total because some reports did not split are not
   a fault: they read 0 and `usage_valid` is unchanged from its per-report

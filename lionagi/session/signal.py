@@ -11,7 +11,7 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from ..protocols.generic.element import Element
-from ..service.accounts._pricing import cache_write_split
+from ..service.accounts._pricing import _is_count, cache_write_split
 
 __all__ = (
     "Signal",
@@ -316,7 +316,9 @@ def _extract_usage_dims(usage: dict[str, Any]) -> tuple[int, int, int, int, bool
     output_tokens = int(usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0)
     if _anthropic_usage_shape(usage):
         cached = int(usage.get("cache_read_input_tokens", 0) or 0)
-        cache_write = _as_nonneg_int(usage.get("cache_creation_input_tokens", 0))
+        raw_write = usage.get("cache_creation_input_tokens", 0)
+        # The same count test pricing applies: an integral float such as 200.0 is not a count.
+        cache_write = raw_write if _is_count(raw_write) else None
         input_tokens = int(usage.get("input_tokens", 0) or 0)
         return input_tokens, output_tokens, cached, cache_write or 0, cache_write is not None
 

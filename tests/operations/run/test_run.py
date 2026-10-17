@@ -1892,6 +1892,100 @@ def test_accumulate_result_meta_does_not_let_two_invalid_chunks_cancel_out():
     assert collected["usage_valid"] is False
 
 
+@pytest.mark.parametrize("not_a_split", ["not a mapping", [50], 0, 50])
+def test_accumulate_result_meta_a_split_that_is_not_a_mapping_stays_uncertifiable(not_a_split):
+    """A ``cache_creation`` that is not a mapping is a split that cannot be
+    certified, as it is in one report. A later valid chunk does not certify
+    it, and a number in that place is not added into the merged map."""
+    usage = _merge_two_chunks(
+        {"input_tokens": 1, "cache_creation_input_tokens": 0, "cache_creation": not_a_split},
+        {
+            "input_tokens": 1,
+            "cache_creation_input_tokens": 50,
+            "cache_creation": {"ephemeral_5m_input_tokens": 50},
+        },
+    )
+    collected = _collected_usage(usage)
+    assert collected["cache_write_5m_tokens"] == 0
+    assert collected["cache_write_1h_tokens"] == 0
+    assert collected["usage_valid"] is False
+
+
+@pytest.mark.parametrize("not_a_split", ["not a mapping", [50], 50])
+def test_accumulate_result_meta_a_non_mapping_split_after_a_valid_one_does_not_raise(not_a_split):
+    """The same split arriving after a valid chunk: merging it neither raises
+    nor keeps the earlier chunk's lifetimes as if the stream were exact."""
+    usage = _merge_two_chunks(
+        {
+            "input_tokens": 1,
+            "cache_creation_input_tokens": 50,
+            "cache_creation": {"ephemeral_5m_input_tokens": 50},
+        },
+        {"input_tokens": 1, "cache_creation_input_tokens": 50, "cache_creation": not_a_split},
+    )
+    collected = _collected_usage(usage)
+    assert collected["cache_write_5m_tokens"] == 0
+    assert collected["cache_write_1h_tokens"] == 0
+    assert collected["usage_valid"] is False
+
+
+def test_accumulate_result_meta_reads_a_null_split_as_no_split():
+    """``cache_creation: null`` states no split, as an absent key does: it adds
+    no part and does not erase the parts an earlier chunk reported."""
+    usage = _merge_two_chunks(
+        {
+            "input_tokens": 1,
+            "cache_creation_input_tokens": 100,
+            "cache_creation": {"ephemeral_5m_input_tokens": 100},
+        },
+        {"input_tokens": 1, "cache_creation_input_tokens": 0, "cache_creation": None},
+    )
+    assert usage["cache_creation"] == {
+        "ephemeral_5m_input_tokens": 100,
+        "ephemeral_1h_input_tokens": 0,
+    }
+    collected = _collected_usage(usage)
+    assert collected["cache_write_5m_tokens"] == 100
+    assert collected["cache_write_1h_tokens"] == 0
+    assert collected["usage_valid"] is True
+
+
+def test_accumulate_result_meta_sums_a_split_given_as_any_mapping():
+    """A split is a mapping, not only a dict: two read-only maps sum the way
+    two dicts do."""
+    from types import MappingProxyType
+
+    usage = _merge_two_chunks(
+        {
+            "input_tokens": 1,
+            "cache_creation_input_tokens": 100,
+            "cache_creation": MappingProxyType({"ephemeral_5m_input_tokens": 100}),
+        },
+        {
+            "input_tokens": 1,
+            "cache_creation_input_tokens": 50,
+            "cache_creation": MappingProxyType({"ephemeral_1h_input_tokens": 50}),
+        },
+    )
+    collected = _collected_usage(usage)
+    assert collected["cache_write_5m_tokens"] == 100
+    assert collected["cache_write_1h_tokens"] == 50
+    assert collected["usage_valid"] is True
+
+
+@pytest.mark.parametrize("not_a_count", [None, True, "50"])
+def test_accumulate_result_meta_keeps_a_counter_that_was_not_a_count(not_a_count):
+    """A counter one chunk reports as a non-count stays as reported when a
+    later chunk reports a number: merging does not raise, a bool is not
+    added into a count, and the reader still rejects the report."""
+    usage = _merge_two_chunks(
+        {"input_tokens": 1, "cache_creation_input_tokens": not_a_count},
+        {"input_tokens": 1, "cache_creation_input_tokens": 50},
+    )
+    assert usage["cache_creation_input_tokens"] is not_a_count
+    assert _collected_usage(usage)["usage_valid"] is False
+
+
 def test_accumulate_result_meta_keeps_a_split_that_covers_each_chunks_total():
     """Each chunk splits its own cache-write total exactly, so the merged
     split is still exact against the merged total: both lifetimes survive

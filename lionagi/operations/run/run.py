@@ -342,17 +342,19 @@ def _accumulate_result_meta(result_meta: dict, metadata: dict) -> None:
         if key == "usage" and isinstance(value, dict):
             usage = result_meta.setdefault("usage", {})
             for uk, uv in value.items():
-                if isinstance(uv, (int, float)) and not isinstance(uv, bool):
-                    usage[uk] = usage.get(uk, 0) + uv
-                elif uk == "cache_creation" and isinstance(uv, dict):
+                if uk == "cache_creation":
+                    if uv is None:
+                        # Like an absent key: this chunk states no split.
+                        continue
                     # The cache-write lifetime split is a nested map: one
                     # result chunk may report the five-minute writes and the
                     # next the one-hour writes, so its parts are summed like
                     # the flat counters rather than replaced. The chunk's own
                     # split is first read against that chunk's own total with
-                    # the shared rule; a chunk whose split is not a valid one
-                    # leaves the merged part uncertifiable (None), which the
-                    # reader rejects. A chunk with no split adds no part.
+                    # the shared rule; a chunk whose split is not a valid one,
+                    # a value that is not a mapping included, leaves the merged
+                    # part uncertifiable (None), which the reader rejects. A
+                    # chunk with no split adds no part.
                     merged = usage.setdefault(uk, {})
                     if not isinstance(merged, dict):
                         usage[uk] = merged = {}
@@ -367,6 +369,13 @@ def _accumulate_result_meta(result_meta: dict, metadata: dict) -> None:
                             merged[lifetime] = merged[lifetime] + part
                         else:
                             merged[lifetime] = part
+                elif isinstance(uv, (int, float)) and not isinstance(uv, bool):
+                    previous = usage.get(uk, 0)
+                    if isinstance(previous, (int, float)) and not isinstance(previous, bool):
+                        usage[uk] = previous + uv
+                    # Otherwise an earlier chunk reported this counter as a
+                    # non-count; it stays as reported, so the reader still
+                    # rejects it instead of reading a later count alone.
                 else:
                     usage[uk] = uv
         elif (
