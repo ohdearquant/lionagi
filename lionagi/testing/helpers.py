@@ -13,6 +13,7 @@ from typing import Any, TypeVar
 from pydantic import Field as _Field
 
 from lionagi.ln import fail_after, gather, move_on_after
+from lionagi.ln.concurrency import current_time
 from lionagi.protocols.generic.element import UUID, Element
 from lionagi.protocols.generic.event import EventStatus
 from lionagi.protocols.graph.node import Node
@@ -30,8 +31,8 @@ class AsyncTestHelpers:
         interval: float = 0.1,
         error_message: str | None = None,
     ) -> None:
-        start_time = time.time()
-        while time.time() - start_time < timeout:
+        start_time = current_time()
+        while current_time() - start_time < timeout:
             if condition():
                 return
             await asyncio.sleep(interval)

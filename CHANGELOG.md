@@ -63,6 +63,8 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Changed
 
+- `assert_eventually` uses a monotonic clock for its timeout, so wall-clock changes
+  no longer shorten or extend the polling deadline.
 - CLI stream result parsers measure elapsed time with the active async backend's
   clock, so the Gemini, Codex and Pi parsers can finish under Trio. Operator
   heartbeat deadlines and scheduler recovery deadlines use the same clock helper.

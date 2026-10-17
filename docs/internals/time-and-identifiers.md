@@ -24,3 +24,7 @@ duration accounting under either asyncio or Trio. Operator heartbeat deadlines
 and scheduler recovery deadlines also use it, while their existing asyncio task
 and polling operations retain their backend requirements. Synchronous elapsed
 time measurements continue to use `time.monotonic()`.
+
+`lionagi.testing.helpers.assert_eventually` measures its polling timeout with a
+monotonic clock. Wall-clock adjustments do not change the timeout; its polling
+continues to use asyncio.
