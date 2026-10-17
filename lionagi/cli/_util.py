@@ -216,7 +216,9 @@ def _like_prefix_pattern(id_or_short: str) -> str:
     return escaped + "%"
 
 
-async def fetch_unique_row(db: Any, table: str, id_or_short: str) -> dict[str, Any] | None:
+async def fetch_unique_row(
+    db: Any, table: str, id_or_short: str, *, project: str | None = None
+) -> dict[str, Any] | None:
     """Resolve one id (or short prefix) to a single row of *table*.
 
     Exact id wins outright — it is the primary key, so it cannot be ambiguous.
@@ -225,6 +227,13 @@ async def fetch_unique_row(db: Any, table: str, id_or_short: str) -> dict[str, A
     plus a fetch-one has no cardinality check and no ordering rule, so the row
     it returns is whichever the engine happens to yield first. Rows are ordered
     by id so the candidate list an error reports is stable.
+
+    *project* narrows prefix resolution to one project's row of a table that
+    carries a `project` column. It applies inside the query, so the id-ordered
+    window counts only rows the caller may see: an unscoped window lets foreign
+    rows fill it and hides an in-scope match behind them. The default (None)
+    applies no predicate, which is what the CLI wants — it resolves against the
+    whole store.
 
     Returns the raw row dict (JSON columns still encoded); callers that need
     decoded columns pass it through `db._row_to_dict`.
@@ -237,7 +246,7 @@ async def fetch_unique_row(db: Any, table: str, id_or_short: str) -> dict[str, A
     if row is not None:
         return row
 
-    rows = await _fetch_prefix_rows(db, table, id_or_short)
+    rows = await _fetch_prefix_rows(db, table, id_or_short, project=project)
     if not rows:
         return None
     if len(rows) > 1:
@@ -252,7 +261,9 @@ async def _fetch_exact_row(db: Any, table: str, id_or_short: str) -> dict[str, A
     )
 
 
-async def _fetch_prefix_rows(db: Any, table: str, id_or_short: str) -> list[dict[str, Any]]:
+async def _fetch_prefix_rows(
+    db: Any, table: str, id_or_short: str, *, project: str | None = None
+) -> list[dict[str, Any]]:
     """Rows of *table* whose id starts with *id_or_short*, case-sensitively.
 
     LIKE alone is not enough: on the default backend it compares ASCII
@@ -260,13 +271,19 @@ async def _fetch_prefix_rows(db: Any, table: str, id_or_short: str) -> list[dict
     while the exact comparison beside it would not. It is kept as the first
     predicate because it is the one an index on `id` can use; the substring
     equality after it is what actually decides.
+
+    *project* adds an equality predicate on the row's `project` column, so the
+    `LIMIT` window is filled from one project's rows instead of the whole
+    store. Callers whose `table` has no such column leave it at None.
     """
-    return await db.fetch_all(
-        f"SELECT * FROM {table} WHERE id LIKE ? ESCAPE '\\' "  # noqa: S608
-        f"AND substr(id, 1, ?) = ? "
-        f"ORDER BY id LIMIT {_CANDIDATES_SHOWN + 1}",
-        (_like_prefix_pattern(id_or_short), len(id_or_short), id_or_short),
-    )
+    sql = f"SELECT * FROM {table} WHERE id LIKE ? ESCAPE '\\' "  # noqa: S608
+    params: list[Any] = [_like_prefix_pattern(id_or_short), len(id_or_short), id_or_short]
+    sql += "AND substr(id, 1, ?) = ? "
+    if project is not None:
+        sql += "AND project = ? "
+        params.append(project)
+    sql += f"ORDER BY id LIMIT {_CANDIDATES_SHOWN + 1}"
+    return await db.fetch_all(sql, tuple(params))
 
 
 async def resolve_entity(

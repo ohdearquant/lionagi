@@ -976,6 +976,62 @@ async def test_execute_cancel_command_projectless_pairing_requires_row_still_pro
         assert row["status"] == "running"
 
 
+async def test_cancel_run_id_prefix_window_counts_only_visible_rows(tmp_path, monkeypatch):
+    """A run of the turn's own project must still be found when foreign rows
+    fill the id-ordered window the prefix query reads: the window counts only
+    rows the turn may see."""
+    from lionagi.state.db import StateDB
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    owned = "deadbeef-0006-2222-3333-444455556666"
+    async with StateDB() as db:
+        prog_owned = str(uuid.uuid4())
+        await db.create_progression(prog_owned)
+        await db.create_session(
+            {
+                "id": owned,
+                "progression_id": prog_owned,
+                "status": "completed",
+                "name": "owned-run",
+                "project": "/Users/admin/acme-research",
+                "started_at": time.time(),
+            }
+        )
+        for index in range(6):
+            foreign = f"deadbeef-{index:04d}-8888-7777-666655554444"
+            prog_foreign = str(uuid.uuid4())
+            await db.create_progression(prog_foreign)
+            await db.create_session(
+                {
+                    "id": foreign,
+                    "progression_id": prog_foreign,
+                    "status": "completed",
+                    "name": "foreign-run",
+                    "project": "/Users/admin/acme-ops",
+                    "started_at": time.time(),
+                }
+            )
+
+    store = OperatorStore(path)
+    cid, request_id = await _make_running_turn(
+        store,
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "project": "/Users/admin/acme-research",
+        },
+    )
+    _set_identity(monkeypatch, path, cid, request_id)
+
+    result = await cancel_run({"run": "deadbeef"})
+
+    assert result["id"] == owned
+    assert result["cancelled"] is False
+    assert result["status"] == "already_terminal"
+
+
 async def test_cancel_run_exact_id_of_a_foreign_project_terminal_run_is_not_found(
     tmp_path, monkeypatch
 ):
@@ -1110,3 +1166,98 @@ async def test_cancel_run_ambiguous_id_prefix_hides_foreign_project_candidates(
         "id": owned,
         "run_untouched": True,
     }
+
+
+# ── cancel_run(): an id-prefix collision reports a bounded candidate window ──
+
+
+async def _seed_prefixed_runs(path: Path, count: int, project: str) -> list[str]:
+    """Seed *count* runs whose ids share one literal prefix, sorted by index,
+    and return those ids in order."""
+    from lionagi.state.db import StateDB
+
+    ids = [f"deadbeef-{index:04d}-2222-3333-444455556666" for index in range(count)]
+    async with StateDB() as db:
+        for sid in ids:
+            progression_id = str(uuid.uuid4())
+            await db.create_progression(progression_id)
+            await db.create_session(
+                {
+                    "id": sid,
+                    "progression_id": progression_id,
+                    "status": "running",
+                    "name": "nightly-triage",
+                    "project": project,
+                    "started_at": time.time(),
+                }
+            )
+    return ids
+
+
+async def test_cancel_run_id_prefix_candidates_cap_at_the_listing_size(tmp_path, monkeypatch):
+    """Seven in-scope runs share an id prefix: cancel proposes no target and
+    reports candidates the same way the read-only resolver does -- at most the
+    CLI helper's listing size, with truncation true because more rows matched
+    than are returned."""
+    from lionagi.cli._util import _CANDIDATES_SHOWN
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    project = "/Users/admin/acme-research"
+    ids = await _seed_prefixed_runs(path, 7, project)
+
+    store = OperatorStore(path)
+    cid, request_id = await _make_running_turn(
+        store,
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "project": project,
+        },
+    )
+    _set_identity(monkeypatch, path, cid, request_id)
+
+    result = await cancel_run({"run": "deadbeef"})
+
+    assert result["cancelled"] is False
+    assert result["reason"] == "ambiguous_reference"
+    assert result["run_untouched"] is True
+    assert len(result["candidates"]) == _CANDIDATES_SHOWN
+    assert set(result["candidates"]) == set(ids[:_CANDIDATES_SHOWN])
+    assert result["truncated"] is True
+    assert await store.list_proposals_for_request(request_id) == []
+
+
+async def test_cancel_run_id_prefix_exactly_the_listing_size_is_not_truncated(
+    tmp_path, monkeypatch
+):
+    """Exactly the listing size of in-scope runs share an id prefix: every
+    match is returned, so nothing was dropped and truncation is false."""
+    from lionagi.cli._util import _CANDIDATES_SHOWN
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    project = "/Users/admin/acme-research"
+    ids = await _seed_prefixed_runs(path, _CANDIDATES_SHOWN, project)
+
+    store = OperatorStore(path)
+    cid, request_id = await _make_running_turn(
+        store,
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "project": project,
+        },
+    )
+    _set_identity(monkeypatch, path, cid, request_id)
+
+    result = await cancel_run({"run": "deadbeef"})
+
+    assert result["cancelled"] is False
+    assert result["reason"] == "ambiguous_reference"
+    assert len(result["candidates"]) == _CANDIDATES_SHOWN
+    assert set(result["candidates"]) == set(ids)
+    assert result["truncated"] is False
+    assert await store.list_proposals_for_request(request_id) == []
