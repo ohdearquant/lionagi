@@ -10,9 +10,10 @@ path, the eviction and compaction paths, and the omission markers one layer
 down).
 
 Record statements are pinned as sentences; code citations are pinned as symbol
-or statement text found inside the cited line range, never as an exact line, so
-an edit elsewhere in the cited file that only shifts the lines does not fail
-this module. Removing the cited symbol does fail it.
+or statement text found inside the exact line range the record cites. That is
+deliberate: the record cites lines, so an edit that moves a cited line makes the
+record wrong, and this module fails until the record is re-cited in the same
+change. Removing the cited symbol fails it too.
 """
 
 from __future__ import annotations
@@ -98,13 +99,37 @@ def _code_block_body(text: str, start: str) -> str:
 def test_contract_block_carries_authority_and_a_required_bounds_field() -> None:
     body = _code_block_body(_adr(), "class SectionBound:")
     assert "authority: SectionAuthority" in body
+    assert "left_out: tuple[LeftOut, ...]" in body
 
-    request = _code_block_body(_adr(), "class CompiledChatRequest:")
-    assert "bounds: tuple[SectionBound, ...]" in request
-    # ``= ()`` is what let a compiled request exist with no bound records, which
-    # is the state the amendment says is inexpressible.
-    assert "bounds: tuple[SectionBound, ...] = " not in request
-    assert "no default" in request
+    # D1 and D7 each show ``CompiledChatRequest``; both blocks must carry the
+    # required field, so each is sliced from its own decision.
+    for where, text in (
+        ("D1", _decision_block(D1_HEADING)),
+        ("D7", _amendment_body()),
+    ):
+        request = _code_block_body(text, "class CompiledChatRequest:")
+        assert "bounds: tuple[SectionBound, ...]" in request, where
+        # ``= ()`` is what let a compiled request exist with no bound records,
+        # which is the state the amendment says is inexpressible.
+        assert "bounds: tuple[SectionBound, ...] = " not in request, where
+        assert "no default" in request, where
+
+
+def test_d1_prose_carries_both_amendment_marks() -> None:
+    normalized = _normalized(_decision_block(D1_HEADING))
+    assert (
+        "Amended by D7: `CompiledChatRequest` also carries `bounds`, the tuple of "
+        "`SectionBound` records, and that field is required, with no default" in normalized
+    )
+    assert "`TurnRequest` also carries `skipped`, the tuple of `LeftOut` records" in normalized
+    assert "Amended by D8: `ContextBlock` also carries `authority`" in normalized
+    assert "whose one constructed value is `MATERIAL`" in normalized
+
+
+def test_d1_contract_says_where_the_d7_types_are_defined() -> None:
+    contract = _code_block_body(_adr(), "from collections.abc import Mapping")
+    assert "SectionAuthority, LeftOut and SectionBound" in contract
+    assert "sit earlier in this module than the classes that use them" in contract
 
 
 def test_context_block_and_section_authority_are_in_d1s_contract() -> None:
@@ -133,8 +158,10 @@ def test_refusal_error_carries_the_bound_records() -> None:
 
 
 def test_reason_vocabulary_is_exactly_the_five_values() -> None:
-    body = _code_block_body(_adr(), "LeftOutReason = Literal[")
-    values = re.findall(r'^\s*"([a-z_]+)",', body, flags=re.MULTILINE)
+    body = _code_block_body(_adr(), "LeftOutReason = Literal[").split("\n]", 1)[0]
+    # Any quoted literal counts, with or without a trailing comma, so a sixth
+    # value in any spelling changes the list.
+    values = re.findall(r'^\s*"([^"]+)",?', body, flags=re.MULTILINE)
     assert values == [
         "per_provider_limit",
         "section_budget",
@@ -231,15 +258,37 @@ def test_d2_carries_the_bounds_step() -> None:
 
 
 def test_d2_renders_tool_output_as_its_own_section() -> None:
-    block = _decision_block(D2_HEADING)
-    assert "Folded action results render in the request's `tool_results` section" in _normalized(
-        block
+    normalized = _normalized(_decision_block(D2_HEADING))
+    assert (
+        "Amended by D7: pending action responses are carried into the request's "
+        "`tool_results` section, never into its prompt context" in normalized
     )
-    assert "so D7's bound applies to them independently of the instruction" in _normalized(block)
-    assert "`tool_results` section in action-response order" in _normalized(block)
-    assert "Pending action responses are carried into the request's `tool_results`" in _normalized(
-        block
+    assert (
+        "Amended by D7: the request's `tool_results` section holds one entry per target "
+        "instruction" in normalized
     )
+    assert "in action-response order" in normalized
+    assert (
+        "Amended by D7: folded action results render in the request's `tool_results` "
+        "section, outside the instruction content" in normalized
+    )
+
+
+def test_d2_places_each_tool_results_entry_in_the_message_sequence() -> None:
+    normalized = _normalized(_decision_block(D2_HEADING))
+    assert "`LIONAGI_TOOL_RESULTS_JSON` line" in normalized
+    assert "`END_LIONAGI_TOOL_RESULTS_JSON` line" in normalized
+    assert "appended to its target instruction's `user` content after that content" in normalized
+    assert "No `CompiledMessage` is added, so the role sequence §3 validates is unchanged" in (
+        normalized
+    )
+    assert "D7's bound applies to the section's entries independently" in normalized
+
+
+def test_d2_bounds_step_names_all_five_sections() -> None:
+    normalized = _normalized(_decision_block(D2_HEADING))
+    assert "system, instruction, history, context, tool_results" in normalized
+    assert "system, history, context, tool_results" not in normalized
 
 
 def test_section_literal_names_tool_results_and_instruction() -> None:
@@ -277,16 +326,34 @@ def test_the_amendment_delta_list_names_row_2() -> None:
     assert "it depends on the row" in _normalized(deltas).lower()
 
 
+def test_the_delta_count_matches_the_rows_listed() -> None:
+    deltas = _decision_block("### Deltas against ADR-0008")
+    rows = re.findall(r"^- ADR-0008 delta \d+ ", deltas, flags=re.MULTILINE)
+    assert len(rows) == 3
+    assert "Three rows of ADR-0008's table touch this amendment" in _normalized(deltas)
+
+
+def test_skipped_reasons_before_delta_2_are_stated_once_and_consistently() -> None:
+    d7 = _normalized(_decision_block(D7_HEADING))
+    assert "`TurnRequest.skipped` cannot be built from that report" in d7
+    assert "the skipped-block marker is implemented with or after delta row 2" in d7
+    deltas = _normalized(_decision_block("### Deltas against ADR-0008"))
+    assert "D7's skipped-block marker, which needs both, waits on this row" in deltas
+
+
 # --- D8 names the constructor and the rule ----------------------------------
 
 
-def test_d8_names_the_per_origin_constructors() -> None:
-    block = _decision_block(D8_HEADING)
-    contract = _code_block_body(_adr(), "class ContextBlock:")
-    for origin in ("from_provider", "from_operator", "from_run_instruction"):
-        assert f"{origin}()" in block, f"{origin} missing from D8's semantics"
-        assert f"def {origin}(" in contract, f"{origin} missing from D1's contract"
-    assert "each sets `authority` from the origin it names" in _normalized(block)
+def test_context_block_has_no_non_material_constructor() -> None:
+    contract = _code_block_body(_adr(), "class ContextBlock:").split("\n\n\n", 1)[0]
+    for absent in ("from_operator", "from_run_instruction", "object.__setattr__", "@classmethod"):
+        assert absent not in contract, f"ContextBlock still offers {absent}"
+    normalized = _normalized(_decision_block(D8_HEADING))
+    assert "`SectionAuthority.MATERIAL` is the only value a `ContextBlock` takes" in normalized
+    assert (
+        "`compile_chat_request()` also raises `ValueError` for a block in "
+        "`TurnRequest.context_blocks` whose `authority` is not `MATERIAL`" in normalized
+    )
 
 
 def test_d8_authority_is_not_settable_by_an_ordinary_builder() -> None:
@@ -297,27 +364,40 @@ def test_d8_authority_is_not_settable_by_an_ordinary_builder() -> None:
     assert "`TypeError`" in block
 
 
-def test_d8_binds_the_provider_path_to_the_material_builder() -> None:
+def test_d8_sets_the_non_material_levels_on_sections_only() -> None:
     normalized = _normalized(_decision_block(D8_HEADING))
-    assert "A provider's result becomes a block through" in normalized
-    assert "which is material by construction" in normalized
+    assert "The two non-material levels are never block values" in normalized
+    assert "`OPERATOR` on the system section's `SectionBound`" in normalized
+    assert "`RUN_INSTRUCTION` on the instruction section's" in normalized
     assert "no provider-supplied value can reach them" in normalized
-    assert "This per-origin construction is what the amendment" in normalized
-    assert "requires of the implementation" in normalized
+    assert "This construction is what the amendment requires of the implementation" in normalized
+
+
+def test_d8_types_every_section_including_history() -> None:
+    normalized = _normalized(_decision_block(D8_HEADING))
+    assert (
+        "The system section carries `OPERATOR`, the instruction section `RUN_INSTRUCTION`, "
+        "and the history, context and tool-results sections `MATERIAL`" in normalized
+    )
+    assert "a section has one authority, the lowest of anything it can hold" in normalized
 
 
 # --- the ReAct removal is given a posture -----------------------------------
 
 
-def test_react_removal_takes_the_skip_posture() -> None:
-    block = _decision_block(D7_HEADING)
-    normalized = _normalized(block)
-    assert "The ReAct context removal, which today drops the caller's context" in normalized
-    assert "takes **skip** on the history section" in normalized
-    assert "so the removal is a stated fact rather than an unrecorded one" in normalized
-    # The gap list walks the same removal and points at the posture that covers it.
-    context = _decision_block("### Context — what the code does today")
-    assert "D7 gives it the **skip** posture above" in _normalized(context)
+def test_react_removal_is_a_stated_step_not_a_left_out() -> None:
+    d2 = _normalized(_decision_block(D2_HEADING))
+    assert "Amended by D7: within one of ReAct's later calls" in d2
+    assert "The unit is the prompt-context item, never the instruction" in d2
+    assert "when the history section keeps no carrier, the current instruction keeps them" in d2
+    assert "this step adds no `left_out` entry" in d2
+    # The bound and the step are ordered so the step cannot turn into a drop.
+    assert "The history bound measures each instruction with the caller's ReAct context" in d2
+    d7 = _normalized(_decision_block(D7_HEADING))
+    assert "De-duplication is not a left-out" in d7
+    assert "no posture, marker or `left_out` entry applies" in d7
+    context = _normalized(_decision_block("### Context — what the code does today"))
+    assert "it is a de-duplication rather than a left-out" in context
 
 
 # --- the gap list lives in the amendment's Context, not the Decision --------
@@ -354,6 +434,14 @@ def test_the_removed_false_claims_are_gone() -> None:
         "| Delta (ADR-0008) | How this amendment narrows it |",
         "bounds: tuple[SectionBound, ...] = ()",
         "assertable without a live model",
+        "the request's `skipped` is built from the reasons D7's vocabulary allows",
+        "Two rows of ADR-0008's table",
+        "takes **skip** on the history section",
+        "D7 gives it the **skip** posture above",
+        "def from_operator(",
+        "def from_run_instruction(",
+        "cited by D2 §3 above",
+        "model-window estimate",
     ):
         assert removed not in text, f"{removed!r} is still in the record"
 
@@ -384,26 +472,26 @@ _PREPARE_MSGS = "lionagi/protocols/messages/prepare.py"
 def test_the_two_refusals_on_the_active_path_are_where_cited() -> None:
     _in_span(
         _PREPARE,
-        295,
-        295,
+        349,
+        349,
         'raise ValueError("First message in progression must be an Instruction or System")',
     )
-    _in_span(_PREPARE, 341, 354, "raise EmptyOutgoingContentError(")
+    _in_span(_PREPARE, 414, 427, "raise EmptyOutgoingContentError(")
 
 
 def test_the_empty_content_guard_tests_the_current_turn() -> None:
-    _in_span(_PREPARE, 310, 311, "_current_turn_rendered = None")
-    _in_span(_PREPARE, 330, 331, "if i == _last_index:", "_current_turn_rendered = rendered")
+    _in_span(_PREPARE, 372, 373, "_current_turn_rendered = None")
+    _in_span(_PREPARE, 403, 404, "if i == _last_index:", "_current_turn_rendered = rendered")
     _in_span(
         _PREPARE,
-        341,
-        341,
+        414,
+        414,
         "if _contents and _has_real_instruction_text(ins.content) and not _current_turn_rendered",
     )
     _in_span(
         _PREPARE,
-        395,
-        408,
+        468,
+        481,
         "def _has_real_instruction_text(content) -> bool:",
         "Deliberately ignores ``guidance``/``prompt_context``",
     )
@@ -447,20 +535,20 @@ def test_compaction_path_replaces_a_span_with_one_summary() -> None:
 
 
 def test_codex_omission_markers_are_the_three_cited_shapes() -> None:
-    _in_span(_CODEX, 995, 998, "[output truncated:", "characters omitted here]")
-    _in_span(_CODEX, 1117, 1120, "items not shown]")
-    _in_span(_CODEX, 1149, 1154, 'note = "[omitted]"', "keys not shown")
+    _in_span(_CODEX, 2015, 2018, "[output truncated:", "characters omitted here]")
+    _in_span(_CODEX, 2137, 2140, "items not shown]")
+    _in_span(_CODEX, 2169, 2174, 'note = "[omitted]"', "keys not shown")
     # The file-change echo repeats the mapping's shape; its payload is the
     # ``{"omitted": ...}`` entry the amendment now names as its own shape.
-    _in_span(_CODEX, 1209, 1212, '{"omitted":', "changes not shown")
+    _in_span(_CODEX, 2229, 2232, '{"omitted":', "changes not shown")
 
 
 def test_amendment_counts_three_codex_marker_shapes_and_cites_each() -> None:
     normalized = _normalized(_amendment_body())
     assert "in three shapes" in normalized
-    for cited in (":995-998", ":1117-1120", ":1149-1154"):
+    for cited in (":2015-2018", ":2137-2140", ":2169-2174"):
         assert cited in normalized, f"{cited} is not cited for its marker shape"
-    assert ":1209-1212" in normalized
+    assert ":2229-2232" in normalized
     # The fourth site is the same mapping shape, said so, not a fourth shape.
     assert "A fourth site repeats the mapping's shape rather than adding a new one" in normalized
     # The ``{"omitted": ...}`` entry the file-change echo appends is described as its
@@ -492,16 +580,16 @@ def test_the_skipped_block_renders_the_same_marker() -> None:
     assert "section=context" in normalized
 
 
-def test_react_context_removal_is_listed_as_a_left_out() -> None:
+def test_react_context_removal_is_listed_in_the_starting_state() -> None:
     normalized = _normalized(_amendment_body())
-    assert "a second, narrower left-out exists inside one ReAct turn's later calls" in normalized
-    assert "(`lionagi/operations/chat/_prepare.py:191-232`)" in normalized
+    assert "a second, narrower removal exists inside one ReAct turn's later calls" in normalized
+    assert "(`lionagi/operations/chat/_prepare.py:234-280`)" in normalized
     # The removal the sentence cites is where the cited range shows it: the first
     # carrier keeps the context and the later carriers drop it.
     _in_span(
         _PREPARE,
-        191,
-        232,
+        234,
+        280,
         "_leave_out = set(carriers[1:])",
         "_without_context(ins, shown)",
         "if i in _leave_out:",
@@ -509,13 +597,13 @@ def test_react_context_removal_is_listed_as_a_left_out() -> None:
 
 
 def test_the_file_change_echo_call_site_is_where_cited() -> None:
-    _in_span(_CODEX, 1384, 1384, "_bounded_changes(changes)")
+    _in_span(_CODEX, 2418, 2418, "_bounded_changes(changes)")
 
 
 def test_amendment_cites_the_value_error_guard_by_line() -> None:
     normalized = _normalized(_amendment_body())
     assert "raises a `ValueError` when the" in normalized
-    assert "(`lionagi/operations/chat/_prepare.py:295`, cited by D2 §3 above)" in normalized
+    assert "(`lionagi/operations/chat/_prepare.py:349`, quoted by D2 §3 above)" in normalized
 
 
 def test_operations_types_module_holds_the_operation_shapes() -> None:
@@ -529,18 +617,18 @@ def test_operations_types_module_holds_the_operation_shapes() -> None:
 
 
 def test_the_active_prepare_path_is_still_the_one_cited() -> None:
-    _in_span(_PREPARE, 174, 180, "def _prepare_run_kwargs(")
-    _in_span(_PREPARE, 180, 180, "context_blocks: Sequence[str] | None = None")
-    _in_span(_PREPARE, 285, 286, 'injected = "\\n".join(context_blocks) if context_blocks else ""')
-    _in_span(_PREPARE, 234, 239, "_collect_action_dicts(_act_res)")
+    _in_span(_PREPARE, 194, 194, "def _prepare_run_kwargs(")
+    _in_span(_PREPARE, 200, 200, "context_blocks: Sequence[str] | None = None")
+    _in_span(_PREPARE, 335, 338, 'injected = "\\n".join(context_blocks) if context_blocks else ""')
+    _in_span(_PREPARE, 282, 287, "_collect_action_dicts(_act_res)")
     _in_span(
         _PREPARE,
-        249,
-        254,
+        299,
+        304,
         "current.with_updates(prompt_context=extended_ctx)",
     )
     _in_span("lionagi/operations/chat/chat.py", 62, 62, "_prepare_run_kwargs(")
-    _in_span("lionagi/operations/run/run.py", 429, 429, "_prepare_run_kwargs(")
+    _in_span("lionagi/operations/run/run.py", 466, 466, "_prepare_run_kwargs(")
     _in_span(_PREPARE_MSGS, 100, 100, "def prepare_messages_for_chat(")
 
 
@@ -558,7 +646,7 @@ def test_the_registry_and_counters_are_where_cited() -> None:
         '"writeback_failed": 0,',
     )
     _in_span(_BRANCH, 291, 303, "def last_context_report(self):", "``skipped``")
-    _in_span("lionagi/cli/monitor.py", 669, 680, '"blocks_injected",')
+    _in_span("lionagi/cli/monitor.py", 670, 681, '"blocks_injected",')
 
 
 def test_the_untyped_authority_and_budget_shapes_are_where_cited() -> None:
@@ -575,5 +663,25 @@ def test_the_untyped_authority_and_budget_shapes_are_where_cited() -> None:
         88,
         "def lookup_context_window(model_name: str, provider: str | None = None) -> int:",
     )
-    _in_span("lionagi/service/token_budget.py", 150, 150, "def get_token_budget(branch: Branch)")
+    _in_span(
+        "lionagi/service/token_budget.py",
+        128,
+        147,
+        "def get_context_window(branch: Branch) -> int:",
+        "return lookup_context_window(model_name, provider)",
+    )
+    _in_span(
+        "lionagi/service/token_budget.py",
+        150,
+        150,
+        "def get_token_budget(branch: Branch)",
+    )
     _in_span("lionagi/agent/nudge.py", 207, 207, "get_token_budget(self.branch)")
+    assert "the model-window lookup" in _normalized(_amendment_body())
+
+
+def test_the_prompt_cache_mode_is_where_cited() -> None:
+    _in_span(_PREPARE, 209, 209, "places_cache = ")
+    _in_span(_PREPARE, 336, 337, "if places_cache:", "return injected + g")
+    _in_span(_PREPARE, 360, 367, 'kw["system_blocks"] = stable')
+    assert "With ADR-0127's prompt-cache option on (`:209`)" in _normalized(_amendment_body())

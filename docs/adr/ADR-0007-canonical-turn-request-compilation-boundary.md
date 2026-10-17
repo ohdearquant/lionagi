@@ -99,6 +99,9 @@ from pydantic import BaseModel
 from lionagi.operations.schema.structure import Structure
 from lionagi.protocols.messages import Instruction, MessageRole
 
+# Amended by D7 and D8: SectionAuthority, LeftOut and SectionBound, whose definitions
+# are D7's contract below, sit earlier in this module than the classes that use them.
+
 
 @dataclass(frozen=True, slots=True)
 class ContextBlock:
@@ -107,29 +110,6 @@ class ContextBlock:
     authority: SectionAuthority = field(  # Amended by D8
         default=SectionAuthority.MATERIAL, init=False
     )
-
-    @classmethod
-    def from_provider(cls, provider_name: str, content: str) -> "ContextBlock":
-        """A registry's block: authority is MATERIAL by construction."""
-        return cls._of(SectionAuthority.MATERIAL, provider_name, content)
-
-    @classmethod
-    def from_operator(cls, provider_name: str, content: str) -> "ContextBlock":
-        """Operator text: authority is OPERATOR by construction."""
-        return cls._of(SectionAuthority.OPERATOR, provider_name, content)
-
-    @classmethod
-    def from_run_instruction(cls, provider_name: str, content: str) -> "ContextBlock":
-        """The caller's instruction: authority is RUN_INSTRUCTION by construction."""
-        return cls._of(SectionAuthority.RUN_INSTRUCTION, provider_name, content)
-
-    @classmethod
-    def _of(
-        cls, authority: SectionAuthority, provider_name: str, content: str
-    ) -> "ContextBlock":
-        block = cls(provider_name=provider_name, content=content)
-        object.__setattr__(block, "authority", authority)
-        return block
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,9 +152,9 @@ default.
 Amended by D7: `CompiledChatRequest` also carries `bounds`, the tuple of `SectionBound` records,
 and that field is required, with no default; `TurnRequest` also carries `skipped`, the tuple of
 `LeftOut` records naming the entries the context registry did not admit, each with its reason.
-Amended by D8: `ContextBlock` also carries `authority`, a `SectionAuthority` set from the origin
-that built the block rather than passed by the caller. The additions are defined in Amendment 1
-below.
+Amended by D8: `ContextBlock` also carries `authority`, a `SectionAuthority` that no constructor
+argument sets and whose one constructed value is `MATERIAL`. The additions are defined in
+Amendment 1 below.
 
 After migration, the durable instruction content contract is reduced to provider-neutral fields:
 
@@ -274,8 +254,8 @@ The compiler walks the selected records once:
 - `ActionResponse` records are accumulated until the next historical `Instruction`.
 - `AssistantResponse` becomes an ephemeral copy of `AssistantResponseContent`.
 - `Instruction` becomes an ephemeral copy with `tool_schemas=()`, `response_format=None`, and no
-  structure instance. Pending action responses are carried into the request's `tool_results`
-  section, never into its prompt context.
+  structure instance. Amended by D7: pending action responses are carried into the request's
+  `tool_results` section, never into its prompt context.
 - A base `Message` or other record whose role is `unset` is ignored; routed traffic is not a
   provider conversation turn.
 - Any future fixed-role conversational subtype not covered above raises `TypeError` so adding a
@@ -291,10 +271,19 @@ Action responses use the current provider-visible projection:
 }
 ```
 
-For each target instruction, projected dictionaries append to the request's `tool_results`
-section in action-response order. A dictionary already equal to an existing prompt-context item
-is not appended again. Pending responses after the last historical instruction belong to the
-current turn's tool-results entry.
+Amended by D7: the request's `tool_results` section holds one entry per target instruction. An
+entry is the projected dictionaries of the action responses that precede its instruction, in
+action-response order, skipping a dictionary equal to one already in the entry or in that
+instruction's prompt context. Responses after the last historical instruction form the current
+instruction's entry. §5 fixes where each entry renders.
+
+Amended by D7: within one of ReAct's later calls, the caller's context items render once per
+request. Of the instructions the history section keeps under its bound (§6), the first that
+carries those items keeps them, and every later rendered instruction carrying them, the current
+one included, renders without them; when the history section keeps no carrier, the current
+instruction keeps them. The unit is the prompt-context item, never the instruction, and only this
+request's ephemeral copies change. No item leaves the request, since each still renders once, so
+this step adds no `left_out` entry.
 
 #### 3. Validate conversation ordering and merge assistant runs
 
@@ -337,8 +326,13 @@ decision in ADR-0008.
   Historical views render only durable sections; the current ephemeral view additionally renders
   the TurnRequest's Tools, ResponseSchema, and ResponseFormat sections.
 - Each assistant response renders its normalized text and has role `assistant`.
-- Folded action results render in the request's `tool_results` section, one section per request,
-  outside the instruction content, so D7's bound applies to them independently of the instruction.
+- Amended by D7: folded action results render in the request's `tool_results` section, outside
+  the instruction content. Each entry from §2 renders as one block, its dictionaries as a
+  canonical JSON array (D3's encoding) between a `LIONAGI_TOOL_RESULTS_JSON` line and an
+  `END_LIONAGI_TOOL_RESULTS_JSON` line, appended to its target instruction's `user` content after
+  that content, as a trailing text part when the content is a multimodal list. No
+  `CompiledMessage` is added, so the role sequence §3 validates is unchanged, and D7's bound
+  applies to the section's entries independently of the instructions they follow.
 - A falsy rendered value is omitted, matching the active path.
 - Multimodal instruction content remains a list containing a text part and `image_url` parts.
 - The returned `messages` tuple preserves the final content order.
@@ -348,12 +342,14 @@ decision in ADR-0008.
 #### 6. Apply section bounds and record both states (Amended by D7)
 
 After the sections are assembled and rendered, the compiler applies each section's declared bound
-and returns one `SectionBound` per section — system, history, context, tool_results — in
-`CompiledChatRequest.bounds`. A section within its bound keeps everything, and its record carries
+and returns one `SectionBound` per section — system, instruction, history, context, tool_results —
+in `CompiledChatRequest.bounds`. A section within its bound keeps everything, and its record carries
 an empty `left_out`. A truncating section renders D7's marker inside itself and carries one
 `left_out` entry per dropped item. A refusing section raises `SectionBudgetRefused` before the
 provider call, and its records travel on that error. The step measures rendered text and never
-mutates history.
+mutates history. The history bound measures each instruction with the caller's ReAct context
+items in, so the §2 step that removes them, which runs over the records the bound kept, only
+shortens what the bound admitted.
 
 The algorithm has no retry, timeout, token cap, or provider call. It is deterministic for the
 branch snapshot and `TurnRequest` supplied. Callers that require a stable snapshot must avoid
@@ -536,18 +532,18 @@ lines:
   `TurnRequest`, `ContextBlock`, `CompiledMessage`, `CompiledChatRequest`, `compile_chat_request`
   and any authority type are absent from it; `_prepare_run_kwargs()` is still the active chat/run
   path
-  (`lionagi/operations/chat/_prepare.py:174`, called from `lionagi/operations/chat/chat.py:62`
-  and `lionagi/operations/run/run.py:429`), and `prepare_messages_for_chat()` still stands
+  (`lionagi/operations/chat/_prepare.py:194`, called from `lionagi/operations/chat/chat.py:62`
+  and `lionagi/operations/run/run.py:466`), and `prepare_messages_for_chat()` still stands
   separately (`lionagi/protocols/messages/prepare.py:100`);
 - kept versus dropped: over a per-provider cap or over the total budget, the registry appends
   the provider name to `ProviderReport.skipped` and moves on
   (`lionagi/protocols/context_providers.py:115-117` and `:129-132`). Only the surviving texts
   are threaded into compilation, as `context_blocks: Sequence[str]`
-  (`lionagi/operations/chat/_prepare.py:180`), and joined into the guidance fold with no marker
-  (`:285-286`). The prompt therefore shows the kept state alone and never says material was
+  (`lionagi/operations/chat/_prepare.py:200`), and joined into the guidance fold with no marker
+  (`:335-338`). The prompt therefore shows the kept state alone and never says material was
   dropped;
 - outside the call, aggregate counters exist (`lionagi/protocols/context_providers.py:63-70`)
-  and render per session (`lionagi/cli/monitor.py:669-680`), and `branch.last_context_report`
+  and render per session (`lionagi/cli/monitor.py:670-681`), and `branch.last_context_report`
   exposes one turn's names (`lionagi/session/branch.py:291-303`). Those are event counts: they
   do not say what that same call kept, and one `skipped` list merges two causes with no reason
   code;
@@ -564,42 +560,45 @@ lines:
   The summary is what the compiler sees, and it does not say which records it stands for;
 - in-context omission markers do exist, one layer down, in the Codex provider, in three shapes: a
   head-and-tail cut of a bounded tool result's text, counting characters
-  (`lionagi/providers/openai/codex.py:995-998`); a list's tail replaced by an item counting the
-  entries left out (`:1117-1120`); and a mapping's `"[omitted]"` entry counting the keys left out
-  (`:1149-1154`). A fourth site repeats the mapping's shape rather than adding a new one: the
+  (`lionagi/providers/openai/codex.py:2015-2018`); a list's tail replaced by an item counting the
+  entries left out (`:2137-2140`); and a mapping's `"[omitted]"` entry counting the keys left out
+  (`:2169-2174`). A fourth site repeats the mapping's shape rather than adding a new one: the
   file-change echo appends its own `{"omitted": "<n> of <m> changes not shown"}` entry once per
-  file-change item (`lionagi/providers/openai/codex.py:1209-1212`, called from `:1384`), so the
+  file-change item (`lionagi/providers/openai/codex.py:2229-2232`, called from `:2418`), so the
   same mapping shape appears twice. None names a section: they count characters or entries. This
   amendment generalizes the posture, not the shape; that provider's own bounds are unchanged;
 - refusal exists twice on the active path. `_prepare_run_kwargs()` raises a `ValueError` when the
   first retained message under a system message is not an Instruction
-  (`lionagi/operations/chat/_prepare.py:295`, cited by D2 §3 above), and it raises
+  (`lionagi/operations/chat/_prepare.py:349`, quoted by D2 §3 above), and it raises
   `EmptyOutgoingContentError` when the current turn renders empty despite carrying caller text
-  or images (`:341-354`). That guard tests the current turn, the last entry appended to the
+  or images (`:414-427`). That guard tests the current turn, the last entry appended to the
   assembled list, not the whole list: `_current_turn_rendered` is captured for
-  `_last_index` (`:310-311`, `:330-331`) and `_has_real_instruction_text()` deliberately ignores
-  the guidance and prompt context this module injects (`:395-408`). No section boundary refuses
+  `_last_index` (`:372-373`, `:403-404`) and `_has_real_instruction_text()` deliberately ignores
+  the guidance and prompt context this module injects (`:468-481`). No section boundary refuses
   over its own budget;
 - authority: no type exists. Retrieved blocks arrive as bare strings, system text is
   `branch.msgs.system.rendered`, caller guidance is the durable `guidance`, and folded action
-  results are dicts appended to `prompt_context` (`lionagi/operations/chat/_prepare.py:234-239`,
-  `:249-254`); all of them meet in one minimal-YAML rendering, where caller prompt context and
+  results are dicts appended to `prompt_context` (`lionagi/operations/chat/_prepare.py:282-287`,
+  `:299-304`); all of them meet in one minimal-YAML rendering, where caller prompt context and
   tool output share the same "Context" field
   (`lionagi/protocols/messages/instruction.py:206-218`). Material and instruction are one
-  untyped list;
-- a second, narrower left-out exists inside one ReAct turn's later calls: the current request
+  untyped list. With ADR-0127's prompt-cache option on (`:209`), the system text and the tool
+  set go out as their own system blocks instead (`:336-337`, `:360-367`), and the rest still
+  meet in the instruction;
+- a second, narrower removal exists inside one ReAct turn's later calls: the current request
   renders the caller's context once, on the first rendered instruction carrying it, and later
   rendered instructions, the current turn included, go out with those items removed
-  (`lionagi/operations/chat/_prepare.py:191-232`). Only that request's copies change, and no
-  marker or record states the removal, so it is a third form of silent dropping the compiler has
-  to account for. D7 gives it the **skip** posture above, so it becomes a stated left-out entry
-  rather than a silent removal;
+  (`lionagi/operations/chat/_prepare.py:234-280`). Only that request's copies change, and no
+  marker or record states the removal. No item leaves the request, since each renders once, so
+  it is a de-duplication rather than a left-out: D2 §2 now states it as a compiler step, and D7
+  records why it carries no `left_out` entry;
 - per-section bounds: none. The registry has one total (`_DEFAULT_BUDGET = 2000`,
   `lionagi/protocols/context_providers.py:25`) and per-provider maxima; nothing bounds the
   system section, and the history section is shaped before compilation by the active view rather
-  than by a bound. What exists for history and tool results is the model-window estimate
-  (`lionagi/service/token_budget.py:88`, consumed by `get_token_budget()` at `:150`), whose
-  result informs the nudger (`lionagi/agent/nudge.py:207`) rather than the compiler, so it never
+  than by a bound. What exists for history and tool results is the model-window lookup
+  (`lookup_context_window()`, `lionagi/service/token_budget.py:88`, reached through
+  `get_context_window()` at `:128-147`, the limit `get_token_budget()` at `:150` measures usage
+  against), whose result informs the nudger (`lionagi/agent/nudge.py:207`) rather than the compiler, so it never
   cuts or records anything.
 
 ### D7 — Every bound has two visible states
@@ -617,11 +616,12 @@ two postures, and a section that keeps none takes a third:
   context block takes this posture: it is admitted whole or left out whole, which is the
   no-partial-truncation rule ADR-0008 D3 already fixes.
 
-Removal is not silent either. The ReAct context removal, which today drops the caller's context
-from every later rendered instruction of one turn, takes **skip** on the history section: the
-section keeps the first instruction that carries the context and leaves out the later copies,
-each named in the section's `left_out` with reason `truncated`, so the removal is a stated fact
-rather than an unrecorded one.
+De-duplication is not a left-out. The ReAct context removal, which today takes the caller's
+context items out of every later rendered instruction of one turn with nothing stating it, is
+D2 §2's stated step: each item still renders once, on the first kept instruction carrying it, so
+no material leaves the request and no posture, marker or `left_out` entry applies. What would
+make it a drop is excluded there: the history bound measures instructions with the items in,
+and when the bound keeps no carrier the current instruction keeps them.
 
 The record states both states of the bound: what the section kept and what it left out. A
 section that dropped nothing still produces its record, with an empty left-out set, so the
@@ -721,8 +721,10 @@ Exact semantics:
   the entries the context registry did not admit and the reason for each, so the compiler renders
   the marker from the request rather than from a name-only report. ADR-0008 delta row 2 is the
   source of those reasons: it replaces the report's loose `skipped` name list with one typed
-  outcome per provider, carrying a stable reason code. Until that row lands, the request's
-  `skipped` is built from the reasons D7's vocabulary allows;
+  outcome per provider, carrying a stable reason code. Until that row lands, the shipped report
+  names a skipped provider without its reason and `LeftOut.reason` is required, so
+  `TurnRequest.skipped` cannot be built from that report: the skipped-block marker is
+  implemented with or after delta row 2;
 - the marker for a skipped context block renders outside D3's envelope, as one text line
   immediately above the `LIONAGI_CONTEXT_BLOCKS_JSON` opening line, inside the same guidance
   section. It is not a JSON entry, so D3's array stays a parseable array of retained blocks;
@@ -735,22 +737,25 @@ Every compiled section is typed with an authority level: operator/system authori
 instruction, or material. Retrieved rows, tool output, and any text relayed into the request
 from outside the operator or the branch's validated caller are material. The compiled artifact
 preserves these markings, so the audit question — which sections that could have instructed the
-model entered this call — is a query over the compiled request. The instruction section carries
-`RUN_INSTRUCTION`, the system section `OPERATOR`, and the context and tool-results sections
-`MATERIAL`.
+model entered this call — is a query over the compiled request. The system section carries
+`OPERATOR`, the instruction section `RUN_INSTRUCTION`, and the history, context and tool-results
+sections `MATERIAL`. History is material because a section has one authority, the lowest of
+anything it can hold, and history holds earlier assistant turns, which can restate retrieved rows
+and tool output; an earlier turn's instruction is therefore never this call's instruction.
 
 Exact semantics:
 
-- `SectionAuthority.MATERIAL` is the only default. A `ContextBlock` is built through one
-  classmethod per origin — `from_provider()`, `from_operator()`, `from_run_instruction()` — and
-  each sets `authority` from the origin it names. `authority` is declared `init=False`, so the
-  ordinary constructor takes no authority argument: `ContextBlock(provider_name, content)` is
-  material, and `ContextBlock(provider_name, content, SectionAuthority.OPERATOR)` raises
-  `TypeError` instead of building a block. A provider's result becomes a block through
-  `from_provider()`, which is material by construction, and the two non-material levels are set
-  only by the builder the compiler calls for the section that owns that text, so no
-  provider-supplied value can reach them. This per-origin construction is what the amendment
-  requires of the implementation;
+- `SectionAuthority.MATERIAL` is the only value a `ContextBlock` takes. `authority` is declared
+  `init=False` with that default, so the constructor takes no authority argument:
+  `ContextBlock(provider_name, content)` is material, and
+  `ContextBlock(provider_name, content, SectionAuthority.OPERATOR)` raises `TypeError` instead of
+  building a block. `compile_chat_request()` also raises `ValueError` for a block in
+  `TurnRequest.context_blocks` whose `authority` is not `MATERIAL`, which covers a value forced
+  past the constructor. The two non-material levels are never block values: the compiler sets
+  `OPERATOR` on the system section's `SectionBound`, built from `branch.msgs.system`, and
+  `RUN_INSTRUCTION` on the instruction section's, built from `TurnRequest.instruction`. No
+  provider supplies either input, so no provider-supplied value can reach them. This
+  construction is what the amendment requires of the implementation;
 - the carrier is the contract itself: `ContextBlock` gains `authority: SectionAuthority`,
   defaulting to `SectionAuthority.MATERIAL`, on D1's type, and `SectionBound` gains `authority`
   in D7's contract, so each compiled section states the authority of the material in it. Both
@@ -758,9 +763,9 @@ Exact semantics:
 - a block's authority reaches the compiled prompt as data: D3's canonical JSON entry gains an
   `authority` key carrying `block.authority.value`, and `sort_keys`, escaping and the envelope
   delimiters are unchanged;
-- the check is the constructor itself: the ordinary signature takes no authority argument, so a
-  material block cannot be built as operator text. The refusal is a `TypeError` raised by the
-  signature, testable without a live model;
+- the checks are the constructor and the compiler: the signature takes no authority argument, so
+  a block cannot be built as operator text, and the compiler refuses a non-material block
+  however it was made. Both refusals are testable without a live model;
 - this is an auditability and containment-at-assembly decision. It does not claim the model
   obeys the distinction, and it does not replace D3's statement that attribution and syntactic
   encoding do not authorize instructions found in retrieved text.
@@ -768,7 +773,7 @@ Exact semantics:
 ### Deltas against ADR-0008
 
 This ADR is Aspirational and enumerates target decisions, so it carries no current-vs-ideal delta
-table of its own. Two rows of ADR-0008's table touch this amendment, and they are named here
+table of its own. Three rows of ADR-0008's table touch this amendment, and they are named here
 rather than edited there, because they stay open on that record.
 
 - ADR-0008 delta 1 — add source-attributed data envelopes and separators between system text,
@@ -779,8 +784,9 @@ rather than edited there, because they stay open on that record.
   provider, carrying stable reason codes and token counts. D7 does not decide this row: it does
   not replace `ProviderReport`. It depends on the row for one input, the reason each skipped
   provider was skipped: `TurnRequest.skipped` carries `LeftOut` records, and their reasons come
-  from the per-provider outcome delta 2 defines. Until that row lands, the compiler can name a
-  skipped provider but not the reason the shipped report does not carry.
+  from the per-provider outcome delta 2 defines. Until that row lands, the shipped report gives a
+  skipped provider's name but not its reason, so D7's skipped-block marker, which needs both,
+  waits on this row.
 - ADR-0008 delta 4 — name the existing total limit as a rendered-token budget and decide whether
   invocation cost also needs a bound. D7 does not decide this row: it does not name the existing
   total as a rendered-token budget, and it does not decide whether invocation cost needs a bound.
