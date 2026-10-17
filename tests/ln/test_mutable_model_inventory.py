@@ -2,30 +2,49 @@
 
 The scan follows imports, reexports, lexical name/attribute aliases (assignments,
 assignment expressions, and loop targets over a literal tuple, list or set) and
-declared inheritance. A name bound in more than one place resolves to every value it
-was given, so a fallback in an ``except`` clause cannot hide the import it replaces. A name
-a nested suite binds keeps the value it held before the suite among them: an enclosing
-scope's binding, a function parameter, or the module global or builtin it names, so a
-branch that may not run cannot replace it. A dotted name resolves through every value its
-root was given, and ``super`` called with arguments is refused as a writer.
+declared inheritance. A name a nested suite binds keeps the value it held before the suite
+among them: an enclosing scope's binding, a function parameter, or the module global or
+builtin it names, so a branch that may not run cannot replace it. A dotted name resolves
+through every value its root was given.
 Calls are read in every expression a statement evaluates, including tests, context
 managers, loop iterables, return values, assertions and match subjects and guards. Every
 statement body is walked, a ``match`` statement's case clauses included, and a statement
 kind the walk cannot classify is reported rather than skipped.
 
-The scan fails closed by construction: it reads only the shapes it fully understands, and
-refuses every other one. The shapes it reads are a class base that is a plain name or a
-dotted attribute whose resolved symbol is a declared class, a builtin class, an imported
-symbol or ``Generic``; class keywords, decorator keywords and ``model_config`` entries
-written as named keyword arguments; a ``model_config`` value given as a dict literal with
-string keys and constant values, or as a call to ``ConfigDict`` or ``dict`` whose own
-arguments are named keyword arguments with constant values; and a ``model_config`` assigned
-to a single plain name. A decorator is read when its resolved symbol is one of the audited
-names on the allow-list. A class body binds ``__hash__``, ``__eq__``, ``model_config`` or
-``Config`` only in a form the scan fully reads, and every other binding of one of those
-names is refused. Everything else is a "cannot read" violation, naming the file and line: a
-statement kind the walk does not know, a class base, class keyword or decorator outside
-those forms, an attribute assignment whose owner is not a plain name, an assignment to
+The scan is fail-closed, and the property that makes the rule checkable is this. A form
+whose meaning the scan cannot resolve to a single value is refused as "cannot read" rather
+than guessed at, and a refusal is never resolved by choosing one of the values a name might
+hold. A rule that protects the property is observable when it is undone: a sample that
+defines or reaches a hashable mutable descendant -- a class descending from
+``HashableModel`` or ``DataClass`` -- or one that writes ``__hash__`` or a frozen
+configuration onto a family class, scans with no violation and no refusal. The tests below
+reproduce each such sample, watch it scan clean with the rule removed, and confirm that the
+rule refuses it. Refusing a form the framework's own tree never writes is acceptable; what
+is not acceptable is a form the tree does write that the scan cannot read.
+
+The shapes the scan reads are a class base that is a plain name or a dotted attribute
+whose resolved symbol is a declared class, a builtin class, an imported symbol or
+``Generic``; class keywords, decorator keywords and ``model_config`` entries written as
+named keyword arguments; a ``model_config`` value given as a dict literal with string keys
+and constant values, or as a call to ``ConfigDict`` or ``dict`` whose own arguments are
+named keyword arguments with constant values; and a ``model_config`` assigned to a single
+plain name. A decorator is read when its resolved symbol is one of the audited
+names on the allow-list, once every module's aliases have resolved. A class body binds
+``__hash__``, ``__eq__``, ``model_config`` or ``Config`` only in a form the scan fully
+reads, and every other binding of one of those names is refused. A class name declared
+twice in one scope is refused, because only the last declaration would remain. A base, a
+decorator, a ``setattr`` target or a class body's write target is read only when the name
+it uses was bound once, before its use, in the scope it resolves in, and resolves to a
+single readable value; a name bound twice, bound after its use, taken from a subscript,
+given a value the scan does not read, or declared ``global`` or ``nonlocal`` in a function
+is refused rather than resolved, because which binding applies is decided by runtime order
+the scan does not model. ``super`` is read as a writer only through the bare builtin form,
+and only when the name resolves to nothing but ``builtins.super``. A call that carries a
+hash keyword and passes a class the scan inventories is refused, because the scan does not
+follow what the call does with the class. Everything else is a "cannot read" violation,
+naming the file and line: a statement kind the walk does not know, a class base, class
+keyword or decorator outside those forms, an attribute assignment whose owner is not a
+plain name, an assignment to
 ``__bases__``, ``__class__`` or ``__mro__``, an assignment outside a class body to
 ``__hash__``, ``__eq__`` or ``model_config``, a ``del`` of an attribute whose owner is not a
 plain name, a class built by a ``type(...)`` call, and a ``setattr``, ``delattr`` or
@@ -235,6 +254,16 @@ class _Scan:
     symbols: set[str]
     writes: list[tuple[str, str]]
     refusals: list[tuple[str, str]]
+    # How many times each name was given a new value, by the alias key of its scope -- an
+    # assignment, a walrus or a loop target. A name given a second value holds more than
+    # one, and which a reference receives is decided by runtime order the scan does not
+    # model, so it is refused where a base, decorator or target needs it resolved. A
+    # declared class or an import binds the name once and is not counted.
+    binds: dict[str, int] | None = None
+    # The ``<scope>.<name>`` keys a function declared ``global`` or ``nonlocal``. Such a
+    # binding writes a name outside the scope the scan walks under, so the scan cannot
+    # follow it and refuses a base, decorator or target it supplies.
+    declared: set[str] | None = None
 
 
 def _symbol(node: ast.AST, bindings: dict[str, str], module: str) -> str | None:
@@ -389,6 +418,35 @@ def _name_candidates(
     return candidates
 
 
+def _visible_candidates(
+    node: ast.AST,
+    aliases: dict[str, set[str]],
+    module: str,
+    bindings: dict[str, str],
+    scope: str,
+) -> set[str] | None:
+    """Every value a bare name can hold in *scope*, through every binding it can see.
+
+    A name resolves in the innermost scope that binds it, but a second binding of the same
+    spelling in an enclosing scope is still a value some references receive -- a module
+    rebinding seen from inside a function that does not rebind it, most often -- so every
+    value the name can hold is returned rather than the single one the innermost binding
+    names. A name no scope here binds resolves to the builtin it names.
+    """
+    keys = _binding_keys(node, scope)
+    if keys is None:
+        return None
+    candidates: set[str] = set()
+    for key in keys:
+        for value in aliases.get(key, set()):
+            candidates |= _canonicals(value, aliases)
+    if not candidates:
+        symbol = _symbol(node, bindings, module)
+        if symbol is not None:
+            candidates |= _canonicals(symbol, aliases)
+    return candidates
+
+
 def _readable_symbol(candidate: str, module: str, classes: set[str]) -> bool:
     """Whether one resolved symbol is a base, decorator or config the scan can follow.
 
@@ -416,6 +474,10 @@ def _readable_base(
     symbols: set[str],
     bindings: dict[str, str] | None = None,
     key: str | None = None,
+    owner: str | None = None,
+    before: dict[str, frozenset[str]] | None = None,
+    scope: str = "",
+    counts: dict[str, int] | None = None,
 ) -> bool:
     """Whether a class base is a plain name or a dotted attribute the scan reads.
 
@@ -431,10 +493,139 @@ def _readable_base(
     class it builds would go unread. A name with one unreadable binding is refused even
     when another binding is a declared class.
     """
+    if owner and not _read_once(node, aliases, bindings, before, scope, counts):
+        # The name was bound more than once in an enclosing scope, bound after this class
+        # was declared, or declared ``global``/``nonlocal``; the scan does not resolve
+        # which value the class received, so the base is refused rather than guessed.
+        return False
     candidates = _name_candidates(node, aliases, module, symbols, bindings, key)
     return bool(candidates) and all(
         _readable_symbol(candidate, module, classes) for candidate in candidates
     )
+
+
+def _binding_keys(node: ast.AST, scope: str) -> set[str] | None:
+    """The alias keys a reference to *node* can see from *scope*, or ``None``.
+
+    A name resolves in the scope a reference sits in and in each scope enclosing it, and a
+    binding in any other scope -- a sibling function's local, another module's global -- is
+    not a value this reference can reach. The keys are therefore the name bound in *scope*
+    and in each scope enclosing it, out to the module: what the caller reads is only what
+    the reference could see.
+    """
+    if not _plain_dotted(node):
+        return None
+    root = node
+    while isinstance(root, ast.Attribute):
+        root = root.value
+    if not isinstance(root, ast.Name):
+        return None
+    keys = {f"{root.id}"}
+    parts = scope.split(".")
+    while parts:
+        keys.add(".".join([*parts, root.id]))
+        parts.pop()
+    return keys
+
+
+def _bindings_of(
+    node: ast.AST, aliases: dict[str, set[str]], scope: str
+) -> dict[str, frozenset[str]] | None:
+    """The values the reference *node* sees, keyed by the binding it would read.
+
+    The values are taken when the reference is read, so the caller can tell a binding made
+    after the reference from one that was already there.
+    """
+    keys = _binding_keys(node, scope)
+    if keys is None:
+        return None
+    return {
+        key: frozenset(aliases[key]) for key in keys if key in aliases
+    }
+
+
+def _binding_count(node: ast.AST, counts: dict[str, int] | None, scope: str) -> int:
+    """How many times the name *node* roots at was bound in the scope it resolves in.
+
+    A name resolves in the innermost scope that binds it -- a function local before the
+    module global of the same spelling -- so the count is taken for that scope alone. A
+    name bound more than once there -- by a second assignment, by a fallback in an
+    ``except`` clause or an ``if`` arm, by a rebinding after its use -- holds more than one
+    value, and which value a reference receives is decided by runtime order the scan does
+    not model. The count is what the scan refuses on rather than the values, so a name it
+    cannot resolve is never guessed at.
+    """
+    keys = _binding_keys(node, scope)
+    if keys is None or counts is None:
+        return 0
+    for key in _innermost_first(node, scope):
+        if key in counts:
+            return counts[key]
+    return 0
+
+
+def _innermost_first(node: ast.AST, scope: str) -> list[str]:
+    """The alias keys *node* can resolve through, innermost scope first.
+
+    The root name bound in the reference's own scope comes first, then the same name in
+    each scope enclosing it out to the module, which is the order Python looks them up in.
+    """
+    if not _plain_dotted(node):
+        return []
+    root = node
+    while isinstance(root, ast.Attribute):
+        root = root.value
+    if not isinstance(root, ast.Name):
+        return []
+    keys = [root.id]
+    parts = scope.split(".")
+    while parts:
+        keys.append(".".join([*parts, root.id]))
+        parts.pop()
+    return keys
+
+
+def _read_once(
+    node: ast.AST,
+    aliases: dict[str, set[str]],
+    bindings: dict[str, str],
+    before: dict[str, frozenset[str]] | None,
+    scope: str,
+    counts: dict[str, int] | None = None,
+) -> bool:
+    """Whether a reference's name is bound exactly once, and bound before the reference.
+
+    The scan reads a base, decorator or ``setattr`` target only when the name it names was
+    bound once, before the class or call that uses it. A name bound more than once, bound
+    after its use, or declared ``global``/``nonlocal`` -- either of which moves the binding
+    out of the scope the scan walks -- is a value the scan cannot resolve, because which
+    binding applies is decided by the runtime order the scan does not model. Such a name is
+    refused rather than read. A name nothing here binds -- a builtin, or a symbol from an
+    unread module -- has no binding to count and is left to the caller's other rules.
+    """
+    if before is None:
+        return False
+    if _binding_count(node, counts, scope) > 1:
+        # The name was bound more than once -- by a second assignment, by a fallback in an
+        # ``except`` clause or an ``if`` arm -- so it holds more than one value and the
+        # scan cannot tell which one the reference receives. It is refused rather than
+        # resolved, which is what "read only the shapes it fully understands" requires.
+        return False
+    after = _bindings_of(node, aliases, scope)
+    if after is None or after != before:
+        # A binding appeared, or a second value was added, after the reference was read.
+        return False
+    root = node
+    while isinstance(root, ast.Attribute):
+        root = root.value
+    if not isinstance(root, ast.Name):
+        return False
+    symbol = bindings.get(root.id)
+    if symbol in (_UNRESOLVED, _PARAMETER):
+        # The name holds a value the scan does not read -- an item of a list, a call, a
+        # name the function declared ``global`` -- so it is refused rather than read.
+        return False
+    return True
 
 
 def _readable_decorator(
@@ -444,17 +635,25 @@ def _readable_decorator(
     symbols: set[str],
     bindings: dict[str, str] | None = None,
     key: str | None = None,
+    owner: str | None = None,
+    before: dict[str, frozenset[str]] | None = None,
+    scope: str = "",
+    counts: dict[str, int] | None = None,
 ) -> bool:
     """Whether a class decorator is a form the scan fully reads.
 
-    A decorator is read only when EVERY value its name was bound to resolves to a name on
-    the allow-list, whether it is used bare or called with no positional argument and no
+    A decorator is read only when its name is bound exactly once where the class is
+    declared -- a name bound more than once, bound after its use, or declared
+    ``global``/``nonlocal`` is refused -- and EVERY value that name was bound to resolves
+    to a name on the allow-list, used bare or called with no positional argument and no
     unpack. Every other decorator -- one a module defines itself, one re-exported from
     another module under a new name, a name that also holds an unrecognized value, a call
     with a positional argument -- is refused, so a name this scan does not recognize cannot
     turn on a generated hash or a new base unread.
     """
     target = node.func if isinstance(node, ast.Call) else node
+    if owner and not _read_once(target, aliases, bindings, before, scope, counts):
+        return False
     candidates = _name_candidates(target, aliases, module, symbols, bindings=bindings, key=key)
     if not candidates or not candidates <= _CLASS_DECORATORS:
         return False
@@ -687,14 +886,25 @@ def _scope_suites(node: ast.stmt, module: str) -> Iterator[list[ast.stmt]]:
     yield from _suite_bodies(node, module)
 
 
+
 def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
-    result = _Scan({}, {}, set(), [], [])
+    result = _Scan({}, {}, set(), [], [], {}, set())
     calls: list[tuple[str, frozenset[str], str, str]] = []
-    setattr_calls: list[tuple[str, str, str, ast.Call]] = []
+    setattr_calls: list[
+        tuple[str | None, str, str, ast.Call, dict[str, str], dict[str, frozenset[str]] | None, str]
+    ] = []
     type_calls: list[tuple[str, str, bool]] = []
     base_refusals: list[tuple[str, ast.AST, dict[str, str], str, str | None]] = []
     decorator_refusals: list[tuple[str, ast.AST, str, dict[str, str], str | None]] = []
     refusals: list[tuple[str, str]] = []
+    # The calls that are not in a decorator position, kept until every alias resolves so a
+    # call through a re-exported ``dataclass`` is judged after its alias is known.
+    dataclass_calls: list[tuple[str | None, str]] = []
+    # A call that carries a hash keyword -- ``unsafe_hash=`` or ``frozen=`` -- with a
+    # value other than false, and is not the read decorator form. Whether it writes hash
+    # authority is decided after every alias resolves, so a call through a re-exported
+    # name is judged once that name is known rather than before.
+    hash_calls: list[tuple[str | None, str, tuple[str, ...]]] = []
     for module, (package, source) in sources.items():
         tree = ast.parse(source, filename=module)
         # The nodes a class decorator is written as, so a ``dataclass`` call written as a
@@ -714,15 +924,54 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
             class_name: str | None = None,
             closure: dict[str, str] | None = None,
         ) -> None:
-            def bind(name: str, target: str) -> None:
+            def bind(
+                name: str, target: str, value: ast.AST | None = None, counted: bool = True
+            ) -> None:
                 bindings[name] = target
-                result.aliases.setdefault(f"{scope}.{name}", set()).add(target)
+                key = f"{scope}.{name}"
+                result.aliases.setdefault(key, set()).add(target)
+                if counted and result.binds is not None:
+                    # Only a binding that gives a name a new value is counted -- an
+                    # assignment, a walrus, a loop target. An import or a declared class
+                    # also binds the name, but it is the name's one declaration rather
+                    # than a second value the scan would have to choose between.
+                    result.binds[key] = result.binds.get(key, 0) + 1
+                if result.declared is not None and f"{scope}.{name}" in result.declared:
+                    # The function declared this name ``global`` or ``nonlocal``, so this
+                    # binding writes a name outside the scope the scan walks under: the
+                    # value continues in an enclosing scope and the scan cannot follow it.
+                    # The local name and the module-level name of that spelling both
+                    # resolve to a value the scan cannot read, so a base, decorator or
+                    # target either supplies is refused.
+                    bindings[name] = _UNRESOLVED
+                    # The write lands in the enclosing scope, so every scope that already
+                    # holds this name now holds a value the scan cannot read -- the
+                    # module-level scope of the same spelling included.
+                    for key in [*result.aliases, f"{module}.{name}"]:
+                        if key == f"{module}.{name}" or key.endswith(f".{name}"):
+                            result.aliases.setdefault(key, set()).add(_UNRESOLVED)
+
+            def refuse(lineno: int, col: int, reason: str) -> None:
+                refusals.append((f"{module}:{lineno}:{col + 1}", reason))
 
             def assignment(target: ast.AST, value: ast.AST | None) -> None:
                 if isinstance(target, ast.Name):
                     if class_name and target.id == "__hash__" and not _none(value):
                         result.writes.append((class_name, "assigned __hash__"))
-                    bind(target.id, _symbol(value, bindings, module) or f"{scope}.{target.id}")
+                    if isinstance(value, ast.Subscript) and target.id not in _AUTHORITY_NAMES:
+                        # The value takes one item of a container -- ``BASES[0]`` -- and
+                        # which item that is is decided at runtime, so the name is given a
+                        # value the scan cannot read rather than guessed at: a base, a
+                        # decorator or a target it supplies is refused where it is used. A
+                        # class-body authority name keeps its own reading below, which a
+                        # configuration value still passes through.
+                        bind(target.id, _UNRESOLVED, value)
+                        return
+                    bind(
+                        target.id,
+                        _symbol(value, bindings, module) or f"{scope}.{target.id}",
+                        value,
+                    )
                 elif isinstance(target, ast.Attribute):
                     if not _plain_dotted(target.value):
                         refusals.append(
@@ -745,7 +994,19 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                         )
                     elif target.attr in {"__hash__", "__eq__"}:
                         owner = _symbol(target.value, bindings, module)
-                        if owner and not _none(value):
+                        resolved = _canonicals(owner, result.aliases) if owner else set()
+                        if owner and (_UNRESOLVED in resolved or _PARAMETER in resolved):
+                            # The owner resolves to a value the scan does not read -- an
+                            # item of a list, or a name the function declared ``global``
+                            # -- so the write is refused rather than recorded against a
+                            # class the scan cannot name.
+                            refusals.append(
+                                (
+                                    f"{module}:{target.lineno}:{target.col_offset + 1}",
+                                    "an attribute assignment whose owner the scan cannot read",
+                                )
+                            )
+                        elif owner and not _none(value):
                             result.writes.append(
                                 (owner, f"post-definition {target.attr} assignment")
                             )
@@ -815,6 +1076,10 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                         continue
                     key = f"{scope}.{name.id}"
                     bindings[name.id] = key
+                    if result.binds is not None:
+                        # A loop or with target binds the name once and gives it each
+                        # element of the literal in turn, so it counts as one binding.
+                        result.binds[key] = result.binds.get(key, 0) + 1
                     for element in iterable.elts:
                         result.aliases.setdefault(key, set()).add(
                             _symbol(element, bindings, module) or _UNRESOLVED
@@ -843,7 +1108,7 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                                 assignment(item.target, item.value)
                         elif isinstance(item, ast.comprehension):
                             loop_target(item.target, item.iter)
-                inspect_calls(expressions, bindings)
+                inspect_calls(expressions, bindings, scope)
                 if isinstance(node, ast.ImportFrom):
                     parts = package.split(".") if package else []
                     base = node.module or ""
@@ -858,18 +1123,28 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                                 f"from {base!r} is unsupported in the closed mutable-model "
                                 "inventory; use named imports"
                             )
-                        bind(item.asname or item.name, f"{base}.{item.name}")
+                        bind(item.asname or item.name, f"{base}.{item.name}", counted=False)
                 elif isinstance(node, ast.Import):
                     for item in node.names:
                         local = item.asname or item.name.split(".")[0]
-                        bind(local, item.name if item.asname else local)
+                        bind(local, item.name if item.asname else local, counted=False)
                 elif isinstance(node, ast.ClassDef):
                     fqn = f"{scope}.{node.name}"
                     location = f"{module}:{node.lineno}:{node.col_offset + 1}"
                     for base in node.bases:
                         # Readability is decided after every module is scanned, so a base
                         # that resolves to a class declared later still resolves. The
-                        # location and the bindings are taken here, where they hold.
+                        # location and the bindings are taken here, where they hold. A
+                        # subscript base takes one item of a value the scan does not read,
+                        # so it is refused at once rather than resolved.
+                        if isinstance(base, ast.Subscript):
+                            refusals.append(
+                                (
+                                    f"{module}:{base.lineno}:{base.col_offset + 1}",
+                                    "a class base the scan cannot read",
+                                )
+                            )
+                            continue
                         base_refusals.append(
                             (
                                 f"{module}:{base.lineno}:{base.col_offset + 1}",
@@ -877,6 +1152,9 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                                 dict(bindings),
                                 module,
                                 _alias_key(base, scope),
+                                fqn,
+                                _bindings_of(base, result.aliases, scope),
+                                scope,
                             )
                         )
                     for keyword in node.keywords:
@@ -918,6 +1196,15 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                                     else decorator,
                                     scope,
                                 ),
+                                fqn,
+                                _bindings_of(
+                                    decorator.func
+                                    if isinstance(decorator, ast.Call)
+                                    else decorator,
+                                    result.aliases,
+                                    scope,
+                                ),
+                                scope,
                             )
                         )
                     for statement in _class_body_statements(node.body, module):
@@ -971,16 +1258,26 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                         )
                         is not None
                     )
+                    if fqn in result.classes:
+                        # The same class name declared twice in one scope leaves only the
+                        # last definition, so a descendant, a frozen configuration or a
+                        # declared hash in the first could be dropped unread.
+                        refusals.append(
+                            (
+                                location,
+                                f"a second declaration of {fqn} the scan cannot read",
+                            )
+                        )
                     result.classes[fqn] = _Class(node, location, bases, decorators)
                     result.symbols.add(fqn)
-                    bind(node.name, fqn)
+                    bind(node.name, fqn, counted=False)
                     walk(node.body, bindings.copy(), fqn, fqn, closure or bindings.copy())
                 elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     fqn = f"{scope}.{node.name}"
                     result.symbols.add(fqn)
                     if class_name and node.name == "__hash__":
                         result.writes.append((class_name, "defined __hash__"))
-                    bind(node.name, fqn)
+                    bind(node.name, fqn, counted=False)
                     local = (closure if class_name and closure is not None else bindings).copy()
                     args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
                     args.extend(arg for arg in (node.args.vararg, node.args.kwarg) if arg)
@@ -996,6 +1293,13 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                     if node.value is not None:
                         for target in targets:
                             assignment(target, node.value)
+                elif isinstance(node, (ast.Global, ast.Nonlocal)):
+                    # A name the function declares stays in the enclosing scope, so the
+                    # scan records it and refuses a value it supplies rather than reading
+                    # the local binding as the whole story.
+                    for name in node.names:
+                        if result.declared is not None:
+                            result.declared.add(f"{scope}.{name}")
                 elif isinstance(node, ast.AugAssign):
                     # A compound assignment adds to a name or attribute; it can rebind a
                     # class authority just as a plain assignment does, so it is read the
@@ -1046,7 +1350,9 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                                 result.aliases.setdefault(key, set()).add(before)
                             bindings[name] = key
 
-        def inspect_calls(expressions: list[ast.expr], bindings: dict[str, str]) -> None:
+        def inspect_calls(
+            expressions: list[ast.expr], bindings: dict[str, str], scope: str
+        ) -> None:
             for expression in expressions:
                 for call in (item for item in ast.walk(expression) if isinstance(item, ast.Call)):
                     function = _symbol(call.func, bindings, module)
@@ -1099,16 +1405,23 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                         # arguments can name any class and its metaclass, as in
                         # ``super(type(Known), Known).__setattr__``, so it is refused too.
                         receiver = call.func.value
-                        if not (
-                            isinstance(receiver, ast.Call)
+                        resolved = (
+                            _visible_candidates(
+                                receiver.func, result.aliases, module, bindings, scope
+                            )
+                            if isinstance(receiver, ast.Call)
                             and not receiver.args
                             and not receiver.keywords
-                            and _canonicals(
-                                _symbol(receiver.func, bindings, module) or "", result.aliases
-                            )
-                            & {"builtins.super"}
-                        ):
-                            refusals.append((location, "a setattr call the scan cannot read"))
+                            else None
+                        )
+                        if resolved and resolved <= {"builtins.super"}:
+                            # The bare ``super()`` form writes an instance field through the
+                            # class's own ``__setattr__``, not a class authority, so it is
+                            # read. The name must resolve to nothing but ``builtins.super``:
+                            # a name bound more than once -- a local ``super`` beside the
+                            # builtin -- could name any object, so it is refused.
+                            continue
+                        refusals.append((location, "a setattr call the scan cannot read"))
                         continue
                     if not function and not attribute_writer:
                         continue
@@ -1120,41 +1433,99 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                         refusals.append((location, "a setattr call the scan cannot read"))
                         continue
                     # A setattr-like call is resolved after every module is scanned, so a
-                    # re-exported name still resolves. The owner and the location are
-                    # taken here, where the bindings are.
-                    setattr_calls.append((function, location, owner or "", call))
-                    if call.args and any(
-                        kw.arg in _HASH_KEYWORDS and not _false(kw.value) for kw in call.keywords
-                    ):
-                        if owner:
-                            calls.append(
-                                (
-                                    function,
-                                    frozenset({"dataclasses.dataclass"}),
-                                    owner,
-                                    "post-definition dataclass hash generation",
-                                )
-                            )
-                    if not decorated_dataclass and (canonical & {"dataclasses.dataclass"}):
+                    # re-exported name still resolves. The owner, the location and what the
+                    # target name held here are taken now, where the bindings are, so a
+                    # target bound after the call is told from one bound before it.
+                    target = call.args[0] if call.args else None
+                    setattr_calls.append(
+                        (
+                            function,
+                            location,
+                            owner or "",
+                            call,
+                            dict(bindings),
+                            _bindings_of(target, result.aliases, scope)
+                            if target is not None
+                            else None,
+                            scope,
+                        )
+                    )
+                    if not decorated_dataclass:
                         # ``dataclass`` used as a decorator is read; used anywhere else it
                         # rewrites a class's fields and hash authority, and the scan does
                         # not follow the argument it is given, so every such call is
-                        # refused.
-                        refusals.append((location, "a dataclass call that is not a decorator"))
+                        # refused. Whether the name IS ``dataclass`` is decided after every
+                        # module is scanned: a call through a re-exported alias is judged
+                        # once that alias resolves, not before.
+                        dataclass_calls.append((function, location))
+                        if any(
+                            kw.arg in _HASH_KEYWORDS and not _false(kw.value)
+                            for kw in call.keywords
+                        ):
+                            hash_calls.append(
+                                (
+                                    function,
+                                    location,
+                                    tuple(
+                                        symbol
+                                        for argument in (
+                                            *call.args,
+                                            *(kw.value for kw in call.keywords),
+                                        )
+                                        if (symbol := _symbol(argument, bindings, module))
+                                        is not None
+                                    ),
+                                )
+                            )
 
         walk(tree.body, {}, module)
     # A base is read only when its spine resolves to a class the scan inventories,
     # whichever module declares it, so this runs once every module has been scanned.
-    for location, base, bindings, module, key in base_refusals:
+    for location, base, bindings, module, key, owner, before, scope in base_refusals:
         if not _readable_base(
-            base, result.aliases, module, set(result.classes), result.symbols, bindings, key
+            base,
+            result.aliases,
+            module,
+            set(result.classes),
+            result.symbols,
+            bindings,
+            key,
+            owner,
+            before,
+            scope,
+            result.binds,
         ):
             refusals.append((location, "a class base the scan cannot read"))
-    for location, decorator, module, bindings, key in decorator_refusals:
+    for location, decorator, module, bindings, key, owner, before, scope in decorator_refusals:
         if not _readable_decorator(
-            decorator, result.aliases, module, result.symbols, bindings, key
+            decorator,
+            result.aliases,
+            module,
+            result.symbols,
+            bindings,
+            key,
+            owner,
+            before,
+            scope,
+            result.binds,
         ):
             refusals.append((location, "a decorator the scan cannot read"))
+    for function, location in dataclass_calls:
+        if function and "dataclasses.dataclass" in _canonicals(function, result.aliases):
+            refusals.append((location, "a dataclass call that is not a decorator"))
+    declared_classes = set(result.classes)
+    for function, location, arguments in hash_calls:
+        if function and "dataclasses.dataclass" in _canonicals(function, result.aliases):
+            # A ``dataclass`` call outside a decorator position is refused above; it does
+            # not need a second refusal here.
+            continue
+        if any(
+            _canonicals(argument, result.aliases) & declared_classes for argument in arguments
+        ):
+            # The call passes a class the scan inventories and a hash keyword that is not
+            # false, so it can turn on a generated hash for that class. The scan does not
+            # follow what the call does with it, so the call is refused rather than read.
+            refusals.append((location, "a decorator call the scan cannot read"))
     for function, location, builds_a_class in type_calls:
         if not builds_a_class or not function:
             continue
@@ -1163,7 +1534,7 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
     for function, expected, owner, description in calls:
         if _canonicals(function, result.aliases) & expected:
             result.writes.append((owner, description))
-    for function, location, owner, call in setattr_calls:
+    for function, location, owner, call, bindings, before, scope in setattr_calls:
         canonical = _canonicals(function, result.aliases)
         if not (canonical & _SETATTR):
             continue
@@ -1173,7 +1544,11 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
             len(call.args) != 3
             or call.keywords
             or any(isinstance(argument, ast.Starred) for argument in call.args)
-            or not isinstance(first, (ast.Name, ast.Attribute))
+            or not _plain_dotted(first)
+            or (
+                first is not None
+                and not _read_once(first, result.aliases, bindings, before, scope, result.binds)
+            )
             or not isinstance(second, ast.Constant)
             or not isinstance(second.value, str)
         ):
@@ -1807,16 +2182,147 @@ Known.__hash__ = None
 """)
     # ``Local`` takes a base the scan cannot read: the ``shadow`` parameter named
     # ``HashableModel`` shadows the import, so the base resolves to the parameter and
-    # not to the family root. ``Other`` takes ``Alias`` as a base, and both of
-    # ``Alias``'s values -- the family root and ``object`` -- are readable, so the base
-    # is read and the class is not refused; ``Other`` declares its own ``__hash__`` but
-    # is outside the family, so it is not authority of it. Nothing else in the module is
-    # authority of the family.
+    # not to the family root. ``Other`` takes ``Alias`` as a base, and ``Alias`` was bound
+    # twice -- to the family root and to ``object`` -- so which value the class received
+    # is decided by runtime order the scan does not model, and the base is refused rather
+    # than resolved to one of them. Neither class is authority of the family: ``Other``
+    # declares its own ``__hash__`` but is outside it, and nothing else in the module is
+    # authority of it.
     assert _violations(scan, {*_ROOTS, "sample.Known"}) == [
-        "sample:8:17: a class base the scan cannot read"
+        "sample:12:13: a class base the scan cannot read",
+        "sample:8:17: a class base the scan cannot read",
     ]
 
 
+# A shape a resolved base, decorator or write target must not be read from, with the
+# refusal its own rule emits. Each sample resolves a name the scan cannot know the value
+# of -- a class name a scope defines twice, a write target that is not a plain dotted
+# name, a name given a second value or bound after its use, a name taken from a
+# subscript, a name a function declares ``global`` or ``nonlocal``, ``super`` given a
+# second value, or a keyword call that passes a class the scan inventories. Undoing that
+# one rule turns its case red, so a shape refused only by a neighbouring rule fails its
+# case rather than passing untested.
+_UNRESOLVED_SHAPE_CASES: list[tuple[str, str, str, dict[str, tuple[str, str]] | None]] = [
+    (
+        "I01",
+        "a second declaration of sample.Added the scan cannot read",
+        "if True:\n    class Added(HashableModel): pass\nelse:\n    class Added: pass",
+        None,
+    ),
+    (
+        "I01-frozen",
+        "a second declaration of sample.Added the scan cannot read",
+        "from pydantic import ConfigDict\nif True:\n    class Added(HashableModel):\n"
+        "        model_config = ConfigDict(frozen=True)\nelse:\n"
+        "    class Added(HashableModel): pass",
+        None,
+    ),
+    (
+        "I02",
+        "a setattr call the scan cannot read",
+        "class Holder(HashableModel): pass\nHolder.K = Holder\n"
+        "setattr([Holder][0].K, '__hash__', object.__hash__)",
+        None,
+    ),
+    (
+        "I03-rebound",
+        "a class base the scan cannot read",
+        "Base = HashableModel\nBase = object\nclass Added(Base): pass",
+        None,
+    ),
+    (
+        "I03-after-use",
+        "a class base the scan cannot read",
+        "Base = HashableModel\nclass Added(Base): pass\nBase = object",
+        None,
+    ),
+    (
+        "I03-decorator",
+        "a decorator the scan cannot read",
+        "from dataclasses import dataclass\ndec = dataclass\ndec = dataclass\n@dec\n"
+        "class Added(HashableModel): pass",
+        None,
+    ),
+    (
+        "I04-container",
+        "a class base the scan cannot read",
+        "BASES = HashableModel\nBase = BASES[0]\nclass Added(Base): pass",
+        None,
+    ),
+    (
+        "I04-inline",
+        "a class base the scan cannot read",
+        "Base = object\nBase = (HashableModel,)[0]\nclass Added(Base): pass",
+        None,
+    ),
+    (
+        "I05",
+        "a decorator call the scan cannot read",
+        "from helpers import decorate\nclass Added(HashableModel): pass\n"
+        "decorate(cls=Added, unsafe_hash=True)",
+        {"helpers": ("", "def decorate(*, cls, **kw):\n    return cls\n")},
+    ),
+    (
+        "I06-global",
+        "a class base the scan cannot read",
+        "def make():\n    global Base\n    Base = HashableModel\n"
+        "    class Added(Base): pass",
+        None,
+    ),
+    (
+        "I06-nonlocal",
+        "a class base the scan cannot read",
+        "def outer():\n    Base = HashableModel\n    def inner():\n"
+        "        nonlocal Base\n        Base = object\n    class Added(Base): pass",
+        None,
+    ),
+    (
+        "I07-rebound-super",
+        "a setattr call the scan cannot read",
+        "import builtins\nsuper = object\nsuper = builtins.super\n"
+        "class Added(HashableModel): pass\n"
+        "def make():\n    super().__setattr__('__hash__', object.__hash__)",
+        None,
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "case_id,marker,snippet,other",
+    [
+        pytest.param(case_id, marker, snippet, other, id=case_id)
+        for case_id, marker, snippet, other in _UNRESOLVED_SHAPE_CASES
+    ],
+)
+def test_a_name_whose_value_the_scan_cannot_resolve_is_refused(case_id, marker, snippet, other):
+    """A class base, decorator or write target the scan cannot resolve to one value is
+    refused rather than guessed at, and its own rule is what refuses it. The name may be
+    one a scope defines twice, one given a second value or bound after its use, one taken
+    from a subscript, one a function declares ``global`` or ``nonlocal``, a ``super``
+    given a second value, a write target that is not a plain dotted name, or a keyword
+    call that passes a class the scan inventories. Each is a shape whose value is decided
+    at runtime, so reading one would let a hashable mutable descendant or a hash authority
+    go unread."""
+    scan = _sample("from lionagi.models import HashableModel\n" + snippet, other)
+    errors = _violations(scan, {*_ROOTS, "sample.Added"})
+    assert any(marker in error for error in errors), (case_id, marker, errors)
+
+
+def test_a_function_scope_import_fallback_binding_a_base_is_left_refused():
+    """A function-scope try/except that binds a base in both arms is refused, and the
+    refusal is kept rather than resolved. Which arm runs depends on whether a module is
+    importable on the host, which the scan does not model, so the two values are not
+    distinguishable from the source. The framework tree holds no such form: every
+    function-scope ``except ImportError`` site is checked, and none of them binds a plain
+    name that a later class base or decorator reads, so the refusal costs the tree
+    nothing."""
+    scan = _sample(
+        "from lionagi.models import HashableModel\n"
+        "def make():\n    try:\n        from pkg import Base\n"
+        "    except ImportError:\n        Base = object\n    class Added(Base): pass"
+    )
+    errors = _violations(scan, {*_ROOTS, "sample.make.<locals>.Added"})
+    assert any("a class base the scan cannot read" in error for error in errors), errors
 @pytest.mark.parametrize(
     "statement",
     [
