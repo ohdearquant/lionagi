@@ -110,11 +110,12 @@ def _grep_sync(
     if err:
         return SearchResponse(success=False, error=err, count=0)
 
-    cmd = ["grep", "-rn", "-E", pattern, resolved_path]
+    # -e: a pattern that starts with "-" is a pattern, never an option.
+    cmd = ["grep", "-rn", "-E", "-e", pattern, resolved_path]
     if include:
         cmd += ["--include", include]
 
-    result = _subprocess_sync(cmd, False, 30.0, None)  # noqa: S603  # argv fixed: [grep, -rn, -E, <pattern>, <validated-path>]; shell=False
+    result = _subprocess_sync(cmd, False, 30.0, None)  # noqa: S603  # argv fixed: [grep, -rn, -E, -e, <pattern>, <validated-path>]; shell=False
 
     if result.get("timed_out"):
         return SearchResponse(success=False, error="grep timed out", count=0)

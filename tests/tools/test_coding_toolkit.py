@@ -274,6 +274,19 @@ async def test_search_rejects_path_outside_workspace(tmp_path, action, pattern):
     assert "escapes workspace" in result["error"]
 
 
+async def test_search_reads_a_leading_dash_as_a_pattern_not_an_option(tmp_path):
+    # As an option, "-f<file>" would read the patterns from a file outside the workspace.
+    patterns = tmp_path.parent / f"{tmp_path.name}_patterns"
+    patterns.write_text("SECRET\n")
+    (tmp_path / "notes.txt").write_text("SECRET\n")
+    _, _, tools = _make_toolkit(tmp_path)
+
+    result = await _tool_fn(tools, "search")(action="grep", pattern=f"-f{patterns}", path=".")
+
+    assert result["success"] is True
+    assert result["total_matches"] == 0
+
+
 async def test_coding_toolkit_reader_rejects_workspace_escape(tmp_path):
     """ReaderTool rejects paths that escape the workspace root."""
     secret = tmp_path.parent / "secret.txt"

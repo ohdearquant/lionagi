@@ -592,7 +592,8 @@ class CodingToolkit(LionTool):
                 except PermissionError as e:
                     return {"success": False, "error": str(e)}
                 limit = max_results or 50
-                cmd = ["grep", "-rn", "-E", pattern, search_path]
+                # -e: a pattern that starts with "-" is a pattern, never an option.
+                cmd = ["grep", "-rn", "-E", "-e", pattern, search_path]
                 if include:
                     cmd.insert(3, f"--include={include}")
                 raw = await run_sync(_subprocess_sync, cmd, False, 30.0, None)

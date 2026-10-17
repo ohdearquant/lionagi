@@ -78,6 +78,19 @@ async def test_grep_finds_matching_content(tmp_path):
     assert "hello" in resp.content
 
 
+async def test_grep_reads_a_leading_dash_as_a_pattern_not_an_option(tmp_path):
+    # As an option, "-f<file>" would read the patterns from a file outside the workspace.
+    patterns = tmp_path.parent / f"{tmp_path.name}_patterns"
+    patterns.write_text("SECRET\n")
+    (tmp_path / "notes.txt").write_text("SECRET\n")
+    tool = SearchTool(workspace_root=str(tmp_path))
+    resp = await tool.handle_request(
+        SearchRequest(action=SearchAction.grep, pattern=f"-f{patterns}", path=".")
+    )
+    assert resp.success is True
+    assert resp.count == 0
+
+
 async def test_grep_returns_search_response(tmp_path):
     (tmp_path / "f.py").write_text("content\n")
     tool = SearchTool()
