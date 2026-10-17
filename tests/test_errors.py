@@ -35,6 +35,7 @@ _EXPECTED_ALL = (
     "RelationError",
     "OperationError",
     "ExecutionError",
+    "ProviderStreamError",
     "ConfigurationError",
     "ContainmentRefusedError",
     "TimeoutError",
