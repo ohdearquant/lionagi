@@ -65,10 +65,23 @@ jobs:
           echo '::error::the release did not resolve a full source commit'
           exit 1
         fi
+    # Check out the release's tag ref, never a commit computed by an earlier job:
+    # a release event carries the tag, and a manual repair names the published
+    # version's tag. The next step then requires that tag to be the commit the
+    # source job resolved and validated.
     - uses: actions/checkout@v7
       with:
-        ref: ${{ needs.source.outputs.sha }}
+        ref: ${{ github.event_name == 'release' && github.ref || format('refs/tags/v{0}', inputs.version) }}
         persist-credentials: false
+    - name: Require the checked-out tag to be the resolved source
+      shell: bash
+      env:
+        RESOLVED_SHA: ${{ needs.source.outputs.sha }}
+      run: |
+        if [[ "$(git rev-parse HEAD)" != "${RESOLVED_SHA}" ]]; then
+          echo '::error::the checked-out tag is not the resolved source commit'
+          exit 1
+        fi
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v7
       with:

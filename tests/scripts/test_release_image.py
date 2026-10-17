@@ -44,6 +44,13 @@ GUARD_RUN = (
     "  exit 1\n"
     "fi\n"
 )
+TEST_CHECKOUT_REF = "${{ github.event_name == 'release' && github.ref || format('refs/tags/v{0}', inputs.version) }}"
+TAG_GUARD_RUN = (
+    'if [[ "$(git rev-parse HEAD)" != "${RESOLVED_SHA}" ]]; then\n'
+    "  echo '::error::the checked-out tag is not the resolved source commit'\n"
+    "  exit 1\n"
+    "fi\n"
+)
 UV_INSTALL_RUN = (
     'curl -LsSf https://astral.sh/uv/install.sh | sh\necho "$HOME/.cargo/bin" >> $GITHUB_PATH\n'
 )
@@ -573,11 +580,19 @@ def assert_workflow_contract(document):
     }
     # The test job is what makes a red commit refuse the release, so its steps
     # are pinned whole: a replaced install or test command would otherwise pass.
+    # It checks out the tag ref, not the commit an earlier job computed, and then
+    # requires that tag to be the resolved source before anything runs.
     assert jobs["test"]["steps"] == [
         guard,
         {
             "uses": CHECKOUT_ACTION,
-            "with": {"ref": "${{ needs.source.outputs.sha }}", "persist-credentials": False},
+            "with": {"ref": TEST_CHECKOUT_REF, "persist-credentials": False},
+        },
+        {
+            "name": "Require the checked-out tag to be the resolved source",
+            "shell": "bash",
+            "env": {"RESOLVED_SHA": "${{ needs.source.outputs.sha }}"},
+            "run": TAG_GUARD_RUN,
         },
         {
             "name": "Set up Python ${{ matrix.python-version }}",
@@ -834,6 +849,9 @@ def test_workflow_tests_builds_and_verifies_one_resolved_source():
         "image-step-gated-on-latest",
         "run-tests-continue-on-error",
         "run-tests-skipped",
+        "test-checkout-resolved-commit",
+        "test-tag-guard-removed",
+        "test-tag-guard-after-install",
         "install-run-replaced",
         "source-step-inserted",
         "deploy-step-inserted",
@@ -998,6 +1016,28 @@ def test_workflow_contract_rejects_publication_wiring_mutations(mutation):
         image["if"] = "steps.release.outputs.publish_latest == 'true'"
     elif mutation == "run-tests-continue-on-error":
         next(s for s in test["steps"] if s.get("name") == "Run tests")["continue-on-error"] = True
+    elif mutation == "test-checkout-resolved-commit":
+        next(s for s in test["steps"] if s.get("uses", "").startswith("actions/checkout"))["with"][
+            "ref"
+        ] = "${{ needs.source.outputs.sha }}"
+    elif mutation == "test-tag-guard-removed":
+        test["steps"] = [
+            s
+            for s in test["steps"]
+            if s.get("name") != "Require the checked-out tag to be the resolved source"
+        ]
+    elif mutation == "test-tag-guard-after-install":
+        steps = test["steps"]
+        tag_guard = next(
+            s
+            for s in steps
+            if s.get("name") == "Require the checked-out tag to be the resolved source"
+        )
+        steps.remove(tag_guard)
+        steps.insert(
+            next(i for i, s in enumerate(steps) if s.get("name") == "Install dependencies") + 1,
+            tag_guard,
+        )
     elif mutation == "run-tests-skipped":
         next(s for s in test["steps"] if s.get("name") == "Run tests")["if"] = "false"
     elif mutation == "install-run-replaced":
