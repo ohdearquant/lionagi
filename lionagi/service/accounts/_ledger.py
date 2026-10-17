@@ -638,8 +638,11 @@ class CredentialLedger:
                 if isinstance(evidence, UnknownOutcome):
                     if state == "settled":
                         return "already_settled"
+                    # The first reason recorded on an open attempt stands: a later write (a
+                    # cancellation arriving after a rate limit was recorded) keeps it.
                     connection.execute(
-                        "UPDATE attempt SET outcome = ? WHERE id = ? AND state = 'open'",
+                        "UPDATE attempt SET outcome = ? "
+                        "WHERE id = ? AND state = 'open' AND outcome IS NULL",
                         (outcome, str(attempt_id)),
                     )
                     result = "still_open"

@@ -198,6 +198,19 @@ async def test_admission_holds_ceiling_and_settlement_replaces_it(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_a_later_unknown_outcome_keeps_the_reason_already_recorded(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    ledger = CredentialLedger(path, clock=lambda: datetime(2026, 1, 15, tzinfo=timezone.utc))
+    attempt = await reserve_one(ledger, quote=make_quote(8), accounts=(make_spec(budget=10),))
+
+    assert await ledger.settle(attempt.attempt_id, UnknownOutcome("rate_limited")) == "still_open"
+    assert await ledger.settle(attempt.attempt_id, UnknownOutcome("cancelled")) == "still_open"
+
+    assert read_attempt(path, attempt.attempt_id)[4] == "rate_limited"
+    assert (await ledger.status("anthropic", "2026-01"))[0].open_ceiling_nusd == 8
+
+
+@pytest.mark.anyio
 async def test_budget_equality_admits_and_one_more_nusd_refuses(tmp_path):
     ledger = CredentialLedger(
         tmp_path / "ledger.sqlite3", clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc)
