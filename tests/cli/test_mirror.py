@@ -183,6 +183,8 @@ def test_action_request_response_linkage() -> None:
     assert rc["action_request_id"] == str(req.id)
     assert rc["function"] == "Read"
     assert rc["output"] == "file contents"
+    # The result consumed its use's name: the map holds only uses still awaiting a result.
+    assert tool_names == {}
 
 
 def test_tool_result_error_flag_recorded() -> None:
@@ -1824,6 +1826,384 @@ async def test_tool_name_survives_restart_between_use_and_result(
     assert resp["function"] == "Bash"  # recovered from persisted tool_names, not ""
 
 
+def _response_functions(contents: list[dict]) -> list[str]:
+    return [c["function"] for c in contents if "action_request_id" in c]
+
+
+async def _session_contents(db: StateDB) -> list[dict]:
+    row = await db.get_session(session_db_id(SID))
+    contents = []
+    for mid in await db.get_progression(row["progression_id"]):
+        c = (await db.get_message(mid))["content"]
+        contents.append(json.loads(c) if isinstance(c, str) else c)
+    return contents
+
+
+@pytest.mark.asyncio
+async def test_a_failed_batch_is_re_read_with_the_tool_names_it_consumed(
+    temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The tool_use lands in one committed pass; its result arrives in a batch whose write
+    # fails. The re-read of that batch must still find the use's name, so the map is only
+    # adopted once the batch is durable, like the cursor.
+    root = tmp_path / "projects"
+    path = root / "-w-proj" / f"{SID}.jsonl"
+    _write_lineage_file(
+        path,
+        [
+            _user_text("u1", "run it"),
+            _assistant("a1", [{"type": "tool_use", "id": "tool_1", "name": "Bash", "input": {}}]),
+        ],
+    )
+    async with StateDB() as db:
+        states: dict[str, _FileState] = {}
+        await _one_pass(db, root, states, {}, since=None, live_window=300)
+        state = states[str(path)]
+        assert state.tool_names == {"tool_1": "Bash"}
+        offset_before = state.offset
+
+        with path.open("a") as fh:
+            fh.write(json.dumps(_tool_result("u2", "tool_1", "total 0")) + "\n")
+
+        async def _fail(*args, **kwargs):
+            raise RuntimeError("write failed")
+
+        with monkeypatch.context() as m:
+            m.setattr(db, "insert_messages", _fail)
+            await _one_pass(db, root, states, {}, since=None, live_window=300)
+        assert state.offset == offset_before
+        assert state.tool_names == {"tool_1": "Bash"}
+
+        await _one_pass(db, root, states, {}, since=None, live_window=300)
+        assert state.tool_names == {}
+        contents = await _session_contents(db)
+    assert _response_functions(contents) == ["Bash"]
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_tool_result_in_a_later_batch_keeps_the_use_name(
+    temp_db_path: Path,
+) -> None:
+    # The first result consumes the use's entry; the repeat shares its row and must not
+    # blank the name the first one wrote. The name comes from the stored use row.
+    use = _assistant("a1", [{"type": "tool_use", "id": "tool_1", "name": "Bash", "input": {}}])
+    names: dict[str, str] = {}
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=SID,
+            events=[_user_text("u1", "run it"), use, _tool_result("u2", "tool_1", "first")],
+            tool_names=names,
+        )
+        assert names == {}
+        await mirror_session(
+            db, session_uid=SID, events=[_tool_result("u3", "tool_1", "again")], tool_names=names
+        )
+        contents = await _session_contents(db)
+    (response,) = [c for c in contents if "action_request_id" in c]
+    assert response["function"] == "Bash"
+    assert response["output"] == "again"
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_tool_result_in_the_same_batch_keeps_the_use_name(
+    temp_db_path: Path,
+) -> None:
+    use = _assistant("a1", [{"type": "tool_use", "id": "tool_1", "name": "Bash", "input": {}}])
+    events = [
+        _user_text("u1", "run it"),
+        use,
+        _tool_result("u2", "tool_1", "first"),
+        _tool_result("u3", "tool_1", "again"),
+    ]
+    async with StateDB() as db:
+        await mirror_session(db, session_uid=SID, events=events, tool_names={})
+        contents = await _session_contents(db)
+    assert _response_functions(contents) == ["Bash"]
+
+
+@pytest.mark.asyncio
+async def test_a_tool_result_whose_use_was_never_mirrored_keeps_an_empty_name(
+    temp_db_path: Path,
+) -> None:
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=SID,
+            events=[_user_text("u1", "hi"), _tool_result("u2", "tool_9", "out")],
+            tool_names={},
+        )
+        contents = await _session_contents(db)
+    assert _response_functions(contents) == [""]
+
+
+@pytest.mark.asyncio
+async def test_naming_unnamed_results_reads_the_store_once_per_chunk_of_500(
+    temp_db_path: Path,
+) -> None:
+    """A pass whose results link to uses never mirrored must not open one read per result.
+
+    Each such result needs the name off its use's stored row; the naming step must batch
+    those lookups into one query per 500 ids rather than one ``get_message`` each."""
+    from sqlalchemy import event
+
+    events = [_user_text("u1", "hi")] + [
+        _tool_result(f"u{i + 2}", f"tool_{i}", f"out {i}") for i in range(40)
+    ]
+    async with StateDB() as db:
+        reads: list[str] = []
+
+        def _spy(conn, cursor, statement, parameters, context, executemany):
+            upper = statement.lstrip().upper()
+            if upper.startswith("SELECT") and "FROM MESSAGES" in upper:
+                reads.append(statement)
+
+        event.listen(db._engine.sync_engine, "before_cursor_execute", _spy)
+        try:
+            await mirror_session(db, session_uid=SID, events=events, tool_names={})
+        finally:
+            event.remove(db._engine.sync_engine, "before_cursor_execute", _spy)
+        contents = await _session_contents(db)
+
+    assert _response_functions(contents) == ["" for _ in range(40)]
+    assert len(reads) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_results_pointer_covers_the_named_row(
+    temp_db_path: Path, tmp_path: Path
+) -> None:
+    """The source pointer of a repeated result must hash the row as stored, name included.
+
+    The name is recovered from the use's stored row after the source pointer is built; a
+    pointer hashing the pre-naming content would let a reader reconstruct an unnamed
+    ActionResponse and accept it as the full content."""
+    from sqlalchemy import event
+
+    from lionagi.state._mirror_common import resolve_mirrored_content
+
+    use = _assistant("a1", [{"type": "tool_use", "id": "tool_1", "name": "Bash", "input": {}}])
+    first = _tool_result("u2", "tool_1", "first")
+    repeat = _tool_result("u3", "tool_1", "again")
+    path = tmp_path / "t.jsonl"
+
+    def _write(lines: list[dict]) -> list[tuple[int, int, str]]:
+        sources: list[tuple[int, int, str]] = []
+        offset = 0
+        blob = b""
+        for line in lines:
+            raw = (json.dumps(line) + "\n").encode()
+            sources.append((offset, len(raw) - 1, hashlib.sha256(raw[:-1]).hexdigest()))
+            offset += len(raw)
+            blob += raw
+        path.write_bytes(blob)
+        return sources
+
+    events = [_user_text("u1", "run it"), use, first]
+    sources = _write(events)
+    async with StateDB() as db:
+        await mirror_session(
+            db,
+            session_uid=SID,
+            events=events,
+            tool_names={},
+            source_path=str(path),
+            event_sources=sources,
+            max_preview_chars=500,
+        )
+        sources = _write([*events, repeat])[-1:]
+        await mirror_session(
+            db,
+            session_uid=SID,
+            events=[repeat],
+            tool_names={},
+            source_path=str(path),
+            event_sources=sources,
+            max_preview_chars=500,
+        )
+        row = await db.get_message(_det(SID, "toolresp", "tool_1"))
+
+    assert row["content"]["function"] == "Bash"
+
+    def _reconstruct(record, session_uid, message_id):
+        for m in messages_for_event(record, session_uid, {}):
+            if str(m.id) == message_id:
+                return m.to_dict(mode="db")["content"]
+        return None
+
+    resolved = resolve_mirrored_content(row, reconstruct=_reconstruct)
+    assert resolved.content["function"] == "Bash"
+
+
+@pytest.mark.asyncio
+async def test_a_mirror_pass_rewrites_each_progression_once(temp_db_path: Path) -> None:
+    from sqlalchemy import event
+
+    events = [_user_text("u1", "start")] + [
+        _assistant(f"a{i}", [{"type": "text", "text": f"step {i}"}]) for i in range(6)
+    ]
+    async with StateDB() as db:
+        updates: list[str] = []
+
+        def _spy(conn, cursor, statement, parameters, context, executemany):
+            if statement.lstrip().upper().startswith("UPDATE PROGRESSIONS"):
+                updates.append(statement)
+
+        event.listen(db._engine.sync_engine, "before_cursor_execute", _spy)
+        written = await mirror_session(
+            db, session_uid=SID, events=events, tool_names={}, status="running"
+        )
+        event.remove(db._engine.sync_engine, "before_cursor_execute", _spy)
+        row = await db.get_session(session_db_id(SID))
+        session_ids = await db.get_progression(row["progression_id"])
+    assert written == 7
+    assert len(session_ids) == 7
+    # One rewrite of the branch progression and one of the session progression for the
+    # whole batch, where the per-message path issued one of each per message.
+    assert len(updates) == 2
+
+
+def test_a_legacy_tool_name_map_loads_as_its_newest_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import lionagi.cli.mirror as mirror_mod
+
+    offsets = tmp_path / "offsets.json"
+    monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", offsets)
+    names = {f"tool_{i}": f"Fn{i}" for i in range(100)}
+    offsets.write_text(json.dumps({"f": {"offset": 5, "session_uid": "s", "tool_names": names}}))
+
+    loaded = _load_states()["f"].tool_names
+
+    keep = mirror_mod._LEGACY_TOOL_NAMES_KEEP
+    assert list(loaded) == [f"tool_{i}" for i in range(100 - keep, 100)]
+    assert loaded["tool_99"] == "Fn99"
+
+
+def test_a_saved_pending_tool_name_map_loads_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import lionagi.cli.mirror as mirror_mod
+
+    monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", tmp_path / "offsets.json")
+    # More uses waiting for a result than a legacy map keeps, as one message with many
+    # parallel tool calls leaves them across a restart.
+    names = {f"tool_{i}": f"Fn{i}" for i in range(mirror_mod._LEGACY_TOOL_NAMES_KEEP + 6)}
+    _save_states({"f": _FileState(session_uid="s", offset=5, tool_names=dict(names))})
+
+    assert _load_states()["f"].tool_names == names
+
+
+def test_the_saved_map_is_also_written_under_the_key_earlier_releases_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import lionagi.cli.mirror as mirror_mod
+
+    offsets = tmp_path / "offsets.json"
+    monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", offsets)
+    names = {"tool_1": "Read", "tool_2": "Bash"}
+    _save_states({"f": _FileState(session_uid="s", offset=5, tool_names=dict(names))})
+
+    saved = json.loads(offsets.read_text())["f"]
+    assert saved["pending_tool_names"] == names
+    # An earlier release reads only "tool_names", and saves it alone; both directions keep
+    # the names.
+    assert saved["tool_names"] == names
+    offsets.write_text(json.dumps({"f": {"offset": 5, "session_uid": "s", "tool_names": names}}))
+    assert _load_states()["f"].tool_names == names
+
+
+@pytest.mark.asyncio
+async def test_a_failed_codex_batch_is_re_read_in_the_turn_it_started_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The walk updates the turn as it meets turn_context records. A batch whose write fails
+    # after a turn change must be re-read from the turn it started in, or its leading
+    # messages are attributed to the later turn.
+    import lionagi.state.codex_mirror as codex_mod
+    from lionagi.cli.mirror import _mirror_one_codex
+
+    def turn(turn_id: str, model: str) -> dict:
+        return {
+            "type": "turn_context",
+            "timestamp": "2026-07-29T12:00:00Z",
+            "payload": {"model": model, "effort": "low", "turn_id": turn_id},
+        }
+
+    def said(mid: str, text: str) -> dict:
+        return {
+            "type": "response_item",
+            "timestamp": "2026-07-29T12:00:00Z",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "id": mid,
+                "content": [{"type": "output_text", "text": text}],
+            },
+        }
+
+    path = tmp_path / "rollout-turn.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in (turn("t1", "m-one"), said("a1", "one"))))
+    state = _FileState(session_uid="")
+    async with StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}") as db:
+        await _mirror_one_codex(db, path, state, {})
+        assert state.turn["turn_id"] == "t1"
+        offset_before = state.offset
+        with path.open("a") as fh:
+            for r in (said("a2", "two"), turn("t2", "m-two"), said("a3", "three")):
+                fh.write(json.dumps(r) + "\n")
+
+        async def _fail(*args, **kwargs):
+            raise RuntimeError("write failed")
+
+        with monkeypatch.context() as m:
+            m.setattr(codex_mod, "write_mirrored_messages", _fail)
+            with pytest.raises(RuntimeError, match="write failed"):
+                await _mirror_one_codex(db, path, state, {})
+        assert state.offset == offset_before
+        assert state.turn["turn_id"] == "t1"
+
+        await _mirror_one_codex(db, path, state, {})
+        assert state.turn["turn_id"] == "t2"
+        turns = {}
+        for mid in ("a1", "a2", "a3"):
+            row = await db.get_message(codex_mod._det(path.stem, mid, "text"))
+            meta = row["node_metadata"]
+            meta = json.loads(meta) if isinstance(meta, str) else meta
+            turns[mid] = meta["codex_turn"]["turn_id"]
+    assert turns == {"a1": "t1", "a2": "t1", "a3": "t2"}
+
+
+def test_an_unchanged_save_leaves_offsets_json_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import lionagi.cli.mirror as mirror_mod
+
+    offsets = tmp_path / "offsets.json"
+    monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", offsets)
+    states = {"f": _FileState(session_uid="s", offset=12, tool_names={"t1": "Read"})}
+
+    _save_states(states)
+    first = offsets.read_text()
+    inode = offsets.stat().st_ino
+    _save_states(states)
+    assert offsets.read_text() == first
+    assert offsets.stat().st_ino == inode  # not replaced
+
+    states["f"].offset = 40
+    _save_states(states)
+    assert offsets.stat().st_ino != inode  # a changed state is written
+    assert json.loads(offsets.read_text())["f"]["offset"] == 40
+
+    # The comparison is with the file, so one removed or replaced from outside comes back.
+    offsets.unlink()
+    _save_states(states)
+    assert json.loads(offsets.read_text())["f"]["offset"] == 40
+    offsets.write_text("{}")
+    _save_states(states)
+    assert json.loads(offsets.read_text())["f"]["offset"] == 40
+
+
 @pytest.mark.asyncio
 async def test_lineage_resolves_after_restart(
     temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2408,7 +2788,7 @@ async def test_cli_tail_loop_retries_a_failed_backfill(tmp_path, monkeypatch):
     monkeypatch.setattr(mirror_mod, "_absorb_backfill", fake_backfill)
     monkeypatch.setattr(mirror_mod, "_codex_pass", fake_codex_pass)
     monkeypatch.setattr(mirror_mod, "_load_states", lambda: {})
-    monkeypatch.setattr(mirror_mod, "_save_states", lambda states: None)
+    monkeypatch.setattr(mirror_mod, "_save_states", lambda states, previous=None: None)
     monkeypatch.setattr("lionagi.state.db.StateDB", lambda: FakeDB())
     monkeypatch.setattr("anyio.sleep", fake_sleep)
 
@@ -2580,7 +2960,7 @@ async def test_a_failed_prior_stem_absorption_also_leaves_the_file_eligible(tmp_
     assert calls == [uid, stem, uid, stem], f"absorption ids across both passes: {calls}"
 
 
-# Bounded preview + source pointer codec (mirror_spec.md)
+# Bounded preview + source pointer codec
 
 
 def _source_line_for(raw: bytes, path: Path) -> SourceLine:
@@ -3344,3 +3724,99 @@ def test_an_unset_flag_still_takes_the_computed_default(monkeypatch, tmp_path):
         assert config_mod.MIRROR_IMPORT_AMBIENT is True
     finally:
         _restore_config(monkeypatch)
+
+
+@pytest.mark.asyncio
+async def test_a_result_takes_a_name_only_from_a_stored_use_row() -> None:
+    from lionagi.protocols.messages.action_request import ActionRequest
+    from lionagi.protocols.messages.action_response import ActionResponse
+    from lionagi.state._mirror_common import name_answered_results
+
+    def _stored(message) -> dict:
+        # The shape StateDB.get_messages returns: content as to_dict(mode="db") left
+        # it and the resolved class of the row as lion_class_str.
+        row = message.to_dict(mode="db")
+        return {"content": row["content"], "lion_class_str": message.class_name(full=True)}
+
+    class _Store:
+        async def get_messages(self, ids):
+            rows = {
+                "use": _stored(ActionRequest(content={"function": "Bash", "arguments": {}})),
+                "result": _stored(
+                    ActionResponse(
+                        content={"function": "Edit", "output": "x", "action_request_id": None}
+                    )
+                ),
+                # An ActionResponse whose output is None keeps arguments: {} once
+                # to_dict(mode="db") drops the field, so it looks like a use by its fields
+                # alone; only its recorded class tells it apart.
+                "silent": _stored(
+                    ActionResponse(
+                        content={"function": "Edit", "output": None, "action_request_id": None}
+                    )
+                ),
+                # A row with no recorded class (an older or non-mirror writer) is told
+                # apart by its fields: no output and no arguments means it is no use.
+                "bare": {"content": {"function": "Bash"}},
+                "unclassed_use": {"content": {"function": "Grep", "arguments": {}}},
+            }
+            return {i: rows[i] for i in ids if i in rows}
+
+    rows = [
+        {"id": "r1", "content": {"function": "", "output": "a", "action_request_id": "use"}},
+        {"id": "r2", "content": {"function": "", "output": "b", "action_request_id": "result"}},
+        {"id": "r3", "content": {"function": "", "output": "c", "action_request_id": "silent"}},
+        {"id": "r4", "content": {"function": "", "output": "d", "action_request_id": "bare"}},
+        {
+            "id": "r5",
+            "content": {"function": "", "output": "e", "action_request_id": "unclassed_use"},
+        },
+    ]
+    await name_answered_results(_Store(), rows)
+    assert [row["content"]["function"] for row in rows] == ["Bash", "", "", "", "Grep"]
+
+
+@pytest.mark.asyncio
+async def test_a_stored_use_row_with_no_recorded_class_lends_its_name(temp_db_path: Path) -> None:
+    """StateDB reads a row stored without a class back as ``__unknown__``, which is unclassed.
+
+    Such a row is judged by its fields, so a use row (function and arguments, no output)
+    still names the result linked to it.
+    """
+    from lionagi.state._mirror_common import name_answered_results
+
+    async with StateDB() as db:
+        await db.insert_message(
+            {
+                "id": "U1",
+                "created_at": 1.0,
+                "role": "assistant",
+                "content": {"function": "Grep", "arguments": {}},
+            }
+        )
+        stored = await db.get_messages(["U1"])
+        rows = [{"id": "L4", "content": {"function": "", "output": "x", "action_request_id": "U1"}}]
+        await name_answered_results(db, rows)
+    assert stored["U1"]["lion_class_str"] == "__unknown__"
+    assert rows[0]["content"]["function"] == "Grep"
+
+
+@pytest.mark.asyncio
+async def test_a_stored_row_without_arguments_is_not_a_use() -> None:
+    """A result may take a name only from a stored use row, and a use row carries arguments.
+
+    A stored row with a function name and no arguments (and no recorded class) is not a
+    use row, so a result linked to it keeps the empty name rather than taking that name.
+    """
+    from lionagi.state._mirror_common import name_answered_results
+
+    class _Store:
+        async def get_messages(self, ids):
+            rows = {"naked": {"content": {"function": "Bash"}}}
+            return {i: rows[i] for i in ids if i in rows}
+
+    rows = [
+        {"id": "r1", "content": {"function": "", "output": "a", "action_request_id": "naked"}},
+    ]
+    await name_answered_results(_Store(), rows)
+    assert rows[0]["content"]["function"] == ""

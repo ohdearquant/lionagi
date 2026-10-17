@@ -3479,10 +3479,12 @@ async def test_engine_run_planning_kind_uses_real_planning_engine_and_persists_v
     monkeypatch.setattr(PlanningEngine, "_synthesize", fake_synthesize)
     monkeypatch.setattr(EngineRun, "run_dag", run_dag_spy)
 
-    async def fake_spawn_roles(session, specs, *, spawners=()):
-        return {}
+    async def fake_make_agent(self, role, **kwargs):
+        from lionagi.session.branch import Branch
 
-    monkeypatch.setattr("lionagi.engines.planning.spawn_roles", fake_spawn_roles)
+        return Branch(name=kwargs.get("name") or role)
+
+    monkeypatch.setattr(EngineRun, "make_agent", fake_make_agent)
 
     def fake_build_dag_graph(session, assignments, roles):
         from lionagi.protocols.types import Graph
@@ -3678,6 +3680,8 @@ async def test_orchestration_fanout_submits_built_graph_through_injected_session
 
 @pytest.mark.asyncio
 async def test_planning_engine_run_delegates_to_engine_run_run_dag():
+    from types import SimpleNamespace
+
     from lionagi.casts.emission import TaskAssignment
     from lionagi.engines.engine import EngineRun
     from lionagi.engines.planning import PlanningEngine
@@ -3686,13 +3690,13 @@ async def test_planning_engine_run_delegates_to_engine_run_run_dag():
     run = eng.new_run()
 
     assignments = [TaskAssignment(task="x", assignee="researcher")]
-    sentinel_graph = object()
+    sentinel_graph = SimpleNamespace(internal_nodes=())
 
     async def fake_plan(_run, prompt, max_ops):
         return assignments
 
-    async def fake_spawn_roles(session, specs, *, spawners=()):
-        return {"researcher": object()}
+    async def fake_make_agent(self, role, **kwargs):
+        return object()
 
     def fake_build_dag_graph(session, asg, roles):
         return (sentinel_graph, ["n1"])
@@ -3705,7 +3709,7 @@ async def test_planning_engine_run_delegates_to_engine_run_run_dag():
 
     run_dag_spy = AsyncMock(return_value={"operation_results": {"n1": "ok"}})
     with (
-        mock.patch("lionagi.engines.planning.spawn_roles", fake_spawn_roles),
+        mock.patch.object(EngineRun, "make_agent", fake_make_agent),
         mock.patch("lionagi.engines.planning.build_dag_graph", fake_build_dag_graph),
         mock.patch.object(EngineRun, "run_dag", run_dag_spy),
     ):

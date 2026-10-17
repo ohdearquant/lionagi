@@ -124,6 +124,7 @@ describe("Library workflow creation identity", () => {
         search: (previous: Record<string, string | undefined>) => typeof router.search;
       }) => {
         router.search = search(router.search);
+        root.render(<LibraryPage />);
         return Promise.resolve();
       },
     );
@@ -148,12 +149,13 @@ describe("Library workflow creation identity", () => {
   });
 
   async function createWhileReloadIsPending(reload: Deferred<unknown[]>) {
-    api.listWorkflowDefs.mockResolvedValueOnce([]).mockReturnValueOnce(reload.promise);
+    api.listWorkflowDefs.mockReturnValueOnce(reload.promise);
 
     await act(async () => {
       root.render(<LibraryPage />);
     });
     await flush();
+    expect(api.listWorkflowDefs).not.toHaveBeenCalled();
 
     const newButton = [...container.querySelectorAll("button")].find((button) =>
       button.textContent?.includes("newWorkflow"),
@@ -167,6 +169,8 @@ describe("Library workflow creation identity", () => {
     expect(completeButton).not.toBeNull();
     await act(async () => completeButton?.click());
     await flush();
+    expect(api.listAgents).toHaveBeenCalledTimes(2);
+    expect(api.listWorkflowDefs).toHaveBeenCalledOnce();
   }
 
   it("uses the returned id for detail while the catalog reload is delayed", async () => {

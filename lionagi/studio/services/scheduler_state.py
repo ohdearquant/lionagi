@@ -10,7 +10,6 @@ SchedulerStateService.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -93,6 +92,8 @@ class SchedulerStateService(Protocol):
     async def create_invocation(self, invocation: dict[str, Any]) -> None: ...
 
     async def update_invocation(self, inv_id: str, **fields: Any) -> None: ...
+
+    async def merge_invocation_node_metadata(self, inv_id: str, patch: dict[str, Any]) -> None: ...
 
     async def get_invocation(self, invocation_id: str) -> dict[str, Any] | None: ...
 
@@ -289,6 +290,10 @@ class _DBSchedulerStateService:
     async def update_invocation(self, inv_id: str, **fields: Any) -> None:
         async with self._db_context() as db:
             await db.update_invocation(inv_id, **fields)
+
+    async def merge_invocation_node_metadata(self, inv_id: str, patch: dict[str, Any]) -> None:
+        async with self._db_context() as db:
+            await db.merge_invocation_node_metadata(inv_id, patch)
 
     async def get_invocation(self, invocation_id: str) -> dict[str, Any] | None:
         async with self._db_context() as db:
@@ -545,10 +550,10 @@ async def flush_run_telemetry(
     after its own terminal-status guard returns True). Pops the bus's
     accumulated signal counters for *run_id* and merges them with the
     invocation's files-read overlap under a ``"coordination"`` key in
-    ``invocations.node_metadata`` (read-modify-write). Returns `None` (and
-    leaves node_metadata untouched) when there's nothing to report.
-    Best-effort: a failure computing/persisting is logged and swallowed,
-    never propagated or retried; `CancelledError` still propagates."""
+    ``invocations.node_metadata``. Returns `None` (and leaves node_metadata
+    untouched) when there's nothing to report. Best-effort: a failure
+    computing/persisting is logged and swallowed, never propagated or
+    retried; `CancelledError` still propagates."""
     signals = bus.pop_run_counters(run_id)
     try:
         overlap = await svc.compute_files_overlap(invocation_id, top_n=top_n)
@@ -560,17 +565,7 @@ async def flush_run_telemetry(
             "files_overlap": overlap,
         }
 
-        invocation = await svc.get_invocation(invocation_id)
-        node_metadata = (invocation or {}).get("node_metadata")
-        if isinstance(node_metadata, str):
-            try:
-                node_metadata = json.loads(node_metadata)
-            except (ValueError, TypeError):
-                node_metadata = {}
-        if not isinstance(node_metadata, dict):
-            node_metadata = {}
-        node_metadata["coordination"] = telemetry
-        await svc.update_invocation(invocation_id, node_metadata=node_metadata)
+        await svc.merge_invocation_node_metadata(invocation_id, {"coordination": telemetry})
         return telemetry
     except Exception:
         _log.warning(

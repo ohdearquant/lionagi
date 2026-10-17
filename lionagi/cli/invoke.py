@@ -8,6 +8,7 @@ import argparse
 import json
 import time
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from lionagi._auto import CliDeclaration, auto_register
@@ -44,7 +45,26 @@ async def _start_invocation(
     return inv_id
 
 
-async def _end_invocation(invocation_id: str, *, status: str, metadata: dict | None) -> dict | None:
+@dataclass(frozen=True)
+class InvocationEnd:
+    """Outcome of closing one invocation.
+
+    ``applied`` says whether this call recorded what it was asked to record:
+    the guarded status write landed, or the row already carried the requested
+    status and the ``--metadata`` payload was merged. A row already in the
+    requested status keeps its stored status and end time. ``row`` is the stored
+    invocation either way, so a caller can report the status another writer left
+    behind. When ``applied`` is false neither the requested status nor any
+    ``--metadata`` was recorded.
+    """
+
+    row: dict
+    applied: bool
+
+
+async def _end_invocation(
+    invocation_id: str, *, status: str, metadata: dict | None
+) -> InvocationEnd | None:
     from lionagi.state.db import StateDB
     from lionagi.state.reasons import RunReasons
 
@@ -57,10 +77,9 @@ async def _end_invocation(invocation_id: str, *, status: str, metadata: dict | N
     }
 
     async with StateDB() as db:
-        existing = await db.get_invocation(invocation_id)
-        if existing is None:
+        if await db.get_invocation(invocation_id) is None:
             return None
-        await db.update_status(
+        transitioned = await db.update_status(
             "invocation",
             invocation_id,
             new_status=status,
@@ -68,22 +87,40 @@ async def _end_invocation(invocation_id: str, *, status: str, metadata: dict | N
             reason_summary=f"Invocation {status}.",
             source="executor",
             actor=invocation_id,
+            expected_statuses={"running"},
             extra_fields={"ended_at": time.time()},
         )
+        if not transitioned:
+            # The guarded write was refused, so the row left running before it.
+            stored = await db.get_invocation(invocation_id)
+            if stored is None or stored.get("status") != status:
+                # A different terminal status owns the row. Return the status
+                # and metadata this call carried as not written rather than
+                # overwriting the outcome another writer recorded.
+                return InvocationEnd(row=stored, applied=False)
+            # The row is already in the status this call requested, so there is
+            # no status or end time to move. A --metadata payload is still the
+            # closer's to record, merged onto the row as it now stands.
+            if metadata is not None:
+                await _merge_invocation_metadata(db, invocation_id, metadata)
+            return InvocationEnd(row=await db.get_invocation(invocation_id), applied=True)
         if metadata is not None:
-            # Merge: preserve any metadata the skill wrote during the
-            # run, overwrite per-key with the closer's payload.
-            current = existing.get("node_metadata") or {}
-            if isinstance(current, str):
-                try:
-                    current = json.loads(current)
-                except json.JSONDecodeError:
-                    current = {}
-            await db.update_invocation(
-                invocation_id,
-                node_metadata={**current, **metadata},
-            )
-        return await db.get_invocation(invocation_id)
+            # Merge: preserve any metadata the skill wrote during the run,
+            # overwrite per-key with the closer's payload.
+            await _merge_invocation_metadata(db, invocation_id, metadata)
+        return InvocationEnd(row=await db.get_invocation(invocation_id), applied=True)
+
+
+async def _merge_invocation_metadata(db, invocation_id: str, metadata: dict) -> None:
+    """Merge ``metadata`` over the row's stored node_metadata, in the database.
+
+    ``StateDB.merge_invocation_node_metadata`` merges inside a single UPDATE, so
+    a second closer's payload landing between this close's read and its write is
+    merged with rather than overwritten: there is no read-modify-write in Python
+    and nothing to retry. The payload therefore lands with the write or the write
+    fails, and a failure propagates rather than reporting the payload saved.
+    """
+    await db.merge_invocation_node_metadata(invocation_id, metadata)
 
 
 async def _list_invocations(*, skill: str | None, status: str | None, limit: int) -> list[dict]:
@@ -166,8 +203,11 @@ def add_invoke_subparser(subparsers: argparse._SubParsersAction) -> None:
         "--metadata",
         default=None,
         help=(
-            "JSON merged key-by-key into the invocation's existing metadata, so anything written "
-            "during the run survives unless this overwrites that key."
+            "JSON merged key-by-key into the invocation's existing metadata as an RFC 7396 merge "
+            "patch, so anything written during the run survives unless this overwrites that key. "
+            "A nested object merges into the stored object rather than replacing it, and a key "
+            "set to null is removed. A close naming a different status than the stored one "
+            "records neither the status nor this payload."
         ),
     )
 
@@ -242,7 +282,26 @@ def run_invoke(args: argparse.Namespace) -> int:
         if result is None:
             log_error(f"invocation not found: {args.invocation_id}")
             return 1
-        print(f"{args.invocation_id}: {result['status']} ({result['session_count']} session(s))")
+        if not result.applied:
+            stored_status = result.row["status"] if result.row else None
+            if stored_status is None:
+                detail = (
+                    f"invocation {args.invocation_id} was not running; "
+                    f"requested status {args.status!r} was not recorded"
+                )
+            else:
+                detail = (
+                    f"invocation {args.invocation_id} is already {stored_status!r}; "
+                    f"requested status {args.status!r} was not recorded"
+                )
+            if metadata is not None:
+                detail += " and its --metadata was not saved"
+            log_error(detail + ".")
+            return 1
+        print(
+            f"{args.invocation_id}: {result.row['status']} "
+            f"({result.row['session_count']} session(s))"
+        )
         return 0
 
     if args.invoke_command == "list":
