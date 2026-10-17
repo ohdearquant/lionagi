@@ -93,6 +93,14 @@ _API_LOOPS = ("react", "lndl")
 _API_DEFAULT_LOOP = "react"
 # The <lact> calls one LNDL round may declare; a round that declares more runs none.
 _API_LNDL_MAX_ACTIONS = 16
+# An LNDL leg keeps calls and the answer in separate rounds, so the answer is written after
+# the results are read; this is the guidance that tells the model so.
+_API_LNDL_GUIDANCE = (
+    "A round either declares <lact> calls, with no OUT{}, or writes the answer, with no "
+    "<lact>. Calls declared in a round run when it ends, and you read their results in the "
+    "next round. Write the answer as text in an <lvar> and bind it in OUT{answer: [...]}; a "
+    "tool result is never the answer."
+)
 # The Anthropic messages endpoint refuses a request that names no output limit.
 _ANTHROPIC_DEFAULT_MAX_TOKENS = 8192
 
@@ -347,9 +355,10 @@ async def _run_api_turn(
 
     The loop is ``Branch.ReAct`` or, for ``loop="lndl"``, batched LNDL rounds
     (ADR-0132); *timeout* bounds the whole turn and raises ``TimeoutError`` past
-    it. However the turn ends, what it spent is recorded under the launch record's
-    ``spend`` and printed, and then the branch is written to *snapshot_dir*, so a
-    resume and a reader of the run directory find both. Returns the answer's text.
+    it. However the turn ends, what it spent is added to the launch record's
+    ``spend``, the invocation's total, and printed, and then the branch is written
+    to *snapshot_dir*, so a resume and a reader of the run directory find both.
+    Returns the answer's text.
     """
     import contextlib
 
@@ -369,12 +378,15 @@ async def _run_api_turn(
                 schemas = branch.acts.get_tool_schema(tools=True)
                 result = await branch.operate(
                     instruction=instruction,
+                    guidance=_API_LNDL_GUIDANCE,
                     response_format=_LndlAnswer,
                     tool_schemas=schemas.get("tools", []) if isinstance(schemas, dict) else [],
                     invoke_actions=False,
                     handle_validation="raise",
                     middle=build_lndl_middle(
-                        round_budget=1 + max_extensions, max_actions=_API_LNDL_MAX_ACTIONS
+                        round_budget=1 + max_extensions,
+                        max_actions=_API_LNDL_MAX_ACTIONS,
+                        lacts_with_out=False,
                     ),
                 )
             else:
@@ -386,14 +398,19 @@ async def _run_api_turn(
     finally:
         with anyio.CancelScope(shield=True):
             calls_after = _calls_sent(branch)
-            spend = {
-                "requests": sum(
-                    count - calls_before.get(key, 0) for key, count in calls_after.items()
-                ),
-                "tool_calls": _tool_results(branch) - tools_before,
-                "wall_seconds": round(time.monotonic() - started, 3),
-            }
             record = branch.metadata.get(_API_LAUNCH_KEY)
+            # The record totals this invocation's turns: a queued message drained as a
+            # further turn adds to it, and a resume, a new invocation, clears it first.
+            prior = record.get("spend") if isinstance(record, dict) else None
+            prior = prior if isinstance(prior, dict) else {}
+            spend = {
+                "requests": prior.get("requests", 0)
+                + sum(count - calls_before.get(key, 0) for key, count in calls_after.items()),
+                "tool_calls": prior.get("tool_calls", 0) + _tool_results(branch) - tools_before,
+                "wall_seconds": round(
+                    prior.get("wall_seconds", 0.0) + time.monotonic() - started, 3
+                ),
+            }
             if isinstance(record, dict):
                 record["spend"] = spend
             hint(
@@ -1355,6 +1372,8 @@ async def _run_agent(
     api_launch = None
     if not getattr(branch.chat_model, "is_cli", False) and _API_LAUNCH_KEY in branch.metadata:
         api_launch = _recorded_api_launch(branch.metadata[_API_LAUNCH_KEY])
+        # What an earlier invocation spent is not this one's.
+        branch.metadata[_API_LAUNCH_KEY].pop("spend", None)
         declared = _profile_api_launch(profile) if is_resumed_branch else None
         if is_resumed_branch and profile is not None and declared is None:
             raise ConfigurationError(

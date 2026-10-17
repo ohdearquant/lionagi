@@ -75,8 +75,10 @@ def _text(text: str) -> dict:
 
 
 _LNDL_READ = '```lndl\n<lact r>reader(action="read", path="notes.txt")</lact>\n```'
-_LNDL_RESULT_AS_ANSWER = (
-    '```lndl\n<lact r>reader(action="read", path="notes.txt")</lact>\nOUT{answer: [r]}\n```'
+_LNDL_RESULT_AS_ANSWER = "```lndl\nOUT{answer: [r]}\n```"
+_LNDL_READ_AND_GUESS = (
+    '```lndl\n<lact r>reader(action="read", path="notes.txt")</lact>\n'
+    "<lvar a>a guess</lvar>\nOUT{answer: [a]}\n```"
 )
 _LNDL_MISSING = "```lndl\nOUT{answer: [missing]}\n```"
 
@@ -683,10 +685,10 @@ async def test_a_react_turn_records_and_prints_what_it_spent(leg, monkeypatch):
 async def test_a_resumed_turn_counts_only_its_own_spend(leg):
     from lionagi.cli._runs import find_branch
 
-    leg.replies = [_last_round(), _answer("first")]
+    leg.replies = [_read_round("notes.txt"), _last_round(), _answer("first")]
     _, _, branch_id, _, _ = await leg.run(_profile(api_tools="read"))
     first = leg.branch.metadata["api_launch"]["spend"]
-    assert (first["requests"], first["tool_calls"]) == (2, 0)
+    assert (first["requests"], first["tool_calls"]) == (3, 1)
 
     leg.replies = [_read_round("notes.txt"), _last_round(), _answer("read it")]
     await leg.run(_profile(api_tools="read"), "read the notes now", resume=branch_id)
@@ -698,9 +700,9 @@ async def test_a_resumed_turn_counts_only_its_own_spend(leg):
 
 
 @pytest.mark.asyncio
-async def test_a_second_turn_on_the_same_branch_counts_only_its_own_spend(leg, tmp_path):
-    """A queued steer runs one more turn on the same branch and the same model, so
-    the counts are read from a baseline taken at the turn's start."""
+async def test_a_second_turn_in_the_same_invocation_adds_to_its_spend(leg, tmp_path):
+    """A queued steer runs one more turn on the same branch and the same model; the
+    record totals the invocation, each turn counted once from its own baseline."""
     import lionagi.cli.agent as agent_mod
 
     leg.replies = [_read_round("notes.txt"), _last_round(), _answer("first")]
@@ -718,7 +720,7 @@ async def test_a_second_turn_on_the_same_branch_counts_only_its_own_spend(leg, t
 
     assert result == "second"
     spend = leg.branch.metadata["api_launch"]["spend"]
-    assert (spend["requests"], spend["tool_calls"]) == (3, 1)
+    assert (spend["requests"], spend["tool_calls"]) == (6, 2)
 
 
 @pytest.mark.asyncio
@@ -761,14 +763,40 @@ async def test_an_lndl_leg_reads_then_answers_in_two_requests(leg):
 
 @pytest.mark.asyncio
 async def test_an_lndl_answer_that_is_a_tool_result_is_refused_and_repaired(leg):
-    leg.replies = [_text(_LNDL_RESULT_AS_ANSWER), _lndl_answer("the notes say hello")]
+    leg.replies = [
+        _text(_LNDL_READ),
+        _text(_LNDL_RESULT_AS_ANSWER),
+        _lndl_answer("the notes say hello"),
+    ]
 
     result, _, _, status, _ = await leg.run(_profile(api_tools="read", api_loop="lndl"))
 
     assert (result, status) == ("the notes say hello", "completed")
-    assert "the answer must be text you write" in _last_user_text(leg.payloads[1])
+    assert "the answer must be text you write" in _last_user_text(leg.payloads[2])
     spend = leg.branch.metadata["api_launch"]["spend"]
-    assert (spend["requests"], spend["tool_calls"]) == (2, 1)
+    assert (spend["requests"], spend["tool_calls"]) == (3, 1)
+
+
+@pytest.mark.asyncio
+async def test_an_lndl_round_that_calls_and_answers_runs_nothing_and_is_repaired(leg):
+    leg.replies = [_text(_LNDL_READ_AND_GUESS), _text(_LNDL_READ), _lndl_answer("read it")]
+
+    result, _, _, status, _ = await leg.run(_profile(api_tools="read", api_loop="lndl"))
+
+    assert (result, status) == ("read it", "completed")
+    assert "declares <lact> calls and also writes OUT{}" in _last_user_text(leg.payloads[1])
+    spend = leg.branch.metadata["api_launch"]["spend"]
+    # Only the second round's read ran; the guess was never taken as the answer.
+    assert (spend["requests"], spend["tool_calls"]) == (3, 1)
+
+
+@pytest.mark.asyncio
+async def test_an_lndl_leg_is_told_to_keep_calls_and_the_answer_apart(leg):
+    leg.replies = [_text(_LNDL_READ), _lndl_answer("the notes say hello")]
+
+    await leg.run(_profile(api_tools="read", api_loop="lndl"))
+
+    assert "either declares <lact> calls" in json.dumps(leg.payloads[0], default=str)
 
 
 @pytest.mark.asyncio

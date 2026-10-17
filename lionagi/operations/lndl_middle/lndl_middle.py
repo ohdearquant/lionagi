@@ -146,12 +146,15 @@ def _round_instruction(
     prior_error: str | None,
 ) -> JsonValue | Instruction:
     """Round 1 sends the instruction verbatim (LNDL contract rides in
-    ``guidance``); later rounds send a short 'Round N of M.' continuation notice."""
+    ``guidance``); later rounds send a short 'Round N of M.' continuation notice,
+    which on the last round says so and after a refused round carries its error."""
     if round_num == 1:
         return original_instruction
     notice = f"Round {round_num} of {round_budget}."
+    if round_num == round_budget:
+        notice += " This is the last round: write your answer in OUT{} now."
     if prior_error:
-        notice += f"\n\nError from your previous OUT{{}}: {prior_error}\nRepair and try again."
+        notice += f"\n\nError from your previous round: {prior_error}\nRepair and try again."
     return notice
 
 
@@ -160,10 +163,12 @@ def _classify_round(
     target: Any,
     action_results: dict[str, Any],
     max_actions: int | None = None,
+    lacts_with_out: bool = True,
 ) -> tuple[RoundOutcome, list[ActionCall], dict[str, Any] | None]:
     """Parse and assemble one round's raw text into a RoundOutcome; returns (outcome, pending_action_calls, assembled_dict).
 
     A round declaring more than ``max_actions`` ``<lact>`` calls is a repair round: none of its calls runs.
+    With ``lacts_with_out=False``, so is a round that declares ``<lact>`` calls beside its ``OUT{}``.
     """
     blocks = extract_lndl_blocks(text)
     if not blocks:
@@ -187,6 +192,20 @@ def _classify_round(
                 None,
             )
 
+        if not lacts_with_out and program.lacts and program.out_block is not None:
+            return (
+                Retry(
+                    error=(
+                        "this round declares <lact> calls and also writes OUT{}; none of its "
+                        "calls ran and the answer was not taken. Declare calls in a round "
+                        "without OUT{}, read their results, then write OUT{} in a later round "
+                        "that declares no <lact>."
+                    )
+                ),
+                [],
+                None,
+            )
+
         if program.out_block is None:
             pending = [build_action_call(la.alias, la) for la in program.lacts]
             return Continue(), pending, None
@@ -199,10 +218,16 @@ def _classify_round(
     return Success(output=assembled), pending, assembled
 
 
-def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET, max_actions: int | None = None):
+def build_lndl_middle(
+    round_budget: int = DEFAULT_ROUND_BUDGET,
+    max_actions: int | None = None,
+    lacts_with_out: bool = True,
+):
     """Build an LNDL seam Middle (ADR-0024 §1) with a custom round budget; ``lndl_middle`` is the ready-to-use default.
 
     ``max_actions`` bounds the ``<lact>`` calls one round may declare; None leaves them unbounded.
+    ``lacts_with_out=False`` keeps calls and the answer in separate rounds: a round that declares
+    ``<lact>`` calls beside its ``OUT{}`` is a repair round and none of its calls runs.
     """
     if max_actions is not None and (
         isinstance(max_actions, bool) or not isinstance(max_actions, int) or max_actions < 1
@@ -241,7 +266,11 @@ def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET, max_actions: int
         )
 
         action_results: dict[str, Any] = {}
+        # The most recent refusal, for the exhaustion error, and the one the next round is
+        # asked to repair; a round that only declares calls clears the second, since the
+        # model has already moved past it.
         last_error: str | None = None
+        repair_error: str | None = None
 
         for round_num in range(1, round_budget + 1):
             if round_num == 1:
@@ -253,15 +282,22 @@ def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET, max_actions: int
                 round_chat_param = stripped_chat_param.with_updates(
                     turn_origin=TurnOrigin.no_origin()
                 )
-            round_instruction = _round_instruction(instruction, round_num, round_budget, last_error)
+            round_instruction = _round_instruction(
+                instruction, round_num, round_budget, repair_error
+            )
+            repair_error = None
 
             text = await _run_round_chat(branch, round_instruction, round_chat_param)
             outcome, pending, assembled = _classify_round(
-                text, target, action_results, max_actions=max_actions
+                text,
+                target,
+                action_results,
+                max_actions=max_actions,
+                lacts_with_out=lacts_with_out,
             )
 
             if isinstance(outcome, Retry):
-                last_error = outcome.error
+                last_error = repair_error = outcome.error
                 continue
 
             if isinstance(outcome, Continue):
@@ -282,7 +318,7 @@ def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET, max_actions: int
             try:
                 return target.model_validate(assembled)
             except ValidationError as e:
-                last_error = str(e)
+                last_error = repair_error = str(e)
                 continue
 
         # Round budget exhausted without a valid OUT{}: raise rather than

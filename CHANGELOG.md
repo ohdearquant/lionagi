@@ -16,13 +16,17 @@ project those rows ran under. To keep the project, name it in those members.
 ### Added
 
 - An API-model `li agent` leg can run batched LNDL rounds in place of ReAct: a profile that
-  declares `api_tools: read` may set `api_loop: lndl` (default `react`). A round may declare up
-  to 16 tool calls, which run together; the turn ends when the model writes its answer as text.
-  A turn that uses up its rounds without an answer ends `failed` with the error recorded. The
-  loop is recorded on the branch and a resume runs the recorded one.
-- Every API-model `li agent` turn records what it spent under `metadata["api_launch"]["spend"]`
-  (`requests`, `tool_calls`, `wall_seconds`, counted for that turn only) and prints it as
-  `[api] spend: ...` before the resume hint.
+  declares `api_tools: read` may set `api_loop: lndl` (default `react`). A round either declares
+  up to 16 tool calls, which run together, or writes the answer as text; the turn ends when an
+  answer is accepted. A turn that uses up its rounds without an answer ends `failed` with the
+  error recorded. The loop is recorded on the branch and a resume runs the recorded one.
+- Every API-model `li agent` invocation records what it spent under
+  `metadata["api_launch"]["spend"]` (`requests`, `tool_calls`, `wall_seconds`, for that
+  invocation only) and prints it as `[api] spend: ...` after each turn.
+- `build_lndl_middle(lacts_with_out=False)` keeps tool calls and the answer in separate rounds:
+  a round that declares `<lact>` calls beside its `OUT{}` is refused and none of its calls runs.
+  From the second round on, the last round's notice says it is the last, and a refused round's
+  error is shown to the next round only.
 
 - `lionagi.ln.concurrency.temporary_signal_handlers(handler, signals=(SIGINT, SIGTERM))`, a
   context manager that installs one handler for the length of a block and restores each prior

@@ -687,6 +687,98 @@ class TestMaxActions:
         assert "declares 3 <lact> calls" in calls[1].last_user_message
 
 
+class TestSeparateAnswerRounds:
+    _MIXED = (
+        '```lndl\n<lact q a>lookup(query="x")</lact>\n<lvar b>guess</lvar>\nOUT{answer: [b]}\n```'
+    )
+
+    def test_a_round_that_calls_and_answers_is_refused_with_nothing_pending(self):
+        outcome, pending, assembled = _classify_round(
+            self._MIXED, AnswerModel, {}, lacts_with_out=False
+        )
+        assert isinstance(outcome, Retry)
+        assert "declares <lact> calls and also writes OUT{}" in outcome.error
+        assert pending == []
+        assert assembled is None
+
+    def test_calls_alone_and_an_answer_alone_still_classify(self):
+        calls = '```lndl\n<lact q a>lookup(query="x")</lact>\n```'
+        outcome, pending, _ = _classify_round(calls, AnswerModel, {}, lacts_with_out=False)
+        assert isinstance(outcome, Continue) and len(pending) == 1
+        answer = "```lndl\nOUT{answer: [a]}\n```"
+        outcome, _, assembled = _classify_round(
+            answer, AnswerModel, {"a": "read"}, lacts_with_out=False
+        )
+        assert isinstance(outcome, Success) and assembled == {"answer": "read"}
+
+    def test_the_default_still_takes_a_round_that_calls_and_answers(self):
+        outcome, _, assembled = _classify_round(self._MIXED, AnswerModel, {})
+        assert isinstance(outcome, Success)
+        assert assembled == {"answer": "guess"}
+
+    @pytest.mark.asyncio
+    async def test_the_refused_round_runs_no_call(self):
+        calls_made: list[str] = []
+
+        def counted_lookup(query: str) -> str:
+            """Return a canned lookup result for a query."""
+            calls_made.append(query)
+            return f"result for {query}"
+
+        middle = build_lndl_middle(round_budget=3, lacts_with_out=False)
+        branch = TestBranch.from_text(
+            [
+                '```lndl\n<lact q a>counted_lookup(query="x")</lact>\n<lvar b>guess</lvar>\n'
+                "OUT{answer: [b]}\n```",
+                '```lndl\n<lact q a>counted_lookup(query="y")</lact>\n```',
+                "```lndl\n<lvar b>read</lvar>\nOUT{answer: [b]}\n```",
+            ]
+        )
+        branch.register_tools([counted_lookup])
+        result = await middle(branch, "look it up", ChatParam(response_format=AnswerModel))
+
+        assert result.answer == "read"
+        assert calls_made == ["y"]
+
+
+class TestRoundNotices:
+    @pytest.mark.asyncio
+    async def test_the_last_round_says_it_is_the_last(self):
+        middle = build_lndl_middle(round_budget=3)
+        branch = TestBranch.from_text(
+            ["thinking", "thinking", "```lndl\n<lvar a>hi</lvar>\nOUT{answer: [a]}\n```"]
+        )
+        await middle(branch, "say hi", ChatParam(response_format=AnswerModel))
+
+        calls = TestBranch.calls(branch)
+        assert "This is the last round" not in calls[1].last_user_message
+        assert "Round 3 of 3. This is the last round" in calls[2].last_user_message
+
+    @pytest.mark.asyncio
+    async def test_a_repair_error_is_shown_once_and_not_after_a_call_round(self):
+        middle = build_lndl_middle(round_budget=4)
+        branch = TestBranch.from_text(
+            [
+                "```lndl\nOUT{answer: [missing]}\n```",
+                '```lndl\n<lact q a>lookup(query="x")</lact>\n```',
+                "```lndl\n<lvar b>done</lvar>\nOUT{answer: [b]}\n```",
+            ]
+        )
+        branch.register_tools([lookup])
+        await middle(branch, "look it up", ChatParam(response_format=AnswerModel))
+
+        calls = TestBranch.calls(branch)
+        assert "undeclared alias" in calls[1].last_user_message
+        assert "Error from your previous round" not in calls[2].last_user_message
+
+    @pytest.mark.asyncio
+    async def test_exhaustion_still_reports_the_last_refusal(self):
+        middle = build_lndl_middle(round_budget=2)
+        branch = TestBranch.from_text(["```lndl\nOUT{answer: [missing]}\n```", "thinking"])
+        with pytest.raises(LNDLError, match="undeclared alias"):
+            await middle(branch, "answer", ChatParam(response_format=AnswerModel))
+
+
 class TestRoundBudget:
     @pytest.mark.asyncio
     async def test_custom_round_budget_respected(self):
