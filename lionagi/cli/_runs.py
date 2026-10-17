@@ -1078,9 +1078,9 @@ async def _teardown_common(
                 metadata=metadata,
                 expected_statuses={pre_write_status},
                 extra_fields=(
-                    {"ended_at": ended_at}
+                    {"ended_at": ended_at, "current_phase": None}
                     if duration_ms is None
-                    else {"ended_at": ended_at, "duration_ms": duration_ms}
+                    else {"ended_at": ended_at, "duration_ms": duration_ms, "current_phase": None}
                 ),
             )
             if not written:
@@ -1865,6 +1865,7 @@ async def find_incomplete_session_for_run(run_id: str) -> dict | None:
                 source="executor",
                 actor=row["id"],
                 expected_statuses={status},
+                extra_fields={"current_phase": None},
             )
             row = await db.get_session(row["id"]) or row
         return row

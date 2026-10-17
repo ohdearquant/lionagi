@@ -218,6 +218,22 @@ def _resolve_project_for_mirror(cwd: str) -> tuple[str, str]:
     return project, source
 
 
+# A tool result consumes its tool use's name (see messages_for_event), so a file's map holds the
+# uses still waiting for a result, and is saved as "pending_tool_names" and loaded whole. It is
+# also saved as "tool_names", the key earlier releases read, so a downgraded mirror still names
+# those results. A map saved by an earlier release has only "tool_names" and kept every use ever
+# seen, so a load of one keeps its newest entries, answered uses included, and those stay until a
+# repeat of their result consumes them. A pending use older than that window is dropped from the
+# map, and its result takes the name from the use's stored row instead.
+_LEGACY_TOOL_NAMES_KEEP = 64
+
+
+def _recent_tool_names(names: dict[str, str]) -> dict[str, str]:
+    if len(names) <= _LEGACY_TOOL_NAMES_KEEP:
+        return names
+    return dict(list(names.items())[-_LEGACY_TOOL_NAMES_KEEP:])
+
+
 def _load_states() -> dict[str, _FileState]:
     # offsets.json persisted-state contract: see docs/internals/cli.md#mirror.py.
     # Dropping `turn` would leave messages written after a restart unattributed
@@ -231,10 +247,15 @@ def _load_states() -> dict[str, _FileState]:
         if isinstance(val, int):
             states[key] = _FileState(session_uid="", offset=val)
         elif isinstance(val, dict):
+            pending = val.get("pending_tool_names")
             states[key] = _FileState(
                 session_uid=val.get("session_uid") or "",
                 offset=val.get("offset", 0),
-                tool_names=dict(val.get("tool_names") or {}),
+                tool_names=(
+                    dict(pending)
+                    if isinstance(pending, dict)
+                    else _recent_tool_names(dict(val.get("tool_names") or {}))
+                ),
                 leaf_uuid=val.get("leaf_uuid"),
                 turn={str(k): str(v) for k, v in (val.get("turn") or {}).items() if v is not None},
             )
@@ -242,11 +263,19 @@ def _load_states() -> dict[str, _FileState]:
 
 
 def _save_states(states: dict[str, _FileState]) -> None:
+    """Write offsets.json unless the file already holds this content.
+
+    A pass that advanced no transcript produces the same content, and rewriting the whole
+    file on every poll for nothing would be most of what an idle mirror writes. The check
+    reads the file instead of remembering the last write, so a file removed or replaced
+    from outside is written again on the next pass.
+    """
     ensure_lionagi_dir(_OFFSETS_PATH.parent)
     payload = {
         key: {
             "offset": st.offset,
             "session_uid": st.session_uid,
+            "pending_tool_names": st.tool_names,
             "tool_names": st.tool_names,
             "leaf_uuid": st.leaf_uuid,
             "turn": st.turn,
@@ -258,8 +287,14 @@ def _save_states(states: dict[str, _FileState]) -> None:
     # coerces to str. Refuse those tokens at the write instead of letting them
     # round-trip forever through the equally permissive read above.
     raise_if_non_finite(payload)
+    data = json.dumps(payload)
+    try:
+        if _OFFSETS_PATH.read_text() == data:
+            return
+    except (OSError, UnicodeDecodeError):
+        pass  # absent or unreadable: write it
     tmp = _OFFSETS_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload))
+    tmp.write_text(data)
     tmp.replace(_OFFSETS_PATH)
 
 
@@ -498,11 +533,12 @@ async def _mirror_one(db, path: Path, state: _FileState, lineage: _Lineage) -> i
 
     # Always kept "running"; the session-level idle sweep after the whole pass
     # flips it to completed.
+    names = dict(state.tool_names)
     written = await mirror_session(
         db,
         session_uid=state.session_uid,
         events=events,
-        tool_names=state.tool_names,
+        tool_names=names,
         project=state.project,
         project_source=state.project_source,
         model=state.model,
@@ -514,7 +550,9 @@ async def _mirror_one(db, path: Path, state: _FileState, lineage: _Lineage) -> i
         max_preview_chars=MIRROR_PREVIEW_CHARS,
     )
     # Advance the cursor only after the batch is durably mirrored, so a failed
-    # write re-reads (idempotently) rather than losing the batch.
+    # write re-reads (idempotently) rather than losing the batch. The tool-name map
+    # moves with it: the re-read needs the names the batch consumed.
+    state.tool_names = names
     state.offset = new_offset
     if written and not state.created:
         state.created = True
@@ -711,11 +749,13 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
         if thread:
             node_metadata = {"codex": thread}
 
+    names = dict(state.tool_names)
+    turn = dict(state.turn)
     written, tally = await mirror_session(
         db,
         rollout_uid=state.session_uid,
         records=records,
-        tool_names=state.tool_names,
+        tool_names=names,
         project=state.project,
         project_source=state.project_source,
         model=state.model,
@@ -724,12 +764,15 @@ async def _mirror_one_codex(db, path: Path, state: _FileState, threads: dict[str
         cwd=state.cwd,
         node_metadata=node_metadata,
         source_path=str(path),
-        turn=state.turn,
+        turn=turn,
         unparseable=unreadable,
         event_sources=sources,
         max_preview_chars=MIRROR_PREVIEW_CHARS,
     )
-    # Advance only after a durable write, so a failed batch is re-read next pass.
+    # Advance only after a durable write, so a failed batch is re-read next pass, with
+    # the tool-name map and the turn it started from.
+    state.tool_names = names
+    state.turn = turn
     state.offset = new_offset
 
     if meta and meta.get("thread_uid"):

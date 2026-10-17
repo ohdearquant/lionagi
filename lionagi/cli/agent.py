@@ -542,8 +542,17 @@ async def _drain_pending_steers(
     return last_res
 
 
-async def _tombstone_pending_steers(live: dict | None) -> None:
+async def _tombstone_pending_steers(
+    live: dict | None,
+    *,
+    result: str = (
+        "rejected: run reached terminal status before the steer could land — use `li agent -r`"
+    ),
+) -> None:
     """Finalize never-claimed session controls as rejected at run teardown.
+
+    *result* is the outcome recorded on each closed row; a flow run's teardown
+    passes its own, since its controls are not steers.
 
     A steer enqueued while the run was live but never drained must not sit
     pending forever. Best-effort: a failure here logs and leaves the row
@@ -591,10 +600,7 @@ async def _tombstone_pending_steers(live: dict | None) -> None:
             # recorded as never delivered.
             await live["db"].finalize_session_control(
                 row["id"],
-                result=(
-                    "rejected: run reached terminal status before "
-                    "the steer could land — use `li agent -r`"
-                ),
+                result=result,
                 only_if_unclaimed=True,
             )
     except Exception as exc:  # noqa: BLE001 — teardown must not raise

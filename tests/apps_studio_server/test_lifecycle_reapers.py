@@ -808,6 +808,14 @@ def test_reap_null_status_sessions_write_is_atomic_with_ended_at(tmp_path, monke
 
     monkeypatch.setattr(lc_mod, "process_liveness", lambda *_a, **_k: False)
 
+    async def _seed_phase() -> None:
+        async with StateDB(db_path) as db:
+            await db.execute(
+                "UPDATE sessions SET current_phase = ? WHERE id = ?", ("executing", sid)
+            )
+
+    run_async(_seed_phase())
+
     async def _boom(*_a, **_k):
         raise RuntimeError("update_session must not be called by this reaper")
 
@@ -821,6 +829,9 @@ def test_reap_null_status_sessions_write_is_atomic_with_ended_at(tmp_path, monke
     sess = run_async(_get_session(db_path, sid))
     assert sess["status"] == "failed"
     assert sess["ended_at"] is not None
+    # The dead process's row is terminal; the live phase must not survive it,
+    # and it has to clear in the same write (update_session is barred above).
+    assert sess["current_phase"] is None
 
 
 # ── automatic phantom reaper ─────────────────────────────────────────────────
@@ -1045,6 +1056,14 @@ def test_reap_phantom_sessions_write_is_atomic_with_ended_at(tmp_path, monkeypat
         )
     )
 
+    async def _seed_phase() -> None:
+        async with StateDB(db_path) as db:
+            await db.execute(
+                "UPDATE sessions SET current_phase = ? WHERE id = ?", ("executing", sid)
+            )
+
+    run_async(_seed_phase())
+
     async def _boom(*_a, **_k):
         raise RuntimeError("update_session must not be called by this reaper")
 
@@ -1058,6 +1077,9 @@ def test_reap_phantom_sessions_write_is_atomic_with_ended_at(tmp_path, monkeypat
     sess = run_async(_get_session(db_path, sid))
     assert sess["status"] == "failed"
     assert sess["ended_at"] is not None
+    # A reaped row is terminal, so the live phase clears with the status in
+    # the same write (update_session is barred above).
+    assert sess["current_phase"] is None
 
 
 # ── admin prune delegates to transition-based reaper ─────────────────────────
