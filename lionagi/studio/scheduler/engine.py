@@ -11,7 +11,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -726,8 +726,8 @@ class SchedulerEngine:
                 "next_fire_at shifted for schedule %s (%s): %s -> %s (tz=%s)",
                 schedule.get("name"),
                 schedule.get("id"),
-                datetime.fromtimestamp(old, tz=timezone.utc).isoformat(),
-                datetime.fromtimestamp(new, tz=timezone.utc).isoformat(),
+                coerce_created_at(old).isoformat(),
+                coerce_created_at(new).isoformat(),
                 SCHEDULER_TZ,
             )
         return new
