@@ -204,12 +204,13 @@ they accept it, and the characterization in D7 pins the sequence for the rest.
 
 Amends ADR-0008 D4 for these providers and only while caching is on. Context blocks returned for a
 conversation are placed in the system field as the conversation blocks, after the stable block,
-each block carrying its own mark (D5). They are sent unchanged on every request of the conversation:
-they are not re-gathered per call and not dropped after the first. A provider that returns a block
-only on the first call of a conversation (one that checks whether the branch has a response yet)
-keeps its block in the conversation segment for the later calls; a block a provider returns on a
-later call is added to the turn segment as new content and does not rewrite the conversation
-segment. The turn segment's first message is the first user message, carrying only its own content.
+with one mark at the end of the conversation segment (D5). They are sent unchanged on every request
+of the conversation: they are not re-gathered per call and not dropped after the first. A provider
+that returns a block only on the first call of a conversation (one that checks whether the branch
+has a response yet) keeps its block in the conversation segment for the later calls; a block a
+provider returns on a later call is added to the turn segment as new content and does not rewrite
+the conversation segment. The turn segment's first message is the first user message, carrying only
+its own content.
 The block list is threaded to the compiler the way ADR-0008 D4 already threads it; the conversation
 segment itself is held by the Branch (D1), which `_prepare_run_kwargs` reads from the branch it is
 handed.
@@ -219,9 +220,9 @@ Anthropic adapter today lifts at most one leading system-role message out of the
 that one string in a single-element `system` list (`providers/anthropic/messages.py:198-203` and
 `:226-228`), so a request carrying two system messages is rejected as an invalid payload. The
 compiler therefore hands the adapter the ordered lists it needs — the stable blocks and the
-conversation blocks — and the adapter must accept an ordered list of system blocks and put one mark
-on each, rather than lifting a single message. ADR-0027 D4 owns that boundary: provider adapters own
-vendor request grammar and the payload remapping that goes with it.
+conversation blocks — and the adapter must accept an ordered list of system blocks and mark the end
+of each segment, rather than lifting a single message. ADR-0027 D4 owns that boundary: provider
+adapters own vendor request grammar and the payload remapping that goes with it.
 
 ADR-0008 D4's alternatives reject persisting these blocks as ordinary messages partly because
 retrieved material is "refreshed per turn". For these providers with caching on that reading
@@ -243,8 +244,8 @@ injection budget is unchanged.
 The compiler hands the adapter the ordered lists — the stable blocks and the conversation blocks —
 and the position in this request where the previous request ended; the adapter builds the native
 system blocks from them (ADR-0027 D4) and turns the boundaries into its provider's marks. The
-adapter must accept an ordered list of system blocks and put one mark on each (D4); the compiler
-does not emit the native system field. For Anthropic:
+adapter must accept an ordered list of system blocks and mark the end of each segment (D4); the
+compiler does not emit the native system field. For Anthropic:
 
 - one mark with a one-hour lifetime at the end of the stable segment;
 - one five-minute mark at the end of the conversation segment when it is non-empty;

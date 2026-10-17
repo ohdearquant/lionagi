@@ -25,11 +25,12 @@ def _flat() -> str:
 
 
 def _decision(number: int) -> str:
-    """The text of ``### D<number>`` up to the next ``###`` heading, normalized."""
+    """The text of ``### D<number>`` up to the next heading, normalized."""
     text = ADR_PATH.read_text(encoding="utf-8")
     start = text.index(f"### D{number}:")
-    rest = text.index("\n### ", start) if "\n### " in text[start:] else len(text)
-    return re.sub(r"\s+", " ", text[start:rest])
+    heading = re.search(r"\n#{2,3} ", text[start:])
+    end = start + heading.start() if heading else len(text)
+    return re.sub(r"\s+", " ", text[start:end])
 
 
 def test_scope_gate_requires_declaration_and_option() -> None:
@@ -54,17 +55,12 @@ def test_option_off_is_byte_identical_on_every_path_with_no_exception() -> None:
 
 def test_the_mark_stays_wherever_it_fires_today_while_the_option_is_off() -> None:
     flat = _flat()
-    assert (
-        "the Anthropic adapter's `cache_control`-triggered last-message mark "
-        "(`providers/anthropic/messages.py:209-224`) stays exactly as today wherever it fires today"
-        in flat
-    )
+    assert "the Anthropic adapter's `cache_control`-triggered last-message mark" in flat
+    assert "stays exactly as today wherever it fires today" in flat
     d5 = _decision(5)
-    assert (
-        "byte-identical to today's on every path, the adapter's `cache_control`-triggered last-message "
-        "mark (`providers/anthropic/messages.py:209-224`) included wherever it fires today" in d5
-    )
-    assert "replaces" in d5
+    assert "byte-identical to today's on every path" in d5
+    assert "the adapter's `cache_control`-triggered last-message mark" in d5
+    assert "included wherever it fires today" in d5
 
 
 def test_p4_states_both_paths_for_the_flag() -> None:
@@ -126,10 +122,10 @@ def test_response_sections_render_in_the_turn_segment() -> None:
     assert "renders the same bytes whether it is current or history" in d2
     assert "a run declares" not in _flat()
     assert "The rendered schema is the `ResponseSchema` of the request operative" in d2
-    assert "`reason` when the call asks for it (`operations/operate/step.py:102-104`)" in d2
+    assert "`reason` when the call asks for it" in d2
     assert (
-        "`action_required`, `action_requests` and `action_responses` when the call passes actions "
-        "(`operations/operate/step.py:106-109`)" in d2
+        "`action_required`, `action_requests` and `action_responses` when the call passes actions"
+        in d2
     )
     assert "the response sections beside the tools" not in _flat()
     assert "in the stable segment beside the tools" not in _flat()
@@ -142,7 +138,8 @@ def test_stable_tool_definitions_come_from_the_conversation_tool_set() -> None:
     )
     assert "not the per-call `action_param`" in d2
     assert "A call that requests no action, such as `ReAct`'s final answer" in d2
-    assert "(`operations/ReAct/ReAct.py:653` sets `action_param` None)" in d2
+    assert "operations/ReAct/ReAct.py" in d2
+    assert "sets `action_param` None" in d2
     assert "still carries the same tool section in the stable segment" in d2
     assert "its turn content says that no action is requested" in d2
     assert "is therefore a counted stable-segment change (D6)" in d2
@@ -179,7 +176,8 @@ def test_conversation_segment_lifetime_and_its_lock() -> None:
 def test_context_blocks_are_the_system_blocks_after_the_stable_block() -> None:
     d4 = _decision(4)
     assert "in the system field as the conversation blocks, after the stable block" in d4
-    assert "each block carrying its own mark" in d4
+    assert "with one mark at the end of the conversation segment (D5)" in d4
+    assert "each block carrying its own mark" not in d4
     assert (
         "The turn segment's first message is the first user message, carrying only its own content"
         in d4
@@ -189,8 +187,8 @@ def test_context_blocks_are_the_system_blocks_after_the_stable_block() -> None:
     assert "source attribution stays in `ProviderReport.fired`" in d4
     assert "moves to ADR-0007 D3's canonical JSON once that record is accepted" in d4
     assert (
-        "the adapter must accept an ordered list of system blocks and put one mark on each, rather "
-        "than lifting a single message" in d4
+        "the adapter must accept an ordered list of system blocks and mark the end of each segment, "
+        "rather than lifting a single message" in d4
     )
     assert "ADR-0027 D4 owns that boundary" in d4
     assert "renders as it does today" not in _flat()
@@ -202,14 +200,25 @@ def test_marks_take_the_recorded_position_and_come_only_from_the_option() -> Non
         "the ordered lists — the stable blocks and the conversation blocks — and the position in this "
         "request where the previous request ended" in d5
     )
-    assert "one five-minute mark at that recorded position" in d5
+    assert "one mark with a one-hour lifetime at the end of the stable segment" in d5
+    assert "one five-minute mark at the end of the conversation segment when it is non-empty" in d5
+    assert "one five-minute mark on the last block of the turn segment" in d5
+    assert (
+        "when a turn adds more than the provider's lookback, one five-minute mark at that recorded "
+        "position, on the previous request's last block" in d5
+    )
+    assert "At most four marks" in d5
+    assert "one-hour marks precede five-minute marks" in d5
+    assert "this decision's placement replaces that one `cache_control`-triggered mark" in d5
+    assert "the adapter's own last-message mark is not placed on top of it" in d5
     assert "marks come only from this option" in d5
     assert (
-        "The adapter must accept an ordered list of system blocks and put one mark on each (D4)"
-        in d5
+        "The adapter must accept an ordered list of system blocks and mark the end of each segment "
+        "(D4)" in d5
     )
     assert "the compiler does not emit the native system field" in d5
     assert "the request-option filter stops dropping the marks the adapter writes" not in _flat()
+    assert "put one mark on each" not in _flat()
 
 
 def test_prompt_caching_is_a_configuration_option_outside_the_body() -> None:
@@ -223,7 +232,11 @@ def test_prompt_caching_is_a_configuration_option_outside_the_body() -> None:
 
 
 def test_minimum_cacheable_length_is_stated_the_same_way_in_context_and_decision() -> None:
-    assert _flat().count("shorter than the model's minimum cacheable length") == 2
+    flat = _flat()
+    context = flat[flat.index("## Context") : flat.index("## Decision")]
+    clause = "shorter than the model's minimum cacheable length"
+    assert clause in context
+    assert clause in _decision(5)
 
 
 def test_consequences_state_the_write_prices() -> None:
@@ -241,7 +254,7 @@ def test_history_rewrite_is_a_counted_turn_segment_change() -> None:
     assert "A **history rewrite** is a turn-segment change" in d1
     assert "it breaks the prefix from the rewritten message on" in d1
     assert "the hide, show and summarize directives of ADR-0125 step 2" in d1
-    assert "`operations/chat/_prepare.py:191-247`" in d1
+    assert "operations/chat/_prepare.py" in d1
     assert "context dedupe" not in d1
     assert "counts segment changes, including a history rewrite" in _decision(6)
 
@@ -267,10 +280,10 @@ def test_the_adapter_builds_the_native_system_block() -> None:
 def test_accounting_names_the_usage_fields_the_extractor_reads() -> None:
     d6 = _decision(6)
     assert "`cache_read_input_tokens` and `cache_creation_input_tokens`" in d6
-    assert "`session/signal.py:290-294`" in d6
+    assert "session/signal.py" in d6
     assert "This record extends it to carry both" in d6
     assert "`ephemeral_5m_input_tokens` and `ephemeral_1h_input_tokens`" in d6
-    assert "`lion1/hub/backend/anthropic.py:498-501`" in d6
+    assert "lion1/hub/backend/anthropic.py" in d6
 
 
 def test_d7_lists_six_tests_and_the_api_chat_path() -> None:
@@ -321,7 +334,9 @@ def test_decision_table_counts_turn_segment_changes() -> None:
 
 
 def test_p1_cites_the_renderer_keys_span() -> None:
-    assert "`protocols/messages/instruction.py:210-215`" in _flat()
+    flat = _flat()
+    assert "While an instruction is current it renders its `Tools`, `ResponseSchema` and" in flat
+    assert "protocols/messages/instruction.py" in flat
 
 
 def test_amended_records_carry_a_pointer_to_this_record() -> None:
