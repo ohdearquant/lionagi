@@ -19,7 +19,7 @@ from __future__ import annotations
 import faulthandler
 import os
 import subprocess
-import time
+import sys
 from pathlib import Path
 
 import pytest
@@ -151,25 +151,48 @@ def test_disarm_is_safe_when_nothing_was_ever_armed(monkeypatch, spy):
     td.disarm_traceback_dump()
 
 
-def test_a_real_arm_writes_real_stacks(tmp_path, monkeypatch):
+_REAL_ARM = """
+import sys, time
+from pathlib import Path
+from lionagi.studio import _traceback_dump as td
+
+target = Path(sys.argv[1])
+if not td.arm_traceback_dump():
+    sys.exit(3)
+try:
+    deadline = time.time() + 5.0
+    while target.stat().st_size == 0 and time.time() < deadline:
+        time.sleep(0.05)
+finally:
+    td.disarm_traceback_dump()
+"""
+
+
+def test_a_real_arm_writes_real_stacks(tmp_path):
     """One end-to-end pass with the stdlib call unmocked.
 
     Every other test here spies on ``dump_traceback_later``, so all of them
     would pass on a version that arms something which never writes anything.
+    The armed timer's thread reads the stack of every thread in its process,
+    so the pass runs in a child interpreter: in the test runner's own worker it
+    would read the worker's other threads too, and a fault there ends the
+    worker rather than this test.
     """
     target = _outside_any_checkout(tmp_path) / "real.txt"
-    monkeypatch.setenv(td._ENV_PATH, str(target))
-    monkeypatch.setenv(td._ENV_INTERVAL, "0.2")
+    env = {**os.environ, td._ENV_PATH: str(target), td._ENV_INTERVAL: "0.2"}
 
-    assert td.arm_traceback_dump() is True
-    try:
-        deadline = time.time() + 5.0
-        while target.stat().st_size == 0 and time.time() < deadline:
-            time.sleep(0.05)
-        content = target.read_text()
-    finally:
-        td.disarm_traceback_dump()
+    result = subprocess.run(
+        [sys.executable, "-c", _REAL_ARM, str(target)],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
 
+    assert result.returncode == 0, f"the child exited {result.returncode}: {result.stderr[-2000:]}"
+    assert "armed, every 0.2s" in result.stderr
+    content = target.read_text()
     assert "Thread" in content or "File " in content, (
         f"the armed timer produced no stack text within the window: {content[:200]!r}"
     )
