@@ -110,12 +110,7 @@ class MessageManager(Manager):
             system = kwargs.get("system")
             if system:
                 self.set_system(_msg)
-            if _msg in self.messages:
-                idx = self.messages.progression.index(_msg.id)
-                self.messages.exclude(_msg.id)
-                self.messages.insert(idx, _msg)
-            else:
-                self.messages.include(_msg)
+            self.messages.update(_msg)
 
         callbacks = list(self._on_message_added)
         errors: list[BaseException] = []
@@ -408,12 +403,7 @@ class MessageManager(Manager):
         _msg = self.create_message(**params)
         if system:
             self.set_system(_msg)
-        if _msg in self.messages:
-            idx = self.messages.progression.index(_msg.id)
-            self.messages.exclude(_msg.id)
-            self.messages.insert(idx, _msg)
-        else:
-            self.messages.include(_msg)
+        self.messages.update(_msg)
 
         self._fire_on_message_added(_msg, hook_snapshot)
 
