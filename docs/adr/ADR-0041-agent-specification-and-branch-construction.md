@@ -31,9 +31,13 @@ Decision:
   write files or run commands are offered to an API model only by a later decision that runs
   them inside an operating-system sandbox.
 - The branch records the tool set and bound under `metadata["api_launch"]` and is written to the
-  run's branches directory after every turn. A resume runs the loop again from that record; a
-  non-CLI branch without it keeps the earlier path. Queued operator messages drain at turn end as
-  further turns of the loop.
+  run's branches directory after every turn. A resume runs the loop again from that record, with
+  the read set bound again to the resume's working directory and the bound the resuming profile
+  names; a resume under a profile without `api_tools`, or with `--image`, is refused before a
+  run exists. A non-CLI branch without the record keeps the earlier path. Queued operator
+  messages drain at turn end as further turns of the loop.
+- An API model is built from its model spec alone; the CLI display options (`-v`, `--theme`)
+  are not put on its request, on a new leg or a resume.
 
 `search` is held to what `reader` may read: it resolves its path inside the working directory,
 passes the pattern to grep after `-e` so a pattern is never read as an option, and leaves out

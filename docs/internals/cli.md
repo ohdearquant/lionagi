@@ -1143,14 +1143,20 @@ before plus a pointer to the opt-in:
 - `max_extensions` — rounds after the first, a whole number from 1 to 100 (default 10).
 
 `--preset coding` and `--image` are refused for an API model. The leg is handed no MCP server.
+An API model is built from its model spec alone: the display options `-v` and `--theme` are CLI
+endpoint settings and are not put on its request, so its key and endpoint stay its own.
 The Anthropic endpoint requires an output limit, so an API leg on it sets `max_tokens` (8192)
 unless the endpoint's settings already carry one. The default role is `reviewer` (a
 declared `role:` key still wins).
 
 The branch records `{"tools", "max_extensions"}` under `metadata["api_launch"]`; the snapshot is
 written to the run's branches dir after every turn, however the turn ends, so `li agent -r`
-finds it and runs the loop again from that record (a profile's current `max_extensions`
-replaces the recorded bound). A non-CLI branch without the record runs the earlier
+finds it and runs the loop again from that record. A stored branch keeps its messages, not its
+tools, so the resume binds the read set again, guarded to its own working directory; a profile's
+current `max_extensions` replaces the recorded bound, and a resume without `-a` runs on the
+recorded one. A resume under a profile that no longer declares `api_tools`, or with `--image`,
+is refused before a run exists, and the display options stay off the resumed model's request
+too. A non-CLI branch without the record runs the earlier
 `branch.operate` path unchanged. Queued operator messages drain as further turns of the loop
 (`_drain_pending_steers(run_turn=...)`), on the budget the deadline leaves. Messages persist
 through the same branch-level hooks as a CLI leg; there is no stream dir, since nothing streams
