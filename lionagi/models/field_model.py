@@ -58,7 +58,7 @@ class FieldModel(Params):
         converted = self._convert_kwargs_to_params(**kwargs)
         Params.__init__(self, **converted)
 
-    def _validate(self) -> None:
+    def _validate(self, _stacklevel: int = 3) -> None:
         Params._validate(self)
 
         if not self._is_sentinel(self.base_type):
@@ -80,7 +80,7 @@ class FieldModel(Params):
                     f"FieldModel has {len(self.metadata)} metadata items, "
                     f"exceeding recommended limit of {METADATA_LIMIT}. "
                     "Consider simplifying the field definition.",
-                    stacklevel=3,
+                    stacklevel=_stacklevel,
                 )
 
     @classmethod
@@ -159,34 +159,30 @@ class FieldModel(Params):
 
     # ---- factory helpers -------------------------------------------------- #
 
+    def _clone(self, *, base_type: Any, metadata: tuple) -> Self:
+        new_instance = object.__new__(type(self))
+        object.__setattr__(new_instance, "base_type", base_type)
+        object.__setattr__(new_instance, "metadata", metadata)
+        # One frame deeper than the factory method, so a warning names its caller.
+        new_instance._validate(_stacklevel=4)
+        return new_instance
+
     def as_nullable(self) -> Self:
         current_metadata = () if self._is_sentinel(self.metadata) else self.metadata
         new_metadata = (*current_metadata, Meta("nullable", True))
-        new_instance = object.__new__(type(self))
-        object.__setattr__(new_instance, "base_type", self.base_type)
-        object.__setattr__(new_instance, "metadata", new_metadata)
-        new_instance._validate()
-        return new_instance
+        return self._clone(base_type=self.base_type, metadata=new_metadata)
 
     def as_listable(self) -> Self:
         current_base = Any if self._is_sentinel(self.base_type) else self.base_type
         new_base = list[current_base]  # type: ignore
         current_metadata = () if self._is_sentinel(self.metadata) else self.metadata
         new_metadata = (*current_metadata, Meta("listable", True))
-        new_instance = object.__new__(type(self))
-        object.__setattr__(new_instance, "base_type", new_base)
-        object.__setattr__(new_instance, "metadata", new_metadata)
-        new_instance._validate()
-        return new_instance
+        return self._clone(base_type=new_base, metadata=new_metadata)
 
     def with_validator(self, f: Callable[[Any], bool]) -> Self:
         current_metadata = () if self._is_sentinel(self.metadata) else self.metadata
         new_metadata = (*current_metadata, Meta("validator", f))
-        new_instance = object.__new__(type(self))
-        object.__setattr__(new_instance, "base_type", self.base_type)
-        object.__setattr__(new_instance, "metadata", new_metadata)
-        new_instance._validate()
-        return new_instance
+        return self._clone(base_type=self.base_type, metadata=new_metadata)
 
     def with_description(self, description: str) -> Self:
         return self.with_metadata("description", description)
@@ -210,11 +206,7 @@ class FieldModel(Params):
         current_metadata = () if self._is_sentinel(self.metadata) else self.metadata
         filtered_metadata = tuple(m for m in current_metadata if m.key != key)
         new_metadata = (*filtered_metadata, Meta(key, value))
-        new_instance = object.__new__(type(self))
-        object.__setattr__(new_instance, "base_type", self.base_type)
-        object.__setattr__(new_instance, "metadata", new_metadata)
-        new_instance._validate()
-        return new_instance
+        return self._clone(base_type=self.base_type, metadata=new_metadata)
 
     def with_json_schema_extra(self, **kwargs: Any) -> Self:
         existing = self.extract_metadata("json_schema_extra") or {}
@@ -226,11 +218,7 @@ class FieldModel(Params):
             *filtered_metadata,
             Meta("json_schema_extra", updated),
         )
-        new_instance = object.__new__(type(self))
-        object.__setattr__(new_instance, "base_type", self.base_type)
-        object.__setattr__(new_instance, "metadata", new_metadata)
-        new_instance._validate()
-        return new_instance
+        return self._clone(base_type=self.base_type, metadata=new_metadata)
 
     def create_field(self) -> Any:
         """Create a Pydantic FieldInfo from this template."""

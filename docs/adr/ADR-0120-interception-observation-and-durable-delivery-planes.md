@@ -650,10 +650,10 @@ idempotency identity `(attempt, boundary, subject, subscriber, fact range)`: rep
 execution attempt reuses its run identity, and retrying a known failed execution creates the next
 attempt under the same wake identity, so deduplication spans the attempts even though delivery may
 repeat. That is the practice `enqueue_dispatch` already uses for its `dedup_key`, extended from one
-dispatch to one wake (`lionagi/dispatch/outbox.py:171-217`). The outbox row's persistence is not what
+dispatch to one wake (`lionagi/dispatch/outbox.py:159-205`). The outbox row's persistence is not what
 `retryable` copies: `enqueue_dispatch` inserts a row unconditionally
-(`lionagi/dispatch/outbox.py:219`), acknowledgement is the opt-in (`:178`), and the only per-call
-bound is `max_attempts` (`:179`).
+(`lionagi/dispatch/outbox.py:207`), acknowledgement is the opt-in (`:166`), and the only per-call
+bound is `max_attempts` (`:167`).
 
 A failed execution is not terminal delivery. `state/` owns subscription/source scope, cursor,
 frozen batch membership and payload, filter version, execution attempts, claim lease, next retry,
@@ -662,7 +662,7 @@ the first. Failure retains the batch and cursor until retry succeeds or the boun
 guarded transaction records success or durable dead-letter and advances the cursor. Each batch is
 persisted on its own, and a dead-letter row is re-queueable regardless of cursor position: the
 shape the outbox already uses for an exhausted row, retained and re-queued by an operator override
-(`lionagi/dispatch/outbox.py:47`, `:518-535`, `:591-621`). Recovery scans unfinished batch rows as
+(`lionagi/dispatch/outbox.py:48`, `:506-523`, `:579-609`). Recovery scans unfinished batch rows as
 well as the source log.
 
 Queue depth per observing subscriber is declared and bounded. A full queue drops a `best_effort`
@@ -680,7 +680,7 @@ exit of the invocation owning this subscription, including failure or cancellati
 cleanup. A nested operation's `RunEnd` or `RunFailed` does not settle its parent:
 `ReactiveExecutor` invokes each node's operation through `Operation.invoke`
 (`lionagi/operations/node.py:84-95`) and `Branch` emits its `RunEnd` or `RunFailed` per operation
-(`lionagi/session/branch.py:441-469`, `:1066-1119`; `lionagi/operations/run/run.py:817-828`), all
+(`lionagi/session/branch.py:441-469`, `:1066-1119`; `lionagi/operations/run/run.py:816-827`), all
 before the enclosing flow returns (`lionagi/operations/flow.py:1718`). No flow- or
 invocation-terminal session Signal exists today: the bus carries `RunEnd` per operation
 (`lionagi/session/signal.py:62`) and nothing terminal beyond it, the flow's own drain of node
@@ -711,9 +711,9 @@ the record says what is lost and when. For a durable subscriber the source fact 
 `session_signals` row the persistence sink has
 confirmed, never the in-memory emit: the log is append-only with a monotonic per-session sequence
 (`lionagi/state/schema.sql:797-801`), the sink writes it with the sequence the store assigns
-(`lionagi/state/db.py:6763-6771`), and the cursor is a position in that sequence, read forward with
-`after_seq` (`lionagi/state/db.py:6788-6803`), whose forward read defaults to 500 rows
-(`:6793`). Registration requires a bound usable sink and replayable filters, and persists source
+(`lionagi/state/db.py:6770-6778`), and the cursor is a position in that sequence, read forward with
+`after_seq` (`lionagi/state/db.py:6795-6810`), whose forward read defaults to 500 rows
+(`:6800`). Registration requires a bound usable sink and replayable filters, and persists source
 invocation and signal identity, `emitter_role`, versioned payload type and filter-required data
 without destructive truncation; every page is read through a frozen closure cutoff. A fact the
 sink did not confirm is not a committed row and is no durable subscriber's source: it reaches
@@ -790,9 +790,9 @@ bound it cannot enforce. Omitted, `delivery` selects `retryable`, and registrati
 it cannot use fails explicitly rather than being silently downgraded to `best_effort`.
 `max_attempts` is the bound on the total automatic execution attempts of a failed woken run,
 including the first: the same kind of per-row attempt bound the dispatch outbox declares for its
-own row (`lionagi/dispatch/outbox.py:47`, whose default is 8), enforced the same way the outbox
+own row (`lionagi/dispatch/outbox.py:48`, whose default is 8), enforced the same way the outbox
 enforces its bound, by dead-lettering the row once it is spent and retaining it for an operator
-re-queue (`:518-535`, `:591-621`).
+re-queue (`:506-523`, `:579-609`).
 A wake carries its own identity, `(attempt, boundary, subject, subscriber, fact
 range)`, so the delivery a retry repeats is the delivery that was minted and not a fresh read of
 everything since; facts past the range belong to the next wake.
@@ -804,7 +804,7 @@ everything since; facts past the range belong to the next wake.
   (`lionagi/session/observer.py:296-320`, `:333-370`).
 - No durable wake path exists. Runs are spawned in-process today: the hypothesis, review and
   research operations call `run.spawn` for follow-up work inside their own run
-  (`lionagi/engines/hypothesis.py:890-961`, `lionagi/engines/review.py:615`,
+  (`lionagi/engines/hypothesis.py:887-958`, `lionagi/engines/review.py:615`,
   `lionagi/engines/research.py:187`, `:191`), and the reactive flow subscribes to its spawn type
   and `EscalationRequest` and injects the resulting nodes into a graph it is already running
   (`lionagi/operations/flow.py:1165-1166`, `:1458-1502`), under ADR-0023 D6, which decides that the
@@ -814,22 +814,22 @@ everything since; facts past the range belong to the next wake.
   per-subscriber wake cursor. The team round batches the pending targets it discovers on each node
   completion, one re-invocation per target, so its position is a per-completion batch of targets,
   not a per-subscriber position (`lionagi/cli/orchestrate/_orchestration.py:1378`, `:1414-1419`;
-  `lionagi/cli/orchestrate/flow.py:1988-2033`). A schedule holds `github_cursor`, a monotonic
+  `lionagi/cli/orchestrate/flow.py:1987-2032`). A schedule holds `github_cursor`, a monotonic
   reader position that remembers how far a poll has read so a refused event is re-offered rather
   than skipped, and the store advances it only forward, so a stale write cannot move it back
-  (`lionagi/state/schema.sql:463`, `:527-535`; `lionagi/state/db.py:4950-4952`; ADR-0070,
+  (`lionagi/state/schema.sql:463`, `:527-535`; `lionagi/state/db.py:4957-4959`; ADR-0070,
   Accepted). It is one position per schedule, not per observing subscriber. The nearest durable
   per-session log, and the domain of this record's cursor, is `session_signals`: append-only, with
   the per-session `seq` its store assigns at insert, read forward with `after_seq`
-  (`lionagi/state/schema.sql:797-801`; writer `lionagi/state/db.py:6763-6771`; forward reader
-  `lionagi/state/db.py:6788-6803`).
+  (`lionagi/state/schema.sql:797-801`; writer `lionagi/state/db.py:6770-6778`; forward reader
+  `lionagi/state/db.py:6795-6810`).
 - The one existing dropped-and-counted precedent is the persistence sink's own drop accounting,
   and it counts a drop on the writer, not on a wake (`lionagi/session/observer.py:287-294`).
 - `verdict` and `budget` each lack a session lifecycle Signal. `verdict` names the `Verdict` cast
   (`lionagi/casts/emission.py:152`); the review operation emits a `ReviewVerdict` into the session
   observer (`lionagi/engines/review.py:280`, `:841`), which is one emit site, but a `Verdict` cast
   raised outside that path is carried by no lifecycle Signal. `budget` names a token-budget
-  reading (`lionagi/service/token_budget.py:150`); the nearest crossing is the engine's
+  reading (`lionagi/service/token_budget.py:140`); the nearest crossing is the engine's
   `budget_exhausted` notification (`lionagi/engines/engine.py:404-412`), whose `kind` is a bare
   string on an engine event, not a session Signal. Both boundaries are declared so the vocabulary
   is closed at registration; the emit site still missing for each is row 7 of the delta, not

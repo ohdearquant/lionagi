@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from lionagi.models.field_model import FieldModel
 
 from lionagi.ln import extract_json, to_dict, to_list
-from lionagi.ln.types import Unset
+from lionagi.ln.types import Spec, Unset
 from lionagi.ln.types._sentinel import _compat_not_sentinel
 from lionagi.models import HashableModel
 
@@ -298,6 +298,16 @@ def get_default_field(
     listable: bool | None = None,
 ):
     return _get_default_fields(kind, default=default, nullable=nullable, listable=listable)
+
+
+_DEFAULT_SPECS: dict[str, Spec] = {}
+
+
+def _get_default_spec(kind: str) -> Spec:
+    """Return the immutable Spec used by a standard Operative field."""
+    if kind not in _DEFAULT_SPECS:
+        _DEFAULT_SPECS[kind] = get_default_field(kind).to_spec()
+    return _DEFAULT_SPECS[kind]
 
 
 def _get_default_fields(

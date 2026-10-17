@@ -481,3 +481,13 @@ def test_validator_parametrized(validator, value, expected):
     """Parametrized test for common validator patterns."""
     result = validator(DummyCls, value)
     assert result == expected
+
+
+def test_same_dtype_list_requires_a_dtype():
+    """No dtype is an error, never an inferred one."""
+    with pytest.raises(TypeError):
+        validate_same_dtype_flat_list(DummyCls, [1, 2], None)
+
+
+def test_same_dtype_list_accepts_a_tuple_of_types():
+    assert validate_same_dtype_flat_list(DummyCls, [1, "a"], (int, str)) == [1, "a"]
