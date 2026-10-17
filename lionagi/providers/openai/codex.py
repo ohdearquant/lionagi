@@ -33,6 +33,7 @@ from lionagi.providers._cli_subprocess import (
     SpawnedProcess,
     build_declarative_cli_args,
     discover_cli,
+    env_as_the_spawn_encodes_it,
     ndjson_from_cli,
     print_readable,
     raise_if_env_is_not_a_string_map,
@@ -162,11 +163,15 @@ def _refuse_oversized_command(cmd: list[str]) -> None:
         else:
             what = f"Command-line argument {position}"
         # Measured in the bytes exec passes: os.fsencode is how an argument is encoded for
-        # exec, so a path holding a byte that is not UTF-8 counts that byte once. A
-        # character it cannot encode is refused after the handler, naming the argument by
-        # its position or its flag, since the codec's error holds the whole argument.
+        # exec, so a path holding a byte that is not UTF-8 counts that byte once. The
+        # argument is read with `str.__str__` first, so a caller's own `encode` is never
+        # called here; a character the text cannot encode is refused after the handler,
+        # naming the argument by its position or its flag, since the codec's error holds
+        # the whole argument.
+        if not issubclass(type(argument), str):
+            raise TypeError(f"{what} must be text, not {type(argument).__name__}")
         try:
-            encoded = os.fsencode(argument)
+            encoded = os.fsencode(str.__str__(argument))
         except UnicodeEncodeError:
             encoded = None
         if encoded is None:
@@ -300,37 +305,12 @@ def _toml_string(value: str) -> str:
     return f'"{body}"'
 
 
-# Every request field a containment or refusal check reads, and the command line
-# renders. Each is reduced to plain built-in data by `_plain_request` before any
-# check or the renderer reads it, so a check and the command line can only ever read
-# the same value. A field added here without a reduction in that one function fails
-# the parity test that walks this tuple.
-PLAIN_INPUT_FIELDS: tuple[str, ...] = (
-    "prompt",
-    "system_prompt",
-    "model",
-    "profile",
-    "sandbox",
-    "ask_for_approval",
-    "color",
-    "reasoning_effort",
-    "plan_mode_reasoning_effort",
-    "enable_features",
-    "disable_features",
-    "config_overrides",
-    "bypass_approvals",
-    "full_auto",
-    "search",
-    "fast_mode",
-    "contain_account_integrations",
-    "account_connectors",
-)
-
 # The text fields the command line renders into an argument of their own, by name.
 # Read by the checks so a lone surrogate in any of them is refused by name rather
-# than reaching the CLI as a raw byte. Path fields are left out: a path may
-# legitimately hold a byte that is not UTF-8, and ``os.fsencode`` is what measures
-# those at the process boundary.
+# than reaching the CLI as a raw byte. Path fields are left out of THIS list, not out of
+# the checks: a path may legitimately hold a byte that is not UTF-8, and ``os.fsencode``
+# is what measures those at the process boundary, so the path fields are reduced in the
+# snapshot and measured where the built command is.
 _ARGUMENT_TEXT_FIELDS: tuple[str, ...] = (
     "model",
     "profile",
@@ -371,6 +351,65 @@ def _plain_entry_key(key: Any, index: int) -> str:
             f"({type(key).__name__})."
         )
     return _plain_text(key)
+
+
+def _plain_path(item: Any, what: str) -> str:
+    """One path field entry as a plain ``str`` read with ``str.__str__(os.fspath(x))``, or
+    a refusal by name and type.
+
+    ``os.fspath`` reads a path-like value through ``__fspath__`` and a ``str`` through
+    itself, so a path-like object's own ``__str__``, and a ``str`` subclass's own
+    ``__str__``, are each read once, here; the answer is reduced with ``str.__str__`` to
+    an exact ``str``. The containment check and ``as_cmd_args`` then read that one plain
+    text, so ``os.fsencode`` never calls a caller object's ``encode``. A value
+    ``os.fspath`` cannot read, or whose answer is not text, is refused as ``what`` and its
+    type, never by its text.
+    """
+    try:
+        target = os.fspath(item)
+    except TypeError:
+        reason = "is not a path"
+    else:
+        reason = None
+        if not issubclass(type(target), str):
+            reason = "does not name a text path"
+    if reason is not None:
+        raise TypeError(f"{what} {reason} (it is a {type(item).__name__})")
+    return str.__str__(target)
+
+
+def _plain_paths(value: Any, name: str) -> list[str]:
+    """Every entry of the repeated path field ``name`` reduced to plain ``str``."""
+    if value is None:
+        return []
+    if not issubclass(type(value), (list, tuple)):
+        raise TypeError(f"{name} must be a list of paths, not {type(value).__name__}")
+    entries = list.__iter__(value) if issubclass(type(value), list) else tuple.__iter__(value)
+    return [_plain_path(item, f"{name} entry {index}") for index, item in enumerate(entries)]
+
+
+def _plain_optional_path(value: Any, name: str) -> str | None:
+    """A single path field reduced to plain ``str``, or ``None`` when unset."""
+    return None if value is None else _plain_path(value, name)
+
+
+def _plain_path_fields(request: Any) -> dict[str, Any]:
+    """The four path fields of ``request`` reduced to plain ``str``, read once and by name.
+
+    ``output_schema``, ``output_last_message``, every ``images`` entry and every
+    ``add_dir`` entry, each ``str.__str__(os.fspath(x))``. The containment check and
+    ``_plain_request`` both read this, so the text contained is the text rendered. It
+    touches only these fields, so a request whose environment the spawn would refuse is
+    still contained by the path check first.
+    """
+    return {
+        "output_schema": _plain_optional_path(request.output_schema, "output_schema"),
+        "output_last_message": _plain_optional_path(
+            request.output_last_message, "output_last_message"
+        ),
+        "images": _plain_paths(request.images, "images"),
+        "add_dir": _plain_paths(request.add_dir, "add_dir"),
+    }
 
 
 def _plain_override_value(value: Any, index: int) -> Any:
@@ -443,7 +482,11 @@ class _PlainRequest:
     ``as_cmd_args`` and the spawn path both read this snapshot and nothing else for
     these fields, so ``model_copy(update=...)`` — which skips validation — cannot hand a
     check one object and the command line another. The snapshot is taken again where the
-    process would start.
+    process would start. ``env`` holds the mapping the spawn encodes, each key and value
+    read once as text; the four path fields and every entry of ``images`` and ``add_dir``
+    are plain ``str`` read with ``str.__str__(os.fspath(x))``, so the containment check
+    and the rendered argument are one text and ``os.fsencode`` never calls a caller
+    object's ``encode``.
     """
 
     prompt: str
@@ -464,6 +507,11 @@ class _PlainRequest:
     fast_mode: bool
     contain_account_integrations: bool
     account_connectors: list[str]
+    output_schema: str | None
+    output_last_message: str | None
+    images: list[str]
+    add_dir: list[str]
+    env: dict[str, str] | None
 
     def contains_account_integrations(self) -> bool:
         return self.contain_account_integrations and not self.account_connectors
@@ -479,6 +527,9 @@ class _PlainRequest:
                 "color",
                 "enable_features",
                 "disable_features",
+                "output_schema",
+                "output_last_message",
+                "add_dir",
             )
         }
 
@@ -506,10 +557,12 @@ def _plain_request(
 
     One function, so the containment checks and the renderer read one object: a text
     field is read with ``str.__str__``, a repeated field element by element, a boolean
-    by its exact type, and the overrides recursively, key by key and value by value. A
-    field the reduction cannot read is refused by name (or, inside the overrides, by
-    position) and its type, never by its text. ``overrides`` hands in an already-read
-    list of pairs; ``None`` reads ``request.config_overrides`` once.
+    by its exact type, the four path fields and every ``images``/``add_dir`` entry with
+    ``str.__str__(os.fspath(x))``, the environment with the encoder the spawn uses, and
+    the overrides recursively, key by key and value by value. A field the reduction
+    cannot read is refused by name (or, inside the overrides, by position) and its type,
+    never by its text. ``overrides`` hands in an already-read list of pairs; ``None``
+    reads ``request.config_overrides`` once.
     """
 
     def text(name: str) -> str | None:
@@ -540,6 +593,11 @@ def _plain_request(
             raise TypeError(f"{name} must be a boolean, not {type(value).__name__}")
         return value
 
+    paths = _plain_path_fields(request)
+    env = request.env
+    if env is not None and not issubclass(type(env), Mapping):
+        raise TypeError(f"env must be a mapping, not {type(env).__name__}")
+
     pairs = (
         _override_pairs(request.config_overrides) if overrides is None else _plain_pairs(overrides)
     )
@@ -562,6 +620,11 @@ def _plain_request(
         fast_mode=flag("fast_mode"),
         contain_account_integrations=flag("contain_account_integrations"),
         account_connectors=texts("account_connectors"),
+        output_schema=paths["output_schema"],
+        output_last_message=paths["output_last_message"],
+        images=paths["images"],
+        add_dir=paths["add_dir"],
+        env=None if env is None else env_as_the_spawn_encodes_it(env),
     )
 
 
@@ -962,7 +1025,7 @@ class CodexCodeRequest(BaseModel):
         unnamed = [
             f"entry {index} (key is {type(key).__name__})"
             for index, key in enumerate(value)
-            if not isinstance(key, str)
+            if not issubclass(type(key), str)
         ]
         if unnamed:
             raise TypeError(
@@ -1233,20 +1296,29 @@ class CodexCodeRequest(BaseModel):
     def _validate_add_dir(cls, v):
         if v is None:
             return v
-        return check_add_dir_entries_safe(v, "add_dir")
+        # Reduced and kept here, not only checked: the field then holds one plain text, so
+        # every later read (the containment check, the command line, the spawn) is that
+        # same text and a path-like whose own read answers differently later cannot pass
+        # the check and render as another path.
+        return _plain_paths(check_add_dir_entries_safe(v, "add_dir"), "add_dir")
 
     @field_validator("images", mode="after")
     @classmethod
     def _validate_images(cls, v):
-        return check_paths_safe(v, "images")
+        return _plain_paths(check_paths_safe(v, "images"), "images")
 
     @field_validator("output_schema", "output_last_message", mode="before")
     @classmethod
     def _validate_output_paths(cls, v):
         if v is None:
             return v
-        check_path_safe(str(v), "output_schema/output_last_message")
-        return v
+        # Read once as `str.__str__(os.fspath(v))` and kept as that text, so the value
+        # this check judges is the value the field carries and the command line renders; an
+        # object whose own read answers a safe path now and another later has no second
+        # read to answer.
+        target = _plain_path(v, "output_schema/output_last_message")
+        check_path_safe(target, "output_schema/output_last_message")
+        return target
 
     def __init__(self, **data: Any) -> None:
         # The working directory decides which codex configs apply, so under
@@ -1301,12 +1373,17 @@ class CodexCodeRequest(BaseModel):
                 # pydantic's validation and so keeps its own type.
                 return self
             raise
-        if self.images:
-            contain_paths_in_repo(self.images, repo_root, "images")
-        if self.output_schema is not None:
-            contain_paths_in_repo([str(self.output_schema)], repo_root, "output_schema")
-        if self.output_last_message is not None:
-            contain_paths_in_repo([str(self.output_last_message)], repo_root, "output_last_message")
+        # Each path is read the way the snapshot reads it, `str.__str__(os.fspath(x))`, so
+        # the text this check contains is the text the command line renders: a path-like
+        # value whose own `__str__` answers differently on a later read cannot pass here
+        # and escape at the render.
+        paths = _plain_path_fields(self)
+        if paths["images"]:
+            contain_paths_in_repo(paths["images"], repo_root, "images")
+        if paths["output_schema"] is not None:
+            contain_paths_in_repo([paths["output_schema"]], repo_root, "output_schema")
+        if paths["output_last_message"] is not None:
+            contain_paths_in_repo([paths["output_last_message"]], repo_root, "output_last_message")
         return self
 
     @model_validator(mode="before")
@@ -1411,7 +1488,7 @@ class CodexCodeRequest(BaseModel):
         args.extend(self._build_declarative_args(plain))
 
         for git_root in _linked_worktree_git_writable_roots(cwd):
-            if str(git_root) not in (self.add_dir or []):
+            if str(git_root) not in plain.add_dir:
                 args.extend(["--add-dir", str(git_root)])
 
         # Approval & sandbox: mutually exclusive hierarchy
@@ -1463,7 +1540,7 @@ class CodexCodeRequest(BaseModel):
         if plain.fast_mode:
             args.extend(["-c", "service_tier=fast"])
 
-        for image in self.images:
+        for image in plain.images:
             args.extend(["-i", image])
 
         containing = plain.contains_account_integrations()
@@ -1496,7 +1573,7 @@ class CodexCodeRequest(BaseModel):
         return args
 
     def _contains_account_integrations(self) -> bool:
-        return self.contain_account_integrations and not self.account_connectors
+        return _plain_request(self).contains_account_integrations()
 
     def _argument_text_fields(self) -> list[tuple[str, str]]:
         """The fields ``as_cmd_args`` renders into an argument of their own, by name.
@@ -1504,8 +1581,10 @@ class CodexCodeRequest(BaseModel):
         Read by the construction and spawn checks so a lone surrogate in any of them is
         refused by name rather than reaching the CLI as a raw byte. The text comes from
         the normalized snapshot, so the check names the argument the command line builds.
-        Path fields are left out: a path may legitimately hold a byte that is not UTF-8,
-        and ``os.fsencode`` is what measures those at the process boundary.
+        Path fields are left out of this list, not out of the checks: a path may
+        legitimately hold a byte that is not UTF-8, and ``os.fsencode`` is what measures
+        those at the process boundary, so the path fields are reduced in the snapshot and
+        measured where the built command is.
         """
         return _plain_request(self).argument_text_fields()
 
@@ -1550,7 +1629,7 @@ class CodexCodeRequest(BaseModel):
             # The profile lionagi writes is a file of its own, but codex before 0.135 reads `-p`
             # as a `[profiles.<name>]` table in the configs it merges, and one defined there under
             # this name could turn either feature back on.
-            defined = codex_config_defining_profile(plain.profile, self.env, self.cwd())
+            defined = codex_config_defining_profile(plain.profile, plain.env, self.cwd())
             if defined is not None:
                 raise ValueError(
                     f"contain_account_integrations cannot be combined with profile={plain.profile!r} "
@@ -1558,7 +1637,7 @@ class CodexCodeRequest(BaseModel):
                     "applies its features after --disable"
                 )
         else:
-            sources = [("the codex config", configured_codex_profile(self.env))]
+            sources = [("the codex config", configured_codex_profile(plain.env))]
             project = project_codex_profile(self.cwd())
             if project is not None:
                 sources.append((f"the project codex config {str(project[0])!r}", project[1]))
@@ -1633,7 +1712,7 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
     async with contextlib.aclosing(
         ndjson_from_cli(
             cmd,
-            env=request.env,
+            env=plain.env,
             # The plain prompt the checks measured, so the bytes written to the child's
             # stdin are the bytes those checks read.
             stdin_data=plain.prompt,

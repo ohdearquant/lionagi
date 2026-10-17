@@ -166,9 +166,12 @@ def raise_if_env_is_not_a_string_map(value: Mapping) -> None:
     """
     bad: list[str] = []
     for index, (key, val) in enumerate(value.items()):
-        if not isinstance(key, str):
+        # `issubclass(type(x), str)`, never `isinstance`: a type whose `__class__` merely
+        # answers `str` passes `isinstance` and is then rendered by pydantic, which
+        # quotes the value.
+        if not issubclass(type(key), str):
             bad.append(f"entry {index} (key is {type(key).__name__})")
-        elif not isinstance(val, str):
+        elif not issubclass(type(val), str):
             bad.append(f"entry {index} (value is {type(val).__name__})")
     if bad:
         raise TypeError("env must map strings to strings; these entries do not: " + ", ".join(bad))
