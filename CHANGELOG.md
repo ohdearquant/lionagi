@@ -146,6 +146,9 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Fixed
 
+- A scheduled playbook launch passes the args its schedule declares (`action_playbook_args`, or
+  the args of the resolved playbook target), as in `li play audit --depth 2`. It used to launch the
+  bare playbook, and adopting a declared playbook schedule with args was refused for that reason.
 - Session health finds a stale `finalize.lock` in a run's directory and a stale `job.lock` in its
   MCP job directory. Both sit beside the `artifacts` directory a session records, which is the only
   tree the check walked, so for most runs a stale lock was never seen and the session was classified

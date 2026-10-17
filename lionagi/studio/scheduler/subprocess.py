@@ -283,6 +283,28 @@ def _reserved_flow_flags() -> frozenset[str]:
     return _RESERVED_FLOW_FLAGS
 
 
+def _playbook_args(schedule: dict) -> dict:
+    """The typed playbook args a play launch passes to ``li play``.
+
+    A one-shot launch stores them on ``action_playbook_args``. A scheduled row
+    has no such column: a declaration's args ride in the target snapshot the row
+    resolves, so they are read from there. Either way the same validation and the
+    same flags apply, so a declared arg reaches the child instead of being
+    dropped.
+    """
+    declared = schedule.get("action_playbook_args")
+    if isinstance(declared, dict) and declared:
+        return declared
+    snapshot = schedule.get("resolved_target")
+    if isinstance(snapshot, dict):
+        target = snapshot.get("target")
+        if isinstance(target, dict) and target.get("kind") == "playbook":
+            args = target.get("args")
+            if isinstance(args, dict) and args:
+                return args
+    return declared if isinstance(declared, dict) else {}
+
+
 def _validate_playbook_args(pb_args: object) -> None:
     """Validate a play launch's typed playbook args before argv construction.
 
@@ -481,8 +503,10 @@ def build_argv(
         _validate_identifier(playbook, "action_playbook")
     if isinstance(extra, list):
         _validate_extra_args(extra)
+    play_args: dict = {}
     if kind == "play":
-        _validate_playbook_args(schedule.get("action_playbook_args") or {})
+        play_args = _playbook_args(schedule)
+        _validate_playbook_args(play_args)
     if kind == "engine":
         _validate_engine_options(schedule.get("action_engine_options"))
 
@@ -548,7 +572,7 @@ def build_argv(
         argv += ["play"]
         if playbook:
             argv.append(playbook)
-            for key, value in (schedule.get("action_playbook_args") or {}).items():
+            for key, value in play_args.items():
                 flag = "--" + key.replace("_", "-")
                 if isinstance(value, bool):
                     if value:

@@ -95,6 +95,28 @@ class TestBuildArgvPlay:
         with pytest.raises(ValueError):
             _validate_playbook_args(["mode"])
 
+    def test_a_scheduled_row_reads_the_args_its_target_declares(self):
+        """A scheduled row carries its play args in the resolved target snapshot,
+        in place of the one-shot args field; the launch must read them there."""
+        argv, _ = build_argv(
+            _play_schedule(
+                resolved_target={
+                    "target": {"kind": "playbook", "name": "audit", "args": {"depth": 2}}
+                }
+            ),
+            {},
+            executable_prefix=["li"],
+        )
+        assert argv == ["li", "play", "audit", "--depth", "2"]
+
+    def test_a_scheduled_row_with_no_declared_args_still_builds_a_bare_play(self):
+        argv, _ = build_argv(
+            _play_schedule(resolved_target={"target": {"kind": "playbook", "name": "audit"}}),
+            {},
+            executable_prefix=["li"],
+        )
+        assert argv == ["li", "play", "audit"]
+
 
 class TestPlaceholderGuard:
     @pytest.fixture()

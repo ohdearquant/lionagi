@@ -1532,8 +1532,6 @@ async def _adopt_plan_entry(
         )
     differences = await _adopt_spec_differences(row, resolved)
     undeclared = _adopt_undeclared_values(row)
-    target = resolved.resolved["target"]
-    play_args = target.get("args") if target.get("kind") == "playbook" else None
     reasons: list[str] = []
     if differences:
         rendered = "; ".join(
@@ -1618,11 +1616,6 @@ async def _adopt_plan_entry(
         reasons.append(
             f"the row sets {rendered}, which a declaration cannot express; clear "
             f"{'it' if len(undeclared) == 1 else 'them'} on the row first."
-        )
-    if play_args:
-        reasons.append(
-            f"the member declares playbook args {play_args!r}, which a scheduled play "
-            "launch does not pass; remove them from the member."
         )
     if reasons:
         return PlanEntry(

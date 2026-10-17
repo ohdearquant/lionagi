@@ -946,6 +946,35 @@ schedules:
     }
 
 
+_PLAY_TARGET_WITH_ARGS_BLOCK = (
+    "    target:\n      kind: playbook\n      name: health-audit\n      args:\n        depth: 2\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_a_declared_playbook_target_passes_its_args_to_the_launch(
+    temp_db_path, agent_profile
+):
+    """A playbook target's declared args reach the fire path.
+
+    The schedules table stores a play target's args only inside the resolved
+    target snapshot, so the launch must read them from there; a launch that
+    reads only the one-shot args field drops them and the play runs with its
+    defaults, silently.
+    """
+    from lionagi.studio.scheduler.subprocess import build_argv
+
+    doc = parse_schedule_set(
+        _manifest_with_target("nightly", cwd=agent_profile, target=_PLAY_TARGET_WITH_ARGS_BLOCK)
+    )
+    async with StateDB() as db:
+        await apply_schedule_set(db, doc, agent_profile)
+        row = await db.get_schedule_by_name("demo/nightly")
+    argv, tmp = build_argv(row, {}, executable_prefix=["li"])
+    assert argv == ["li", "play", "health-audit", "--depth", "2"]
+    assert tmp is None
+
+
 # cwd / project resolution
 
 
@@ -2595,7 +2624,7 @@ async def test_adopt_accepts_the_default_github_poll_interval(
 
 
 @pytest.mark.asyncio
-async def test_adopt_refuses_playbook_args_a_scheduled_launch_does_not_pass(
+async def test_adopt_keeps_playbook_args_the_launch_now_passes(
     temp_db_path, agent_profile, pinned_scheduler_tz
 ):
     manifest = f"""
@@ -2635,12 +2664,20 @@ schedules:
             }
         )
         plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
-        assert [entry.action for entry in plan] == ["ERROR"]
-        assert "playbook args {'depth': 2}" in plan[0].detail
+        assert [entry.action for entry in plan] == ["ADOPT"], plan[0].detail
+
+        # The adopted row keeps the declared args in its resolved target, which is
+        # where the launch reads them, so the play fires with what the member wrote.
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        await apply_schedule_set(db, doc, agent_profile, adopt=True)
+        row = await db.get_schedule_by_name("demo/audit")
+        argv, _ = build_argv(row, {}, executable_prefix=["li"])
+        assert argv == ["li", "play", "health-audit", "--depth", "2"]
 
         without_args = parse_schedule_set(manifest.replace("      args:\n        depth: 2\n", ""))
         plan, _ = await build_plan(db, without_args, agent_profile, adopt=True)
-        assert [entry.action for entry in plan] == ["ADOPT"]
+        assert [entry.action for entry in plan] == ["UPDATE"]
 
 
 @pytest.mark.asyncio
