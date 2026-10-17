@@ -411,13 +411,23 @@ class TestStoreProbe:
         its own timeout, so by the time cleanup runs nothing is cancelling any
         more and the close completes either way.
 
-        The assertion is deliberately immediate. Left alone the thread does go
-        away eventually: dropping the last reference to the connection runs a
-        finalizer that stops the worker once its statement gives up. Waiting for
-        that is what makes the difference invisible, and it is not the behaviour
-        being asked for — a finalizer completing a close against an event loop
-        that has since closed is the failure, not the recovery. What the probe
-        owes its caller is a connection already closed by the time it returns.
+        The assertion is a bounded join, not a count taken the instant the
+        probe returns. An immediate count is a race on the correct path too:
+        aiosqlite resolves the close future and only then leaves its loop, so
+        the thread is still alive for a moment after ``close()`` has returned.
+        A bounded join is not that wait, because the two windows differ in
+        length. The bound is well under the probe's busy timeout, which is the
+        probe's own ``timeout_ms`` of 1000 ms, and the blocker still holds the
+        write lock: a correct close has already queued the worker's stop, so
+        the thread exits inside the bound, while an unshielded close never
+        queues it and the worker stays blocked in the locked read past the
+        bound. Waiting longer would be the mistake — left alone the thread
+        does go away eventually, because dropping the last reference to the
+        connection runs a finalizer that stops the worker once its statement
+        gives up, and a finalizer completing a close against an event loop
+        that has since closed is the failure, not the recovery. What the
+        probe owes its caller is a connection already closed by the time it
+        returns.
         """
         import threading
 
@@ -428,12 +438,12 @@ class TestStoreProbe:
 
         db_path, _ = seeded
 
-        def _workers() -> int:
-            return sum(
-                1
+        def _workers() -> set:
+            return {
+                t
                 for t in threading.enumerate()
                 if _is_live_connection_worker(t, _connection_worker_thread)
-            )
+            }
 
         blocker = _hold_the_write_lock(db_path)
         try:
@@ -447,13 +457,18 @@ class TestStoreProbe:
                     await admin_svc.store_probe(timeout_ms=1000)
 
             anyio.run(_abandon)
-            # Read immediately, and deliberately so -- see this test's
-            # docstring. What the probe owes an abandoned caller is a
-            # connection already closed by the time it returns, so any
-            # settling window here would accept the exact regression the
-            # test exists to catch: an unshielded close that lets the worker
-            # outlive the probe and finish later on its own.
-            assert _workers() == before, "a connection worker outlived an abandoned probe"
+            # Join the workers the probe started -- the live ones present now
+            # that were not present before -- with a bound well under the
+            # probe's busy timeout, while the blocker still holds the write
+            # lock. A correct close has already queued the worker's stop, so
+            # the thread exits inside the bound; an unshielded close never
+            # queues it, and the worker stays blocked in the locked read past
+            # the bound.
+            started = _workers() - before
+            for worker in started:
+                worker.join(0.25)
+            leaked = [worker for worker in started if worker.is_alive()]
+            assert not leaked, "a connection worker outlived an abandoned probe"
         finally:
             blocker.rollback()
             blocker.close()
