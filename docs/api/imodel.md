@@ -73,6 +73,7 @@ no model named after it is recorded as served.
 | `"anthropic"` | `"chat"` | `ANTHROPIC_API_KEY` |
 | `"gemini"` | `"chat"` | `GEMINI_API_KEY` |
 | `"ollama"` | `"chat"` | — (local) |
+| `"lattice"` | `"chat"` | — (local) |
 | `"groq"` | `"chat"` | `GROQ_API_KEY` |
 | `"deepseek"` | `"chat"` | `DEEPSEEK_API_KEY` |
 | `"perplexity"` | `"chat"` | `PERPLEXITY_API_KEY` |
@@ -85,6 +86,7 @@ no model named after it is recorded as served.
 |-------------|-------------|-------------|
 | `"openai"` | `"embed"` / `"embeddings"` | `OPENAI_API_KEY` |
 | `"ollama"` | `"embed"` / `"embeddings"` | — (local) |
+| `"lattice"` | `"embed"` / `"embeddings"` | — (local) |
 | `"nvidia_nim"` | `"embed"` | `NVIDIA_NIM_API_KEY` |
 
 These endpoints are all registered and routable through `match_endpoint()`.
@@ -292,6 +294,7 @@ CLI table above for accepted variants).
 | `"anthropic"` | Anthropic | `ANTHROPIC_API_KEY` |
 | `"gemini"` | Google AI (OpenAI-compat) | `GEMINI_API_KEY` |
 | `"ollama"` | Ollama local | — (no key needed) |
+| `"lattice"` | Lattice local | — (no key needed) |
 | `"nvidia_nim"` | NVIDIA NIM | `NVIDIA_NIM_API_KEY` |
 | `"perplexity"` | Perplexity Sonar | `PERPLEXITY_API_KEY` |
 | `"groq"` | Groq | `GROQ_API_KEY` |
