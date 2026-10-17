@@ -461,6 +461,10 @@
          <lastmod>2026-10-17</lastmod>
     </url>
     <url>
+         <loc>https://ohdearquant.github.io/lionagi/concepts/studio-model/</loc>
+         <lastmod>2026-10-17</lastmod>
+    </url>
+    <url>
          <loc>https://ohdearquant.github.io/lionagi/cookbook/</loc>
          <lastmod>2026-10-17</lastmod>
     </url>
@@ -577,7 +581,15 @@
          <lastmod>2026-10-17</lastmod>
     </url>
     <url>
-         <loc>https://ohdearquant.github.io/lionagi/guides/studio/</loc>
+         <loc>https://ohdearquant.github.io/lionagi/guides/studio-getting-started/</loc>
+         <lastmod>2026-10-17</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/guides/studio-operator/</loc>
+         <lastmod>2026-10-17</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/guides/studio-schedules/</loc>
          <lastmod>2026-10-17</lastmod>
     </url>
     <url>
@@ -698,6 +710,10 @@
     </url>
     <url>
          <loc>https://ohdearquant.github.io/lionagi/reference/providers/</loc>
+         <lastmod>2026-10-17</lastmod>
+    </url>
+    <url>
+         <loc>https://ohdearquant.github.io/lionagi/reference/studio-surfaces/</loc>
          <lastmod>2026-10-17</lastmod>
     </url>
     <url>
