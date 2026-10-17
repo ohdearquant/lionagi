@@ -150,6 +150,10 @@ project those rows ran under. To keep the project, name it in those members.
   above its directory and none was named. That path skipped the warning, so the leg started
   without the servers its instructions assumed and nothing said so. `--no-mcp-config` still
   starts a leg with no servers silently.
+- On `li o flow` and `li o fanout`, the built-in orchestrator, casts-role workers and the fanout
+  synthesis branch are handed the server set the run resolved, including no set at all when the
+  run found no config. A run that found none used to leave those branches to discover a config of
+  their own, so the home `~/.lionagi/.mcp.json` reached them.
 - A settings shell hook (`hooks.pre` / `hooks.post` with a `command`) runs in a session of its
   own, so cancelling the tool call it guards left the hook and anything it started running, and an
   error while exchanging data with it did the same. The hook's process group is now killed on

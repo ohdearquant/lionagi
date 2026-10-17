@@ -360,13 +360,12 @@ are different requests: `{}` means "apply no servers" and is applied as the
 whole set; `None` means there's nothing to hand over and the model keeps
 whatever it already had. Branches built through `create_agent` get the
 matching set as `resolved_mcp_servers` (the built-in orchestrator the run's
-set; casts-role workers and the fanout synthesis branch the worker set): left
-unset, the factory discovers a config of its own, the home
-`.lionagi/.mcp.json` included, and that replaces the set just handed over.
-Only a run with no set at all leaves it unset, so in such a run the built-in
-orchestrator, a casts-role worker and the fanout synthesis branch each get the
-factory's home `.lionagi/.mcp.json`, which the job-control policy does not
-filter (#3444).
+set; casts-role workers and the fanout synthesis branch the worker set). A run
+passes that key on every one of those calls, so no branch it builds falls back
+on the factory's own discovery, which would pick up a config the run did not
+choose, the home `.lionagi/.mcp.json` included. A run that found no config
+resolves no set and hands each of those branches no set. A worker built from a
+user profile is built without the factory and is handed no servers either.
 
 **`collect_worker_artifacts`** — the worker roster comes from the artifact
 directories the run actually handed out, not a scan for non-empty ones, so a

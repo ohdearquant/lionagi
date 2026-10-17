@@ -489,16 +489,75 @@ async def test_a_found_run_set_is_the_set_the_synthesis_branch_gets(tmp_run, hom
 
 
 @pytest.mark.asyncio
-async def test_with_no_run_set_a_casts_worker_still_finds_the_home_config(tmp_run, home_mcp_config):
-    """The contrast case: the run found nothing and was told nothing, so the
-    worker keeps the factory's own discovery, home config included."""
+async def test_with_no_run_set_a_casts_worker_starts_with_no_server_set(tmp_run, home_mcp_config):
+    """The run found no config and was told nothing, so its set is no set at
+    all. The worker is handed that: the home-level config is not the run's to
+    hand over, and a worker given a set chosen by a rule the run never applied
+    would start with servers the run's own resolution never saw."""
     env = await _setup(no_mcp_config=False)
     assert env.mcp_servers is None
 
     args = await _casts_worker_args(env)
 
-    assert _mcp_config_arg(args) == {"mcpServers": _HOME_SERVER}
-    assert "critic" in home_mcp_config
+    assert "--mcp-config" not in args
+    assert "--strict-mcp-config" not in args
+    assert home_mcp_config == []
+
+
+@pytest.mark.asyncio
+async def test_with_no_run_set_the_orchestrator_starts_with_no_server_set(tmp_run, home_mcp_config):
+    env = await _setup(no_mcp_config=False)
+    args = await _cli_args(env.orc_branch.chat_model)
+
+    assert "--mcp-config" not in args
+    assert "--strict-mcp-config" not in args
+    assert home_mcp_config == []
+
+
+@pytest.mark.asyncio
+async def test_with_no_run_set_the_synthesis_branch_starts_with_no_server_set(
+    tmp_run, home_mcp_config
+):
+    from lionagi.cli.orchestrate.fanout import _fresh_synthesis_branch
+
+    env = await _setup(no_mcp_config=False)
+    branch = await _fresh_synthesis_branch(env)
+    args = await _cli_args(branch.chat_model)
+
+    assert "--mcp-config" not in args
+    assert "--strict-mcp-config" not in args
+    assert home_mcp_config == []
+
+
+@pytest.mark.asyncio
+async def test_a_home_config_never_reaches_a_worker_of_any_kind(tmp_run, home_mcp_config):
+    """The whole run, one launch: every branch it builds is handed the run's
+    own set — which, here, is none of them. Profile and built-in-role workers
+    included, so the two kinds cannot start with different servers."""
+    env = await _setup(no_mcp_config=False)
+
+    profile_worker, _, profile, _ = await build_worker_branch(
+        env,
+        agent_id="w1",
+        role="implementer",
+        model_override="claude_code/sonnet",
+    )
+    assert profile is not None
+    casts_args = await _cli_args(
+        (
+            await build_worker_branch(
+                env,
+                agent_id="w2",
+                role="critic",
+                model_override="claude_code/sonnet",
+            )
+        )[0].chat_model
+    )
+
+    for args in (await _cli_args(profile_worker.chat_model), casts_args):
+        assert "--mcp-config" not in args
+        assert "--strict-mcp-config" not in args
+    assert home_mcp_config == []
 
 
 _CONTROL_AND_KNOWLEDGE = {
