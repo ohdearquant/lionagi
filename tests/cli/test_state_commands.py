@@ -597,8 +597,8 @@ async def test_doctor_dry_run_does_not_modify_status(temp_db_path: Path):
     async with StateDB() as db:
         stale = await _seed_session(db, status="running")
         await db.execute(
-            "UPDATE sessions SET started_at = ? WHERE id = ?",
-            (old, stale),
+            "UPDATE sessions SET started_at = ?, current_phase = ? WHERE id = ?",
+            (old, "executing", stale),
         )
         recent = await _seed_session(db, status="running")
         await db.execute(
@@ -646,6 +646,9 @@ async def test_doctor_sweeps_stale_running_sessions_to_aborted(
         s_recent = await db.get_session(recent)
     assert s_stale["status"] == "aborted"
     assert s_stale["ended_at"] is not None
+    # The swept row is terminal, so it must not keep the live phase the dead
+    # process left behind.
+    assert s_stale["current_phase"] is None
     assert s_recent["status"] == "running"
 
 

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Protocol, get_args
 
 from sqlalchemy import JSON, bindparam, text
 
+from ..compat import _quote
 from ..reasons import VALID_REASON_CODES
 from . import LifecycleNotFoundError, LifecycleValidationError
 from .callbacks import (
@@ -40,6 +41,8 @@ class _TxProvider(Protocol):
     dialect: str
 
     def _tx(self) -> Any: ...
+
+    def _owner_values(self, table: str) -> dict[str, str]: ...
 
 
 def _json_list(evidence_refs: tuple) -> list:
@@ -147,15 +150,19 @@ class SQLAlchemyLifecycleService:
 
         transition_id = uuid.uuid4().hex
         now = time.time()
+        # A store whose rows carry an owner gets it written on the transition too (ADR-0128 D5).
+        owned = self._db._owner_values("status_transitions")
+        owner_columns = "".join(f", {_quote(name)}" for name in owned)
+        owner_params = "".join(f", :_owner{i}" for i in range(len(owned)))
         await connection.execute(
             text(
-                "INSERT INTO status_transitions "
+                "INSERT INTO status_transitions "  # noqa: S608 -- the owner column is quoted
                 "(id, entity_type, entity_id, previous_status, status, "
                 " reason_code, reason_summary, evidence_refs, "
-                " source, actor, created_at, metadata) "
+                f" source, actor, created_at, metadata{owner_columns}) "
                 "VALUES (:id, :entity_type, :entity_id, NULL, :status, "
                 " :reason_code, :reason_summary, :evidence_refs, "
-                " :source, :actor, :created_at, :metadata)"
+                f" :source, :actor, :created_at, :metadata{owner_params})"
             ).bindparams(
                 bindparam("evidence_refs", type_=JSON),
                 bindparam("metadata", type_=JSON),
@@ -172,6 +179,7 @@ class SQLAlchemyLifecycleService:
                 "actor": command.actor.id,
                 "created_at": now,
                 "metadata": dict(command.reason.metadata),
+                **{f"_owner{i}": value for i, value in enumerate(owned.values())},
             },
         )
         return transition_id
@@ -567,13 +575,31 @@ class SQLAlchemyLifecycleService:
         so both the ordinary and override paths share it. Returns the new
         transition id, or ``None`` on a zero-row UPDATE (conflict).
         """
+        # An invocation's cancellation records an observation: cleanup cannot
+        # revise an end time or a reason another writer already recorded for the
+        # same terminal fact, including one recorded after this transition read
+        # the row. A first cancellation (previous status not yet terminal) writes
+        # both; a later one keeps what is stored and only appends its history.
+        observed_cancel = (
+            command.entity_type == "invocation"
+            and command.to_status == "cancelled"
+            and command.override is None
+        )
+        revise_recorded_cancel = observed_cancel and previous_status == command.to_status
         set_clauses = ["status = :status", "updated_at = :now"]
         if write_reason_columns:
-            set_clauses[1:1] = [
-                "status_reason_code = :reason_code",
-                "status_reason_summary = :reason_summary",
-                "status_evidence_refs = :evidence_refs",
-            ]
+            if revise_recorded_cancel:
+                set_clauses[1:1] = [
+                    "status_reason_code = COALESCE(status_reason_code, :reason_code)",
+                    "status_reason_summary = COALESCE(status_reason_summary, :reason_summary)",
+                    "status_evidence_refs = COALESCE(status_evidence_refs, :evidence_refs)",
+                ]
+            else:
+                set_clauses[1:1] = [
+                    "status_reason_code = :reason_code",
+                    "status_reason_summary = :reason_summary",
+                    "status_evidence_refs = :evidence_refs",
+                ]
         where_clauses = [
             "id = :id",
             "(status = :previous_status OR (status IS NULL AND :previous_status IS NULL))",
@@ -600,7 +626,10 @@ class SQLAlchemyLifecycleService:
                 params[key] = expected
         for col, value in command.patch.items():
             key = f"patch_{col}"
-            set_clauses.append(f"{col} = :{key}")
+            if observed_cancel and col == "ended_at":
+                set_clauses.append(f"{col} = COALESCE({col}, :{key})")
+            else:
+                set_clauses.append(f"{col} = :{key}")
             params[key] = value
 
         update_sql = (

@@ -674,6 +674,25 @@ def _to_db_fields(
     return fields
 
 
+def _resolve_project(execution: Execution, *, project: str | None, is_global: bool) -> str | None:
+    """The project a member runs under: its own, else the document's.
+
+    A project written as YAML null (``null``, ``~`` or a blank value, which the parser
+    reads alike) declares that the member has no project, which is what an export
+    writes for a row stored without one; an omitted project or an empty string
+    inherits the document's (none in a global document). The difference is real at
+    spawn time: the project is the schedule's fallback execution root, used only
+    when its own stored ``cwd`` is unusable, and is passed as ``--project`` to the
+    agent and flow_yaml commands a declaration spawns, so reading an explicit null
+    as "inherit" would change what an exported row does on re-apply.
+    """
+    if execution.project:
+        return execution.project
+    if execution.project is None and "project" in execution.model_fields_set:
+        return None
+    return None if is_global else project
+
+
 def resolve_member(
     name: str,
     member: ScheduleMember,
@@ -686,7 +705,7 @@ def resolve_member(
     resolved_trigger = _resolve_trigger(member.trigger)
     cwd = _resolve_cwd(member.execution, manifest_dir=manifest_dir, is_global=is_global)
     resolved_target = _resolve_target(member.target, manifest_dir, cwd)
-    resolved_project = member.execution.project or (None if is_global else project)
+    resolved_project = _resolve_project(member.execution, project=project, is_global=is_global)
 
     resolved = {
         "trigger": resolved_trigger,
@@ -698,6 +717,11 @@ def resolve_member(
     }
     digest = _digest_of(resolved)
     authored = member.model_dump(mode="json")
+    # The stored spec records the member as authored, so an omitted project stays
+    # omitted rather than becoming a null, which now means "no project". The
+    # managed export, the only reader of this spec, sets the project from the
+    # row's stored action_project before it validates the member.
+    authored["execution"] = member.execution.model_dump(mode="json", exclude_unset=True)
     db_fields = _to_db_fields(resolved_trigger, resolved_target, member, cwd, resolved_project)
 
     return ResolvedMember(

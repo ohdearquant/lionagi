@@ -78,8 +78,8 @@ compatibility mode `open()`:
   leaves SQLite's automatic PASSIVE checkpoint at its default; manual checkpoints refuse (D6);
 - disposes the engine and leaves the object unopened when admission fails, so a failed open cannot be
   reused as a writer;
-- keys any shared handle by URL, mode and profile, so a native and a compatibility handle on one file
-  are never the same object.
+- keys any shared handle by URL, mode, profile and owner, so a native and a compatibility handle on
+  one file, and two compatibility handles writing different owners, are never the same object.
 
 Read paths that only read (status, list, detail) open read-only regardless of mode.
 
@@ -197,7 +197,68 @@ and by a native migration that has recognized the store. Native migration requir
 version and the expected shape together; a store without the key is adopted only if its shape is one
 lionagi's own history produced. Compatibility mode reads the store's metadata and never writes
 `version`, `lineage` or any backfill key. Non-numeric, missing and equal version values are
-classified explicitly rather than falling through a numeric comparison.
+classified explicitly rather than falling through a numeric comparison. Native initialization does
+not write `lineage = 'lionagi'` yet, and native migration does not yet require the key: today a
+store with no `lineage` row opens and migrates natively as before, so the refusal below covers
+only a store whose managing application wrote its row.
+
+A store another application manages carries a `lineage` row naming that application. The managing
+application writes it when it creates the store, in the transaction that creates its schema, and the
+row is the admission contract: compatibility mode admits only a store whose `lineage` row is present
+and names an application other than lionagi. lionagi never writes the row into a store it does not
+manage. A compatibility open that wrote it on first use would leave every native open before that
+write, in any process, free to migrate the store.
+
+A writable native `StateDB` open refuses a store whose `lineage` row names another application,
+raising `ForeignLineageError`; this is what refuses a writable `StateDB` open in a second process of
+a store this process holds in compatibility mode. On SQLite the row is read before any writable
+connection exists, from the file SQLAlchemy opens for the URL however the URL spells the path, and
+those reads write no file of the store: the file, its rollback journal, its write-ahead log and the
+log's `-shm` index keep their bytes and modification times, whether or not another process has the
+store open. The first read opens the file immutable, so SQLite takes no lock and reads no journal,
+log or index; a table an interrupted transaction left half-written is skipped rather than failing
+the read. Beside a rollback journal that begins with a journal header, as one an interrupted
+transaction leaves does, the file can hold part of that transaction, a row it deleted or one it
+wrote, so the row is read instead from a private copy of the file and the journal, which SQLite rolls
+back. When a non-empty write-ahead log is beside the file, whatever row the file shows, the row is
+read again read-only with `readonly_shm`, which reads the log through its existing `-shm` index and
+never writes to it; when there is no index, or that read fails, the row is read from a private copy
+of the file and the log. A private copy is made in a new directory under the system's temporary
+directory (Python's `tempfile`), which only the user running lionagi can read, and the directory is
+removed before the read returns; a process killed while it copies leaves the copy in that directory.
+The file is copied byte for byte, whatever its pages hold, through a descriptor this process keeps
+open for each file it copies and never closes, since closing any descriptor of a file drops every
+lock this process holds on it, which another connection here may hold; two costs follow from that:
+each distinct store copied keeps one descriptor open for the life of the process, and a store deleted
+after it was copied keeps its disk space allocated until the process exits. On Windows, where a lock
+belongs to the handle that took it, the file is copied as usual. A copy the store committed or
+checkpointed under, seen as a changed journal or log header, is taken again from the first read, a
+bounded number of times; when every copy sees the store move, the file's own row stands and the
+writable connection decides the rest. A copy costs a read of the whole file, and is made only beside
+such a journal or a log without a readable index.
+
+A read that fails decides nothing; the writable connection then decides. Each writable connection
+reads the row again right after its busy timeout, before the connection settings of P2 and before
+any statement of `_apply_schema()`, which refuses a row written between the first reads and the
+writable connection. A connection that refuses is closed. That read is the writable connection's,
+and it is the case in which a refused open can change a file of the store: by the time it refuses,
+the connection may have rolled back a hot rollback journal, as on any writable open, built the
+`-shm` index or recorded its read in it, and, if no other connection has the store open when it
+closes, SQLite folds the log into the file. It happens only when the row was written after the reads
+before the writable connection, or when those reads could not read it (a file SQLite cannot open
+read-only, a copy that cannot be made or read, or a store that moved under every copy). A refused
+open, and an open whose first connection never read the store, leaves no engine. A connection a
+native handle opened before the row was written is not asked again; only its later connections read
+the row. Every transaction of `_apply_schema()` that writes reads the row again under its write
+lock, ahead of the version, so a store whose `lineage` names another application and whose version
+is above `SCHEMA_VERSION` is refused on its lineage by any of these checks.
+
+While a writable native handle in this process has a file open, compatibility mode does not admit
+that file: the handle's connections write without the profile, and those already open would never
+read the row. The file is the one the handle's connection opened, by its device and inode, however
+the handle's URL spells the path. A native handle in another process is not visible to that check. These refusals cover
+writable opens through `StateDB`. A read-only `StateDB` open applies nothing and is not checked, and
+Studio's `open_db` and other code that connects to the file natively are not covered.
 
 ### D8: acceptance
 
@@ -231,6 +292,10 @@ Public tests use synthetic profiles. A deployment proves its own profile in its 
 - The aiosqlite floor rises to 0.22.0 (D3).
 - Turning compatibility writes off is the rollback. Restoring a backup over a store the managing
   application is still writing is not.
+- No production caller opens a store in compatibility mode until the native refusal of D7 ships,
+  since before it a native open in another process can migrate a store this process is writing.
+  None does today: the mode is reached only by passing a profile to `StateDB`, and no command,
+  server or configuration passes one.
 
 ## Alternatives considered
 
@@ -266,6 +331,25 @@ before any data or DDL statement. Every step `_apply_schema()` runs ahead of its
 `schedules`, `invocations`, `schedule_runs` and `definitions`) either finds nothing to do or checks
 the version first inside its own `BEGIN IMMEDIATE`. The connection settings of P2 are applied before
 any of it. Compatibility mode (D1) runs none of these steps.
+
+A writable native `StateDB` open of a store whose `lineage` row names another application raises
+`ForeignLineageError` (D7) before any writable connection exists, leaving the store file, its
+journal, its log and its `-shm` index as they were: beside a journal an interrupted transaction left,
+or when the row is only in the log and the log has no readable index, the row is read from a private
+copy in a temporary directory that is removed before the read returns, and otherwise a row only in
+the log is read through the index without writing it. A row written after those reads, or one they
+could not read, is refused by the writable connection's first read, before the connection settings
+of P2 and before any statement of `_apply_schema()`; by then that connection may have rolled back a
+hot journal, written the index, or, closing as the store's last connection, folded the log into the
+file. Wherever the lineage and the version are both read, the lineage is checked
+first. While this process holds a store open in compatibility mode, a writable native open of that
+file from this process is refused before any writable connection exists, whatever the row says and
+however the URL spells the path: by the URL before an engine exists, and by the file's device and
+inode on the first read. While a writable native handle in this process has a file open,
+compatibility admission of that file is refused, the file being the one that handle's connection
+opened, however its URL spells the path. These refusals cover writable `StateDB` opens; a
+read-only open applies nothing and is not checked, and Studio's `open_db` and other code that
+connects to the file natively are not covered.
 
 ### A.1 Entry points
 

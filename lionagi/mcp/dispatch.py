@@ -17,11 +17,11 @@ import json
 import os
 import subprocess
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
+from lionagi.ln import now_utc
 
 from . import config, jobs, projection, roster
 from .verbs import (
@@ -52,7 +52,7 @@ MACHINE_TIMEOUT_SECONDS = 60.0
 # would fail to parse with a misleading message.
 MACHINE_OUTPUT_LIMIT = 1_000_000
 
-_STARTED_AT = datetime.now(timezone.utc).isoformat()
+_STARTED_AT = now_utc().isoformat()
 _STARTED_MONOTONIC = time.time()
 
 

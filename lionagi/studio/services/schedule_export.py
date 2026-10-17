@@ -488,8 +488,11 @@ def build_managed_export_document(
             continue
         authored = dict(authored)
         execution = dict(authored.get("execution") or {})
-        if not execution.get("project") and row.get("action_project"):
-            execution["project"] = row["action_project"]
+        # The member carries the project the row runs with, whatever the author
+        # wrote: an omitted or empty project resolved against a document that the
+        # export does not reproduce (a global one, or another document's project),
+        # and written back as it was it would resolve differently on re-apply.
+        execution["project"] = row.get("action_project") or None
         authored["execution"] = execution
         try:
             member = ScheduleMember.model_validate(authored)

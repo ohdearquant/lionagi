@@ -9,6 +9,7 @@ import argparse
 import contextlib
 import json
 import logging
+import urllib.parse
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -797,6 +798,49 @@ def test_schedule_list_api_error_returns_1(monkeypatch):
     assert result == 1
 
 
+def _host_of(url: str) -> str:
+    return urllib.parse.urlsplit(url).hostname or ""
+
+
+def _port_of(url: str) -> int:
+    port = urllib.parse.urlsplit(url).port
+    assert port is not None
+    return port
+
+
+def _authority_of(url: str) -> str:
+    return url.removeprefix("http://").removeprefix("https://")
+
+
+def _guard_admits_host(host_header: str) -> bool:
+    """Whether the daemon's Host guard admits *host_header*.
+
+    Uses the ambient ``LIONAGI_STUDIO_HOST`` -- the value the URL under test was
+    built from -- and calls the real middleware in-process; no server is started.
+    """
+    import asyncio
+
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+
+    from lionagi.studio.app import validate_host_header
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/schedules",
+            "headers": [(b"host", host_header.encode())],
+        }
+    )
+
+    async def call_next(_request):
+        return JSONResponse({"ok": True})
+
+    response = asyncio.run(validate_host_header(request, call_next))
+    return response.status_code != 400
+
+
 def test_base_url_default(monkeypatch):
     """_base_url returns the default when no env vars are set."""
     monkeypatch.delenv("LIONAGI_STUDIO_URL", raising=False)
@@ -822,12 +866,232 @@ def test_base_url_respects_studio_port(monkeypatch):
 def test_base_url_respects_studio_host(monkeypatch):
     """_base_url reflects LIONAGI_STUDIO_HOST when set."""
     monkeypatch.delenv("LIONAGI_STUDIO_URL", raising=False)
-    monkeypatch.setenv("LIONAGI_STUDIO_HOST", "0.0.0.0")
+    monkeypatch.setenv("LIONAGI_STUDIO_HOST", "192.168.1.5")
     monkeypatch.setenv("LIONAGI_STUDIO_PORT", "8765")
 
     from lionagi.studio.cli import _base_url
 
-    assert _base_url() == "http://0.0.0.0:8765"
+    assert _base_url() == "http://192.168.1.5:8765"
+
+
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [
+        # An unspecified address names no address a client can open, so the URL
+        # says the loopback address of the same family, which the daemon admits.
+        ("0.0.0.0", "http://127.0.0.1:8765"),
+        ("::", "http://[::1]:8765"),
+        ("::1", "http://[::1]:8765"),
+        ("2001:db8::1", "http://[2001:db8::1]:8765"),
+    ],
+)
+def test_base_url_maps_an_unspecified_host_and_brackets_ipv6(monkeypatch, host, expected):
+    """A URL needs the address a client connects to, and an IPv6 literal in
+    brackets -- `http://::1:8765` parses as the IPv6 address `::1:8765` at no
+    port, which then raises. The Host here is the one the URL sends when a
+    schedule command reaches the daemon through it."""
+    monkeypatch.delenv("LIONAGI_STUDIO_URL", raising=False)
+    monkeypatch.setenv("LIONAGI_STUDIO_HOST", host)
+    monkeypatch.delenv("LIONAGI_STUDIO_PORT", raising=False)
+
+    from lionagi.studio.cli import _base_url
+
+    url = _base_url()
+    assert url == expected
+    # The URL must parse with the port attached; an unbracketed IPv6 literal
+    # swallows the port as another address group and raises here instead.
+    assert _host_of(url) == _host_of(expected)
+    assert _port_of(url) == 8765
+    # And the daemon's Host guard admits the authority the URL carries.
+    assert _guard_admits_host(_authority_of(url))
+
+
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [
+        # A blank value is the loopback default, not a URL with no host: the one
+        # built from "" is `http://:8765`, which does not parse.
+        ("", "http://127.0.0.1:8765"),
+        ("   ", "http://127.0.0.1:8765"),
+        ("[]", "http://127.0.0.1:8765"),
+        ("[ ]", "http://127.0.0.1:8765"),
+        # A name that is not an address keeps its brackets off the URL.
+        ("[localhost]", "http://localhost:8765"),
+        ("LOCALHOST", "http://localhost:8765"),
+        # An IPv4-mapped address is the IPv4 address a client connects to; the
+        # IPv6 spelling of it is one the daemon's Host grammar refuses.
+        ("::ffff:127.0.0.1", "http://127.0.0.1:8765"),
+        ("::ffff:192.168.1.5", "http://192.168.1.5:8765"),
+        ("[::ffff:c0a8:105]", "http://192.168.1.5:8765"),
+        # An unspecified IPv4-mapped address is an unspecified IPv4 address.
+        ("::ffff:0.0.0.0", "http://127.0.0.1:8765"),
+        # An IPv6 literal is bracketed in its canonical spelling.
+        ("2001:0db8::1", "http://[2001:db8::1]:8765"),
+        ("[2001:db8::1]", "http://[2001:db8::1]:8765"),
+        ("[fe80::1]", "http://[fe80::1]:8765"),
+    ],
+)
+def test_base_url_builds_a_parsable_url_the_host_guard_admits(monkeypatch, host, expected):
+    """Every spelling of a bind host yields one URL: parsable with its port, and
+    one whose authority the daemon admits under the very value it was built from.
+
+    The URL's host is also the `Host` header a request through it sends, so a URL
+    the guard refuses is a link to a 400 however it is opened.
+    """
+    monkeypatch.delenv("LIONAGI_STUDIO_URL", raising=False)
+    monkeypatch.delenv("LIONAGI_STUDIO_PORT", raising=False)
+    monkeypatch.setenv("LIONAGI_STUDIO_HOST", host)
+
+    from lionagi.studio.cli import _base_url
+
+    url = _base_url()
+    assert url == expected
+    assert _host_of(url) == _host_of(expected)
+    assert _port_of(url) == 8765
+    assert _guard_admits_host(_authority_of(url)), (
+        f"the daemon refuses Host {_authority_of(url)!r} with {host!r} set"
+    )
+
+
+# Every spelling of a bind host a reader has to agree on. Grouped by what the
+# value names: the unspecified addresses, the loopback ones, the mapped forms of
+# both, concrete unicast addresses in canonical and non-canonical spellings, a
+# zone that names a local interface, and the values that are names or blanks.
+_BIND_HOST_SPELLINGS = [
+    # unspecified
+    "0.0.0.0",
+    "::",
+    "[::]",
+    "0:0:0:0:0:0:0:0",
+    "[0:0:0:0:0:0:0:0]",
+    "::0",
+    "0000::0000",
+    "::ffff:0.0.0.0",
+    "[::ffff:0.0.0.0]",
+    "::ffff:0:0",
+    "[::ffff:0:0]",
+    "0:0:0:0:0:ffff:0:0",
+    # loopback
+    "127.0.0.1",
+    "[127.0.0.1]",
+    "127.0.0.2",
+    "::1",
+    "[::1]",
+    "0:0:0:0:0:0:0:1",
+    "[0:0:0:0:0:0:0:1]",
+    "::ffff:127.0.0.1",
+    "[::ffff:127.0.0.1]",
+    "::ffff:7f00:1",
+    "[::ffff:7f00:1]",
+    "localhost",
+    "LOCALHOST",
+    "[localhost]",
+    "sub.localhost",
+    # IPv4-mapped unicast
+    "::ffff:192.168.1.5",
+    "[::ffff:192.168.1.5]",
+    "::ffff:c0a8:105",
+    "[::ffff:c0a8:105]",
+    # concrete unicast, canonical and non-canonical, bracketed and padded
+    "192.168.1.5",
+    " 192.168.1.5 ",
+    "[192.168.1.5]",
+    "2001:db8::1",
+    "[2001:db8::1]",
+    " 2001:db8::1 ",
+    "2001:DB8::1",
+    "2001:0db8::1",
+    "[2001:0db8::1]",
+    "2001:db8:0:0:0:0:0:1",
+    # link-local
+    "fe80::1",
+    "[fe80::1]",
+    "fe80:0000::1",
+    # blanks and names
+    "",
+    "   ",
+    "[]",
+    "[ ]",
+    "studio.example.com",
+    "STUDIO.EXAMPLE.COM",
+    " studio.example.com ",
+    "[studio.example.com]",
+    # a bare IPv6 literal that carries a trailing group, which is an address and
+    # not an address-and-port
+    "::1:8765",
+]
+
+
+@pytest.mark.parametrize("host", _BIND_HOST_SPELLINGS, ids=repr)
+def test_base_url_agrees_with_the_host_guard_for_every_spelling(monkeypatch, host):
+    """For every spelling of the bind host, the URL `_base_url()` builds parses
+    with its port, and the authority it carries is one the daemon's Host guard
+    admits under that same value.
+
+    The URL is the one a request through it uses as its `Host`, so the two
+    readers of one variable have to agree on what it names. They used to each
+    strip, unbracket and lowercase for themselves, so a spelling one understood
+    and the other did not was a link that answered 400.
+    """
+    monkeypatch.delenv("LIONAGI_STUDIO_URL", raising=False)
+    monkeypatch.delenv("LIONAGI_STUDIO_PORT", raising=False)
+    monkeypatch.setenv("LIONAGI_STUDIO_HOST", host)
+
+    from lionagi.studio.cli import _base_url
+
+    url = _base_url()
+    authority = _authority_of(url)
+    assert _host_of(url), f"{host!r} built a URL with no host: {url!r}"
+    assert _port_of(url) == 8765, url
+    assert _guard_admits_host(authority), (
+        f"the daemon refuses Host {authority!r} with LIONAGI_STUDIO_HOST={host!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [
+        # A zone names one local interface, so it stays a bracketed IPv6 literal
+        # and the Host grammar refuses it (`%` is not a digit or `:`).
+        ("fe80::1%eth0", "[fe80::1%eth0]"),
+        ("[fe80::1%eth0]", "[fe80::1%eth0]"),
+        ("fe80::1%en0", "[fe80::1%en0]"),
+    ],
+    ids=repr,
+)
+def test_base_url_leaves_a_zoned_address_to_the_daemon(monkeypatch, host, expected):
+    """A zone names a local interface rather than an address a URL can carry, so
+    `_url_authority` hands the daemon the bracketed literal and the Host grammar
+    refuses it. The grammar is deliberately not loosened for a zone, so the two
+    readers do not meet for one; that is pinned here rather than asserted away.
+    """
+    monkeypatch.delenv("LIONAGI_STUDIO_URL", raising=False)
+    monkeypatch.setenv("LIONAGI_STUDIO_HOST", host)
+
+    from lionagi.studio.cli import _url_authority
+
+    authority = _url_authority(host)
+    assert authority == expected
+    assert _guard_admits_host(authority) is False
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1:8765", "[::1]:8765"], ids=repr)
+def test_base_url_returns_a_value_carrying_a_port_as_the_name_it_is(monkeypatch, host):
+    """An address and a port in one string is not an address, so `_url_authority`
+    returns it as the name it is -- with no brackets invented around it -- and the
+    URL built from it is not parsable. That value is not a bind host (`--host`
+    refuses it, so the CLI never writes it), and the decided reading is that the
+    normalizer returns a value it cannot parse as a name rather than guessing
+    which half was the host.
+    """
+    monkeypatch.delenv("LIONAGI_STUDIO_URL", raising=False)
+    monkeypatch.setenv("LIONAGI_STUDIO_HOST", host)
+
+    from lionagi.studio.cli import _base_url, _url_authority
+
+    assert _url_authority(host) == host
+    with pytest.raises(ValueError):
+        _port_of(_base_url())
 
 
 def test_base_url_studio_url_takes_precedence(monkeypatch):

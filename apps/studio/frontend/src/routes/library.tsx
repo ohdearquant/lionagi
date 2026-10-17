@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslations } from "use-intl";
 import { AgentDetail } from "@/components/library/AgentDetail";
 import { CreateAgentPanel } from "@/components/library/CreateAgentPanel";
@@ -85,192 +85,288 @@ interface LibraryItem {
 
 type KindLoadStatus = "loaded" | "failed";
 
-function useLibraryData() {
-  const [items, setItems] = useState<LibraryItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [allAgents, setAllAgents] = useState<AgentProfileSummary[]>([]);
-  const [allEngines, setAllEngines] = useState<EngineDef[]>([]);
-  const [kindStatus, setKindStatus] = useState<Partial<Record<LibraryKind, KindLoadStatus>>>({});
+// One list endpoint each. A tab's catalog is assembled from the sources its
+// kind needs; e.g. the Playbook tab reads both bundled templates and the
+// user's own playbooks.
+type CatalogSource =
+  | "agents"
+  | "builtinPlaybooks"
+  | "playbooks"
+  | "workflows"
+  | "skills"
+  | "plugins"
+  | "engines"
+  | "mcpServers";
 
-  const reload = useCallback(() => {
-    let alive = true;
-    setLoading(true);
-    setError(null);
+const KIND_SOURCES: Record<LibraryKind, CatalogSource[]> = {
+  agent: ["agents"],
+  playbook: ["builtinPlaybooks", "playbooks"],
+  workflow: ["workflows"],
+  skill: ["skills"],
+  plugin: ["plugins"],
+  engine: ["engines"],
+  mcp: ["mcpServers"],
+};
 
-    Promise.allSettled([
-      listAgents(),
-      listBuiltinPlaybooks(),
-      listPlaybooks(),
-      listWorkflowDefs(),
-      listSkills(),
-      listPlugins(),
-      listEngineDefs(),
-      listMcpServers(),
-    ]).then(
-      ([
-        agentsRes,
-        builtinsRes,
-        playbooksRes,
-        workflowsRes,
-        skillsRes,
-        pluginsRes,
-        enginesRes,
-        mcpRes,
-      ]) => {
-        if (!alive) return;
+// Rows one source contributes, plus the detail lookups a routed pane reads
+// (agent profiles, engine defs).
+interface SourceData {
+  items: LibraryItem[];
+  agents?: AgentProfileSummary[];
+  engines?: EngineDef[];
+}
 
-        const out: LibraryItem[] = [];
-        const results = [
-          agentsRes,
-          builtinsRes,
-          playbooksRes,
-          workflowsRes,
-          skillsRes,
-          pluginsRes,
-          enginesRes,
-          mcpRes,
-        ];
+// A source's settled result, held for the page's life so revisiting a tab
+// renders what it already fetched instead of requesting it again. "failed"
+// records a rejected request so a retry can target just that source.
+type SourceCache = Partial<Record<CatalogSource, SourceData | "failed">>;
 
-        if (agentsRes.status === "fulfilled") {
-          setAllAgents(agentsRes.value.agents);
-          for (const a of agentsRes.value.agents) {
-            out.push({
-              key: `agent:${a.name}`,
-              kind: "agent",
-              name: a.name,
-              description: a.description ?? undefined,
-              meta: a.model ?? undefined,
-            });
-          }
-        }
-        // Built-in templates first, then the user's own playbooks — surfacing
-        // the shipped templates the Workflows page was missing entirely
-        // (DESIGN-BRIEF §3). These are agent+prompt templates, not graphs, so
-        // they live under the "playbook" kind, separate from "workflow"
-        // (DB-backed graph designs, edited inline via the Library drawer).
-        if (builtinsRes.status === "fulfilled") {
-          for (const p of builtinsRes.value.playbooks) {
-            out.push({
-              key: `playbook:builtin:${p.name}`,
-              kind: "playbook",
-              subKind: "builtin",
-              name: p.name,
-              description: p.description,
-              meta: p.description,
-            });
-          }
-        }
-        if (playbooksRes.status === "fulfilled") {
-          for (const p of playbooksRes.value.playbooks) {
-            out.push({
-              key: `playbook:custom:${p.name}`,
-              kind: "playbook",
-              subKind: "custom",
-              name: p.name,
-              description: p.description ?? undefined,
-              meta: p.description ?? undefined,
-            });
-          }
-        }
-        if (workflowsRes.status === "fulfilled") {
-          for (const w of workflowsRes.value) {
-            out.push({
-              key: `workflow:${w.id}`,
-              kind: "workflow",
-              name: w.name,
-              description: w.description ?? undefined,
-              meta: w.id,
-            });
-          }
-        }
-        if (skillsRes.status === "fulfilled") {
-          for (const s of skillsRes.value.skills) {
-            out.push({
-              key: `skill:${s.name}`,
-              kind: "skill",
-              name: s.name,
-              description: s.description ?? undefined,
-            });
-          }
-        }
-        if (pluginsRes.status === "fulfilled") {
-          // The same plugin can be listed by several sources (marketplace +
-          // installed cache); detail lookup is by name, so one row suffices.
-          const seenPlugins = new Set<string>();
-          for (const p of pluginsRes.value.plugins) {
-            if (seenPlugins.has(p.name)) continue;
-            seenPlugins.add(p.name);
-            out.push({
-              key: `plugin:${p.name}`,
-              kind: "plugin",
-              name: p.name,
-              description: p.description ?? undefined,
-              meta: `v${p.version}`,
-            });
-          }
-        }
-        if (enginesRes.status === "fulfilled") {
-          setAllEngines(enginesRes.value);
-          for (const e of enginesRes.value) {
-            out.push({
-              key: `engine:${e.id}`,
-              kind: "engine",
-              name: e.name,
-              description: e.description ?? undefined,
-              meta: e.kind,
-            });
-          }
-        }
+// A create, delete, or clone names the kind it changed. Dropping that kind's
+// sources from the cache makes every tab that lists them fetch them again —
+// including a tab the completion did not resolve on.
+interface CatalogInvalidation {
+  token: number;
+  kinds: LibraryKind[];
+}
 
-        if (mcpRes.status === "fulfilled") {
-          for (const s of mcpRes.value.servers) {
-            out.push({
-              key: `mcp:${s.name}`,
-              kind: "mcp",
-              name: s.name,
-              description: s.command ?? s.url ?? undefined,
-              meta: s.enabled ? s.transport : `${s.transport} · disabled`,
-            });
-          }
-        }
-
-        setItems(out);
-        if (results.some((result) => result.status === "rejected")) {
-          setError("degraded");
-        }
-        setKindStatus({
-          agent: agentsRes.status === "fulfilled" ? "loaded" : "failed",
-          // "playbook" items come from two sources (builtin templates,
-          // custom playbooks); either failing means the kind's list can't
-          // be asserted complete or empty.
-          playbook:
-            builtinsRes.status === "fulfilled" && playbooksRes.status === "fulfilled"
-              ? "loaded"
-              : "failed",
-          workflow: workflowsRes.status === "fulfilled" ? "loaded" : "failed",
-          skill: skillsRes.status === "fulfilled" ? "loaded" : "failed",
-          plugin: pluginsRes.status === "fulfilled" ? "loaded" : "failed",
-          engine: enginesRes.status === "fulfilled" ? "loaded" : "failed",
-          mcp: mcpRes.status === "fulfilled" ? "loaded" : "failed",
-        });
-        setLoading(false);
-      },
-    );
-
-    return () => {
-      alive = false;
+const SOURCE_REQUESTS: Record<CatalogSource, () => Promise<SourceData>> = {
+  agents: async () => {
+    const value = await listAgents();
+    return {
+      agents: value.agents,
+      items: value.agents.map((a) => ({
+        key: `agent:${a.name}`,
+        kind: "agent",
+        name: a.name,
+        description: a.description ?? undefined,
+        meta: a.model ?? undefined,
+      })),
     };
-  }, []);
+  },
+  // Built-in templates first, then the user's own playbooks — surfacing the
+  // shipped templates the Workflows page was missing entirely
+  // (DESIGN-BRIEF §3). These are agent+prompt templates, not graphs, so they
+  // live under the "playbook" kind, separate from "workflow" (DB-backed graph
+  // designs, edited inline via the Library drawer).
+  builtinPlaybooks: async () => {
+    const value = await listBuiltinPlaybooks();
+    return {
+      items: value.playbooks.map((p) => ({
+        key: `playbook:builtin:${p.name}`,
+        kind: "playbook",
+        subKind: "builtin",
+        name: p.name,
+        description: p.description,
+        meta: p.description,
+      })),
+    };
+  },
+  playbooks: async () => {
+    const value = await listPlaybooks();
+    return {
+      items: value.playbooks.map((p) => ({
+        key: `playbook:custom:${p.name}`,
+        kind: "playbook",
+        subKind: "custom",
+        name: p.name,
+        description: p.description ?? undefined,
+        meta: p.description ?? undefined,
+      })),
+    };
+  },
+  workflows: async () => {
+    const value = await listWorkflowDefs();
+    return {
+      items: value.map((w) => ({
+        key: `workflow:${w.id}`,
+        kind: "workflow",
+        name: w.name,
+        description: w.description ?? undefined,
+        meta: w.id,
+      })),
+    };
+  },
+  skills: async () => {
+    const value = await listSkills();
+    return {
+      items: value.skills.map((s) => ({
+        key: `skill:${s.name}`,
+        kind: "skill",
+        name: s.name,
+        description: s.description ?? undefined,
+      })),
+    };
+  },
+  plugins: async () => {
+    const value = await listPlugins();
+    // The same plugin can be listed by several sources (marketplace +
+    // installed cache); detail lookup is by name, so one row suffices.
+    const seenPlugins = new Set<string>();
+    const items: LibraryItem[] = [];
+    for (const p of value.plugins) {
+      if (seenPlugins.has(p.name)) continue;
+      seenPlugins.add(p.name);
+      items.push({
+        key: `plugin:${p.name}`,
+        kind: "plugin",
+        name: p.name,
+        description: p.description ?? undefined,
+        meta: `v${p.version}`,
+      });
+    }
+    return { items };
+  },
+  engines: async () => {
+    const value = await listEngineDefs();
+    return {
+      engines: value,
+      items: value.map((e) => ({
+        key: `engine:${e.id}`,
+        kind: "engine",
+        name: e.name,
+        description: e.description ?? undefined,
+        meta: e.kind,
+      })),
+    };
+  },
+  mcpServers: async () => {
+    const value = await listMcpServers();
+    return {
+      items: value.servers.map((s) => ({
+        key: `mcp:${s.name}`,
+        kind: "mcp",
+        name: s.name,
+        description: s.command ?? s.url ?? undefined,
+        meta: s.enabled ? s.transport : `${s.transport} · disabled`,
+      })),
+    };
+  },
+};
+
+function useLibraryData(
+  tab: LibraryTab | undefined,
+  refresh: {
+    reloadToken: number;
+    retryToken: number;
+    invalidation: CatalogInvalidation;
+  },
+  hidden = false,
+) {
+  const { reloadToken, retryToken, invalidation } = refresh;
+  const [cache, setCache] = useState<SourceCache>({});
+  const requestVersion = useRef<Partial<Record<CatalogSource, number>>>({});
+  const prevReloadToken = useRef(reloadToken);
+  const prevRetryToken = useRef(retryToken);
+  const prevInvalidationToken = useRef(invalidation.token);
+
+  const wants = (kind: LibraryKind) =>
+    (tab === kind && (hidden || !UNFINISHED_KINDS.has(kind))) ||
+    (tab === "all" && !UNFINISHED_KINDS.has(kind));
+  const wantedKinds = LIBRARY_KINDS.filter(wants);
+  const wantedSources = Array.from(new Set(wantedKinds.flatMap((kind) => KIND_SOURCES[kind])));
+  // The effect runs on the scope and refresh tokens; wantedKinds is derived
+  // from the scope, so a stable key stands in for the wanted set.
+  const scope = `${tab ?? ""}:${hidden}`;
 
   useEffect(() => {
-    // Return reload()'s cleanup so an unmount mid-flight flips its alive flag
-    // and the resolved fetch can't setState on the stale component.
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- reload() calls setState inside async callbacks; synchronous reset is needed to clear stale items before the fetch resolves
-    return reload();
-  }, [reload]);
+    const reload = reloadToken !== prevReloadToken.current;
+    const retry = !reload && retryToken !== prevRetryToken.current;
+    const invalidated = invalidation.token !== prevInvalidationToken.current;
+    prevReloadToken.current = reloadToken;
+    prevRetryToken.current = retryToken;
+    prevInvalidationToken.current = invalidation.token;
 
-  return { items, loading, error, reload, allAgents, allEngines, kindStatus };
+    // A create, delete, or clone drops the completed kind's sources here, so a
+    // tab that lists them fetches them again on its next visit even when the
+    // completion resolved on another tab. Sources the same refresh already
+    // re-requests are left in place, so the list does not blink empty under a
+    // viewer who is still on the completed tab.
+    if (invalidated) {
+      const dropped = new Set(invalidation.kinds.flatMap((kind) => KIND_SOURCES[kind]));
+      const refetched = reload ? new Set(wantedSources) : new Set<CatalogSource>();
+      setCache((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        for (const source of dropped) {
+          if (refetched.has(source)) continue;
+          if (source in next) {
+            delete next[source];
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+      // A dropped source may still have a request in flight from before the
+      // completion. Bump its version so a late response for it cannot refill
+      // the cache the drop just cleared.
+      for (const source of dropped) {
+        if (refetched.has(source)) continue;
+        requestVersion.current[source] = (requestVersion.current[source] ?? 0) + 1;
+      }
+    }
+
+    const sources = wantedSources.filter((source) => {
+      const cached = cache[source];
+      if (reload) return true;
+      if (retry) return cached === "failed";
+      // A failed source must be attempted again on a revisit; holding it
+      // would leave the tab permanently stuck on its error state.
+      return cached === undefined || cached === "failed";
+    });
+    if (sources.length === 0) return;
+
+    for (const source of sources) {
+      // A source being retried is no longer in its failed state: clear the
+      // recorded failure so the tab shows its loading state instead of the
+      // stale error banner until the response arrives.
+      if (cache[source] === "failed") {
+        setCache((prev) => {
+          if (prev[source] !== "failed") return prev;
+          const next = { ...prev };
+          delete next[source];
+          return next;
+        });
+      }
+      const version = (requestVersion.current[source] ?? 0) + 1;
+      requestVersion.current[source] = version;
+      SOURCE_REQUESTS[source]().then(
+        (data) => {
+          if (requestVersion.current[source] !== version) return;
+          setCache((prev) => ({ ...prev, [source]: data }));
+        },
+        () => {
+          if (requestVersion.current[source] !== version) return;
+          setCache((prev) => ({ ...prev, [source]: "failed" }));
+        },
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- wantedSources derives from tab/hidden; cache is read only to pick what to request
+  }, [scope, reloadToken, retryToken, invalidation.token, hidden]);
+
+  const items = wantedKinds.flatMap((kind) =>
+    KIND_SOURCES[kind].flatMap((source) => {
+      const entry = cache[source];
+      return entry && entry !== "failed" ? entry.items : [];
+    }),
+  );
+
+  const kindStatus: Partial<Record<LibraryKind, KindLoadStatus>> = {};
+  for (const kind of wantedKinds) {
+    const sources = KIND_SOURCES[kind];
+    if (sources.some((source) => cache[source] === "failed")) kindStatus[kind] = "failed";
+    else if (sources.every((source) => cache[source] !== undefined)) kindStatus[kind] = "loaded";
+  }
+
+  const agentsEntry = wants("agent") ? cache["agents"] : undefined;
+  const enginesEntry = wants("engine") ? cache["engines"] : undefined;
+  return {
+    items,
+    loading: wantedSources.some((source) => cache[source] === undefined),
+    error: wantedKinds.some((kind) => kindStatus[kind] === "failed") ? "degraded" : null,
+    allAgents: agentsEntry && agentsEntry !== "failed" ? (agentsEntry.agents ?? []) : [],
+    allEngines: enginesEntry && enginesEntry !== "failed" ? (enginesEntry.engines ?? []) : [],
+    kindStatus,
+  };
 }
 
 const PLAYBOOK_SUB_KINDS: PlaybookSubKind[] = ["builtin", "custom"];
@@ -365,17 +461,79 @@ function CatalogSkeleton() {
 function LibraryPage() {
   const t = useTranslations("library");
   const tDaemon = useTranslations("daemon");
-  const { items, loading, error, reload, allAgents, allEngines, kindStatus } = useLibraryData();
   const navigate = useNavigate({ from: "/library" });
   const { tab, sel } = Route.useSearch();
   const kindFilter: LibraryTab = tab ?? "all";
+  // A create, clone, or delete completion can outlive the tab where it began.
+  // What it writes closes or reshapes the detail pane, so those writes are
+  // scoped to that tab the same way its selection write already is: a
+  // completion that resolves after the user moved on must not touch the new
+  // tab's pane.
+  const activeTab = useRef(kindFilter);
+  useEffect(() => {
+    activeTab.current = kindFilter;
+  }, [kindFilter]);
+  const completionOnTab = (captured: LibraryTab) => activeTab.current === captured;
+  const parsed = parseSel(sel);
+  const selectedHiddenKind =
+    kindFilter !== "hooks" && parsed && UNFINISHED_KINDS.has(parsed.kind) ? parsed.kind : undefined;
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const [reloadToken, setReloadToken] = useState(0);
+  const [visibleRetryToken, setVisibleRetryToken] = useState(0);
+  const [hiddenRetryToken, setHiddenRetryToken] = useState(0);
+  // A create, delete, or clone names the kind it changed. Recording that kind
+  // here lets every tab that lists it fetch it again on its next visit, even
+  // when the completion resolved after the viewer moved to another tab.
+  const [invalidation, setInvalidation] = useState<CatalogInvalidation>({ token: 0, kinds: [] });
+  // Completion callbacks can outlive the tab where they were created. Refresh
+  // the current effects instead of issuing requests for a captured tab.
+  const reload = useCallback(() => setReloadToken((token) => token + 1), []);
+  const invalidate = useCallback(
+    (kind: LibraryKind) => setInvalidation((prev) => ({ token: prev.token + 1, kinds: [kind] })),
+    [],
+  );
+  const retryVisible = useCallback(() => setVisibleRetryToken((token) => token + 1), []);
+  const retryHidden = useCallback(() => setHiddenRetryToken((token) => token + 1), []);
+  const visible = useLibraryData(kindFilter, {
+    reloadToken,
+    retryToken: visibleRetryToken,
+    invalidation,
+  });
+  // Detail navigation must not reload or hide the visible catalog.
+  const hidden = useLibraryData(
+    selectedHiddenKind,
+    { reloadToken, retryToken: hiddenRetryToken, invalidation },
+    true,
+  );
+  const items = [...visible.items, ...hidden.items];
+  const { loading, allAgents } = visible;
+  const { allEngines } = hidden;
+  const error = visible.error;
+  const kindStatus = { ...visible.kindStatus };
+  if (selectedHiddenKind) kindStatus[selectedHiddenKind] = hidden.kindStatus[selectedHiddenKind];
+  const selectionLoading = !!selectedHiddenKind && hidden.loading;
 
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
-  const [optimisticWorkflow, setOptimisticWorkflow] = useState<CreatedWorkflowDef | null>(null);
-
   // Collapsed split-pane: show detail when a selection exists or create is open.
   const [detailActive, setDetailActive] = useState(false);
+  // A create form belongs to the tab that opened it, and the detail pane's
+  // collapsed state belongs to the selection; switching tabs closes the form
+  // and returns to the list rather than leaving the previous tab's pane up.
+  useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect -- a tab change closes the
+       create form and returns the collapsed layout to the list */
+    setShowCreate(false);
+    setDetailActive(false);
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [kindFilter]);
+  const [optimisticWorkflow, setOptimisticWorkflow] = useState<CreatedWorkflowDef | null>(null);
 
   const ALL_KIND_TABS: Array<{ value: LibraryTab; label: string }> = [
     { value: "all", label: t("filterAll") },
@@ -412,7 +570,7 @@ function LibraryPage() {
 
   // Auto-select the first row whenever the tab or loaded items change (and no explicit sel).
   useEffect(() => {
-    if (loading) return;
+    if (kindFilter === "hooks" || loading || selectionLoading) return;
 
     // Keep any sel that resolves in the current filtered list — this is what
     // makes deep links into the Library work. A sel from another tab won't be
@@ -421,12 +579,15 @@ function LibraryPage() {
       const parsed = parseSel(sel);
       const isOptimisticWorkflow =
         parsed?.kind === "workflow" && optimisticWorkflow?.name === parsed.name;
-      const isHiddenWorkflow =
-        parsed?.kind === "workflow" &&
-        items.some((item) => item.kind === "workflow" && item.name === parsed.name);
+      const isHiddenSelection =
+        parsed &&
+        UNFINISHED_KINDS.has(parsed.kind) &&
+        items.some((item) => item.kind === parsed.kind && item.name === parsed.name);
       if (
         isOptimisticWorkflow ||
-        isHiddenWorkflow ||
+        isHiddenSelection ||
+        (parsed?.kind === "engine" && hidden.kindStatus.engine === "loaded") ||
+        (parsed && kindStatus[parsed.kind] === "failed") ||
         (parsed &&
           filtered.some(
             (i) =>
@@ -457,7 +618,7 @@ function LibraryPage() {
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally runs only on tab/items change
-  }, [tab, loading, items.length]);
+  }, [tab, loading, selectionLoading, items.length]);
 
   const selectItem = useCallback(
     (item: LibraryItem) => {
@@ -468,10 +629,8 @@ function LibraryPage() {
         replace: false,
       });
     },
-    [navigate],
+    [navigate, setShowCreate, setDetailActive],
   );
-
-  const parsed = parseSel(sel);
 
   // Resolve the agent/engine objects from the selection.
   const selectedAgent =
@@ -513,8 +672,10 @@ function LibraryPage() {
     kindFilter === "hooks"
       ? false
       : kindFilter === "all"
-        ? LIBRARY_KINDS.some((kind) => !UNFINISHED_KINDS.has(kind) && kindStatus[kind] === "failed")
-        : kindStatus[kindFilter as LibraryKind] === "failed";
+        ? LIBRARY_KINDS.some(
+            (kind) => !UNFINISHED_KINDS.has(kind) && visible.kindStatus[kind] === "failed",
+          )
+        : visible.kindStatus[kindFilter as LibraryKind] === "failed";
 
   const createLabel =
     kindFilter === "mcp"
@@ -567,8 +728,15 @@ function LibraryPage() {
           role="alert"
           className="flex shrink-0 items-center justify-between gap-3 border-b border-edge bg-status-error-bg px-3 py-2 text-body text-content-secondary"
         >
-          <span>{t("loadError")}</span>
-          <Button size="sm" variant="secondary" onClick={reload}>
+          <span>
+            {t("loadError")}{" "}
+            {ALL_KIND_TABS.filter(
+              (tab) => visible.kindStatus[tab.value as LibraryKind] === "failed",
+            )
+              .map((tab) => tab.label)
+              .join(", ")}
+          </span>
+          <Button size="sm" variant="secondary" onClick={retryVisible}>
             {tDaemon("retry")}
           </Button>
         </div>
@@ -589,7 +757,7 @@ function LibraryPage() {
                     {t("empty.clearFilters")}
                   </Button>
                 )}
-                <Button size="sm" variant="secondary" onClick={reload}>
+                <Button size="sm" variant="secondary" onClick={retryVisible}>
                   {tDaemon("retry")}
                 </Button>
               </div>
@@ -727,10 +895,15 @@ function LibraryPage() {
       <div className="flex h-full flex-col overflow-hidden">
         <CreateMcpServerPanel
           onCreated={(name) => {
-            setShowCreate(false);
+            if (!mounted.current) return;
+            if (completionOnTab(kindFilter)) setShowCreate(false);
+            invalidate("mcp");
             void reload();
             void navigate({
-              search: (prev) => ({ ...prev, sel: encodeSel("mcp", name) }),
+              search: (prev) =>
+                (prev.tab ?? "all") === kindFilter && prev.sel === sel
+                  ? { ...prev, sel: encodeSel("mcp", name) }
+                  : prev,
               replace: false,
             });
           }}
@@ -745,10 +918,15 @@ function LibraryPage() {
     detailPane = (
       <CreateAgentPanel
         onCreated={(name) => {
-          setShowCreate(false);
+          if (!mounted.current) return;
+          if (completionOnTab(kindFilter)) setShowCreate(false);
+          invalidate("agent");
           void reload();
           void navigate({
-            search: (prev) => ({ ...prev, sel: encodeSel("agent", name) }),
+            search: (prev) =>
+              (prev.tab ?? "all") === kindFilter && prev.sel === sel
+                ? { ...prev, sel: encodeSel("agent", name) }
+                : prev,
             replace: false,
           });
         }}
@@ -763,11 +941,16 @@ function LibraryPage() {
       <div className="flex h-full flex-col overflow-hidden">
         <CreateWorkflowPanel
           onCreated={(workflow) => {
+            if (!mounted.current) return;
             setOptimisticWorkflow(workflow);
-            setShowCreate(false);
+            if (completionOnTab(kindFilter)) setShowCreate(false);
+            invalidate("workflow");
             void reload();
             void navigate({
-              search: (prev) => ({ ...prev, sel: encodeSel("workflow", workflow.name) }),
+              search: (prev) =>
+                (prev.tab ?? "all") === kindFilter && prev.sel === sel
+                  ? { ...prev, sel: encodeSel("workflow", workflow.name) }
+                  : prev,
               replace: false,
             });
           }}
@@ -778,16 +961,45 @@ function LibraryPage() {
         />
       </div>
     );
+  } else if (
+    selectedHiddenKind &&
+    !selectedWorkflowId &&
+    (hidden.loading || hidden.kindStatus[selectedHiddenKind] === "failed")
+  ) {
+    const failed = !hidden.loading && hidden.kindStatus[selectedHiddenKind] === "failed";
+    detailPane = (
+      <div className="flex h-full flex-col overflow-hidden">
+        <DrawerBackButton onClick={handleBack}>{t("drawer.back")}</DrawerBackButton>
+        <DrawerHeader
+          name={parsed!.name}
+          badge={ALL_KIND_TABS.find((tab) => tab.value === selectedHiddenKind)?.label}
+        />
+        <div className="flex items-center gap-3 p-4" role={failed ? "alert" : "status"}>
+          <span>{t(failed ? "loadError" : "loading")}</span>
+          {failed && (
+            <Button size="sm" variant="secondary" onClick={retryHidden}>
+              {tDaemon("retry")}
+            </Button>
+          )}
+        </div>
+      </div>
+    );
   } else if (parsed?.kind === "mcp") {
     detailPane = (
       <McpServerDetail
         name={parsed.name}
         onBack={handleBack}
         onDeleted={() => {
+          if (!mounted.current) return;
+          const deleted = parsed.name;
           void reload();
-          handleBack();
+          invalidate("mcp");
+          if (completionOnTab(kindFilter)) handleBack();
           void navigate({
             search: (prev) => {
+              if ((prev.tab ?? "all") !== kindFilter) return prev;
+              const current = parseSel(prev.sel);
+              if (current?.kind !== "mcp" || current.name !== deleted) return prev;
               const next = { ...prev };
               delete next.sel;
               return next;
@@ -803,10 +1015,16 @@ function LibraryPage() {
         agent={selectedAgent}
         onBack={handleBack}
         onDeleted={() => {
-          setDetailActive(false);
+          if (!mounted.current) return;
+          const deleted = parsed.name;
+          if (completionOnTab(kindFilter)) setDetailActive(false);
+          invalidate("agent");
           void reload();
           void navigate({
             search: (prev) => {
+              if ((prev.tab ?? "all") !== kindFilter) return prev;
+              const current = parseSel(prev.sel);
+              if (current?.kind !== "agent" || current.name !== deleted) return prev;
               const next = { ...prev };
               delete next.sel;
               return next;
@@ -817,7 +1035,31 @@ function LibraryPage() {
       />
     );
   } else if (parsed?.kind === "workflow" && selectedWorkflowId) {
-    detailPane = <WorkflowDetail id={selectedWorkflowId} onBack={handleBack} />;
+    detailPane = (
+      <WorkflowDetail
+        id={selectedWorkflowId}
+        onBack={handleBack}
+        onDeleted={() => {
+          if (!mounted.current) return;
+          const deleted = parsed.name;
+          if (completionOnTab(kindFilter)) setDetailActive(false);
+          if (optimisticWorkflow?.name === deleted) setOptimisticWorkflow(null);
+          invalidate("workflow");
+          void reload();
+          void navigate({
+            search: (prev) => {
+              if ((prev.tab ?? "all") !== kindFilter) return prev;
+              const current = parseSel(prev.sel);
+              if (current?.kind !== "workflow" || current.name !== deleted) return prev;
+              const next = { ...prev };
+              delete next.sel;
+              return next;
+            },
+            replace: false,
+          });
+        }}
+      />
+    );
   } else if (parsed?.kind === "playbook") {
     detailPane = (
       <PlaybookTemplateDetail
@@ -825,9 +1067,14 @@ function LibraryPage() {
         isBuiltin={parsed.subKind === "builtin"}
         onBack={handleBack}
         onCloned={(clonedName) => {
+          if (!mounted.current) return;
+          invalidate("playbook");
           void reload();
           void navigate({
-            search: (prev) => ({ ...prev, sel: encodeSel("playbook", clonedName, "custom") }),
+            search: (prev) =>
+              (prev.tab ?? "all") === kindFilter && prev.sel === sel
+                ? { ...prev, sel: encodeSel("playbook", clonedName, "custom") }
+                : prev,
             replace: false,
           });
         }}
