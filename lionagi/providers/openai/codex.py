@@ -13,6 +13,7 @@ import subprocess
 import unicodedata
 import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from textwrap import shorten
 from typing import Any, Literal
@@ -179,19 +180,22 @@ def _contain_override(key: str, value: Any, what: str) -> tuple[bool, Any]:
     """Whether account-integration containment keeps the override ``key=value``, and the
     value it keeps: an override under `features.apps` or `features.plugins` is dropped, and
     those keys leave an inline `features` table, which is dropped when nothing is left.
-    ``what`` names the key in a refusal, so the key itself is never printed."""
+
+    Reads the normalized snapshot: ``key`` is plain text and an inline table is a plain
+    ``dict`` whose switch names are plain text, so the name this check compares is the
+    name the table renders. ``what`` names the key in a refusal, so the key itself is
+    never printed.
+    """
     path = _override_key_path(key, what)
     if path[0] == "features":
         if len(path) >= 2 and path[1] in _ACCOUNT_INTEGRATION_FEATURES:
             return False, value
         if len(path) == 1 and isinstance(value, Mapping):
-            # Each switch name is compared and kept as plain text, so the name the check
-            # reads is the name the inline table renders.
-            kept = {}
-            for k, v in value.items():
-                k = _plain_text(k)
-                if k not in _ACCOUNT_INTEGRATION_FEATURES:
-                    kept[k] = v
+            kept = {
+                name: item
+                for name, item in value.items()
+                if name not in _ACCOUNT_INTEGRATION_FEATURES
+            }
             value = kept
             if not value:
                 return False, value
@@ -296,34 +300,291 @@ def _toml_string(value: str) -> str:
     return f'"{body}"'
 
 
-def _plain_text(item: Any) -> Any:
-    """``item`` as a plain ``str`` when it is text, else ``item`` unchanged.
+# Every request field a containment or refusal check reads, and the command line
+# renders. Each is reduced to plain built-in data by `_plain_request` before any
+# check or the renderer reads it, so a check and the command line can only ever read
+# the same value. A field added here without a reduction in that one function fails
+# the parity test that walks this tuple.
+PLAIN_INPUT_FIELDS: tuple[str, ...] = (
+    "prompt",
+    "system_prompt",
+    "model",
+    "profile",
+    "sandbox",
+    "ask_for_approval",
+    "color",
+    "reasoning_effort",
+    "plan_mode_reasoning_effort",
+    "enable_features",
+    "disable_features",
+    "config_overrides",
+    "bypass_approvals",
+    "full_auto",
+    "search",
+    "fast_mode",
+    "contain_account_integrations",
+    "account_connectors",
+)
+
+# The text fields the command line renders into an argument of their own, by name.
+# Read by the checks so a lone surrogate in any of them is refused by name rather
+# than reaching the CLI as a raw byte. Path fields are left out: a path may
+# legitimately hold a byte that is not UTF-8, and ``os.fsencode`` is what measures
+# those at the process boundary.
+_ARGUMENT_TEXT_FIELDS: tuple[str, ...] = (
+    "model",
+    "profile",
+    "sandbox",
+    "ask_for_approval",
+    "color",
+    "reasoning_effort",
+    "plan_mode_reasoning_effort",
+)
+
+# The repeated text fields the command line renders one argument per entry for.
+_ARGUMENT_LIST_FIELDS: tuple[str, ...] = ("enable_features", "disable_features")
+
+
+def _plain_text(item: Any) -> str:
+    """``item`` as a plain ``str``, read with ``str.__str__``.
 
     A ``str`` subclass's own ``__str__``, ``__format__`` or ``__eq__`` can answer a
     containment check one way and the renderer another; ``str.__str__`` returns an exact
-    copy of its characters without calling any of them.
+    copy of its characters without calling any of them. The caller establishes that the
+    type is text before calling.
     """
-    return str.__str__(item) if issubclass(type(item), str) else item
+    return str.__str__(item)
 
 
-def _plain_pairs(pairs: Iterable[tuple[Any, Any]]) -> list[tuple[Any, Any]]:
-    return [(_plain_text(key), _plain_text(value)) for key, value in pairs]
+def _plain_entry_key(key: Any, index: int) -> str:
+    """The key of the `-c` override at ``index`` as plain text, or a refusal by position
+    and type.
+
+    A key is text only when ``issubclass(type(key), str)`` holds: a type whose
+    ``__class__`` merely answers ``str`` is not text, and is refused here rather than
+    read as one value by a check and another by the command line. The key itself is
+    never printed — it can hold a secret as a value can.
+    """
+    if not issubclass(type(key), str):
+        raise TypeError(
+            f"The config override entry {index} has a key that is not a string "
+            f"({type(key).__name__})."
+        )
+    return _plain_text(key)
 
 
-def _override_pairs(overrides: Mapping | None) -> list[tuple[Any, Any]]:
-    """The `-c` overrides as one list of key/value pairs, read from ``items()`` once,
-    with every text key and value reduced to a plain ``str``.
+def _plain_override_value(value: Any, index: int) -> Any:
+    """``value`` reduced to plain built-in data, recursively, or a refusal by position
+    and type.
+
+    ``str``, ``int`` and ``float`` subclasses are read through the base type's own
+    reader, so a value whose own ``__str__``, ``encode`` or ``__index__`` answers
+    differently reaches every reader as the same built-in. A list or table is copied
+    into a plain ``list``/``dict`` so no view of the caller's object is read twice; a
+    table's keys are read as text by the same rule as an entry's key. ``None`` is kept
+    so the command builder refuses it as it always has. Any other value is refused by
+    its position in the entry and its type, never by its text.
+    """
+    kind = type(value)
+    if value is None or kind is bool:
+        return value
+    if issubclass(kind, str):
+        return _plain_text(value)
+    if issubclass(kind, int):
+        return int.__index__(value)
+    if issubclass(kind, float):
+        return float.__float__(value)
+    if issubclass(kind, tuple):
+        return [_plain_override_value(item, index) for item in tuple.__iter__(value)]
+    if issubclass(kind, list):
+        return [_plain_override_value(item, index) for item in list.__iter__(value)]
+    if issubclass(kind, dict):
+        return {
+            _plain_entry_key(key, index): _plain_override_value(item, index)
+            for key, item in dict.items(value)
+        }
+    raise TypeError(
+        f"The config override entry {index} holds a value that is not plain data "
+        f"({kind.__name__}); only text, numbers, booleans, lists and tables reach "
+        "the command line."
+    )
+
+
+def _plain_pairs(pairs: Iterable[tuple[Any, Any]]) -> list[tuple[str, Any]]:
+    """Each `-c` key/value pair reduced to plain built-in data, by position."""
+    return [
+        (_plain_entry_key(key, index), _plain_override_value(value, index))
+        for index, (key, value) in enumerate(pairs)
+    ]
+
+
+def _override_pairs(overrides: Mapping | None) -> list[tuple[str, Any]]:
+    """The `-c` overrides as one list of key/value pairs, read from ``items()`` once and
+    reduced to plain built-in data at every depth.
 
     A containment decision and the rendered command line are two readers of one such
     list, so a mapping whose iteration and ``items()`` disagree, or whose ``items()``
-    answers differently on each call, cannot answer a check and a renderer differently,
-    and a key whose own methods answer differently on each read reaches both as the same
-    characters. Only ``None`` reads as no overrides: a mapping is read through ``items()``
-    whether or not its length agrees.
+    answers differently on each call, cannot answer a check and a renderer differently.
+    Every key is text read with ``str.__str__`` and every value is reduced recursively,
+    so a key or nested value whose own methods answer differently on each read reaches
+    both readers as the same plain value, or is refused by position and type. Only
+    ``None`` reads as no overrides: a mapping is read through ``items()`` whether or not
+    its length agrees.
     """
     if overrides is None:
         return []
     return _plain_pairs(overrides.items())
+
+
+@dataclass(frozen=True)
+class _PlainRequest:
+    """Every field a containment or refusal check reads, reduced to plain built-in data.
+
+    ``as_cmd_args`` and the spawn path both read this snapshot and nothing else for
+    these fields, so ``model_copy(update=...)`` — which skips validation — cannot hand a
+    check one object and the command line another. The snapshot is taken again where the
+    process would start.
+    """
+
+    prompt: str
+    system_prompt: str | None
+    model: str | None
+    profile: str | None
+    sandbox: str | None
+    ask_for_approval: str | None
+    color: str | None
+    reasoning_effort: str | None
+    plan_mode_reasoning_effort: str | None
+    enable_features: list[str]
+    disable_features: list[str]
+    overrides: list[tuple[str, Any]]
+    bypass_approvals: bool
+    full_auto: bool
+    search: bool
+    fast_mode: bool
+    contain_account_integrations: bool
+    account_connectors: list[str]
+
+    def contains_account_integrations(self) -> bool:
+        return self.contain_account_integrations and not self.account_connectors
+
+    def updates(self) -> dict[str, Any]:
+        """The snapshot's values for the fields the declarative renderer reads, for the
+        copy it renders."""
+        return {
+            name: getattr(self, name)
+            for name in (
+                "model",
+                "profile",
+                "color",
+                "enable_features",
+                "disable_features",
+            )
+        }
+
+    def override_keys(self) -> list[str]:
+        return [key for key, _ in self.overrides]
+
+    def argument_text_fields(self) -> list[tuple[str, str]]:
+        """Each field the command line renders into an argument of its own, by name."""
+        fields: list[tuple[str, str]] = []
+        for name in _ARGUMENT_TEXT_FIELDS:
+            text = getattr(self, name)
+            if isinstance(text, str):
+                fields.append((name, text))
+        for name in _ARGUMENT_LIST_FIELDS:
+            for feature in getattr(self, name):
+                if isinstance(feature, str):
+                    fields.append((name, feature))
+        return fields
+
+
+def _plain_request(
+    request: CodexCodeRequest, overrides: Sequence[tuple[Any, Any]] | None = None
+) -> _PlainRequest:
+    """Reduce every field a check or the command line reads to plain built-in data.
+
+    One function, so the containment checks and the renderer read one object: a text
+    field is read with ``str.__str__``, a repeated field element by element, a boolean
+    by its exact type, and the overrides recursively, key by key and value by value. A
+    field the reduction cannot read is refused by name (or, inside the overrides, by
+    position) and its type, never by its text. ``overrides`` hands in an already-read
+    list of pairs; ``None`` reads ``request.config_overrides`` once.
+    """
+
+    def text(name: str) -> str | None:
+        value = getattr(request, name)
+        if value is None:
+            return None
+        if not issubclass(type(value), str):
+            raise TypeError(f"{name} must be text, not {type(value).__name__}")
+        return _plain_text(value)
+
+    def texts(name: str) -> list[str]:
+        value = getattr(request, name)
+        if value is None:
+            return []
+        if not issubclass(type(value), (list, tuple)):
+            raise TypeError(f"{name} must be a list of text, not {type(value).__name__}")
+        entries = list.__iter__(value) if issubclass(type(value), list) else tuple.__iter__(value)
+        plain: list[str] = []
+        for index, item in enumerate(entries):
+            if not issubclass(type(item), str):
+                raise TypeError(f"{name} entry {index} must be text, not {type(item).__name__}")
+            plain.append(_plain_text(item))
+        return plain
+
+    def flag(name: str) -> bool:
+        value = getattr(request, name)
+        if type(value) is not bool:
+            raise TypeError(f"{name} must be a boolean, not {type(value).__name__}")
+        return value
+
+    pairs = (
+        _override_pairs(request.config_overrides) if overrides is None else _plain_pairs(overrides)
+    )
+    return _PlainRequest(
+        prompt=text("prompt") or "",
+        system_prompt=text("system_prompt"),
+        model=text("model"),
+        profile=text("profile"),
+        sandbox=text("sandbox"),
+        ask_for_approval=text("ask_for_approval"),
+        color=text("color"),
+        reasoning_effort=text("reasoning_effort"),
+        plan_mode_reasoning_effort=text("plan_mode_reasoning_effort"),
+        enable_features=texts("enable_features"),
+        disable_features=texts("disable_features"),
+        overrides=pairs,
+        bypass_approvals=flag("bypass_approvals"),
+        full_auto=flag("full_auto"),
+        search=flag("search"),
+        fast_mode=flag("fast_mode"),
+        contain_account_integrations=flag("contain_account_integrations"),
+        account_connectors=texts("account_connectors"),
+    )
+
+
+def _refuse_ambiguous_approval(plain: _PlainRequest) -> None:
+    """Refuse ``ask_for_approval`` beside an ``approval_policy`` override.
+
+    Run on the normalized snapshot at construction and again where the process would
+    start, so a request copied without validation cannot put both ``-c
+    approval_policy=`` entries on the command line.
+    """
+    if (
+        plain.ask_for_approval
+        and not plain.bypass_approvals
+        and not plain.full_auto
+        and any(
+            key == "approval_policy" or key.startswith("approval_policy.")
+            for key in plain.override_keys()
+        )
+    ):
+        raise ValueError(
+            "ask_for_approval cannot be combined with config_overrides entries "
+            "for approval_policy; choose one approval policy source"
+        )
 
 
 def _refuse_oversized_cli_inputs(
@@ -344,6 +605,11 @@ def _refuse_oversized_cli_inputs(
     is raised after the handler that produced it ends: the ``UnicodeEncodeError`` an
     encode raises holds the whole text in its ``.object``, and raising inside the
     handler would chain the refusal to it.
+
+    ``override_pairs`` are the key/value pairs of one normalized snapshot: a key is read
+    as text only when ``issubclass(type(key), str)`` holds, and a key or value that is
+    not text is refused by position and type, never by its text. Every caller passes the
+    same pairs the command line is rendered from.
     """
     failure: ValueError | TypeError | None = None
     measured: list[tuple[str, bytes]] = []
@@ -367,10 +633,10 @@ def _refuse_oversized_cli_inputs(
     for index, (key, value) in enumerate(override_pairs or ()):
         if failure is not None:
             break
-        if not isinstance(key, str):
-            # Reached only by a request built without validation, whose field validator
-            # refuses such a key; named by position and type, never by the key, and with
-            # the TypeError that validator raises so both paths refuse it the same way.
+        if not issubclass(type(key), str):
+            # A key is text only when its own type is a str subclass; a type whose
+            # __class__ merely answers str is not text. Named by position and type,
+            # never by the key, with the TypeError the field validator raises.
             failure = TypeError(
                 f"The config override entry {index} has a key that is not a string "
                 f"({type(key).__name__})."
@@ -1065,12 +1331,13 @@ class CodexCodeRequest(BaseModel):
         refusal: CLIInputRefusedError | None = None
         contained_refusal = False
         try:
+            plain = _plain_request(self)
             _refuse_oversized_cli_inputs(
-                self.prompt,
-                self.system_prompt,
-                _override_pairs(self.config_overrides),
-                text_fields=self._argument_text_fields(),
-                contained=self._contains_account_integrations(),
+                plain.prompt,
+                plain.system_prompt,
+                plain.overrides,
+                text_fields=plain.argument_text_fields(),
+                contained=plain.contains_account_integrations(),
             )
         except ValueError as exc:
             refusal = CLIInputRefusedError(str(exc))
@@ -1098,19 +1365,10 @@ class CodexCodeRequest(BaseModel):
 
     @model_validator(mode="after")
     def _reject_ambiguous_approval_policy(self):
-        if (
-            self.ask_for_approval
-            and not self.bypass_approvals
-            and not self.full_auto
-            and any(
-                key == "approval_policy" or key.startswith("approval_policy.")
-                for key in self.config_overrides
-            )
-        ):
-            raise ValueError(
-                "ask_for_approval cannot be combined with config_overrides entries "
-                "for approval_policy; choose one approval policy source"
-            )
+        # The refusal runs on the normalized snapshot, and again where the process would
+        # start, so a request copied without validation cannot put both an
+        # `ask_for_approval` policy and an `approval_policy` override on the line.
+        _refuse_ambiguous_approval(_plain_request(self))
         return self
 
     # ── workspace path ────────────────────────────────────────────
@@ -1120,46 +1378,62 @@ class CodexCodeRequest(BaseModel):
 
     # ── CLI command builder ───────────────────────────────────────
 
-    def as_cmd_args(self, overrides: Sequence[tuple[Any, Any]] | None = None) -> list[str]:
-        """Build argument list for ``codex exec`` subcommand.
+    def _settled(self, plain: _PlainRequest, update: dict[str, Any] | None = None):
+        """A copy of this request whose checked fields are the snapshot's plain values.
 
-        ``overrides`` is one read of ``config_overrides``: containment decides from these
-        pairs and the command line is rendered from them. A caller that already took that
-        read hands its list in (the spawn path, whose own check reads the same pairs),
-        rather than letting this method read a mapping that can answer twice.
+        The declarative renderer reads a model, so the snapshot's values for the fields it
+        renders are written onto a copy here; a value the reduction refused never reaches
+        it.
         """
+        return self.model_copy(update={**plain.updates(), **(update or {})})
+
+    def as_cmd_args(
+        self,
+        overrides: Sequence[tuple[Any, Any]] | None = None,
+        *,
+        plain: _PlainRequest | None = None,
+    ) -> list[str]:
+        """Build the argument list for ``codex exec`` from one normalized snapshot.
+
+        ``overrides`` is one read of ``config_overrides``; ``None`` reads it here. A
+        caller that already reduced the request (the spawn path) hands its snapshot in as
+        ``plain``, so that check and this render cannot read the fields twice. Either way
+        every check below and every rendered argument reads one plain snapshot, so a field
+        whose own methods answer differently on each read cannot be judged as one value and
+        rendered as another.
+        """
+        if plain is None:
+            plain = _plain_request(self, overrides)
+        _refuse_ambiguous_approval(plain)
         args: list[str] = ["exec", "--json"]
         cwd = self.cwd()
-        pairs = (
-            _override_pairs(self.config_overrides) if overrides is None else _plain_pairs(overrides)
-        )
 
-        args.extend(self._build_declarative_args(pairs))
+        args.extend(self._build_declarative_args(plain))
 
         for git_root in _linked_worktree_git_writable_roots(cwd):
             if str(git_root) not in (self.add_dir or []):
                 args.extend(["--add-dir", str(git_root)])
 
         # Approval & sandbox: mutually exclusive hierarchy
-        if self.bypass_approvals:
+        if plain.bypass_approvals:
             args.append("--dangerously-bypass-approvals-and-sandbox")
-        elif self.full_auto:
+        elif plain.full_auto:
             # Codex 0.147.0 removed `--full-auto`, turning the earlier deprecation
             # warning into a hard argv error. Its deprecation notice prescribes
             # `--sandbox workspace-write`, which keeps the same sandbox posture.
             args.extend(["--sandbox", "workspace-write"])
         else:
-            if self.ask_for_approval:
+            if plain.ask_for_approval:
                 # The config key has the same mode vocabulary as the former CLI
                 # flag and remains available in builds that no longer expose it.
-                rendered = _rendered_override_value(self.ask_for_approval, "ask_for_approval")
+                rendered = _rendered_override_value(plain.ask_for_approval, "ask_for_approval")
                 args.extend(["-c", f"approval_policy={rendered}"])
-            if self.sandbox:
-                args.extend(["-s", self.sandbox])
+            if plain.sandbox:
+                args.extend(["-s", plain.sandbox])
 
         # Web search: old `--search` flag was removed upstream (2026-04);
         # express intent via the `tool_search` feature flag instead.
-        if self.search:
+        if plain.search:
             args.extend(["--enable", "tool_search"])
         else:
             args.extend(["--disable", "tool_search"])
@@ -1168,8 +1442,8 @@ class CodexCodeRequest(BaseModel):
         # value is read as TOML like every other `-c` value, so it is written as a TOML
         # string: written raw, a prompt that parses as TOML ("true", "42", '"quoted"')
         # would reach codex as that value instead of as its own text.
-        if self.system_prompt:
-            rendered = _rendered_override_value(self.system_prompt, "The system prompt")
+        if plain.system_prompt:
+            rendered = _rendered_override_value(plain.system_prompt, "The system prompt")
             args.extend(["-c", f"developer_instructions={rendered}"])
 
         # Encoded like every other `-c` override below. While these fields were
@@ -1177,30 +1451,23 @@ class CodexCodeRequest(BaseModel):
         # safe by construction; now that any string is accepted, what keeps an
         # arbitrary value inside its own override is codex's own leniency about
         # the right-hand side, which is not a contract lionagi owns.
-        if self.reasoning_effort:
-            rendered = _rendered_override_value(self.reasoning_effort, "reasoning_effort")
+        if plain.reasoning_effort:
+            rendered = _rendered_override_value(plain.reasoning_effort, "reasoning_effort")
             args.extend(["-c", f"reasoning_effort={rendered}"])
-        if self.plan_mode_reasoning_effort:
+        if plain.plan_mode_reasoning_effort:
             rendered = _rendered_override_value(
-                self.plan_mode_reasoning_effort, "plan_mode_reasoning_effort"
+                plain.plan_mode_reasoning_effort, "plan_mode_reasoning_effort"
             )
             args.extend(["-c", f"plan_mode_reasoning_effort={rendered}"])
 
-        if self.fast_mode:
+        if plain.fast_mode:
             args.extend(["-c", "service_tier=fast"])
 
         for image in self.images:
             args.extend(["-i", image])
 
-        containing = self._contains_account_integrations()
-        for index, (key, value) in enumerate(pairs):
-            if not isinstance(key, str):
-                # Only a request built without validation holds one; named by
-                # position and type, never by the key.
-                raise TypeError(
-                    f"config_overrides entry {index} has a key that is not a string "
-                    f"({type(key).__name__})"
-                )
+        containing = plain.contains_account_integrations()
+        for index, (key, value) in enumerate(plain.overrides):
             if "=" in key:
                 raise _equals_in_key_refusal(index)
             # Containment removes overrides under `features.apps` and
@@ -1235,30 +1502,14 @@ class CodexCodeRequest(BaseModel):
         """The fields ``as_cmd_args`` renders into an argument of their own, by name.
 
         Read by the construction and spawn checks so a lone surrogate in any of them is
-        refused by name rather than reaching the CLI as a raw byte. Path fields are left
-        out: a path may legitimately hold a byte that is not UTF-8, and ``os.fsencode``
-        is what measures those at the process boundary.
+        refused by name rather than reaching the CLI as a raw byte. The text comes from
+        the normalized snapshot, so the check names the argument the command line builds.
+        Path fields are left out: a path may legitimately hold a byte that is not UTF-8,
+        and ``os.fsencode`` is what measures those at the process boundary.
         """
-        fields: list[tuple[str, str]] = []
-        for name in (
-            "model",
-            "profile",
-            "sandbox",
-            "ask_for_approval",
-            "color",
-            "reasoning_effort",
-            "plan_mode_reasoning_effort",
-        ):
-            text = getattr(self, name)
-            if isinstance(text, str):
-                fields.append((name, text))
-        for name in ("enable_features", "disable_features"):
-            for feature in getattr(self, name) or ():
-                if isinstance(feature, str):
-                    fields.append((name, feature))
-        return fields
+        return _plain_request(self).argument_text_fields()
 
-    def _refuse_a_profile_under_containment(self, overrides: Sequence[tuple[Any, Any]]) -> None:
+    def _refuse_a_profile_under_containment(self, plain: _PlainRequest) -> None:
         # `--disable` sets the features in the root config. Codex before 0.135 (read at
         # the 0.120.0 and 0.130.0 tags) applies the active profile's `[features]` after
         # it, so a profile can turn either one back on; the active profile is `-p`, else a
@@ -1266,16 +1517,20 @@ class CodexCodeRequest(BaseModel):
         # From 0.135 a profile is a config file layered under `-c`, and codex refuses a
         # root `profile` key itself. The profile lionagi writes for MCP server secrets
         # holds only `mcp_servers`.
-        if self.profile is not None and not is_generated_codex_profile(self.profile):
+        #
+        # Every read below is of the normalized snapshot: `plain.profile` is plain text
+        # and each override key is plain text, so the profile this check judges is the one
+        # the command line renders.
+        if plain.profile is not None and not is_generated_codex_profile(plain.profile):
             raise ValueError(
-                f"contain_account_integrations cannot be combined with profile={self.profile!r}: "
+                f"contain_account_integrations cannot be combined with profile={plain.profile!r}: "
                 "codex before 0.135 applies a profile's features after --disable, so the "
                 "profile could turn apps or plugins back on"
             )
-        for index, (key, _value) in enumerate(overrides):
-            # A key that is not a string, or holds '=', is refused by position where
-            # as_cmd_args renders the overrides, after this check.
-            if not isinstance(key, str) or "=" in key:
+        for index, (key, _value) in enumerate(plain.overrides):
+            # A key that holds '=' is refused by position where as_cmd_args renders the
+            # overrides, after this check.
+            if "=" in key:
                 continue
             unreadable = None
             try:
@@ -1291,14 +1546,14 @@ class CodexCodeRequest(BaseModel):
                     f"override entry {index}: it selects or changes a profile, and codex "
                     "before 0.135 applies a profile's features after --disable"
                 )
-        if self.profile is not None:
+        if plain.profile is not None:
             # The profile lionagi writes is a file of its own, but codex before 0.135 reads `-p`
             # as a `[profiles.<name>]` table in the configs it merges, and one defined there under
             # this name could turn either feature back on.
-            defined = codex_config_defining_profile(self.profile, self.env, self.cwd())
+            defined = codex_config_defining_profile(plain.profile, self.env, self.cwd())
             if defined is not None:
                 raise ValueError(
-                    f"contain_account_integrations cannot be combined with profile={self.profile!r} "
+                    f"contain_account_integrations cannot be combined with profile={plain.profile!r} "
                     f"while {str(defined)!r} defines a profile of that name: codex before 0.135 "
                     "applies its features after --disable"
                 )
@@ -1321,29 +1576,31 @@ class CodexCodeRequest(BaseModel):
                     "its features after --disable (from 0.135 codex refuses the key itself)"
                 )
 
-    def _build_declarative_args(self, overrides: Sequence[tuple[Any, Any]]) -> list[str]:
-        if not self._contains_account_integrations():
-            return build_declarative_cli_args(self)
+    def _build_declarative_args(self, plain: _PlainRequest) -> list[str]:
+        if not plain.contains_account_integrations():
+            return build_declarative_cli_args(self._settled(plain))
         try:
-            self._refuse_a_profile_under_containment(overrides)
+            self._refuse_a_profile_under_containment(plain)
         except ContainmentRefusedError:
             raise
         except (ValueError, OSError) as exc:
             # A combination that could let a profile turn a feature back on, and an override
             # key or a codex config the check cannot read to rule that out, are both refused.
             raise ContainmentRefusedError(str(exc)) from exc
-        disabled = list(self.disable_features or ())
-        settled = self.model_copy(
-            update={
-                "enable_features": [
-                    f for f in self.enable_features or () if f not in _ACCOUNT_INTEGRATION_FEATURES
-                ]
-                or None,
-                "disable_features": disabled
-                + [f for f in _ACCOUNT_INTEGRATION_FEATURES if f not in disabled],
-            }
+        disabled = list(plain.disable_features)
+        return build_declarative_cli_args(
+            self._settled(
+                plain,
+                update={
+                    "enable_features": [
+                        f for f in plain.enable_features if f not in _ACCOUNT_INTEGRATION_FEATURES
+                    ]
+                    or None,
+                    "disable_features": disabled
+                    + [f for f in _ACCOUNT_INTEGRATION_FEATURES if f not in disabled],
+                },
+            )
         )
-        return build_declarative_cli_args(settled)
 
 
 CodexSession = CLISession
@@ -1356,18 +1613,20 @@ CodexSession = CLISession
 async def _ndjson_from_cli(request: CodexCodeRequest):
     if CODEX_CLI is None:
         raise RuntimeError("Codex CLI not found. Install with: npm i -g @openai/codex")
-    # model_copy(update=...) skips validation, so check again where inputs reach the process.
-    # One read of the overrides serves the check and the render: a mapping whose items()
-    # answers twice cannot pass a profile to one and hide it from the other.
-    overrides = _override_pairs(request.config_overrides)
+    # model_copy(update=...) skips validation, so the request is reduced again here, where
+    # its inputs reach the process: every check below and the command line read one
+    # normalized snapshot, so a copied request cannot carry an object a check judges one
+    # way and the renderer another.
+    plain = _plain_request(request)
+    _refuse_ambiguous_approval(plain)
     _refuse_oversized_cli_inputs(
-        request.prompt,
-        request.system_prompt,
-        overrides,
-        text_fields=request._argument_text_fields(),
-        contained=request._contains_account_integrations(),
+        plain.prompt,
+        plain.system_prompt,
+        plain.overrides,
+        text_fields=plain.argument_text_fields(),
+        contained=plain.contains_account_integrations(),
     )
-    cmd = [CODEX_CLI, *request.as_cmd_args(overrides)]
+    cmd = [CODEX_CLI, *request.as_cmd_args(plain=plain)]
     _refuse_oversized_command(cmd)
     # Do NOT pass cwd here — Codex CLI already gets the workspace via -C <repo>;
     # setting both double-resolves to 'repo/repo'. See docs/internals/runtime.md.
@@ -1375,7 +1634,9 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
         ndjson_from_cli(
             cmd,
             env=request.env,
-            stdin_data=request.prompt,
+            # The plain prompt the checks measured, so the bytes written to the child's
+            # stdin are the bytes those checks read.
+            stdin_data=plain.prompt,
             on_spawn=request.on_spawn,
         )
     ) as stream:

@@ -190,8 +190,10 @@ def unencodable_env_entry(env: Mapping[str, str]) -> str | None:
     ``str`` subclass's own ``encode`` and answers with whatever it returns, so a ``bytes``
     answer is taken through the base type's own slice, decoded, reduced to a plain ``str``
     and encoded again here. The bytes that answer for the entry are then the bytes the spawn
-    would send, not the first encoder's own answer. An answer that is not text or bytes is
-    refused by position with ``TypeError``, as the spawn refuses it.
+    would send, not the first encoder's own answer. An encoder that raises anything at all —
+    an answer that is not text or bytes, a path-like read that fails, a value whose own
+    method raises — is refused by position and type with ``TypeError``; the error it raised
+    is neither kept as the refusal's context nor reachable through its message or ``args``.
     """
     for index, (key, val) in enumerate(env.items()):
         for part, item in (("key", key), ("value", val)):
@@ -203,7 +205,11 @@ def unencodable_env_entry(env: Mapping[str, str]) -> str | None:
                 os.fsencode(str.__str__(os.fsdecode(encoded)))
             except UnicodeEncodeError:
                 return f"The environment entry {index} {part}"
-            except TypeError:
+            except Exception:
+                # Any other exception an encoder raises is refused by position and type.
+                # The value's own text is not carried: the exception that was caught may
+                # hold it in its message or its args, and raising inside this handler
+                # would chain the refusal to it.
                 unreadable = True
             if unreadable:
                 # Raised after the handler, so the refusal keeps no error as its context;
