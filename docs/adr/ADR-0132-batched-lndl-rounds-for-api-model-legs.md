@@ -13,7 +13,8 @@
 
 An API-model `li agent` leg runs lionagi's own tool loop, `Branch.ReAct(tools=True,
 max_extensions=N)` (`lionagi/cli/agent.py:276-308`, ADR-0041 Amendment 1). Each ReAct analysis round
-is one model request, and a round's tool calls run concurrently through `act()`
+is at least one model request (a reply that fails to parse is asked for again), and a round's tool
+calls run through `act()`, concurrently unless the model asks for them in sequence
 (`lionagi/operations/ReAct/ReAct.py:98`, `:205`, `:542`). After the last analysis round ReAct always
 makes one more request for the answer (`ReAct.py:631-684`). A ReAct turn therefore costs its
 analysis rounds plus one. A model that asks for a read cannot see the result in that round, so it
@@ -27,9 +28,10 @@ call, concurrently and through the ordinary `act()` path with its permissions an
 next round sees the results; a round whose `OUT{}` validates ends the turn
 (`lionagi/operations/lndl_middle/lndl_middle.py:217-262`; ADR-0024 D3-D4). The same one-read task
 takes two requests: the round that declares the read, and the round that reads the result and
-writes the answer. The difference is at most the one request per turn that ReAct spends on the
-answer after the model has stopped, and only in turns where the model would have taken that extra
-round; whether models do, and how often, is what the pilot below measures.
+writes the answer. With the same number of rounds, then, the batched loop saves the request ReAct
+makes for the answer, one per turn, a turn with no tool calls included (two requests against one).
+Whether a model takes the same number of rounds in each loop, and how many repair rounds the
+batched loop costs it, is what the pilot below measures.
 
 Nothing measures it today. A leg's branch holds its requests and tool calls as messages, but no leg
 reports how many requests a task took, so a claim that one loop is cheaper is an estimate.
@@ -44,11 +46,17 @@ as an unknown `api_tools` value. A profile that sets `api_loop` without `api_too
 since the key would otherwise be ignored on a leg whose provider runs its own loop.
 
 An `lndl` leg runs `branch.operate(instruction=..., middle=build_lndl_middle(round_budget=1 +
-max_extensions))` with the same read tool set, guards, recall and timeout as a ReAct leg. Its answer
-model has one field, `answer: str`, and accepts only text the model wrote: a call's result placed in
-`OUT{}` (a mapping, a list, or nothing from a failed call) is refused, and the refusal tells the
-model to read the result and write the answer in the next round. The read tools return mappings
-(`lionagi/tools/coding.py:454-670`), so an answer is never a raw tool result.
+max_extensions))` with the same read tool set, guards, recall and timeout as a ReAct leg. It keeps
+calls and the answer in separate rounds, and its guidance tells the model so: a round either
+declares `<lact>` calls, with no `OUT{}`, or writes the answer, with no `<lact>`. A round that does
+both is a repair round, in which none of its calls runs and its answer is not taken. Left to the
+Middle's own rule, such a round would run only the calls its `OUT{}` binds and drop the rest
+(`lndl_middle.py:173-182`), so a model could answer beside a read it never saw. The answer model
+has one field, `answer: str`, and accepts only text the model wrote: an `OUT{}` that binds a
+call's result from an earlier round (a mapping, a list, or nothing from a failed call) is refused,
+and the refusal tells the model to read the result and write the answer as text. The read tools
+return mappings (`lionagi/tools/coding.py:454-670`, `lionagi/tools/context/context.py:228-432`),
+so an answer is never a raw tool result.
 
 Every LNDL round's request names the leg's tools, their parameters and descriptions, whatever the
 provider's prompt-cache placement. Today the Middle strips the tool schemas from its rounds
@@ -65,16 +73,19 @@ unknown tool set is.
 
 - A round may declare at most 16 `<lact>` calls. A round that declares more is a repair round: no
   call runs, and the model is told the limit and asked to split the work.
+- From the second round on, each round's instruction names its number and the budget, and the
+  last says it is the last. A repair round's error is shown to the round after it only.
 - Each call keeps its tool's own limits (the read tools' size caps and the path guards); the round
   adds no timeout of its own, and the leg's `--timeout` bounds the whole turn, as for ReAct.
 - A failed call is a result: `act()` runs with errors suppressed, so the call's output is nothing or
   an error mapping, the next round's request carries it, and the model decides what to do. It never
   becomes the answer (D1).
-- A refused `OUT{}` and an over-limit round are repair rounds and count against the round budget.
-  The last round's instruction says it is the last. A turn that spends the budget without an
-  accepted `OUT{}` ends `failed`, with the Middle's error as its recorded cause, the same way a turn
-  ends on a provider's refusal; it never ends as a crash with no recorded cause. This differs from
-  ReAct, which on reaching its bound still asks for an answer.
+- A refused `OUT{}`, an over-limit round and a round that both calls and answers are repair rounds
+  and count against the round budget. A turn that spends the budget without an accepted `OUT{}`
+  ends `failed`: the Middle raises its error, which ends the turn the way any turn failure does,
+  a provider's refusal included. The session records `failed` with the error's message, `li agent`
+  reports the error and exits non-zero, and the run's cause file records a cause that is not a
+  provider error. This differs from ReAct, which on reaching its bound still asks for an answer.
 - The results a round feeds back count against the request ceiling of ADR-0130 like any other
   message; a round whose results would cross it is handled by that record, not by a second rule here.
 
@@ -83,16 +94,20 @@ unknown tool set is.
 When an API-model leg's turn ends, however it ends, the branch records under
 `metadata["api_launch"]["spend"]`:
 
-- `requests`: the requests the leg's model sent during this turn, counted where the model sends them,
-  so repair and parse requests and failed requests count;
-- `tool_calls`: the tool calls that ran during this turn;
-- `wall_seconds`: the turn's elapsed time on a monotonic clock.
+- `requests`: the requests the leg sent, counted where each model the branch uses sends them (the
+  chat and the parse model, which a resumed branch builds as two), so repair, parse and failed
+  requests count; a request its endpoint retries counts once;
+- `tool_calls`: the tool calls that ran;
+- `wall_seconds`: elapsed time on a monotonic clock, rounded to milliseconds.
 
-Each counts this turn only, from a baseline taken when the turn starts, so a resumed branch's earlier
-turns are not counted again. The record is written before the branch snapshot that ends the turn, so
-a resume and a reader of the run directory find it. `li agent` prints the three numbers on one line,
-`[api] spend: <requests> request(s), <tool_calls> tool call(s), <wall_seconds>s`, before its resume
-hint. Both loops record the same keys, so a comparison reads two records and never an estimate.
+The record totals this `li agent` invocation: its turn and any queued messages it drains as further
+turns, each turn counted from a baseline taken when it starts. A resume is a new invocation and
+starts from zero, so a resumed branch's earlier turns are not counted again. The record is written
+before the branch snapshot that ends the turn, so a resume and a reader of the run directory find
+it. After each turn `li agent` prints the totals on its hint channel (stderr) as one line,
+`[api] spend: <requests> request(s), <tool_calls> tool call(s), <wall_seconds>s` with the seconds
+to one decimal, before its resume hint when one prints. Both loops record the same keys, so a
+comparison reads two records and never an estimate.
 
 ### D4: one pilot before any default changes
 
