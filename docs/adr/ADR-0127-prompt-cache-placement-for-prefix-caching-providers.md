@@ -62,7 +62,7 @@ is a separate characterization, distinct from the acceptance tests in D7):
 
 **P1: no request in a tool loop is a prefix of the next.** Each pair of consecutive requests first
 differs at the previous round's instruction. While an instruction is current it renders its
-`Tools`, `ResponseSchema` and `ResponseFormat` sections (`protocols/messages/instruction.py:210-215`);
+`Tools`, `ResponseSchema` and `ResponseFormat` sections (`protocols/messages/instruction.py:211-216`);
 once it is history it is re-rendered without them (`operations/chat/_prepare.py:228`). Rounds 0 to
 1 differ at message 0, 1 to 2 at message 2, 2 to 3 at message 4. The current instruction is about
 3,170 characters of `json.dumps` of the whole message object, role wrapper included (3,141 of the
@@ -193,7 +193,7 @@ responses, which today's parser does not do (`protocols/messages/assistant_respo
 the `ResponseSchema` of the request operative: it includes the fields lionagi adds on top of the
 caller's model — `reason` when the call asks for it (`operations/operate/step.py:102-104`) and
 `action_required`, `action_requests` and `action_responses` when the call passes actions
-(`operations/operate/step.py:106-109`), which `operations/operate/operate.py:220-226` requests
+(`operations/operate/step.py:106-109`), which `operations/operate/operate.py:218-224` requests
 through `Step.request_operative`. It renders there as part of the instruction that asks for it, and
 it renders the same bytes whether it is current or history, instead of appearing in the one request
 and vanishing from the next. A format that changes between turns therefore renders in the turn
