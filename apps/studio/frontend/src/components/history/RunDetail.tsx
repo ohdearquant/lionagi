@@ -2054,6 +2054,13 @@ export default function RunDetail({ id }: RunDetailProps) {
   // same id again but not the same visit, so a request from the first visit
   // would match the second and overwrite the reader's own fresh read.
   const visitTokenRef = useRef(0);
+  // The same visit as state, for the one handler that has to compare the
+  // visit it was made for against the visit now on screen. A ref cannot
+  // answer that: the handler is created during render, and reading a ref's
+  // `current` while rendering is what the ref is not for. Depending on this
+  // instead re-creates the handler once per visit, so the copy it closes over
+  // is the visit it belongs to.
+  const [visitToken, setVisitToken] = useState(0);
 
   useEffect(() => {
     if (!id) return;
@@ -2077,6 +2084,12 @@ export default function RunDetail({ id }: RunDetailProps) {
     setOlderLoadFailed(false);
     setOlderCursor(null);
     initialScrollDoneRef.current = false;
+    // A resume accepted on a run this pane has since left is no longer this
+    // pane's business: the watch it starts polls the resumed invocation, and
+    // carrying it into a later visit would restart that poll for a run the
+    // reader is no longer looking at (and never asked to see resumed).
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset stale state before async fetch; setState only fires in the effect body synchronously, not in callbacks
+    setResumeWatch(null);
     // The Fleet view keeps this component mounted and swaps `id` — the
     // selection is scoped to the run it was made on, so a run switch must
     // drop it rather than let it read as the new run's selection. Every id
@@ -2096,6 +2109,8 @@ export default function RunDetail({ id }: RunDetailProps) {
     }
     selectionRunRef.current = id;
     visitTokenRef.current += 1;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset stale state before async fetch; setState only fires in the effect body synchronously, not in callbacks
+    setVisitToken(visitTokenRef.current);
     getSession(id)
       .then((s) => {
         if (cancelled) return;
@@ -2414,6 +2429,13 @@ export default function RunDetail({ id }: RunDetailProps) {
         setError(String(e));
       })
       .finally(() => {
+        // The visit this page was asked for is the one whose busy state this
+        // clears. A page from an earlier visit settles whenever its own
+        // request does, which can be while the run now on screen has a page of
+        // its own in flight — clearing that run's busy state here would
+        // re-enable its control and let the reader ask for the same page
+        // twice.
+        if (visitTokenRef.current !== visit) return;
         loadingOlderRef.current = false;
         setLoadingOlder(false);
       });
@@ -2441,7 +2463,13 @@ export default function RunDetail({ id }: RunDetailProps) {
         if (visitTokenRef.current !== visit) return;
         setError(String(e));
       })
-      .finally(() => setLoadingOlder(false));
+      .finally(() => {
+        // Same as the older-page finally: the busy state belongs to the visit
+        // that asked for this reload, not to whichever visit is on screen when
+        // its response settles.
+        if (visitTokenRef.current !== visit) return;
+        setLoadingOlder(false);
+      });
   }, [id]);
 
   // Scroll-up trigger: an always-mounted sentinel just above the message
@@ -2479,11 +2507,24 @@ export default function RunDetail({ id }: RunDetailProps) {
 
   const handleResumed = useCallback(
     async (result: RunResumeResponse) => {
+      // The reader may have left this run while the resume was being accepted
+      // (or left and come back to it), so the pane may no longer be the one
+      // this handler belongs to. A resume is a state change for the run it was
+      // accepted on: marking the run now on screen live would give it a live
+      // badge and a wait-for-events pane for a continuation it never received.
+      // The visit, not the run id, tells the two apart: leaving a run and
+      // returning to it reaches the same id but not the same visit.
+      if (visitTokenRef.current !== visitToken) return;
       setDone(false);
       setLive(true);
       setResumeWatch(result);
       try {
         const fresh = await getSession(id);
+        // The refresh is a second chance for the reader to have moved on, and
+        // the snapshot it carries describes the run the resume was accepted
+        // on. Writing it over the run now on screen would put that run's name
+        // and rows back under the current one.
+        if (visitTokenRef.current !== visitToken) return;
         setSession((previous) =>
           previous && previous.id === fresh.id ? mergeCompletedSession(previous, fresh) : previous,
         );
@@ -2493,7 +2534,7 @@ export default function RunDetail({ id }: RunDetailProps) {
         // refresh races a transient daemon disconnect.
       }
     },
-    [id],
+    [id, visitToken],
   );
 
   // Confirming a proposal records the intent locally; derivePausePhase

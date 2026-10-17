@@ -3400,6 +3400,508 @@ describe("history/RunDetail.tsx — a response for a run the reader has left", (
     return [...container.querySelectorAll("button")].find((b) => b.textContent?.includes(text));
   }
 
+  // The older-page control renders its own label while a page is in flight, so
+  // a match on the resting label cannot see it in the state this file has to
+  // assert on (busy and disabled).
+  function olderButton(container: HTMLElement) {
+    return [...container.querySelectorAll("button")].find(
+      (b) => b.textContent?.includes("Load older messages") || b.textContent === "…",
+    );
+  }
+
+  // The snapshot a second visit to the first run reads: a distinct name and
+  // branch so a stale write is visible rather than confused with this visit's
+  // own content, and a cursor of its own so the next page can be traced.
+  const runAFresh = {
+    ...runA,
+    name: "fresh-run-name",
+    message_next_cursor: "cursor-fresh",
+    branches: [
+      {
+        id: "branch-a",
+        name: "fresh-branch",
+        created_at: 0,
+        message_total: 2,
+        message_has_older: true,
+        messages: [instruction("a2", "second")],
+      },
+    ],
+  };
+
+  // The page the first visit asked for: an older row only this page carries,
+  // so its absence proves the page was dropped rather than merged.
+  const staleFirstVisitPage = {
+    ...runA,
+    message_next_cursor: "cursor-stale",
+    branches: [
+      {
+        ...runA.branches[0],
+        message_total: 3,
+        messages: [...runA.branches[0].messages, instruction("a0", "oldest-of-first-visit")],
+      },
+    ],
+  };
+
+  it("a stale older page does not clear the loading state of the next run's own page", async () => {
+    const h = await mount();
+    const stalePageOnA = deferred<unknown>();
+    const pageOnB = deferred<unknown>();
+    vi.mocked(h.getSession)
+      .mockResolvedValueOnce(runA as never)
+      // The page the reader asked for on the first run, still in flight.
+      .mockReturnValueOnce(stalePageOnA.promise as never)
+      .mockResolvedValueOnce(runB as never)
+      // The page asked for on the second run, also still in flight.
+      .mockReturnValueOnce(pageOnB.promise as never);
+    try {
+      await h.render("run-a");
+      await act(async () => {
+        button(h.container, "Load older messages")?.click();
+      });
+
+      await h.render("run-b");
+      expect(h.container.textContent).toContain("second-run-name");
+
+      // The second run's own page is in flight: its control reads as busy and
+      // is disabled, so the reader cannot ask for it a second time.
+      await act(async () => {
+        button(h.container, "Load older messages")?.click();
+      });
+      await h.flush();
+      expect(h.getSession).toHaveBeenCalledTimes(4);
+      expect(olderButton(h.container)?.disabled).toBe(true);
+
+      // The first run's page settles now. Its request belongs to a visit the
+      // reader has left, so settling it must not touch the control state of
+      // the run on screen while that run's own page is still in flight.
+      await act(async () => {
+        stalePageOnA.resolve(staleFirstVisitPage);
+      });
+      await h.flush();
+
+      expect(olderButton(h.container)?.disabled).toBe(true);
+      expect(h.getSession).toHaveBeenCalledTimes(4);
+    } finally {
+      act(() => h.root.unmount());
+      h.container.remove();
+    }
+  });
+
+  it("a stale older page does not clear the loading state of the next visit to the same run", async () => {
+    const h = await mount();
+    const stalePageOnA = deferred<unknown>();
+    const pageOnA = deferred<unknown>();
+    vi.mocked(h.getSession)
+      .mockResolvedValueOnce(runA as never)
+      // The page the reader asked for on the first visit, still in flight.
+      .mockReturnValueOnce(stalePageOnA.promise as never)
+      .mockResolvedValueOnce(runB as never)
+      .mockResolvedValueOnce(runAFresh as never)
+      // The page asked for on the second visit, also still in flight.
+      .mockReturnValueOnce(pageOnA.promise as never);
+    try {
+      await h.render("run-a");
+      await act(async () => {
+        button(h.container, "Load older messages")?.click();
+      });
+
+      await h.render("run-b");
+      expect(h.container.textContent).toContain("second-run-name");
+
+      // Back to the same run, but a new visit — this one's own read is the
+      // snapshot on screen, and its own page is in flight.
+      await h.render("run-a");
+      expect(h.container.textContent).toContain("fresh-run-name");
+      await act(async () => {
+        button(h.container, "Load older messages")?.click();
+      });
+      await h.flush();
+      expect(h.getSession).toHaveBeenLastCalledWith("run-a", { messageCursor: "cursor-fresh" });
+      expect(olderButton(h.container)?.disabled).toBe(true);
+
+      // The first visit's page settles. It belongs to a visit the reader has
+      // left even though the run id matches, so it must leave the second
+      // visit's in-flight page alone.
+      await act(async () => {
+        stalePageOnA.resolve(staleFirstVisitPage);
+      });
+      await h.flush();
+
+      expect(olderButton(h.container)?.disabled).toBe(true);
+      expect(h.container.textContent).not.toContain("oldest-of-first-visit");
+      expect(h.getSession).toHaveBeenCalledTimes(5);
+    } finally {
+      act(() => h.root.unmount());
+      h.container.remove();
+    }
+  });
+
+  it("a stale reload does not clear the loading state of the next run's own reload", async () => {
+    const h = await mount();
+    const staleReload = deferred<unknown>();
+    const reloadOnB = deferred<unknown>();
+    vi.mocked(h.getSession)
+      .mockResolvedValueOnce(runA as never)
+      // The anchor aged out on the first run, so its reload is offered.
+      .mockRejectedValueOnce(new h.ApiError(400, "the anchor moved on"))
+      // That reload is still in flight when the reader leaves the run.
+      .mockReturnValueOnce(staleReload.promise as never)
+      .mockResolvedValueOnce(runB as never)
+      // The second run's own anchor ages out too, and its reload is offered.
+      .mockRejectedValueOnce(new h.ApiError(400, "the anchor moved on"))
+      // The reload asked for on the second run, also still in flight.
+      .mockReturnValueOnce(reloadOnB.promise as never);
+    try {
+      await h.render("run-a");
+      await act(async () => {
+        button(h.container, "Load older messages")?.click();
+      });
+      const reloadOnA = button(h.container, "Reload conversation");
+      expect(reloadOnA, "setup: the reload control is offered after the failed page").toBeDefined();
+      await act(async () => {
+        reloadOnA?.click();
+      });
+
+      await h.render("run-b");
+      expect(h.container.textContent).toContain("second-run-name");
+      await act(async () => {
+        button(h.container, "Load older messages")?.click();
+      });
+      await h.flush();
+      const reload = button(h.container, "Reload conversation");
+      expect(reload, "setup: the second run offers its own reload").toBeDefined();
+      await act(async () => {
+        reload?.click();
+      });
+      await h.flush();
+      // The second run's reload is in flight, so the pane reads as busy.
+      expect(olderButton(h.container)?.disabled).toBe(true);
+      expect(h.getSession).toHaveBeenCalledTimes(6);
+
+      // The first run's reload settles now. Its request belongs to a visit the
+      // reader has left, so settling it must not clear the busy state of the
+      // reload the run on screen still has in flight.
+      await act(async () => {
+        staleReload.resolve(runA);
+      });
+      await h.flush();
+
+      expect(olderButton(h.container)?.disabled).toBe(true);
+      // And because it is still busy, the reader cannot ask for it twice.
+      await act(async () => {
+        olderButton(h.container)?.click();
+      });
+      await h.flush();
+      expect(h.getSession).toHaveBeenCalledTimes(6);
+    } finally {
+      act(() => h.root.unmount());
+      h.container.remove();
+    }
+  });
+
+  it("a stale reload does not clear the loading state of the next visit to the same run", async () => {
+    const h = await mount();
+    const staleReload = deferred<unknown>();
+    const pageOnSecondVisit = deferred<unknown>();
+    vi.mocked(h.getSession)
+      .mockResolvedValueOnce(runA as never)
+      // The anchor aged out on the first visit, so its reload is offered.
+      .mockRejectedValueOnce(new h.ApiError(400, "the anchor moved on"))
+      // That reload is still in flight when the reader leaves the run.
+      .mockReturnValueOnce(staleReload.promise as never)
+      .mockResolvedValueOnce(runB as never)
+      .mockResolvedValueOnce(runAFresh as never)
+      // The page the second visit asks for, also still in flight.
+      .mockReturnValueOnce(pageOnSecondVisit.promise as never);
+    try {
+      await h.render("run-a");
+      await act(async () => {
+        button(h.container, "Load older messages")?.click();
+      });
+      const reloadOnA = button(h.container, "Reload conversation");
+      expect(reloadOnA, "setup: the reload control is offered after the failed page").toBeDefined();
+      await act(async () => {
+        reloadOnA?.click();
+      });
+
+      await h.render("run-b");
+      expect(h.container.textContent).toContain("second-run-name");
+
+      // Back to the same run, but a new visit. Its own read is the snapshot on
+      // screen, and its own page is in flight.
+      await h.render("run-a");
+      expect(h.container.textContent).toContain("fresh-run-name");
+      await act(async () => {
+        button(h.container, "Load older messages")?.click();
+      });
+      await h.flush();
+      expect(h.getSession).toHaveBeenLastCalledWith("run-a", { messageCursor: "cursor-fresh" });
+      expect(olderButton(h.container)?.disabled).toBe(true);
+
+      // The first visit's reload settles now. It belongs to a visit the reader
+      // has left even though the run id matches again, so it must leave the
+      // second visit's in-flight page alone.
+      await act(async () => {
+        staleReload.resolve(runA);
+      });
+      await h.flush();
+
+      expect(olderButton(h.container)?.disabled).toBe(true);
+      expect(h.getSession).toHaveBeenCalledTimes(6);
+    } finally {
+      act(() => h.root.unmount());
+      h.container.remove();
+    }
+  });
+
+  it("a resume accepted on an earlier visit to the same run does not restart it on a later one", async () => {
+    const h = await mount();
+    const { getInvocation } = await import("@/lib/api");
+    vi.mocked(getInvocation).mockRejectedValue(new Error("no invocation in this test"));
+    vi.mocked(h.getSession)
+      .mockResolvedValueOnce(runA as never)
+      .mockResolvedValueOnce(runB as never)
+      .mockResolvedValueOnce(runAFresh as never)
+      // Never reached: the resume belongs to a visit that is over, so its own
+      // refresh is not asked for at all.
+      .mockResolvedValueOnce(runA as never);
+    try {
+      await h.render("run-a");
+      const acceptedOnRunA = resumeRunProps.current;
+      expect(acceptedOnRunA, "setup: the resume control was rendered").not.toBeNull();
+
+      await h.render("run-b");
+      expect(h.container.textContent).toContain("second-run-name");
+
+      await h.render("run-a");
+      expect(h.container.textContent).toContain("fresh-run-name");
+
+      // The acceptance on the first visit settles only now, after the reader
+      // has come back to the same run. The run id matches, but the visit does
+      // not: the continuation belongs to the visit that is over, so the run on
+      // screen must not be marked live for it and no refresh may be issued.
+      await act(async () => {
+        void acceptedOnRunA?.onResumed({ run_id: "run-a", invocation_id: "inv-1" });
+        await Promise.resolve();
+      });
+      await h.flush();
+
+      expect(h.getSession).toHaveBeenCalledTimes(3);
+      expect(h.container.textContent).toContain("No lifecycle events recorded");
+      expect(h.container.textContent).not.toContain("Waiting for lifecycle events");
+      expect(h.container.textContent).not.toContain("live");
+    } finally {
+      act(() => h.root.unmount());
+      h.container.remove();
+    }
+  });
+
+  it("an older page started before a switch away and back is not merged into the fresh visit", async () => {
+    const h = await mount();
+    const stalePage = deferred<unknown>();
+    vi.mocked(h.getSession)
+      .mockResolvedValueOnce(runA as never)
+      // The page the reader asked for on the first visit, still in flight.
+      .mockReturnValueOnce(stalePage.promise as never)
+      .mockResolvedValueOnce(runB as never)
+      .mockResolvedValueOnce(runAFresh as never)
+      // The page this visit asks for afterwards.
+      .mockResolvedValueOnce(runAFresh as never);
+    try {
+      await h.render("run-a");
+      await act(async () => {
+        button(h.container, "Load older messages")?.click();
+      });
+
+      await h.render("run-b");
+      expect(h.container.textContent).toContain("second-run-name");
+
+      await h.render("run-a");
+      expect(h.container.textContent).toContain("fresh-run-name");
+
+      // The page belongs to the first visit, which is over even though the run
+      // id matches the one on screen again. Its rows must not be merged into
+      // this visit's own read, and its cursor must not become this visit's.
+      await act(async () => {
+        stalePage.resolve(staleFirstVisitPage);
+      });
+      await h.flush();
+
+      expect(h.container.textContent).toContain("fresh-run-name");
+      expect(h.container.textContent).not.toContain("oldest-of-first-visit");
+
+      await act(async () => {
+        button(h.container, "Load older messages")?.click();
+      });
+      await h.flush();
+      expect(h.getSession).toHaveBeenLastCalledWith("run-a", { messageCursor: "cursor-fresh" });
+    } finally {
+      act(() => h.root.unmount());
+      h.container.remove();
+    }
+  });
+
+  it("a failed older page started before a switch away and back is not written to the fresh visit", async () => {
+    const h = await mount();
+    const stalePage = deferred<unknown>();
+    vi.mocked(h.getSession)
+      .mockResolvedValueOnce(runA as never)
+      .mockReturnValueOnce(stalePage.promise as never)
+      .mockResolvedValueOnce(runB as never)
+      .mockResolvedValueOnce(runAFresh as never);
+    try {
+      await h.render("run-a");
+      await act(async () => {
+        button(h.container, "Load older messages")?.click();
+      });
+
+      await h.render("run-b");
+      await h.render("run-a");
+      expect(h.container.textContent).toContain("fresh-run-name");
+
+      // A failure of the first visit's page is about that visit. The whole-run
+      // error state replaces every row, so writing it here would blank the run
+      // the reader is looking at now.
+      await act(async () => {
+        stalePage.reject(new Error("upstream closed"));
+      });
+      await h.flush();
+
+      expect(h.container.textContent).toContain("fresh-run-name");
+      expect(h.container.textContent).not.toContain("upstream closed");
+    } finally {
+      act(() => h.root.unmount());
+      h.container.remove();
+    }
+  });
+
+  it("a failed reload started before a switch away and back is not written to the fresh visit", async () => {
+    const h = await mount();
+    const staleReload = deferred<unknown>();
+    vi.mocked(h.getSession)
+      .mockResolvedValueOnce(runA as never)
+      // The anchor aged out, so older history is refused and the reload is offered.
+      .mockRejectedValueOnce(new h.ApiError(400, "the anchor moved on"))
+      // That reload is still in flight when the reader leaves the run.
+      .mockReturnValueOnce(staleReload.promise as never)
+      .mockResolvedValueOnce(runB as never)
+      .mockResolvedValueOnce(runAFresh as never);
+    try {
+      await h.render("run-a");
+      await act(async () => {
+        button(h.container, "Load older messages")?.click();
+      });
+      const reload = button(h.container, "Reload conversation");
+      expect(reload, "setup: the reload control is offered after the failed page").toBeDefined();
+      await act(async () => {
+        reload?.click();
+      });
+
+      await h.render("run-b");
+      await h.render("run-a");
+      expect(h.container.textContent).toContain("fresh-run-name");
+
+      await act(async () => {
+        staleReload.reject(new Error("upstream closed"));
+      });
+      await h.flush();
+
+      expect(h.container.textContent).toContain("fresh-run-name");
+      expect(h.container.textContent).not.toContain("upstream closed");
+    } finally {
+      act(() => h.root.unmount());
+      h.container.remove();
+    }
+  });
+
+  it("a resume accepted on the run the reader left does not mark the run on screen live", async () => {
+    const h = await mount();
+    const { getInvocation } = await import("@/lib/api");
+    vi.mocked(getInvocation).mockRejectedValue(new Error("no invocation in this test"));
+    vi.mocked(h.getSession)
+      .mockResolvedValueOnce(runA as never)
+      .mockResolvedValueOnce(runB as never);
+    try {
+      await h.render("run-a");
+      const acceptedOnRunA = resumeRunProps.current;
+      expect(acceptedOnRunA, "setup: the resume control was rendered").not.toBeNull();
+
+      await h.render("run-b");
+      expect(h.container.textContent).toContain("second-run-name");
+      expect(h.container.textContent).toContain("No lifecycle events recorded");
+
+      // The reader accepts a resume on the first run only after switching
+      // away. The run on screen is a finished one that received no
+      // continuation: it must not gain a live badge, a running status, or the
+      // "waiting for events" text a live run shows.
+      await act(async () => {
+        void acceptedOnRunA?.onResumed({ run_id: "run-a", invocation_id: "inv-1" });
+        await Promise.resolve();
+      });
+      await h.flush();
+
+      expect(h.container.textContent).toContain("second-run-name");
+      expect(h.container.textContent).toContain("No lifecycle events recorded");
+      expect(h.container.textContent).not.toContain("Waiting for lifecycle events");
+      expect(h.container.textContent).not.toContain("live");
+      expect(h.container.textContent).not.toContain("running");
+      expect(h.getSession).toHaveBeenCalledTimes(2);
+    } finally {
+      act(() => h.root.unmount());
+      h.container.remove();
+    }
+  });
+
+  it("a resume refresh started before a switch away and back does not overwrite the fresh visit", async () => {
+    const h = await mount();
+    const { getInvocation } = await import("@/lib/api");
+    vi.mocked(getInvocation).mockRejectedValue(new Error("no invocation in this test"));
+    const resumeRefresh = deferred<unknown>();
+    vi.mocked(h.getSession)
+      .mockResolvedValueOnce(runA as never)
+      // The eager refresh the accepted resume asks for, for the first visit.
+      .mockReturnValueOnce(resumeRefresh.promise as never)
+      .mockResolvedValueOnce(runB as never)
+      .mockResolvedValueOnce(runAFresh as never);
+    try {
+      await h.render("run-a");
+      const acceptedOnRunA = resumeRunProps.current;
+      expect(acceptedOnRunA, "setup: the resume control was rendered").not.toBeNull();
+
+      // The resume is accepted while the first visit is on screen, so its own
+      // refresh is in flight when the reader moves on.
+      await act(async () => {
+        void acceptedOnRunA?.onResumed({ run_id: "run-a", invocation_id: "inv-1" });
+        await Promise.resolve();
+      });
+      await h.flush();
+
+      await h.render("run-b");
+      expect(h.container.textContent).toContain("second-run-name");
+
+      await h.render("run-a");
+      expect(h.container.textContent).toContain("fresh-run-name");
+
+      // The first visit's refresh resolves last. It describes the run as it
+      // was before the switch, so merging it here would put that visit's name
+      // and rows back under the visit the reader is actually looking at.
+      await act(async () => {
+        resumeRefresh.resolve(runA);
+      });
+      await h.flush();
+
+      expect(h.container.textContent).toContain("fresh-run-name");
+      expect(h.container.textContent).not.toContain("first-run-name");
+      expect(h.container.textContent).not.toContain("first-branch");
+      // A resume accepted on a visit that is over is not carried into the next
+      // one either: nothing keeps polling its invocation on the way back.
+      expect(vi.mocked(getInvocation)).toHaveBeenCalledTimes(1);
+    } finally {
+      act(() => h.root.unmount());
+      h.container.remove();
+    }
+  });
+
   it("a reload started on one run does not replace the run the reader switched to", async () => {
     const h = await mount();
     const staleReload = deferred<unknown>();
@@ -3658,13 +4160,9 @@ describe("history/RunDetail.tsx — a response for a run the reader has left", (
 
   it("a resume accepted on one run does not replace the run the reader switched to", async () => {
     const h = await mount();
-    const resumeRefresh = deferred<unknown>();
     vi.mocked(h.getSession)
       .mockResolvedValueOnce(runA as never)
-      .mockResolvedValueOnce(runB as never)
-      // The eager refresh the accepted resume asks for, for the run it was
-      // accepted on.
-      .mockReturnValueOnce(resumeRefresh.promise as never);
+      .mockResolvedValueOnce(runB as never);
     try {
       await h.render("run-a");
       expect(h.container.textContent).toContain("first-run-name");
@@ -3674,18 +4172,16 @@ describe("history/RunDetail.tsx — a response for a run the reader has left", (
       await h.render("run-b");
       expect(h.container.textContent).toContain("second-run-name");
 
-      // The reader accepts a resume on the first run and only then switches
-      // away; the resume's own refresh lands while the other run is on screen.
+      // The reader accepts a resume on the first run only after switching
+      // away. That run is no longer the one this pane is for, so its refresh
+      // is not asked for at all and there is nothing left to land here.
       await act(async () => {
-        // Not awaited: its own refresh is the request this test lands below.
         void acceptedOnRunA?.onResumed({ run_id: "run-a", invocation_id: "inv-1" });
         await Promise.resolve();
       });
-      await act(async () => {
-        resumeRefresh.resolve(runA);
-      });
       await h.flush();
 
+      expect(h.getSession).toHaveBeenCalledTimes(2);
       expect(h.container.textContent).toContain("second-run-name");
       expect(h.container.textContent).not.toContain("first-run-name");
       expect(h.container.textContent).not.toContain("first-branch");
