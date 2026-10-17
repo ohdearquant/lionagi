@@ -1273,9 +1273,10 @@ def _column_collations(tokens: list[tuple[str, str]]) -> frozenset[tuple[str, st
     for group in _groups(tokens, start):
         if group[0][0] == _WORD and _is_table_constraint([text for _, text in group]):
             continue
-        name = _name(group[0])
-        if name is not None:
-            found.add((name, _declared_collation(group[1:])))
+        # Table SQL is read spelled, so a quoted name that a bare word cannot spell keeps its
+        # quotes; the column it names is read between them.
+        if group[0][0] in (_WORD, _IDENT, _STRING):
+            found.add((_unquoted(*group[0]), _declared_collation(group[1:])))
     return frozenset(found)
 
 
