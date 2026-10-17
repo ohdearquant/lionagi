@@ -3077,7 +3077,7 @@ class StateDB:
         if not added:
             return
         await conn.execute(
-            text("UPDATE progressions SET collection = :col WHERE id = :id" + clause),
+            text("UPDATE progressions SET collection = :col WHERE id = :id" + clause),  # noqa: S608 -- owner predicate
             {"col": _to_json_column([*current, *added]), "id": progression_id, **owner},
         )
 
