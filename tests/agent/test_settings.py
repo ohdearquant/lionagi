@@ -323,6 +323,62 @@ async def test_a_hook_whose_exchange_fails_ends_its_process_group(monkeypatch, p
     cleanup.assert_awaited_once_with(mock_proc, grace=None, group_witnesses=witnesses)
 
 
+def _pid_alive(pid: int) -> bool:
+    import os
+
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+async def test_cancelling_a_pre_hook_kills_the_hook_and_the_process_it_started(tmp_path):
+    """A real hook and its own child are both gone once the cancelled call returns."""
+    import asyncio
+    import os
+    import signal
+    import sys
+
+    from lionagi.agent.settings import _make_shell_hook
+
+    pids_file = tmp_path / "pids"
+    script = tmp_path / "hook.py"
+    script.write_text(
+        "import os, subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        "with open(sys.argv[1] + '.tmp', 'w') as f:\n"
+        "    f.write(f'{os.getpid()} {child.pid}')\n"
+        "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
+        "time.sleep(30)\n"
+    )
+    hook = _make_shell_hook([sys.executable, str(script), str(pids_file)], "pre", "bash")
+    task = asyncio.create_task(hook("bash", "run", {}))
+    pids: list[int] = []
+    try:
+        for _ in range(200):
+            if pids_file.exists():
+                break
+            await asyncio.sleep(0.05)
+        pids = [int(pid) for pid in pids_file.read_text().split()]
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        for _ in range(100):
+            if not any(_pid_alive(pid) for pid in pids):
+                break
+            await asyncio.sleep(0.05)
+        assert [pid for pid in pids if _pid_alive(pid)] == []
+    finally:
+        if not task.done():
+            task.cancel()
+        for pid in pids:
+            if _pid_alive(pid):
+                os.kill(pid, signal.SIGKILL)
+
+
 # aterminate_process_group must never signal the init/session process group.
 # A test double (or a not-yet-spawned proc) whose ``pid`` coerces to 1 via
 # __index__ would make os.killpg(1, ...) signal process group 1 — which on a
