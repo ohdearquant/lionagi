@@ -555,7 +555,7 @@ lines:
   and any authority type are absent from it; `_prepare_run_kwargs()` is still the active chat/run
   path
   (`lionagi/operations/chat/_prepare.py:194`, called from `lionagi/operations/chat/chat.py:62`
-  and `lionagi/operations/run/run.py:466`), and `prepare_messages_for_chat()` still stands
+  and `lionagi/operations/run/run.py:465`), and `prepare_messages_for_chat()` still stands
   separately (`lionagi/protocols/messages/prepare.py:100`);
 - kept versus dropped: over a per-provider cap or over the total budget, the registry appends
   the provider name to `ProviderReport.skipped` and moves on
