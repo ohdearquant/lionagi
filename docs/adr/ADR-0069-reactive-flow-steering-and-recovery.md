@@ -301,6 +301,7 @@ class CheckpointWriter:
     prompt: str
     plan: list[dict]
     config: dict[str, Any]
+    max_spawn: int | None = None
     flow_context: dict[str, Any] = field(default_factory=dict)
     ops: dict[str, dict[str, Any]] = field(default_factory=dict)
     spawned: list[dict] = field(default_factory=list)
@@ -323,6 +324,12 @@ class CheckpointWriter:
         status: str,
         response: Any,
         flow_context: dict[str, Any] | None = None,
+        operation: str | None = None,
+        assignee: str | None = None,
+        instruction: str | None = None,
+        parent_id: str | None = None,
+        spawn_id: str | None = None,
+        context: Any | None = None,
     ) -> None: ...
 ```
 
@@ -343,9 +350,20 @@ Wire shape:
     }
   },
   "spawned": [
-    {"node_id": "operation-uuid", "status": "completed|failed", "response": "..."}
+    {
+      "node_id": "operation-uuid",
+      "status": "completed|failed",
+      "response": "...",
+      "operation": "...",
+      "assignee": "...",
+      "instruction": "...",
+      "parent_id": "...",
+      "spawn_id": "...",
+      "context": null
+    }
   ],
-  "config": {"model_spec": "...", "reactive_spec": "...", "max_ops": 0}
+  "config": {"model_spec": "...", "reactive_spec": "...", "max_ops": 0},
+  "max_spawn": 20
 }
 ```
 
@@ -396,6 +414,7 @@ def _apply_checkpoint_precompletion(
     checkpoint_ops: dict[str, dict],
     *,
     allow_degraded_context: bool,
+    retry_failed: bool = False,
     checkpoint_spawned: list[dict] | None = None,
 ) -> None: ...
 
@@ -403,6 +422,7 @@ async def _resume_flow(
     target: str,
     *,
     allow_degraded_context: bool = False,
+    retry_failed: bool = False,
     dry_run: bool = False,
     show_graph: bool = False,
     notify: str | None = None,
@@ -411,8 +431,9 @@ async def _resume_flow(
 
 Exact resolution semantics:
 
-- An exact run directory is preferred. Otherwise `_find_run_dir_by_id()` chooses the most recently
-  modified directory matching the supplied prefix; it does not report multiple prefix matches.
+- An exact run directory is preferred. Otherwise `_find_run_dir_by_id()` resolves an unambiguous
+  prefix of the run id; more than one directory matching the prefix raises `AmbiguousIdError`
+  (`lionagi/cli/orchestrate/_checkpoint.py:182-183`).
 - If no run directory checkpoint is found, the target is resolved through session/invocation/play
   storage, then through the session's `node_metadata.run_id`.
 - Missing target, missing backing session, missing run id, or missing `checkpoint.json` raises
@@ -524,10 +545,15 @@ against the artifact set a node declared, it does not make.
   re-folds each leg's profile or role `artifact_defaults` from the live roles at resume
   (`lionagi/cli/orchestrate/flow.py:942-951`), so removing a role's `artifact_defaults` between runs
   loses that leg's contract. The persisted record exists — `artifact_contract_json` is the column
-  ADR-0064 D3 has a flow write at DAG-build time
+  ADR-0064 D3 has a flow write
   (`docs/adr/ADR-0064-cli-execution-outcome-and-completion-record.md:403`; declared at
-  `lionagi/state/schema.sql:191`, written at `lionagi/cli/orchestrate/flow.py:1057`) — and resume
-  does not read it. Delta row 2 covers both the read and the check.
+  `lionagi/state/schema.sql:191`). Two writers fill it, both append-only and frozen before the work
+  they describe runs: `_build_dag` folds each planned leg's role defaults in at DAG-build time
+  (`lionagi/cli/orchestrate/flow.py:1057`), and `_execute_dag` folds a reactively spawned node's own
+  entries in after it completes (`lionagi/cli/orchestrate/flow.py:2377,2390`). Resume does not read
+  either. The column is also nullable — the schema records that a NULL contract means verification
+  is skipped (`lionagi/state/schema.sql:190`) — so an absent or unreadable record is not evidence
+  that the declared set is still present. Delta row 2 covers both the read and the check.
 - **A node that declared no artifact contract.** There is nothing independent to check, so it keeps
   today's status replay like any other completed node. The settle-check delta rows cover only nodes
   that declare artifacts; giving a contract-less completion an independent recorded identity is
@@ -536,10 +562,16 @@ against the artifact set a node declared, it does not make.
   original run's. `resolve_checkpoint_target` returns the original run's `RunDir` with its
   `artifact_root` (`resolve_checkpoint_target` → `_find_run_dir_by_id`,
   `lionagi/cli/orchestrate/_checkpoint.py:164`), but `_resume_flow` keeps only the checkpoint dict
-  and drops the run dir (`lionagi/cli/orchestrate/flow.py:3371`), and `_run_flow` allocates a fresh
-  run, so without `--save` the resumed run's `artifact_root` is a new directory (`allocate_run`,
-  `lionagi/cli/_runs.py:408-426`). Against that new root every completed node's declared artifacts
-  are absent. Delta row 9 covers threading the original root.
+  and drops the run dir (`lionagi/cli/orchestrate/flow.py:3371`), and `_run_flow` allocates a run
+  again through `allocate_run`, whose root is chosen from `--save`: without `--save` the resumed
+  run's `artifact_root` is a fresh directory, and with `--save` it is the path `--save` names. The
+  path the resume passes comes from the replayed config, which carries the original `save_dir`
+  (`lionagi/cli/orchestrate/flow.py:2770`); `allocate_run` uses `save_dir` as the artifact root when
+  it is given and falls back to a fresh `<state_root>/artifacts` when it is not
+  (`lionagi/cli/_runs.py:423-426`). Either way the root is not read from the original `RunDir` the
+  resolver returned, so without `--save` every completed node's declared artifacts are absent from
+  the new root, and with a `--save` naming a directory other than the original run's they are absent
+  there too. Delta row 9 covers threading the original root.
 - **What the live verifier proves.** Presence and a non-zero size, not content: it reads
   `os.path.getsize(full) > 0` (`lionagi/state/artifact_verifier.py:249`), and the currency check
   beside it compares mtime and size and says itself that this "narrows, but doesn't close" the
@@ -567,8 +599,10 @@ entries likewise use it at `:1856` and `:2015`). A resume that looked up a spawn
 under its node id would find no directory at all.
 
 The identity delta row 6 asks for is a digest recorded in the checkpoint entry when the node
-completes: **field** `result_digest`, beside the entry's `status` and `response`
-(`CheckpointWriter.record`, `lionagi/cli/orchestrate/_checkpoint.py:72`). It would be taken with the
+completes: **field** `result_digest`, beside the entry's `status` and `response` — in a planned
+entry written by `CheckpointWriter.record` (`lionagi/cli/orchestrate/_checkpoint.py:72`) and in a
+spawned entry written by `record_spawned`
+(`lionagi/cli/orchestrate/_checkpoint.py:92,121`). It would be taken with the
 BLAKE-family hash the tree already uses for recorded content — `blake2b`
 (`lionagi/cli/orchestrate/_manifest.py:333`; ADR-0110 D1 records a "BLAKE-family content hash",
 `docs/adr/ADR-0110-deterministic-manifest-fanout.md:119`) — not `compute_hash`'s SHA-256 default
@@ -622,9 +656,12 @@ provide.
 - Amendment 1 records that a recorded `completed` node is replayed from its stored `status` alone:
   a checkpoint whose declared artifacts were lost or changed still replays as finished. The check
   that would narrow this is delta rows 2, 6, 7, 8, and 9, and it is not shipped.
-- Resume is planner-free and preserves completed/failed outcomes, but rebuilds a checkpoint's spawn
-  entries when all of them can be soundly rebuilt and refuses the whole resume on any entry that
-  cannot, and requires an explicit flag to lose inherited conversation state.
+- Resume is planner-free and preserves completed outcomes, but a checkpoint that records a failed
+  node refuses the resume (`_apply_checkpoint_precompletion` raises `FlowResumeError`,
+  `lionagi/cli/orchestrate/flow.py:1270-1278`) unless `--retry-failed` re-runs those entries as
+  pending (`lionagi/cli/orchestrate/flow.py:1310-1312`). It rebuilds a checkpoint's spawn entries
+  when all of them can be soundly rebuilt and refuses the whole resume on any entry that cannot, and
+  requires an explicit flag to lose inherited conversation state.
 - Contributors extending control must understand verb-specific apply/stamp ordering; treating a
   message like idempotent pause/resume would introduce duplicate steering.
 - Reversing D1-D3 requires a new control transport and compatibility for pending rows. D4's JSON
@@ -636,13 +673,13 @@ provide.
 | # | Delta | Size | Issue |
 |---|---|---|---|
 | 1 | Add a terminal reactive-flow cancel control; acceptance: after acknowledgement, no new operation starts and the run persists a cancelled terminal state. | M | (filled at issue-open time) |
-| 2 | Verify a replayed node's declared artifact set from the contract the run persisted, before pre-marking it `COMPLETED`, and refuse rather than trust when it cannot be proven; acceptance: a resumed run never marks a node that declared artifacts completed from a record whose declared set is missing, empty, or changed, and it reads the persisted `artifact_contract_json` column rather than re-deriving the contract from the live roles. Depends on delta 7's byte-level check — a result whose bytes changed under a preserved size and mtime is not detected until row 7 ships, so this row cannot close first. | M | #2015 |
+| 2 | Verify a replayed node's declared artifact set from the contract the run persisted, before pre-marking it `COMPLETED`, and refuse rather than trust when it cannot be proven; acceptance: a resumed run never marks a node that declared artifacts completed from a record whose declared set is missing or empty (presence and non-empty size, not content), it reads the persisted `artifact_contract_json` column rather than re-deriving the contract from the live roles, and a reactively spawned node's contract is persisted when that node completes rather than only after `run_dag`, where both contract writers run today (`lionagi/cli/orchestrate/flow.py:2377,2390`). Depends on delta 9 — without the original run's artifact root every declared path resolves against a root that never held the artifact, so presence cannot be checked until row 9 lands. | M | #2015 |
 | 3 | Persist predecessor conversation state needed by `inherit_context`; acceptance: eligible resumed operations receive the same inherited conversation without requiring degraded mode. | L | #2015 |
 | 4 | Enforce checkpoint-version compatibility and report unsupported versions before graph construction; acceptance: a checkpoint with an unknown version fails with a typed migration/compatibility error. | S | (filled at issue-open time) |
 | 5 | Add operator recovery for controls stranded in `applying`; acceptance: status distinguishes definitely-applied, definitely-not-applied, and indeterminate messages without automatic duplicate injection. | M | (filled at issue-open time) |
-| 6 | Give a completed node's settlement an independent recorded result identity, for the nodes delta 2's artifact check cannot cover; acceptance: a checkpoint records a `result_digest` beside the entry's `status` and `response` when the node completes, so a completed node that declared no artifact contract is re-checked from that digest instead of being trusted from its recorded `status`, and the record states that a digest stored beside an editable checkpoint detects an accidental change to the artifact only — a deliberate edit can rewrite the digest to match. | L | (filled at issue-open time) |
-| 7 | Make the artifact check byte-level and recompute the dependent closure when a value a consumer already read must be re-produced; acceptance: a result whose bytes changed under a preserved path, size, and mtime is detected, and a dependent of a re-run producer is never left reading a stale value. The size-and-mtime check resume could make today narrows the window rather than closing it, which is why delta 2 names this row as its prerequisite. | L | (filled at issue-open time) |
-| 8 | Route a producer result whose recorded value is missing or changed to exactly one outcome by whether a dependent already consumed it; acceptance: when a dependent consumed the producer's result, resume refuses and names the producer and the consumer that read it, and never re-runs that producer, while a producer no dependent consumed runs again — a resume over a consumed-and-changed producer result raises a typed refusal naming both, and no run re-executes a producer a dependent has read. The recomputation that would let such a producer re-run is delta 7. | M | (filled at issue-open time) |
+| 6 | Give a completed node's settlement an independent recorded result identity, for the nodes delta 2's artifact check cannot cover; acceptance: a checkpoint records a `result_digest` beside the entry's `status` and `response` when the node completes, so a completed node that declared no artifact contract is re-checked from that digest instead of being trusted from its recorded `status`. The bytes hashed are the node's own recorded result — the `<id>.md` file `_record_result` writes into the node's artifact directory once the DAG finishes (`lionagi/cli/orchestrate/flow.py:2281-2283`), which today lands only after `run_dag`, not at node completion. | L | (filled at issue-open time) |
+| 7 | Make the artifact check byte-level with a per-artifact completion digest, and recompute the dependent closure when a value a consumer already read must be re-produced; acceptance: a checkpoint records a completion digest per declared artifact, so a result whose bytes changed under a preserved path, size, and mtime is detected, and a dependent of a re-run producer is never left reading a stale value. Depends on delta 2 — the digest is compared against artifacts row 2 has already shown are present; the size-and-mtime check alone narrows the window rather than closing it. | L | (filled at issue-open time) |
+| 8 | Route a producer result whose recorded value is missing or changed to exactly one outcome by whether a dependent already consumed it, describing the behaviour before delta 7's byte-level check lands; acceptance: when a dependent consumed the producer's result, resume refuses and names the producer and the consumer that read it, and never re-runs that producer, while a producer no dependent consumed may run again — a resume over a consumed-and-changed producer result raises a typed refusal naming both, and no run re-executes a producer a dependent has read. The recomputation that would let such a producer re-run is delta 7. | M | (filled at issue-open time) |
 | 9 | Thread the original run's `artifact_root` through a resume so a settled node's declared artifacts are read from the run that produced them, not from the fresh root a resumed run is given; acceptance: resuming a run without `--save` still resolves every completed node's declared artifacts against the original run's artifact root. | M | (filled at issue-open time) |
 
 ## Alternatives considered
