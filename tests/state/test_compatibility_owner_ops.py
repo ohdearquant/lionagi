@@ -3774,22 +3774,38 @@ def _profile_that_admits_agent_setup(store: Path):
     )
 
 
-async def test_agent_setup_completes_on_a_compatibility_store(tmp_path, monkeypatch):
-    """A fresh agent run's setup is served by the profile: the session and branch rows are written,
-    and the lifecycle handlers that run at setup write through the run's own handle."""
-    from lionagi.cli import _runs
-    from lionagi.session.branch import Branch
+def _record_shared_store_lookups(monkeypatch) -> list:
+    """Every lookup of the process-wide store, recorded rather than raised: the hook bus logs
+    and drops most handler errors, so only a record shows the lookup happened."""
     from lionagi.state import db as db_mod
 
+    lookups: list = []
+
+    async def lookup(*args, **kwargs):
+        lookups.append((args, kwargs))
+        raise RuntimeError("agent setup reached the process-wide store")
+
+    monkeypatch.setattr(db_mod, "get_shared_db", lookup)
+    return lookups
+
+
+@pytest.mark.parametrize("share_db", [True, False], ids=["shared", "not-shared"])
+async def test_agent_setup_completes_on_a_compatibility_store(tmp_path, monkeypatch, share_db):
+    """A fresh agent run's setup is served by the base profile: the session and branch rows are
+    written through the run's own handle, and the setup handlers, handed that handle, reach no
+    other store and write nothing more."""
+    from lionagi.cli import _runs
+    from lionagi.session.branch import Branch
+
     store = await _managed_store(tmp_path / "managed.db")
-    profile = _profile_that_admits_agent_setup(store)
-    handle = StateDB(store, compatibility=profile, owner="principal:a")
+    handle = StateDB(store, compatibility=_profile(store), owner="principal:a")
     await handle.open()
 
     async def compatibility_store(*_args, **_kwargs):
         return handle
 
     monkeypatch.setattr(_runs, "_open_shared_db", compatibility_store)
+    lookups = _record_shared_store_lookups(monkeypatch)
     monkeypatch.setattr(
         "lionagi.cli.kill.current_pid_markers",
         lambda: {
@@ -3808,15 +3824,74 @@ async def test_agent_setup_completes_on_a_compatibility_store(tmp_path, monkeypa
             model="fixture-model",
             provider="fixture-provider",
             project="fixture-project",
-            share_db=False,
+            share_db=share_db,
         )
 
         assert ctx is not None
+        assert lookups == []
         assert _rows(store, "SELECT COUNT(*) FROM sessions") == [(1,)]
-        assert _rows(store, f"SELECT name, model, {OWNER} FROM branches") == [
-            ("main", "fixture-model", "principal:a")
+        assert _rows(store, f"SELECT name, model, provider, agent_name, {OWNER} FROM branches") == [
+            ("main", "fixture-model", "fixture-provider", "fixture-agent", "principal:a")
         ]
-        assert _rows(store, "SELECT status FROM sessions") == [("running",)]
+        assert _rows(
+            store, "SELECT status, status_reason_code, model, provider, agent_name FROM sessions"
+        ) == [("running", "run.started.ok", "fixture-model", "fixture-provider", "fixture-agent")]
+    finally:
+        await handle.close()
+
+
+@pytest.mark.parametrize("share_db", [True, False], ids=["shared", "not-shared"])
+async def test_native_agent_setup_reaches_no_store_beside_its_own(tmp_path, monkeypatch, share_db):
+    """Natively the setup handlers, handed the run's handle, open no process-wide store either,
+    and the rows carry the same provenance and started reason as before."""
+    from lionagi.cli import _runs
+    from lionagi.session.branch import Branch
+
+    handle = StateDB(tmp_path / "native.db")
+    await handle.open()
+
+    async def native_store(*_args, **_kwargs):
+        return handle
+
+    monkeypatch.setattr(_runs, "_open_shared_db", native_store)
+    lookups = _record_shared_store_lookups(monkeypatch)
+    monkeypatch.setattr(
+        "lionagi.cli.kill.current_pid_markers",
+        lambda: {
+            "pid": 1,
+            "pid_create_time": 0.0,
+            "pid_host": "test",
+            "pid_boot_time": 0.0,
+            "process_identity_mode": "local",
+        },
+    )
+    try:
+        branch = Branch(name="main")
+        ctx = await _runs.setup_agent_persist(
+            branch,
+            agent_name="fixture-agent",
+            model="fixture-model",
+            provider="fixture-provider",
+            project="fixture-project",
+            share_db=share_db,
+        )
+
+        assert ctx is not None
+        assert lookups == []
+        session = await handle.get_session(ctx["session_id"])
+        assert (session["status"], session["status_reason_code"]) == ("running", "run.started.ok")
+        assert (session["model"], session["provider"], session["agent_name"]) == (
+            "fixture-model",
+            "fixture-provider",
+            "fixture-agent",
+        )
+        assert session["started_at"] is not None
+        row = await handle.get_branch(str(branch.id))
+        assert (row["model"], row["provider"], row["agent_name"]) == (
+            "fixture-model",
+            "fixture-provider",
+            "fixture-agent",
+        )
     finally:
         await handle.close()
 

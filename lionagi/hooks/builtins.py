@@ -53,10 +53,16 @@ async def persist_session_start(
     db: Any = None,
     **_unused: Any,
 ) -> None:
-    """Write the session provenance set + open the lifecycle window."""
+    """Write the session provenance set + open the lifecycle window.
+
+    A run that hands its own handle to this handler on the event has written the session row
+    with every one of these fields when it created it, so the handler writes nothing. Emitted
+    without a handle (a direct bus emit), it writes them as before."""
     from lionagi.state.db import SESSION_TERMINAL_STATUSES
     from lionagi.state.reasons import RunReasons
 
+    if db is not None:
+        return
     db = await _db(db)
     row = await db.get_session(session_id)
     if row is None:
@@ -176,7 +182,12 @@ async def persist_branch_provenance(
     db: Any = None,
     **_unused: Any,
 ) -> None:
-    """Persist per-branch model / provider / agent_name provenance."""
+    """Persist per-branch model / provider / agent_name provenance.
+
+    A run that hands its own handle to this handler on the event created the branch row with
+    these fields, so the handler writes nothing; emitted without a handle, it writes them."""
+    if db is not None:
+        return
     db = await _db(db)
     await db.update_branch(
         branch_id,

@@ -1933,10 +1933,10 @@ async def setup_agent_persist(
 
             from lionagi.hooks.bus import HookPoint
 
-            # The session and branch rows above already carry every field these handlers
-            # write, so no store handle is handed to them: their writes would repeat what
-            # this setup committed, and in compatibility mode a repeated write needs profile
-            # grants and an operation name the setup itself does not require.
+            # The run's own handle goes with both emits, as with the teardown's. The session
+            # and branch rows above already carry every field the default handlers write, so
+            # handed a handle they write nothing: no process-wide store is reached, and no
+            # repeated write needs a grant this setup does not.
             await session.hooks.emit(
                 HookPoint.SESSION_START,
                 session_id=session_id,
@@ -1946,6 +1946,7 @@ async def setup_agent_persist(
                 agent_name=agent_name,
                 agent_hash=_provenance.agent_definition_hash(agent_name),
                 invocation_id=invocation_id,
+                db=db,
             )
             await session.hooks.emit(
                 HookPoint.BRANCH_CREATE,
@@ -1953,6 +1954,7 @@ async def setup_agent_persist(
                 model=model,
                 provider=provider,
                 agent_name=agent_name,
+                db=db,
             )
 
         new_msg_ids: list = []

@@ -68,7 +68,9 @@ terminal status is written after them. Every other failed signal write is still 
 before.
 A lifecycle emit a run makes hands the run's own open handle to the default
 handlers, so each writes through that handle and meets whatever the store
-requires of the run; an emit that carries no handle falls back to the store
+requires of the run (the `SESSION_START` and `BRANCH_CREATE` handlers, handed
+the agent setup's handle, write nothing: the rows the setup created already
+carry what they would write); an emit that carries no handle falls back to the store
 looked up by its URL, where a registered compatibility handle is returned ahead
 of a native one. A refusal a handler *raises* is raised by the emit as any
 handler's refusal is; a refusal the signal sink *keeps* (the store declined a
