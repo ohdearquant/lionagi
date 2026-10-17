@@ -3586,7 +3586,7 @@
               "nargs": null,
               "default": "127.0.0.1",
               "choices": null,
-              "help": "Host to bind (default: 127.0.0.1)"
+              "help": "Host to bind (default: 127.0.0.1). --docker also publishes the container port on this host, so anything else there exposes the daemon to that interface. This is an IP address, not an address with a port: the port is --port, and a value carrying a port is refused."
             },
             {
               "option_strings": [
@@ -3641,7 +3641,7 @@
               "nargs": 0,
               "default": false,
               "choices": null,
-              "help": "Run the bundled frontend + backend via Docker"
+              "help": "Run the bundled frontend + backend via Docker. The port is published on --host (loopback by default)"
             },
             {
               "option_strings": [
@@ -3713,7 +3713,7 @@
                   "nargs": null,
                   "default": "==SUPPRESS==",
                   "choices": null,
-                  "help": "Host to bind (default: 127.0.0.1)"
+                  "help": "Host to bind (default: 127.0.0.1). --docker also publishes the container port on this host, so anything else there exposes the daemon to that interface. This is an IP address, not an address with a port: the port is --port, and a value carrying a port is refused."
                 },
                 {
                   "option_strings": [
@@ -3768,7 +3768,7 @@
                   "nargs": 0,
                   "default": "==SUPPRESS==",
                   "choices": null,
-                  "help": "Run the bundled frontend + backend via Docker"
+                  "help": "Run the bundled frontend + backend via Docker. The port is published on --host (loopback by default)"
                 },
                 {
                   "option_strings": [
@@ -6099,7 +6099,7 @@
                   "nargs": null,
                   "default": null,
                   "choices": null,
-                  "help": "JSON merged key-by-key into the invocation's existing metadata, so anything written during the run survives unless this overwrites that key."
+                  "help": "JSON merged key-by-key into the invocation's existing metadata as an RFC 7396 merge patch, so anything written during the run survives unless this overwrites that key. A nested object merges into the stored object rather than replacing it, and a key set to null is removed. A close naming a different status than the stored one records neither the status nor this payload."
                 }
               ],
               "subparsers": {}

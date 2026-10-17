@@ -6,10 +6,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from lionagi._errors import ProviderStreamError
 from lionagi.protocols.generic.event import EventStatus
 from lionagi.service.connections.api_calling import APICalling
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
+from lionagi.service.types.stream_chunk import StreamChunk
 
 
 class TestAPICalling:
@@ -154,6 +156,55 @@ class TestAPICalling:
                 chunks.append(chunk)
 
         assert len(chunks) >= 2
+        assert api_call.status == EventStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_a_stream_whose_provider_reports_the_call_failed_ends_failed(
+        self, sample_payload, sample_headers, mock_endpoint
+    ):
+        sample_payload["stream"] = True
+        api_call = APICalling(
+            payload=sample_payload, headers=sample_headers, endpoint=mock_endpoint
+        )
+        failed = mock_endpoint._line_to_stream_chunk(
+            'data: {"type":"response.failed","response":{"id":"r1",'
+            '"error":{"code":"server_error","message":"upstream"}}}'
+        )
+        after = mock_endpoint._line_to_stream_chunk(
+            'data: {"choices":[{"delta":{"content":"tail"}}]}'
+        )
+
+        async def mock_stream():
+            yield failed
+            yield after
+
+        with patch.object(mock_endpoint, "stream", return_value=mock_stream()):
+            chunks = [chunk async for chunk in api_call.stream()]
+
+        # Every chunk still reaches the consumer; the call fails once the stream ends.
+        assert chunks == [failed, after]
+        assert api_call.status == EventStatus.FAILED
+        error = api_call.execution.error
+        assert isinstance(error, ProviderStreamError)
+        assert "upstream" in str(error)
+        assert error.details["event"]["type"] == "response.failed"
+
+    @pytest.mark.asyncio
+    async def test_an_error_chunk_the_endpoint_did_not_mark_leaves_the_call_completed(
+        self, sample_payload, sample_headers, mock_endpoint
+    ):
+        # A CLI endpoint builds its own chunks; only the HTTP converter marks a call failure.
+        sample_payload["stream"] = True
+        api_call = APICalling(
+            payload=sample_payload, headers=sample_headers, endpoint=mock_endpoint
+        )
+
+        async def mock_stream():
+            yield StreamChunk(type="error", content="Reconnecting... 1/5", is_error=True)
+
+        with patch.object(mock_endpoint, "stream", return_value=mock_stream()):
+            [chunk async for chunk in api_call.stream()]
+
         assert api_call.status == EventStatus.COMPLETED
 
     def test_cache_control_handling(self, sample_payload, sample_headers, mock_endpoint):
