@@ -650,10 +650,10 @@ idempotency identity `(attempt, boundary, subject, subscriber, fact range)`: rep
 execution attempt reuses its run identity, and retrying a known failed execution creates the next
 attempt under the same wake identity, so deduplication spans the attempts even though delivery may
 repeat. That is the practice `enqueue_dispatch` already uses for its `dedup_key`, extended from one
-dispatch to one wake (`lionagi/dispatch/outbox.py:171-217`). The outbox row's persistence is not what
+dispatch to one wake (`lionagi/dispatch/outbox.py:159-205`). The outbox row's persistence is not what
 `retryable` copies: `enqueue_dispatch` inserts a row unconditionally
-(`lionagi/dispatch/outbox.py:219`), acknowledgement is the opt-in (`:178`), and the only per-call
-bound is `max_attempts` (`:179`).
+(`lionagi/dispatch/outbox.py:207`), acknowledgement is the opt-in (`:166`), and the only per-call
+bound is `max_attempts` (`:167`).
 
 A failed execution is not terminal delivery. `state/` owns subscription/source scope, cursor,
 frozen batch membership and payload, filter version, execution attempts, claim lease, next retry,
@@ -662,7 +662,7 @@ the first. Failure retains the batch and cursor until retry succeeds or the boun
 guarded transaction records success or durable dead-letter and advances the cursor. Each batch is
 persisted on its own, and a dead-letter row is re-queueable regardless of cursor position: the
 shape the outbox already uses for an exhausted row, retained and re-queued by an operator override
-(`lionagi/dispatch/outbox.py:47`, `:518-535`, `:591-621`). Recovery scans unfinished batch rows as
+(`lionagi/dispatch/outbox.py:48`, `:506-523`, `:579-609`). Recovery scans unfinished batch rows as
 well as the source log.
 
 Queue depth per observing subscriber is declared and bounded. A full queue drops a `best_effort`
@@ -790,9 +790,9 @@ bound it cannot enforce. Omitted, `delivery` selects `retryable`, and registrati
 it cannot use fails explicitly rather than being silently downgraded to `best_effort`.
 `max_attempts` is the bound on the total automatic execution attempts of a failed woken run,
 including the first: the same kind of per-row attempt bound the dispatch outbox declares for its
-own row (`lionagi/dispatch/outbox.py:47`, whose default is 8), enforced the same way the outbox
+own row (`lionagi/dispatch/outbox.py:48`, whose default is 8), enforced the same way the outbox
 enforces its bound, by dead-lettering the row once it is spent and retaining it for an operator
-re-queue (`:518-535`, `:591-621`).
+re-queue (`:506-523`, `:579-609`).
 A wake carries its own identity, `(attempt, boundary, subject, subscriber, fact
 range)`, so the delivery a retry repeats is the delivery that was minted and not a fresh read of
 everything since; facts past the range belong to the next wake.

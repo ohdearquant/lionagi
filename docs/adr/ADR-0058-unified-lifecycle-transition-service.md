@@ -729,7 +729,7 @@ of this note recorded. `initialize_in_transaction` is reached through
 call sites in `lionagi/state/db.py` covering `session`, `schedule_run`, `invocation`, `show`, and
 `play`. Two policies are outside it: `team`, which has no creation path in `lionagi/state/db.py`
 at all, and `dispatch`, whose rows are inserted by a raw statement in
-`lionagi/dispatch/outbox.py:221` that never reaches the lifecycle service. Those two, plus the
+`lionagi/dispatch/outbox.py:209` that never reaches the lifecycle service. Those two, plus the
 remaining migration phases, are what is still open. Implementation is complete only when the
 phase gates pass. `Status: Accepted` records that the one-policy/one-service
 decision already has dependent implementation on main; `Implementation-status: partial` records
