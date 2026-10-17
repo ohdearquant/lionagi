@@ -78,8 +78,8 @@ compatibility mode `open()`:
   leaves SQLite's automatic PASSIVE checkpoint at its default; manual checkpoints refuse (D6);
 - disposes the engine and leaves the object unopened when admission fails, so a failed open cannot be
   reused as a writer;
-- keys any shared handle by URL, mode and profile, so a native and a compatibility handle on one file
-  are never the same object.
+- keys any shared handle by URL, mode, profile and owner, so a native and a compatibility handle on
+  one file, and two compatibility handles writing different owners, are never the same object.
 
 Read paths that only read (status, list, detail) open read-only regardless of mode.
 
