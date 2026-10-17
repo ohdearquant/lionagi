@@ -307,9 +307,9 @@ Code anchors: `lionagi/dispatch/outbox.py`; `lionagi/state/transitions.py`.
   it does not mean a consumer received, committed, or acknowledged the payload. A non-zero result
   uses stripped stderr or `exit <code>` and truncates the stored error to 2,000 characters; no
   rationale is recorded for that exact cap.
-- A ten-second timeout kills the subprocess and reports a timeout error. The timeout value is
-  inherited without a recorded transport benchmark. The additional five-second claim margin gives
-  the live attempt a short window beyond the configured timeout before crash recovery may reclaim.
+- A ten-second timeout kills the command's process group, the command and anything it started, and
+  reports a timeout error; a cancelled delivery kills the group too. The timeout value is inherited
+  without a recorded transport benchmark. The additional five-second claim margin gives the live attempt a short window beyond the configured timeout before crash recovery may reclaim.
 - No database transaction spans subprocess execution.
 
 **Why this way.** The claim makes attempt ownership durable while avoiding a database lock around an

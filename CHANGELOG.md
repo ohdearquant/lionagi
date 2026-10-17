@@ -159,6 +159,15 @@ project those rows ran under. To keep the project, name it in those members.
   synthesis branch are handed the server set the run resolved, including no set at all when the
   run found no config. A run that found none used to leave those branches to discover a config of
   their own, so the home `~/.lionagi/.mcp.json` reached them.
+- A dispatch notify command that ran past its timeout was killed as a single process, so anything
+  it started kept running, and nothing waited for the command to exit. On Python 3.10, where the timeout
+  raises `asyncio.TimeoutError` rather than the builtin `TimeoutError`, it was not killed at all
+  and was reported as an execution error with an empty message. A cancelled delivery also left it
+  running. A timeout now reports as a timeout on every supported version, and a timeout, a failed
+  exchange or a cancelled delivery kills the command's whole process group and waits for the
+  command to exit.
+- `li o ctl resolve` reports a busy `state.db` and exits unknown, as queueing a control does,
+  instead of failing with a timeout traceback.
 - `li monitor run` replaced the SIGINT and SIGTERM handlers with its own and never put them back,
   so in a process that called it they outlived the wait. It also replaced a handler installed
   outside Python, which can never be reinstalled. A SIGTERM that arrived during a poll escaped the

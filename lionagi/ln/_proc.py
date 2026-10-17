@@ -3,15 +3,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import os
 import secrets
 import signal
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
-from .concurrency import move_on_after, sleep
+from anyio.lowlevel import checkpoint_if_cancelled
+
+from .concurrency import move_on_after, shield, sleep
 
 # Two reads of a kernel tick clock for one process can differ in the last
 # place, so a recorded start time is compared to a live one within this. Two
@@ -714,3 +718,110 @@ async def aterminate_process_group(
         # can stall this one, with no timeout left to catch it.
         with move_on_after(grace), contextlib.suppress(Exception):
             await _await_child_exit(proc)
+
+
+async def _wait_proc(proc: Any, grace: float = 2.0) -> None:
+    """Wait at most *grace* seconds for a killed child to exit; never raises an error."""
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(proc.wait(), timeout=grace)
+
+
+def _spawn_witnesses(
+    proc: Any, leader_created: float | None, group_marker: str
+) -> tuple[tuple[int, float], ...]:
+    """Members that prove a spawned child's group is still the one it started.
+
+    The spawn marker lets a surviving member stand in for a leader that has already
+    exited, which is the usual case when the child returned while a process it started
+    still holds its pipes.
+    """
+    if leader_created is None:
+        return ()
+    return capture_group_witnesses(
+        proc,
+        expected_leader_created=leader_created,
+        expected_marker=group_marker,
+    )
+
+
+async def _end_spawned_group(proc: Any, leader_created: float | None, group_marker: str) -> None:
+    """Kill a spawned child and the process group it leads, then wait for the child.
+
+    The kill is sent before the first suspension point, so it reaches the group even
+    when the caller's task is being cancelled. The wait is shielded from a cancelled
+    scope; a second native cancellation can cut it short, and the event loop's child
+    watcher still reaps the killed child.
+    """
+    group_witnesses = _spawn_witnesses(proc, leader_created, group_marker)
+    await aterminate_process_group(proc, grace=None, group_witnesses=group_witnesses)
+    await shield(_wait_proc, proc)
+
+
+async def _spawn_in_group(
+    argv: Sequence[str], env: dict[str, str], group_marker: str
+) -> tuple[asyncio.subprocess.Process, float | None]:
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+        env=env,
+    )
+    return proc, observe_process_group_leader(
+        getattr(proc, "pid", None),
+        expected_marker=group_marker,
+    )
+
+
+def _end_abandoned_spawn(group_marker: str, spawn: asyncio.Future) -> None:
+    """Kill the group of a child whose caller was cancelled while it was being spawned.
+
+    Runs as the spawn task's done-callback, after the caller has already unwound, so
+    the kill is synchronous and the loop's child watcher reaps the child.
+    """
+    if spawn.cancelled() or spawn.exception() is not None:
+        return
+    proc, leader_created = spawn.result()
+    terminate_process_group(
+        proc,
+        grace=None,
+        group_witnesses=_spawn_witnesses(proc, leader_created, group_marker),
+    )
+
+
+async def communicate_in_process_group(
+    argv: Sequence[str], stdin: bytes, *, timeout: float
+) -> tuple[int | None, bytes, bytes]:
+    """Run *argv* in a session of its own, feed it *stdin*, and return its exit and output.
+
+    Whatever ends the exchange early -- the timeout, a failed exchange, a cancelled
+    caller, including one cancelled while the child is being started -- kills the
+    child's whole process group before the exception leaves, so neither the command nor
+    anything it started keeps running once it is given up on. The timeout raises the
+    event loop's timeout error, ``asyncio.TimeoutError`` before Python 3.11.
+    """
+    child_env, group_marker = prepare_process_group_env()
+    proc = None
+    leader_created = None
+    try:
+        # Shielded: the OS has started the child before the spawn call returns, so a
+        # cancellation landing inside it would otherwise lose the only handle to that
+        # child's group. The done-callback kills the group once the handle arrives.
+        spawn = asyncio.ensure_future(_spawn_in_group(argv, child_env, group_marker))
+        try:
+            proc, leader_created = await asyncio.shield(spawn)
+        except BaseException:
+            spawn.add_done_callback(partial(_end_abandoned_spawn, group_marker))
+            raise
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            proc.communicate(stdin), timeout=timeout
+        )
+    except BaseException:
+        if proc is not None:
+            await _end_spawned_group(proc, leader_created, group_marker)
+            # A scope cancelled during the shielded wait is delivered here, so it is
+            # not replaced by the error the caller turns this exception into.
+            await checkpoint_if_cancelled()
+        raise
+    return proc.returncode, stdout_bytes, stderr_bytes

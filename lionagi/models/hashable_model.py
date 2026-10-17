@@ -6,8 +6,6 @@ from typing_extensions import Self
 
 from .. import ln
 
-_DEFAULT_HASHABLE_SERIALIZER = None
-
 ConversionMode = Literal["python", "json", "db"]
 
 
@@ -68,16 +66,14 @@ class HashableModel(BaseModel):
         """Converts this Element to a JSON string."""
 
         dict_ = self._to_dict(**kw)
-        b_ = ln.json_dumpb(
+        return ln.json_dumps(
             dict_,
+            decode=decode,
             sort_keys=True,
             deterministic_sets=True,
             naive_utc=True,
             default=_get_default_hashable_serializer(),
         )
-        if decode:
-            return b_.decode("utf-8")
-        return b_
 
     @classmethod
     def from_json(cls, data: bytes | str, mode: ConversionMode = "json", **kwargs) -> Self:
@@ -89,15 +85,7 @@ class HashableModel(BaseModel):
 
 
 def _get_default_hashable_serializer():
-    global _DEFAULT_HASHABLE_SERIALIZER
-    if _DEFAULT_HASHABLE_SERIALIZER is None:
-        from lionagi.protocols.ids import Element
+    # Imported here: lionagi.protocols.generic imports this module while it loads.
+    from lionagi.protocols.generic.element import DEFAULT_ELEMENT_SERIALIZER
 
-        _DEFAULT_HASHABLE_SERIALIZER = ln.get_orjson_default(
-            order=[Element, BaseModel],
-            additional={
-                Element: lambda o: o.to_dict(),
-                BaseModel: lambda o: o.model_dump(mode="json"),
-            },
-        )
-    return _DEFAULT_HASHABLE_SERIALIZER
+    return DEFAULT_ELEMENT_SERIALIZER

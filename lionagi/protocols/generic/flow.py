@@ -40,16 +40,20 @@ class Flow(Element, Generic[E, P]):
     _progression_names: dict[str, UUID] = PrivateAttr(default_factory=dict)
     _lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
 
+    @staticmethod
+    def _check_progression_items(prog: Progression, item_ids: set[UUID]) -> None:
+        missing = set(prog) - item_ids
+        if missing:
+            raise ItemNotFoundError(
+                f"Progression '{prog.name}' references missing items: {missing}"
+            )
+
     @model_validator(mode="after")
     def _validate_referential_integrity(self) -> Self:
         """Validate all progression UUIDs exist in items pile."""
         item_ids = set(self.items.keys())
         for prog in self.progressions:
-            missing = set(prog) - item_ids
-            if missing:
-                raise ItemNotFoundError(
-                    f"Progression '{prog.name}' references missing items: {missing}"
-                )
+            self._check_progression_items(prog, item_ids)
         return self
 
     @staticmethod
@@ -116,11 +120,7 @@ class Flow(Element, Generic[E, P]):
 
         item_ids = set(items.keys())
         for prog in progressions:
-            missing = set(prog) - item_ids
-            if missing:
-                raise ItemNotFoundError(
-                    f"Progression '{prog.name}' references missing items: {missing}"
-                )
+            cls._check_progression_items(prog, item_ids)
 
         flow = cls.model_construct(
             items=items,

@@ -1201,6 +1201,24 @@ async def test_a_hand_resolution_falls_back_to_the_os_account_not_a_placeholder(
     assert getpass.getuser() in stored, f"no real identity was recorded: {stored!r}"
 
 
+def test_resolving_a_control_while_state_db_is_busy_reports_it(monkeypatch, caplog):
+    """A resolve that cannot write within the busy bound says so and exits unknown, as
+    queueing a control does, rather than escaping as a timeout traceback."""
+    from lionagi.cli.orchestrate import _control
+
+    async def held(**_):
+        await asyncio.sleep(5)
+        return "resolved", 0
+
+    monkeypatch.setattr(_control, "_DB_BUSY_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(_control, "_resolve_control_inner", held)
+    rc = _control.run_ctl_resolve(
+        argparse.Namespace(control_id="c" * 32, outcome="abandoned", actor=None)
+    )
+    assert rc == EXIT_UNKNOWN
+    assert "state.db busy" in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_a_refused_finalize_after_delivery_is_reported_not_swallowed(temp_db_path, caplog):
     """Somebody resolves the row while the continuation turn is running.
