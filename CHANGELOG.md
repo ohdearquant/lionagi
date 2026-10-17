@@ -150,6 +150,15 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Fixed
 
+- `li agent` warns when it hands a leg no MCP servers because no `.mcp.json` was found at or
+  above its directory and none was named. That path skipped the warning, so the leg started
+  without the servers its instructions assumed and nothing said so. `--no-mcp-config`, and a
+  named config listing no servers, start a leg with no servers silently; the named empty config
+  used to be reported as a set not carried to the provider.
+- On `li o flow` and `li o fanout`, the built-in orchestrator, casts-role workers and the fanout
+  synthesis branch are handed the server set the run resolved, including no set at all when the
+  run found no config. A run that found none used to leave those branches to discover a config of
+  their own, so the home `~/.lionagi/.mcp.json` reached them.
 - A dispatch notify command that ran past its timeout was killed as a single process, so anything
   it started kept running, and nothing waited for the command to exit. On Python 3.10, where the timeout
   raises `asyncio.TimeoutError` rather than the builtin `TimeoutError`, it was not killed at all
