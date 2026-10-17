@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
+import pytest
 import yaml
 from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 
@@ -256,6 +257,38 @@ def test_studio_docs_name_only_origins_the_daemon_allows(monkeypatch) -> None:
             named |= _named_origins(paragraph)
         unexpected = sorted(named - allowed)
         assert not unexpected, f"{name} names origins the daemon does not allow: {unexpected}"
+
+
+# The values a browser sends in Sec-Fetch-Site (Fetch Metadata Request Headers).
+_FETCH_SITE_VALUES = ("none", "same-origin", "same-site", "cross-site")
+_FETCH_SITE_RULE = re.compile(
+    r"judged by `Sec-Fetch-Site`:(?P<passes>.*?)\bpass;(?P<refused>.*?)\bneed\b", re.DOTALL
+)
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        DOCS / "guides/studio-getting-started.md",
+        DOCS / "concepts/studio-model.md",
+        ROOT / "apps/studio/frontend/HOSTING.md",
+    ],
+    ids=lambda page: page.name,
+)
+def test_studio_docs_state_the_fetch_site_rule_the_daemon_applies(page: Path) -> None:
+    """Each trust section names the Sec-Fetch-Site values that pass without a
+    bearer and those that need one; both lists must be what the daemon decides."""
+    from lionagi.studio.app import _fetch_site_accepted_without_origin
+
+    match = _FETCH_SITE_RULE.search(page.read_text())
+    assert match, f"{page.name} does not state the Sec-Fetch-Site rule"
+    passes = set(re.findall(r"`([a-z-]+)`", match["passes"]))
+    refused = set(re.findall(r"`([a-z-]+)`", match["refused"]))
+    accepted = {v for v in _FETCH_SITE_VALUES if _fetch_site_accepted_without_origin([v])}
+    assert passes == accepted, f"{page.name} says {sorted(passes)} pass; daemon: {sorted(accepted)}"
+    assert refused == set(_FETCH_SITE_VALUES) - accepted, (
+        f"{page.name} says {sorted(refused)} need the bearer"
+    )
 
 
 def test_operator_guide_names_the_shipped_auto_allow_control() -> None:

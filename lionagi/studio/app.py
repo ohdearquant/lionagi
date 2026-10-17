@@ -55,9 +55,11 @@ _REMOTE_ORIGIN_REFUSAL = (
 def _origin_accepted_without_token(origins: list[str], raw_host: str) -> bool:
     """Whether a request may use the API when no token is configured, by its Origin.
 
-    No Origin header (a command-line or scripted client, and a browser on some cross-site
-    GET requests) is accepted. A browser origin is accepted when its host is loopback
-    (``localhost``, 127.0.0.0/8 or ``::1``) on any port, or when it is the daemon's own
+    A request with no Origin header is accepted here and then judged by its
+    ``Sec-Fetch-Site`` header (``_fetch_site_accepted_without_origin``), because a
+    browser sends no Origin on some cross-site GET requests. A browser origin is accepted
+    when its host is loopback (``localhost``, 127.0.0.0/8 or ``::1``) on any port, or
+    when it is the daemon's own
     origin: its authority equals the request's Host, as for the SPA a daemon bound to
     another address serves itself. A request that carries an Origin from another site,
     ``null`` included, is refused. CORS only decides which pages may read a response; a
