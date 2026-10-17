@@ -187,7 +187,10 @@ describe("schedule summary refresh", () => {
     const legacy = schedule("legacy");
     delete legacy.recent_runs_summary;
     vi.mocked(listSchedules).mockResolvedValue({ schedules: [legacy] });
-    vi.mocked(listScheduleRuns).mockResolvedValue({ runs: [runViewRow("legacy")], has_next: false });
+    vi.mocked(listScheduleRuns).mockResolvedValue({
+      runs: [runViewRow("legacy")],
+      has_next: false,
+    });
     await act(async () => root.render(<Harness />));
     const summary = latest.schedules[0].recent_runs_summary;
     expect(summary?.status).toBe("available");
