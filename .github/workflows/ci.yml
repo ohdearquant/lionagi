@@ -449,6 +449,16 @@ jobs:
     - name: Run seeded-daemon e2e smoke tests
       working-directory: apps/studio/frontend
       run: npm run e2e
+    # The stop/resume test in the Operator suite has failed intermittently: after
+    # the page reloads, the daemon stops answering and every later request
+    # returns 502. The smoke step above runs it once, which is not enough to
+    # catch an intermittent failure there, so it is repeated three more times
+    # against the same build. Its own global setup boots a fresh seeded daemon
+    # and preview server on free ports, so this invocation starts cleanly on its
+    # own.
+    - name: Repeat the Operator stop/resume test
+      working-directory: apps/studio/frontend
+      run: npx playwright test e2e/operator.spec.ts -g "Operator streams, persists, stops, records a run, and resumes it" --repeat-each 3
     # The bundle also carries the daemon and preview server logs from
     # apps/studio/frontend/e2e-logs/, which is where a mid-run server failure
     # is explained.
@@ -462,6 +472,18 @@ jobs:
           apps/studio/frontend/test-results/
           apps/studio/frontend/e2e-logs/
         if-no-files-found: warn
+        retention-days: 7
+    # The daemon and preview server logs are uploaded on every run, so a passing
+    # run carries them too: a failure can be read against a run that passed, and
+    # a run without them is visible as a failed step rather than a missing file.
+    - name: Upload server logs
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: studio-e2e-server-logs
+        path: apps/studio/frontend/e2e-logs/
+        if-no-files-found: error
+        overwrite: true
         retention-days: 7
 
   # Detect which conditional-job inputs changed, to gate the jobs below.
