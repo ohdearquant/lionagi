@@ -5,9 +5,10 @@
 
 A call `stream()` creates is consumed by the generator, never by the executor's
 queue, while a call the caller appended with `Executor.append` and then passed
-in was queued at that append. Either way the stream must leave the queue and the
-pile consistent however it ends, otherwise the next call the queue forwards is
-one the pile no longer holds.
+in was queued at that append. Either way the stream must leave neither a queue
+entry nor a pile entry for its call however it ends: a pending id whose call the
+pile still holds is sent again by the next `forward()`, and a call left in the
+pile is held there for good.
 """
 
 from __future__ import annotations
@@ -69,6 +70,10 @@ async def _stream_once(model: iModel, tag: str = "stream") -> list:
     assert fake_stream.call_count == 1, (
         f"the fake transport served {fake_stream.call_count} stream request(s), expected 1"
     )
+    assert [chunk["choices"][0]["delta"]["content"] for chunk in chunks] == [
+        f"{tag} chunk 0",
+        f"{tag} chunk 1",
+    ], "the stream yielded chunks that are not its own"
     return chunks
 
 
@@ -229,7 +234,7 @@ async def test_a_stream_that_ends_while_an_invoke_waits_leaves_the_invoke_its_ow
 
 
 @pytest.mark.asyncio
-async def test_a_cancelled_stream_waiting_for_a_slot_leaves_no_pending_entry():
+async def test_a_cancelled_stream_waiting_for_a_slot_leaves_no_queue_or_pile_entry():
     model = _model(concurrency_limit=1)
     await model.executor.start()
     slot = model.executor.processor._concurrency_sem
@@ -259,7 +264,7 @@ async def test_a_cancelled_stream_waiting_for_a_slot_leaves_no_pending_entry():
 
 
 @pytest.mark.asyncio
-async def test_a_stream_whose_processor_fails_to_start_leaves_no_pending_entry():
+async def test_a_stream_whose_processor_fails_to_start_leaves_no_queue_or_pile_entry():
     model = _model()
 
     async def refused_start(*_args, **_kwargs):
@@ -282,8 +287,8 @@ async def test_a_run_stream_past_its_deadline_before_it_starts_leaves_nothing_qu
     # run() arms its deadline before the pre-call hooks run, so a hook that
     # outlasts the timeout ends the run before the stream starts. This test
     # calls the run() streaming path, ``_stream_with_liveness``, directly with
-    # an already-expired deadline: the call it creates must not be left for the
-    # next invoke() to send.
+    # an already-expired deadline: the call it creates must be left neither in
+    # the queue, where the next forward() would send it, nor in the pile.
     model = _model()
     with patch.object(model.endpoint, "stream", side_effect=_chunks(1)) as fake_stream:
         with pytest.raises(TimeoutError):
@@ -308,8 +313,8 @@ async def test_a_run_stream_past_its_deadline_before_it_starts_leaves_nothing_qu
 async def test_a_queued_call_cancelled_before_it_is_registered_leaves_the_queue_empty():
     # A caller may append its own call before streaming it, so the call holds a
     # pending entry from that append. A stream cancelled while the pile
-    # registration is still in flight must drop that entry, or the next
-    # forward() pops an id the pile no longer holds.
+    # registration is still in flight must drop that entry and leave the call
+    # out of the pile, so no later forward() sends a call nobody is waiting for.
     model = _model()
     api_call = await model.create_event(messages=MESSAGES)
     await model.executor.append(api_call)
@@ -340,7 +345,8 @@ async def test_a_queued_call_cancelled_before_it_is_registered_leaves_the_queue_
 @pytest.mark.asyncio
 async def test_a_queued_call_whose_processor_fails_to_start_leaves_the_queue_empty():
     # The caller's own append put the call in the queue before stream() took
-    # it, so a processor start that raises must not leave that entry behind.
+    # it, so a processor start that raises must leave neither that entry nor
+    # the call in the pile.
     model = _model()
     api_call = await model.create_event(messages=MESSAGES)
     await model.executor.append(api_call)
@@ -367,7 +373,8 @@ async def test_a_queued_call_whose_processor_fails_to_start_leaves_the_queue_emp
 @pytest.mark.asyncio
 async def test_a_queued_call_cancelled_while_waiting_for_a_slot_leaves_the_queue_empty():
     # As above, one concurrency limit and the caller's own append before the
-    # stream: the queue entry must not outlive a stream cancelled at the slot.
+    # stream: neither the queue entry nor the pile entry may outlive a stream
+    # cancelled at the slot.
     model = _model(concurrency_limit=1)
     await model.executor.start()
     real_slot = model.executor.processor._concurrency_sem

@@ -486,9 +486,9 @@ class iModel:  # noqa: N801
             api_call = await self.create_event(**kw)
         self._capture_routing_scope(api_call)
         # A call stream() creates is consumed by this generator, never by the
-        # executor's queue: it goes straight into the pile, because the next
-        # forward() on this executor would pop a queued id and look it up in the
-        # pile, which the teardown below has already emptied for it. A caller
+        # executor's queue: it goes into the pile with no pending entry, because
+        # forward() sends every pending id the pile still holds and would send
+        # this call a second time while the stream is consuming it. A caller
         # that appended the call before passing it in did put it in the queue at
         # that append, so the entry is dropped here; a forward() between the two
         # can still have sent it.
