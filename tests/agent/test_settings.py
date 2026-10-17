@@ -140,7 +140,7 @@ async def test_pre_hook_timeout_passes_spawn_bound_group_witnesses(monkeypatch):
     import asyncio
     from unittest.mock import AsyncMock, MagicMock
 
-    import lionagi.agent.settings as settings_mod
+    import lionagi.ln._proc as proc_mod
     from lionagi.agent.settings import _make_shell_hook
 
     mock_proc = MagicMock()
@@ -153,19 +153,19 @@ async def test_pre_hook_timeout_passes_spawn_bound_group_witnesses(monkeypatch):
     witnesses = ((9999, 10.0),)
     cleanup = AsyncMock()
     monkeypatch.setattr(
-        settings_mod,
+        proc_mod,
         "prepare_process_group_env",
         lambda env=None: ({"MARKED": "pre"}, "pre-token"),
     )
     monkeypatch.setattr(
-        settings_mod,
+        proc_mod,
         "observe_process_group_leader",
         lambda pid, *, expected_marker: (
             10.0 if (pid, expected_marker) == (9999, "pre-token") else None
         ),
     )
-    monkeypatch.setattr(settings_mod, "capture_group_witnesses", lambda *a, **k: witnesses)
-    monkeypatch.setattr(settings_mod, "aterminate_process_group", cleanup)
+    monkeypatch.setattr(proc_mod, "capture_group_witnesses", lambda *a, **k: witnesses)
+    monkeypatch.setattr(proc_mod, "aterminate_process_group", cleanup)
 
     hook = _make_shell_hook(["slow_guard"], "pre", "bash")
     with pytest.raises(PermissionError, match="timed out"):
@@ -184,7 +184,7 @@ async def test_post_hook_timeout_passes_spawn_bound_group_witnesses(monkeypatch)
     import asyncio
     from unittest.mock import AsyncMock, MagicMock
 
-    import lionagi.agent.settings as settings_mod
+    import lionagi.ln._proc as proc_mod
     from lionagi.agent.settings import _make_shell_hook
 
     mock_proc = MagicMock()
@@ -196,19 +196,19 @@ async def test_post_hook_timeout_passes_spawn_bound_group_witnesses(monkeypatch)
     witnesses = ((8888, 11.0),)
     cleanup = AsyncMock()
     monkeypatch.setattr(
-        settings_mod,
+        proc_mod,
         "prepare_process_group_env",
         lambda env=None: ({"MARKED": "post"}, "post-token"),
     )
     monkeypatch.setattr(
-        settings_mod,
+        proc_mod,
         "observe_process_group_leader",
         lambda pid, *, expected_marker: (
             11.0 if (pid, expected_marker) == (8888, "post-token") else None
         ),
     )
-    monkeypatch.setattr(settings_mod, "capture_group_witnesses", lambda *a, **k: witnesses)
-    monkeypatch.setattr(settings_mod, "aterminate_process_group", cleanup)
+    monkeypatch.setattr(proc_mod, "capture_group_witnesses", lambda *a, **k: witnesses)
+    monkeypatch.setattr(proc_mod, "aterminate_process_group", cleanup)
 
     hook = _make_shell_hook(["slow_notifier"], "post", "bash")
     # Post-hook swallows timeout; must not raise
@@ -227,17 +227,17 @@ def _patch_hook_spawn(monkeypatch, mock_proc, created, witnesses):
     import asyncio
     from unittest.mock import AsyncMock
 
-    import lionagi.agent.settings as settings_mod
+    import lionagi.ln._proc as proc_mod
 
     spawn = AsyncMock(return_value=mock_proc)
     cleanup = AsyncMock()
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
-    monkeypatch.setattr(settings_mod, "prepare_process_group_env", lambda env=None: ({}, "token"))
+    monkeypatch.setattr(proc_mod, "prepare_process_group_env", lambda env=None: ({}, "token"))
     monkeypatch.setattr(
-        settings_mod, "observe_process_group_leader", lambda pid, *, expected_marker: created
+        proc_mod, "observe_process_group_leader", lambda pid, *, expected_marker: created
     )
-    monkeypatch.setattr(settings_mod, "capture_group_witnesses", lambda *a, **k: witnesses)
-    monkeypatch.setattr(settings_mod, "aterminate_process_group", cleanup)
+    monkeypatch.setattr(proc_mod, "capture_group_witnesses", lambda *a, **k: witnesses)
+    monkeypatch.setattr(proc_mod, "aterminate_process_group", cleanup)
     return spawn, cleanup
 
 

@@ -116,5 +116,4 @@ class FirecrawlCrawlEndpoint(Endpoint):
         if config is None:
             kwargs.setdefault("serialize_by_alias", True)
             kwargs.setdefault("timeout", 120)
-            kwargs.setdefault("max_retries", 3)
         super().__init__(config=config, **kwargs)

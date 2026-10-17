@@ -8,7 +8,10 @@ with no daemon running.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -63,6 +66,90 @@ def _capture_argv_script(out_path: Path) -> list[str]:
         "{deliver_to}",
         "{payload}",
     ]
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _pid_reporting_template(tmp_path: Path) -> tuple[list[str], Path]:
+    """A notify template that starts a child holding its pipes, records both pids, and
+    then sleeps past any timeout the test gives it."""
+    pids_file = tmp_path / "pids"
+    script = tmp_path / "notify.py"
+    script.write_text(
+        "import os, subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        "with open(sys.argv[1] + '.tmp', 'w') as f:\n"
+        "    f.write(f'{os.getpid()} {child.pid}')\n"
+        "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
+        "time.sleep(60)\n"
+    )
+    return [sys.executable, str(script), str(pids_file), "{deliver_to}"], pids_file
+
+
+async def _gone(pids: list[int]) -> bool:
+    for _ in range(100):
+        if not any(_pid_alive(pid) for pid in pids):
+            return True
+        await asyncio.sleep(0.05)
+    return False
+
+
+async def test_a_notify_template_past_its_timeout_kills_its_process_group(tmp_path):
+    """``asyncio.wait_for`` raises ``asyncio.TimeoutError``, which is not the builtin
+    ``TimeoutError`` before Python 3.11, so the timeout branch must catch both; it names
+    the timeout, and by the time it returns the command and the child it started are
+    gone, the command reaped rather than left behind."""
+    from lionagi.dispatch.outbox import _exec_notify_template
+
+    template, pids_file = _pid_reporting_template(tmp_path)
+    pids: list[int] = []
+    try:
+        ok, error = await _exec_notify_template(
+            template, payload_json="{}", deliver_to="seat-1", timeout=2.0
+        )
+        assert ok is False
+        assert error.startswith("notify template timed out after 2.0s")
+        pids = [int(pid) for pid in pids_file.read_text().split()]
+        assert await _gone(pids)
+    finally:
+        for pid in pids:
+            if _pid_alive(pid):
+                os.kill(pid, signal.SIGKILL)
+
+
+async def test_cancelling_a_notify_delivery_kills_the_command_and_its_child(tmp_path):
+    """A cancelled caller does not leave the notify command or its child running."""
+    from lionagi.dispatch.outbox import _exec_notify_template
+
+    template, pids_file = _pid_reporting_template(tmp_path)
+    task = asyncio.create_task(
+        _exec_notify_template(template, payload_json="{}", deliver_to="seat-1", timeout=30.0)
+    )
+    pids: list[int] = []
+    try:
+        for _ in range(200):
+            if pids_file.exists():
+                break
+            await asyncio.sleep(0.05)
+        pids = [int(pid) for pid in pids_file.read_text().split()]
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert await _gone(pids)
+    finally:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+        for pid in pids:
+            if _pid_alive(pid):
+                os.kill(pid, signal.SIGKILL)
 
 
 # ── backoff ───────────────────────────────────────────────────────────────────

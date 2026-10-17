@@ -91,9 +91,9 @@ def test_schedule_reader_position_is_the_github_poll_cursor() -> None:
 
 
 def test_outbox_row_defaults_and_attempt_bound_anchors() -> None:
-    assert "DEFAULT_MAX_ATTEMPTS" in _line("lionagi/dispatch/outbox.py", 47)
-    assert "ack_required: bool = False" in _line("lionagi/dispatch/outbox.py", 178)
-    assert "max_attempts: int = DEFAULT_MAX_ATTEMPTS" in _line("lionagi/dispatch/outbox.py", 179)
+    assert "DEFAULT_MAX_ATTEMPTS" in _line("lionagi/dispatch/outbox.py", 48)
+    assert "ack_required: bool = False" in _line("lionagi/dispatch/outbox.py", 166)
+    assert "max_attempts: int = DEFAULT_MAX_ATTEMPTS" in _line("lionagi/dispatch/outbox.py", 167)
 
 
 def test_team_round_batches_pending_targets_per_completion() -> None:
@@ -101,13 +101,13 @@ def test_team_round_batches_pending_targets_per_completion() -> None:
         _line("lionagi/cli/orchestrate/_orchestration.py", 1378)
     )
     assert "def build_round_operations" in _line("lionagi/cli/orchestrate/_orchestration.py", 1414)
-    assert "def _on_team_op_complete" in _line("lionagi/cli/orchestrate/flow.py", 1988)
+    assert "def _on_team_op_complete" in _line("lionagi/cli/orchestrate/flow.py", 1987)
 
 
 def test_signal_rows_and_schedule_cursor_citations_point_at_their_code() -> None:
-    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 4954)
-    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 6767)
-    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 6792)
+    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 4961)
+    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 6774)
+    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 6799)
 
 
 # -- what the amendment now says ---------------------------------------------
@@ -127,8 +127,8 @@ def test_durable_subscriber_source_is_a_confirmed_session_signals_row() -> None:
     assert "never the in-memory emit" in flat
     assert "reaches `best_effort` subscribers only" in flat
     assert "lionagi/state/schema.sql:797-801" in flat
-    assert "lionagi/state/db.py:6767-6775" in flat
-    assert "lionagi/state/db.py:6792-6807" in flat
+    assert "lionagi/state/db.py:6774-6782" in flat
+    assert "lionagi/state/db.py:6799-6814" in flat
     assert "the cursor is a position in that sequence, read forward with `after_seq`" in flat
     assert "is not a committed row and is no durable subscriber's source" in flat
     assert "whose forward read defaults to 500 rows" in flat
@@ -144,7 +144,7 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     assert "Settlement is the exit of the invocation owning this subscription" in flat
     assert "A nested operation's `RunEnd` or `RunFailed` does not settle its parent" in flat
     assert "lionagi/session/branch.py:441-469" in flat
-    assert "lionagi/operations/run/run.py:817-828" in flat
+    assert "lionagi/operations/run/run.py:816-827" in flat
     assert "`unbind_db_persistence`" in flat
     assert "lionagi/session/observer.py:581-598" in flat
     assert "observer unbinding is cleanup, not settlement" in flat
@@ -225,8 +225,8 @@ def test_delivery_default_matches_the_outbox_tier_it_cites() -> None:
     assert "`best_effort` is an explicit volatile option with no durable cursor" in flat
     assert "docs/adr/ADR-0059-durable-dispatch-outbox.md:391`, `:609" in flat
     assert "`enqueue_dispatch` inserts a row unconditionally" in flat
-    assert "acknowledgement is the opt-in (`:178`)" in flat
-    assert "the only per-call bound is `max_attempts` (`:179`)" in flat
+    assert "acknowledgement is the opt-in (`:166`)" in flat
+    assert "the only per-call bound is `max_attempts` (`:167`)" in flat
 
 
 def test_d1_gains_a_durable_observing_subscriber_row() -> None:
@@ -250,11 +250,11 @@ def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are
     flat = _flat()
     assert "lionagi/cli/orchestrate/_orchestration.py:1378" in flat
     assert "lionagi/state/schema.sql:463" in flat
-    assert "lionagi/state/db.py:4954-4956" in flat
+    assert "lionagi/state/db.py:4961-4963" in flat
     assert "the store advances it only forward, so a stale write cannot move it back" in flat
     assert "ADR-0070, Accepted" in flat
     assert "per-completion batch of targets, not a per-subscriber position" in flat
-    assert "lionagi/cli/orchestrate/flow.py:1988-2033" in flat
+    assert "lionagi/cli/orchestrate/flow.py:1987-2032" in flat
     assert "It is one position per schedule, not per observing subscriber" in flat
 
 
@@ -349,7 +349,7 @@ def test_failure_advances_the_cursor_only_on_success_or_a_durable_dead_letter() 
     assert "`max_attempts` counts total automatic execution attempts, including the first" in flat
     assert "Failure retains the batch and cursor until retry succeeds" in flat
     assert "a dead-letter row is re-queueable regardless of cursor position" in flat
-    assert "lionagi/dispatch/outbox.py:47`, `:518-535`, `:591-621" in flat
+    assert "lionagi/dispatch/outbox.py:48`, `:506-523`, `:579-609" in flat
     row_four = next(line for line in text.splitlines() if line.startswith("| 4 |"))
     assert "advanced only on a batch's success or its durable dead-letter" in row_four
     assert "re-queueable irrespective of cursor position" in row_four

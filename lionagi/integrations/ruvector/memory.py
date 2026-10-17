@@ -12,6 +12,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 from uuid import UUID
 
+from lionagi.protocols.generic.element import ID
 from lionagi.protocols.graph.node import Node
 from lionagi.protocols.memory import MemoryItem, MemoryQuery
 
@@ -59,7 +60,7 @@ class RuVectorMemoryStore:
         if not isinstance(item, MemoryItem):
             raise TypeError("item must be a LionAGI MemoryItem")
         content = _text(item.content, self._store.max_content_bytes, "content")
-        item_id = UUID(str(item.id))
+        item_id = ID.get_id(item)
         created_at = float(item.created_at)
         if not math.isfinite(created_at):
             raise ValueError("created_at must be finite")
