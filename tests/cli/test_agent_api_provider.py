@@ -560,3 +560,51 @@ async def test_display_flags_on_a_resume_stay_off_the_api_request(leg):
     for payload in leg.payloads:
         assert "verbose_output" not in json.dumps(payload, default=str)
         assert "cli_display_theme" not in json.dumps(payload, default=str)
+
+
+def _failed_read_then_good_read() -> dict:
+    return _reply(
+        {
+            "analysis": "try the old name, then the notes",
+            "action_requests": [
+                {"function": "reader", "arguments": {"action": "read", "path": "missing.txt"}},
+                {"function": "reader", "arguments": {"action": "read", "path": "notes.txt"}},
+            ],
+            "action_strategy": "sequential",
+            "extension_needed": True,
+            "reason": {"title": "read", "content": "one of these holds the answer"},
+        }
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "khive_injection",
+    [True, {"writeback": {"enabled": True, "salience_cap": 0.4}}],
+    ids=["opt-in", "writeback-on"],
+)
+async def test_an_api_leg_recalls_from_khive_but_writes_no_read_output_back(
+    leg, monkeypatch, khive_injection
+):
+    import lionagi.tools.khive_injection as injection_mod
+
+    monkeypatch.delenv("LIONAGI_KHIVE_INJECTION", raising=False)
+    ops_seen: list[str] = []
+
+    async def call_khive(ops, mcp_config):
+        ops_seen.append(ops)
+        tool = ops.split("(", 1)[0]
+        result = [] if tool == "memory.recall" else {"id": "mem-1", "kind": "memory"}
+        return {"results": [{"ok": True, "tool": tool, "result": result}]}
+
+    monkeypatch.setattr(injection_mod, "_call_khive", call_khive)
+    profile = _profile(api_tools="read")
+    profile.khive_injection = khive_injection
+    leg.replies = [_failed_read_then_good_read(), _last_round(), _answer("the notes say hello")]
+
+    result, _, _, status, _ = await leg.run(profile)
+
+    assert (result, status) == ("the notes say hello", "completed")
+    assert any(op.startswith("memory.recall(") for op in ops_seen)
+    assert not any(op.startswith("memory.remember(") for op in ops_seen)
+    assert "hello from the notes" not in "".join(ops_seen)

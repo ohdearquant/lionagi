@@ -193,6 +193,19 @@ def _make_coding_preset(
     return AgentSpec.coding(cwd=cwd, effort=effort, system_prompt=system_prompt, role=role)
 
 
+def _recall_only(configured: object) -> object:
+    """A profile's ``khive_injection`` setting with writeback turned off.
+
+    An API leg runs its tools in this process, so writeback would receive the read
+    set's outputs and store file text in khive. Recall stays as the profile sets it.
+    """
+    if configured is True:
+        return {"writeback": {"enabled": False}}
+    if isinstance(configured, dict):
+        return {**configured, "writeback": {"enabled": False}}
+    return configured
+
+
 def _profile_api_launch(profile) -> dict | None:
     """The API tool loop a profile declares, or None when it declares none.
 
@@ -1062,6 +1075,8 @@ async def _run_agent(
                 )
             if profile is not None:
                 spec.khive_injection = getattr(profile, "khive_injection", None)
+                if api_launch is not None:
+                    spec.khive_injection = _recall_only(spec.khive_injection)
             # AgentSpec.coding()/compose() default lion_system=True regardless
             # of the profile's frontmatter — propagate an explicit opt-out.
             if profile is not None and not profile.lion_system:
