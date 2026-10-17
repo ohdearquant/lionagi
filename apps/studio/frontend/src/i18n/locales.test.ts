@@ -248,12 +248,14 @@ describe("messages — leaf-key parity across all 16 locales", () => {
   // all 16 locales, so they add nothing to the identity-leak baseline.
   // 1106 = 1105 + the Library's explicit clear-filter action.
   // 1105 = 1106 - empty.createWorkflow, a Library label no component reads.
-  // 1110 = 1105 + daemon.accessRequired (title, body, fix, command), the screen
-  // shown when a running daemon refuses the page, + the unavailable recent-run
-  // slice label. The prose leaves are natively translated in all 16; command is
-  // the literal `li studio`, which is attributed in the identity-leak baseline below.
-  it("en.json has 1110 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1110);
+  // 1113 = 1105 + daemon.accessRequired (title, body, fix, command), the screen
+  // shown when a running daemon refuses the page, + three labels that explain
+  // recorded usage, unavailable reads, and unknown start times, + the
+  // unavailable recent-run slice label. The prose leaves are natively
+  // translated in all 16; command is the literal `li studio`, which is
+  // attributed in the identity-leak baseline below.
+  it("en.json has 1113 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1113);
   });
 
   it.each(LOCALES.map((l) => l.code))(

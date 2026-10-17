@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -89,7 +90,15 @@ async def _resolve_session_by_branch_id(db: Any, entity_id: str) -> dict[str, An
     return await db.get_session(branch["session_id"])
 
 
-async def _resolve_session_by_run_id(db: Any, entity_id: str) -> dict[str, Any] | None:
+# A run id is `YYYYMMDDTHHMMSS-hex6` (`_runs._new_run_id`). Every character before the `T`
+# is a digit, and digits are valid hex, so a prefix that stops short of the `T` can also begin
+# an entity id, or simply be a number or a date. A prefix that reaches it cannot begin a UUID.
+_RUN_ID_THROUGH_T = re.compile(r"\d{8}T")
+
+
+async def _resolve_session_by_run_id(
+    db: Any, entity_id: str, *, prefix_through_t: bool = False
+) -> dict[str, Any] | None:
     """Fallback: resolve *entity_id* as a CLI run id to its most-recent session.
 
     Run ids are not primary keys `_util.resolve_entity` searches — they live
@@ -106,6 +115,9 @@ async def _resolve_session_by_run_id(db: Any, entity_id: str) -> dict[str, Any] 
     one is returned rather than assuming a 1:1 mapping. A prefix that fits
     more than one *distinct* run id raises `AmbiguousIdError`, for the same
     reason a colliding table prefix does: there is no correct row to prefer.
+
+    With *prefix_through_t*, a prefix resolves only once it reaches the `T` after
+    the date (ADR-0108, Amendment 2); the commands that act on a run ask for it.
     """
     entity_id = entity_id.strip()
     if not entity_id:
@@ -115,6 +127,8 @@ async def _resolve_session_by_run_id(db: Any, entity_id: str) -> dict[str, Any] 
     if exact:
         return max(exact, key=lambda s: s.get("updated_at") or 0)
 
+    if prefix_through_t and not _RUN_ID_THROUGH_T.match(entity_id):
+        return None
     run_ids = await _run_id_candidates(db, entity_id)
     if not run_ids:
         return None
@@ -187,7 +201,9 @@ async def _resolve_play_target(
     return ("session", row) if row is not None else None
 
 
-async def _resolve_any_target(db: Any, entity_id: str) -> tuple[str, dict[str, Any]] | None:
+async def _resolve_any_target(
+    db: Any, entity_id: str, *, run_prefix_through_t: bool = False
+) -> tuple[str, dict[str, Any]] | None:
     """`li o ctl status <id>` resolution: no kind scoping, id required (no
     latest). Falls back to branch_id, then run_id, after sessions/invocations/plays.
 
@@ -202,7 +218,11 @@ async def _resolve_any_target(db: Any, entity_id: str) -> tuple[str, dict[str, A
     Searching the run-id space last orders it, which is not the same as keeping
     it apart: a string that identifies both an entity and a run is ambiguous
     however late the second space is consulted, so that case is refused rather
-    than resolved.
+    than resolved, after an entity hit and after a branch hit alike.
+
+    *run_prefix_through_t* is passed by the commands that act on the answer:
+    their run-id prefixes must reach the `T` after the date (ADR-0108,
+    Amendment 2), so a number, a date or a label never acts on a run.
     """
     hit = await resolve_entity(db, entity_id, tables=("sessions", "invocations", "plays"))
     if hit is not None:
@@ -225,8 +245,15 @@ async def _resolve_any_target(db: Any, entity_id: str) -> tuple[str, dict[str, A
         return entity_type, row
     row = await _resolve_session_by_branch_id(db, entity_id)
     if row is not None:
+        also_runs = await _run_id_candidates(db, entity_id)
+        if also_runs:
+            raise AmbiguousIdError(
+                entity_id,
+                None,
+                [f"branch of session {row.get('id')}", *(f"run {r}" for r in also_runs)],
+            )
         return "session", row
-    row = await _resolve_session_by_run_id(db, entity_id)
+    row = await _resolve_session_by_run_id(db, entity_id, prefix_through_t=run_prefix_through_t)
     if row is not None:
         return "session", row
     return None
@@ -328,9 +355,11 @@ def _detect_degraded(
         return False, None
     if primary_session.get("num_turns") is not None:
         return False, None
-    phase = primary_session.get("current_phase")
-    detail = f"; current_phase={phase!r} never advanced to a terminal marker" if phase else ""
-    return True, f"status={status!r} but run-usage metrics (num_turns) were never recorded{detail}"
+    # The stored phase is deliberately not quoted here: a terminal row can still
+    # carry one when the row predates the phase clear, or when a writer that does
+    # not clear it ended the run, so it is not evidence about this record. The
+    # num_turns gap above is the signal.
+    return True, f"status={status!r} but run-usage metrics (num_turns) were never recorded"
 
 
 # ── View assembly ────────────────────────────────────────────────────────
@@ -369,6 +398,8 @@ async def _build_view(
             for c in await db.list_pending_session_controls(primary_session["id"])
         ]
 
+    pending_controls_note = _pending_controls_note(primary_session)
+
     status = row.get("status") or ""
     terminal, exit_class, exit_code = _classify(entity_type, status)
     degraded, degraded_reason = _detect_degraded(
@@ -379,7 +410,8 @@ async def _build_view(
     if primary_session is not None:
         model = primary_session.get("model")
         provider = primary_session.get("provider")
-        current_phase = primary_session.get("current_phase")
+        if not terminal and not _classify("session", primary_session.get("status") or "")[0]:
+            current_phase = primary_session.get("current_phase")
         last_activity = primary_session.get("last_message_at") or primary_session.get("updated_at")
     else:
         last_activity = row.get("updated_at")
@@ -431,9 +463,70 @@ async def _build_view(
         # that as never-landed would be the same fabricated negative the
         # teardown declines to write.
         "pending_controls": [
-            {**c, "never_landed": terminal and c.get("result") is None} for c in pending_controls
+            {
+                **c,
+                "never_landed": terminal and c.get("result") is None,
+                # Only a never-landed row needs a remedy, and the remedy is a
+                # property of the consumer, like the note above: an agent steer
+                # is drained by a leg's next turn boundary and reopened with
+                # `li agent -r`, while a flow/play control's consumer is the
+                # run's own DAG poller, which is gone with the run. Naming the
+                # agent command for a flow row would send its reader to one that
+                # cannot apply the control.
+                "remedy": (
+                    _never_landed_remedy(primary_session)
+                    if terminal and c.get("result") is None
+                    else None
+                ),
+            }
+            for c in pending_controls
         ],
+        "pending_controls_note": pending_controls_note,
     }
+
+
+def _never_landed_remedy(primary_session: dict[str, Any] | None) -> str | None:
+    """The one command that can still deliver a queued control, or ``None``.
+
+    ``None`` means no command this surface can name would apply it, so the
+    renderer prints none: the agent hint names a path only an agent run has.
+    """
+    if primary_session is None:
+        return None
+    if primary_session.get("invocation_kind") == "agent":
+        return "use `li agent -r`"
+    return None
+
+
+def _pending_controls_note(primary_session: dict[str, Any] | None) -> str | None:
+    """How a queued control would be delivered for this backing session.
+
+    The consumer is a property of the session kind, not of the queue: a
+    flow/play run applies controls through its DAG execution poller, an agent
+    run drains a steer at its next turn boundary. One sentence for every kind
+    would describe one of them wrongly, so the note is chosen here, from the
+    row, and the renderer prints what it is given. ``None`` means no consumer
+    this surface can name, and the renderer prints nothing.
+    """
+    if primary_session is None:
+        return None
+    kind = primary_session.get("invocation_kind")
+    if kind == "agent":
+        return "steers land as a continuation turn once the run's current turn ends"
+    if kind not in {"flow", "play"}:
+        return None
+    metadata = primary_session.get("node_metadata") or {}
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except (TypeError, ValueError):
+            metadata = {}
+    marker = metadata.get("flow_control_poller") if isinstance(metadata, dict) else None
+    if marker == "stopped":
+        return "the DAG execution poller has stopped; no queued control will be applied from now on"
+    return (
+        "flow/play controls wait for the DAG execution poller; none will be applied after it stops"
+    )
 
 
 def _fmt_ts(ts: float | None) -> str:
@@ -474,6 +567,8 @@ def _render_human(view: dict[str, Any]) -> str:
         lines.append("")
         if not view["terminal"]:
             lines.append(_dim("  -- pending controls --"))
+            if view.get("pending_controls_note"):
+                lines.append(f"  {view['pending_controls_note']}")
         elif any(
             str(c.get("result") or "").startswith("applying") for c in view["pending_controls"]
         ):
@@ -494,7 +589,9 @@ def _render_human(view: dict[str, Any]) -> str:
                 if view["terminal"]:
                     line += " — owner never reported back; outcome unknown"
             elif ctl.get("never_landed"):
-                line += "  never landed — use `li agent -r`"
+                line += "  never landed"
+                if ctl.get("remedy"):
+                    line += f" — {ctl['remedy']}"
             lines.append(line)
 
     if view["degraded"]:

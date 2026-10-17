@@ -84,4 +84,4 @@ result = await branch.operate(
 
 Next, follow the [orchestration progression](guides/orchestration.md), the
 [durable operations guide](guides/durable-operations.md), or the
-[Studio and schedules guide](guides/studio.md).
+[Studio getting-started guide](guides/studio-getting-started.md).

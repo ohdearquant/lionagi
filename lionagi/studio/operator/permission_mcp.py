@@ -4,8 +4,10 @@
 
 Claude invokes ``request_permission`` before gated native tool work. The helper
 persists the exact tool/input as an Operator proposal and polls the shared
-StateDB until the daemon's authenticated human-decision endpoint records allow
-or deny. Nothing is auto-approved in this subprocess.
+StateDB until the daemon's decision routes record allow or deny; in open mode
+those routes admit any process that can reach the daemon's listener, including
+programs run by other local accounts. Nothing is auto-approved in this
+subprocess.
 """
 
 from __future__ import annotations
