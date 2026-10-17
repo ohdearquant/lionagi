@@ -233,8 +233,8 @@ def _sql_tokens(
             after_references = bool(tokens) and tokens[-1] == (_WORD, "references")
             if (in_parent_columns or after_references) and not verbatim:
                 # SQLite's grammar takes a string in a REFERENCES column list, and the string right
-                # after REFERENCES, as the name it spells, alone among the places a string may
-                # stand.
+                # after REFERENCES, as the name it spells; these are the only places this reader
+                # takes a string as a name.
                 name = sql[i + 1 : j].replace("''", "'")
                 tokens.append((_IDENT, _spelled_name(name) if spelled else _fold(name)))
             else:
@@ -544,11 +544,12 @@ class TableShape:
     table's definition. A column's ``default`` is compared as written, since SQLite stores the
     word as given: ``DEFAULT open`` and ``DEFAULT Open`` differ.
     A virtual table's ``definitions`` are instead its module's name, read between its quotes and
-    folded, and the arguments' tokens in order, spacing aside: SQLite looks a module up without
-    regard to ASCII case and hands it each argument's text, which the module reads as it chooses,
-    so a reordered or repeated argument is another definition, while ``USING fts4("x"(1))``
-    differs from ``USING fts4(x(1))``, ``USING "fts4"(x)`` is ``USING fts4(x)``, and ``fts3(x)``
-    differs from ``fts4(x)``, whose columns read alike.
+    folded, and the text of each argument in order, the spacing around an argument aside: SQLite
+    looks a module up without regard to ASCII case and hands it each argument's text, which the
+    module reads as it chooses, so a reordered or repeated argument is another definition, and so
+    is ``content= 'events'`` against ``content='events'``, while ``USING fts4("x"(1))`` differs
+    from ``USING fts4(x(1))``, ``USING "fts4"(x)`` is ``USING fts4(x)``, and ``fts3(x)`` differs
+    from ``fts4(x)``, whose columns read alike.
     Values compare as :func:`read_closure` spells them, so a profile's shapes come from reading
     a store built by the managing application.
     """
@@ -711,13 +712,73 @@ def _definitions(tokens: list[tuple[str, str]]) -> frozenset[str]:
     return frozenset(found)
 
 
+def _argument_texts(sql: str) -> list[str]:
+    """Each module argument of a ``CREATE VIRTUAL TABLE`` as SQLite hands it to the module.
+
+    SQLite gives the module the text of each argument from its first token to its last, exactly as
+    written, so the spacing and comments around an argument are not part of it while those inside
+    it are. The argument list is the statement's first parenthesis outside a quoted token or a
+    comment; an argument with no token is dropped, as SQLite drops it.
+    """
+    texts: list[str] = []
+    first = last = None
+    depth = -1
+    i, n = 0, len(sql)
+    while i < n:
+        ch = sql[i]
+        if ch in " \t\n\v\f\r":
+            i += 1
+            continue
+        if sql.startswith("--", i):
+            end = sql.find("\n", i)
+            i = n if end < 0 else end + 1
+            continue
+        if sql.startswith("/*", i):
+            end = sql.find("*/", i + 2)
+            i = n if end < 0 else end + 2
+            continue
+        if ch in "'\"`[":
+            close = "]" if ch == "[" else ch
+            j = i + 1
+            while j < n and not (sql[j] == close and (close == "]" or sql[j + 1 : j + 2] != close)):
+                j += 1 if close == "]" or sql[j] != close else 2
+            end = min(j + 1, n)
+        else:
+            end = i + 1
+            if depth == -1:
+                if ch == "(":
+                    depth = 0
+                i = end
+                continue
+            if ch == "(":
+                depth += 1
+            elif ch == ")" and depth == 0:
+                break
+            elif ch == ")":
+                depth -= 1
+            elif ch == "," and depth == 0:
+                if first is not None:
+                    texts.append(sql[first:last])
+                first = last = None
+                i = end
+                continue
+        if depth >= 0:
+            first = i if first is None else first
+            last = end
+        i = end
+    if first is not None:
+        texts.append(sql[first:last])
+    return texts
+
+
 def _module_arguments(sql: str) -> frozenset[str]:
-    """A virtual table's module and the tokens of each of its arguments, for ``definitions``.
+    """A virtual table's module and the text of each of its arguments, for ``definitions``.
 
     The module's name is read between its quotes and folded, since SQLite looks a module up without
-    regard to ASCII case, so ``USING "fts4"(x)`` equals ``USING fts4(x)``. The arguments' tokens
-    in order are compared, spacing aside, since SQLite hands the module each argument's text, which
-    the module reads as it chooses.
+    regard to ASCII case, so ``USING "fts4"(x)`` equals ``USING fts4(x)``. Each argument is compared
+    as the text SQLite hands the module (:func:`_argument_texts`), which the module reads as it
+    chooses: fts4 reads ``content='events'`` as the table ``events`` and ``content= 'events'`` as a
+    table whose name starts with a space and a quote.
     """
     tokens = _sql_tokens(sql, verbatim=True)
     # The module's argument list is the statement's first parenthesis: a table name holding one is
@@ -727,13 +788,17 @@ def _module_arguments(sql: str) -> frozenset[str]:
         return frozenset()
     kind, text = tokens[start - 1]
     found = "using " + _unquoted(kind, text)
-    # The arguments are one ordered tuple, each in one spelling from its own tokens: a reordered or
-    # repeated argument is another definition, while the spacing between the tokens of one is not,
+    # The arguments are one ordered tuple: a reordered or repeated argument is another definition,
     # and an empty argument list is no argument list.
-    arguments = [_joined(group) for group in _groups(tokens, start)]
+    arguments = _argument_texts(sql)
     if arguments:
         found += " (" + ", ".join(arguments) + ")"
     return frozenset({found})
+
+
+# The full-text modules whose only argument naming a table is ``content=``; every other argument
+# of theirs is a column, an option word or an option's value.
+_FTS_MODULES = frozenset({"fts3", "fts4", "fts5"})
 
 
 def _virtual_table_names(tokens: list[tuple[str, str]]) -> set[str]:
@@ -742,16 +807,21 @@ def _virtual_table_names(tokens: list[tuple[str, str]]) -> set[str]:
     A virtual table touches the closure when its ``CREATE VIRTUAL TABLE`` statement names a table
     of the closure among its module arguments, as ``content='events'`` names ``events``. Only the
     argument list is read, so the statement's keywords, the table's own name and the module's name
-    name nothing in the store. Every token of an argument counts, a bare word, a single-quoted
-    string and a double-quoted name alike, since a quoted token may be read either way. An empty
-    set means the statement is not a ``CREATE VIRTUAL TABLE`` or names no argument.
+    name nothing in the store. For fts3, fts4 and fts5 only the value of a ``content=`` argument
+    names a table, so a column or ``content_rowid='seq'`` names none. Any other module reads its
+    arguments as it chooses, so every token of every argument counts, a bare word, a single-quoted
+    string and a double-quoted name alike, since a quoted token may be read either way.
     """
-    if _top_level_words(tokens)[:3] != ["create", "virtual", "table"]:
-        return set()
     start = next((i for i, token in enumerate(tokens) if token == (_PUNCT, "(")), None)
-    if start is None:
+    if start is None or start < 1:
         return set()
-    return _names(tokens[start:])
+    if _unquoted(*tokens[start - 1]) not in _FTS_MODULES:
+        return _names(tokens[start:])
+    found: set[str] = set()
+    for group in _groups(tokens, start):
+        if len(group) > 2 and _unquoted(*group[0]) == "content" and group[1] == (_PUNCT, "="):
+            found |= _names(group[2:])
+    return found
 
 
 def _indexed_terms(index_sql: str, columns: frozenset[str]) -> list[str]:
@@ -895,18 +965,39 @@ def _read_closure(fetch: _Fetch, tables: Iterable[str]) -> Closure:
         if key[0] in ("trigger", "view") and row[3]
     }
     virtual = {
-        key[1]: names
+        key[1]: _virtual_table_names(tokens)
         for key, row in entries.items()
-        if key[0] == "table" and row[3] and (names := _virtual_table_names(_sql_tokens(row[3])))
+        if key[0] == "table"
+        and row[3]
+        and _top_level_words(tokens := _sql_tokens(row[3]))[:3] == ["create", "virtual", "table"]
+    }
+    # A module keeps a virtual table's data in shadow tables named after it (``docs_data`` for
+    # ``docs``), which it writes whenever the virtual table is written, so a trigger on one runs on
+    # that write. Every ordinary table named ``<virtual table>_...`` is taken as one: the module
+    # alone knows its suffixes, and taking more tables only refuses more stores.
+    shadows = {
+        name: {
+            other
+            for kind, other in entries
+            if kind == "table" and other.startswith(name + "_") and other not in virtual
+        }
+        for name in virtual
     }
     # A table is named with its ASCII letters in either case, as SQLite matches it, and a quoted
     # token may be read as a name or as a string literal depending on its scope and on the
     # connection's setting, so every spelling a body carries counts: an object that may name a
     # closure table or another closure object belongs to the closure, and what that object reads
-    # joins in turn, until nothing new joins. The body itself is kept as written.
-    known = {name for _, name in entries if not name.startswith("sqlite_")}
+    # joins in turn, until nothing new joins. Only a table or a view is read through a body: an
+    # index or a trigger is never read by name, so a word that names one pulls nothing in. The
+    # body itself is kept as written.
+    known = {
+        name
+        for kind, name in entries
+        if kind in ("table", "view") and not name.startswith("sqlite_")
+    }
     inside = set(wanted)
     joined: set[tuple[str, str]] = set()
+    joined_virtual: set[str] = set()
     while True:
         found = {
             key for key, names in reads.items() if key not in joined and inside.intersection(names)
@@ -914,19 +1005,23 @@ def _read_closure(fetch: _Fetch, tables: Iterable[str]) -> Closure:
         # An object whose own name the closure already holds joins too: what a closure object
         # reads is part of the closure, and that includes an object it reads by name.
         found |= {key for key in reads if key not in joined and key[1] in inside}
-        # A virtual table whose arguments name a closure table is part of the closure too, and, its
-        # name being a table of the closure, is compared as one.
+        # A virtual table joins when its arguments name a closure table, and when the closure
+        # already holds it however it got there (named in *tables*, read by a view or a trigger).
+        # Its name being a table of the closure, it is compared as one.
         found_virtual = {
-            name for name, names in virtual.items() if name not in inside and inside & names
+            name
+            for name, names in virtual.items()
+            if name not in joined_virtual and (name in inside or inside & names)
         }
         if not found and not found_virtual:
             break
         joined |= found
-        inside |= found_virtual
+        joined_virtual |= found_virtual
         for name in found_virtual:
             # What the virtual table's arguments name joins with it, as what a view's body names
-            # does: the closure follows every object it reads.
-            inside |= virtual[name] & known
+            # does, and so do its shadow tables: the closure follows every object it reads.
+            inside.add(name)
+            inside |= (virtual[name] & known) | shadows[name]
         for key in found:
             inside |= reads[key] & known
     shapes = [

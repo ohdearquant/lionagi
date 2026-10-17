@@ -2027,7 +2027,8 @@ async def test_a_single_quoted_collation_after_a_references_list_is_still_a_lite
 def _virtual_table(statement: str):
     with closing(sqlite3.connect(":memory:")) as conn:
         conn.execute(statement)
-        (table,) = read_closure(conn, ["notes"]).tables
+        # The module's shadow tables join the closure with it; the shape asked for is its own.
+        (table,) = [t for t in read_closure(conn, ["notes"]).tables if t.name == "notes"]
     return table
 
 
@@ -2035,7 +2036,7 @@ def _virtual_shape(statement: str, name: str = "docs"):
     """The shape ``read_closure`` reads of the one table *statement* creates, named *name*."""
     with closing(sqlite3.connect(":memory:")) as conn:
         conn.execute(statement)
-        (table,) = read_closure(conn, [name]).tables
+        (table,) = [t for t in read_closure(conn, [name]).tables if t.name == name]
     return table
 
 
@@ -2076,7 +2077,7 @@ _VIRTUAL_TABLES_NAMING_EVENTS = {
     ),
     "a double-quoted content": 'CREATE VIRTUAL TABLE docs USING fts5(body, content="events");\n',
     "a bare content": "CREATE VIRTUAL TABLE docs USING fts5(body, content=events);\n",
-    "a bare column argument": "CREATE VIRTUAL TABLE docs USING fts4(events);\n",
+    "another module's bare argument": "CREATE VIRTUAL TABLE docs USING fts5vocab(events, row);\n",
 }
 
 
@@ -2182,9 +2183,9 @@ _VIRTUAL_ARGUMENT_PAIRS = {
 def test_a_virtual_table_with_its_arguments_reordered_or_repeated_is_another_table(
     reference, store
 ):
-    """SQLite hands the module the arguments' text, so the arguments' tokens in order are part of
-    the table's definition: the same tokens in another order, or one twice, are another table,
-    while the spacing between the tokens of one argument is not."""
+    """SQLite hands the module the arguments' text, so the arguments in order are part of
+    the table's definition: the same arguments in another order, or one twice, are another table,
+    while the spacing around an argument is not."""
     expected = _virtual_shape(f"CREATE VIRTUAL TABLE docs USING {reference}")
     observed = _virtual_shape(f"CREATE VIRTUAL TABLE docs USING {store}")
     assert expected.options == observed.options == frozenset({"virtual"})
@@ -2226,6 +2227,122 @@ async def test_a_quoted_module_name_is_the_module_name(tmp_path):
     store_other = _store(tmp_path / "other.db", _SCHEMA + other)
     reason = await _refused_against(reference, store_other)
     assert "definitions of docs" in reason
+
+
+async def test_an_argument_spaced_otherwise_inside_is_another_definition(tmp_path):
+    """SQLite hands the module each argument's text from its first token to its last, and fts4
+    reads ``content= 'events'`` as a table whose name starts with a space and a quote, so the
+    spacing inside an argument is part of the definition while the spacing around one is not."""
+    tight = "CREATE VIRTUAL TABLE docs USING fts4(body, content='events');\n"
+    spaced = "CREATE VIRTUAL TABLE docs USING fts4(body, content= 'events');\n"
+    around = "CREATE VIRTUAL TABLE docs USING fts4( body ,content='events' /* note */ );\n"
+    reference = _store(tmp_path / "reference.db", _SCHEMA + tight)
+    store = _store(tmp_path / "managed.db", _SCHEMA + spaced)
+    reason = await _refused_against(reference, store)
+    assert "definitions of docs" in reason
+    same = _store(tmp_path / "around.db", _SCHEMA + around)
+    await (await _open(same, _profile(reference))).close()
+
+
+# A virtual table the closure reaches by any route brings in what it reads
+
+
+_DOCS_OVER_OTHER = (
+    "CREATE VIRTUAL TABLE docs USING fts5(value, content='other');\n"
+    "CREATE VIEW run_docs AS SELECT runs.id, docs.value FROM runs JOIN docs ON docs.rowid = 1;\n"
+)
+
+
+async def test_a_virtual_table_a_view_reads_brings_its_content_table(tmp_path):
+    """A closure view that reads a virtual table brings the virtual table in, and the table its
+    ``content=`` names joins with it however the virtual table was reached, so a store whose
+    content table differs is refused."""
+    reference = _store(tmp_path / "reference.db", _SCHEMA + _DOCS_OVER_OTHER)
+    changed = _SCHEMA.replace(
+        "CREATE TABLE other (id TEXT PRIMARY KEY, value TEXT);",
+        "CREATE TABLE other (id TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT 'changed');",
+    )
+    store = _store(tmp_path / "managed.db", changed + _DOCS_OVER_OTHER)
+    with closing(sqlite3.connect(reference)) as conn:
+        assert {"docs", "other"} <= read_closure(conn, ["runs", "events"]).table_names
+        assert "other" in read_closure(conn, ["docs"]).table_names
+    reason = await _refused_against(reference, store)
+    assert "other" in reason
+
+
+async def test_a_trigger_on_a_virtual_tables_shadow_table_is_part_of_the_closure(tmp_path):
+    """A module keeps a virtual table's data in shadow tables named after it and writes them when
+    the virtual table is written, so they join the closure with it, and a trigger on one that the
+    profile does not hold refuses the store."""
+    schema = _SCHEMA + _FTS5_OVER_EVENTS
+    reference = _store(tmp_path / "reference.db", schema)
+    store = _store(
+        tmp_path / "managed.db",
+        schema + "CREATE TRIGGER shadow_write AFTER INSERT ON docs_data "
+        "BEGIN INSERT OR REPLACE INTO other VALUES ('keep', 'changed'); END;\n",
+    )
+    with closing(sqlite3.connect(reference)) as conn:
+        assert "docs_data" in read_closure(conn, ["runs", "events"]).table_names
+    reason = await _refused_against(reference, store)
+    assert "shadow_write" in reason
+
+
+async def test_an_fts_argument_other_than_content_names_no_table(tmp_path):
+    """Of a full-text table's arguments only ``content=`` names a table: a column called like a
+    closure table and ``content_rowid='seq'`` name none, so a table that happens to be called
+    ``seq`` stays out of the closure, and reading the closure from the virtual table gives the
+    same closure as reading it from the tables it covers."""
+    unrelated = "CREATE TABLE seq (id INTEGER PRIMARY KEY ON CONFLICT REPLACE, counter TEXT);\n"
+    schema = _SCHEMA + _FTS5_OVER_EVENTS + unrelated
+    reference = _store(tmp_path / "reference.db", schema)
+    with closing(sqlite3.connect(reference)) as conn:
+        closure = read_closure(conn, ["runs", "events"])
+        assert "seq" not in closure.table_names
+        assert closure == read_closure(conn, ["runs", "events", "docs"])
+    await (await _open(_store(tmp_path / "managed.db", schema), _profile(reference))).close()
+    column = _store(
+        tmp_path / "column.db", _SCHEMA + "CREATE VIRTUAL TABLE docs USING fts4(events);\n"
+    )
+    await (await _open(column, _profile(_store(tmp_path / "plain.db", _SCHEMA)))).close()
+
+
+async def test_a_virtual_table_outside_the_closure_is_never_read(tmp_path):
+    """A virtual table whose module this SQLite lacks cannot be read, but one the closure does not
+    reach is read only for its foreign keys, which SQLite lists without the module, so the store
+    is admitted."""
+    reference = _store(tmp_path / "reference.db", _SCHEMA)
+    store = _store(tmp_path / "managed.db", _SCHEMA)
+    _inject(
+        store,
+        [
+            (
+                "table",
+                "elsewhere",
+                "elsewhere",
+                0,
+                "CREATE VIRTUAL TABLE elsewhere USING nosuchmodule(x)",
+            )
+        ],
+    )
+    await (await _open(store, _profile(reference))).close()
+
+
+async def test_a_word_naming_an_index_or_a_trigger_pulls_nothing_in(tmp_path):
+    """Only a table or a view is read through a closure body: a word of a closure trigger that
+    names an index or the trigger itself is no closure object, so a virtual table whose argument
+    is that word stays out of the closure."""
+    guarded = _SCHEMA + (
+        "CREATE TRIGGER guard BEFORE INSERT ON events WHEN NEW.body = '' "
+        "BEGIN SELECT RAISE(ABORT, 'empty'); END;\n"
+    )
+    reference = _store(tmp_path / "reference.db", guarded)
+    for word, extra in (("body", "CREATE INDEX body ON other(value);\n"), ("guard", "")):
+        store = _store(tmp_path / f"{word}.db", guarded + extra)
+        _inject(
+            store,
+            [("table", "vt", "vt", 0, f"CREATE VIRTUAL TABLE vt USING nosuchmodule({word})")],
+        )
+        await (await _open(store, _profile(reference))).close()
 
 
 async def test_a_single_quoted_references_table_is_the_bare_name(tmp_path):
