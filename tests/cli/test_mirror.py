@@ -3777,6 +3777,31 @@ async def test_a_result_takes_a_name_only_from_a_stored_use_row() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_stored_use_row_with_no_recorded_class_lends_its_name(temp_db_path: Path) -> None:
+    """StateDB reads a row stored without a class back as ``__unknown__``, which is unclassed.
+
+    Such a row is judged by its fields, so a use row (function and arguments, no output)
+    still names the result linked to it.
+    """
+    from lionagi.state._mirror_common import name_answered_results
+
+    async with StateDB() as db:
+        await db.insert_message(
+            {
+                "id": "U1",
+                "created_at": 1.0,
+                "role": "assistant",
+                "content": {"function": "Grep", "arguments": {}},
+            }
+        )
+        stored = await db.get_messages(["U1"])
+        rows = [{"id": "L4", "content": {"function": "", "output": "x", "action_request_id": "U1"}}]
+        await name_answered_results(db, rows)
+    assert stored["U1"]["lion_class_str"] == "__unknown__"
+    assert rows[0]["content"]["function"] == "Grep"
+
+
+@pytest.mark.asyncio
 async def test_a_stored_row_without_arguments_is_not_a_use() -> None:
     """A result may take a name only from a stored use row, and a use row carries arguments.
 

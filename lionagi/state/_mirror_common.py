@@ -415,11 +415,13 @@ async def name_answered_results(db: StateDB, rows: Sequence[dict[str, Any]]) -> 
     # ``...action_response.ActionResponse``. A recorded class that is not ActionRequest is refused
     # outright: an ActionResponse whose ``output`` is None keeps its default ``arguments: {}``
     # once the omitted field is dropped, so it would pass a field-shape test. Rows with no
-    # recorded class (an older or non-mirror writer) fall back to the field shape, as
+    # recorded class (an older or non-mirror writer; StateDB reads one back as its placeholder
+    # type, ``__unknown__``) fall back to the field shape, as
     # ``_bound_content`` tells the classes apart: a use carries function and arguments without
     # output, a result carries output. The field test is kept for the unclassed row alone; a
     # recorded class always wins over it.
     use_class = "lionagi.protocols.messages.action_request.ActionRequest"
+    unclassed = (None, "", "__unknown__")
     # Rows are told apart by their fields, as _bound_content does: a result carries both
     # function and output, a use function and arguments without output.
     requested: dict[str, Any] = {}
@@ -457,7 +459,7 @@ async def name_answered_results(db: StateDB, rows: Sequence[dict[str, Any]]) -> 
             recorded_class = stored_row.get("lion_class_str") if stored_row is not None else None
             if (
                 isinstance(stored_content, dict)
-                and (not recorded_class or recorded_class == use_class)
+                and (recorded_class in unclassed or recorded_class == use_class)
                 and "arguments" in stored_content
                 and "output" not in stored_content
             ):
