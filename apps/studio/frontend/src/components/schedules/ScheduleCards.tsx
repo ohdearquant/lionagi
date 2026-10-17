@@ -19,6 +19,7 @@ import {
   formatDelta,
   latestRunBySchedule,
   nextFireState,
+  recentRunsUnavailable,
   scheduleHealthBadge,
   sortSchedulesForCards,
   toMs,
@@ -143,11 +144,22 @@ function HealthBadge({ schedule, nowMs }: { schedule: ScheduleSummary; nowMs: nu
   );
 }
 
-function LastRun({ run, nowMs }: { run: RunRow | undefined; nowMs: number }) {
+function LastRun({
+  run,
+  nowMs,
+  schedule,
+}: {
+  run: RunRow | undefined;
+  nowMs: number;
+  schedule: ScheduleSummary;
+}) {
   const t = useTranslations("schedules");
   const tError = useTranslations("schedules.error");
   const tStatus = useTranslations("history.status");
 
+  if (recentRunsUnavailable(schedule)) {
+    return <span className="text-meta text-status-warning">{t("recentRunsUnavailable")}</span>;
+  }
   if (!run) return <span className="text-meta text-content-muted">{t("table.neverRun")}</span>;
 
   const label = KNOWN_RUN_STATUSES.has(run.status)
@@ -263,7 +275,7 @@ function ScheduleCard({
       <HealthBadge schedule={schedule} nowMs={nowMs} />
 
       {/* Last run */}
-      <LastRun run={lastRun} nowMs={nowMs} />
+      <LastRun run={lastRun} nowMs={nowMs} schedule={schedule} />
 
       {/* Footer: next fire + actions (z-10 above the title overlay) */}
       <div className="mt-auto flex items-center justify-between gap-2 border-t border-edge pt-3">

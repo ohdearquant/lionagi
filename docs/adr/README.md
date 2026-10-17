@@ -90,6 +90,8 @@ its area block.
 - [ADR-0004](ADR-0004-directed-graph-structural-invariants.md) — Directed graph structural
   invariants
 - 0005 — unused (intentional gap)
+- [ADR-0129](ADR-0129-ordering-multiplicity-and-holder-coordination.md) — Ordering multiplicity and
+  holder-side coordination for collections (sequential number; see Numbering)
 
 ### messages-context (0006-0010)
 

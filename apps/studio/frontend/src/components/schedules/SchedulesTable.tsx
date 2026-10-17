@@ -18,6 +18,7 @@ import {
   KNOWN_RUN_STATUSES,
   formatDelta,
   latestRunBySchedule,
+  recentRunsUnavailable,
   nextFireState,
   toMs,
   type RunRow,
@@ -94,11 +95,22 @@ function NextFireCell({ schedule, nowMs }: { schedule: ScheduleSummary; nowMs: n
   );
 }
 
-function LastRunCell({ run, nowMs }: { run: RunRow | undefined; nowMs: number }) {
+function LastRunCell({
+  run,
+  nowMs,
+  schedule,
+}: {
+  run: RunRow | undefined;
+  nowMs: number;
+  schedule: ScheduleSummary;
+}) {
   const t = useTranslations("schedules");
   const tError = useTranslations("schedules.error");
   const tStatus = useTranslations("history.status");
 
+  if (recentRunsUnavailable(schedule)) {
+    return <span className="text-meta text-status-warning">{t("recentRunsUnavailable")}</span>;
+  }
   if (!run) return <span className="text-meta text-content-muted">{t("table.neverRun")}</span>;
 
   const label = KNOWN_RUN_STATUSES.has(run.status)
@@ -205,7 +217,7 @@ function ScheduleRow({
         />
       </td>
       <td className="px-3 py-2.5">
-        <LastRunCell run={lastRun} nowMs={nowMs} />
+        <LastRunCell run={lastRun} nowMs={nowMs} schedule={schedule} />
       </td>
       <td className="px-3 py-2.5">
         <NextFireCell schedule={schedule} nowMs={nowMs} />

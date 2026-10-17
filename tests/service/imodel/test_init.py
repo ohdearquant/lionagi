@@ -1319,19 +1319,21 @@ class TestReportedServedModel:
         started = asyncio.Event()
         sent = []
 
-        async def forward():
-            # The call exists and is in executor.pending; nothing has been sent.
+        async def enqueue(_event):
+            # invoke sends only its own call: the call exists and is being queued to the
+            # processor; nothing has been sent.
             started.set()
             if failure == "raised":
-                raise RuntimeError("the queue could not be forwarded")
+                raise RuntimeError("the call could not be queued")
             await asyncio.Event().wait()
 
         async def call(*_args, **_kwargs):
             sent.append(True)
             return {"model": "unreachable", "response": "x"}
 
+        await base_imodel.executor.start()
         with (
-            patch.object(base_imodel.executor, "forward", side_effect=forward),
+            patch.object(base_imodel.executor.processor, "enqueue", side_effect=enqueue),
             patch.object(base_imodel.endpoint, "call", side_effect=call),
         ):
             task = asyncio.create_task(
