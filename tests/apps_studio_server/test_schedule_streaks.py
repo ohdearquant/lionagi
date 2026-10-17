@@ -151,7 +151,10 @@ async def test_get_schedule_detail_carries_same_fields(temp_db_path):
     assert detail["last_status"] == "failed"
 
 
-async def test_list_schedules_issues_constant_queries_not_per_row(temp_db_path):
+@pytest.mark.parametrize("include_recent_runs", [False, True])
+async def test_list_schedules_issues_constant_queries_not_per_row(
+    temp_db_path, include_recent_runs
+):
     """list_schedules must batch streak/remaining_runs lookups (no N+1)."""
     from sqlalchemy import event
     from sqlalchemy.engine import Engine
@@ -183,7 +186,7 @@ async def test_list_schedules_issues_constant_queries_not_per_row(temp_db_path):
     # StateDB()/engine internally, so a per-instance listener would miss it.
     event.listen(Engine, "before_cursor_execute", _record)
     try:
-        rows = await list_schedules()
+        rows = await list_schedules(include_recent_runs=include_recent_runs)
     finally:
         event.remove(Engine, "before_cursor_execute", _record)
 
@@ -206,7 +209,9 @@ async def test_list_schedules_issues_constant_queries_not_per_row(temp_db_path):
     # read-only on an on-disk SQLite store, which skips the schema step
     # entirely -- so on this fixture the schema read is absent by design, and
     # its reappearance would mean a read route went back to a writable open.
-    assert len(select_statements) == 5, select_statements
+    # Opting into recent history adds one batched key/payload query. This
+    # fixture has no linked invocations, so its two evidence joins are absent.
+    assert len(select_statements) == 5 + int(include_recent_runs), select_statements
 
     for sid in sids:
         row = next(r for r in rows if r["id"] == sid)

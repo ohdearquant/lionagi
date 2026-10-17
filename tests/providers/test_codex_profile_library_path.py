@@ -144,3 +144,19 @@ class TestOrderingAndPrecedence:
         _write(codex_home, "no-model", 'model_provider = "openrouter"\n')
         with pytest.raises(ValueError, match="declares no 'model'"):
             CodexCodeRequest(model="no-model", prompt="x")
+
+
+class TestAProfileTheParserCannotRead:
+    def test_a_profile_nested_too_deep_refuses_and_names_the_file(self, codex_home):
+        """A profile file nested past the parser's limit is unreadable, not a
+        reason to hand codex the profile name as a model id. The refusal names
+        the file so a caller can find and fix it."""
+        _write(codex_home, "deep", "x = " + "[" * 3000 + "]" * 3000 + "\n")
+        with pytest.raises(ValueError, match="could not be read") as raised:
+            resolve_codex_config_profile("deep")
+        assert str(codex_home / "deep.config.toml") in str(raised.value)
+
+    def test_the_request_over_that_profile_refuses_the_same_way(self, codex_home):
+        _write(codex_home, "deep", "x = " + "[" * 3000 + "]" * 3000 + "\n")
+        with pytest.raises(ValueError, match="could not be read"):
+            CodexCodeRequest(model="deep", prompt="x")

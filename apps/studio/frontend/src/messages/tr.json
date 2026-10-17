@@ -666,6 +666,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "Son çalıştırmalar kullanılamıyor",
     "title": "zamanlamalar",
     "subtitle": "cron, interval ve GitHub tetikleyicilerinde kalıcı otomasyonlar",
     "calendar": "takvim",
@@ -1250,6 +1251,12 @@
       "body": "Something answered at {base}, but it isn't a lionagi daemon.",
       "fix": "Stop that program, or point the daemon at a different port:",
       "command": "li studio --port 8766"
+    },
+    "accessRequired": {
+      "title": "Bu daemon bir erişim belirteci gerektiriyor",
+      "body": "{base} adresinde bir lionagi daemon'u yanıt verdi ancak bu sayfayı reddetti. Bir daemon, başka bir kaynaktaki sayfayı yalnızca erişim belirteciyle kabul eder; li studio komutu bu sayfayı açarken ona bir belirteç verir. Sayfayı yeniden yüklemek belirteci siler.",
+      "fix": "Studio'yu erişimle açmak için bunu daemon'un çalıştığı yerde çalıştırın:",
+      "command": "li studio"
     },
     "retry": "Retry",
     "dismiss": "Dismiss"

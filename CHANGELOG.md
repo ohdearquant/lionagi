@@ -6,6 +6,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Upgrading from 0.35.5
+
+`li schedule apply` now reads a member's `execution.project` written as YAML null as no
+project (see Changed). A project-scoped document applied with an earlier release whose
+members write their project as null plans an `UPDATE` on its next apply that removes the
+project those rows ran under. To keep the project, name it in those members.
+
 ### Added
 
 - A compatibility open mode for `StateDB` (ADR-0128): `StateDB(path, compatibility=profile)`
@@ -15,6 +22,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   is admitted only when that structure matches, every connection carries a default-deny SQLite
   authorizer, and anything outside the profile raises `StateCompatibilityRefused`. The minimum
   aiosqlite version rises to 0.22.0, the first release that exposes `set_authorizer`.
+- A writable `StateDB` open refuses a store whose `schema_meta` `lineage` row names another
+  application, raising `ForeignLineageError` (exported from `lionagi.state`). The row is read from
+  the file the URL opens before any writable connection exists, without writing the file, its
+  journal, its write-ahead log or the log's `-shm` index: beside a journal an interrupted
+  transaction left, or a log with no readable index, it is read from a private copy in a temporary
+  directory that is removed before the read returns; a process killed while it copies leaves the
+  copy in that directory. Each copy is made through a descriptor this process keeps open on the
+  store's file and never closes, since closing any descriptor of the file drops the POSIX locks
+  this process's other connections hold on it: each distinct store copied keeps one descriptor for
+  the life of the process, the opens are serialised by a lock, so a descriptor that stays open and
+  unfiled needs the file replaced between the `stat` and the `open`, and a run that copies very
+  many distinct stores can meet the process's open-file limit (`EMFILE`) there, which makes that
+  copy's read fail, so the writable connection's own read of the row decides. Each writable
+  connection reads the row again before its own settings, for a row written in between; a store
+  refused there may have had its journal rolled back, its index
+  written or its log folded into the file by that connection. The managing application writes that
+  row when it creates the store, and compatibility mode admits only a store that has it, so a
+  native open in another process cannot migrate a store being written in compatibility mode;
+  compatibility mode in turn refuses a store this process has open natively. A store without the
+  row opens and migrates natively as before. Studio's own store opener is not covered yet.
 
 ### Changed
 
@@ -66,6 +93,44 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   releases read High). An effort that is not a string also counts as none (earlier releases
   read a number as an unknown effort, which gave Medium, or High on Pro, and raised `TypeError`
   on a list or dict).
+- `li schedule apply` reads a member's `execution.project` written as YAML null
+  (`project: null`, `project: ~` or a blank `project:`) as no project. Earlier
+  releases gave that member the document's `metadata.project` in a project-scoped
+  document, so re-applying an export of a row stored without a project gave the
+  row the export's project. An omitted project, or `project: ""`, still inherits
+  the document's `metadata.project` in a project-scoped document (a global one
+  has none). A project-scoped document already applied whose member writes its
+  project as null in any of those spellings plans an `UPDATE` on its next apply
+  that removes the project the member ran under. Such a row also loses the
+  project's registered path as its fallback working directory: if its stored
+  `cwd` is set and is not an existing absolute directory, and the project's
+  registered path is usable, it is refused when it fires instead of running there
+  (with no usable project path it was refused already). A row whose `cwd` is an
+  existing absolute directory runs there, and an `agent` or `flow_yaml` run then
+  takes its project from the one detected in that directory, since its command no
+  longer receives `--project`. `li schedule export` writes every member's stored
+  project, `null` included.
+- `close_shared_db()` raises a `RuntimeError` naming each handle it could not close, with the
+  error that handle's `close()` raised, instead of suppressing every error and returning as if
+  the sweep were done. A handle whose close is refused by another event loop, whose close is
+  cancelled (a cancellation is raised as `CancelledError`, not collected into that
+  `RuntimeError`), or whose close raises any other error, stays in the shared registry so a later
+  lookup or sweep still reaches it; run teardown logs the refusal as it logs a failed
+  `StateDB.close()`. `register_shared_db()` raises any error the displaced handle's close raised,
+  a refusal included, rather than replacing the entry over a handle that is still open.
+
+### Fixed
+
+- A read-only `StateDB` open of a store whose path contains `#` or `%` opened another file: SQLite
+  read the path as a URI, so `#` started a fragment, which also dropped read-only mode and created
+  that file, and `%` started an escape. The path is now passed as a file URI, so it names the file.
+- JSON Schema loading now caches generated Pydantic models by schema-node identity, keeping
+  distinct definitions separate when their display names sanitize to the same name. Repeated
+  references to one node still reuse its model, and a colliding definition cannot replace the
+  requested root model (#3320).
+- Flow synthesis now reuses the bounded observer-write drain before state storage is closed,
+  including failure and cancellation paths. Branch-status and segment metadata writes created
+  during synthesis receive the same cleanup as writes from the execution phase (#3211).
 
 ## [0.35.5] - 2026-10-11
 

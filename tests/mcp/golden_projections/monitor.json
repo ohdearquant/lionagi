@@ -11,7 +11,7 @@
         "x-flag": "--no-chain"
       },
       "entity_type": {
-        "description": "Narrow the table to one kind of entity: session, invocation, show or play. `command` narrows to invocations launched as a command action.",
+        "description": "Narrow the table to one kind of entity: session, invocation, show or play. `command` narrows to invocations launched as a command action. Use `session` for flow runs, or `invocation` for registered invocation records.",
         "enum": [
           "session",
           "invocation",

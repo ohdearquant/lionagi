@@ -3,7 +3,7 @@
 
 import logging
 
-from pydantic import Field, model_validator
+from pydantic import Field, PrivateAttr, model_validator
 from typing_extensions import Self
 
 from ..hooks.hooked_event import HookedEvent
@@ -52,6 +52,8 @@ class APICalling(HookedEvent):
         description="Whether to include token usage information in messages",
         exclude=True,
     )
+
+    _routing_scope: object | None = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def _validate_streaming(self) -> Self:
@@ -116,18 +118,26 @@ class APICalling(HookedEvent):
         return None
 
     async def _core_invoke(self):
+        scope_kwargs = (
+            {"_routing_scope": self._routing_scope} if self._routing_scope is not None else {}
+        )
         return await self.endpoint.call(
             request=self.payload,
             cache_control=self.cache_control,
             skip_payload_creation=True,
             extra_headers=self.headers if self.headers else None,
+            **scope_kwargs,
             **self.call_kwargs,
         )
 
     async def _core_stream(self):
+        scope_kwargs = (
+            {"_routing_scope": self._routing_scope} if self._routing_scope is not None else {}
+        )
         async for i in self.endpoint.stream(
             request=self.payload,
             extra_headers=self.headers if self.headers else None,
+            **scope_kwargs,
             **self.call_kwargs,
         ):
             yield i

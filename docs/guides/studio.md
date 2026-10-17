@@ -49,8 +49,13 @@ li studio
 ```
 
 The hosted page is the frontend; it connects to the local daemon at
-`http://127.0.0.1:8765`. Keep the command running. Use `--no-open` when you do
-not want LionAGI to open a browser.
+`http://127.0.0.1:8765`. Keep the command running. `li studio` opens the page
+with a one-time pairing code, which is how the daemon knows the page came from
+you: a code works once, within two minutes. If you reload the page or open the
+hosted address yourself, the page asks you to run `li studio` again; with the
+daemon already running, that opens a newly paired page without starting a
+second daemon. Use `--no-open` when you do not want LionAGI to open a browser;
+`li studio` then prints the one-time link instead.
 
 Other shipped modes are:
 

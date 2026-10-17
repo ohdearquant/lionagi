@@ -640,7 +640,11 @@ class OperatorCoordinator:
                         # the pair; the mirror may not have minted the row
                         # yet, so retry in the background for a bounded window.
                         engine_session_uid = session_id
-                        if engine_link_task is None or engine_link_task.done():
+                        # Not on a store in compatibility mode: the run may write only the rows
+                        # it created there (ADR-0128 D4), and the mirrored row is not one.
+                        if not _in_compatibility_mode(live["db"]) and (
+                            engine_link_task is None or engine_link_task.done()
+                        ):
                             engine_link_task = asyncio.ensure_future(
                                 _link_engine_child(live["db"], session_id, parent_run_id=run_id)
                             )
@@ -730,7 +734,16 @@ class OperatorCoordinator:
                         run_dir.run_id
                     )
                 except Exception as recovery_exc:  # noqa: BLE001
+                    from lionagi.state.db import ForeignLineageError, SchemaTooNewError
+
                     refusal = refusal_in(recovery_exc)
+                    if refusal is None and isinstance(
+                        recovery_exc, (ForeignLineageError, SchemaTooNewError)
+                    ):
+                        # The recovery opens the store natively, and a store another application
+                        # manages or at a later schema than this package refuses that open: no
+                        # retry would change it.
+                        refusal = recovery_exc
             if live is not None:
                 run_id = live["session_id"]
                 evidence = f"open the run at /runs/{run_id} for its status and history"
@@ -744,8 +757,9 @@ class OperatorCoordinator:
                 details = {"runId": None}
             if refusal is not None:
                 # The store refused a write in compatibility mode (ADR-0128 D6), including
-                # one of the setup writes themselves: stopping here did not need a retry, and
-                # the turn's own run details point at the refused write's run.
+                # one of the setup writes themselves, or refused the recovery's native open as
+                # a store another application manages or at a later schema: stopping here did not
+                # need a retry, and the turn's own run details point at the refused write's run.
                 await record(
                     "failed",
                     {
@@ -806,9 +820,22 @@ class OperatorCoordinator:
                         and engine_link_task.exception() is None
                         and engine_link_task.result()
                     ):
-                        with suppress(Exception):
-                            await _link_engine_child_once(
+                        # Held like the task above: a cancel here must not skip teardown.
+                        last_link = asyncio.ensure_future(
+                            _link_engine_child_once(
                                 engine_session_uid, parent_run_id=live["session_id"]
+                            )
+                        )
+                        while not last_link.done():
+                            try:
+                                await asyncio.wait((last_link,))
+                            except asyncio.CancelledError as exc:
+                                early_failure = early_failure or exc
+                        if not last_link.cancelled() and last_link.exception() is not None:
+                            _log.warning(
+                                "engine child link failed for session %s: %r",
+                                engine_session_uid[:8],
+                                last_link.exception(),
                             )
                 if live is not None:
                     from lionagi.cli._runs import teardown_agent_persist
@@ -879,24 +906,33 @@ class OperatorCoordinator:
                             )
                 try:
                     final_provider, final_model = resolve_operator_provider_model(engine_turn)
-                    await asyncio.to_thread(
-                        run_dir.write_manifest,
-                        {
-                            "kind": "agent",
-                            "agent_name": "Operator",
-                            "branch_id": str(run_branch.id),
-                            "session_id": live["session_id"] if live is not None else None,
-                            "provider": final_provider,
-                            "model": final_model,
-                            "status": terminal_status,
-                            "started_at": started_at or time.time(),
-                            "ended_at": time.time(),
-                        },
+                    terminal_write = asyncio.ensure_future(
+                        asyncio.to_thread(
+                            run_dir.write_manifest,
+                            {
+                                "kind": "agent",
+                                "agent_name": "Operator",
+                                "branch_id": str(run_branch.id),
+                                "session_id": live["session_id"] if live is not None else None,
+                                "provider": final_provider,
+                                "model": final_model,
+                                "status": terminal_status,
+                                "started_at": started_at or time.time(),
+                                "ended_at": time.time(),
+                            },
+                        )
                     )
+                    # Held like the other records: a cancel that lands while this write is in
+                    # flight waits for it, so run.json is not left `running`.
+                    while not terminal_write.done():
+                        try:
+                            await asyncio.wait((terminal_write,))
+                        except asyncio.CancelledError as exc:
+                            early_failure = early_failure or exc
+                    terminal_write.result()
                 except Exception:
                     # The run's record keeps its last status; say why, as the opening
-                    # write's failure is said. A cancel that lands while this write is in
-                    # flight propagates instead, and the write's outcome goes unobserved.
+                    # write's failure is said.
                     _log.error(
                         "Operator turn %s: its terminal run.json write failed",
                         request_id,

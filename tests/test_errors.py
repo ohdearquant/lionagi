@@ -36,6 +36,7 @@ _EXPECTED_ALL = (
     "OperationError",
     "ExecutionError",
     "ConfigurationError",
+    "ContainmentRefusedError",
     "TimeoutError",
     "EmptyOutgoingContentError",
     "ItemNotFoundError",

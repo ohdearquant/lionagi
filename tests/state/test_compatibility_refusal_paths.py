@@ -88,6 +88,37 @@ async def test_a_final_operate_the_store_refuses_is_raised(tmp_path: Path):
 # 2. Orchestration admission: a refused admission write fails the run with its reason
 
 
+async def test_a_refusal_inside_a_group_fails_the_orchestration_run(tmp_path: Path, monkeypatch):
+    """A refusal that arrives inside an exception group fails the run with the refusal as its
+    reason, as a bare one does, rather than recording persistence as degraded."""
+    from lionagi import Session
+    from lionagi.cli._runs import RunDir
+    from lionagi.cli.orchestrate import _orchestration
+    from lionagi.ln.concurrency._compat import BaseExceptionGroup
+
+    refusal = StateCompatibilityRefused("create_progression", "owned@1", "refused")
+
+    async def grouped():
+        raise BaseExceptionGroup("setup", [refusal, ValueError("other")])
+
+    monkeypatch.setattr(_orchestration, "_open_shared_db", grouped)
+    run = RunDir(
+        run_id="grouped-refusal",
+        state_root=tmp_path / "state",
+        artifact_root=tmp_path / "artifacts",
+    )
+    run.ensure_state_dirs()
+    manifest: dict = {"status": "running"}
+    run.write_manifest(manifest)
+
+    with pytest.raises(BaseExceptionGroup):
+        await _orchestration.setup_orchestration_persist(Session(), run=run, run_manifest=manifest)
+
+    assert manifest["status"] == "failed"
+    assert manifest["error"] == f"The store refused a write: {refusal}"
+    assert "persistence_degraded_reason" not in manifest
+
+
 async def test_a_refused_orchestration_admission_fails_the_run(tmp_path: Path, monkeypatch):
     """An admission write the store refuses fails the run with the refusal as its reason, rather
     than recording persistence as degraded and continuing without it (ADR-0128 D6)."""
@@ -181,6 +212,61 @@ async def test_a_refused_admission_without_a_manifest_leaves_run_json_as_it_was(
 
 async def _resolved(value):
     return value
+
+
+async def test_a_non_refusal_from_a_displaced_close_degrades_the_run(tmp_path: Path, monkeypatch):
+    """A displaced handle whose close raised an ordinary error reaches orchestration admission as a
+    setup failure: the run records persistence degraded and keeps running. Only a store refusal
+    fails the run, so the admission path must not fail the run on an error that is not one."""
+    import lionagi.state.db as db_mod
+    from lionagi import Session
+    from lionagi.cli._runs import RunDir
+    from lionagi.cli.orchestrate import _orchestration
+    from lionagi.state.db import StateDB, register_shared_db
+
+    monkeypatch.setattr(db_mod, "_SHARED", {})
+    monkeypatch.setattr(db_mod, "_SHARED_OPEN_LOCK", None)
+    store = tmp_path / "orch.db"
+    monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", store)
+    monkeypatch.setattr(
+        "lionagi.cli.kill.current_pid_markers",
+        lambda: {
+            "pid": 1,
+            "pid_create_time": 1.0,
+            "pid_host": "here",
+            "pid_boot_time": 1.0,
+            "process_identity_mode": "local",
+        },
+    )
+
+    displaced = StateDB(store)
+    await displaced.open()
+    await register_shared_db(displaced)
+
+    async def refused_close():
+        raise RuntimeError("the displaced handle would not close")
+
+    run = RunDir(
+        run_id="degraded-displacement",
+        state_root=tmp_path / "state",
+        artifact_root=tmp_path / "artifacts",
+    )
+    run.ensure_state_dirs()
+    manifest: dict = {"status": "running"}
+    run.write_manifest(manifest)
+
+    try:
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(displaced, "close", refused_close)
+            ctx = await _orchestration.setup_orchestration_persist(
+                Session(), run=run, run_manifest=manifest
+            )
+    finally:
+        await displaced.close()
+
+    assert ctx is None
+    assert manifest["status"] == "running", "a displaced close error failed the run"
+    assert "the displaced handle would not close" in manifest["persistence_degraded_reason"]
 
 
 # 3. Flow: a refused write settles the sibling held behind the fan-out's semaphore
