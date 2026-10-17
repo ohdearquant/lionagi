@@ -199,7 +199,7 @@ jobs:
     # it then holds the whole run. Unbounded, that leg runs to the six-hour job
     # limit, and because runs on a pushed branch share one concurrency group and
     # are never cancelled, every push in the meantime queues behind it and all
-    # but the newest are cancelled without running. A leg takes 15 to 29
+    # but the newest are cancelled without running. A leg takes 11 to 29
     # minutes. The test steps stop at 45, before the job's 60, so a stopped leg
     # still runs the failure telemetry and the peak-RSS report, which names the
     # test each worker was still running.
