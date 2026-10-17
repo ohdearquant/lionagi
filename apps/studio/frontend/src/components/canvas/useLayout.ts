@@ -232,7 +232,11 @@ export function foldWideGraph(nodes: Node[], edges: Edge[] = []): Node[] {
   for (const [index, x] of xs.entries()) {
     for (const node of byX.get(x) ?? []) columnById.set(node.id, index);
   }
-  const isSafeBreak = (beforeX: number, afterX: number): boolean => {
+  // The first half of a safe break, on its own: the boundary is a chain link,
+  // a single-node column whose one out-edge goes to the next single-node
+  // column, and that is that node's only in-edge. This says nothing about
+  // chords; isSafeBreak below adds that.
+  const isChainLink = (beforeX: number, afterX: number): boolean => {
     const beforeNodes = byX.get(beforeX) ?? [];
     const afterNodes = byX.get(afterX) ?? [];
     if (beforeNodes.length !== 1 || afterNodes.length !== 1) return false;
@@ -240,15 +244,29 @@ export function foldWideGraph(nodes: Node[], edges: Edge[] = []): Node[] {
     const b = afterNodes[0]!;
     const aOut = outDeg.get(a.id) ?? [];
     const bIn = inDeg.get(b.id) ?? [];
-    if (!(aOut.length === 1 && aOut[0] === b.id && bIn.length === 1 && bIn[0] === a.id)) {
-      return false;
-    }
-    // ...and no other edge may cross this boundary. Both boundary columns hold
-    // one node, so the only way left for an edge to cross without touching them
-    // is to start left of the break and end right of it: a chord. Breaking there
-    // would fold that chord onto the next row and draw a real dependency as a
-    // row boundary, so refuse the break instead.
-    const cut = columnById.get(a.id)!;
+    return aOut.length === 1 && aOut[0] === b.id && bIn.length === 1 && bIn[0] === a.id;
+  };
+  // A row may only break between two adjacent columns when exactly one edge
+  // crosses that boundary (a chain link) and no other edge crosses it. Both
+  // boundary columns hold one node, so the only way left for an edge to cross
+  // without touching them is to start left of the break and end right of it: a
+  // chord. Breaking there would fold that chord onto the next row and draw a
+  // real dependency as a row boundary, so a chord refuses the break.
+  //
+  // The chord test is what can leave a row with no safe break at all: one edge
+  // spanning the row crosses every boundary inside it, so the row runs past
+  // FOLD_MAX_ROW_WIDTH and the graph stays a strip below the interactive zoom
+  // floor — the exact thing the fold exists to remove. The fill loop below
+  // therefore treats a missing safe break as something to work around, not the
+  // end of the matter: it remembers the last safe break inside the width bound
+  // so one blocked boundary does not block the whole row, and when the row has
+  // no safe break at all it falls back to the row's last chain link. A chord
+  // crossing that chain link is then drawn as an ordinary forward edge, not as
+  // a row boundary; only the chain link itself is marked. A row with no chain
+  // link either cannot be broken and so does not fold.
+  const isSafeBreak = (beforeX: number, afterX: number): boolean => {
+    if (!isChainLink(beforeX, afterX)) return false;
+    const cut = columnById.get((byX.get(beforeX) ?? [])[0]!.id)!;
     for (const edge of edges) {
       const sourceColumn = columnById.get(edge.source);
       const targetColumn = columnById.get(edge.target);
@@ -262,27 +280,45 @@ export function foldWideGraph(nodes: Node[], edges: Edge[] = []): Node[] {
   };
 
   const rows: number[][] = [];
-  let current: number[] = [];
-  let rowStartX = 0;
-  let prevX: number | null = null;
-  for (const x of xs) {
-    if (current.length === 0) {
-      current = [x];
-      rowStartX = x;
-      prevX = x;
+  // `rowStart` and every break index below are indices into `xs`; a break "at"
+  // a column means the row ends after it and the next row begins there.
+  let rowStart = 0;
+  while (rowStart < xs.length) {
+    // Furthest column this row can hold, and the last safe break inside it.
+    let end = rowStart;
+    let lastSafeBreak = -1;
+    for (let i = rowStart + 1; i < xs.length; i++) {
+      if (xs[i]! - xs[rowStart]! + NODE_WIDTH > FOLD_MAX_ROW_WIDTH) break;
+      end = i;
+      if (!edgeAware || isSafeBreak(xs[i - 1]!, xs[i]!)) lastSafeBreak = i - 1;
+    }
+    // The row already reaches the end of the graph, or it can break where it
+    // naturally stops: take that.
+    if (end === xs.length - 1 || !edgeAware || isSafeBreak(xs[end]!, xs[end + 1]!)) {
+      rows.push(xs.slice(rowStart, end + 1));
+      rowStart = end + 1;
       continue;
     }
-    const overWidth = x - rowStartX + NODE_WIDTH > FOLD_MAX_ROW_WIDTH;
-    if (overWidth && (!edgeAware || isSafeBreak(prevX!, x))) {
-      rows.push(current);
-      current = [x];
-      rowStartX = x;
-    } else {
-      current.push(x);
+    // The natural break is not safe, but an earlier safe break is still inside
+    // the width bound: break there and re-test the remaining columns.
+    if (lastSafeBreak >= rowStart) {
+      rows.push(xs.slice(rowStart, lastSafeBreak + 1));
+      rowStart = lastSafeBreak + 1;
+      continue;
     }
-    prevX = x;
+    // No safe break anywhere in the row: fall back to its last chain link, even
+    // though a chord crosses it. The boundary the row naturally stops at is
+    // included, because a chord crossing exactly there is the case this exists
+    // for. Only that chain link becomes a row boundary.
+    let chainLink = -1;
+    for (let j = rowStart; j <= end; j++) {
+      if (isChainLink(xs[j]!, xs[j + 1]!)) chainLink = j;
+    }
+    // No chain link either: the row cannot be broken, so nothing folds.
+    if (chainLink === -1) return nodes;
+    rows.push(xs.slice(rowStart, chainLink + 1));
+    rowStart = chainLink + 1;
   }
-  if (current.length > 0) rows.push(current);
   if (rows.length <= 1) return nodes;
 
   const out: Node[] = [];
@@ -628,7 +664,7 @@ export function getLayoutedElements(
       marginy: 24,
     });
 
-    for (const node of nodes) {
+    for (const node of uniqueNodes) {
       g.setNode(node.id, { width: NODE_WIDTH, height: estimateNodeHeight(node) });
     }
     // Rank assignment is ours: `ranks` above already

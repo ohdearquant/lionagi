@@ -51,8 +51,10 @@ real nodes plus twice the sum of pinned rank spans over **distinct directed
 endpoint pairs**, matching graphlib's non-multigraph edges. Unknown endpoints
 do not contribute. Self-loops are charged conservatively. Graphs above 192 work
 units or 128 nodes use placement within the same ranks, with siblings ordered
-by node ID, instead of Dagre's crossing optimization. All original node and edge
-records remain available, including parallel edges.
+by node ID, instead of Dagre's crossing optimization. All original edge records
+remain available, including parallel edges. Each node id takes one slot: when
+several node records share an id, the first is laid out and the others are
+dropped, so two cards are never placed on one position.
 
 A known non-self edge that does not advance its computed rank also bypasses
 Dagre: its cycle-breaking pass can reverse edges and invalidate the original
