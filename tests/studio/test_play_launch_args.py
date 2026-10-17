@@ -109,6 +109,36 @@ class TestBuildArgvPlay:
         )
         assert argv == ["li", "play", "audit", "--depth", "2"]
 
+    @pytest.mark.parametrize("bad_args", [[], "", 0, False])
+    def test_empty_values_of_the_wrong_shape_are_refused_too(self, bad_args):
+        """An empty list, string, zero or false is a stored value of the wrong
+        shape, not the absence of args, on either path."""
+        with pytest.raises(ValueError, match="must be an object"):
+            build_argv(_play_schedule(action_playbook_args=bad_args), {}, executable_prefix=["li"])
+        with pytest.raises(ValueError, match="must be an object"):
+            build_argv(
+                _play_schedule(
+                    resolved_target={
+                        "target": {"kind": "playbook", "name": "audit", "args": bad_args}
+                    }
+                ),
+                {},
+                executable_prefix=["li"],
+            )
+
+    def test_an_empty_object_reads_the_target_snapshot(self):
+        argv, _ = build_argv(
+            _play_schedule(
+                action_playbook_args={},
+                resolved_target={
+                    "target": {"kind": "playbook", "name": "audit", "args": {"depth": 2}}
+                },
+            ),
+            {},
+            executable_prefix=["li"],
+        )
+        assert argv == ["li", "play", "audit", "--depth", "2"]
+
     def test_args_of_the_wrong_shape_are_refused_rather_than_dropped(self):
         """A stored args value that is not an object is refused at launch; it is
         never read as no args, which would run the play with its defaults."""

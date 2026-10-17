@@ -294,14 +294,16 @@ def _playbook_args(schedule: dict) -> object:
     validation refuses it rather than the launch running with no args.
     """
     declared = schedule.get("action_playbook_args")
-    if declared:
+    # An empty object is what a launch with no args stores; anything else, an
+    # empty list or string included, is a stored value and goes to validation.
+    if declared is not None and declared != {}:
         return declared
     snapshot = schedule.get("resolved_target")
     if isinstance(snapshot, dict):
         target = snapshot.get("target")
         if isinstance(target, dict) and target.get("kind") == "playbook":
             args = target.get("args")
-            if args:
+            if args is not None:
                 return args
     return {}
 
