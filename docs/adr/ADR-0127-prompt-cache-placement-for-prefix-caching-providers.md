@@ -176,7 +176,7 @@ Rendering the tools from the conversation's tool set rather than from the call's
 what keeps the stable segment stable: `action_param` is None on ReAct's final call, so a tool
 section built from it would drop out of that request and rewrite the stable block, paying the
 one-hour write price again — the defect this decision removes. Reaching for `branch.acts` instead is
-not a new dependency: `operations/operate/operate.py:199-203` already builds the tool schemas from
+not a new dependency: `operations/operate/operate.py:200-204` already builds the tool schemas from
 the Branch's action manager when a call passes `tools=True`.
 
 The provider's native `tools` field is out of scope: it is not written until a record maps the
@@ -187,7 +187,7 @@ responses, which today's parser does not do (`protocols/messages/assistant_respo
 the `ResponseSchema` of the request operative: it includes the fields lionagi adds on top of the
 caller's model — `reason` when the call asks for it (`operations/operate/step.py:102-104`) and
 `action_required`, `action_requests` and `action_responses` when the call passes actions
-(`operations/operate/step.py:106-109`), which `operations/operate/operate.py:219-225` requests
+(`operations/operate/step.py:106-109`), which `operations/operate/operate.py:220-226` requests
 through `Step.request_operative`. It renders there as part of the instruction that asks for it, and
 it renders the same bytes whether it is current or history, instead of appearing in the one request
 and vanishing from the next. A format that changes between turns therefore renders in the turn
