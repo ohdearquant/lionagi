@@ -18,7 +18,8 @@ project those rows ran under. To keep the project, name it in those members.
 - Studio Operator can update its active conversation's title and persistent
   description. Omitted fields retain their values, and an applied result is
   recorded only with the saved change. Descriptions appear in the conversation
-  list. The store adds nullable `studio_operator_conversations.description`.
+  list, and forks preserve the source description independently. The store adds
+  nullable `studio_operator_conversations.description`.
 - Studio sessions can set or clear an explicit display label through
   `PATCH /api/sessions/{session_id}`. Labels take precedence in session list and
   detail names without changing activity timestamps; clearing a label restores

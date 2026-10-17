@@ -1601,7 +1601,8 @@ forking mid-turn ends the fork at the last completed turn rather than
 copying a half-written one, and the source conversation keeps streaming
 untouched. `up_to_sequence`, when given, additionally caps the fork at an
 earlier point in history so a user can branch from any prior turn, not
-only the tip. The fork starts with no provider session of its own, so it
+only the tip. The fork copies the source description, which can then be
+edited independently. It starts with no provider session of its own, so it
 never silently resumes the source's provider-side session.
 
 ### Redaction

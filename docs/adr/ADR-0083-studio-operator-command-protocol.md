@@ -214,7 +214,8 @@ Exact persistence semantics:
   preserve an omitted field, and null or an empty stripped description clears it.
   Description-only updates preserve the title. Descriptions are stripped and limited
   to 2000 characters; Unicode categories Cf, Zl, and Zp are rejected, as are Cc
-  characters other than newline and tab.
+  characters other than newline and tab. Forks copy the description and retain it
+  independently of later edits to either conversation.
 - `sequence` is monotonic across the whole conversation, not reset per request. A single
   StateDB transaction increments `next_sequence` and inserts each frame, preventing
   duplicates during concurrent delivery.
