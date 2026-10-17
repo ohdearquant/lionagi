@@ -666,6 +666,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "Eksekusi terbaru tidak tersedia",
     "title": "Penjadwalan",
     "subtitle": "Otomasi tetap pada pemicu cron, interval, dan GitHub",
     "calendar": "Kalender",

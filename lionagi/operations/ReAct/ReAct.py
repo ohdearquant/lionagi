@@ -688,7 +688,17 @@ async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
     except (ExecutionError, ProviderError):
         # The provider refused the final call; an earlier round's reply is not its answer.
         raise
-    except Exception:
+    except Exception as exc:
+        from lionagi.state.compat import refusal_in  # noqa: PLC0415
+
+        # The call's own path can wrap the refusal in a task group, so it is looked up however
+        # deeply nested rather than read off the outermost error alone.
+        refusal = refusal_in(exc)
+        if refusal is not None:
+            # The store refused a write this call made (ADR-0128 D6): the run stops rather than
+            # reporting an earlier round's reply as this call's answer, and the refusal leaves
+            # as itself so a caller's check finds it.
+            raise refusal  # noqa: B904 -- raised as found, keeping its own cause
         out = branch.msgs.last_response.response
 
     _o = verbose_yield("\n### ReAct Final Answer:\n", out)
