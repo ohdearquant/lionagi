@@ -83,6 +83,7 @@ _OPERATOR_MCP_TOOLS = [
     "mcp__studio_operator__cancel_run",
     "mcp__studio_operator__resume_run",
     "mcp__studio_operator__rename_run",
+    "mcp__studio_operator__update_conversation",
     "mcp__studio_operator__pause_run",
     "mcp__studio_operator__release_run_pause",
     "mcp__studio_operator__steer_run",
@@ -468,6 +469,7 @@ class BranchOperatorEngine:
                             "launch",
                             "navigate",
                             "prefill",
+                            "update_conversation",
                         )
                     )
                     else "read"

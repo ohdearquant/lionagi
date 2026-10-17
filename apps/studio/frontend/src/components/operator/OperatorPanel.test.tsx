@@ -837,6 +837,32 @@ describe("OperatorPanel", () => {
       });
     });
 
+    it("shows a conversation description beneath its title and in the tooltip", async () => {
+      const description = "Review scheduler retries and release decisions";
+      const conversation = {
+        id: "conversation-1",
+        title: "Scheduler check",
+        description,
+        status: "active",
+        pinned: false,
+        activeRequestId: null,
+      };
+      api.listOperatorConversations.mockResolvedValue([conversation]);
+      api.getOperatorConversation.mockResolvedValue({ conversation, frames: [] });
+
+      await mount();
+      await openList();
+
+      const titleButton = [...container.querySelectorAll("ul li button")].find((button) =>
+        button.textContent?.includes("Scheduler check"),
+      ) as HTMLButtonElement;
+      expect(titleButton.title).toBe(description);
+      expect([...titleButton.querySelectorAll("span")].map((span) => span.textContent)).toEqual([
+        "Scheduler check",
+        description,
+      ]);
+    });
+
     it("renames a conversation inline and reflects the new title", async () => {
       window.localStorage.setItem("studio:operator-conversation", "conversation-1");
       api.updateOperatorConversation.mockResolvedValue({

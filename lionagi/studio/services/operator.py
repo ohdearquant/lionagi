@@ -120,6 +120,8 @@ async def update_operator_conversation(
     kwargs: dict[str, Any] = {}
     if "title" in fields:
         kwargs["title"] = body.title
+    if "description" in fields:
+        kwargs["description"] = body.description
     if "pinned" in fields:
         kwargs["pinned"] = body.pinned
     if "status" in fields:

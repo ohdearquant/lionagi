@@ -66,6 +66,7 @@ describe("Operator API v1", () => {
         id: "conversation-new",
         project: null,
         title: "Release check",
+        description: null,
         status: "active",
         pinned: false,
         nextSequence: 4,
@@ -79,6 +80,35 @@ describe("Operator API v1", () => {
         updatedAt: 20,
       },
     ]);
+  });
+
+  it("preserves conversation descriptions and tolerates older daemon responses", async () => {
+    const description = "Café planning\n\tDecisions for the next release";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          json({
+            conversations: [
+              { id: "described", title: "Release", description },
+              { id: "cleared", description: null },
+              { id: "legacy" },
+              { id: "malformed", description: { text: "not a string" } },
+            ],
+          }),
+        ),
+      ),
+    );
+
+    const conversations = await listOperatorConversations();
+
+    expect(conversations.map((conversation) => conversation.description)).toEqual([
+      description,
+      null,
+      null,
+      null,
+    ]);
+    expect(conversations[0].title).toBe("Release");
   });
 
   it("requests the active/archived/all filter as a query param", async () => {

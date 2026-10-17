@@ -1530,11 +1530,18 @@ export default function OperatorPanel({ open, onClose }: Props) {
                                   selectConversation(conversation.id);
                                   setListPanelOpen(false);
                                 }}
-                                title={t("list.renamePlaceholder")}
-                                className="min-w-0 flex-1 truncate text-start text-meta text-content-primary outline-none"
+                                title={conversation.description || t("list.renamePlaceholder")}
+                                className="min-w-0 flex-1 text-start text-meta text-content-primary outline-none"
                               >
-                                {conversation.pinned ? "★ " : ""}
-                                {conversationLabel(conversation)}
+                                <span className="block truncate">
+                                  {conversation.pinned ? "★ " : ""}
+                                  {conversationLabel(conversation)}
+                                </span>
+                                {conversation.description && (
+                                  <span className="block truncate text-content-muted">
+                                    {conversation.description}
+                                  </span>
+                                )}
                               </button>
                             )}
                             {activeRenamingId !== conversation.id && (
