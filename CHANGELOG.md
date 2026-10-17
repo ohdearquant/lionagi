@@ -15,6 +15,10 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Added
 
+- `lionagi.ln.concurrency.temporary_signal_handlers(handler, signals=(SIGINT, SIGTERM))`, a
+  context manager that installs one handler for the length of a block and restores each prior
+  handler on exit. Like `run_async`, it installs nothing off the main thread and leaves alone a
+  signal whose handler was installed outside Python.
 - A compatibility open mode for `StateDB` (ADR-0128): `StateDB(path, compatibility=profile)`
   writes into a SQLite store whose schema another application manages without migrating,
   stamping or reconfiguring it. A `CompatibilityProfile` declares the exact structure of the
@@ -155,6 +159,12 @@ project those rows ran under. To keep the project, name it in those members.
   command to exit.
   `li o ctl resolve` reports a busy `state.db` and exits unknown, as queueing a control does,
   instead of failing with a timeout traceback.
+- `li monitor run` replaced the SIGINT and SIGTERM handlers with its own and never put them back,
+  so in a process that called it they outlived the wait. It also replaced a handler installed
+  outside Python, which can never be reinstalled. A SIGTERM that arrived during a poll escaped the
+  wait as `SigtermInterrupt`, where SIGINT stopped it with the in-progress exit code. The wait now
+  restores the handlers it took when it returns, leaves one it could not give back alone, and
+  stops on SIGTERM as it does on SIGINT.
 - A settings shell hook (`hooks.pre` / `hooks.post` with a `command`) runs in a session of its
   own, so cancelling the tool call it guards left the hook and anything it started running, and an
   error while exchanging data with it did the same. The hook's process group is now killed on
