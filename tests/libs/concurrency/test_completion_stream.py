@@ -6,6 +6,7 @@ Covers lifecycle, cancellation, error handling, and edge cases.
 import anyio
 import pytest
 
+from lionagi.ln import move_on_after
 from lionagi.ln.concurrency.patterns import CompletionStream
 
 pytestmark = pytest.mark.anyio
@@ -158,6 +159,31 @@ async def test_completion_stream_leaving_early_waits_for_remaining_tasks(anyio_b
     assert sorted(finished) == list(range(NUM_TASKS))
     await anyio.sleep(0.05)
     assert sorted(finished) == list(range(NUM_TASKS))
+
+
+async def test_completion_stream_cancelling_an_enclosing_scope_stops_remaining_tasks(anyio_backend):
+    """Cancelling an enclosing scope before the block exits stops the remaining awaitables.
+
+    This is the documented way to leave early and not wait: without the cancel,
+    ``__aexit__`` would wait out the slow awaitable and the outer deadline fails
+    the test.
+    """
+    finished = []
+
+    async def task(x):
+        await anyio.sleep(0.001 if x == 0 else 5.0)
+        finished.append(x)
+        return x
+
+    with anyio.fail_after(2):
+        with move_on_after(None) as scope:
+            async with CompletionStream([task(0), task(1)]) as stream:
+                async for _idx, _result in stream:
+                    scope.cancel()
+                    break
+
+    assert scope.cancelled_caught
+    assert finished == [0]
 
 
 # Test removed - timing-dependent behavior hard to test reliably

@@ -137,10 +137,12 @@ class CompletionStream:
     Leaving the iteration early, such as a ``break`` after the first result, does
     not cancel the remaining awaitables: it only stops the consumer from taking
     further results. Exiting the ``async with`` block still waits for every
-    awaitable, so the work that was already scheduled runs to completion. To stop
-    the remaining awaitables instead, wrap the block in a cancel scope or a
-    deadline, for example ``lionagi.ln.move_on_after`` or
-    ``lionagi.ln.fail_after``.
+    remaining awaitable. They run to completion unless one of them raises while
+    ``return_exceptions`` is false: that error cancels the others and is raised
+    when the block exits. To stop the remaining awaitables when the consumer
+    leaves, call ``cancel()`` on an enclosing cancel scope before the block exits,
+    for example the scope ``lionagi.ln.move_on_after`` yields. A deadline alone,
+    such as ``lionagi.ln.fail_after``, stops them only when it expires.
     """
 
     def __init__(

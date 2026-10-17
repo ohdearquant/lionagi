@@ -799,8 +799,12 @@ async def retry(
   iterating before every result has arrived, nothing is cancelled and neither end
   of the stream is closed: the remaining runners keep sending into the buffer,
   which holds a result for every awaitable, and leaving the `async with` block
-  waits for all of them. A caller that wants the remaining work stopped wraps the
-  block in a cancel scope or a deadline, such as `move_on_after` or `fail_after`.
+  waits for all of them. With `return_exceptions=False`, one that raises after the
+  consumer has stopped cancels the rest, and its error is raised through
+  `__aexit__`. A caller that wants the remaining work stopped when it leaves calls
+  `cancel()` on an enclosing cancel scope before the block exits, such as the
+  scope `move_on_after` yields; a deadline alone, such as `fail_after`, stops the
+  work only when it expires.
 - `retry()` is a standalone helper independent of `alcall`'s retry parameters: it
   defaults to retrying (`attempts=3`) rather than `alcall`'s default of no retry
   (`retry_attempts=0`). It validates `attempts >= 1`, `base_delay > 0`,
