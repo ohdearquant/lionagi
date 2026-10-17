@@ -617,14 +617,14 @@ did not decide how often a subscriber that is a process rather than an in-proces
 run, and the cheapest reading of D3's dispatch, one run per matching fact, is the one to refuse.
 One attempt of `ReactiveExecutor` emits a different fact per node transition, from `NodeQueued`
 through `NodeStarted` to `NodeCompleted` or `NodeFailed`, with `NodeSkipped`, `NodeCancelled` and
-`NodeEscalated` beside them (`lionagi/session/signal.py:88-149`, `:175-228`), so a subscriber
+`NodeEscalated` beside them (`lionagi/session/signal.py:109-170`, `:196-249`), so a subscriber
 bound to one attempt pays a full run per row and re-reads the same attempt once per transition. At
 forty facts and six subscribers that is two hundred forty runs to review one attempt. ADR-0123
 (Proposed) D1 names the unit the wake follows: a Run is one admitted execution attempt, not a
 fact. Today's tree has no execution attempt object, so the amendment introduces the attempt as the
 unit its policy counts and bounds: one admitted run, the unit ADR-0123 D1 names, and not the
 outbound dispatch counter that already carries an `attempt` field
-(`lionagi/session/signal.py:163`).
+(`lionagi/session/signal.py:184`).
 
 **Decision.** A subscriber that is not an in-process callable is woken once per boundary it
 observes. The wake vocabulary is closed: `candidate` (a node's terminal fact, `NodeCompleted`,
@@ -680,10 +680,10 @@ exit of the invocation owning this subscription, including failure or cancellati
 cleanup. A nested operation's `RunEnd` or `RunFailed` does not settle its parent:
 `ReactiveExecutor` invokes each node's operation through `Operation.invoke`
 (`lionagi/operations/node.py:84-95`) and `Branch` emits its `RunEnd` or `RunFailed` per operation
-(`lionagi/session/branch.py:441-469`, `:1066-1119`; `lionagi/operations/run/run.py:780-791`), all
+(`lionagi/session/branch.py:441-469`, `:1066-1119`; `lionagi/operations/run/run.py:817-828`), all
 before the enclosing flow returns (`lionagi/operations/flow.py:1718`). No flow- or
 invocation-terminal session Signal exists today: the bus carries `RunEnd` per operation
-(`lionagi/session/signal.py:61`) and nothing terminal beyond it, the flow's own drain of node
+(`lionagi/session/signal.py:62`) and nothing terminal beyond it, the flow's own drain of node
 emissions emits no terminal (`lionagi/engines/flow_signals.py:148-154`), and the invocation
 terminal that does exist is a process-local registry envelope rather than a session Signal
 (`lionagi/state/lifecycle/callbacks.py:84`, `:170`), so the owner-scoped finalizer that records

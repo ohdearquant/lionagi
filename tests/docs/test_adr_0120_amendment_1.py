@@ -144,7 +144,7 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     assert "Settlement is the exit of the invocation owning this subscription" in flat
     assert "A nested operation's `RunEnd` or `RunFailed` does not settle its parent" in flat
     assert "lionagi/session/branch.py:441-469" in flat
-    assert "lionagi/operations/run/run.py:780-791" in flat
+    assert "lionagi/operations/run/run.py:817-828" in flat
     assert "`unbind_db_persistence`" in flat
     assert "lionagi/session/observer.py:542-559" in flat
     assert "observer unbinding is cleanup, not settlement" in flat
@@ -152,7 +152,7 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     assert "no timeout and no new setting" in flat
     assert "no execution attempt object" in flat
     assert "one admitted run, the unit ADR-0123 D1 names" in flat
-    assert "lionagi/session/signal.py:163" in flat
+    assert "lionagi/session/signal.py:184" in flat
     # No flow- or invocation-terminal signal exists today, and the closure path
     # is named as a prerequisite rather than described as present.
     assert "No flow- or" in flat
