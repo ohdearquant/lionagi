@@ -101,6 +101,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   read the path as a URI, so `#` started a fragment, which also dropped read-only mode and created
   that file, and `%` started an escape. The path is now passed as a file URI, so it names the file.
 
+### Fixed
+
+- JSON Schema loading now caches generated Pydantic models by schema-node identity, keeping
+  distinct definitions separate when their display names sanitize to the same name. Repeated
+  references to one node still reuse its model, and a colliding definition cannot replace the
+  requested root model (#3320).
+- Flow synthesis now reuses the bounded observer-write drain before state storage is closed,
+  including failure and cancellation paths. Branch-status and segment metadata writes created
+  during synthesis receive the same cleanup as writes from the execution phase (#3211).
+
 ## [0.35.5] - 2026-10-11
 
 ### Added

@@ -47,9 +47,19 @@ whose schema another application manages, and never migrates, stamps or reconfig
   closure's triggers and views) and refuses unless it equals the profile's closure. What joins the
   closure is a fixed point: a trigger or view whose SQL may name one of the tables, in any
   spelling and a quoted string included, joins, and so does one whose SQL may name another object of
-  the closure; a view or a table a closure object reads joins in turn, until nothing new joins. A
-  trigger's place among the closure triggers on its own table is part of the closure, since the
-  order SQLite fires a table's triggers in depends on the order they were created.
+  the closure; a virtual table joins as a table of the closure and is compared like one when its
+  `CREATE VIRTUAL TABLE` statement names a table of the closure (for fts3, fts4 and fts5 in a
+  `content=` argument, which is the only one of theirs that names a table; for any other module in
+  any argument token, bare, single-quoted or double-quoted), and when a closure object reads it or
+  the caller names it; either way the tables its arguments name and its shadow tables (every table
+  named `<virtual table>_...`, a superset of the module's own) join with it, and a virtual table
+  the closure neither names nor reads stays out of it; only a table or a view is read through a
+  body, so a word that names an index or a trigger pulls nothing in; a
+  view or a table a closure object reads joins in turn, until nothing new joins, and a table only
+  the store's closure reaches is refused as not in the profile. A trigger's place
+  among the closure triggers on its own table that fire on the same event and timing is part of
+  the closure, since SQLite fires those in an order fixed by when they were created; triggers
+  for different events or timings may be created in any order.
   `store_versions` narrows the stores a profile is tried on; a version never admits on its own. A
   failed admission disposes the engine, so the object stays unopened. A write transaction compares
   `PRAGMA schema_version` with the admitted value once it holds the writer, and re-reads the
@@ -62,15 +72,39 @@ whose schema another application manages, and never migrates, stamps or reconfig
   compared as written, with only whitespace and comments set aside: every token keeps its case and
   its quote characters, and a store whose default, trigger or view differs from the profile's in
   case or in quoting is refused even where SQLite would read the two alike. A double-quoted token
-  in a table's or an index's definition that names no column is read as a string literal, keeps
-  its quotes, and equals only the same literal written the same way; a blob literal (`x'41'`) is a
-  token of its own. The mode fails closed,
-  since whether SQLite reads a quoted token as a name or as a string literal depends on the scope
-  it appears in and on the connection's double-quoted-string setting. A table whose constraints
-  declare any conflict resolution but ABORT (`ON CONFLICT REPLACE`, `ROLLBACK`, `IGNORE` or
-  `FAIL`), or a trigger or view that names one (`INSERT OR REPLACE`, `REPLACE INTO`,
-  `RAISE(IGNORE)` and the like), is refused, in the store or in the profile: the authorizer cannot
-  see a row a REPLACE resolution deletes or a transaction a ROLLBACK resolution ends.
+  in a table's or an index's definition is read as a name where SQLite reads a name: after a dot,
+  after a word that takes a name (`REFERENCES`, `ON`, `COLLATE`, `CONSTRAINT` and the like), in
+  the column list after `REFERENCES <table>`, or immediately before a `(`, which makes it a
+  function's name, or in a column's type a sized type's name, rather than a string. Everywhere
+  else it is a string literal when it names no column, and a literal keeps its quotes and equals
+  only the same literal written the same way; a token in a type position with no size, as in
+  `id "TEXT"`, is compared the same way, so quoting a type name is refused against the bare type
+  even though SQLite reads it as the type name. A sized one (`id "VARCHAR"(10)`) opens a
+  parenthesis, so its definition equals the bare `VARCHAR(10)`, and it is refused by its column's
+  type instead, which SQLite reports without the size. A single-quoted token after `REFERENCES`
+  is the table's name, and a single-quoted token in the column list after `REFERENCES <table>` is
+  a name too, since SQLite's grammar takes a string in both places; anywhere else it is compared as
+  the string it spells, so a single-quoted name SQLite also reads as a name elsewhere
+  (`COLLATE 'NOCASE'`) is refused against the bare spelling. A quoted name that a bare word would
+  read as a value in an expression (`"null"`,
+  `"current_date"`, `"current_time"`, `"current_timestamp"`) or as the `NOT` operator (`"not"`),
+  or that a bare word cannot spell (a name holding a quote, a space or punctuation, or starting
+  with a digit), equals only the same name quoted, never the bare word, though a plain quoted
+  name like `"status"` equals its bare spelling. A blob literal (`x'41'`) is a token of its own.
+  A virtual table's definition is its module's name, read between its quotes and compared without
+  regard to case as SQLite looks it up, and the text of each argument in order, from its first
+  token to its last as written, since SQLite hands the module that text: a reordered or repeated
+  argument differs, `content= 'events'` differs from `content='events'` (fts4 reads the first as a
+  table whose name starts with a space and a quote), the spacing around an argument does not
+  count, `USING fts4("x"(1))` and `USING fts4(x(1))` differ in their quotes, `USING "fts4"(x)` is
+  `USING fts4(x)`, and `fts3(x)` and `fts4(x)` differ. The mode fails closed, since whether SQLite reads a quoted token as a name or
+  as a string literal depends on the scope it appears in and on the connection's
+  double-quoted-string setting. A table whose constraints declare any conflict resolution but
+  ABORT (`ON CONFLICT REPLACE`, `ROLLBACK`, `IGNORE` or `FAIL`), or a trigger or view that names
+  one (`INSERT OR REPLACE`,
+  `REPLACE INTO`, `RAISE(IGNORE)` and the like), is refused, in the store or in the profile: the
+  authorizer cannot see a row a REPLACE resolution deletes or a transaction a ROLLBACK resolution
+  ends.
 - **Operations.** A StateDB method marked as an operation the profile names runs inside that
   operation's scope (a context variable, so code the operation calls inherits it). The scope ends
   when the operation returns, even for a task the operation started. `_tx()` and the
@@ -1046,9 +1080,10 @@ Two rejections stay explicit because the redaction cannot reach them:
   validator rejects it itself rather than leaving it for pydantic to quote.
 - A mapping with bad entries is rejected as `TypeError`, not `ValueError`: pydantic converts
   `ValueError` and `AssertionError` into a `ValidationError` that quotes the rejected input and
-  lets everything else propagate untouched. The message names string keys, because a string key
-  is a variable *name* and naming it is what makes the error actionable; a key of any other type
-  is not a name and is reported by position and type only. Values are never printed.
+  lets everything else propagate untouched. The message prints nothing from the mapping: each bad
+  entry is reported by its position and the type that is wrong. A key can carry a credential as
+  easily as a value (a token pasted where a name belongs, `NAME=value` written as a name), and no
+  test of a key's shape tells the two apart.
 
 `_runtime_state_fields` on the endpoint does two jobs for those fields, and both are about a
 value that must stay in memory:
