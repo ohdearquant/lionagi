@@ -3,7 +3,7 @@
 
 from pydantic import BaseModel, JsonValue
 
-from lionagi.ln import copy
+from lionagi.ln import copy, is_pydantic_model_class
 from lionagi.utils import UNDEFINED, to_list
 
 from .validate_boolean import validate_boolean
@@ -87,7 +87,7 @@ def validate_callable(cls, value, undefind_able: bool = True, check_name: bool =
 def validate_model_to_type(cls, value):
     if value is None:
         return BaseModel
-    if isinstance(value, type) and issubclass(value, BaseModel):
+    if is_pydantic_model_class(value):
         return value
     if isinstance(value, BaseModel):
         return value.__class__

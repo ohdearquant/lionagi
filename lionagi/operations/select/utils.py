@@ -7,7 +7,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field, JsonValue
 
-from lionagi.ln import is_same_dtype
+from lionagi.ln import is_pydantic_model_class, is_same_dtype
 from lionagi.ln.fuzzy import string_similarity
 
 
@@ -34,7 +34,7 @@ def parse_to_representation(
     if isinstance(choices, list):
         if is_same_dtype(choices, BaseModel):
             choices = {i.__class__.__name__: i for i in choices}
-        if all(inspect.isclass(i) and issubclass(i, BaseModel) for i in choices):
+        if all(is_pydantic_model_class(i) for i in choices):
             choices = {i.__name__: i for i in choices}
     if isinstance(choices, type) and issubclass(choices, Enum):
         keys = [i.name for i in choices]
@@ -88,7 +88,7 @@ def parse_selection(selection_str: str, choices: Any):
             select_from = [i.__class__.__name__ for i in choices]
         if is_same_dtype(choices, str):
             select_from = list(choices)
-        if all(inspect.isclass(i) and issubclass(i, BaseModel) for i in choices):
+        if all(is_pydantic_model_class(i) for i in choices):
             select_from = [i.__name__ for i in choices]
 
     if not select_from:

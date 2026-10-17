@@ -5,14 +5,13 @@
 
 from __future__ import annotations
 
-import types
 from dataclasses import dataclass
-from typing import Any, Union, get_args, get_origin
+from typing import Any
 
 from pydantic import BaseModel
 
 from lionagi.libs.validate.validate_boolean import validate_boolean
-from lionagi.ln import json_dumps
+from lionagi.ln import json_dumps, unwrap_optional
 
 Scalar = float | int | str | bool
 
@@ -128,15 +127,9 @@ _SCALAR_TYPES: tuple[type, ...] = (str, int, float, bool)
 
 def _unwrap_scalar(annotation: Any) -> type | None:
     """Return the scalar type from ``str/int/float/bool`` or Optional-scalar annotations, else None."""
+    annotation = unwrap_optional(annotation)
     if annotation in _SCALAR_TYPES:
         return annotation  # type: ignore[return-value]
-
-    # Handle both typing.Union[X, None] and X | None (PEP 604 UnionType)
-    origin = get_origin(annotation)
-    if origin is Union or isinstance(annotation, types.UnionType):
-        args = [a for a in get_args(annotation) if a is not type(None)]
-        if len(args) == 1 and args[0] in _SCALAR_TYPES:
-            return args[0]  # type: ignore[return-value]
 
     return None
 

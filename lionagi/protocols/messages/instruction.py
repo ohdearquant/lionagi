@@ -6,6 +6,7 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel
 
+from lionagi.ln import is_pydantic_model_class
 from lionagi.ln.types import ModelConfig
 
 from .message import Message, MessageContent, MessageRole
@@ -182,7 +183,7 @@ class InstructionContent(MessageContent):
         if response_format is not None:
             valid = (
                 isinstance(response_format, dict)
-                or (isinstance(response_format, type) and issubclass(response_format, BaseModel))
+                or (is_pydantic_model_class(response_format))
                 or isinstance(response_format, BaseModel)
             )
             if valid:
@@ -276,7 +277,7 @@ def _build_structure(
 
     if isinstance(response_format, dict):
         return structure_cls(response_format)
-    if isinstance(response_format, type) and issubclass(response_format, BaseModel):
+    if is_pydantic_model_class(response_format):
         return structure_cls(response_format)
     if isinstance(response_format, BaseModel):
         return structure_cls(type(response_format))

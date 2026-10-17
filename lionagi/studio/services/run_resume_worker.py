@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
 import json
 import os
 import sys
@@ -14,6 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from lionagi.ln import compute_hash
 from lionagi.state.db import (
     SESSION_TERMINAL_STATUSES,
     StateDB,
@@ -49,7 +49,7 @@ def _branch_resume_lock(branch_id: str):
         raise RuntimeError("queued resume requires a local StateDB")
     lock_dir = Path(db_path).parent / "resume-locks"
     lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    digest = hashlib.sha256(branch_id.encode()).hexdigest()
+    digest = compute_hash(branch_id)
     flags = os.O_CREAT | os.O_RDWR
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW

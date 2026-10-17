@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import shutil
 from functools import partial
 from pathlib import Path
@@ -21,6 +20,7 @@ from lionagi._flow_spec import (
     validate_flow_spec_fields as _check_spec_fields,
 )
 from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
+from lionagi.ln import hash_file
 
 from ..registry import studio_route
 from ._path_safety import public_path, safe_path_join
@@ -103,7 +103,7 @@ def fingerprint_playbook(name: str) -> str:
     path = _PLAYBOOKS_ROOT / f"{stem}.playbook.yaml"
     if not path.is_file():
         raise FileNotFoundError(f"Playbook {stem!r} not found")
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    digest = hash_file(path)
     return f"sha256:{digest}"
 
 
