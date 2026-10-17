@@ -40,3 +40,9 @@ Run, team and show imports and the Claude and Codex transcript mirrors use this
 conversion for timestamp fields. Naive ISO strings mean UTC regardless of the
 host timezone. A conversion outside the platform timestamp range falls back to
 the importer's existing filesystem timestamp or missing value.
+
+The mirror CLI permits fractional durations and bare seconds, with an empty
+optional window meaning no limit. Monitor cutoff parsing requires integer
+values and a unit. Schedule declarations retain their strict digits-and-unit
+grammar, inclusive 30-day maximum, and integer `interval_sec`. These callers
+share positive, finite duration validation; their distinct input grammars remain.

@@ -42,19 +42,6 @@ def _validate_group_by(raw: str) -> list[str]:
     return keys
 
 
-def _reject_non_positive_since(window: str) -> None:
-    """Reject a `--since` window that isn't strictly positive.
-
-    See docs/internals/cli.md for why this tightens Monitor's shared parser.
-    """
-    try:
-        value = int(window[:-1])
-    except (ValueError, IndexError):
-        return
-    if value <= 0:
-        raise ValueError(f"--since window must be positive; got {window!r}. Format: 30m, 1h, 7d.")
-
-
 def _iso(ts: float | None) -> str | None:
     if ts is None:
         return None
@@ -205,7 +192,6 @@ def run_stats(args: argparse.Namespace) -> int:
         return 2
 
     try:
-        _reject_non_positive_since(args.since)
         since = _since_timestamp(args.since)
     except ValueError as exc:
         log_error(str(exc))
@@ -276,7 +262,6 @@ def _machine_runs(argv: list[str]) -> dict[str, Any]:
 
     try:
         group_by = _validate_group_by(args.group_by)
-        _reject_non_positive_since(args.since)
         return run_async(_machine_stats_runs_data(since_window=args.since, group_by=group_by))
     except ValueError as exc:
         raise MachineError("invalid_input", str(exc)) from exc

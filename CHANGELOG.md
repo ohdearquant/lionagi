@@ -63,6 +63,9 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Changed
 
+- Mirror and monitor time windows reject zero, negative, non-finite values and
+  uppercase units, trim surrounding whitespace, and accept explicit seconds (`s`)
+  in mirror windows. Invalid stats windows report a clear input error.
 - Run, team and show imports and transcript mirrors interpret naive ISO timestamps
   as UTC and accept numeric epoch strings. Out-of-range timestamp values keep
   each importer's existing filesystem-time or missing-value fallback.

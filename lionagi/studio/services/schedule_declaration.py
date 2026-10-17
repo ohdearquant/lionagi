@@ -37,7 +37,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lionagi._paths import _find_git_root
-from lionagi.ln import short_id
+from lionagi.ln import parse_duration, short_id
 from lionagi.state.db import (
     INVOCATION_TERMINAL_STATUSES,
     ScheduleOwnershipConflictError,
@@ -323,22 +323,20 @@ def parse_schedule_set(text: str, *, source: str = "<string>") -> ScheduleSetDoc
 # ---------------------------------------------------------------------------
 
 _EVERY_RE = re.compile(r"^(\d+)(s|m|h|d)$")
-_EVERY_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 _EVERY_MAX_SECONDS = 30 * 86400
 
 
 def _parse_every(raw: str) -> int:
-    m = _EVERY_RE.match(raw.strip())
-    if not m:
+    if not _EVERY_RE.match(raw.strip()):
         raise ValueError(
             f"trigger.every must be a strict positive duration like '30s'/'15m'/'6h'/'2d', got {raw!r}"
         )
-    seconds = int(m.group(1)) * _EVERY_UNIT_SECONDS[m.group(2)]
-    if seconds <= 0:
-        raise ValueError(f"trigger.every must be strictly positive, got {raw!r}")
-    if seconds > _EVERY_MAX_SECONDS:
-        raise ValueError(f"trigger.every exceeds the maximum bound of 30d, got {raw!r}")
-    return seconds
+    try:
+        return int(parse_duration(raw, max_seconds=_EVERY_MAX_SECONDS))
+    except ValueError as exc:
+        raise ValueError(
+            f"trigger.every must be positive and at most 30d, got {raw!r} ({exc})"
+        ) from exc
 
 
 def _parse_at(raw: str) -> datetime:
