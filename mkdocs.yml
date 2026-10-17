@@ -205,7 +205,11 @@ nav:
 
   - Operate:
       - Durable operations: guides/durable-operations.md
-      - Studio & schedules: guides/studio.md
+      - Studio getting started: guides/studio-getting-started.md
+      - Studio Operator: guides/studio-operator.md
+      - Studio schedules: guides/studio-schedules.md
+      - Studio model: concepts/studio-model.md
+      - Studio surfaces: reference/studio-surfaces.md
       - Scheduling workflows: guides/scheduling-workflows.md
       - Connect an MCP client: guides/mcp-setup.md
       - MCP server: reference/mcp-server.md
