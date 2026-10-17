@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from enum import Enum
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -11,6 +10,7 @@ from pydantic import BaseModel, Field
 from lionagi.libs.path_safety import is_protected_name
 from lionagi.libs.path_safety import resolve_workspace_path as _resolve_workspace_path
 from lionagi.ln.concurrency import run_sync
+from lionagi.ln.types import Enum
 from lionagi.protocols.action.tool import Tool
 
 from .._subprocess import _subprocess_sync

@@ -8,7 +8,6 @@ import argparse
 import json
 import math
 import re
-import signal
 import sys
 import time
 from functools import cache
@@ -1090,7 +1089,7 @@ def _watch_loop(
     project: str | None,
 ) -> int:
     """Repeatedly clear screen and reprint; exit cleanly on SIGINT/SIGTERM."""
-    from lionagi.ln.concurrency import SigtermInterrupt, run_async
+    from lionagi.ln.concurrency import SigtermInterrupt, run_async, temporary_signal_handlers
 
     from ._logging import log_error
     from .status import EXIT_UNKNOWN
@@ -1101,25 +1100,13 @@ def _watch_loop(
         nonlocal interrupted
         interrupted = True
 
-    def _install(signum):
-        """Take over *signum* only if the handler can be given back.
-
-        A handler installed outside Python is reported as None and cannot be
-        reinstalled, so replacing one means keeping it forever. Leaving it
-        alone costs this loop its clean exit on that signal; taking it would
-        cost the whole process its handler, which is the larger harm.
-        """
-        prior = signal.getsignal(signum)
-        if prior is None:
-            return None
-        signal.signal(signum, _handle_signal)
-        return prior
-
-    prior_sigint = _install(signal.SIGINT)
-    prior_sigterm = _install(signal.SIGTERM)
     exit_code = 0
 
-    try:
+    # The loop's handlers must not outlive the loop. A signal whose handler was
+    # installed outside Python is left alone, since it could not be given back:
+    # that costs this loop its clean exit on that signal, where taking it would
+    # cost the whole process its handler.
+    with temporary_signal_handlers(_handle_signal):
         while not interrupted:
             since = _since_timestamp(since_window) if since_window else None
             try:
@@ -1151,13 +1138,6 @@ def _watch_loop(
                 if interrupted:
                     break
                 time.sleep(0.1)
-    finally:
-        # The loop's handlers must not outlive the loop. None here means the
-        # signal was never taken over, so there is nothing to give back.
-        if prior_sigint is not None:
-            signal.signal(signal.SIGINT, prior_sigint)
-        if prior_sigterm is not None:
-            signal.signal(signal.SIGTERM, prior_sigterm)
 
     if _IS_TTY:
         print()  # newline after Ctrl-C
@@ -1539,7 +1519,7 @@ def _dispatch_wait(
 ) -> int:
     """Block until every id in `ids` reaches a terminal schedule_run status;
     see docs/internals/cli.md for chain-following and max_wait semantics."""
-    from lionagi.ln.concurrency import run_async
+    from lionagi.ln.concurrency import SigtermInterrupt, run_async, temporary_signal_handlers
     from lionagi.state.db import StateDB, state_db_known_absent
 
     from ._logging import log_error
@@ -1555,123 +1535,126 @@ def _dispatch_wait(
         nonlocal interrupted
         interrupted = True
 
-    signal.signal(signal.SIGINT, _handle_signal)
-    signal.signal(signal.SIGTERM, _handle_signal)
+    # Given back on every exit path; see _watch_loop for the terms of the takeover.
+    with temporary_signal_handlers(_handle_signal):
 
-    def _sleep_interval(secs: float) -> None:
-        # Sleep in small increments so SIGINT/SIGTERM stay responsive,
-        # mirroring _watch_loop's own chunked sleep exactly.
-        for _ in range(max(1, round(secs * 10))):
-            if interrupted:
-                break
-            time.sleep(0.1)
+        def _sleep_interval(secs: float) -> None:
+            # Sleep in small increments so SIGINT/SIGTERM stay responsive,
+            # mirroring _watch_loop's own chunked sleep exactly.
+            for _ in range(max(1, round(secs * 10))):
+                if interrupted:
+                    break
+                time.sleep(0.1)
 
-    def _run_tick(coro: Any) -> Any:
-        # run_async raises bare KeyboardInterrupt on SIGINT during its own
-        # call (see run_async's docstring in ln/concurrency/utils.py).
-        nonlocal interrupted
-        try:
-            return run_async(coro)
-        except KeyboardInterrupt:
-            interrupted = True
-            return None
+        def _run_tick(coro: Any) -> Any:
+            # run_async installs its own handlers for the duration of the call,
+            # so a signal arriving inside it surfaces as KeyboardInterrupt
+            # (SIGINT) or SigtermInterrupt (SIGTERM) instead of setting the flag.
+            nonlocal interrupted
+            try:
+                return run_async(coro)
+            except (KeyboardInterrupt, SigtermInterrupt):
+                interrupted = True
+                return None
 
-    schedule_names: dict[str, str] = {}
+        schedule_names: dict[str, str] = {}
 
-    async def _resolve() -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], list[str]]:
-        async with StateDB() as db:
-            return await _resolve_watched_runs(db, ids)
-
-    try:
-        resolved = _run_tick(_resolve())
-    except AmbiguousIdError as exc:
-        # Nothing to wait on: the caller named a prefix, not a run.
-        log_error(str(exc))
-        return EXIT_UNKNOWN
-    if resolved is None:
-        # Interrupted before resolving completed — "still in progress",
-        # not success or failure.
-        return EXIT_RUNNING
-    pending, session_pending, unresolved = resolved
-    for raw_id in unresolved:
-        log_error(f"run id {raw_id!r} not found (checked schedule_runs and sessions)")
-
-    total_watched = len(pending)
-    total_sessions = len(session_pending)
-    done: list[dict[str, Any]] = []
-    session_done: list[dict[str, Any]] = []
-    chain_state = _new_chain_state(pending, chain=chain)
-    processed = 0
-
-    async def _tick() -> None:
-        nonlocal processed
-        async with StateDB() as db:
-            await _poll_pending_once(db, pending, schedule_names, done)
-            await _poll_pending_sessions_once(db, session_pending, session_done)
-            processed = await _advance_chains(
-                db, pending, done, chain_state=chain_state, processed=processed
-            )
-
-    def _chain_open() -> bool:
-        return bool(pending or session_pending or chain_state["awaiting_grace"])
-
-    # max_wait bounds total wall-clock so a stuck session can't hang forever;
-    # None falls back to the bounded default, 0/negative opts into unbounded.
-    effective_max_wait = _DEFAULT_MAX_WAIT_SECONDS if max_wait is None else max_wait
-    deadline = time.monotonic() + effective_max_wait if effective_max_wait > 0 else None
-
-    def _wait_expired() -> bool:
-        return deadline is not None and time.monotonic() >= deadline
-
-    while _chain_open() and not interrupted and not _wait_expired():
-        _run_tick(_tick())
-        if not _chain_open() or interrupted or _wait_expired():
-            break
-        _sleep_interval(interval)
-
-    resolved_roots = chain_state["resolved_roots"]
-    chain_tail_exit = chain_state["chain_tail_exit"]
-    from ._util import EXIT_CODE_BY_STATUS
-
-    session_ok = all(EXIT_CODE_BY_STATUS.get(r["status"], 1) == 0 for r in session_done)
-    if unresolved:
-        exit_code = EXIT_UNKNOWN
-    elif len(resolved_roots) < total_watched or len(session_done) < total_sessions:
-        # Some watched chain (or session) never concluded before we stopped.
-        exit_code = EXIT_RUNNING
-    elif all(chain_tail_exit.get(root) == 0 for root in resolved_roots) and session_ok:
-        # Final-link-wins: each resolved chain's most recently seen terminal
-        # exit_code decides, not every link along the way.
-        exit_code = 0
-    else:
-        exit_code = 1
-
-    if follow and not interrupted:
-        baseline = time.time()
-        follow_pending: dict[str, dict[str, Any]] = {}
-
-        async def _follow_tick(bl: float) -> float:
+        async def _resolve() -> tuple[
+            dict[str, dict[str, Any]], dict[str, dict[str, Any]], list[str]
+        ]:
             async with StateDB() as db:
-                new_rows = await _query_schedule_runs_since(db, bl)
-                for row in new_rows:
-                    follow_pending.setdefault(row["id"], row)
-                if follow_pending:
-                    await _poll_pending_once(db, follow_pending, schedule_names, [])
-            if new_rows:
-                bl = max(bl, *(r["created_at"] for r in new_rows))
-            return bl
+                return await _resolve_watched_runs(db, ids)
 
-        while not interrupted:
-            tick_result = _run_tick(_follow_tick(baseline))
-            if tick_result is not None:
-                baseline = tick_result
-            if interrupted:
+        try:
+            resolved = _run_tick(_resolve())
+        except AmbiguousIdError as exc:
+            # Nothing to wait on: the caller named a prefix, not a run.
+            log_error(str(exc))
+            return EXIT_UNKNOWN
+        if resolved is None:
+            # Interrupted before resolving completed — "still in progress",
+            # not success or failure.
+            return EXIT_RUNNING
+        pending, session_pending, unresolved = resolved
+        for raw_id in unresolved:
+            log_error(f"run id {raw_id!r} not found (checked schedule_runs and sessions)")
+
+        total_watched = len(pending)
+        total_sessions = len(session_pending)
+        done: list[dict[str, Any]] = []
+        session_done: list[dict[str, Any]] = []
+        chain_state = _new_chain_state(pending, chain=chain)
+        processed = 0
+
+        async def _tick() -> None:
+            nonlocal processed
+            async with StateDB() as db:
+                await _poll_pending_once(db, pending, schedule_names, done)
+                await _poll_pending_sessions_once(db, session_pending, session_done)
+                processed = await _advance_chains(
+                    db, pending, done, chain_state=chain_state, processed=processed
+                )
+
+        def _chain_open() -> bool:
+            return bool(pending or session_pending or chain_state["awaiting_grace"])
+
+        # max_wait bounds total wall-clock so a stuck session can't hang forever;
+        # None falls back to the bounded default, 0/negative opts into unbounded.
+        effective_max_wait = _DEFAULT_MAX_WAIT_SECONDS if max_wait is None else max_wait
+        deadline = time.monotonic() + effective_max_wait if effective_max_wait > 0 else None
+
+        def _wait_expired() -> bool:
+            return deadline is not None and time.monotonic() >= deadline
+
+        while _chain_open() and not interrupted and not _wait_expired():
+            _run_tick(_tick())
+            if not _chain_open() or interrupted or _wait_expired():
                 break
             _sleep_interval(interval)
-        # --follow has no natural end; exit code stays whatever the initial
-        # bounded set resolved to — new runs print but don't feed the aggregate.
 
-    return exit_code
+        resolved_roots = chain_state["resolved_roots"]
+        chain_tail_exit = chain_state["chain_tail_exit"]
+        from ._util import EXIT_CODE_BY_STATUS
+
+        session_ok = all(EXIT_CODE_BY_STATUS.get(r["status"], 1) == 0 for r in session_done)
+        if unresolved:
+            exit_code = EXIT_UNKNOWN
+        elif len(resolved_roots) < total_watched or len(session_done) < total_sessions:
+            # Some watched chain (or session) never concluded before we stopped.
+            exit_code = EXIT_RUNNING
+        elif all(chain_tail_exit.get(root) == 0 for root in resolved_roots) and session_ok:
+            # Final-link-wins: each resolved chain's most recently seen terminal
+            # exit_code decides, not every link along the way.
+            exit_code = 0
+        else:
+            exit_code = 1
+
+        if follow and not interrupted:
+            baseline = time.time()
+            follow_pending: dict[str, dict[str, Any]] = {}
+
+            async def _follow_tick(bl: float) -> float:
+                async with StateDB() as db:
+                    new_rows = await _query_schedule_runs_since(db, bl)
+                    for row in new_rows:
+                        follow_pending.setdefault(row["id"], row)
+                    if follow_pending:
+                        await _poll_pending_once(db, follow_pending, schedule_names, [])
+                if new_rows:
+                    bl = max(bl, *(r["created_at"] for r in new_rows))
+                return bl
+
+            while not interrupted:
+                tick_result = _run_tick(_follow_tick(baseline))
+                if tick_result is not None:
+                    baseline = tick_result
+                if interrupted:
+                    break
+                _sleep_interval(interval)
+            # --follow has no natural end; exit code stays whatever the initial
+            # bounded set resolved to — new runs print but don't feed the aggregate.
+
+        return exit_code
 
 
 def run_monitor_wait(argv: list[str]) -> int:

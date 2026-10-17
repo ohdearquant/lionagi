@@ -78,8 +78,9 @@ def test_load_hooks_resolves_string_names_to_callables():
 
 
 def test_load_hooks_rejects_unknown_hook_point():
-    with pytest.raises(ValueError, match="Unknown hook point"):
+    with pytest.raises(ValueError, match="Unknown hook point") as exc_info:
         load_hooks_for_agent({"session.bogus": ["persist_session_start"]})
+    assert str(exc_info.value).endswith(f"valid: {sorted(point.value for point in HookPoint)}")
 
 
 def test_load_hooks_rejects_non_list_value():

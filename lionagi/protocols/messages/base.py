@@ -1,9 +1,10 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-from enum import Enum
 from typing import Any, TypeAlias
 from uuid import UUID
+
+from lionagi.ln.types import Enum
 
 from .._concepts import Observable
 from ..generic.element import ID, Element
@@ -43,7 +44,7 @@ class MessageField(str, Enum):
     METADATA = "metadata"
 
 
-MESSAGE_FIELDS = [i.value for i in MessageField.__members__.values()]
+MESSAGE_FIELDS = list(MessageField.allowed())
 
 
 def validate_sender_recipient(value: Any, /) -> SenderRecipient:
@@ -60,7 +61,7 @@ def validate_sender_recipient(value: Any, /) -> SenderRecipient:
     if value is None:
         return MessageRole.UNSET
 
-    if value in ["system", "user", "unset", "assistant", "action"]:
+    if value in MessageRole.allowed():
         return MessageRole(value)
 
     # Plain strings (user names, identifiers, etc): try to parse as ID, else keep as-is.
