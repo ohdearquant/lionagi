@@ -127,13 +127,23 @@ project those rows ran under. To keep the project, name it in those members.
   `APICalling.stream()` caller saw a failure. The HTTP converter now marks such a chunk
   `call_failed`; the chunk is still delivered, and once the stream ends the call fails with the new
   `ProviderStreamError` (status `FAILED`), which `iModel.stream()` raises as it does other stream
-  failures. An item failure inside a call (`response.mcp_call.failed`) still leaves it
+  failures. The error quotes an error chunk's text as the consumer was shown it, after any key
+  redaction. An item failure inside a call (`response.mcp_call.failed`) still leaves it
   `COMPLETED`, and `Endpoint.stream()` itself still yields the marked chunk without raising.
-- An SSE event that named itself only in its `event:` field (`event: error` with a body holding
-  just the message) lost that name, so the error read as an ordinary event. The name now stands in
-  for a `type` the JSON body lacks (never one it carries), and the chunk records it as
-  `sse_event`. A stream that separates events without blank lines converts the waiting event under
-  its own name before the next `event:` line.
+- An SSE event whose `event:` field says the call failed (`error`, `response.error`,
+  `response.failed`, `turn.failed`) was read from its data alone, so `event: error` with data
+  holding only a message, an error subtype or plain text read as an ordinary event. Such a name
+  now fails the call whatever the data holds: it stands in for a `type` the JSON data lacks (never
+  one it carries), data that is not a JSON object becomes an error chunk, and the chunk records the
+  name as `sse_event`. Any other name (`message`, `ping`) leaves the chunk exactly as before. The
+  routed Anthropic stream reads names the same way, and records such an attempt's end as
+  `stream_error`.
+- Streamed HTTP events are framed by one reader for the plain and the routed Anthropic stream. A
+  blank line ends an event, and an `event:` field names the event being assembled, before or after
+  its data. In a stream without blank lines, an `event:` field after a named event's data starts
+  the next event, as does a `data:` line after data that is already complete JSON. A line that is
+  no SSE field is an event of its own and drops a pending name; the plain stream used to drop such
+  a line when an event was waiting.
 - A stream that named its served model only on the Responses API's `response.completed` event
   recorded none. That provider event is now read (other result chunks, such as a CLI run record,
   still are not), and once a stream reports a failure no later chunk restores a served model.

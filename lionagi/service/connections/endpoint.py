@@ -32,6 +32,10 @@ _CONFIGURED_TIMEOUT = object()
 # call; a type that ends in ``failed`` without the dot is read like any other event.
 _CALL_FAILED_EVENT_TYPES = frozenset({"response.failed", "turn.failed", "failed"})
 
+# An SSE ``event:`` name that says the call failed, whatever the event's data holds: a
+# provider can name the event ``error`` and put an error subtype, or plain text, in it.
+_SSE_CALL_FAILURE_NAMES = frozenset({"error", "response.error"}) | _CALL_FAILED_EVENT_TYPES
+
 
 def _event_reports_call_failure(event: Any) -> bool:
     """Whether a provider event or response says the call failed.
@@ -66,7 +70,13 @@ def _event_reports_call_failure(event: Any) -> bool:
 
 
 def _call_failure_detail(chunk: StreamChunk) -> str:
-    """What a chunk marked ``call_failed`` says went wrong, for the error that ends the call."""
+    """What a chunk marked ``call_failed`` says went wrong, for the error that ends the call.
+
+    An error chunk's own text comes first: it is what the consumer was shown, after any
+    redaction the endpoint applied, and the raw event can hold text the chunk masked.
+    """
+    if chunk.type == "error" and isinstance(chunk.content, str) and chunk.content:
+        return chunk.content
     raw = chunk.metadata.get("raw")
     if isinstance(raw, dict):
         for holder in (raw, raw.get("response")):
@@ -769,70 +779,68 @@ class Endpoint:
                     pending += raw.decode("utf-8")
                     while "\n" in pending:
                         line, pending = pending.split("\n", 1)
-                        chunk = self._stream_line_to_chunk(line, frame)
-                        if chunk is not None:
-                            yield chunk
+                        for data, name in self._frame_stream_line(line, frame):
+                            yield self._line_to_stream_chunk(data, sse_event=name)
 
                 if pending:
-                    chunk = self._stream_line_to_chunk(pending, frame)
-                    if chunk is not None:
-                        yield chunk
+                    for data, name in self._frame_stream_line(pending, frame):
+                        yield self._line_to_stream_chunk(data, sse_event=name)
                 if frame.data:
-                    yield self._dispatch_sse_frame(frame)
+                    data, name = self._take_sse_event(frame)
+                    yield self._line_to_stream_chunk(data, sse_event=name)
 
-    def _dispatch_sse_frame(self, frame: _SSEFrame) -> StreamChunk:
-        """Convert the event *frame* holds and start a new one."""
-        data = "\n".join(frame.data)
-        name = frame.event
+    @staticmethod
+    def _take_sse_event(frame: _SSEFrame) -> tuple[str, str | None]:
+        """The event *frame* holds, as its data and its ``event:`` name; the frame starts over."""
+        event = ("\n".join(frame.data), frame.event)
         frame.data.clear()
         frame.event = None
-        return self._line_to_stream_chunk(data, sse_event=name)
+        return event
 
-    def _stream_line_to_chunk(
-        self,
-        line: str,
-        frame: _SSEFrame,
-    ) -> StreamChunk | None:
-        """Parse one HTTP stream line, handling SSE framing when present."""
-        text = line.rstrip("\r")
-        stripped = text.strip()
+    @classmethod
+    def _frame_stream_line(cls, line: str, frame: _SSEFrame) -> list[tuple[str, str | None]]:
+        """Feed one HTTP stream line to *frame*; return the events it completes.
+
+        Each event is its data and the name its ``event:`` field gave it, or None. A blank
+        line ends the event being assembled, and an ``event:`` field names that event,
+        before or after its ``data:`` lines. A stream without blank lines is split as well:
+        an ``event:`` field arriving after a named event's data starts the next event, and
+        a ``data:`` line arriving after data that is already complete JSON (or ``[DONE]``)
+        does too. A line that is no SSE field is an event of its own with no name, after
+        any event still waiting, and the name being assembled is dropped with it.
+        """
+        stripped = line.rstrip("\r").strip()
 
         if not stripped:
-            if not frame.data:
-                frame.event = None
-                return None
-            return self._dispatch_sse_frame(frame)
+            if frame.data:
+                return [cls._take_sse_event(frame)]
+            frame.event = None
+            return []
 
-        if stripped.startswith(":"):
-            return None
+        if stripped.startswith(":") or stripped.startswith(("id:", "retry:")):
+            return []
 
         if stripped.startswith("event:"):
-            # A stream without blank lines between events starts the next one here, so a
-            # complete event still waiting is converted under its own name first.
-            previous = None
-            if frame.data and self._looks_like_complete_stream_data(frame.data):
-                previous = self._dispatch_sse_frame(frame)
+            events = []
+            if frame.data and frame.event is not None:
+                events.append(cls._take_sse_event(frame))
             frame.event = stripped.removeprefix("event:").strip() or None
-            return previous
-
-        if stripped.startswith(("id:", "retry:")):
-            return None
+            return events
 
         if stripped.startswith("data:"):
             data = stripped.removeprefix("data:")
             if data.startswith(" "):
                 data = data[1:]
-            if frame.data and self._looks_like_complete_stream_data(frame.data):
-                previous = self._dispatch_sse_frame(frame)
-                frame.data.append(data)
-                return previous
+            events = []
+            if frame.data and cls._looks_like_complete_stream_data(frame.data):
+                events.append(cls._take_sse_event(frame))
             frame.data.append(data)
-            return None
+            return events
 
-        if frame.data:
-            return self._dispatch_sse_frame(frame)
-
-        return self._line_to_stream_chunk(stripped)
+        events = [cls._take_sse_event(frame)] if frame.data else []
+        frame.event = None
+        events.append((stripped, None))
+        return events
 
     @staticmethod
     def _looks_like_complete_stream_data(data_lines: list[str]) -> bool:
@@ -848,15 +856,18 @@ class Endpoint:
     def _line_to_stream_chunk(self, line: str, sse_event: str | None = None) -> StreamChunk:
         """Convert a generic HTTP stream line into the StreamChunk contract.
 
-        *sse_event* is the name the event's SSE ``event:`` field gave it. It stands in
-        for a ``type`` the JSON body does not carry (``event: error`` with a body that
-        holds only the message), and never replaces one the body does carry.
+        *sse_event* is the name the event's SSE ``event:`` field gave it. Only a name that
+        says the call failed (``_SSE_CALL_FAILURE_NAMES``) is read: such an event fails the
+        call whatever its data holds, the name stands in for a ``type`` the JSON body does
+        not carry, and the chunk records it as ``sse_event``. Any other name, ``message``
+        included, leaves the chunk exactly as the data alone converts.
 
-        A chunk whose event says the call itself failed (an ``error`` event, or what
-        ``_event_reports_call_failure`` reads as one) is marked ``call_failed`` in its
-        metadata. The chunk keeps the type it converts to, so its content still reaches
-        the consumer; ``APICalling`` reads the mark and fails the call when the stream
-        ends.
+        A chunk whose event says the call itself failed (an ``error`` event, what
+        ``_event_reports_call_failure`` reads as one, or a failure name) is marked
+        ``call_failed`` in its metadata. The chunk keeps the type it converts to, so its
+        content still reaches the consumer; ``APICalling`` reads the mark and fails the
+        call when the stream ends. Data that is not a JSON object under a failure name
+        becomes an error chunk holding that text.
         """
         data = line
         if line.startswith("data:"):
@@ -865,35 +876,46 @@ class Endpoint:
         if data == "[DONE]":
             return StreamChunk(type="result", metadata={"done": True})
 
+        failure_name = sse_event if sse_event in _SSE_CALL_FAILURE_NAMES else None
+
         try:
             event = json.loads(data)
         except json.JSONDecodeError:
-            return StreamChunk(
-                type="text",
-                content=data,
-                is_delta=True,
-                metadata={"raw": line},
-            )
+            event, decoded = None, False
+        else:
+            decoded = True
 
         if not isinstance(event, dict):
+            # As before: undecodable data keeps its line as the raw event, decoded JSON
+            # that is not an object keeps the decoded value.
+            text, raw = (str(event), event) if decoded else (data, line)
+            if failure_name is not None:
+                return StreamChunk(
+                    type="error",
+                    content=text,
+                    is_error=True,
+                    metadata={"raw": raw, "sse_event": failure_name, "call_failed": True},
+                )
             return StreamChunk(
                 type="text",
-                content=str(event),
+                content=text,
                 is_delta=True,
-                metadata={"raw": event},
+                metadata={"raw": raw},
             )
 
-        named_by_sse = bool(sse_event) and "type" not in event
-        if named_by_sse:
-            event = {**event, "type": sse_event}
+        if failure_name is not None and "type" not in event:
+            event = {**event, "type": failure_name}
 
         chunk = self._event_to_stream_chunk(event)
         if chunk is None:
             chunk = StreamChunk(type="system", metadata={"raw": event})
-        if named_by_sse:
-            # The raw event carries the type the SSE field gave it; say so.
-            chunk.metadata["sse_event"] = sse_event
-        if (chunk.type == "error" and chunk.is_error) or _event_reports_call_failure(event):
+        if failure_name is not None:
+            chunk.metadata["sse_event"] = failure_name
+        if (
+            failure_name is not None
+            or (chunk.type == "error" and chunk.is_error)
+            or _event_reports_call_failure(event)
+        ):
             chunk.metadata["call_failed"] = True
         return chunk
 

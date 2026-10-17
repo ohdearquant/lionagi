@@ -202,6 +202,102 @@ async def test_endpoint_recognizes_an_error_named_only_by_sse(replay_server, rec
     )
 
 
+_CHAT_HI = {"id": "c1", "choices": [{"delta": {"content": "hi"}}]}
+_CHAT_BYE = {"id": "c2", "choices": [{"delta": {"content": "bye"}}]}
+
+
+async def _endpoint_chunks(replay, record_property):
+    chunks = [chunk async for chunk in _endpoint(replay).stream(_payload())]
+    await asyncio.wait_for(replay.eof.wait(), timeout=2)
+    assert len(replay.requests) == 1
+    record_property("chunks", json.dumps([asdict(c) for c in chunks]))
+    return chunks
+
+
+@pytest.mark.parametrize("entry", _ENTRIES)
+@pytest.mark.parametrize(
+    "wire",
+    [
+        pytest.param(
+            'event: error\ndata: {"type":"overloaded_error","message":"Overloaded"}\n\n',
+            id="typed-data",
+        ),
+        pytest.param("event: error\ndata: upstream gateway error\n\n", id="text-data"),
+        pytest.param('event: error\ndata: "upstream gateway error"\n\n', id="json-string-data"),
+        pytest.param('data: {"message":"upstream"}\nevent: error\n\n', id="name-after-data"),
+        pytest.param(
+            "event: response.created\ndata: "
+            + json.dumps(_CREATED)
+            + '\nevent: error\ndata: {"message":"upstream"}\n',
+            id="no-blank-lines",
+        ),
+    ],
+)
+async def test_an_event_named_error_fails_the_call_whatever_its_data(
+    replay_server, entry, wire, record_property
+):
+    replay = await replay_server(wire)
+    call, chunks, _model = await _observe(replay, entry, record_property)
+    assert call.status == EventStatus.FAILED
+    failed = [chunk for chunk in chunks if chunk.metadata.get("call_failed")]
+    assert len(failed) == 1
+    # The event the name belongs to, never one framed before it.
+    assert chunks[-1] is failed[0]
+    assert failed[0].metadata["sse_event"] == "error"
+
+
+async def test_a_success_event_name_leaves_the_chunk_as_its_data_converts(
+    replay_server, record_property
+):
+    replay = await replay_server("event: message\ndata: " + json.dumps(_CHAT_HI) + "\n\n")
+    chunks = await _endpoint_chunks(replay, record_property)
+    assert [(chunk.type, chunk.content) for chunk in chunks] == [("text", "hi")]
+    assert chunks[0].metadata == {"raw": _CHAT_HI}
+
+
+@pytest.mark.parametrize(
+    ("wire", "expected"),
+    [
+        pytest.param(
+            "event: ping\ndata: keep-alive\nevent: message\ndata: " + json.dumps(_CHAT_HI) + "\n\n",
+            [("text", "keep-alive", False), ("text", "hi", False)],
+            id="named-events-without-blank-lines",
+        ),
+        pytest.param(
+            "data: " + json.dumps(_CHAT_HI) + "\ndata: " + json.dumps(_CHAT_BYE) + "\n",
+            [("text", "hi", False), ("text", "bye", False)],
+            id="complete-data-without-blank-lines",
+        ),
+        pytest.param(
+            "event: error\n" + json.dumps(_CHAT_HI) + "\ndata: " + json.dumps(_CHAT_BYE) + "\n\n",
+            [("text", "hi", False), ("text", "bye", False)],
+            id="a-line-outside-sse-drops-the-pending-name",
+        ),
+        pytest.param(
+            'data: {"message":"upstream"}\nevent: error\n\ndata: ' + json.dumps(_CHAT_BYE) + "\n\n",
+            [("error", None, True), ("text", "bye", False)],
+            id="a-name-ends-with-its-event",
+        ),
+    ],
+)
+async def test_sse_events_are_split_and_named_as_framed(
+    replay_server, wire, expected, record_property
+):
+    replay = await replay_server(wire)
+    chunks = await _endpoint_chunks(replay, record_property)
+    assert [
+        (
+            chunk.type,
+            chunk.content if chunk.type == "text" else None,
+            bool(chunk.metadata.get("call_failed")),
+        )
+        for chunk in chunks
+    ] == expected
+    assert [chunk.metadata.get("sse_event") for chunk in chunks] == [
+        "error" if failed else None for _type, _text, failed in expected
+    ]
+
+
 @pytest.mark.parametrize("entry", ["imodel", "imodel-limited"])
 @pytest.mark.parametrize("nested_error", [False, True], ids=["no-error", "nested-error"])
 async def test_item_failure_does_not_fail_successful_call(

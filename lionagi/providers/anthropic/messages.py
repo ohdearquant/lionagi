@@ -675,6 +675,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         from lionagi.service.connections.endpoint import (
             _RoutedNoRetryError,
             _RoutedRetryableError,
+            _SSEFrame,
         )
 
         self._assert_ssrf_safe_url()
@@ -726,7 +727,9 @@ class AnthropicMessagesEndpoint(Endpoint):
         text_redactor = StreamTextRedactor(attempt.key)
         decoder = codecs.getincrementaldecoder("utf-8")()
         pending = ""
-        event_data: list[str] = []
+        # The same SSE framing as the unrouted stream, so an event keeps its ``event:``
+        # name and an ``event: error`` fails the call here as it does there.
+        frame = _SSEFrame()
         usage: dict[str, Any] = {}
         served_model = None
         request_id = None
@@ -735,30 +738,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         saw_final_usage = False
         start_models: set[str] = set()
 
-        def finish_line(line: str) -> list[str]:
-            text = line.rstrip("\r")
-            stripped = text.strip()
-            if not stripped:
-                if not event_data:
-                    return []
-                data = "\n".join(event_data)
-                event_data.clear()
-                return [data]
-            if stripped.startswith(":") or stripped.startswith(("event:", "id:", "retry:")):
-                return []
-            if stripped.startswith("data:"):
-                data = stripped.removeprefix("data:")
-                if data.startswith(" "):
-                    data = data[1:]
-                event_data.append(data)
-                return []
-            if event_data:
-                data = "\n".join(event_data)
-                event_data.clear()
-                return [data, stripped]
-            return [stripped]
-
-        def queue_data(data: str) -> list:
+        def queue_data(data: str, sse_event: str | None = None) -> list:
             """Hand one event to the text redactor; return the events now ready."""
             event = None
             try:
@@ -768,7 +748,7 @@ class AnthropicMessagesEndpoint(Endpoint):
             pieces: list[tuple[str, str]] = []
             places: list[tuple[Any, Any]] = []
             # The chunk a consumer receives for this event, read before any masking.
-            shown = self._line_to_stream_chunk(data)
+            shown = self._line_to_stream_chunk(data, sse_event=sse_event)
             # A consumer joins chunk text by type (``Branch.run`` joins text chunks, and
             # thinking chunks) and may join every chunk's text in order.
             if shown is None or not isinstance(shown.content, str) or not shown.content:
@@ -779,7 +759,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                 # of the other chunks of that type.
                 pieces.append((StreamTextRedactor.RAW, data))
                 places.append((None, None))
-                return push(event, data, places, False, pieces, shown, None)
+                return push(event, data, places, False, pieces, shown, None, sse_event)
             # What the event says about the attempt, read before the walk masks its text:
             # a count whose text holds a run is masked in place, and the attempt is priced
             # from the provider's own count.
@@ -820,11 +800,15 @@ class AnthropicMessagesEndpoint(Endpoint):
             rewrite = _mask_key_runs_in_strings(
                 event, attempt.key, {(id(holder), name) for holder, name in places}
             )
-            return push(event, data, places, rewrite, pieces, shown, settlement)
+            return push(event, data, places, rewrite, pieces, shown, settlement, sse_event)
 
-        def push(event, data, places, rewrite, pieces, shown, settlement=None) -> list:
+        def push(
+            event, data, places, rewrite, pieces, shown, settlement=None, sse_event=None
+        ) -> list:
             if shown is None:
-                return text_redactor.push((event, data, places, rewrite, None, settlement), pieces)
+                return text_redactor.push(
+                    (event, data, places, rewrite, None, settlement, sse_event), pieces
+                )
             # A piece whose text the chunk shows takes the chunk's join too; other text
             # the chunk shows is a piece of its own.
             source = next(
@@ -836,14 +820,14 @@ class AnthropicMessagesEndpoint(Endpoint):
                 shown.content,
             )
             return text_redactor.push(
-                (event, data, places, rewrite, shown.type, settlement),
+                (event, data, places, rewrite, shown.type, settlement, sse_event),
                 pieces,
                 (shown.type, source),
             )
 
         async def emit_ready(ready: list):
             nonlocal served_model, request_id, settled, saw_error_event, saw_final_usage
-            for (event, data, places, rewrite, shown_type, settlement), texts in ready:
+            for (event, data, places, rewrite, shown_type, settlement, sse_event), texts in ready:
                 shown_text = texts.pop() if shown_type is not None else None
                 raw = None
                 for (holder, field), text in zip(places, texts, strict=True):
@@ -916,8 +900,12 @@ class AnthropicMessagesEndpoint(Endpoint):
                     )
                     await router.settle_stream_end(attempt, priced)
                     settled = True
-                chunk = self._line_to_stream_chunk(data)
+                chunk = self._line_to_stream_chunk(data, sse_event=sse_event)
                 if chunk is not None:
+                    if chunk.metadata.get("call_failed"):
+                        # A failure the event's SSE name or its data reports, whatever
+                        # ``type`` the data carries.
+                        saw_error_event = True
                     if shown_text is not None and chunk.type == shown_type:
                         chunk.content = shown_text
                     chunk.content = redact_value(chunk.content, attempt.key)
@@ -983,25 +971,24 @@ class AnthropicMessagesEndpoint(Endpoint):
                     pending += decoder.decode(safe)
                     while "\n" in pending:
                         line, pending = pending.split("\n", 1)
-                        for data in finish_line(line):
-                            async for chunk in emit_ready(queue_data(data)):
+                        for data, name in self._frame_stream_line(line, frame):
+                            async for chunk in emit_ready(queue_data(data, name)):
                                 yield chunk
                 # The byte redactor's held tail can hold several lines, the last events
                 # of the stream among them.
                 pending += decoder.decode(redactor.feed(b"", final=True), final=True)
                 while "\n" in pending:
                     line, pending = pending.split("\n", 1)
-                    for data in finish_line(line):
-                        async for chunk in emit_ready(queue_data(data)):
+                    for data, name in self._frame_stream_line(line, frame):
+                        async for chunk in emit_ready(queue_data(data, name)):
                             yield chunk
                 if pending:
-                    for data in finish_line(pending):
-                        async for chunk in emit_ready(queue_data(data)):
+                    for data, name in self._frame_stream_line(pending, frame):
+                        async for chunk in emit_ready(queue_data(data, name)):
                             yield chunk
-                if event_data:
-                    data = "\n".join(event_data)
-                    event_data.clear()
-                    async for chunk in emit_ready(queue_data(data)):
+                if frame.data:
+                    data, name = self._take_sse_event(frame)
+                    async for chunk in emit_ready(queue_data(data, name)):
                         yield chunk
                 async for chunk in emit_ready(text_redactor.finish()):
                     yield chunk

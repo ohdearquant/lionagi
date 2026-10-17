@@ -56,7 +56,10 @@ A provider can accept a streamed HTTP call and then say, inside the stream, that
 call failed (an `error` event, `response.failed`). The chunk that says so is marked
 `call_failed` in its metadata and still delivered; when the stream ends the call fails
 with `ProviderStreamError`, so its status is `FAILED` and `iModel.stream()` raises
-`ValueError` from that cause. A failure of one item inside the call (such as
+`ValueError` from that cause. An SSE event whose `event:` field names a call failure
+(`error`, `response.error`, `response.failed`, `turn.failed`) fails the call whatever
+its data holds, and its chunk records the name as `sse_event`; any other name leaves the
+chunk as its data converts. A failure of one item inside the call (such as
 `response.mcp_call.failed`) does not fail the call. Once a stream reports a failure,
 no model named after it is recorded as served.
 
