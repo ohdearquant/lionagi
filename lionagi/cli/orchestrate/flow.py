@@ -200,7 +200,36 @@ class FlowPlanError(LionError):
     """Orchestrator failed to produce a usable plan."""
 
 
-async def _persist_session_phase(env, phase: str) -> None:
+async def _validate_flow_invocation(invocation_id: str) -> None:
+    """Reject a dangling invocation before setup can degrade persistence.
+
+    Every way this check can fail to confirm the row is reported through
+    :class:`FlowPlanError`: an unreadable store (a missing table, a locked or
+    unopenable file) leaves the id just as unproven as an absent one, and
+    letting the read error escape would surface a traceback where the caller
+    expects a refusal it can act on.
+    """
+    from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
+
+    registered = False
+    if not state_db_known_absent():
+        try:
+            async with StateDB(readonly=read_only_open_supported()) as db:
+                registered = await db.get_invocation(invocation_id) is not None
+        except Exception as exc:  # noqa: BLE001 — an unreadable store is a refusal
+            raise FlowPlanError(
+                f"--invocation {invocation_id!r} could not be checked against the "
+                f"recorded invocations: {exc}. Register one with `li invoke start` "
+                "and use its exact ID, or repair the state store and retry"
+            ) from exc
+    if not registered:
+        raise FlowPlanError(
+            f"--invocation {invocation_id!r} is not a registered invocation ID; "
+            "register one with `li invoke start` and use its exact ID"
+        )
+
+
+async def _persist_session_phase(env, phase: str | None) -> None:
     """Best-effort write of the live execution phase to the session row."""
     ctx = getattr(env, "_live_persist", None)
     if ctx and ctx.get("db"):
@@ -220,6 +249,87 @@ async def _persist_node_metadata_patch(db, session_id: str, patch: dict) -> None
     exactly the race that used to lose one side's patch.
     """
     await db.merge_session_node_metadata(session_id, patch)
+
+
+async def _persist_control_poller_state(env, state: str) -> None:
+    """Publish flow/play consumer availability through existing scalar metadata."""
+    ctx = getattr(env, "_live_persist", None)
+    if ctx and ctx.get("db"):
+        try:
+            await _persist_node_metadata_patch(
+                ctx["db"], ctx["session_id"], {"flow_control_poller": state}
+            )
+        except Exception as exc:  # noqa: BLE001 — metadata stays best-effort
+            logger.debug("control poller state %s could not be persisted: %s", state, exc)
+
+
+async def _cancel_poller_marker_write(write: _asyncio.Task, reason: str) -> None:
+    """Cancel a still-running marker write and give it the drain's grace period.
+
+    A marker write left running is not free: while it runs it holds the store
+    when it is the writer, and teardown's own status write is queued behind
+    that lock, so the write is cancelled here rather than left to run to its
+    own end. Cancelling cuts a write that cooperates: one parked in a driver
+    call (SQLite's busy wait, say) cannot be interrupted from Python, so it
+    keeps the store until that call returns, up to the driver's own busy
+    timeout. A write that ignores its cancel is abandoned after the grace
+    period and reported, as one segment write would be. A cancellation that
+    arrives from further out is left to propagate, so this never swallows one
+    that was not its to take.
+    """
+    if write.done():
+        return
+    write.cancel()
+    with move_on_after(_DRAIN_GRACE_SECONDS):
+        await _asyncio.wait({write})
+    if not write.done():
+        _warn(
+            f"control-poller marker write was abandoned {reason}; it still holds "
+            "the store until its driver call returns, and whether the marker "
+            "landed is not known from here"
+        )
+    else:
+        # The write unwound, which does not say the merge committed: a cancel
+        # delivered while the driver call ran can land here with the UPDATE
+        # already applied. The helper cannot tell the two apart, so it does not
+        # claim the marker is stale.
+        _warn(
+            f"control-poller marker write was cancelled {reason}; whether the "
+            "marker landed is not known from here"
+        )
+
+
+async def _persist_control_poller_state_bounded(env, state: str) -> None:
+    """Best-effort marker write, bounded so a wedged store cannot hold the caller.
+
+    The marker is telemetry, like every other node_metadata write, so it gets
+    the same budget the drain gives one segment-metadata write. A write still
+    running at the budget is cancelled and given the drain's grace period to
+    unwind, because leaving it running would let it go on holding the store's
+    write lock, and teardown's own status write is queued behind it. The budget
+    bounds the caller, not the store: a cooperative write is cut at the budget,
+    while one parked in a driver call (SQLite's busy wait) keeps the lock until
+    that call returns, bounded by the driver's busy timeout
+    (``LIONAGI_SQLITE_BUSY_TIMEOUT_MS``, 5 s by default). A write that ignores
+    the cancel is abandoned and reported, not awaited.
+    """
+    write = _asyncio.ensure_future(_persist_control_poller_state(env, state))
+    try:
+        _done, pending = await _asyncio.wait({write}, timeout=_DRAIN_GRACE_SECONDS)
+    except BaseException:
+        # The caller is being cancelled with this write still in flight. The
+        # write is cancelled so it cannot outlive the caller, but a write this
+        # does not unwind (one parked in a driver call) keeps the store until
+        # that call returns.
+        await _cancel_poller_marker_write(write, "with its caller")
+        raise
+    if pending:
+        await _cancel_poller_marker_write(write, "after its budget")
+        return
+    # The write swallows every error it can report itself; what escapes it is a
+    # cancellation, and the caller asked for this write, so it is the caller's
+    # to see.
+    write.result()
 
 
 # ── Artifact-contract text — shared by planned legs and spawned nodes ─────────
@@ -327,6 +437,17 @@ _DRAIN_RECANCEL_SECONDS = 0.1
 # would race the executor's task-group teardown) — see TeamLifecycleCoordinator.
 
 
+async def _persist_applied_control_phase(db, session_id: str, phase: str) -> None:
+    """Retry one failed phase write without replaying the executor action."""
+    for attempt in range(2):
+        try:
+            await db.update_session(session_id, current_phase=phase)
+            return
+        except Exception as exc:  # noqa: BLE001 — phase telemetry stays best-effort
+            if attempt:
+                logger.debug("control phase write failed after retry: %s", exc)
+
+
 async def _apply_session_control(db, executor, row: dict) -> str | None:
     """Apply one session_controls row against *executor*. Returns the
     finalize result, or None if left untouched (mid-apply from a prior
@@ -343,10 +464,12 @@ async def _apply_session_control(db, executor, row: dict) -> str | None:
     try:
         if verb == "pause":
             executor.pause()
+            await _persist_applied_control_phase(db, row["session_id"], "paused")
             return await _finalize_applied(db, control_id)
 
         if verb == "resume":
             executor.resume()
+            await _persist_applied_control_phase(db, row["session_id"], "executing")
             return await _finalize_applied(db, control_id)
 
         if verb == "message":
@@ -2062,6 +2185,12 @@ async def _execute_dag(
             add_dir.append(project_root)
 
     t_exec = time.monotonic()
+    # The run-start publish is bounded the same way as the stop marker, and has
+    # the same limit: a cooperative write is cut at the budget, while one parked
+    # in the store driver's busy wait keeps the writer lock until that call
+    # returns, so run start can wait out the driver's busy timeout on a stalled
+    # store.
+    await _persist_control_poller_state_bounded(env, "active")
     _hb_task = _asyncio.ensure_future(_heartbeat_loop())
     _ctl_task = _asyncio.ensure_future(_control_poll_loop())
     _exchange = getattr(env, "exchange", None)
@@ -2102,9 +2231,22 @@ async def _execute_dag(
         _cancelled = isinstance(_dag_exc, _asyncio.CancelledError)
         try:
             _hb_task.cancel()
-            _ctl_task.cancel()
             if _exch_task is not None:
                 _exchange.stop()
+            # Publish the stop, then cancel the poll loop. Once the marker commits,
+            # admission refuses new controls. A control admitted before that -- while
+            # this write runs, after the write outlives its budget, or after a native
+            # cancellation interrupts the wait -- may never be applied once the loop is
+            # gone; _run_flow's teardown closes every such control as rejected after the
+            # session is terminal, so none is left pending. Ordered after the heartbeat
+            # and exchange stops above so the write cannot delay or skip them, and
+            # shielded against cooperative cancellation. The cancel runs in the finally
+            # either way.
+            try:
+                with CancelScope(shield=True):
+                    await _persist_control_poller_state_bounded(env, "stopped")
+            finally:
+                _ctl_task.cancel()
             # Waited, not awaited: awaiting a cancelled task under suppress(CancelledError)
             # would also swallow a cancellation of this task arriving meanwhile.
             await _asyncio.wait({_hb_task, _ctl_task})
@@ -2746,6 +2888,9 @@ async def _run_flow(
     if legacy_kwargs:
         raise TypeError(f"_run_flow() got unexpected keyword arguments: {list(legacy_kwargs)}")
 
+    if invocation_id is not None:
+        await _validate_flow_invocation(invocation_id)
+
     _started_at = time.time()
     _invocation_kind = "play" if playbook_name else "flow"
     # The directory this run resolves its MCP config from: the launching
@@ -2878,7 +3023,10 @@ async def _run_flow(
     # Every flow run stamps its own run_id into node_metadata so a later
     # --resume can resolve this session back to a checkpoint; a resumed run
     # additionally links to the run it resumed from.
-    _extra_node_metadata: dict = {"run_id": env.run.run_id}
+    _extra_node_metadata: dict = {
+        "run_id": env.run.run_id,
+        "flow_control_poller": "pending",
+    }
     if resume_checkpoint is not None and resume_checkpoint.get("session_id"):
         _extra_node_metadata["resumed_from"] = resume_checkpoint["session_id"]
 
@@ -2904,6 +3052,12 @@ async def _run_flow(
         artifact_contract=artifact_contract,
         extra_node_metadata=_extra_node_metadata,
     )
+
+    if env._live_persist is not None:
+        from .._logging import hint
+
+        session_id = env._live_persist["session_id"]
+        hint(f"Session: {session_id}  →  li o ctl status {session_id[:8]}")
 
     inner_kw = dict(
         env=env,
@@ -2951,7 +3105,61 @@ async def _run_flow(
         raise
     finally:
         with CancelScope(shield=True):
-            effective_status = await stop_live_persist(env, status=_terminal_status)
+            # Teardown clears the live phase in its terminal status UPDATE.
+            # This shield covers cooperative cancel scopes; native task.cancel
+            # can still interrupt the existing teardown before that commit.
+            _control_session_id = (env._live_persist or {}).get("session_id")
+            try:
+                effective_status = await stop_live_persist(env, status=_terminal_status)
+            finally:
+                if _control_session_id is not None:
+                    # The DAG poller is gone, so a control still queued and unclaimed
+                    # will never be applied: close it, as the agent runner closes its
+                    # undelivered steers. This runs even when the teardown above raised
+                    # after its terminal commit, so a failure there cannot leave a
+                    # control queued against a consumer that has already gone. The
+                    # sweep refuses a session whose stored status is not terminal, and
+                    # leaves a claimed row to whoever claimed it; teardown closed the
+                    # live handle, so it gets a fresh one.
+                    from lionagi.cli.agent import _tombstone_pending_steers
+                    from lionagi.state.db import (
+                        SESSION_TERMINAL_STATUSES,
+                        StateDB,
+                        read_only_open_supported,
+                        state_db_known_absent,
+                    )
+
+                    try:
+                        # A read-only probe first, because the sweep needs a writable
+                        # handle and the writable open takes the store's writer lock and
+                        # re-runs the schema reconciliation. Most runs queue no control at
+                        # all, and for a file store a read-only open skips both, so that
+                        # common exit stays a read. Read-only is SQLite-only: a store with
+                        # no file path (a server-backed URL) opens writable either way, so
+                        # the probe is an optimisation for file stores, not for every
+                        # store. The sweep re-checks the terminal precondition and the
+                        # claim before it writes, so the probe is only an optimisation.
+                        if not state_db_known_absent():
+                            async with StateDB(readonly=read_only_open_supported()) as _probe_db:
+                                _probe_session = await _probe_db.get_session(_control_session_id)
+                                _probe_pending = await _probe_db.list_pending_session_controls(
+                                    _control_session_id
+                                )
+                            if (_probe_session or {}).get(
+                                "status"
+                            ) in SESSION_TERMINAL_STATUSES and any(
+                                row.get("result") is None for row in _probe_pending
+                            ):
+                                async with StateDB() as _sweep_db:
+                                    await _tombstone_pending_steers(
+                                        {"db": _sweep_db, "session_id": _control_session_id},
+                                        result=(
+                                            "rejected: run reached terminal status before its DAG "
+                                            "poller applied the control"
+                                        ),
+                                    )
+                    except Exception as _sweep_exc:  # noqa: BLE001 — teardown must not raise
+                        logger.warning("control tombstone write failed: %r", _sweep_exc)
             if effective_status != _terminal_status:
                 _terminal_status = effective_status
             import time as _time
@@ -3114,6 +3322,7 @@ async def _run_flow_inner(
         )
 
         progress("Planning DAG...")
+        await _persist_session_phase(env, "planning")
         try:
             assignments = await plan(
                 env.orc_branch, prompt, roles=roster, dag=True, guidance=guidance, max_tasks=max_ops

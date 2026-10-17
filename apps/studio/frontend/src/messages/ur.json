@@ -666,6 +666,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "حالیہ رنز دستیاب نہیں",
     "title": "شیڈولز",
     "subtitle": "cron، interval، اور GitHub ٹرگرز پر مستقل آٹومیشنز",
     "calendar": "کیلنڈر",

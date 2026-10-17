@@ -666,6 +666,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "近期运行记录不可用",
     "title": "计划任务",
     "subtitle": "基于 cron、固定间隔与 GitHub 触发的常驻自动化",
     "calendar": "日历",
