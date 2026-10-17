@@ -6,11 +6,38 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+@contextlib.contextmanager
+def _cli_warnings():
+    """Collect the CLI warning channel as it is emitted.
+
+    The channel is a logger, not stderr directly, so a raise/apply refusal reads
+    from it rather than from capsys. Its handlers are swapped for the duration
+    because a test that drives ``main()`` leaves the channel in whatever state
+    configure_cli_logging() set.
+    """
+    logger = logging.getLogger("lionagi.cli.warn")
+    messages: list[str] = []
+    handler = logging.Handler()
+    handler.emit = lambda record: messages.append(record.getMessage())
+    saved = (logger.level, logger.propagate, list(logger.handlers))
+    logger.handlers = [handler]
+    logger.propagate = False
+    logger.setLevel(logging.WARNING)
+    try:
+        yield messages
+    finally:
+        logger.setLevel(saved[0])
+        logger.propagate = saved[1]
+        logger.handlers[:] = saved[2]
 
 
 def test_schedule_subparser_registered():
@@ -2025,15 +2052,16 @@ def test_schedule_validate_valid_file_exits_zero(agent_profile_cwd, capsys):
     assert "VALID" in capsys.readouterr().out
 
 
-def test_schedule_validate_invalid_file_exits_nonzero(agent_profile_cwd, capsys):
+def test_schedule_validate_invalid_file_exits_nonzero(agent_profile_cwd):
     from lionagi.studio.cli import run_schedule
 
     manifest = _write_manifest(agent_profile_cwd)
     manifest.write_text(manifest.read_text().replace("reviewer", "ghost-profile"))
     args = _parse_schedule_args(["validate", str(manifest)])
-    result = run_schedule(args)
+    with _cli_warnings() as warnings:
+        result = run_schedule(args)
     assert result == 1
-    assert "does not exist" in capsys.readouterr().err
+    assert any("does not exist" in message for message in warnings)
 
 
 def test_schedule_validate_missing_file_exits_nonzero(capsys):
@@ -2150,30 +2178,29 @@ schedules:
 
 @pytest.mark.parametrize("verb", ["validate", "apply"])
 def test_a_global_set_labels_a_member_error_with_its_own_prefix(
-    agent_profile_cwd, temp_state_db, capsys, verb
+    agent_profile_cwd, temp_state_db, verb
 ):
     from lionagi.studio.cli import run_schedule
 
     manifest = _write_global_manifest(agent_profile_cwd, with_cwd=False)
-    assert run_schedule(_parse_schedule_args([verb, str(manifest)])) == 1
-    err = capsys.readouterr().err
-    assert err.startswith("INVALID  global/nightly-review  ")
-    assert "demo/" not in err
+    with _cli_warnings() as warnings:
+        assert run_schedule(_parse_schedule_args([verb, str(manifest)])) == 1
+    assert warnings[0].startswith("INVALID  global/nightly-review  ")
+    assert all("demo/" not in message for message in warnings)
 
 
-def test_a_global_set_labels_a_plan_error_with_its_prefix_once(
-    agent_profile_cwd, temp_state_db, capsys
-):
+def test_a_global_set_labels_a_plan_error_with_its_prefix_once(agent_profile_cwd, temp_state_db):
     from lionagi.studio.cli import run_schedule
 
     first = _write_global_manifest(agent_profile_cwd, name="first")
     assert run_schedule(_parse_schedule_args(["apply", str(first)])) == 0
-    capsys.readouterr()
     second = _write_global_manifest(agent_profile_cwd, name="second")
-    assert run_schedule(_parse_schedule_args(["apply", str(second)])) == 1
-    err = capsys.readouterr().err
-    assert err.startswith("INVALID  global/nightly-review  ")
-    assert "global/global/" not in err and "demo/global/" not in err
+    with _cli_warnings() as warnings:
+        assert run_schedule(_parse_schedule_args(["apply", str(second)])) == 1
+    assert warnings[0].startswith("INVALID  global/nightly-review  ")
+    assert all(
+        "global/global/" not in message and "demo/global/" not in message for message in warnings
+    )
 
 
 def _create_unowned_schedule(cwd, *, name="nightly-review", **overrides):
@@ -2247,22 +2274,20 @@ def test_schedule_apply_adopt_dry_run_reports_existing_row(
     ]
 
 
-def test_schedule_apply_without_adopt_names_the_required_flag(
-    agent_profile_cwd, temp_state_db, capsys
-):
+def test_schedule_apply_without_adopt_names_the_required_flag(agent_profile_cwd, temp_state_db):
     from lionagi.studio.cli import run_schedule
 
     manifest = _write_manifest(agent_profile_cwd)
     _create_unowned_schedule(agent_profile_cwd, name="demo/nightly-review")
 
-    result = run_schedule(_parse_schedule_args(["apply", str(manifest)]))
-    captured = capsys.readouterr()
+    with _cli_warnings() as warnings:
+        result = run_schedule(_parse_schedule_args(["apply", str(manifest)]))
     assert result == 1
-    assert "--adopt" in captured.err
+    assert any("--adopt" in message for message in warnings)
 
 
 def test_schedule_apply_adopt_refusal_reports_the_changed_column(
-    agent_profile_cwd, temp_state_db, capsys, monkeypatch
+    agent_profile_cwd, temp_state_db, monkeypatch
 ):
     from lionagi.studio.cli import run_schedule
 
@@ -2270,11 +2295,12 @@ def test_schedule_apply_adopt_refusal_reports_the_changed_column(
     manifest = _write_manifest(agent_profile_cwd)
     _create_unowned_schedule(agent_profile_cwd, cron_expr="17 4 * * *")
 
-    result = run_schedule(_parse_schedule_args(["apply", str(manifest), "--adopt"]))
-    captured = capsys.readouterr()
+    with _cli_warnings() as warnings:
+        result = run_schedule(_parse_schedule_args(["apply", str(manifest), "--adopt"]))
     assert result == 1
-    assert "cron_expr" in captured.err
-    assert "17 4 * * *" in captured.err and "0 2 * * *" in captured.err
+    joined = " ".join(warnings)
+    assert "cron_expr" in joined
+    assert "17 4 * * *" in joined and "0 2 * * *" in joined
 
 
 def test_schedule_apply_json_output_shape(agent_profile_cwd, temp_state_db, capsys):
@@ -2295,9 +2321,7 @@ def test_schedule_apply_json_output_shape(agent_profile_cwd, temp_state_db, caps
     ]
 
 
-def test_schedule_apply_refusal_names_each_row_once(
-    agent_profile_cwd, temp_state_db, capsys, monkeypatch
-):
+def test_schedule_apply_refusal_names_each_row_once(agent_profile_cwd, temp_state_db, monkeypatch):
     from lionagi.studio.cli import run_schedule
 
     monkeypatch.setattr("lionagi.studio.config.SCHEDULER_TZ", "America/New_York")
@@ -2307,8 +2331,9 @@ def test_schedule_apply_refusal_names_each_row_once(
         on_success={"kind": "agent", "agent": "publisher", "prompt": "ship it"},
     )
 
-    result = run_schedule(_parse_schedule_args(["apply", str(manifest), "--adopt"]))
-    err = capsys.readouterr().err
+    with _cli_warnings() as warnings:
+        result = run_schedule(_parse_schedule_args(["apply", str(manifest), "--adopt"]))
     assert result == 1
-    assert "INVALID  demo/nightly-review  " in err
-    assert "demo/demo/" not in err
+    joined = " ".join(warnings)
+    assert "INVALID  demo/nightly-review  " in joined
+    assert "demo/demo/" not in joined

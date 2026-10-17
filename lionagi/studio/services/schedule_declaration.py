@@ -9,6 +9,16 @@ timezone, agent model, flow/playbook content, command allowlist membership).
 Applying a set reconciles it against the rows it owns -- CREATE / UPDATE /
 UNCHANGED / DISABLE -- atomically: any invalid member means zero writes.
 Unowned rows whose declared behavior already matches can be adopted in place.
+
+Adoption keeps the row: same id, same run history, and every column the
+declaration does not write -- project, action_extra_args, on_success, on_fail,
+threshold_config, last_fired_at, next_fire_at, github_cursor,
+effective_timezone, effective_timezone_source, last_alert_at, last_evaluated_at,
+last_healthy_poll_at, poller_consecutive_401, predispatch_refusal_event,
+predispatch_refusal_count, created_at and updated_at. An overdue next_fire_at
+the adopted row already holds therefore still queues the recovery fire it would
+have queued without the adoption, where a fresh create of the same member
+starts clean.
 """
 
 from __future__ import annotations
@@ -829,10 +839,115 @@ _PROJECT_FLAG_ACTION_KINDS = frozenset({"agent", "flow", "fanout", "flow_yaml"})
 # The launch kinds a declaration target resolves to: every member's target is an
 # agent, a flow_yaml snapshot, a playbook or a command.
 _MEMBER_ACTION_KINDS = frozenset(_TARGET_KIND_TO_ACTION_KIND.values())
-# The launch kinds whose argv reads action_agent: an agent launch passes the
+# The launch kinds whose argv passes action_agent on: an agent launch passes the
 # profile as --agent, and an engine launch reads it as the engine kind. Every
 # other kind validates the identifier and then drops it.
 _AGENT_READING_ACTION_KINDS = frozenset({"agent", "engine"})
+# The launch kinds whose argv passes action_model on: an agent launch passes it as
+# a positional, a flow or fanout launch as the model positional after '--', a
+# flow_yaml launch merges it into the spec, and an engine launch passes it as
+# --model. Every other kind validates it and drops it.
+_MODEL_READING_ACTION_KINDS = frozenset({"agent", "flow", "fanout", "flow_yaml", "engine"})
+# The launch kinds whose argv passes action_prompt on: an agent, flow or fanout
+# launch passes it as a positional, a play launch appends it as the playbook's
+# input, and an engine launch passes it as the engine spec. A flow_yaml launch
+# carries its prompt inside the spec and a command launch has no prompt slot, so
+# both validate it and drop it.
+_PROMPT_READING_ACTION_KINDS = frozenset({"agent", "flow", "fanout", "play", "engine"})
+
+# Which launch reads which stored column. For every column a declaration writes,
+# this names the action kinds and the trigger types whose path from a due row to
+# a launched child consults it -- to build the argv, to resolve the execution
+# root, or to validate the value the launch would refuse at every fire. ``None``
+# means every kind or every trigger; an empty set means no launch reads it. It is
+# the single source for the adoption comparison: a column no launch of the row's
+# kind and trigger reads changes nothing about a fire, so two stored values act
+# alike there and adoption neither compares the column nor refuses the row for
+# it. Read off _tick (which trigger dispatches), the cron arming, the missed-fire
+# check, the fire path, build_argv and the github poll.
+_LAUNCH_READERS: dict[str, tuple[frozenset[str] | None, frozenset[str] | None]] = {
+    # _tick dispatches on trigger_type and lists only enabled rows; every fire
+    # then builds an argv from action_kind and resolves its execution root.
+    "trigger_type": (None, None),
+    "enabled": (None, None),
+    "action_kind": (None, None),
+    "action_cwd": (None, None),
+    # A cron row's expression and the zone its fire times are read in.
+    "cron_expr": (None, frozenset({"cron"})),
+    "resolved_timezone": (None, frozenset({"cron"})),
+    # resolve_schedule_cadence_seconds reads the interval for an interval row's
+    # next fire and as a github poll's own fallback.
+    "interval_sec": (None, frozenset({"interval", "github_poll"})),
+    # The github poll reads the repository, its filter and its poll interval.
+    "github_repo": (None, frozenset({"github_poll"})),
+    "github_filter": (None, frozenset({"github_poll"})),
+    "poll_interval_sec": (None, frozenset({"github_poll"})),
+    # next_fire_at is the due instant _tick reads, and the github poll reads it as
+    # the claim it hands the fire; every trigger consults it.
+    "next_fire_at": (None, None),
+    # The missed-fire check and the overlap gate run for every trigger but the
+    # github poll, which holds one pass at a time instead.
+    "missed_fire_policy": (None, frozenset({"cron", "interval", "at"})),
+    "overlap_policy": (None, frozenset({"cron", "interval", "at"})),
+    # Admission and the pre-fire gates read these for every trigger. budget and
+    # rate_limit gate every fire; max_runs gates every fire and every admission.
+    "max_runs": (None, None),
+    "budget_usd": (None, None),
+    "budget_tokens": (None, None),
+    "rate_limit": (None, None),
+    # A threshold row evaluates its metric on the fire path and stamps its
+    # watermark there, whatever the trigger that reached it.
+    "threshold_config": (None, None),
+    # Chained actions run after any fire, whatever its trigger.
+    "on_success": (None, None),
+    "on_fail": (None, None),
+    # build_argv validates an action_project and extra tokens for every kind, and
+    # passes --project on only for the agent and flow-yaml families.
+    "action_project": (None, None),
+    "action_extra_args": (None, None),
+    # The launch-specific columns every kind validates and only some pass on: a
+    # value the launch refuses fails at every fire whatever the kind, and a value
+    # it accepts is dropped by the kinds that read none of it.
+    "action_agent": (None, None),
+    "action_model": (None, None),
+    "action_prompt": (None, None),
+    "action_playbook": (None, None),
+    # The columns only their own kind reads: a command launch spawns the
+    # executable and renders its args, and a flow_yaml launch writes the snapshot
+    # to the spec file it passes. No other kind consults them at all.
+    "action_command": (frozenset({"command"}), None),
+    "action_command_args": (frozenset({"command"}), None),
+    "action_flow_yaml": (frozenset({"flow_yaml"}), None),
+    # The fire registers a terminal callback on the invocation it spawns; only
+    # both halves together register anything, which _adopt_comparable reads.
+    "notify_on": (None, None),
+    "notify_command": (None, None),
+    # No launch reads a description.
+    "description": (frozenset(), None),
+}
+
+
+def _row_action_kind(row: dict[str, Any]) -> str | None:
+    """The canonical launch kind a row's action_kind names, aliases resolved."""
+    from lionagi.studio.scheduler.subprocess import _ALIAS_ACTION_KINDS
+
+    kind = row.get("action_kind")
+    return _ALIAS_ACTION_KINDS.get(kind, kind)
+
+
+def _column_read_by(name: str, schedule: dict[str, Any]) -> bool:
+    """Whether any launch of *schedule*'s kind and trigger consults this column.
+
+    A name the table does not list is compared, not skipped: a column added to
+    the declaration without a table row would otherwise be adopted against a row
+    that stores something else in silence.
+    """
+    if name not in _LAUNCH_READERS:
+        return True
+    kinds, triggers = _LAUNCH_READERS[name]
+    if kinds is not None and _row_action_kind(schedule) not in kinds:
+        return False
+    return triggers is None or schedule.get("trigger_type") in triggers
 
 
 def _is_adoptable(row: dict[str, Any]) -> bool:
@@ -859,20 +974,27 @@ async def _adoption_execution_root(
     return ("path", resolved), resolved, str(root)
 
 
-async def _adopt_model_pair(row: dict[str, Any], declared: Any) -> tuple[Any, Any]:
+async def _adopt_model_pair(
+    row: dict[str, Any], declared: Any, declared_fields: dict[str, Any]
+) -> tuple[Any, Any]:
     current = row.get("action_model")
-    if current or row.get("action_kind") != "agent" or not row.get("action_agent"):
-        return current, declared
-    root_key, root_path, _display = await _adoption_execution_root(row)
-    if root_key[0] != "path" or root_path is None:
-        return current, declared
-    from lionagi.cli._providers import load_agent_profile
+    if not current and row.get("action_kind") == "agent" and row.get("action_agent"):
+        # A row that leaves the model to its profile runs on the profile's model,
+        # read from the row's own execution root, which is where the launch reads it.
+        root_key, root_path, _display = await _adoption_execution_root(row)
+        if root_key[0] == "path" and root_path is not None:
+            from lionagi.cli._providers import load_agent_profile
 
-    try:
-        current = load_agent_profile(row["action_agent"], cwd=Path(root_path)).model or current
-    except (FileNotFoundError, OSError, ValueError):
-        pass
-    return current, declared
+            try:
+                current = (
+                    load_agent_profile(row["action_agent"], cwd=Path(root_path)).model or current
+                )
+            except (FileNotFoundError, OSError, ValueError):
+                pass
+    return (
+        _adopt_comparable("action_model", row, current),
+        _adopt_comparable("action_model", {**row, **declared_fields}, declared),
+    )
 
 
 async def _adopt_project_pair(
@@ -897,13 +1019,24 @@ async def _adopt_project_pair(
     async def project_effect(
         schedule: dict[str, Any], root: tuple[tuple[str, ...], str | None, str]
     ) -> tuple[tuple[str, ...], str]:
+        project = schedule.get("action_project")
+        if project:
+            # The launch validates the project identifier whatever the kind, so a
+            # value it refuses fails at every fire even where the kind drops it;
+            # only a value the launch accepts is then unused.
+            from lionagi.studio.scheduler.subprocess import _validate_identifier
+
+            try:
+                _validate_identifier(project, "action_project")
+            except ValueError:
+                return ("refused",), f"{project!r}, which the launch refuses"
+            if schedule.get("action_kind") not in _PROJECT_FLAG_ACTION_KINDS:
+                return ("unused",), "none, the action takes no project argument"
+            return ("project", str(project)), f"{project!r}, set explicitly"
         if schedule.get("action_kind") not in _PROJECT_FLAG_ACTION_KINDS:
             return ("unused",), "none, the action takes no project argument"
         if root[0][0] == "refused":
             return ("not-launched",), "none, the action does not launch"
-        project = schedule.get("action_project")
-        if project:
-            return ("project", str(project)), f"{project!r}, set explicitly"
         if root[1] is None:
             return ("unknown",), "detected from the scheduler working directory"
         try:
@@ -971,7 +1104,16 @@ def _adopt_unconfirmed_recorded_zone(row: dict[str, Any]) -> tuple[str, str] | N
 
 
 def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
-    """A column value as the scheduler acts on it, for columns where two stored values act alike."""
+    """A column value as the launch acts on it, for stored values that act alike.
+
+    A column no launch of *schedule*'s kind and trigger consults is None on both
+    sides, so two stored values act alike there whatever they say. Within a column
+    a launch does consult, values differ only where the launch would behave
+    differently: a value it passes on counts, and a value it refuses counts as a
+    difference whatever the kind, since a refusal fails at every fire.
+    """
+    if not _column_read_by(name, schedule):
+        return None
     if name == "notify_on":
         # No notification is registered for an empty list or for none, and no
         # notification is registered without a command to run, so neither the
@@ -996,12 +1138,36 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
             _validate_identifier(value, "action_agent")
         except ValueError:
             return value
-        return value if schedule.get("action_kind") in _AGENT_READING_ACTION_KINDS else None
+        return value if _row_action_kind(schedule) in _AGENT_READING_ACTION_KINDS else None
+    if name == "action_model":
+        # Same reading as action_agent: every launch validates the model, only the
+        # listed kinds then pass it on.
+        if not value:
+            return None
+        from lionagi.studio.scheduler.subprocess import _validate_action_model
+
+        try:
+            _validate_action_model(value)
+        except ValueError:
+            return value
+        return value if _row_action_kind(schedule) in _MODEL_READING_ACTION_KINDS else None
     if name == "action_prompt":
         # A launch reads the prompt only when it is set: an unset and an empty
         # prompt are passed alike (an agent launch passes one empty positional,
-        # and a play launch appends nothing).
-        return value or None
+        # and a play launch appends nothing). A prompt the launch refuses, and a
+        # play launch's leading-dash positional, fail at every fire whatever the
+        # kind, so those count as written.
+        if not value:
+            return None
+        from lionagi.studio.scheduler.subprocess import _validate_prompt
+
+        try:
+            _validate_prompt(value)
+        except ValueError:
+            return value
+        if _row_action_kind(schedule) == "play" and value.startswith("-"):
+            return value
+        return value if _row_action_kind(schedule) in _PROMPT_READING_ACTION_KINDS else None
     if name == "cron_expr":
         # Only a cron trigger reads the expression.
         return value if schedule.get("trigger_type") == "cron" else None
@@ -1016,6 +1182,38 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
             return resolve_schedule_cadence_seconds({**schedule, "interval_sec": value})
         # Only an interval or github_poll trigger reads the interval.
         return value if trigger_type == "interval" else None
+    if name == "action_playbook":
+        # Every kind validates the identifier; only a play launch then appends the
+        # name as a positional.
+        if not value:
+            return None
+        from lionagi.studio.scheduler.subprocess import _validate_identifier
+
+        try:
+            _validate_identifier(value, "action_playbook")
+        except ValueError:
+            return value
+        return value if _row_action_kind(schedule) == "play" else None
+    if name == "action_command":
+        # Only a command launch spawns the executable, and it validates the name
+        # and its allow-list membership before it does; a name either check
+        # refuses fails at every fire, so it counts as written.
+        if not value:
+            return None
+        from lionagi.studio.scheduler.subprocess import (
+            _validate_action_command,
+            _validate_command_allowlisted,
+        )
+
+        try:
+            _validate_action_command(value)
+            _validate_command_allowlisted(value)
+        except ValueError:
+            return value
+        return value if _row_action_kind(schedule) == "command" else None
+    if name == "action_flow_yaml":
+        # Only a flow_yaml launch writes the snapshot to a spec file.
+        return value if _row_action_kind(schedule) == "flow_yaml" else None
     if name == "action_cwd" and value:
         # The launch runs in the resolved directory, so two spellings of one
         # directory (a symlink, a trailing slash) act alike.
@@ -1028,17 +1226,21 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
 
 
 def _adopt_undeclared_values(row: dict[str, Any]) -> list[tuple[str, Any]]:
-    """Columns from ``_ADOPT_UNDECLARED_COLUMNS`` the row sets, with their values."""
+    """Columns from ``_ADOPT_UNDECLARED_COLUMNS`` the row sets and a launch reads.
+
+    A column no launch of the row's kind and trigger reads keeps its stored value
+    through an adoption and every later apply without ever reaching a fire, so it
+    is neither expressed nor refused.
+    """
     found: list[tuple[str, Any]] = []
     for name in _ADOPT_UNDECLARED_COLUMNS:
         value = row.get(name)
+        if not _column_read_by(name, row):
+            continue
         if name == "poll_interval_sec":
-            # Only a github_poll trigger reads it.
-            if (
-                row.get("trigger_type") == "github_poll"
-                and value is not None
-                and value != _GITHUB_POLL_DEFAULT_SEC
-            ):
+            # The engine's own default is what a row with no interval polls at, so
+            # a stored default changes no cadence.
+            if value is not None and value != _GITHUB_POLL_DEFAULT_SEC:
                 found.append((name, value))
         elif value:
             found.append((name, value))
@@ -1054,6 +1256,10 @@ async def _adopt_spec_differences(
     for name, declared in sorted(declared_fields.items()):
         if name in _ADOPT_DECLARATION_FIELDS:
             continue
+        if not _column_read_by(name, row):
+            # No launch of the row's kind and trigger consults this column, so the
+            # two stored values act alike and there is nothing to compare.
+            continue
         if name == "resolved_timezone" and (
             row.get("trigger_type") == "cron" and declared_fields.get("trigger_type") == "cron"
         ):
@@ -1062,7 +1268,7 @@ async def _adopt_spec_differences(
                 differences.append((name, current, adopted))
             continue
         if name == "action_model":
-            current, adopted = await _adopt_model_pair(row, declared)
+            current, adopted = await _adopt_model_pair(row, declared, declared_fields)
             if current != adopted:
                 differences.append((name, current, adopted))
             continue
@@ -1108,6 +1314,14 @@ async def _adopt_undeclarable(
         except (ZoneInfoNotFoundError, ValueError):
             return True
         return False
+    if name == "next_fire_at" and current is None:
+        # A declaration resolves a one-shot's own instant at declaration time, so
+        # no member states a one-shot with none.
+        return row.get("trigger_type") == "at"
+    if name == "max_runs" and current is None:
+        # A one-shot's run cap follows from its single instant, so the declaration
+        # always writes one; no member states a one-shot with no cap.
+        return row.get("trigger_type") == "at"
     if name == "interval_sec":
         # A github trigger declares no interval; the scheduler applies its own cadence.
         return row.get("trigger_type") == "github_poll"
@@ -1142,6 +1356,30 @@ async def _adopt_undeclarable(
         # The declaration checks the status vocabulary, so a status outside it
         # cannot be matched by editing the member.
         return any(status not in _NOTIFY_ALLOWED_STATUSES for status in current)
+    if name == "action_playbook" and isinstance(current, str):
+        # A member's playbook name is refused when the launch would refuse it.
+        from lionagi.studio.scheduler.subprocess import _validate_identifier
+
+        try:
+            _validate_identifier(current, "action_playbook")
+        except ValueError:
+            return True
+        return False
+    if name == "action_command" and isinstance(current, str):
+        # A member's executable resolves only against the allow-list, so a name the
+        # launch refuses, or one this process's allow-list does not carry, is not
+        # one a member can be edited to name.
+        from lionagi.studio.scheduler.subprocess import (
+            _validate_action_command,
+            _validate_command_allowlisted,
+        )
+
+        try:
+            _validate_action_command(current)
+            _validate_command_allowlisted(current)
+        except ValueError:
+            return True
+        return False
     if name in ("action_prompt", "action_model") and row.get("action_kind") != "agent":
         # Only an agent member declares a prompt or a model, and it declares the agent kind.
         return current is not None
@@ -1171,10 +1409,20 @@ async def _adopt_undeclarable(
             return True
         return False
     if name == "action_project":
+        stored = row.get("action_project")
+        if isinstance(stored, str) and stored:
+            # The launch validates the identifier whatever the kind, so a value it
+            # refuses is not one a member can be edited to carry.
+            from lionagi.studio.scheduler.subprocess import _validate_identifier
+
+            try:
+                _validate_identifier(stored, "action_project")
+            except ValueError:
+                return True
         root_key, root_path, _display = await _adoption_execution_root(row)
         if root_key[0] != "path" or root_path is None:
             return True
-        if is_global or row.get("action_project"):
+        if is_global or stored:
             return False
         # Every member of a project's set runs with a project, its own or the set's, so a
         # row that sets none and detects none from its root cannot be matched by one.
@@ -1512,9 +1760,20 @@ async def apply_schedule_set(
                         # Adoption accepts a poll interval only where the row's trigger
                         # does not read it. Cleared, so a later apply that makes the
                         # member a github trigger polls at the cadence it declares.
-                        # The row's id, its runs and its runtime watermarks
-                        # (last_fired_at, effective_timezone) carry over as they are:
-                        # a later apply rewrites only the columns the declaration owns.
+                        #
+                        # The row keeps its id, its runs, and every column the
+                        # declaration does not write, which an in-place migration is
+                        # meant to preserve. Those columns are project,
+                        # action_extra_args, on_success, on_fail, threshold_config,
+                        # last_fired_at, next_fire_at, github_cursor,
+                        # effective_timezone, effective_timezone_source,
+                        # last_alert_at, last_evaluated_at, last_healthy_poll_at,
+                        # poller_consecutive_401, predispatch_refusal_event,
+                        # predispatch_refusal_count, created_at, and updated_at. An
+                        # overdue next_fire_at the row already holds still queues the
+                        # recovery fire it would have queued without the adoption; a
+                        # fresh create of the same member starts clean, so a row and
+                        # its fresh twin can differ in that one recovery run.
                         "poll_interval_sec": None,
                     }
                 )

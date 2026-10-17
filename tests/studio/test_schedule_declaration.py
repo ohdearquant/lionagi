@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -1538,16 +1539,22 @@ async def test_adoption_compares_each_column_it_writes(
         )
         if column not in {name for name, _, _ in differences}:
             unchecked.append(column)
-    # A cron trigger reads no interval and no repository, and a member that notifies on
-    # nothing runs no command and reads no event; each is compared where it is read, in
-    # its own test.
-    assert unchecked == [
-        "github_filter",
-        "github_repo",
-        "interval_sec",
-        "notify_command",
-        "notify_on",
-    ]
+    # A column no launch of the row's kind and trigger reads is not compared at
+    # all, and a column the launch acts on alike either way -- an inert
+    # notification, an unset and an empty prompt -- has no difference to report.
+    # The expectation is derived rather than listed, so it cannot drift from what
+    # the comparison and the launch-reader table do; the per-column enumeration
+    # test pins each table row on its own.
+    from lionagi.studio.services.schedule_declaration import _column_read_by
+
+    expected_unchecked = sorted(
+        column
+        for column in compared
+        if not _column_read_by(column, candidate)
+        or _adopt_comparable(column, candidate, _perturb(candidate.get(column)))
+        == _adopt_comparable(column, {**candidate, **written}, written.get(column))
+    )
+    assert unchecked == expected_unchecked
 
 
 _EVERY_HOUR_TRIGGER = (
@@ -3146,6 +3153,36 @@ async def test_adopt_refuses_a_due_one_shot_the_engine_would_recover(
         plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
     assert [entry.action for entry in plan] == ["ERROR"], plan[0].detail
     assert "next_fire_at: row=" in plan[0].detail
+    # No member states a one-shot with no instant, so the remedy says the row cannot
+    # be adopted as it stands rather than naming a member edit nobody can make.
+    assert "no member can declare the row's next_fire_at" in plan[0].detail
+    assert "cannot be adopted as it stands" in plan[0].detail
+    assert "edit the member to match the row" not in plan[0].detail
+
+
+@pytest.mark.asyncio
+async def test_adopt_refuses_a_one_shot_whose_run_cap_no_member_can_state(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    """A one-shot's run cap follows from its single instant, so the declaration
+    always writes one and no member states a row with none."""
+    doc = _at_agent_manifest(cwd=agent_profile)
+    row = _legacy_adoption_row(
+        "nightly",
+        cwd=agent_profile,
+        trigger_type="at",
+        cron_expr=None,
+        next_fire_at=None,
+        max_runs=None,
+    )
+    async with StateDB() as db:
+        await db.create_schedule(row)
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+    assert [entry.action for entry in plan] == ["ERROR"], plan[0].detail
+    assert "max_runs: row=" in plan[0].detail
+    assert "no member can declare the row's max_runs" in plan[0].detail
+    assert "cannot be adopted as it stands" in plan[0].detail
+    assert "edit the member to match the row" not in plan[0].detail
 
 
 @pytest.mark.asyncio
@@ -3208,3 +3245,626 @@ async def test_adopt_accepts_a_github_poll_row_polling_at_the_default(
         await apply_schedule_set(db, doc, agent_profile, adopt=True)
         adopted = await db.get_schedule_by_name("demo/nightly")
     assert adopted["poll_interval_sec"] is None
+
+
+# ---------------------------------------------------------------------------
+# Adoption compares a column only under the launch that reads it
+# ---------------------------------------------------------------------------
+#
+# One case per table row: a row whose kind and trigger read the column differs
+# from the member and must be refused, and a row whose kind and trigger never
+# consult it must be adopted though its stored value differs. Each case names the
+# column it belongs to, so a table row without a case -- or a case without a row
+# -- fails test_every_compared_column_has_a_case below. A case is
+# (tag, member, row, expected): *member* is (target, trigger, extra_member) and
+# *row* is (target, trigger, stored overrides).
+
+_AT_PAST_EPOCH = datetime(2020, 1, 1, tzinfo=timezone.utc).timestamp()
+_CRON_ROW_FIELDS = {
+    "trigger_type": "cron",
+    "cron_expr": "0 2 * * *",
+    "effective_timezone": "America/New_York",
+}
+_INTERVAL_ROW_FIELDS = {
+    "trigger_type": "interval",
+    "cron_expr": None,
+    "effective_timezone": None,
+    "interval_sec": 3600,
+}
+_AT_ROW_FIELDS = {
+    "trigger_type": "at",
+    "cron_expr": None,
+    "effective_timezone": None,
+    "next_fire_at": _AT_PAST_EPOCH,
+    "max_runs": 1,
+    "missed_fire_policy": "run_once",
+}
+_GITHUB_ROW_FIELDS = {
+    "trigger_type": "github_poll",
+    "cron_expr": None,
+    "effective_timezone": None,
+    "github_repo": "acme/widgets",
+}
+_TRIGGER_ROW_FIELDS = {
+    "cron": _CRON_ROW_FIELDS,
+    "interval": _INTERVAL_ROW_FIELDS,
+    "at": _AT_ROW_FIELDS,
+    # The same instant under the default missed-fire policy.
+    "at_skip": {**_AT_ROW_FIELDS, "missed_fire_policy": "skip"},
+    "github": _GITHUB_ROW_FIELDS,
+}
+_TRIGGER_BLOCKS = {
+    "cron": _CRON_TRIGGER_BLOCK,
+    "interval": "      every: 1h\n",
+    "at": _AT_PAST_TRIGGER,
+    "at_skip": _AT_PAST_TRIGGER,
+    "github": _GITHUB_TRIGGER_BLOCK,
+}
+_FLOW_TARGET_BLOCK = "    target:\n      kind: flow\n      file: flows/nightly.yaml\n"
+_TARGET_BLOCKS = {
+    "agent": _AGENT_TARGET_BLOCK,
+    "play": _PLAY_TARGET_BLOCK,
+    "command": _COMMAND_TARGET_BLOCK,
+    "flow": _FLOW_TARGET_BLOCK,
+}
+_TARGET_ROW_FIELDS = {
+    "agent": {
+        "action_kind": "agent",
+        "action_model": "anthropic/claude-sonnet-5",
+        "action_prompt": "check things",
+        "action_agent": "reviewer",
+        "action_playbook": None,
+        "action_command": None,
+        "action_flow_yaml": None,
+    },
+    "play": {
+        "action_kind": "play",
+        "action_model": None,
+        "action_prompt": None,
+        "action_agent": None,
+        "action_playbook": "health-audit",
+        "action_command": None,
+        "action_flow_yaml": None,
+    },
+    "command": {
+        "action_kind": "command",
+        "action_model": None,
+        "action_prompt": None,
+        "action_agent": None,
+        "action_playbook": None,
+        "action_command": "refresh-index",
+        "action_flow_yaml": None,
+    },
+    "flow": {
+        "action_kind": "flow_yaml",
+        "action_model": None,
+        "action_prompt": None,
+        "action_agent": None,
+        "action_playbook": None,
+        "action_command": None,
+        "action_flow_yaml": "workers: 2\n",
+    },
+}
+
+
+def _member_manifest(
+    *, cwd: Path, target: str = "agent", trigger: str = "cron", extra: str = ""
+) -> str:
+    manifest = _agent_manifest("nightly", cwd=cwd, extra_member=extra).replace(
+        _CRON_TRIGGER_BLOCK, _TRIGGER_BLOCKS[trigger]
+    )
+    if target != "agent":
+        manifest = manifest.replace(_AGENT_TARGET_BLOCK, _TARGET_BLOCKS[target])
+    return manifest
+
+
+def _member_row(*, cwd: Path, target: str = "agent", trigger: str = "cron", **overrides) -> dict:
+    row = dict(_legacy_adoption_row("nightly", cwd=cwd))
+    row.update(_TRIGGER_ROW_FIELDS[trigger])
+    row.update(_TARGET_ROW_FIELDS[target])
+    row.update(overrides)
+    return row
+
+
+_AGENT_CRON = ("agent", "cron", "")
+_AGENT_CRON_RUN_ONCE = ("agent", "cron", "    policies:\n      missedFire: run_once\n")
+_AT_RUN_ONCE = ("agent", "at", "    policies:\n      missedFire: run_once\n")
+
+_ADOPT_TABLE_CASES = {
+    "trigger_type": [
+        (
+            "a stored trigger the member does not declare",
+            _AGENT_CRON,
+            ("agent", "interval", {}),
+            "ERROR",
+        ),
+    ],
+    "cron_expr": [
+        (
+            "a stale expression no cron reader sees",
+            ("agent", "interval", ""),
+            ("agent", "interval", {"cron_expr": "0 3 * * *"}),
+            "ADOPT",
+        ),
+        (
+            "an expression that fires at another time",
+            _AGENT_CRON,
+            ("agent", "cron", {"cron_expr": "0 3 * * *"}),
+            "ERROR",
+        ),
+    ],
+    "interval_sec": [
+        (
+            "a cadence a cron trigger never reads",
+            _AGENT_CRON,
+            ("agent", "cron", {"interval_sec": 3600}),
+            "ADOPT",
+        ),
+        (
+            "a cadence that fires on another period",
+            ("agent", "interval", ""),
+            ("agent", "interval", {"interval_sec": 7200}),
+            "ERROR",
+        ),
+    ],
+    "github_repo": [
+        (
+            "a repository a cron trigger never polls",
+            _AGENT_CRON,
+            ("agent", "cron", {"github_repo": "acme/old"}),
+            "ADOPT",
+        ),
+        (
+            "a repository that polls another place",
+            ("agent", "github", ""),
+            ("agent", "github", {"github_repo": "acme/other"}),
+            "ERROR",
+        ),
+    ],
+    "github_filter": [
+        (
+            "a filter a cron trigger never applies",
+            _AGENT_CRON,
+            ("agent", "cron", {"github_filter": {"state": "open"}}),
+            "ADOPT",
+        ),
+        (
+            "a filter that selects other events",
+            ("agent", "github", ""),
+            ("agent", "github", {"github_filter": {"state": "open"}}),
+            "ERROR",
+        ),
+    ],
+    "poll_interval_sec": [
+        (
+            "a poll interval a cron trigger never reads",
+            _AGENT_CRON,
+            ("agent", "cron", {"poll_interval_sec": 60}),
+            "ADOPT",
+        ),
+        (
+            "a poll interval that polls at another cadence",
+            ("agent", "github", ""),
+            ("agent", "github", {"poll_interval_sec": 60}),
+            "ERROR",
+        ),
+    ],
+    "enabled": [
+        (
+            "a disabled row no enabled-schedule read reaches",
+            _AGENT_CRON,
+            ("agent", "cron", {"enabled": 0}),
+            "ERROR",
+        ),
+    ],
+    "action_kind": [
+        (
+            "a launch kind no member target produces",
+            _AGENT_CRON,
+            ("agent", "cron", {"action_kind": "flow", "action_prompt": None, "action_agent": None}),
+            "ERROR",
+        ),
+    ],
+    "action_cwd": [
+        (
+            "a root the launch would spawn in another directory",
+            _AGENT_CRON,
+            ("agent", "cron", {"action_cwd": "REPLACED-ROOT"}),
+            "ERROR",
+        ),
+    ],
+    "action_project": [
+        (
+            "a project argument a play launch never passes on",
+            ("play", "cron", ""),
+            ("play", "cron", {"action_project": "other-project"}),
+            "ADOPT",
+        ),
+        (
+            "a project argument passed on as another project",
+            _AGENT_CRON,
+            ("agent", "cron", {"action_project": "other-project"}),
+            "ERROR",
+        ),
+        (
+            "a project the launch refuses whatever the kind",
+            ("play", "cron", ""),
+            ("play", "cron", {"action_project": "bad name"}),
+            "ERROR",
+        ),
+    ],
+    "budget_usd": [
+        (
+            "a spend cap no member declares",
+            _AGENT_CRON,
+            ("agent", "cron", {"budget_usd": 5.0}),
+            "ERROR",
+        ),
+    ],
+    "budget_tokens": [
+        (
+            "a token cap no member declares",
+            _AGENT_CRON,
+            ("agent", "cron", {"budget_tokens": 500}),
+            "ERROR",
+        ),
+    ],
+    "rate_limit": [
+        (
+            "a rolling cap no member declares",
+            _AGENT_CRON,
+            ("agent", "cron", {"rate_limit": {"max_fires": 1, "window_sec": 60}}),
+            "ERROR",
+        ),
+    ],
+    "notify_on": [
+        (
+            "an event with no command to run on it",
+            _AGENT_CRON,
+            ("agent", "cron", {"notify_on": ["failed"]}),
+            "ADOPT",
+        ),
+        (
+            "an event the member never registers",
+            ("agent", "cron", '    notify:\n      on: [failed]\n      command: "echo done"\n'),
+            ("agent", "cron", {"notify_on": ["completed"], "notify_command": "echo done"}),
+            "ERROR",
+        ),
+    ],
+    "notify_command": [
+        (
+            "a command with no event to run on",
+            _AGENT_CRON,
+            ("agent", "cron", {"notify_command": "echo done"}),
+            "ADOPT",
+        ),
+        (
+            "a command the member never runs",
+            ("agent", "cron", '    notify:\n      on: [failed]\n      command: "echo done"\n'),
+            ("agent", "cron", {"notify_on": ["failed"], "notify_command": "echo other"}),
+            "ERROR",
+        ),
+    ],
+    "action_agent": [
+        (
+            "a profile a play launch validates and drops",
+            ("play", "cron", ""),
+            ("play", "cron", {"action_agent": "reviewer"}),
+            "ADOPT",
+        ),
+        (
+            "a profile the agent launch passes on",
+            _AGENT_CRON,
+            ("agent", "cron", {"action_agent": "other"}),
+            "ERROR",
+        ),
+    ],
+    "action_model": [
+        (
+            "a model a play launch validates and drops",
+            ("play", "cron", ""),
+            ("play", "cron", {"action_model": "anthropic/claude-sonnet-5"}),
+            "ADOPT",
+        ),
+        (
+            "a model the agent launch passes on",
+            _AGENT_CRON,
+            ("agent", "cron", {"action_model": "anthropic/claude-opus-5"}),
+            "ERROR",
+        ),
+        (
+            "a model the launch refuses whatever the kind",
+            ("play", "cron", ""),
+            ("play", "cron", {"action_model": "-oops"}),
+            "ERROR",
+        ),
+    ],
+    "action_prompt": [
+        (
+            "a prompt a command launch validates and drops",
+            ("command", "cron", ""),
+            ("command", "cron", {"action_prompt": "hello"}),
+            "ADOPT",
+        ),
+        (
+            "a prompt the agent launch passes on",
+            _AGENT_CRON,
+            ("agent", "cron", {"action_prompt": "other things"}),
+            "ERROR",
+        ),
+        (
+            "a prompt the launch refuses whatever the kind",
+            ("command", "cron", ""),
+            ("command", "cron", {"action_prompt": "--"}),
+            "ERROR",
+        ),
+        (
+            "a leading-dash prompt a play launch takes as a flag",
+            ("play", "cron", ""),
+            ("play", "cron", {"action_prompt": "-oops"}),
+            "ERROR",
+        ),
+    ],
+    "action_playbook": [
+        (
+            "a playbook an agent launch never appends",
+            _AGENT_CRON,
+            ("agent", "cron", {"action_playbook": "health-audit"}),
+            "ADOPT",
+        ),
+        (
+            "a playbook the play launch runs instead",
+            ("play", "cron", ""),
+            ("play", "cron", {"action_playbook": "other-pb"}),
+            "ERROR",
+        ),
+        (
+            "a playbook the launch refuses whatever the kind",
+            _AGENT_CRON,
+            ("agent", "cron", {"action_playbook": "-oops"}),
+            "ERROR",
+        ),
+    ],
+    "action_command": [
+        (
+            "an executable an agent launch never spawns",
+            _AGENT_CRON,
+            ("agent", "cron", {"action_command": "refresh-index"}),
+            "ADOPT",
+        ),
+        (
+            "an executable a command launch spawns instead",
+            ("command", "cron", ""),
+            ("command", "cron", {"action_command": "other-cmd"}),
+            "ERROR",
+        ),
+    ],
+    "action_command_args": [
+        (
+            "arguments an agent launch never renders",
+            _AGENT_CRON,
+            ("agent", "cron", {"action_command_args": ["fast"]}),
+            "ADOPT",
+        ),
+        (
+            "arguments a command launch renders instead",
+            ("command", "cron", ""),
+            ("command", "cron", {"action_command_args": ["slow"]}),
+            "ERROR",
+        ),
+    ],
+    "action_flow_yaml": [
+        (
+            "a snapshot an agent launch never reads",
+            _AGENT_CRON,
+            ("agent", "cron", {"action_flow_yaml": "workers: 4\n"}),
+            "ADOPT",
+        ),
+        (
+            "a snapshot a flow launch runs instead",
+            ("flow", "cron", ""),
+            ("flow", "cron", {"action_flow_yaml": "workers: 4\n"}),
+            "ERROR",
+        ),
+    ],
+    "missed_fire_policy": [
+        (
+            "a missed-fire policy no missed-fire read reaches",
+            ("agent", "github", ""),
+            ("agent", "github", {"missed_fire_policy": "run_once"}),
+            "ADOPT",
+        ),
+        (
+            "a missed-fire policy the tick reads instead",
+            _AGENT_CRON,
+            ("agent", "cron", {"missed_fire_policy": "run_once"}),
+            "ERROR",
+        ),
+    ],
+    "overlap_policy": [
+        (
+            "an overlap policy no overlap read reaches",
+            ("agent", "github", ""),
+            ("agent", "github", {"overlap_policy": "allow"}),
+            "ADOPT",
+        ),
+        (
+            "an overlap policy the fire reads instead",
+            _AGENT_CRON,
+            ("agent", "cron", {"overlap_policy": "allow"}),
+            "ERROR",
+        ),
+    ],
+    "max_runs": [
+        (
+            "a run cap the admission reads",
+            _AGENT_CRON,
+            ("agent", "cron", {"max_runs": 3}),
+            "ERROR",
+        ),
+        (
+            "no run cap on a one-shot whose declaration always writes one",
+            _AT_RUN_ONCE,
+            ("agent", "at", {"max_runs": None}),
+            "ERROR",
+        ),
+        (
+            "no run cap on a skipped one-shot",
+            ("agent", "at_skip", ""),
+            ("agent", "at_skip", {"max_runs": None}),
+            "ERROR",
+        ),
+    ],
+    "next_fire_at": [
+        (
+            "the declared instant a one-shot holds, fired or not",
+            _AT_RUN_ONCE,
+            ("agent", "at", {}),
+            "ADOPT",
+        ),
+        (
+            "the declared instant on a one-shot whose missed fire is skipped",
+            ("agent", "at_skip", ""),
+            ("agent", "at_skip", {}),
+            "ADOPT",
+        ),
+        (
+            "the declared instant on a one-shot that already fired",
+            _AT_RUN_ONCE,
+            ("agent", "at", {"next_fire_at": None, "last_fired_at": 1.0}),
+            "ADOPT",
+        ),
+        (
+            "another instant the one-shot would fire at",
+            _AT_RUN_ONCE,
+            ("agent", "at", {"next_fire_at": _AT_PAST_EPOCH + 1000.0}),
+            "ERROR",
+        ),
+        (
+            "no instant at all on a one-shot the scheduler would still run",
+            _AT_RUN_ONCE,
+            ("agent", "at", {"next_fire_at": None}),
+            "ERROR",
+        ),
+        (
+            "no instant at all on a skipped one-shot, whose write keeps its null",
+            ("agent", "at_skip", ""),
+            ("agent", "at_skip", {"next_fire_at": None}),
+            "ADOPT",
+        ),
+    ],
+    "resolved_timezone": [
+        (
+            "a zone no interval fire time is read in",
+            ("agent", "interval", ""),
+            ("agent", "interval", {"resolved_timezone": "America/New_York"}),
+            "ADOPT",
+        ),
+        (
+            "a zone another cron expression is read in",
+            _AGENT_CRON,
+            ("agent", "cron", {"resolved_timezone": "Europe/Berlin"}),
+            "ERROR",
+        ),
+    ],
+    "description": [
+        (
+            "a description no launch reads",
+            _AGENT_CRON,
+            ("agent", "cron", {"description": "new"}),
+            "ADOPT",
+        ),
+    ],
+    "on_success": [
+        (
+            "a chained success action no declaration writes",
+            _AGENT_CRON,
+            ("agent", "cron", {"on_success": {"kind": "agent", "agent": "publisher"}}),
+            "ERROR",
+        ),
+    ],
+    "on_fail": [
+        (
+            "a chained failure action no declaration writes",
+            _AGENT_CRON,
+            ("agent", "cron", {"on_fail": {"kind": "agent", "agent": "pager"}}),
+            "ERROR",
+        ),
+    ],
+    "action_extra_args": [
+        (
+            "extra positionals no declaration writes",
+            _AGENT_CRON,
+            ("agent", "cron", {"action_extra_args": ["extra"]}),
+            "ERROR",
+        ),
+    ],
+    "threshold_config": [
+        (
+            "a metric threshold the fire path evaluates",
+            _AGENT_CRON,
+            (
+                "agent",
+                "cron",
+                {"threshold_config": {"metric": "failed_sessions", "op": "gt", "value": 3}},
+            ),
+            "ERROR",
+        ),
+    ],
+}
+
+
+def test_every_compared_column_has_a_case():
+    from lionagi.studio.services.schedule_declaration import _LAUNCH_READERS
+
+    assert set(_ADOPT_TABLE_CASES) == set(_LAUNCH_READERS), (
+        "a table row without a case is a comparison nobody pinned, and a case "
+        "without a table row pins a comparison that no longer exists"
+    )
+
+
+@pytest.mark.parametrize(
+    "column,tag,member,row,expected",
+    [(column, *case) for column, cases in sorted(_ADOPT_TABLE_CASES.items()) for case in cases],
+)
+@pytest.mark.asyncio
+async def test_adoption_reads_a_column_only_under_the_launch_that_reads_it(
+    column,
+    tag,
+    member,
+    row,
+    expected,
+    temp_db_path,
+    agent_profile,
+    pinned_scheduler_tz,
+    monkeypatch,
+):
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
+    flows = agent_profile / "flows"
+    flows.mkdir(exist_ok=True)
+    (flows / "nightly.yaml").write_text("workers: 2\n")
+
+    member_target, member_trigger, extra = member
+    row_target, row_trigger, overrides = row
+    other_root = agent_profile / "other-root"
+    other_root.mkdir(exist_ok=True)
+    overrides = {
+        key: (str(other_root) if value == "REPLACED-ROOT" else value)
+        for key, value in overrides.items()
+    }
+    doc = parse_schedule_set(
+        _member_manifest(
+            cwd=agent_profile, target=member_target, trigger=member_trigger, extra=extra
+        )
+    )
+    stored = _member_row(cwd=agent_profile, target=row_target, trigger=row_trigger, **overrides)
+    async with StateDB() as db:
+        for existing in await db.list_schedules():
+            await db.delete_schedule(existing["id"])
+        await db.create_schedule(dict(stored))
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+    assert plan[0].action == expected, f"{column}: {tag}: {plan[0].detail}"
+    if expected == "ERROR":
+        # The refusal names the column it read, and where no member could state the
+        # stored value it says so instead of offering a member edit nobody can make.
+        assert column in plan[0].detail, f"{column}: {tag}: {plan[0].detail}"
