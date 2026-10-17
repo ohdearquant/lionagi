@@ -403,6 +403,10 @@ def _load_via_codegen(
 
 # Public API
 
+SCHEMA_MODEL_MODULE = __name__
+
+__all__ = ("SCHEMA_MODEL_MODULE", "load_pydantic_model_from_schema")
+
 
 def load_pydantic_model_from_schema(
     schema: str | dict[str, Any],

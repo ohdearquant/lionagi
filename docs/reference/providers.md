@@ -20,6 +20,7 @@ Pass `provider=` to `iModel()`, or let lionagi infer from the model name.
 | Anthropic | `"anthropic"` | — | `ANTHROPIC_API_KEY` | `messages` |
 | Google Gemini | `"gemini"` | `"gemini-api"` | `GEMINI_API_KEY` | `chat/completions` |
 | Ollama (local) | `"ollama"` | — | — (no key needed) | `chat/completions`, `embeddings`, `generate` |
+| Lattice (local) | `"lattice"` | — | — (no key needed) | `chat/completions`, `embeddings` |
 | NVIDIA NIM | `"nvidia_nim"` | `"nvidia"`, `"nim"` | `NVIDIA_NIM_API_KEY` | `chat/completions`, `embeddings` |
 | Perplexity | `"perplexity"` | — | `PERPLEXITY_API_KEY` | `chat/completions` |
 | Groq | `"groq"` | — | `GROQ_API_KEY` | `chat/completions`, `audio/transcriptions` |
@@ -46,6 +47,49 @@ model = li.iModel(
 
 DeepSeek's `reasoning_effort` field maps lionagi effort levels: `low`/`medium` → `"high"`,
 `xhigh` → `"max"`. DeepSeek native values (`low`, `medium`, `high`, `max`) pass through unchanged.
+
+Lattice is a local inference server started with `lattice serve`. lionagi calls it at
+`http://127.0.0.1:8080/v1`. By default a Lattice endpoint sets `allow_local_network=True`, and
+with it the address guard admits only the loopback hosts `localhost`, `127.0.0.1` and `::1`: a
+`base_url=` may change the port or the path but not the host. Passing
+`allow_local_network=False` applies the ordinary guard instead, which refuses loopback and
+private addresses. The guard checks the URL once, before the request, so a Lattice request never
+follows a redirect: the redirect comes back as the failed response. `model` must be the id the
+server reports at `GET /v1/models`.
+
+An `api_key` endpoint setting is dropped whether supplied as a keyword, in a config dict, or
+in an `EndpointConfig`; the caller's config object is left unchanged. Rebuilding a
+`LatticeChatEndpoint` or `LatticeEmbedEndpoint` from its serialized config dict, an
+`EndpointConfig` containing that schema or its JSON text, or its `from_dict()` restores the
+Lattice request model. An absent request model also receives the provider default; a
+caller-supplied request model class is preserved.
+
+A request that omits `max_tokens` gets the server's default of 256 tokens, and `lattice serve`
+refuses a `max_tokens` above its fixed cap of 4096. A reply cut at the `max_tokens` budget carries
+`finish_reason: "length"`, which lionagi reads as neither an error nor an unfinished reply. The
+server also refuses tool calling, `n` above 1, a `response_format` other than `{"type": "text"}`,
+`top_logprobs` above 20 or without `logprobs`, and `logprobs` on a stream; lionagi forwards these
+and the server answers 400. lionagi itself refuses a `top_p` of 0 and a `seed` outside the
+unsigned 64-bit range `0` through `2**64 - 1`, which the server cannot take. Requests also take
+`reasoning_budget` and `lora`, an ordered list of resident
+adapters (`{"id": ..., "scale": ...}`); an omitted `lora` selects the base model on today's
+servers, and `[]` pins it. `top_k` and `repetition_penalty` are accepted and ignored by
+`lattice serve` (the standalone `lattice_serve` daemon applies them), and `lattice serve` reads
+none of `frequency_penalty`, `presence_penalty`, `logit_bias` and `user`.
+
+A reply's leading `<think>...</think>` block is moved from `content` to `reasoning_content`, so structured
+output parses the answer after it; a block with no closing tag, from a reply cut off while it was
+still reasoning, stays in `content`, and streamed replies keep the block where it arrives. A
+generation that fails after its stream has started arrives as a chunk with `is_error` set, and the
+call then fails: `iModel.stream` yields that chunk and raises once the stream ends. A model
+restored with `iModel.from_dict` does not keep its request model, as for every provider today, so
+it forwards its payload unvalidated.
+Embeddings need `lattice serve` started on a vision-language checkpoint; a checkpoint without one
+gets `400 vision_unsupported`.
+
+```python
+model = li.iModel(provider="lattice", model="qwen3.5-0.8b")
+```
 
 ## CLI / agentic providers
 
@@ -158,6 +202,10 @@ lionagi/providers/
 │   ├── chat.py
 │   ├── embed.py
 │   └── generate.py
+├── lattice/
+│   ├── _config.py
+│   ├── chat.py
+│   └── embed.py
 ├── nvidia_nim/
 │   ├── _config.py
 │   ├── chat.py
@@ -288,6 +336,12 @@ endpoint automatically. This registry edit is for built-in providers. Third-part
 providers should normally be declared by a plugin; trusted, enabled plugin provider
 targets are imported lazily after a built-in miss, and cannot override a built-in
 provider name.
+
+**Step 5 — add the provider to the inventories**
+
+The provider list above, the chat/embed and resolution tables in `docs/api/imodel.md`,
+and the provider package list in `CLAUDE.md` are each hand-maintained. Add the provider to
+all three; nothing else prompts the update.
 
 ## Default provider config
 

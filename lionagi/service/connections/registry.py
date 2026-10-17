@@ -641,6 +641,9 @@ def _import_all_providers():
         "lionagi.providers.ollama.chat",
         "lionagi.providers.ollama.embed",
         "lionagi.providers.ollama.generate",
+        # Lattice
+        "lionagi.providers.lattice.chat",
+        "lionagi.providers.lattice.embed",
         # Search & scraping
         "lionagi.providers.tavily.search",
         "lionagi.providers.exa.search",
