@@ -24,6 +24,7 @@ ENUMS = [
     ("lionagi.providers.perplexity.chat", "PerplexityModels"),
     ("lionagi.providers.tavily.search", "SearchDepth"),
     ("lionagi.providers.tavily.search", "SearchTopic"),
+    ("lionagi.service.accounts._types", "RouterErrorCode"),
     ("lionagi.service.resilience", "CircuitState"),
     ("lionagi.session.control", "LoopDirective"),
     ("lionagi.state.health", "SessionHealth"),
