@@ -53,7 +53,7 @@ turn input is limited to 1,048,576 characters, and died at turn start.
 
 **P4 — what one "request" is differs by provider.** API providers send the message list each turn.
 The Codex and fresh Gemini CLI paths flatten the non-system messages into one turn input
-(`lionagi/providers/_cli_subprocess.py:1040-1052`), and Codex carries the system text as a separate
+(`lionagi/providers/_cli_subprocess.py:1036-1059`), and Codex carries the system text as a separate
 argument (`lionagi/providers/openai/codex.py:731-733`). A provider that resumes a session it holds
 sends only the new turn and keeps the history remotely, where nothing on this side can fold it.
 
@@ -97,7 +97,16 @@ request plus the bytes appended since; it gets the 80% notice, and at the ceilin
 1 or 3, refused before the send with the count, because a fold cannot reach history held remotely.
 The reported count is the provider's input count for one request; a provider that reports none, or
 only a total over several requests, and a resumed session with no reported count on record, cannot
-be measured, and under a ceiling are refused with that reason, never sent unmeasured.
+be measured, and under a ceiling are refused with that reason, never sent unmeasured. Whether a
+provider holds the history remotely, and whether a count it reports is for one request, is that
+provider adapter's statement, not an inference from a `resume` argument (the Codex path is handed one
+and still sends the whole history, `lionagi/providers/openai/codex.py:902-903`). Today no resuming adapter
+makes that statement: the Claude Code adapter yields only its terminal `result` usage, a total
+whenever the session ran more than one request, and the run records usage only when the turn
+produced text (`lionagi/operations/run/run.py:489-501`, `:660-665`); the Gemini CLI path reports one
+summary per invocation. Landing step 2 makes the Claude Code adapter report the input count of the
+session's last request from that request's own event, and the run keep it when the turn produced no
+text; a Gemini CLI summary for more than one turn, or one with no turn count, counts as a total.
 
 **D4 — past the line: the model first, then a recoverable fold, then a refusal.** Each turn at or past
 80% of the ceiling carries one line telling the model its measured size, the ceiling and that its
@@ -110,14 +119,18 @@ be measured, and under a ceiling are refused with that reason, never sent unmeas
    or under 60% of the ceiling. A fold replaces a result's body in the request with a stub that keeps
    the tool name, the call id, the original size and how to read it back; the original stays in the
    branch's full record and the model reads it back, in ranges, with its `context` tool (whose output
-   is measured like any other result). A fold never leaves a tool call without its result in the
-   request, never touches the system text, the instruction, or the assistant's own messages, and
-   never changes another branch.
+   is measured like any other result). Today that tool previews a message in 120 characters or
+   restores it whole (`lionagi/tools/context/context.py:185`, `:325`); landing step 4 adds the range
+   read. A run whose model has no `context` tool (a profile with `context_management` off) is not
+   folded, because it could not read the original back; it is refused as in 3. A fold never leaves a
+   tool call without its result in the request, never touches the system text, the instruction, or
+   the assistant's own messages, and never changes another branch.
 3. If nothing is left to fold and the request is still at or past the ceiling, it is refused before
    the send with the count, as in 1.
 
-A summarizing compaction is available only where a profile turns it on, as its own bounded request;
-it is never automatic. A cap that drops the oldest history unread is not offered.
+This record adds no summarizing compaction and the library never summarizes on its own account. The
+model can still ask for one through its `context` tool's `compact`, as today, as its own bounded
+request. A cap that drops the oldest history unread is not offered.
 
 **D5 — a dependent spawned child keeps today's inheritance, under the same ceiling.** A dependent
 child with no branch of its own still starts from a clone of its emitter's active view (P3); this
@@ -145,11 +158,14 @@ request was sent. It is an additive signal type under `SIGNAL_SCHEMA_VERSION`
 
 1. D1, D2 and D7: resolving the ceiling, unset included, and recording it in the event, with no change
    to any request yet.
-2. D3 and D4 step 1 and 3: measurement and refusal before the send. From this step the D1 default
-   refuses a tier-priced request past its boundary for a caller that set nothing, and the release
-   notes name `"none"`; until step 4 an iterative run past the ceiling is refused, not folded.
+2. D3 and D4 step 1 and 3: measurement and refusal before the send, with the Claude Code adapter's
+   per-request input count and the run keeping usage from a turn without text (D3). From this step
+   the D1 default refuses a tier-priced request past its boundary for a caller that set nothing, and
+   the release notes name `"none"`; until step 4 an iterative run past the ceiling is refused, not
+   folded.
 3. The 80% notice (D4).
-4. The fold (D4 step 2) and the re-placed marks (D6), after ADR-0127's placement lands.
+4. The fold (D4 step 2) with the `context` tool's range read, and the re-placed marks (D6), after
+   ADR-0127's placement lands.
 5. D5: the child's first-request check.
 
 ## Tests that prove it
@@ -169,11 +185,15 @@ request was sent. It is an additive signal type under `SIGNAL_SCHEMA_VERSION`
 - A fold: the call/result pairing holds in the rendered request; the original is readable in ranges;
   the system text, instruction and assistant messages are byte-identical; a sibling branch is
   unchanged; the event lists the folded ids.
-- Nothing left to fold: refusal with the count, no send.
+- Nothing left to fold: refusal with the count, no send. An iterative run whose model has no
+  `context` tool, past the ceiling: refusal, no fold.
 - A resumed provider session under a ceiling is measured from its reported count plus the appended
   bytes, gets the notice at 80%, and at the ceiling is refused before the send with the count; a
   provider that reports no per-request input count, and a resumed session with none on record, are
-  refused under a ceiling with that reason.
+  refused under a ceiling with that reason. A resumed Claude Code session whose last turn ran tools
+  is measured from that last request's own input count, not the session total, including a turn
+  that produced no text; a Gemini CLI summary for several turns, or without a turn count, is refused
+  as a total; the Codex path, handed a `resume` argument, is measured from its whole rendered history.
 - A dependent child cloned from an emitter over the ceiling: an iterative child folds its own copy
   and the emitter is unchanged; a bounded child fails as its node and its siblings complete.
 - After a fold, the stable segment's bytes and mark are unchanged and the next request reads the
