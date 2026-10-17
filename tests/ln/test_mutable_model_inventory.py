@@ -7,16 +7,24 @@ was given, so a fallback in an ``except`` clause cannot hide the import it repla
 Calls are read in every expression a statement evaluates, including tests, context
 managers, loop iterables, return values, assertions and match subjects and guards. Every
 statement body is walked, a ``match`` statement's case clauses included, and a statement
-kind the walk cannot classify is reported rather than skipped. It does not execute
-factories, decorators or reflective code, so it fails closed where it cannot follow one: a
-statement kind it does not know, an attribute assignment whose owner is not a plain name,
-a compound or subscripted target that writes an attribute, a class whose base is not a name
-or dotted name it resolves, a class built by a ``type(...)`` call, a ``setattr`` whose
-attribute is not a literal it reads, and a ``model_config`` value it cannot read as a
-literal. Each such shape is refused, naming the file and line, unless it is listed in the
-test's allowlist with a reason. A class a function builds from one of its parameters, or one
-``create_model`` builds, is outside what the scan proves, as the inventory's scope limits
-say. Consumer references
+kind the walk cannot classify is reported rather than skipped.
+
+The scan fails closed by construction: it reads only the shapes it fully understands, and
+refuses every other one. The shapes it reads are a class base that is a plain name or a
+dotted attribute; class keywords, decorator keywords and ``model_config`` entries written
+as named keyword arguments; a ``model_config`` value given as a dict literal with string
+keys, or as a call whose own arguments are named keyword arguments with readable values;
+and a ``model_config`` assigned to a single plain name. A decorator is read when its name
+is imported into the module and it is called without positional arguments. Everything else
+is a "cannot read" violation, naming the file and line: a statement kind the walk does not
+know, a class base, keyword, decorator or ``model_config`` assignment outside those forms,
+an attribute assignment whose owner is not a plain name, an assignment to ``__bases__``,
+``__class__`` or ``__mro__``, a ``del`` of an attribute whose owner is not a plain name, a
+class built by a ``type(...)`` call, and a ``setattr`` whose owner or attribute is not a
+literal the scan reads. Each is refused unless it is listed in the test's allowlist with a
+reason. A class a function builds from one of its parameters, or one ``create_model``
+builds, is outside what the scan proves, as the inventory's scope limits say. Consumer
+references
 document audited boundaries rather than arbitrary dataflow. Wildcard imports are
 rejected because they can conceal declared descendants. Runtime container and mutation
 contracts cover the inventoried concrete types.
@@ -44,6 +52,15 @@ _UNRESOLVED = "<unresolved>"
 _SETATTR = frozenset(
     {"builtins.setattr", "builtins.type.__setattr__", "builtins.object.__setattr__"}
 )
+# Assigning one of these rebinds what a class is, so a class the scan inventories
+# could take a new base or a new metaclass after its declaration.
+_AUTHORITY_ATTRIBUTES = frozenset({"__bases__", "__class__", "__mro__"})
+# The attribute names a call writes an attribute through; a call through one whose
+# function the scan cannot resolve is refused rather than skipped.
+_DELATTR_ATTRIBUTES = frozenset({"__setattr__", "__delattr__", "__delitem__"})
+# The keyword names that turn on a generated hash or a frozen configuration. The
+# scan decides these by their value; every other named keyword is read as not one.
+_HASH_KEYWORDS = frozenset({"unsafe_hash", "frozen"})
 
 
 # A shape the scan cannot read is refused by default; the entries here are the
@@ -51,41 +68,67 @@ _SETATTR = frozenset(
 # ``module:line:column`` of the refused node, as the scan reports it. Every other
 # refusal fails the gate, so a new shape cannot pass unnoticed.
 _ALLOWLIST: dict[str, str] = {
-    # ``setattr`` writes an attribute the scan cannot read as a literal. Each is a
-    # dynamic attribute name on an already-mutable object, none of them a class's
-    # ``__hash__``:
+    # ``setattr`` writes an attribute through a name the scan does not read as a
+    # literal. Each is a dynamic attribute name on an already-mutable object or an
+    # object's own field slot, none of them a class's ``__hash__`` or a class
+    # authority:
     "lionagi._auto:316:9": "a marker written onto a handler function, not a model",
-    "lionagi.ln.types.base:224:13": "object.__setattr__ of a declared field during init",
+    "lionagi.ln.types.base:224:13": "a declared field set from its layout during init",
     "lionagi.ln.types.base:367:13": "a declared field copied by name during update",
-    "lionagi.models.operable_model:132:13": "object.__setattr__ of an extra field",
+    "lionagi.models.operable_model:132:13": "an extra field set by name",
     "lionagi.models.operable_model:142:17": "an extra field reset to its default",
     "lionagi.models.operable_model:145:17": "an extra field reset from its factory",
     "lionagi.models.operable_model:255:9": "an extra field set by name",
     "lionagi.models.operable_model:275:13": "a field attribute set by name on a field object",
-    "lionagi.protocols.generic.pile:527:13": "object.__setattr__ while copying an instance",
+    "lionagi.protocols.generic.pile:527:13": "a field attribute copied by name while copying",
     "lionagi.protocols.messages.instruction:100:17": "a declared field set by name",
     "lionagi.protocols.messages.instruction:146:17": "a declared field set by name",
-    "lionagi.protocols.messages.message:181:9": "object.__setattr__ of a declared field",
-    "lionagi.protocols.messages.message:193:13": "object.__setattr__ of a render-input field",
+    "lionagi.protocols.messages.message:181:9": "a declared field set by name",
+    "lionagi.protocols.messages.message:193:13": "a render-input field set by name",
     "lionagi.providers.anthropic.claude_code:1100:17": "a runtime field copied by name",
     "lionagi.service.connections.endpoint_config:201:17": "a config key set by name",
     "lionagi.service.connections.mcp_wrapper:76:9": "a probe attribute set on an exception",
-    # A class with a metaclass the scan does not inventory; it declares no hash
-    # authority and is outside the mutable family:
+    # A class base the scan cannot read: a parameterized generic base, which declares
+    # no hash authority of its own and is outside the mutable family.
+    "lionagi.adapters._base:331:15": "a runtime-checkable protocol parameterized by a type",
+    "lionagi.adapters._base:508:20": "a runtime-checkable protocol parameterized by a type",
+    "lionagi.adapters.async_postgres_adapter:21:39": "an adapter parameterized by a type",
+    "lionagi.adapters.csv_:26:31": "an adapter parameterized by a type",
+    "lionagi.adapters.json_:26:32": "an adapter parameterized by a type",
+    "lionagi.adapters.pandas_:37:37": "an adapter parameterized by a type",
+    "lionagi.adapters.toml_:33:32": "an adapter parameterized by a type",
+    "lionagi.ln._cache:19:23": "a cache parameterized by two types",
+    "lionagi.ln.concurrency.primitives:126:13": "a primitive parameterized by a type",
+    "lionagi.protocols._concepts:110:21": "a concept parameterized by a type",
+    "lionagi.protocols._concepts:98:23": "a concept parameterized by a type",
+    "lionagi.protocols.generic.element:274:10": "an element parameterized by a type",
+    "lionagi.protocols.generic.flow:25:21": "a flow parameterized by two types",
+    "lionagi.protocols.generic.pile:175:21": "a pile parameterized by two types",
+    "lionagi.protocols.generic.pile:175:36": "a pile parameterized by two types",
+    "lionagi.protocols.generic.progression:139:28": "a progression parameterized by a type",
+    "lionagi.protocols.generic.progression:139:41": "a progression parameterized by a type",
+    "lionagi.protocols.graph.graph:33:34": "a graph parameterized by a type",
+    # A metaclass the scan does not inventory; the class declares no hash authority
+    # and is outside the mutable family:
     "lionagi.ln.types._sentinel:38:1": "a singleton metaclass, not a mutable model",
+    # An attribute assignment whose owner is an item of a list, not a name or a
+    # dotted attribute; the scan refuses that owner shape, and here it writes an
+    # edge's label on an already-built edge:
+    "lionagi.operations.flow:1478:21": "an edge label on a list item, not a class attribute",
     # A class built at runtime by a factory from a parameter; it is outside what the
     # scan proves, and it declares no hash authority:
     "lionagi.protocols.graph.node_factory:144:11": "a node class built by a factory",
-    # An item assignment through a subscripted attribute:
-    "lionagi.operations.flow:1478:21": "an edge label in a list, not a name or attribute",
-    # A configuration value the scan cannot read as a literal:
-    "lionagi.studio.operator.types:48:5": "a wire model's alias generator, not a hash setting",
+    # An assignment to a class authority outside a class body; here it rebinds one
+    # connection object's class to a stop-once subclass, on an object the scan does
+    # not inventory:
+    "lionagi.state.engine:220:9": "a connection object taking a runtime subclass",
 }
 
 
 @dataclass
 class _Class:
     node: ast.ClassDef
+    location: str
     bases: tuple[str, ...]
     decorators: tuple[tuple[str, ast.expr], ...]
 
@@ -162,44 +205,72 @@ def _plain_dotted(node: ast.AST) -> bool:
     return False
 
 
-def _resolvable_base(node: ast.AST) -> bool:
-    """Whether a class base is one the scan resolves to a declaration.
+def _readable_base(node: ast.AST) -> bool:
+    """Whether a class base is a syntactic form the scan fully reads.
 
-    A name or dotted name resolves through ``_symbol``; a subscript resolves through
-    the value it parameterizes. A starred or called base, such as ``*BASES`` or
-    ``type(...)(...)``, is a value the scan cannot follow to a declaration.
+    A plain name or a dotted attribute is read: it resolves to the declaration the
+    scan inventories. Anything else is a form it cannot read, so every other base is
+    refused -- a subscript such as ``BASES[0]`` or ``Generic[T]``, a starred base, a
+    called base, and a constant.
     """
-    if isinstance(node, ast.Subscript):
-        return _resolvable_base(node.value)
     return _plain_dotted(node)
 
 
-def _readable_literal(node: ast.AST | None) -> bool:
-    """Whether a configuration value is one the scan can read without executing code.
+def _named_keywords(keywords: list[ast.keyword]) -> bool:
+    """Whether every keyword is a named one; an unpack (``**mapping``) is not read."""
+    return all(keyword.arg is not None for keyword in keywords)
 
-    Constants, and containers or calls whose own parts are all readable literals, are
-    readable. A name, a merge, an unpack or any other expression is not, because its
-    value is decided at runtime and could turn on the frozen configuration the scan
-    looks for.
+
+def _readable_decorator(node: ast.AST, bindings: dict[str, str], module: str) -> bool:
+    """Whether a class decorator is a form the scan fully reads.
+
+    The decorator must be a plain name or dotted attribute, or a call to one with no
+    positional argument and no unpack, and its name must resolve to a symbol bound in
+    another module. A decorator this module defines itself is a body the scan does not
+    execute, so it is refused rather than read as hash-free; so is a call that could
+    pass the keyword that turns on a generated hash unread.
     """
-    if node is None:
+    target = node.func if isinstance(node, ast.Call) else node
+    if not _plain_dotted(target):
         return False
-    if isinstance(node, ast.Constant):
-        return True
+    symbol = _symbol(target, bindings, module)
+    if not symbol or symbol.startswith(f"{module}."):
+        return False
+    if isinstance(node, ast.Call):
+        return not node.args and _named_keywords(node.keywords)
+    return True
+
+
+def _readable_config(node: ast.AST | None) -> bool:
+    """Whether a ``model_config`` value is one of the two forms the scan reads.
+
+    A dict literal whose keys are all strings, and a call with named keyword arguments
+    and no positional argument, are read: each entry is a named key the scan can look
+    for. A name, a merge, an unpack, a positional argument or any other expression is
+    not, because its entries are decided at runtime and could turn on the frozen
+    configuration the scan looks for.
+    """
     if isinstance(node, ast.Dict):
         return all(
-            key is not None and isinstance(key, ast.Constant) and _readable_literal(value)
-            for key, value in zip(node.keys, node.values)
+            isinstance(key, ast.Constant) and isinstance(key.value, str) for key in node.keys
         )
-    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
-        return all(_readable_literal(element) for element in node.elts)
     if isinstance(node, ast.Call):
-        return (
-            all(keyword.arg is not None for keyword in node.keywords)
-            and all(_readable_literal(keyword.value) for keyword in node.keywords)
-            and all(_readable_literal(argument) for argument in node.args)
-        )
+        return not node.args and _named_keywords(node.keywords)
     return False
+
+
+def _writes_name(node: ast.AST, name: str) -> bool:
+    """Whether *node* binds ``name`` anywhere inside it, as a plain name."""
+    return any(isinstance(item, ast.Name) and item.id == name for item in ast.walk(node))
+
+
+def _config_targets(node: ast.stmt) -> list[ast.expr]:
+    """The assignment targets of *node*, or an empty list for another statement kind."""
+    if isinstance(node, ast.Assign):
+        return list(node.targets)
+    if isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+        return [node.target]
+    return []
 
 
 def _contains_attribute(node: ast.AST) -> bool:
@@ -255,17 +326,18 @@ _SUITE_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _suite_bodies(node: ast.stmt) -> Iterator[list[ast.stmt]]:
+def _suite_bodies(node: ast.stmt, module: str) -> Iterator[list[ast.stmt]]:
     """Every statement body a statement holds, or a refusal for an unknown kind.
 
     The scan must read a hash write or a frozen configuration wherever it sits, so a
     statement kind it cannot classify is reported rather than skipped: an unknown
-    body would otherwise be a place a hash authority could hide unread.
+    body would otherwise be a place a hash authority could hide unread. The refusal
+    names the module and line of the statement it could not read.
     """
     fields = _SUITE_FIELDS.get(type(node).__name__)
     if fields is None:
         raise ValueError(
-            f"{type(node).__name__} at line {node.lineno} is a statement kind the "
+            f"{module}:{node.lineno}: {type(node).__name__} is a statement kind the "
             "mutable-model scan cannot read; extend the scan before relying on the gate"
         )
     for field in fields:
@@ -280,7 +352,7 @@ def _suite_bodies(node: ast.stmt) -> Iterator[list[ast.stmt]]:
             yield case.body
 
 
-def _scope_suites(node: ast.stmt) -> Iterator[list[ast.stmt]]:
+def _scope_suites(node: ast.stmt, module: str) -> Iterator[list[ast.stmt]]:
     """The suites of *node* that stay in the enclosing scope.
 
     A function or class definition opens its own scope, so a name assigned there is
@@ -288,13 +360,14 @@ def _scope_suites(node: ast.stmt) -> Iterator[list[ast.stmt]]:
     """
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         return
-    yield from _suite_bodies(node)
+    yield from _suite_bodies(node, module)
 
 
 def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
     result = _Scan({}, {}, set(), [], [])
     calls: list[tuple[str, frozenset[str], str, str]] = []
     setattr_calls: list[tuple[str, str, str, ast.Call]] = []
+    type_calls: list[tuple[str, str, bool]] = []
     refusals: list[tuple[str, str]] = []
     for module, (package, source) in sources.items():
         tree = ast.parse(source, filename=module)
@@ -324,7 +397,17 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                             )
                         )
                         return
-                    if target.attr == "__hash__":
+                    if target.attr in _AUTHORITY_ATTRIBUTES:
+                        # Reassigning one of these rebinds what the class is after its
+                        # declaration, so a class the scan inventories could take another
+                        # base or metaclass without any declaration to read.
+                        refusals.append(
+                            (
+                                f"{module}:{target.lineno}:{target.col_offset + 1}",
+                                f"an assignment to {target.attr!r} outside a class body",
+                            )
+                        )
+                    elif target.attr == "__hash__":
                         owner = _symbol(target.value, bindings, module)
                         if owner and not _none(value):
                             result.writes.append((owner, "post-definition __hash__ assignment"))
@@ -339,27 +422,10 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                     for index, child in enumerate(target.elts):
                         if isinstance(child, ast.Subscript):
                             continue
-                        if isinstance(
-                            child, (ast.Name, ast.Attribute, ast.Starred, ast.Tuple, ast.List)
-                        ):
-                            assignment(child, values[index] if index < len(values) else None)
-                        else:
-                            refusals.append(
-                                (
-                                    f"{module}:{child.lineno}:{child.col_offset + 1}",
-                                    "a binding target the scan cannot read",
-                                )
-                            )
+                        assignment(child, values[index] if index < len(values) else None)
                 elif isinstance(target, ast.Subscript):
                     # An item assignment writes neither a name nor a class attribute.
                     return
-                else:
-                    refusals.append(
-                        (
-                            f"{module}:{target.lineno}:{target.col_offset + 1}",
-                            "a binding target the scan cannot read",
-                        )
-                    )
 
             def loop_target(target: ast.AST, iterable: ast.AST | None) -> None:
                 # An attribute target is a binding statement too: a loop or with target
@@ -400,7 +466,22 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                 for expression in expressions:
                     for item in ast.walk(expression):
                         if isinstance(item, ast.NamedExpr):
-                            assignment(item.target, item.value)
+                            if (
+                                class_name
+                                and isinstance(item.target, ast.Name)
+                                and item.target.id == "model_config"
+                            ):
+                                # A configuration bound inside an expression is not a
+                                # statement the scan reads as a setting, so the class it
+                                # configures could be frozen unread.
+                                refusals.append(
+                                    (
+                                        f"{module}:{item.lineno}:{item.col_offset + 1}",
+                                        "a model_config target the scan cannot read",
+                                    )
+                                )
+                            else:
+                                assignment(item.target, item.value)
                         elif isinstance(item, ast.comprehension):
                             loop_target(item.target, item.iter)
                 inspect_calls(expressions, bindings)
@@ -425,47 +506,66 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                         bind(local, item.name if item.asname else local)
                 elif isinstance(node, ast.ClassDef):
                     fqn = f"{scope}.{node.name}"
+                    location = f"{module}:{node.lineno}:{node.col_offset + 1}"
                     for base in node.bases:
-                        if not _resolvable_base(base):
+                        if not _readable_base(base):
                             refusals.append(
                                 (
                                     f"{module}:{base.lineno}:{base.col_offset + 1}",
-                                    "a class base the scan cannot resolve",
+                                    "a class base the scan cannot read",
                                 )
                             )
                     for keyword in node.keywords:
-                        if keyword.arg == "metaclass":
+                        if keyword.arg is None:
                             refusals.append(
                                 (
                                     f"{module}:{node.lineno}:{node.col_offset + 1}",
+                                    "a class keyword the scan cannot read",
+                                )
+                            )
+                        elif keyword.arg == "metaclass":
+                            refusals.append(
+                                (
+                                    location,
                                     "a class whose metaclass the scan cannot inventory",
                                 )
                             )
-                        elif keyword.arg != "frozen" and not _readable_literal(keyword.value):
+                        elif keyword.arg not in _HASH_KEYWORDS and not isinstance(
+                            keyword.value, ast.Constant
+                        ):
                             refusals.append(
                                 (
-                                    f"{module}:{node.lineno}:{node.col_offset + 1}",
+                                    location,
                                     f"a class keyword {keyword.arg!r} the scan cannot read",
                                 )
                             )
-                    for statement in _class_body_statements(node.body):
-                        targets = (
-                            statement.targets
-                            if isinstance(statement, ast.Assign)
-                            else [statement.target]
-                            if isinstance(statement, (ast.AnnAssign, ast.AugAssign))
-                            else []
-                        )
-                        for target in targets:
-                            if (
-                                isinstance(target, ast.Name)
-                                and target.id == "model_config"
-                                and not _readable_literal(statement.value)
-                            ):
+                    for decorator in node.decorator_list:
+                        if not _readable_decorator(decorator, bindings, module):
+                            refusals.append(
+                                (
+                                    f"{module}:{decorator.lineno}:{decorator.col_offset + 1}",
+                                    "a decorator the scan cannot read",
+                                )
+                            )
+                    for statement in _class_body_statements(node.body, module):
+                        for target in _config_targets(statement):
+                            if isinstance(target, ast.Name) and target.id == "model_config":
+                                if not _readable_config(statement.value):
+                                    refusals.append(
+                                        (
+                                            f"{module}:{statement.lineno}:"
+                                            f"{statement.col_offset + 1}",
+                                            "a model_config value the scan cannot read",
+                                        )
+                                    )
+                            elif _writes_name(target, "model_config"):
+                                # A compound target that binds ``model_config`` as one
+                                # element, such as ``(model_config,) = ...``, is a form
+                                # the scan cannot read as a single configuration value.
                                 refusals.append(
                                     (
-                                        f"{module}:{statement.lineno}:{statement.col_offset + 1}",
-                                        "a model_config value the scan cannot read",
+                                        f"{module}:{target.lineno}:{target.col_offset + 1}",
+                                        "a model_config target the scan cannot read",
                                     )
                                 )
                     bases = tuple(
@@ -485,7 +585,7 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                         )
                         is not None
                     )
-                    result.classes[fqn] = _Class(node, bases, decorators)
+                    result.classes[fqn] = _Class(node, location, bases, decorators)
                     result.symbols.add(fqn)
                     bind(node.name, fqn)
                     walk(node.body, bindings.copy(), fqn, fqn, closure or bindings.copy())
@@ -508,7 +608,17 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                             assignment(target, node.value)
                 elif isinstance(node, ast.Delete):
                     for target in node.targets:
-                        if isinstance(target, ast.Attribute) and target.attr == "__hash__":
+                        if not isinstance(target, ast.Attribute):
+                            continue
+                        if not _plain_dotted(target.value):
+                            refusals.append(
+                                (
+                                    f"{module}:{target.lineno}:{target.col_offset + 1}",
+                                    "an attribute deletion whose owner is not a plain name",
+                                )
+                            )
+                            continue
+                        if target.attr == "__hash__":
                             owner = _symbol(target.value, bindings, module)
                             if owner:
                                 result.writes.append((owner, "deleted __hash__"))
@@ -521,7 +631,7 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                                 loop_target(item.optional_vars, None)
                     # Inspect declarations in conditional, loop, try and match suites
                     # without pretending to decide which branch executes at runtime.
-                    for statements in _suite_bodies(node):
+                    for statements in _suite_bodies(node, module):
                         walk(statements, bindings.copy(), scope, class_name, closure)
 
         def inspect_calls(expressions: list[ast.expr], bindings: dict[str, str]) -> None:
@@ -532,26 +642,58 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                         # ``type(X)(...)``: the meta-type the inner call returns builds the
                         # class, so the inner call's function is what identifies it.
                         function = _symbol(call.func.func, bindings, module)
-                    if not function:
-                        continue
-                    canonical = _canonicals(function, result.aliases)
+                    canonical = _canonicals(function, result.aliases) if function else frozenset()
                     location = f"{module}:{call.lineno}:{call.col_offset + 1}"
-                    if len(call.args) == 3 and "builtins.type" in canonical:
-                        # Any call that builds a class at runtime, directly or through a
-                        # returned meta-type, is refused: the class it builds is not a
-                        # declaration the scan can inventory.
-                        refusals.append((location, "a class built with type()"))
+                    # ``type(value)`` reads a type, which is not a class the scan has
+                    # to inventory, and the meta-type it returns may be called as an
+                    # ordinary constructor. A three-argument call builds a class, as
+                    # does any other argument shape the scan cannot read: an unpacked
+                    # or starred argument, a keyword argument, and a call through a
+                    # re-exported name. The name is resolved after every module is
+                    # scanned, so a re-exported ``type`` is caught even though its alias
+                    # is not yet known here.
+                    if isinstance(call.func, ast.Call):
+                        # ``type(X)(...)``: the returned meta-type builds the class,
+                        # so a three-argument call of it is a class the scan cannot
+                        # inventory.
+                        builds_a_class = len(call.args) == 3
                     else:
-                        # A setattr-like call is resolved after every module is scanned, so
-                        # a re-exported name still resolves. The owner and the location are
-                        # taken here, where the bindings are.
-                        owner = _symbol(call.args[0], bindings, module) if call.args else None
-                        setattr_calls.append((function, location, owner or "", call))
+                        # One plain argument reads a type; an unpacked argument, a
+                        # keyword argument and any other count are refused, since the
+                        # class-building form is a three-argument call.
+                        builds_a_class = (
+                            len(call.args) != 1
+                            or bool(call.keywords)
+                            or isinstance(call.args[0], ast.Starred)
+                        )
+                    if builds_a_class:
+                        type_calls.append((function, location, True))
+                    if "builtins.type" in canonical:
+                        continue
+                    writes_attribute = (
+                        isinstance(call.func, ast.Attribute)
+                        and call.func.attr in _DELATTR_ATTRIBUTES
+                        and len(call.args) == 3
+                        and isinstance(call.args[1], ast.Constant)
+                        and isinstance(call.args[1].value, str)
+                    )
+                    if not function and not writes_attribute:
+                        continue
+                    owner = _symbol(call.args[0], bindings, module) if call.args else None
+                    if writes_attribute and not (canonical & _SETATTR):
+                        # A call through an attribute-writing name whose function the
+                        # scan cannot resolve, such as ``type(Known).__setattr__(...)``,
+                        # is refused: the class it writes may be one the scan
+                        # inventories and the write would otherwise go unread.
+                        refusals.append((location, "a setattr call the scan cannot read"))
+                        continue
+                    # A setattr-like call is resolved after every module is scanned, so a
+                    # re-exported name still resolves. The owner and the location are
+                    # taken here, where the bindings are.
+                    setattr_calls.append((function, location, owner or "", call))
                     if call.args and any(
-                        kw.arg in {"unsafe_hash", "frozen"} and not _false(kw.value)
-                        for kw in call.keywords
+                        kw.arg in _HASH_KEYWORDS and not _false(kw.value) for kw in call.keywords
                     ):
-                        owner = _symbol(call.args[0], bindings, module)
                         if owner:
                             calls.append(
                                 (
@@ -563,22 +705,28 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
                             )
 
         walk(tree.body, {}, module)
+    for function, location, builds_a_class in type_calls:
+        if not builds_a_class or not function:
+            continue
+        if "builtins.type" in _canonicals(function, result.aliases):
+            refusals.append((location, "a class built with type()"))
     for function, expected, owner, description in calls:
         if _canonicals(function, result.aliases) & expected:
             result.writes.append((owner, description))
     for function, location, owner, call in setattr_calls:
         if not (_canonicals(function, result.aliases) & _SETATTR):
             continue
-        second = call.args[1] if len(call.args) == 3 else None
+        first = call.args[0] if call.args else None
+        second = call.args[1] if len(call.args) >= 2 else None
         if (
             len(call.args) != 3
+            or not isinstance(first, (ast.Name, ast.Attribute))
             or not isinstance(second, ast.Constant)
             or not isinstance(second.value, str)
         ):
-            refusals.append((location, "a setattr call whose attribute the scan cannot read"))
-        elif second.value == "__hash__":
-            if owner and not _none(call.args[2]):
-                result.writes.append((owner, "setattr __hash__"))
+            refusals.append((location, "a setattr call the scan cannot read"))
+        elif second.value == "__hash__" and owner and not _none(call.args[2]):
+            result.writes.append((owner, "setattr __hash__"))
         elif owner:
             result.writes.append((owner, "setattr"))
     result.refusals = refusals
@@ -613,26 +761,26 @@ def _frozen_setting(targets: list[ast.expr], value: ast.expr | None, name: str) 
     return False
 
 
-def _settings(body: list[ast.stmt]) -> Iterator[tuple[list[ast.expr], ast.expr | None]]:
+def _settings(
+    body: list[ast.stmt], module: str
+) -> Iterator[tuple[list[ast.expr], ast.expr | None]]:
     for node in body:
-        if isinstance(node, ast.Assign):
-            yield node.targets, node.value
-        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
-            yield [node.target], node.value
-        for nested in _scope_suites(node):
-            yield from _settings(nested)
+        for target in _config_targets(node):
+            yield [target], node.value
+        for nested in _scope_suites(node, module):
+            yield from _settings(nested, module)
 
 
-def _class_body_statements(body: list[ast.stmt]) -> Iterator[ast.stmt]:
+def _class_body_statements(body: list[ast.stmt], module: str) -> Iterator[ast.stmt]:
     """Every statement in a class body, nested suites included, without entering a
     new scope."""
     for node in body:
         yield node
-        for nested in _scope_suites(node):
-            yield from _class_body_statements(nested)
+        for nested in _scope_suites(node, module):
+            yield from _class_body_statements(nested, module)
 
 
-def _generation(declaration: _Class, aliases: dict[str, set[str]]) -> bool:
+def _generation(declaration: _Class, aliases: dict[str, set[str]], module: str) -> bool:
     if any(kw.arg == "frozen" and not _false(kw.value) for kw in declaration.node.keywords):
         return True
     for symbol, decorator in declaration.decorators:
@@ -644,12 +792,12 @@ def _generation(declaration: _Class, aliases: dict[str, set[str]]) -> bool:
                 for kw in decorator.keywords
             ):
                 return True
-    for targets, value in _settings(declaration.node.body):
+    for targets, value in _settings(declaration.node.body, module):
         if _frozen_setting(targets, value, "model_config"):
             return True
-    for node in _class_body_statements(declaration.node.body):
+    for node in _class_body_statements(declaration.node.body, module):
         if isinstance(node, ast.ClassDef) and node.name == "Config":
-            for targets, value in _settings(node.body):
+            for targets, value in _settings(node.body, module):
                 if _frozen_setting(targets, value, "frozen"):
                     return True
     return False
@@ -671,10 +819,11 @@ def _violations(scan: _Scan, expected: set[str]) -> list[str]:
     for name, declaration in scan.classes.items():
         if any(_UNRESOLVED in _canonicals(base, scan.aliases) for base in declaration.bases):
             violations.append(
-                f"{name}: a base bound by a loop or with target the scan cannot resolve"
+                f"{declaration.location}: {name} takes a base bound by a loop or with "
+                "target the scan cannot resolve"
             )
     for name in selected:
-        if _generation(scan.classes[name], scan.aliases):
+        if _generation(scan.classes[name], scan.aliases, scan.classes[name].location):
             violations.append(f"{name}: generated hash or frozen configuration")
         ancestors = set()
         pending = list(scan.classes[name].bases)
@@ -684,7 +833,9 @@ def _violations(scan: _Scan, expected: set[str]) -> list[str]:
                     continue
                 ancestors.add(ancestor)
                 pending.extend(scan.classes[ancestor].bases)
-                if ancestor not in selected and _generation(scan.classes[ancestor], scan.aliases):
+                if ancestor not in selected and _generation(
+                    scan.classes[ancestor], scan.aliases, scan.classes[ancestor].location
+                ):
                     violations.append(f"{name}: inherited generated hash authority from {ancestor}")
         for owner, description in scan.writes:
             for resolved in _canonicals(owner, scan.aliases) & (ancestors - selected):
@@ -1045,7 +1196,10 @@ def test_an_unknown_statement_kind_fails_closed():
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(ast, "parse", parse_with_unknown)
-        with pytest.raises(ValueError, match="statement kind the mutable-model scan cannot read"):
+        with pytest.raises(
+            ValueError,
+            match=r"^sample:1: Unknown is a statement kind the mutable-model scan cannot read",
+        ):
             _sample("")
 
 
@@ -1123,9 +1277,10 @@ def test_post_definition_hash_authority_is_rejected(assignment):
 )
 def test_a_base_bound_by_a_target_the_scan_cannot_resolve_fails_the_gate(source):
     scan = _sample("from lionagi.models import HashableModel\n" + source)
-    assert "sample.Added: a base bound by a loop or with target the scan cannot resolve" in (
-        _violations(scan, {*_ROOTS})
-    )
+    assert (
+        "sample:3:5: sample.Added takes a base bound by a loop or with target the scan "
+        "cannot resolve"
+    ) in (_violations(scan, {*_ROOTS}))
 
 
 @pytest.mark.parametrize(
@@ -1182,6 +1337,123 @@ class Other(Alias):
 Known.__hash__ = None
 """)
     assert _violations(scan, {*_ROOTS, "sample.Known"}) == []
+
+
+_UNREADABLE_SHAPES = [
+    (
+        "S01",
+        "BASES = (HashableModel,)\nclass K(BASES[0]):\n    __hash__ = object.__hash__\n"
+        "class Known(HashableModel):\n    pass\n",
+    ),
+    (
+        "S02",
+        "class Known(HashableModel):\n    model_config = ConfigDict({'frozen': True})\n",
+    ),
+    (
+        "S03",
+        "class Known(HashableModel):\n    model_config = dict([('frozen', True)])\n",
+    ),
+    (
+        "S04",
+        "class Known(HashableModel, **{'frozen': True}):\n    pass\n",
+    ),
+    (
+        "S05",
+        "FROZEN = {'unsafe_hash': True}\n@dataclass(**FROZEN)\n"
+        "class Known(HashableModel):\n    pass\n",
+    ),
+    (
+        "S06",
+        "@dataclass(**{'unsafe_hash': True})\nclass Known(HashableModel):\n    pass\n",
+    ),
+    (
+        "S07",
+        "class Known(HashableModel):\n    (model_config,) = ({'frozen': True},)\n",
+    ),
+    (
+        "S08",
+        "CFG = {'frozen': True}\nclass Known(HashableModel):\n    (model_config,) = (CFG,)\n",
+    ),
+    (
+        "S09",
+        "class Known(HashableModel):\n    _ = (model_config := {'frozen': True})\n",
+    ),
+    (
+        "S10",
+        "class Known(HashableModel):\n    pass\nsetattr([Known][0], '__hash__', object.__hash__)\n",
+    ),
+    (
+        "S11",
+        "class Known(HashableModel):\n    pass\n"
+        "setattr(globals()['Known'], '__hash__', object.__hash__)\n",
+    ),
+    (
+        "S12",
+        "class Known(HashableModel):\n    pass\n"
+        "type(Known).__setattr__(Known, '__hash__', object.__hash__)\n",
+    ),
+    (
+        "S13",
+        "K = type(*('K', (HashableModel,), {'__hash__': object.__hash__}))\n"
+        "class Known(HashableModel):\n    pass\n",
+    ),
+    (
+        "S14",
+        "K = type('K', *((HashableModel,), {'__hash__': object.__hash__}))\n"
+        "class Known(HashableModel):\n    pass\n",
+    ),
+    (
+        "S15",
+        "def add_hash(cls):\n    cls.__hash__ = object.__hash__\n    return cls\n"
+        "@add_hash\nclass Known(HashableModel):\n    pass\n",
+    ),
+    (
+        "S16",
+        "class Plain:\n    __hash__ = object.__hash__\nPlain.__bases__ = (HashableModel,)\n"
+        "class Known(HashableModel):\n    pass\n",
+    ),
+    (
+        "S17",
+        "class Known(HashableModel):\n    pass\ndel [Known][0].__hash__\n",
+    ),
+    (
+        "S18",
+        "from helpers import maker\n"
+        "K = maker('K', (HashableModel,), {'__hash__': object.__hash__})\n"
+        "class Known(HashableModel):\n    pass\n",
+    ),
+    (
+        "S19",
+        "class Meta(type):\n    pass\nclass Known(HashableModel):\n    pass\n"
+        "Known.__class__ = Meta\n",
+    ),
+]
+# A helper module the shapes that follow a re-export need, so a re-exported name is
+# resolved after every module is scanned.
+_UNREADABLE_SHAPE_MODULES = {"S18": {"helpers": ("", "from builtins import type as maker\n")}}
+
+
+@pytest.mark.parametrize(
+    "case",
+    _UNREADABLE_SHAPES,
+    ids=[shape[0] for shape in _UNREADABLE_SHAPES],
+)
+def test_a_class_shape_the_scan_cannot_read_is_reported(case):
+    """Every class declaration, decorator, ``model_config`` assignment and class-writing
+    call whose form the scan does not fully read is reported, not silently accepted. A
+    reported shape fails the gate unless it is one of the audited production sites.
+    """
+
+    name, snippet = case
+    source = (
+        "from lionagi.models import HashableModel\nfrom pydantic import ConfigDict\n"
+        "from dataclasses import dataclass\n" + snippet
+    )
+    scan = _sample(source, _UNREADABLE_SHAPE_MODULES.get(name))
+    errors = _violations(scan, {*_ROOTS, "sample.Known"})
+    assert errors, f"shape was neither reported nor allowlisted: {snippet!r}"
+    assert not any(error in _ALLOWLIST for error in errors), errors
+    assert all(error.split(": ", 1)[0].count(":") == 2 for error in errors), errors
 
 
 _SCAN_REFUSAL_CASES = [
@@ -1318,8 +1590,13 @@ def test_a_shape_the_scan_cannot_read_is_refused_or_allowlisted(snippet):
     assert errors, f"shape was neither refused nor allowlisted: {snippet!r}"
 
 
-def test_the_scan_allowlist_names_a_production_location_with_a_reason():
+def test_the_scan_allowlist_names_exactly_the_production_refusals_with_a_reason():
+    """The allowlist and the production refusals name the same locations: a site that
+    is no longer refused must leave the allowlist, and a new refusal must not pass
+    silently. Each key is ``module:line:column`` with a reason.
+    """
     assert _ALLOWLIST, "the allowlist must carry the audited production shapes"
     for location, reason in _ALLOWLIST.items():
         assert location.count(":") == 2, location
         assert reason.strip(), location
+    assert set(_ALLOWLIST) == {location for location, _ in _production().refusals}

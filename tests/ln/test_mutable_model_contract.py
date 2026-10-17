@@ -211,6 +211,41 @@ def test_dataclass_dedup_finds_a_pair_its_own_equality_calls_equal_in_either_ord
 
 
 @dataclass(slots=True, eq=False)
+class HashableLabelledPoint(Point):
+    """Equal to any point at the same position, and hashable by its position alone."""
+
+    label: str = ""
+
+    def __eq__(self, other):
+        return isinstance(other, Point) and other.x == self.x
+
+    def __hash__(self):
+        return hash(self.x)
+
+
+@pytest.mark.parametrize("labelled_first", [False, True], ids=["base-first", "labelled-first"])
+def test_dataclass_dedup_keeps_equal_values_whose_hashes_differ(labelled_first):
+    """Deduplication keeps Python's set semantics for values that carry a hash: two
+    values whose hashes differ land in different buckets and are never compared, so a
+    type whose ``__eq__`` crosses kinds without a matching ``__hash__`` keeps both of
+    its equal values, in either order, exactly as adding both to a ``set`` would.
+    """
+    exposed = import_module("lionagi.ln._to_list")
+    placed = Point(1)
+    labelled = HashableLabelledPoint(1, "a")
+    assert placed == labelled
+    assert labelled == placed
+    # The base-equality value is grouped by its field state, the other by its own
+    # hash; the two keys differ, so the pair is never compared.
+    assert exposed._dataclass_content_key(placed) != exposed._own_content_key(labelled)
+    first, second = (labelled, placed) if labelled_first else (placed, labelled)
+    result = to_list([first, second], flatten=True, unique=True)
+    assert len(result) == 2
+    assert result[0] is first
+    assert result[1] is second
+
+
+@dataclass(slots=True, eq=False)
 class Loose(DataClass):
     """Equal to any plain value, whatever its own field holds."""
 
@@ -267,6 +302,65 @@ class Keyed(DataClass):
 
     def __hash__(self):
         return hash(self.k)
+
+
+@dataclass(slots=True, eq=False)
+class SelfHashedChild(DataClass):
+    """Its own equality is identity, and its own hash reads its own child."""
+
+    child: object = None
+
+    def __eq__(self, other):
+        return self is other
+
+    def __hash__(self):
+        return hash(self.child)
+
+
+def test_dataclass_dedup_falls_back_to_equality_when_a_key_cannot_be_taken():
+    """A value whose own hash reads state it no longer carries cannot be keyed, so it
+    is compared by identity and equality instead of raising."""
+
+    deleted, live = Keyed(1), Keyed(1)
+    del deleted.k
+    result = to_list([deleted, deleted, live], flatten=True, unique=True)
+    assert result[0] is deleted
+    assert result[1] is live
+
+
+def test_operation_dedup_falls_back_to_equality_when_a_key_cannot_be_taken():
+    deleted, live = Keyed(1), Keyed(1)
+    del deleted.k
+    result = fields._validate_listable_field(None, [deleted, deleted, live])
+    assert result[0] is deleted
+    assert result[1] is live
+
+
+def test_dataclass_dedup_falls_back_to_equality_when_a_hash_recurses_without_end():
+    cyclic = SelfHashedChild()
+    cyclic.child = cyclic
+    assert to_list([cyclic, cyclic], flatten=True, unique=True) == [cyclic]
+
+
+def test_operation_dedup_falls_back_to_equality_when_a_hash_recurses_without_end():
+    cyclic = SelfHashedChild()
+    cyclic.child = cyclic
+    assert fields._validate_listable_field(None, [cyclic, cyclic]) == [cyclic]
+
+
+def _cyclic_output():
+    cyclic: list = []
+    cyclic.append(cyclic)
+    return fields.ActionResponseModel(output=cyclic)
+
+
+def test_dedup_falls_back_to_equality_when_a_model_cannot_be_keyed():
+    """A model whose output recurses cannot be hashed at all, in the plain unique
+    branch or through the operation validator, and is deduplicated by identity."""
+
+    cyclic = _cyclic_output()
+    assert to_list([cyclic, cyclic], flatten=True, unique=True) == [cyclic]
+    assert fields._validate_listable_field(None, [cyclic, cyclic]) == [cyclic]
 
 
 @dataclass(slots=True, eq=False)

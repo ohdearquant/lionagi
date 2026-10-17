@@ -88,10 +88,15 @@ def _dataclass_content_key(value: DataClass) -> int | None:
 
 
 def _own_content_key(value: DataClass) -> int | None:
-    """A value's own hash, or ``None`` when it cannot be taken."""
+    """A value's own hash, or ``None`` when it cannot be taken.
+
+    A value whose own ``__hash__`` reads state it no longer carries, or one that
+    recurses into itself, gives no key to group by; it falls back to the equality
+    path rather than raising.
+    """
     try:
         return hash(value)
-    except (TypeError, ValueError):
+    except (AttributeError, RecursionError, TypeError, ValueError):
         return None
 
 
@@ -184,12 +189,17 @@ def _dedupe_operation_fields(values: Iterable) -> list:
 
 
 def _operation_content_key(value: Any) -> int | None:
-    """A value's own hash, or ``None`` when it must be compared pairwise."""
+    """A value's own hash, or ``None`` when it must be compared pairwise.
+
+    The same failures that make a value unkeyable in ``to_list`` make it keyless
+    here: a mapping or model value, a hash that reads absent state, and a hash
+    that recurses into itself all fall back to pairwise comparison.
+    """
     if isinstance(value, _MAP_LIKE):
         return None
     try:
         return hash(value)
-    except (TypeError, ValueError):
+    except (AttributeError, RecursionError, TypeError, ValueError):
         return None
 
 
@@ -271,6 +281,7 @@ def to_list(
         kept_dataclasses = {id(value) for value in dataclass_kept}
         seen: set = set()
         unhashable_buckets: dict[Any, list] = {}
+        unkeyed: list = []
         emitted_dataclasses: set[int] = set()
         out: list = []
         for i in processed:
@@ -286,18 +297,21 @@ def to_list(
             except TypeError:
                 # Unhashable item (e.g. a dict): bucket by structural hash, then
                 # confirm identity-or-equality within the bucket, mirroring the
-                # identity-first fast path native set membership gives above.
-                if isinstance(i, _MAP_LIKE):
-                    hash_value = hash_dict(i)
-                else:
+                # identity-first fast path native set membership gives above. A
+                # structural hash that cannot be taken -- a cyclic value, or state
+                # that will not serialize -- joins the keyless bucket, where every
+                # kept value is asked.
+                if not isinstance(i, _MAP_LIKE):
                     raise ValueError(
                         "Unhashable type encountered in list unique value processing."
                     ) from None
-                bucket = unhashable_buckets.get(hash_value)
-                if bucket is None:
-                    unhashable_buckets[hash_value] = [i]
-                    out.append(i)
-                elif not any(_equal_either_way(existing, i) for existing in bucket):
+                try:
+                    hash_value = hash_dict(i)
+                except (AttributeError, RecursionError, TypeError, ValueError):
+                    bucket = unkeyed
+                else:
+                    bucket = unhashable_buckets.setdefault(hash_value, [])
+                if not any(_equal_either_way(existing, i) for existing in bucket):
                     bucket.append(i)
                     out.append(i)
         return out

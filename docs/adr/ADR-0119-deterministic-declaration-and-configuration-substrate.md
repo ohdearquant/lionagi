@@ -13,7 +13,8 @@
   projection, production declarations use the explicit `eq=False` authority, and declaration,
   field-layout, sentinel, singleton, annotation, and Pydantic model caches use identity-safe keys;
   mutable `DataClass`/`HashableModel` families are unhashable, and mutable dataclasses and
-  operation DTOs deduplicate without hashing the value; registry snapshots, canonical durable
+  operation DTOs key each value they can and compare a keyless value pairwise; registry
+  snapshots, canonical durable
   serialization, and the `OperableModel` adapter migration remain open
 - **Area**: utilities
 - **Date**: 2026-08-16
@@ -448,19 +449,24 @@ hashes only when every field value does: a tuple field hashes, a list or dict fi
 No intentional production set or dictionary-key consumers were found. `to_list()` groups
 `DataClass` values that keep the base equality by a transient hash of their declared field state
 and a value whose class defines its own equality by its own hash, and confirms identity-first
-equality in both directions inside each group and against the kept values of the other kind, so a
-pair either side's equality calls equal is one value whichever value arrived first; a
-non-transitive `__eq__` can still make the result depend on the order the values arrive in. A
-value whose field state cannot be hashed is compared with the kept values that define their own
-equality and stays separate unless it is
-the same object or a kept value's own equality calls it equal. A `DataClass` value is never
-compared with a plain mapping; the two are deduplicated in separate branches. The four operation
-DTOs at their shared listable-field validator use ordered identity-first equality in both
-directions, and a pair whose equality gives no single truth value, or raises `TypeError` or
-`ValueError`, stays two values. Generic mapping, Pydantic, and msgspec deduplication retains its
-existing transient hash buckets and confirms equality inside each bucket. Mutable operation
-outputs may be opaque values whose equality does not match their representation, so that boundary
-cannot use a content hash.
+equality in both directions inside each group and against the kept values of the other kind that
+could not be keyed, so a pair either side's equality calls equal is one value whichever value
+arrived first. Two values whose hashes differ are never compared, so equal values of a type whose
+`__eq__` crosses kinds without a matching `__hash__` are both kept, exactly as a `set` would keep
+them; a non-transitive `__eq__` can still make the result depend on the order the values arrive
+in. A value whose key cannot be taken falls back to the equality path rather than raising: a value
+whose field state cannot be hashed is compared with the kept values that define their own equality
+and stays separate unless it is the same object or a kept value's own equality calls it equal, and
+a value whose own hash reads a deleted field or recurses into itself has no key and is compared by
+identity and equality. A `DataClass` value is never compared with a plain mapping; the two are
+deduplicated in separate branches. Equality-only values are compared pairwise, so a list of n such
+values costs up to n*(n-1)/2 comparisons. The four operation DTOs at their shared listable-field
+validator key each value they can and compare it inside its key's group, and compare a value they
+cannot key with every kept value; a pair whose equality gives no single truth value, or raises
+`AttributeError`, `TypeError`, `ValueError` or an unhashable-structural error, stays two values.
+Generic mapping, Pydantic, and msgspec deduplication retains its existing transient hash buckets
+and confirms equality inside each bucket. Mutable operation outputs may be opaque values whose
+equality does not match their representation, so that boundary cannot use a content hash.
 Arbitrary default-field declarations remain fresh, validator functions have stable identities, and
 the six named lazy field constants retain singleton identity. Container keys must instead be stable
 identifiers; changing a mutable value after admission cannot repair container membership.

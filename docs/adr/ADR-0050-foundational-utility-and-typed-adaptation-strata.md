@@ -265,22 +265,29 @@ class Note(BaseModel):
 - `to_list(..., flatten=True, unique=True)` keeps the first of equal `DataClass` values.
   A value that keeps the base equality is grouped by a transient hash of its declared
   field state and compared with its group and with the kept values whose class defines
-  its own equality; a value whose class defines its own equality is grouped by its own
-  hash and compared with its group and with the kept base-equality values. Every
-  comparison asks both directions, so a pair either side's equality calls equal is one
-  value whichever value arrived first; a non-transitive `__eq__` can still make the
-  result depend on the order the values arrive in. A value whose field state cannot be
-  hashed cannot be compared by the base equality either, so it is compared with the kept
-  values that define their own equality
-  and stays a separate value unless it is the same object or a kept value's own equality
-  calls it equal. A `DataClass` value is never compared with a plain mapping; the two are
-  deduplicated in separate branches. Generic mappings, Pydantic models, and msgspec
-  structs retain transient hash buckets with equality confirmation. The operation DTO
-  listable-field validator compares by identity, then equality in both directions,
-  without hashing; opaque outputs whose equality differs from their representation dedupe
-  by equality, and a pair whose equality gives no single truth value (an array, a data
-  frame, a request whose arguments hold one) or raises `TypeError` or `ValueError` stays
-  two values.
+  its own equality that could not be keyed; a value whose class defines its own equality
+  is grouped by its own hash and compared with its group and with the kept values of the
+  other kind that could not be keyed. Every comparison asks both directions, so a pair
+  either side's equality calls equal is one value whichever value arrived first. Two
+  values whose hashes differ are never compared, so equal values of a type whose `__eq__`
+  crosses kinds without a matching `__hash__` are both kept, exactly as a `set` would
+  keep them; a non-transitive `__eq__` can still make the result depend on the order the
+  values arrive in. A value whose key cannot be taken falls back to the equality path
+  rather than raising: a value whose field state cannot be hashed cannot be compared by
+  the base equality either, so it is compared with the kept values that define their own
+  equality and stays a separate value unless it is the same object or a kept value's own
+  equality calls it equal, and a value whose own hash reads a deleted field or recurses
+  into itself has no key and is compared by identity and equality. A `DataClass` value is
+  never compared with a plain mapping; the two are deduplicated in separate branches.
+  Equality-only values are compared pairwise, so a list of n such values costs up to
+  n*(n-1)/2 comparisons. Generic mappings, Pydantic models, and msgspec structs retain
+  transient hash buckets with equality confirmation. The operation DTO listable-field
+  validator keys each value it can and compares it inside its key's group, and compares a
+  value it cannot key with every kept value; opaque outputs whose equality differs from
+  their representation dedupe by equality, and a pair whose equality gives no single
+  truth value (an array, a data frame, a request whose arguments hold one) or raises
+  `AttributeError`, `TypeError`, `ValueError` or an unhashable-structural error stays two
+  values.
 - `Note.to_dict()` recursively removes sentinel values from dictionaries and lists.
   `exclude_none` and `exclude_empty` extend that recursive omission policy. The
   returned structure is a deep copy; JSON mode additionally runs recursive model
