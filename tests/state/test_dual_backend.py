@@ -532,12 +532,16 @@ def test_pg_merge_node_metadata_sql_never_strips_the_whole_document():
     predate the patch. Cheap and always-run (no live Postgres needed) so a
     reintroduction fails fast,
     ahead of the live-Postgres parity test in test_merge_node_metadata_dialect_parity."""
-    sql = StateDB._merge_node_metadata_sql("postgresql")
+    sql = StateDB._merge_node_metadata_sql(
+        "postgresql", ops=StateDB._node_metadata_merge_ops({"nested": {"a": 1}})
+    )
     assert "jsonb_strip_nulls" not in sql, sql
 
 
 def test_sqlite_merge_node_metadata_sql_uses_json_patch():
-    sql = StateDB._merge_node_metadata_sql("sqlite")
+    sql = StateDB._merge_node_metadata_sql(
+        "sqlite", ops=StateDB._node_metadata_merge_ops({"nested": {"a": 1}})
+    )
     assert "json_patch" in sql
 
 
@@ -790,41 +794,63 @@ async def test_merge_node_metadata_dialect_parity(sqlite_db: StateDB, pg_url):
     )
 
 
-# (name, initial node_metadata, patch) -- every row here must raise ValueError
-# on both dialects before any SQL runs.
-_MERGE_REJECTS_NESTED_CASES = [
-    ("synthetic_nested_object", {}, {"nested": {"a": 1}}),
+# (name, initial node_metadata, patch) -- nested patch values merge per RFC
+# 7396 on both dialects, so the same call persists the same state per backend.
+# The record that motivated this table is kept by name: while the merge was
+# being developed, sqlite's json_patch merged the stored "nested" key
+# recursively while Postgres's jsonb `||` replaced it shallowly, and the two
+# backends disagreed on exactly this input.
+_MERGE_NESTED_CASES = [
+    ("synthetic_nested_object", {}, {"nested": {"a": 1}}, {"nested": {"a": 1}}),
     (
-        # The exact input measured to diverge between dialects while this fix
-        # was developed: sqlite's json_patch would merge
-        # {"nullable": None, "value": 1} into the stored "nested" key
-        # recursively, while Postgres's jsonb `||` would replace any existing
-        # "nested" key with it shallowly instead. Permanently pinned here so
-        # the refusal contract keeps covering the exact input that motivated
-        # it, not just a synthetic stand-in for the same shape.
         "first_measured_divergence",
         {},
         {"nested": {"nullable": None, "value": 1}},
+        {"nested": {"value": 1}},
+    ),
+    (
+        "nested_merges_into_the_stored_object",
+        {"nested": {"keep": 1}},
+        {"nested": {"added": 2}},
+        {"nested": {"keep": 1, "added": 2}},
+    ),
+    (
+        "nested_null_removes_only_its_own_key",
+        {"nested": {"keep": 1, "drop": 2}},
+        {"nested": {"drop": None}},
+        {"nested": {"keep": 1}},
+    ),
+    (
+        "nested_patch_replaces_a_scalar_at_its_key",
+        {"nested": 5},
+        {"nested": {"added": 2}},
+        {"nested": {"added": 2}},
+    ),
+    (
+        "deeply_nested_object_merges_at_every_level",
+        {"a": {"b": {"c": 1, "d": 2}}},
+        {"a": {"b": {"c": None, "e": 3}}},
+        {"a": {"b": {"d": 2, "e": 3}}},
     ),
 ]
 
 
-async def test_merge_node_metadata_rejects_nested_object_patch_on_both_dialects(
-    sqlite_db: StateDB, pg_url
-):
-    """A patch value that is itself a dict is refused on every dialect,
-    identically, before any SQL runs -- sqlite's json_patch would merge it
-    recursively and Postgres's jsonb `||` would replace it shallowly, so
-    allowing it would persist different state per backend."""
+async def test_merge_node_metadata_nested_patch_dialect_parity(sqlite_db: StateDB, pg_url):
+    """A nested patch value lands on the identical value on SQLite and
+    PostgreSQL, per RFC 7396: it merges into the stored object rather than
+    replacing it, and a key the patch sets to null is removed."""
     pg = StateDB(url=pg_url)
     await pg.open()
     try:
-        for name, initial, patch in _MERGE_REJECTS_NESTED_CASES:
+        for name, initial, patch, expected in _MERGE_NESTED_CASES:
             for db in (sqlite_db, pg):
                 sid = _uid()
                 await _seed_node_metadata(db, sid, initial)
-                with pytest.raises(ValueError, match="nested object patch"):
-                    await db.merge_session_node_metadata(sid, patch)
+                await db.merge_session_node_metadata(sid, patch)
+                got = _node_metadata(await db.get_session(sid))
+                assert got == expected, (
+                    f"{name} on {db.dialect}: expected {expected!r}, got {got!r}"
+                )
     finally:
         await pg.close()
 

@@ -273,10 +273,10 @@ async def test_fire_happy_path_records_invocation_and_run():
     svc.update_schedule_run.assert_not_awaited()
     # update_status called for schedule_run AND invocation
     assert svc.update_status.await_count == 3  # running + completed + invocation
-    # Only flush_run_telemetry's read-modify-write of
-    # node_metadata["coordination"] remains; the ended_at stamp that used to
-    # precede the terminal write now rides it.
-    assert svc.update_invocation.await_count == 1
+    # Only flush_run_telemetry's merge of node_metadata["coordination"]
+    # remains; the ended_at stamp that used to precede the terminal write now
+    # rides it.
+    assert svc.merge_invocation_node_metadata.await_count == 1
 
     terminal_run = [
         call
@@ -742,13 +742,13 @@ async def test_fire_running_child_with_on_success_does_not_run_success_chain():
     # Assertion 3: signal class. build_schedule_run_signal() derives the
     # signal class from the same mapped status, so a completed_empty outcome
     # must mint ScheduleRunFailed, never ScheduleRunSucceeded.
-    node_metadata_calls = [
-        c.kwargs["node_metadata"]
-        for c in svc.update_invocation.await_args_list
-        if "node_metadata" in c.kwargs
+    node_metadata_patches = [
+        c.args[1] for c in svc.merge_invocation_node_metadata.await_args_list if len(c.args) > 1
     ]
-    assert len(node_metadata_calls) == 1
-    assert node_metadata_calls[0]["coordination"]["signals"]["emitted"] == {"ScheduleRunFailed": 1}
+    assert len(node_metadata_patches) == 1
+    assert node_metadata_patches[0]["coordination"]["signals"]["emitted"] == {
+        "ScheduleRunFailed": 1
+    }
 
     # Assertion 4: chaining. on_success must not fire for a no-evidence outcome.
     chained = [c for c in fire_calls if c[1] == 1]
@@ -1228,13 +1228,13 @@ async def test_fire_normal_completion_dispatches_signal_before_flush_pops_counte
     ):
         await fire_with_claim(engine, schedule, "run-order", trigger_context={"scheduled": True})
 
-    node_metadata_calls = [
-        call.kwargs["node_metadata"]
-        for call in svc.update_invocation.await_args_list
-        if "node_metadata" in call.kwargs
+    node_metadata_patches = [
+        call.args[1]
+        for call in svc.merge_invocation_node_metadata.await_args_list
+        if len(call.args) > 1
     ]
-    assert len(node_metadata_calls) == 1
-    coordination = node_metadata_calls[0]["coordination"]
+    assert len(node_metadata_patches) == 1
+    coordination = node_metadata_patches[0]["coordination"]
     assert coordination["signals"]["emitted"] == {"ScheduleRunSucceeded": 1}
 
 
@@ -2790,6 +2790,9 @@ class _StatefulSvc:
             raise RuntimeError("transient invocation insert failure")
 
     async def update_invocation(self, inv_id, **fields):
+        pass
+
+    async def merge_invocation_node_metadata(self, inv_id, patch):
         pass
 
     async def update_status(self, entity_type, entity_id, *, new_status, **kwargs):

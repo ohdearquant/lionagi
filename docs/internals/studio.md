@@ -812,8 +812,9 @@ telemetry exactly once, riding the invocation's own terminal write
 (`engine.py` calls this only after its own terminal-status guard returns
 `True`). Pops the scheduler signal bus's accumulated counters for the run
 and merges them with the invocation's files-read overlap under a
-`"coordination"` key in `invocations.node_metadata` (read-modify-write,
-since `update_invocation` replaces `node_metadata` wholesale). Returns
+`"coordination"` key in `invocations.node_metadata`, through the store's own
+`merge_invocation_node_metadata` UPDATE, so a key another writer added
+meanwhile (a closer's `result`) survives. Returns
 `None` — leaving `node_metadata` untouched — when there is nothing to
 report (no signal emitted, no file overlap), matching the measure-only
 surfacing rule. Best-effort: it rides an already-committed terminal write,

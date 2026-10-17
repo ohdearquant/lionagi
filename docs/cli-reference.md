@@ -627,13 +627,20 @@ li invoke end "$INV" --status completed
 earlier close already put in the requested status: that same-status close merges
 the payload without moving the stored status or end time, and exits 0; the same
 close with no `--metadata` also exits 0, since there is nothing left to record.
-The merge is retried if another closer writes the row meanwhile. An `end` that
-names a *different* status than the stored one — the row was cancelled, reaped,
-or closed by a sibling launch while the work ran — records neither the requested
-`--status` nor its `--metadata`. That refusal is reported on stderr and **exits
-1**; so is a same-status close whose `--metadata` could not be merged. Either
-way the stored status another writer recorded is left exactly as it is. Treat a
-zero exit as proof the status and metadata were saved.
+`--metadata` merges key by key into the invocation's stored metadata, and the
+merge runs inside the store's own write, so a payload another closer records in
+between is merged with rather than overwritten and both closes keep their keys.
+Keys merge per RFC 7396: a nested object merges into the stored object, a key set
+to `null` is removed, and an array or scalar replaces the stored value. A stored
+value that is not an object (an old row whose metadata is a bare string, for
+instance) is kept under `_discarded_node_metadata`. An `end` that names a
+*different* status than the stored one — the row was cancelled, reaped, or closed
+by a sibling launch while the work ran — records neither the requested `--status`
+nor its `--metadata`. That refusal is reported on stderr and **exits 1**, and the
+stored status another writer recorded is left exactly as it is. The status write
+and the metadata merge are separate writes in that order, so a reader can see the
+terminal status a moment before the closer's metadata lands. Treat a zero exit as
+proof the status and metadata were saved.
 
 ---
 

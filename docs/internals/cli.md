@@ -788,10 +788,13 @@ launch won the race), so the requested `--status` and `--metadata` were not reco
 command reports that on stderr and exits 1 instead of printing the stored status as a
 successful close. A close naming the status the row already carries is applied: the status
 and end time are left alone and only the `--metadata` payload is merged, which is how a
-finalizer records its result on a row an earlier close already moved. That merge writes the
-`node_metadata` it read in its WHERE and re-reads on a zero-row result, so a second closer
-merging its own payload meanwhile is not overwritten; a merge that still cannot land makes
-the close exit 1 rather than report the payload saved.
+finalizer records its result on a row an earlier close already moved. That merge is
+`StateDB.merge_invocation_node_metadata`, one UPDATE that merges the payload inside the
+database, so a second closer merging its own payload meanwhile is merged with rather than
+overwritten; there is no read-modify-write in Python and no retry. The payload lands with
+that write or the write fails and the failure propagates, so a zero exit still means the
+metadata was saved. The status write and the merge are two writes in that order, so a reader
+can see the terminal status a moment before the closer's metadata.
 
 **`_start_invocation`** — invocation records carry no pid marker. `li invoke start` is a
 short-lived CLI command that creates the row and exits (`INV=$(li invoke start ...)`); it is
