@@ -12,6 +12,7 @@ from lionagi.ln import (
     extract_json,
     fuzzy_validate_mapping,
     get_cancelled_exc_class,
+    is_pydantic_model_class,
     to_list,
 )
 from lionagi.ln.fuzzy import FuzzyMatchKeysParams
@@ -201,10 +202,7 @@ async def parse(
             response_format=(
                 parse_param.response_format
                 if isinstance(parse_param.response_format, BaseModel)
-                or (
-                    isinstance(parse_param.response_format, type)
-                    and issubclass(parse_param.response_format, BaseModel)
-                )
+                or is_pydantic_model_class(parse_param.response_format)
                 else None
             ),
             imodel=(
@@ -345,7 +343,7 @@ def _validate_dict_or_model(
                 fill_value=None,
                 strict=False,
             )
-        if isinstance(response_format, type) and issubclass(response_format, BaseModel):
+        if is_pydantic_model_class(response_format):
             # Isolated from the extraction steps above: by here the JSON was
             # recovered, so anything raised is the schema rejecting the data.
             try:

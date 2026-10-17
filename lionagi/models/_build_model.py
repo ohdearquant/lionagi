@@ -5,12 +5,10 @@
 
 from __future__ import annotations
 
-import inspect
-
 from pydantic import BaseModel, ConfigDict, create_model
 from pydantic.fields import FieldInfo
 
-from lionagi.ln import copy
+from lionagi.ln import copy, is_pydantic_model_class
 
 from .field_model import FieldModel
 
@@ -33,9 +31,7 @@ def build_model_type(
 ) -> type[BaseModel]:
     # Keep this low-level constructor uncached: FieldInfo/validator inputs can be mutable.
     # Field precedence (later wins): parameter_fields → base_type → field_models.
-    if base_type is not None and not (
-        inspect.isclass(base_type) and issubclass(base_type, BaseModel)
-    ):
+    if base_type is not None and not is_pydantic_model_class(base_type):
         raise ValueError(f"base_type must be BaseModel subclass, got {base_type}")
 
     exclude_fields = exclude_fields or []

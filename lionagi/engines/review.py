@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
 import weakref
 from functools import lru_cache
@@ -15,6 +14,7 @@ import anyio
 from pydantic import Field
 
 from lionagi.casts.emission import Finding, Verdict
+from lionagi.ln import compute_hash
 from lionagi.ln import gather as ln_gather
 from lionagi.ln.concurrency._compat import (
     get_exception_group_exceptions,
@@ -410,7 +410,7 @@ def _verify_ref(issue: IssueFound) -> str:
     Arrival detection keys on this rather than a verbatim echo of the (long,
     paraphrase-prone) issue description.
     """
-    return f"V-{hashlib.sha256(_verify_key(issue).encode()).hexdigest()[:8]}"
+    return f"V-{compute_hash(_verify_key(issue), max_bytes=None)[:8]}"
 
 
 def _clean_ref(dimensions: tuple[str, ...]) -> str:
@@ -419,7 +419,7 @@ def _clean_ref(dimensions: tuple[str, ...]) -> str:
     from issue verifications by ref alone (the ``issue`` field is model-filled
     free text and paraphrases)."""
     key = "verify-clean:" + ",".join(sorted(dimensions))
-    return f"V-{hashlib.sha256(key.encode()).hexdigest()[:8]}"
+    return f"V-{compute_hash(key)[:8]}"
 
 
 def _dimension_instruction(artifact: str, dimension: str) -> str:

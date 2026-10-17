@@ -18,6 +18,8 @@ from typing import Any, Literal
 from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
+from lionagi.ln import compute_hash
+
 from ..registry import studio_route
 from ._db import open_db as _open_db
 from ._db import require_file_store, store_path
@@ -95,16 +97,16 @@ async def _ensure_evidence_table(db: Any) -> None:
 def compute_params_hash(params: dict[str, Any]) -> str:
     """sha256 over canonical (sorted-keys, separator-stable) JSON of *params*."""
     canonical = json.dumps(params, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return compute_hash(canonical, max_bytes=None)
 
 
 def _compute_content_hash(payload: dict[str, Any]) -> str:
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return compute_hash(canonical, max_bytes=None)
 
 
 def _compute_chain_hash(content_hash: str, previous_hash: str) -> str:
-    return hashlib.sha256((content_hash + previous_hash).encode("utf-8")).hexdigest()
+    return compute_hash(content_hash + previous_hash, max_bytes=None)
 
 
 def _compute_hmac_sig(chain_hash: str, created_at: float, key: str) -> str:
