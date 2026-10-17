@@ -154,15 +154,15 @@ class Structure:
     # Private
 
     def _build_operable(self, user_specs: list[Spec] | tuple[Spec, ...]) -> Operable:
-        from lionagi.operations.fields import get_default_field
+        from lionagi.operations.fields import _get_default_spec
 
         all_specs: list[Spec] = []
         if self._reason:
-            all_specs.append(get_default_field("reason").to_spec())
+            all_specs.append(_get_default_spec("reason"))
         if self._actions:
-            all_specs.append(get_default_field("action_required").to_spec())
-            all_specs.append(get_default_field("action_requests").to_spec())
-            all_specs.append(get_default_field("action_responses").to_spec())
+            all_specs.append(_get_default_spec("action_required"))
+            all_specs.append(_get_default_spec("action_requests"))
+            all_specs.append(_get_default_spec("action_responses"))
         all_specs.extend(user_specs)
         return Operable(tuple(all_specs), name=self._name)
 

@@ -1219,10 +1219,9 @@ def _reconstruct_spawned_nodes(
     replay. Children of such a parent are expected to have been dropped
     before this point; excluding it here means any that were not are refused
     by that check rather than kept against a superseded parent."""
-    from uuid import UUID as _UUID
-
     from lionagi.operations.node import create_operation
     from lionagi.protocols.graph.edge import Edge
+    from lionagi.protocols.ids import to_uuid
     from lionagi.protocols.types import EventStatus
 
     legacy = [e for e in checkpoint_spawned if not e.get("operation")]
@@ -1303,7 +1302,7 @@ def _reconstruct_spawned_nodes(
         node = create_operation(
             entry["operation"],
             parameters=parameters,
-            id=_UUID(node_id),
+            id=to_uuid(node_id),
             metadata=metadata,
         )
         if entry["status"] == "completed":
@@ -1327,7 +1326,7 @@ def _reconstruct_spawned_nodes(
         parent_id = entry.get("parent_id")
         if not parent_id:
             continue
-        parent_uuid = _UUID(parent_id) if parent_id in known_ids else built[parent_id].id
+        parent_uuid = to_uuid(parent_id) if parent_id in known_ids else built[parent_id].id
         graph.add_edge(Edge(head=parent_uuid, tail=built[entry["node_id"]].id, label=["spawn"]))
 
 
@@ -1813,9 +1812,9 @@ async def _execute_dag(
         flow_ctx = None
         if executor is not None:
             with contextlib.suppress(Exception):
-                from uuid import UUID as _UUID
+                from lionagi.protocols.ids import to_uuid
 
-                response = executor.results.get(_UUID(sig.op_id))
+                response = executor.results.get(to_uuid(sig.op_id))
             with contextlib.suppress(Exception):
                 flow_ctx = dict(executor.context.content)
         if sig.op_id in known_node_strs:
@@ -1833,9 +1832,9 @@ async def _execute_dag(
             # as unreconstructable for this node alone (see flow.py's resume path).
             spawn_fields: dict[str, Any] = {"parent_id": sig.parent_id}
             with contextlib.suppress(Exception):
-                from uuid import UUID as _UUID
+                from lionagi.protocols.ids import to_uuid
 
-                spawned_node = env.builder.get_graph().internal_nodes.get(_UUID(sig.op_id))
+                spawned_node = env.builder.get_graph().internal_nodes.get(to_uuid(sig.op_id))
                 if spawned_node is not None:
                     params = spawned_node.parameters
                     spawn_fields["operation"] = spawned_node.operation

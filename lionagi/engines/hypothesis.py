@@ -578,10 +578,7 @@ class HypothesisRun(ChainRun):
         return super().collect(event)  # type: ignore[return-value]
 
     def find(self, eid: str) -> ChainEvent | None:
-        return self._index.get(eid)
-
-    def events_of(self, event_type: type) -> list[Any]:
-        return self.store.get(event_type, [])
+        return super().find(eid)
 
     def export(self, dir_path: str | Path, *, report: str = "") -> dict[str, str]:
         """Write chains.json (event graph) and report.md (synthesis + evidence trail) to *dir_path*; returns paths dict."""
