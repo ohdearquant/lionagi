@@ -278,8 +278,8 @@ instruction's prompt context. Responses after the last historical instruction fo
 instruction's entry. §5 fixes where each entry renders.
 
 Amended by D7: within one of ReAct's later calls, the caller's context items render once per
-request. Of the instructions the history section keeps under its bound (§6), the first that
-carries those items keeps them, and every later rendered instruction carrying them, the current
+request. This step runs after the history bound, in the order §6 fixes. Of the instructions that
+bound kept, the first that carries those items keeps them, and every later rendered instruction carrying them, the current
 one included, renders without them; when the history section keeps no carrier, the current
 instruction keeps them. The unit is the prompt-context item, never the instruction, and only this
 request's ephemeral copies change. No item leaves the request, since each still renders once, so
@@ -330,26 +330,40 @@ decision in ADR-0008.
   the instruction content. Each entry from §2 renders as one block, its dictionaries as a
   canonical JSON array (D3's encoding) between a `LIONAGI_TOOL_RESULTS_JSON` line and an
   `END_LIONAGI_TOOL_RESULTS_JSON` line, appended to its target instruction's `user` content after
-  that content, as a trailing text part when the content is a multimodal list. No
+  that content, separated from it by exactly two newline characters, or as a trailing text part
+  when the content is a multimodal list. No
   `CompiledMessage` is added, so the role sequence §3 validates is unchanged, and D7's bound
   applies to the section's entries independently of the instructions they follow.
 - A falsy rendered value is omitted, matching the active path.
-- Multimodal instruction content remains a list containing a text part and `image_url` parts.
+- Multimodal instruction content remains a list containing a text part and `image_url` parts,
+  plus the trailing tool-results text part when its instruction has a `tool_results` entry.
 - The returned `messages` tuple preserves the final content order.
 - `CompiledMessage` contains only `role` and rendered `content`; message UUIDs and metadata do not
   enter the provider request.
 
 #### 6. Apply section bounds and record both states (Amended by D7)
 
-After the sections are assembled and rendered, the compiler applies each section's declared bound
-and returns one `SectionBound` per section — system, instruction, history, context, tool_results —
-in `CompiledChatRequest.bounds`. A section within its bound keeps everything, and its record carries
-an empty `left_out`. A truncating section renders D7's marker inside itself and carries one
-`left_out` entry per dropped item. A refusing section raises `SectionBudgetRefused` before the
-provider call, and its records travel on that error. The step measures rendered text and never
-mutates history. The history bound measures each instruction with the caller's ReAct context
-items in, so the §2 step that removes them, which runs over the records the bound kept, only
-shortens what the bound admitted.
+The compiler applies each section's declared bound and returns one `SectionBound` per section —
+system, instruction, history, context, tool_results — in `CompiledChatRequest.bounds`. A section
+within its bound keeps everything, and its record carries an empty `left_out`. A truncating section
+renders D7's marker inside itself and carries one `left_out` entry per dropped item. A refusing
+section raises `SectionBudgetRefused` before the provider call, and its records travel on that
+error. Bounds measure rendered text and never mutate history.
+
+The bounds and §2's ReAct step run in one order, so no step reads the result of a later one:
+
+1. The history bound runs on the view §1 resolved, before §2's ReAct step. It keeps or drops whole
+   turns, an instruction together with the assistant responses that answer it, so the records it
+   keeps still pass §3. It measures each turn in its full rendered form: the history bound
+   measures each instruction with the caller's ReAct context items in.
+2. §2's ReAct step runs over the instructions the history bound kept and the current instruction.
+3. §3 to §5 validate, fold and render what remains; §5's omission of a falsy rendered value
+   applies to an instruction the step left empty.
+4. The system, instruction, context and tool_results bounds then measure their rendered sections,
+   so the instruction bound measures the current instruction after the ReAct step.
+
+Because the history bound measured the items the step later removes, the step only shortens what
+that bound admitted.
 
 The algorithm has no retry, timeout, token cap, or provider call. It is deterministic for the
 branch snapshot and `TurnRequest` supplied. Callers that require a stable snapshot must avoid
@@ -582,9 +596,10 @@ lines:
   `:299-304`); all of them meet in one minimal-YAML rendering, where caller prompt context and
   tool output share the same "Context" field
   (`lionagi/protocols/messages/instruction.py:206-218`). Material and instruction are one
-  untyped list. With ADR-0127's prompt-cache option on (`:209`), the system text and the tool
-  set go out as their own system blocks instead (`:336-337`, `:360-367`), and the rest still
-  meet in the instruction;
+  untyped list. With ADR-0127's prompt-cache option on
+  (`lionagi/operations/chat/_prepare.py:209`), the system text and the tool set, rendered once
+  (`:216-222`), go out as their own system blocks instead (`:336-337`, `:360-367`), and the rest
+  still meet in the instruction;
 - a second, narrower removal exists inside one ReAct turn's later calls: the current request
   renders the caller's context once, on the first rendered instruction carrying it, and later
   rendered instructions, the current turn included, go out with those items removed
@@ -803,7 +818,7 @@ rather than edited there, because they stay open on that record.
 - the canonical JSON envelope grows a field per block and a bound record per section, which
   costs prompt characters for the same reason D3's envelope already does;
 - admission moves from one scalar registry budget to a declared posture per section, which the
-  provider registry must supply, and the new constructor refusal can fail a caller that marked
+  compiler's section bounds supply, and the new constructor refusal can fail a caller that marked
   material as operator text, deliberately;
 - reversing either decision costs more than adding it: dropping the authority field returns the
   assembled artifact to untyped concatenation and invalidates any audit built on it, and

@@ -67,14 +67,23 @@ def _decision_block(heading: str) -> str:
 
 
 def _source_span(relative: str, start: int, end: int) -> str:
-    """The text of lines ``start``..``end`` of a cited file, so the symbol is what
-    is pinned and a shift of the surrounding lines is not a failure."""
+    """The text of exactly lines ``start``..``end`` of a cited file.
+
+    The pinned symbol has to sit inside that range, so moving the cited line
+    fails the test until the record is re-cited, as the module docstring says.
+    """
     lines = (REPO_ROOT / relative).read_text(encoding="utf-8").splitlines()
     assert 1 <= start <= end <= len(lines), f"{relative} has no lines {start}-{end}"
     return "\n".join(lines[start - 1 : end])
 
 
 def _in_span(relative: str, start: int, end: int, *needles: str) -> None:
+    # The range pinned here has to be the one the amendment cites, so a test cannot
+    # keep passing on a range the record no longer names.
+    cite = f":{start}" if start == end else f":{start}-{end}"
+    assert re.search(rf"(?<![0-9]){re.escape(cite)}(?![0-9-])", _amendment_body()), (
+        f"the amendment does not cite {relative}{cite}"
+    )
     span = _source_span(relative, start, end)
     for needle in needles:
         assert needle in span, f"{needle!r} not found in {relative}:{start}-{end}"
@@ -137,7 +146,25 @@ def test_context_block_and_section_authority_are_in_d1s_contract() -> None:
     block = _code_block_body(text, "class ContextBlock:")
     assert "authority: SectionAuthority" in block
     assert "Amended by D8" in block
+    assert "default=SectionAuthority.MATERIAL, init=False" in block
     assert "class SectionAuthority(str, Enum)" in text
+
+
+def test_section_authority_has_exactly_its_three_members() -> None:
+    body = _code_block_body(_adr(), "class SectionAuthority(str, Enum):").split("\n\n\n", 1)[0]
+    members = re.findall(r"^\s*([A-Z_]+) = \"([a-z_]+)\"", body, flags=re.MULTILINE)
+    assert members == [
+        ("OPERATOR", "operator"),
+        ("RUN_INSTRUCTION", "run_instruction"),
+        ("MATERIAL", "material"),
+    ], f"SectionAuthority must have exactly these three members, found {members!r}"
+
+
+def test_left_out_carries_a_typed_reason() -> None:
+    body = _code_block_body(_adr(), "class LeftOut:").split("\n\n\n", 1)[0]
+    assert "name: str" in body
+    assert "reason: LeftOutReason" in body
+    assert "tokens: int | None = None" in body
 
 
 def test_d3_example_carries_the_authority_key() -> None:
@@ -279,6 +306,8 @@ def test_d2_places_each_tool_results_entry_in_the_message_sequence() -> None:
     assert "`LIONAGI_TOOL_RESULTS_JSON` line" in normalized
     assert "`END_LIONAGI_TOOL_RESULTS_JSON` line" in normalized
     assert "appended to its target instruction's `user` content after that content" in normalized
+    assert "separated from it by exactly two newline characters" in normalized
+    assert "plus the trailing tool-results text part" in normalized
     assert "No `CompiledMessage` is added, so the role sequence §3 validates is unchanged" in (
         normalized
     )
@@ -391,8 +420,14 @@ def test_react_removal_is_a_stated_step_not_a_left_out() -> None:
     assert "The unit is the prompt-context item, never the instruction" in d2
     assert "when the history section keeps no carrier, the current instruction keeps them" in d2
     assert "this step adds no `left_out` entry" in d2
-    # The bound and the step are ordered so the step cannot turn into a drop.
-    assert "The history bound measures each instruction with the caller's ReAct context" in d2
+    # The bound and the step are ordered so the step cannot turn into a drop, and
+    # the order is one line: history bound, then the step, then render, then the
+    # other bounds.
+    assert "This step runs after the history bound, in the order §6 fixes" in d2
+    assert "The history bound runs on the view §1 resolved, before §2's ReAct step" in d2
+    assert "the history bound measures each instruction with the caller's ReAct context" in d2
+    assert "so the instruction bound measures the current instruction after the ReAct step" in d2
+    assert "keeps under its bound (§6)" not in d2
     d7 = _normalized(_decision_block(D7_HEADING))
     assert "De-duplication is not a left-out" in d7
     assert "no posture, marker or `left_out` entry applies" in d7
@@ -442,6 +477,7 @@ def test_the_removed_false_claims_are_gone() -> None:
         "def from_run_instruction(",
         "cited by D2 §3 above",
         "model-window estimate",
+        "which the provider registry must supply",
     ):
         assert removed not in text, f"{removed!r} is still in the record"
 
@@ -485,7 +521,7 @@ def test_the_empty_content_guard_tests_the_current_turn() -> None:
     _in_span(
         _PREPARE,
         414,
-        414,
+        427,
         "if _contents and _has_real_instruction_text(ins.content) and not _current_turn_rendered",
     )
     _in_span(
@@ -684,4 +720,10 @@ def test_the_prompt_cache_mode_is_where_cited() -> None:
     _in_span(_PREPARE, 209, 209, "places_cache = ")
     _in_span(_PREPARE, 336, 337, "if places_cache:", "return injected + g")
     _in_span(_PREPARE, 360, 367, 'kw["system_blocks"] = stable')
-    assert "With ADR-0127's prompt-cache option on (`:209`)" in _normalized(_amendment_body())
+    _in_span(_PREPARE, 216, 222, "if places_cache:", "tool_section = minimal_yaml(")
+    normalized = _normalized(_amendment_body())
+    assert (
+        "With ADR-0127's prompt-cache option on (`lionagi/operations/chat/_prepare.py:209`)"
+        in normalized
+    )
+    assert "which the compiler's section bounds supply" in normalized
