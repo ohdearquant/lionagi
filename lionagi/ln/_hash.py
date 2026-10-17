@@ -180,6 +180,12 @@ def _hashable_representation(item: Any, active: set[int]) -> Any:
             item, active, lambda: _set_representation(item, active, _TYPE_MARKER_SET)
         )
 
+    if isinstance(item, memoryview):
+        # A memoryview's string is its address, but it compares equal to a view or a
+        # bytes object holding the same values, so it is represented by the bytes it
+        # holds, as a bytes object is.
+        return _hashable_representation(item.tobytes(), active)
+
     with contextlib.suppress(Exception):
         return str(item)
     with contextlib.suppress(Exception):

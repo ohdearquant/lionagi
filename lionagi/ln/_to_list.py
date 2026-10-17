@@ -13,7 +13,11 @@ from typing import Any, ClassVar
 
 from ._hash import hash_dict
 from ._lazy_init import LazyInit
-from ._structural import UnhashableStructuralValueError, _dataclass_structural_key
+from ._structural import (
+    UnhashableStructuralValueError,
+    _dataclass_structural_key,
+    _is_writable_memoryview_refusal,
+)
 from .types import DataClass, Params
 
 __all__ = ("to_list", "ToListParams")
@@ -26,11 +30,6 @@ _SKIP_TYPE = None
 _SKIP_TUPLE_SET = None
 _BYTE_LIKE = (str, bytes, bytearray)
 _TUPLE_SET = (tuple, set, frozenset)
-# A writable ``memoryview`` is the one built-in whose hash refusal is ``ValueError``
-# rather than ``TypeError``; the message is the interpreter's own and is stable across
-# supported versions. Recognizing it keeps the promised equality fallback for that one
-# type without swallowing any other ``ValueError`` a value's own ``__hash__`` raises.
-_WRITABLE_MEMORYVIEW_REFUSAL = "cannot hash writable memoryview object"
 
 
 def _do_init() -> None:
@@ -53,17 +52,6 @@ def _do_init() -> None:
     _SINGLETONE_TYPES = (UndefinedType, UnsetType, PydanticUndefinedType)
     _SKIP_TYPE = (*_BYTE_LIKE, *_MAP_LIKE, _Enum)
     _SKIP_TUPLE_SET = (*_SKIP_TYPE, *_TUPLE_SET)
-
-
-def _is_writable_memoryview_refusal(exc: ValueError) -> bool:
-    """Whether *exc* is the ``ValueError`` a writable ``memoryview``'s hash raises.
-
-    Hashing a writable ``memoryview`` -- on its own or nested in a container or model
-    whose hash reaches it -- raises this one ``ValueError``. Every other ``ValueError``
-    from a value's own ``__hash__`` is a defect in that ``__hash__`` and must propagate,
-    so the refusal is recognized by its own message rather than by the exception type.
-    """
-    return exc.args == (_WRITABLE_MEMORYVIEW_REFUSAL,)
 
 
 def _equal_either_way(left: Any, right: Any) -> bool:
@@ -103,12 +91,14 @@ def _equal_either_way(left: Any, right: Any) -> bool:
 def _dataclass_content_key(value: DataClass) -> int | None:
     """A transient hash of a DataClass value's declared field state, or ``None``.
 
-    ``None`` means the state is one the base equality cannot compare either: a
-    writable memoryview, a cycle, or nesting past the recursion limit.
+    ``None`` means the state is one the base equality cannot compare either: a deleted
+    field, a writable memoryview, a cycle, or nesting past the recursion limit. Any other
+    error, such as a ``ValueError`` from a field value's own ``__hash__``, is a defect in
+    that value and propagates.
     """
     try:
         return hash(_dataclass_structural_key(value._field_state()))
-    except Exception:
+    except (AttributeError, RecursionError, UnhashableStructuralValueError):
         return None
 
 

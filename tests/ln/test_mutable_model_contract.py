@@ -468,6 +468,27 @@ def test_a_cyclic_model_reports_unhashable_from_its_content_key():
         _hash._generate_hashable_representation(cyclic)
 
 
+@pytest.mark.parametrize("kind", ["pydantic", "msgspec"])
+def test_a_cyclic_model_field_compares_unequal_under_the_base_equality(kind):
+    """Pydantic's ``model_dump`` refuses a model that holds itself with ``ValueError``
+    and ``msgspec.to_builtins`` with ``RecursionError``, before the base equality can
+    walk it; either is read as the cycle the projection reports on its own path, so the
+    values compare unequal, as every other cyclic value does, and no stable cache key
+    is kept."""
+    from lionagi.ln import _structural
+
+    def cyclic():
+        value = _CyclicModel() if kind == "pydantic" else _CyclicStruct()
+        value.child = value
+        return value
+
+    first, second = cyclic(), cyclic()
+    assert (MutableContext([first]) == MutableContext([second])) is False
+    assert _structural._try_stable_cache_key(first) is None
+    with pytest.raises(_structural.UnhashableStructuralValueError):
+        _structural._dataclass_structural_key(first)
+
+
 def test_a_value_nested_past_the_recursion_limit_falls_back_to_equality():
     """A value that nests past the recursion limit raises ``RecursionError`` while its
     content key is built; the keying falls back to the equality path, so two equal
@@ -843,20 +864,29 @@ def test_a_writable_memoryview_field_of_a_self_hashed_dataclass_falls_back_to_eq
     assert result[0].value == first
 
 
-def test_a_writable_memoryview_field_of_a_frozen_model_keeps_equal_values_separate():
+def test_a_writable_memoryview_field_of_a_frozen_model_falls_back_to_equality():
     """A frozen model hashes its field values, so a memoryview field makes its hash
     refuse with ``ValueError``; the value takes the equality path, where its content
-    key follows the memoryview's own representation, so two models holding distinct
-    memoryviews are two values rather than raising."""
+    key reads the memoryview by the bytes it holds, so two models holding distinct but
+    equal memoryviews are one value, as the listable field reads them."""
     first, second = _memoryviews()
-    result = to_list(
-        [FrozenMemoryHolder(value=first), FrozenMemoryHolder(value=second)],
-        flatten=True,
-        unique=True,
-    )
-    assert len(result) == 2
-    assert result[0].value == first
-    assert result[1].value == second
+    holders = [FrozenMemoryHolder(value=first), FrozenMemoryHolder(value=second)]
+    assert holders[0] == holders[1]
+    result = to_list(holders, flatten=True, unique=True)
+    assert len(result) == 1
+    assert result[0] is holders[0]
+    assert len(fields._validate_listable_field(None, holders)) == 1
+
+
+def test_a_memoryview_is_keyed_by_the_bytes_it_holds():
+    """A memoryview's string is its address, so keying by it would split views that
+    compare equal; its content key is the one its bytes have, writable or read-only."""
+    from lionagi.ln import hash_dict
+
+    first, second = _memoryviews()
+    assert hash_dict({"v": first}) == hash_dict({"v": second}) == hash_dict({"v": b"ab"})
+    assert hash_dict({"v": memoryview(b"ab")}) == hash_dict({"v": b"ab"})
+    assert hash_dict({"v": first}) != hash_dict({"v": memoryview(bytearray(b"ba"))})
 
 
 def test_a_writable_memoryview_content_compares_as_an_unhashable_structural_value():
@@ -875,6 +905,21 @@ def test_a_user_hash_that_raises_valueerror_still_propagates():
         to_list([ValueErrorHash()], flatten=True, unique=True)
     with pytest.raises(ValueError, match="a broken hash"):
         fields._validate_listable_field(None, [ValueErrorHash()])
+
+
+def test_a_user_hash_that_raises_valueerror_inside_a_field_propagates():
+    """The base equality keys field contents with value equality, so a field value whose
+    own ``__hash__`` raises ``ValueError`` reaches that hash; the error is a defect in
+    that ``__hash__``, so it propagates from the equality and from deduplication rather
+    than reading as an unhashable state."""
+    with pytest.raises(ValueError, match="a broken hash"):
+        _ = MutableContext([ValueErrorHash()]) == MutableContext([ValueErrorHash()])
+    with pytest.raises(ValueError, match="a broken hash"):
+        to_list(
+            [MutableContext([ValueErrorHash()]), MutableContext([ValueErrorHash()])],
+            flatten=True,
+            unique=True,
+        )
 
 
 @pytest.mark.parametrize("kind", ["mapping", "pydantic", "msgspec"])

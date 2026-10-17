@@ -39,6 +39,39 @@ class UnhashableStructuralValueError(TypeError):
         )
 
 
+# A writable ``memoryview`` is the one built-in whose hash refusal is ``ValueError``
+# rather than ``TypeError``; the message is the interpreter's own and is stable across
+# supported versions. Recognizing it keeps the promised equality fallback for that one
+# type without swallowing any other ``ValueError`` a value's own ``__hash__`` raises.
+_WRITABLE_MEMORYVIEW_REFUSAL = "cannot hash writable memoryview object"
+
+
+def _is_writable_memoryview_refusal(exc: ValueError) -> bool:
+    """Whether *exc* is the ``ValueError`` a writable ``memoryview``'s hash raises.
+
+    Hashing a writable ``memoryview`` -- on its own or nested in a container or model
+    whose hash reaches it -- raises this one ``ValueError``. Every other ``ValueError``
+    from a value's own ``__hash__`` is a defect in that ``__hash__`` and must propagate,
+    so the refusal is recognized by its own message rather than by the exception type.
+    """
+    return exc.args == (_WRITABLE_MEMORYVIEW_REFUSAL,)
+
+
+def _serialized(value: Any, path: str, build: Callable[[], Any]) -> Any:
+    """Return *build()*, the builtins a model serializes to, or refuse the model.
+
+    Pydantic's ``model_dump`` and ``msgspec.to_builtins`` raise ``ValueError`` or
+    ``RecursionError`` for a model that holds itself or nests past the recursion limit,
+    before the projection can walk it, so the model is refused with the same error a
+    cycle the projection meets on its own path raises. Any other error from the model's
+    own serializer propagates.
+    """
+    try:
+        return build()
+    except (RecursionError, ValueError) as exc:
+        raise UnhashableStructuralValueError(path, type(value)) from exc
+
+
 def _forward_collection(
     key_ref: weakref.ref[_IdentityKey], on_collect: Callable[[_IdentityKey], None]
 ) -> Callable[[weakref.ref], None]:
@@ -625,7 +658,9 @@ def _project(
     if _is_pydantic_model(value):
         identity = _enter(value, path, active)
         try:
-            dumped = typing.cast(Any, value).model_dump(mode="python")
+            dumped = _serialized(
+                value, path, lambda: typing.cast(Any, value).model_dump(mode="python")
+            )
             projected = _project(dumped, path, active, value_semantics=value_semantics)
             return _StructuralKey(
                 (_PYDANTIC, _IdentityKey(value_type), projected.value),
@@ -649,7 +684,10 @@ def _project(
             import msgspec
 
             projected = _project(
-                msgspec.to_builtins(value), path, active, value_semantics=value_semantics
+                _serialized(value, path, lambda: msgspec.to_builtins(value)),
+                path,
+                active,
+                value_semantics=value_semantics,
             )
             return _StructuralKey(
                 (_MSGSPEC, _IdentityKey(value_type), projected.value),
@@ -700,6 +738,8 @@ def _project(
             # rather than letting the refusal escape. A writable memoryview is the one
             # built-in whose hash refusal is ValueError; a TypeError is the ordinary
             # refusal. Every other error from the value's own __hash__ propagates.
+            if isinstance(exc, ValueError) and not _is_writable_memoryview_refusal(exc):
+                raise
             raise UnhashableStructuralValueError(path, value_type) from exc
         return _StructuralKey(
             (_OPAQUE, type_key, _ValueEqualityKey(value)),
