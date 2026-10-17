@@ -200,6 +200,9 @@ project those rows ran under. To keep the project, name it in those members.
   and a `ReActStream` caller that passes its own `"sequential"` action parameters keeps them on
   every round. Through `ReAct()`, the first round used to run concurrently whatever it declared,
   and each extension round used to run under the strategy the round before it declared.
+- A conflicting guarded transition no longer returns a generated `transition_id`. No
+  `status_transitions` row is written for a conflict, so the returned id referenced nothing;
+  it is now `None`. An applied transition's id is unchanged and still names the row written.
 
 ### Security
 
