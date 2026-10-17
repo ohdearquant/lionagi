@@ -203,20 +203,21 @@ async def test_an_invoke_during_an_open_stream_sends_one_request_for_its_own_cal
 @pytest.mark.asyncio
 async def test_a_stream_that_ends_while_an_invoke_waits_leaves_the_invoke_its_own_result():
     model = _model()
+    await model.executor.start()
     queued = asyncio.Event()
     release = asyncio.Event()
-    real_forward = model.executor.forward
+    real_process = model.executor.processor.process
 
-    async def gated_forward():
-        # Hold the invoke's queue step open while a stream runs and finishes
-        # on the same model. ``queued`` is set once the invoke holds its own
-        # pending entry; the stream then runs to completion before the queue
-        # forwards anything.
+    async def gated_process():
+        # Hold the invoke's send step open while a stream runs and finishes
+        # on the same model. ``queued`` is set once the invoke's call is in the
+        # pile and the processor's queue; the stream then runs to completion
+        # before the processor sends anything.
         queued.set()
         await release.wait()
-        await real_forward()
+        await real_process()
 
-    with patch.object(model.executor, "forward", side_effect=gated_forward):
+    with patch.object(model.executor.processor, "process", side_effect=gated_process):
         invoke_task = asyncio.create_task(_invoke_once(model, "waiting-invoke"))
         await asyncio.wait_for(queued.wait(), timeout=WAIT)
         chunks = await _stream_once(model, "stream-that-ends")
