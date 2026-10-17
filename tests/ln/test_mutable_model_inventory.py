@@ -106,6 +106,8 @@ _CLASS_DECORATORS = frozenset(
         "lionagi.providers.google._config.GeminiCodeConfigs.CLI.register",
         "lionagi.providers.groq._config.GroqConfigs.AUDIO_TRANSCRIPTION.register",
         "lionagi.providers.groq._config.GroqConfigs.CHAT.register",
+        "lionagi.providers.lattice._config.LatticeConfigs.CHAT.register",
+        "lionagi.providers.lattice._config.LatticeConfigs.EMBED.register",
         "lionagi.providers.nvidia_nim._config.NvidiaNimConfigs.CHAT.register",
         "lionagi.providers.nvidia_nim._config.NvidiaNimConfigs.EMBED.register",
         "lionagi.providers.ollama._config.OllamaConfigs.CHAT.register",
@@ -153,7 +155,7 @@ _ALLOWLIST: dict[str, str] = {
     "lionagi.protocols.messages.message:181:9": "a declared field set by name",
     "lionagi.protocols.messages.message:193:13": "a render-input field set by name",
     "lionagi.providers.anthropic.claude_code:1100:17": "a runtime field copied by name",
-    "lionagi.service.connections.endpoint_config:201:17": "a config key set by name",
+    "lionagi.service.connections.endpoint_config:207:17": "a config key set by name",
     "lionagi.service.connections.mcp_wrapper:76:9": "a probe attribute set on an exception",
     # A class base the scan cannot read: a base subscripted by a type parameter. Each
     # declares no hash authority of its own; the refused node is the subscript.
@@ -181,26 +183,32 @@ _ALLOWLIST: dict[str, str] = {
     # An attribute assignment whose owner is an item of a list, not a name or a
     # dotted attribute; the scan refuses that owner shape, and here it writes an
     # edge's label on an already-built edge:
-    "lionagi.operations.flow:1478:21": "an edge label on a list item, not a class attribute",
+    "lionagi.operations.flow:1547:21": "an edge label on a list item, not a class attribute",
     # A class built at runtime by a factory from a parameter; it is outside what the
     # scan proves, and it declares no hash authority:
     "lionagi.protocols.graph.node_factory:144:11": "a node class built by a factory",
     # An assignment to a class authority outside a class body; here it rebinds one
     # connection object's class to a stop-once subclass, on an object the scan does
     # not inventory:
-    "lionagi.state.engine:220:9": "a connection object taking a runtime subclass",
+    "lionagi.state.engine:238:9": "a connection object taking a runtime subclass",
     # A class whose base is a function parameter: the scan cannot see the class the
     # parameter holds, and each declares no hash authority of its own:
-    "lionagi.state.engine:158:30": "a subclass of a caller-supplied connection class",
+    "lionagi.state.engine:176:30": "a subclass of a caller-supplied connection class",
     "lionagi.testing.helpers:227:22": "a subclass of the class a classmethod is called on",
     # A ``model_config`` the scan cannot read in full: ``SettingsConfigDict`` is the
     # settings analogue of ``ConfigDict``, and the entry below passes a callable rather
     # than a constant. Neither sets a frozen configuration, so neither class hashes:
-    "lionagi.config:36:5": "a pydantic settings config, which sets no frozen option",
+    "lionagi.config:168:5": "a pydantic settings config, which sets no frozen option",
     "lionagi.studio.operator.types:48:5": "a config whose alias generator is a callable",
     # An attribute assignment whose owner is not a plain name; here each increments a
     # counter field on an object held in a dict slot:
     "lionagi.studio.scheduler.signals:219:17": "a counter field on a dict-held object",
+    "lionagi.service.accounts._router:588:13": (
+        "a counter on a held character popped from a list, not a class attribute"
+    ),
+    "lionagi.state.compat:1702:13": (
+        "a frozen dataclass folding its own string fields in __post_init__"
+    ),
     "lionagi.studio.scheduler.signals:224:17": "a counter field on a dict-held object",
 }
 
