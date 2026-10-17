@@ -4563,6 +4563,11 @@ async def test_execute_dag_bounds_control_log_drain_on_hanging_update_session(
     cancels: list[int] = []  # cancels each call of the write took
 
     async def _hanging_merge(session_id, patch):
+        # The delivery marker is also an atomic merge, and it is written before
+        # the poll loop runs; only the control-log write may hang here, or the
+        # marker write would be the one the drain exercises instead.
+        if "controls" not in patch:
+            return await real_merge(session_id, patch)
         write_started.set()
         cancels.append(0)
         call = len(cancels) - 1

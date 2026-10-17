@@ -21,6 +21,7 @@ import threading
 import time
 import uuid
 import weakref
+from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -406,7 +407,9 @@ TEAM_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["team"]
 EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
     # duration_ms is derived from ended_at and ended_at_is_approximate describes it, so both carry
     # the same requirement: they must land in the status write, never a separate earlier one.
-    "session": frozenset({"ended_at", "duration_ms", "ended_at_is_approximate", "node_metadata"}),
+    "session": frozenset(
+        {"ended_at", "duration_ms", "ended_at_is_approximate", "node_metadata", "current_phase"}
+    ),
     "invocation": frozenset({"ended_at"}),
     "schedule_run": frozenset({"ended_at", "error_detail", "exit_code"}),
     "play": frozenset({"ended_at"}),
@@ -453,6 +456,17 @@ def _validate_columns(fields: dict[str, Any], allowed: frozenset[str]) -> None:
     bad = set(fields) - allowed
     if bad:
         raise ValueError(f"Invalid column(s): {bad}")
+
+
+def _is_utf8_str(value: Any) -> bool:
+    """Whether ``value`` is a string that encodes as UTF-8 (no lone surrogate)."""
+    if not isinstance(value, str):
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def _to_json_column(value: Any) -> Any:
@@ -2642,6 +2656,7 @@ class StateDB:
     # Messages
 
     _UNKNOWN_TYPE_ID = 0
+    _MESSAGE_READ_CHUNK = 500
 
     @staticmethod
     def _validate_message(msg: dict[str, Any]) -> None:
@@ -2749,6 +2764,33 @@ class StateDB:
                 .first()
             )
         return self._row_to_dict(row) if row else None
+
+    async def get_messages(self, message_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
+        """Read many messages in one query per 500 ids, keyed by id; absent ids are missing.
+
+        A caller that needs N rows by id (e.g. recovering a name from a stored tool use)
+        reads them in bounded chunks rather than one ``get_message`` per row, which reopens
+        a connection each time. ``_MESSAGE_READ_CHUNK`` keeps each IN list under SQLite's
+        bound-parameter ceiling.
+        """
+        unique = list(dict.fromkeys(message_ids))
+        if not unique:
+            return {}
+        found: dict[str, dict[str, Any]] = {}
+        async with self._read() as conn:
+            for start in range(0, len(unique), self._MESSAGE_READ_CHUNK):
+                chunk = unique[start : start + self._MESSAGE_READ_CHUNK]
+                placeholders = ",".join(f":id{i}" for i in range(len(chunk)))
+                sql = (
+                    f"SELECT m.*, mt.lion_class AS lion_class_str "  # noqa: S608
+                    f"FROM messages m LEFT JOIN message_types mt ON m.lion_class = mt.type_id "
+                    f"WHERE m.id IN ({placeholders})"
+                )
+                params = {f"id{i}": mid for i, mid in enumerate(chunk)}
+                rows = (await conn.execute(text(sql), params)).mappings().all()
+                for row in rows:
+                    found[row["id"]] = self._row_to_dict(row)
+        return found
 
     async def _resolve_lion_class(self, lion_class_str: str) -> int:
         """Get or create a message_types row; race-safe via ON CONFLICT DO NOTHING."""
@@ -2876,6 +2918,94 @@ class StateDB:
         await conn.execute(
             text(self._progression_append_sql(self.dialect) + clause),
             {"v": message_id, "id": progression_id, **owner},
+        )
+
+    @staticmethod
+    def _progression_collection_for_update_sql(dialect: str) -> str:
+        # SQLite's BEGIN IMMEDIATE already holds the writer reservation for the whole transaction;
+        # elsewhere the row lock keeps a concurrent append from being lost between read and write.
+        if dialect == "sqlite":
+            return "SELECT collection FROM progressions WHERE id = :id"
+        return "SELECT collection FROM progressions WHERE id = :id FOR UPDATE"
+
+    async def insert_messages(
+        self,
+        msgs: Sequence[dict[str, Any]],
+        *,
+        progression_ids: Sequence[str] = (),
+        session_id: str | None = None,
+        activity_at: float | None = None,
+    ) -> None:
+        """Write a batch of messages and append their ids to progressions in one transaction.
+
+        Each progression is read once. One that holds an array of string ids, given string
+        ids, is rewritten at most once for the whole batch, where ``insert_message`` plus
+        ``append_to_progression`` per message rewrites each progression's whole array once
+        per message. Ids are appended in batch order and
+        skipped when already present, so re-running a batch leaves a string-id progression
+        unchanged. That single rewrite covers a stored array of string ids given string ids,
+        the shape every writer produces; any other stored value or id goes through
+        ``append_to_progression``'s own statement one id at a time, so it ends as appending
+        one message at a time would. ``session_id`` moves that session's activity clock in
+        the same transaction.
+        """
+        for msg in msgs:
+            self._validate_message(msg)
+        if not msgs:
+            return
+        message_ids = [msg["id"] for msg in msgs]
+        async with self._tx() as conn:
+            for msg in msgs:
+                await self._insert_message_in_tx(conn, msg)
+            for progression_id in progression_ids:
+                await self._extend_progression_in_tx(conn, progression_id, message_ids)
+            if session_id is not None:
+                await self._touch_session_activity_in_tx(conn, session_id, at=activity_at)
+
+    async def _extend_progression_in_tx(
+        self, conn, progression_id: str, message_ids: Sequence[str]
+    ) -> None:
+        row = (
+            (
+                await conn.execute(
+                    text(self._progression_collection_for_update_sql(self.dialect)),
+                    {"id": progression_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if row is None:
+            return
+        current = row["collection"]
+        if isinstance(current, str):
+            try:
+                current = json.loads(current)
+            except ValueError:
+                current = None
+        if (
+            not isinstance(current, list)
+            or not all(_is_utf8_str(item) for item in current)
+            or not all(_is_utf8_str(message_id) for message_id in message_ids)
+        ):
+            # Any other shape (not an array, a non-string or non-finite element, a string that
+            # cannot be encoded as UTF-8 such as a lone surrogate, a non-string id) compares or
+            # encodes differently on each dialect, so it takes the per-message statement. The
+            # SQLite tests cannot tell the two paths apart for a non-string id.
+            for message_id in message_ids:
+                await self._append_to_progression_in_tx(conn, progression_id, message_id)
+            return
+        seen = set(current)
+        added: list[str] = []
+        for message_id in message_ids:
+            if message_id not in seen:
+                seen.add(message_id)
+                added.append(message_id)
+        if not added:
+            return
+        await conn.execute(
+            text("UPDATE progressions SET collection = :col WHERE id = :id"),
+            {"col": _to_json_column([*current, *added]), "id": progression_id},
         )
 
     # Sessions
@@ -3591,9 +3721,44 @@ class StateDB:
                 )
 
     @staticmethod
-    def _merge_node_metadata_sql(dialect: str, table: str = "sessions") -> str:
-        """One dialect-specific UPDATE that reads, merges and writes node_metadata in-database."""
+    def _node_metadata_merge_ops(patch: dict[str, Any]) -> list[tuple[str, tuple[str, ...], Any]]:
+        """The in-database steps one RFC 7396 patch needs, containers before their contents.
+
+        Each entry is ``("object", path, None)`` to make the value at *path* an object to merge
+        into, or ``("value", path, value)`` to set it -- removing it when *value* is ``None``.
+        An object-valued node gets a step of its own so a subtree holding only empty objects still
+        lands, and every container step sorts ahead of the values under it, so a value is never
+        written through a container that is not one yet.
+        """
+        nodes: list[tuple[tuple[str, ...], Any, int]] = []
+        stack: list[tuple[tuple[str, ...], Any, int]] = [((), patch, 0)]
+        while stack:
+            path, value, depth = stack.pop()
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    nodes.append((path + (key,), child, depth + 1))
+                    stack.append((path + (key,), child, depth + 1))
+        containers = sorted((n for n in nodes if isinstance(n[1], dict)), key=lambda n: n[2])
+        return [("object", path, None) for path, _, _ in containers] + [
+            ("value", path, value) for path, value, _ in nodes if not isinstance(value, dict)
+        ]
+
+    @staticmethod
+    def _merge_node_metadata_sql(
+        dialect: str,
+        *,
+        ops: list[tuple[str, tuple[str, ...], Any]],
+        table: str = "sessions",
+    ) -> str:
+        """One dialect-specific UPDATE that reads, merges and writes node_metadata in-database.
+
+        *ops* is the fold :meth:`_node_metadata_merge_ops` derived from the patch; the caller
+        binds the patch's own values in the same order, so the two cannot disagree. It is
+        required, because a caller that forgot it would build an UPDATE that merges nothing.
+        """
         if dialect == "sqlite":
+            # json_patch is RFC 7396 already: nested objects merge, a key the patch sets to null is
+            # removed, and an array or scalar patch value replaces the stored value outright.
             return (
                 f"UPDATE {table} SET "  # noqa: S608
                 "node_metadata = json_patch("
@@ -3612,54 +3777,90 @@ class StateDB:
                 "updated_at = :now "
                 "WHERE id = :id"
             )
+        # PostgreSQL's `||` merges top-level keys only, so a nested patch value would replace the
+        # stored object instead of merging into it. Reproduce RFC 7396 with one jsonb_set per patch
+        # node, containers first, and `#-` for a key the patch sets to null. Each container step
+        # reads the document through a one-row subquery, so the steps so far appear once no matter
+        # how deep the patch nests.
+        expr = (
+            "CASE"
+            "  WHEN node_metadata IS NULL THEN '{}'::jsonb"
+            "  WHEN jsonb_typeof(node_metadata::jsonb) = 'object' THEN node_metadata::jsonb"
+            "  WHEN jsonb_typeof(node_metadata::jsonb) = 'null' THEN '{}'::jsonb"
+            "  ELSE jsonb_build_object('_discarded_node_metadata', node_metadata::jsonb,"
+            "                          '_discarded_at', to_jsonb(CAST(:now AS double precision)))"
+            "END"
+        )
+        for index, (kind, path, value) in enumerate(ops or []):
+            # A patch key path, one bound parameter per element. `ARRAY[...]` takes text values,
+            # and a key the caller supplied is never spelled into the statement: read from inside
+            # a text() statement, a key holding `:name`, a lone `:id`, a backslash or a quote
+            # would be read as a bind parameter, substituted, or unescaped, so the path would not
+            # be the key the caller named.
+            at = "ARRAY[{}]".format(
+                ", ".join(f"CAST(:k{index}_{depth} AS text)" for depth in range(len(path)))
+            )
+            if kind == "object":
+                expr = (
+                    f"(SELECT jsonb_set(_doc, {at},"  # noqa: S608 -- patch key path, bound
+                    f" CASE WHEN jsonb_typeof(_doc #> {at}) = 'object'"
+                    f" THEN _doc #> {at} ELSE '{{}}'::jsonb END, true)"
+                    f" FROM (SELECT {expr} AS _doc) AS _m{index})"
+                )
+            elif value is None:
+                expr = f"({expr} #- {at})"
+            else:
+                expr = f"jsonb_set({expr}, {at}, CAST(:v{index} AS jsonb), true)"
         return (
             f"UPDATE {table} SET "  # noqa: S608
-            # jsonb `||` keeps an explicit null, unlike sqlite's json_patch which deletes the key
-            # per RFC 7396. Reproduce RFC 7396 by subtracting exactly the keys :patch itself set to
-            # null, rather than jsonb_strip_nulls which would also strip pre-existing ones.
-            "node_metadata = (("
-            "  CASE"
-            "    WHEN node_metadata IS NULL THEN '{}'::jsonb"
-            "    WHEN jsonb_typeof(node_metadata::jsonb) = 'object' THEN node_metadata::jsonb"
-            "    WHEN jsonb_typeof(node_metadata::jsonb) = 'null' THEN '{}'::jsonb"
-            "    ELSE jsonb_build_object('_discarded_node_metadata', node_metadata::jsonb,"
-            "                            '_discarded_at', to_jsonb(CAST(:now AS double precision)))"
-            "  END || CAST(:patch AS jsonb)"
-            ") - COALESCE("
-            "  (SELECT array_agg(kv.key) FROM jsonb_each(CAST(:patch AS jsonb)) AS kv(key, value)"
-            "   WHERE kv.value = 'null'::jsonb),"
-            "  ARRAY[]::text[]"
-            "))::json, "
+            f"node_metadata = ({expr})::json, "
             "updated_at = :now "
             "WHERE id = :id"
         )
 
     async def _merge_node_metadata(self, table: str, entity_id: str, patch: dict[str, Any]) -> None:
-        """Shared body for the two node_metadata merges: validate the patch, then UPDATE *table*."""
-        for key, value in patch.items():
-            if isinstance(value, dict):
-                raise ValueError(
-                    f"merge_{table[:-1]}_node_metadata does not support a nested "
-                    f"object patch value (key {key!r}): sqlite and postgres "
-                    "merge nested objects differently, so this would persist "
-                    "different state per backend. Flatten the patch or merge "
-                    "the nested object yourself before calling this."
-                )
+        """Shared body for the two node_metadata merges: build the merge, then UPDATE *table*."""
+        ops = self._node_metadata_merge_ops(patch)
         now = time.time()
+        params: dict[str, Any] = {"now": now, "id": entity_id}
+        binds = []
+        if self.dialect == "sqlite":
+            params["patch"] = patch
+            binds.append(bindparam("patch", type_=JSON))
+        else:
+            for index, (kind, path, value) in enumerate(ops):
+                # Every path element the statement reads back, bound in that statement's own
+                # parameter names, so a key cannot reach the SQL text at all.
+                for depth, key in enumerate(path):
+                    params[f"k{index}_{depth}"] = key
+                    binds.append(bindparam(f"k{index}_{depth}"))
+                if kind == "value" and value is not None:
+                    params[f"v{index}"] = value
+                    binds.append(bindparam(f"v{index}", type_=JSON))
+        stmt = text(self._merge_node_metadata_sql(self.dialect, ops=ops, table=table))
+        if binds:
+            stmt = stmt.bindparams(*binds)
         async with self._tx() as conn:
-            stmt = text(self._merge_node_metadata_sql(self.dialect, table=table)).bindparams(
-                bindparam("patch", type_=JSON)
-            )
-            await conn.execute(stmt, {"patch": patch, "now": now, "id": entity_id})
+            await conn.execute(stmt, params)
 
     async def merge_session_node_metadata(self, session_id: str, patch: dict[str, Any]) -> None:
-        """Atomically merge *patch* into the session's node_metadata column."""
+        """Atomically merge *patch* into the session's node_metadata column under RFC 7396.
+
+        Keys merge per RFC 7396: a nested object patch merges into the stored object rather than
+        replacing it, a key the patch sets to ``null`` is removed, and an array or scalar patch
+        value replaces whatever was stored at that key. A stored value that is not an object -- an
+        array, a scalar, or on SQLite even non-JSON text -- is preserved verbatim under
+        ``_discarded_node_metadata`` instead of being dropped.
+        """
         await self._merge_node_metadata("sessions", session_id, patch)
 
     async def merge_invocation_node_metadata(
         self, invocation_id: str, patch: dict[str, Any]
     ) -> None:
-        """Atomically merge *patch* into the invocation's node_metadata column."""
+        """Atomically merge *patch* into the invocation's node_metadata column under RFC 7396.
+
+        Same semantics as :meth:`merge_session_node_metadata`, for the invocations table.
+        """
         await self._merge_node_metadata("invocations", invocation_id, patch)
 
     async def update_artifact_verification(
@@ -4894,6 +5095,40 @@ class StateDB:
             "unreported_sessions": int(row["unreported_sessions"] or 0),
         }
 
+    @staticmethod
+    def _reaper_evidence_exclusion_sql(dialect: str) -> str:
+        """A predicate excluding rows whose terminal evidence the reaper wrote.
+
+        The reaper tags its rows with a ``{"kind": "invocation"}`` entry; a run's own terminal
+        writers do not. The entry must be an object member of the evidence array, so the walk is
+        guarded on both the array and each element: an object held as the whole value, or an array
+        of strings, is not the reaper's entry and must not exclude the row. The JSON functions are
+        guarded with validity and type checks so a legacy non-JSON value, or a value of the wrong
+        shape, cannot abort or misread the whole metric query.
+        """
+        if dialect == "sqlite":
+            # json_each over an object walks its members and over an array its elements, so the
+            # column itself has to be an array before any element is read; a string element
+            # unquotes into ev.value for json_extract to parse, so ev.type must be 'object'.
+            return (
+                "NOT EXISTS (SELECT 1 FROM json_each("
+                "CASE WHEN json_valid(status_evidence_refs) "
+                "AND json_type(status_evidence_refs) = 'array' "
+                "THEN status_evidence_refs ELSE '[]' END"
+                ") AS ev WHERE ev.type = 'object' "
+                "AND json_extract(ev.value, '$.kind') = 'invocation')"
+            )
+        # PostgreSQL's typed json column cannot hold text that is not JSON (the driver rejects it
+        # on write), so the cast below cannot raise; the shape checks carry the same weight as on
+        # SQLite, and ``->>`` reads a member -- a string element has no member to read.
+        return (
+            "NOT EXISTS (SELECT 1 FROM jsonb_array_elements("
+            "CASE WHEN status_evidence_refs IS NULL "
+            "OR jsonb_typeof(status_evidence_refs::jsonb) <> 'array' THEN '[]'::jsonb "
+            "ELSE status_evidence_refs::jsonb END) AS ev "
+            "WHERE jsonb_typeof(ev) = 'object' AND ev ->> 'kind' = 'invocation')"
+        )
+
     # Threshold-alert metrics, studio-wide rather than scoped to a single schedule's runs. These are
     # the VALID_METRICS members one aggregate query answers, which is not all of them:
     # p95_latency_ms needs a sorted sample and github_poll_healthy_age_minutes is a point-in-time
@@ -4961,14 +5196,23 @@ class StateDB:
             return (time.time() - float(last_healthy)) / 60.0
 
         if metric == "p95_latency_ms":
+            # Only an end the run itself measured counts. A cancellation's ended_at records when
+            # the cancellation was observed, so a cancelled row's age can be a delayed cleanup
+            # rather than anything that ran -- dropped by status. A row the lifecycle reaper ends
+            # is the same kind of outside observation, and its timed_out status and
+            # run.timed_out.deadline reason code are shared with a run that hit its own deadline,
+            # so nothing on those two columns tells the two apart. What does separate them is the
+            # reaper's {"kind": "invocation"} entry in status_evidence_refs, which no run-side
+            # invocation terminal writer adds; that column is read here in the same query.
             async with self._read() as conn:
                 rows = (
                     (
                         await conn.execute(
                             text(
-                                "SELECT (ended_at - started_at) AS latency_sec FROM invocations "
+                                "SELECT (ended_at - started_at) AS latency_sec FROM invocations "  # noqa: S608
                                 "WHERE started_at >= :window_start AND ended_at IS NOT NULL "
-                                "AND ended_at >= started_at"
+                                "AND ended_at >= started_at AND status != 'cancelled' "
+                                f"AND {self._reaper_evidence_exclusion_sql(self.dialect)}"
                             ),
                             {"window_start": window_start},
                         )
@@ -6750,26 +6994,51 @@ class StateDB:
         payload: dict[str, Any] | None = None,
         created_at: float | None = None,
         project: str | None = None,
+        require_live_flow_poller: bool = False,
     ) -> str | None:
-        """Queue a control verb for *session_id*; returns its id, or None if it was not admitted."""
+        """Queue a control verb for *session_id*; returns its id, or None if it was not admitted.
+
+        With *require_live_flow_poller*, a flow/play session must also declare
+        a live DAG poller (``node_metadata.flow_control_poller`` of ``pending``
+        or ``active``) in this same statement. The operator admission paths ask
+        for it: they read that marker to decide, and the run can lose its
+        poller between that read and this write -- the teardown publishes the
+        stop before it stops applying controls. Re-checking it here is what
+        stops a control being queued against a consumer that is already gone,
+        the same way the running condition stops one being queued against a
+        terminal run. Left off by default, because a direct caller has already
+        decided who its consumer is.
+        """
         control_id = uuid.uuid4().hex
-        # Four complete literals, selected rather than assembled: the statement text never depends
-        # on a runtime value, and the ownership predicate is visible in the SQL that actually runs.
-        # :project stays a bound parameter.
+        # Every piece of the statement is a fixed literal chosen by the dialect, whether a project
+        # is bound and whether the poller is required; no caller value reaches the text, and the
+        # ownership and delivery predicates are visible in the SQL that actually runs. :project
+        # stays a bound parameter. Only flow and play rows carry the poller marker, so every other
+        # kind keeps the status-only condition.
+        if not require_live_flow_poller:
+            delivery = ""
+        elif self.dialect == "sqlite":
+            delivery = (
+                " AND (COALESCE(invocation_kind, '') NOT IN ('flow', 'play') OR COALESCE("
+                "CASE WHEN json_valid(node_metadata) THEN "
+                "json_extract(node_metadata, '$.flow_control_poller') END, '') "
+                "IN ('pending', 'active'))"
+            )
+        else:
+            delivery = (
+                " AND (COALESCE(invocation_kind, '') NOT IN ('flow', 'play') OR COALESCE("
+                "node_metadata::jsonb->>'flow_control_poller', '') IN ('pending', 'active'))"
+            )
+        owner = " AND project = :project" if project is not None else ""
         if self.dialect == "sqlite":
             admit_source = (
-                "WHERE EXISTS (SELECT 1 FROM sessions WHERE id = :sid "
-                "AND status = 'running' AND project = :project)"
-                if project is not None
-                else "WHERE EXISTS (SELECT 1 FROM sessions WHERE id = :sid AND status = 'running')"
+                "WHERE EXISTS (SELECT 1 FROM sessions WHERE id = :sid AND status = 'running'"  # noqa: S608
+                f"{owner}{delivery})"
             )
         else:
             admit_source = (
-                "FROM (SELECT 1 FROM sessions WHERE id = :sid "
-                "AND status = 'running' AND project = :project FOR UPDATE) _admitted"
-                if project is not None
-                else "FROM (SELECT 1 FROM sessions WHERE id = :sid "
-                "AND status = 'running' FOR UPDATE) _admitted"
+                "FROM (SELECT 1 FROM sessions WHERE id = :sid AND status = 'running'"  # noqa: S608
+                f"{owner}{delivery} FOR UPDATE) _admitted"
             )
         params = {
             "id": control_id,

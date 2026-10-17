@@ -333,6 +333,59 @@ li o ctl msg ID "Prioritize correctness over breadth"
 using context-mode operator steering. Use `li o ctl SUBCOMMAND --help` for the
 command-specific ID and JSON options.
 
+Foreground flows print `Session: <full ID>` after recording the session, before
+planning. Background launch prints the full session ID assigned to its child.
+Control actions accept an exact recorded session, invocation, play or run ID, an
+unambiguous 8-character hex prefix, or an unambiguous prefix of a run ID (the ID
+`li agent` prints) that reaches the `T` after its date, such as `20260801T0201`.
+Any other string is looked up as an exact id first; a string shorter than eight
+characters or carrying a non-hex character is treated as a prefix only when it
+reaches that `T` and begins a recorded run ID, and one that begins both a run ID
+and another ID is refused as ambiguous. A run-id prefix that stops short of the
+`T`, such as `2` or `2026`, therefore cannot act on a run; an eight-character
+hex string is read as a printed id prefix, so `20260801` acts on the session
+whose printed id it begins, exactly as any other eight-hex prefix does — unless
+a recorded run id also begins with those eight digits, which makes the string
+ambiguous and refused. Shorter prefixes remain available to `status`, which does
+not act on a run. An exact
+stored ID need not be a UUID. `--invocation` must name an existing invocation
+registered with `li invoke start`; unknown values fail before flow
+setup/planning or background launch, rather than silently disabling persistence.
+Both `li o flow` and `li o fanout` check it before anything is spawned. The flag
+does not register an alias.
+
+While a flow is waiting for DAG execution, controls are deferred until its DAG
+execution poller starts, including pre-planning, graph construction and resumed
+run windows. The poller checks about every two seconds during DAG execution;
+this is not a delivery deadline or a guarantee before the first operation.
+Controls will not be applied after the poller stops. Flows whose poller has
+stopped, and older flows without control-delivery tracking, refuse new controls.
+The stop marker is published before the poll loop stops, and enqueue re-checks it
+in the same statement that inserts the control, so a run that has lost its poller
+refuses rather than queueing against a consumer that is gone. A control admitted
+just before the marker lands can miss the last poll; when the run's teardown
+writes its terminal status, every control still queued and unclaimed is closed as
+rejected rather than left pending. Teardown also closes them if a later teardown
+step fails after that status write. That teardown path closes the flow/play
+queue: a process killed outright runs no teardown, and neither `li kill` nor a
+reaper sweeps the queue, so a control queued in that window stays pending and
+`li o ctl status`
+renders it as never landed. `li o ctl resolve` closes only a row a consumer
+claimed and never reported back. Marker writes are best-effort: a failed
+stop-marker write can leave a stale active marker, so enqueue is never a delivery
+guarantee. Check `status` for application.
+
+Pause/resume acts at operation boundaries before the concurrency limiter.
+Operations already past the pause gate, including those waiting for limiter
+capacity, may still start; running operations are not interrupted. Messages affect
+only operations prepared after delivery and are rejected if none remain pending.
+Applied pause/resume writes `paused`/`executing` with one retry after a phase-write
+failure; repeated write failure can leave telemetry stale. The paths that end a
+flow run clear `current_phase` in the same statement as the terminal status; a
+legacy or out-of-band terminal row can keep a stored phase, and reads hide one on
+a terminal row. Flow runs are sessions: use
+`li monitor --type session`, or `--type invocation` for registered invocations.
+
 ---
 
 ## Playbooks (`-f`, `-p`, `li play`)
@@ -521,6 +574,10 @@ li monitor --project myproject  # filter sessions by project
 | `-t, --type` | none | One of `session`, `invocation`, `show`, `play`, `command`. `command` narrows to invocations launched as a command action |
 | `-p, --project` | none | Filter sessions by project name |
 
+Flow runs are sessions: use `--type session`, even when the table's `type` column
+labels the row `flow`. Use `--type invocation` for records registered through
+`li invoke start`. `flow` is not a supported `--type` value.
+
 A session detail view includes a `khive injection` block when an opted-in profile recorded
 non-zero recall, injection, failure, degradation, or writeback counters. `degraded_turns`
 distinguishes a provider-contained transport failure from a successful recall that returned no
@@ -622,6 +679,25 @@ li invoke end "$INV" --status completed
 | `start` | `--skill` (required), `--plugin`, `--prompt`, `--metadata` | Opens an invocation; prints its id to stdout |
 | `end ID` | `--status` (default `completed`), `--metadata` | Closes it with a canonical terminal status |
 | `list` | `--skill`, `--status`, `--limit` (default 20) | Lists recent invocations |
+
+`end` closes a *running* invocation, and it records `--metadata` on a row an
+earlier close already put in the requested status: that same-status close merges
+the payload without moving the stored status or end time, and exits 0; the same
+close with no `--metadata` also exits 0, since there is nothing left to record.
+`--metadata` merges key by key into the invocation's stored metadata, and the
+merge runs inside the store's own write, so a payload another closer records in
+between is merged with rather than overwritten and both closes keep their keys.
+Keys merge per RFC 7396: a nested object merges into the stored object, a key set
+to `null` is removed, and an array or scalar replaces the stored value. A stored
+value that is not an object (an old row whose metadata is a bare string, for
+instance) is kept under `_discarded_node_metadata`. An `end` that names a
+*different* status than the stored one — the row was cancelled, reaped, or closed
+by a sibling launch while the work ran — records neither the requested `--status`
+nor its `--metadata`. That refusal is reported on stderr and **exits 1**, and the
+stored status another writer recorded is left exactly as it is. The status write
+and the metadata merge are separate writes in that order, so a reader can see the
+terminal status a moment before the closer's metadata lands. Treat a zero exit as
+proof the status and metadata were saved.
 
 ---
 
