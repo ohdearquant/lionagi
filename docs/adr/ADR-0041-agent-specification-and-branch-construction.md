@@ -43,10 +43,13 @@ Decision:
 
 `search` is held to what `reader` may read: it resolves its path inside the working directory,
 passes the pattern to grep after `-e` so a pattern is never read as an option, and leaves out
-the matches of every file whose path holds a name `reader` refuses (`.env`, private keys),
-which a recursive search would otherwise reach. Each match is read from the NUL grep writes
-after its file name, so a name holding a newline is read whole, and binary files are skipped
-(`-I`), so no notice names a matching file.
+the matches of every file whose path holds a name `reader` refuses (the basenames `.env`,
+`.netrc`, `id_rsa`, `id_ed25519`, `id_ecdsa` and `.htpasswd`, in any case), which a recursive
+search would otherwise reach. Other secret-bearing names, such as `.env.local` or a `.pem` file,
+are not refused by either tool. Each match is read from the NUL grep writes after its file name,
+so a name holding a newline is read whole, and binary files are skipped (`-I`), so no notice
+names a matching file. A grep that runs past its 30-second bound fails the call; the rows it
+read before then are not returned.
 
 Limits: the loop's action protocol is lionagi's JSON action request, not a provider's native
 tool calling.
