@@ -11,6 +11,7 @@ asyncio_mode = "auto" in pyproject.toml — no @pytest.mark.asyncio needed.
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 import threading
 import time
@@ -23,6 +24,7 @@ import pytest_asyncio
 from sqlalchemy import text
 
 from lionagi.state.db import SCHEMA_VERSION, StateDB
+from lionagi.state.reasons import RunReasons
 from tests._scheduler_claims import claim_and_advance
 
 # Fixtures
@@ -1607,6 +1609,120 @@ async def test_update_session_rejects_bad_columns(db: StateDB):
     s = await _make_session(db)
     with pytest.raises(ValueError, match="Invalid column"):
         await db.update_session(s["id"], nonexistent_column="boom")
+
+
+async def _seed_node_metadata(db: StateDB, session_id: str, value: str) -> None:
+    """Write a session's node_metadata verbatim, as another writer's raw SQL would."""
+    async with db._tx() as conn:
+        await conn.execute(
+            text("UPDATE sessions SET node_metadata = :raw WHERE id = :id"),
+            {"raw": value, "id": session_id},
+        )
+
+
+def _metadata_of(row: dict) -> object:
+    """The stored node_metadata as JSON, whether the driver handed it back decoded or as text."""
+    value = row["node_metadata"]
+    return json.loads(value) if isinstance(value, str) else value
+
+
+async def test_set_if_null_fills_a_stored_json_null(db: StateDB):
+    """A stored JSON null is an absence, so set_if_null fills it rather than keeping the text."""
+    s = await _make_session(db, status="running")
+    await _seed_node_metadata(db, s["id"], "null")
+
+    await db.update_session(
+        s["id"], node_metadata=json.dumps({"run": 1}), set_if_null=frozenset({"node_metadata"})
+    )
+
+    row = await db.get_session(s["id"])
+    assert _metadata_of(row) == {"run": 1}
+
+
+async def test_set_if_null_keeps_a_stored_object(db: StateDB):
+    s = await _make_session(db, status="running")
+    await _seed_node_metadata(db, s["id"], '{"managed": "kept"}')
+
+    await db.update_session(
+        s["id"], node_metadata=json.dumps({"run": 1}), set_if_null=frozenset({"node_metadata"})
+    )
+
+    row = await db.get_session(s["id"])
+    assert _metadata_of(row) == {"managed": "kept"}
+
+
+async def test_set_if_null_still_fills_an_ordinary_null_column(db: StateDB):
+    """The JSON-null comparison applies to node_metadata alone; a SQL NULL column keeps the
+    plain COALESCE fill."""
+    s = await _make_session(db, status="running")
+
+    await db.update_session(s["id"], started_at=12.5, set_if_null=frozenset({"started_at"}))
+    await db.update_session(s["id"], started_at=99.0, set_if_null=frozenset({"started_at"}))
+
+    row = await db.get_session(s["id"])
+    assert row["started_at"] == 12.5
+
+
+async def test_a_status_change_and_node_metadata_land_together_natively(db: StateDB):
+    """A status write that carries node_metadata writes the column whole, as before: the
+    by-key merge is the compatibility-mode contract (ADR-0128 D6)."""
+    s = await _make_session(db, status="running")
+    await _seed_node_metadata(db, s["id"], '{"managed": "kept"}')
+
+    await db.update_session(
+        s["id"],
+        status="completed",
+        reason_code=RunReasons.COMPLETED_OK,
+        reason_actor=s["id"],
+        node_metadata=json.dumps({"run": 1}),
+    )
+
+    row = await db.get_session(s["id"])
+    assert row["status"] == "completed"
+    assert _metadata_of(row) == {"run": 1}
+
+
+async def test_merge_session_node_metadata_treats_a_stored_json_null_as_absent(db: StateDB):
+    """A stored JSON null holds no keys yet, so the patch lands in an object of its own."""
+    s = await _make_session(db, status="running")
+    await _seed_node_metadata(db, s["id"], "null")
+
+    await db.merge_session_node_metadata(s["id"], {"linked": "engine-1"})
+
+    row = await db.get_session(s["id"])
+    assert _metadata_of(row) == {"linked": "engine-1"}
+
+
+async def test_merge_session_node_metadata_replaces_under_a_top_level_key(db: StateDB):
+    """The merge is the RFC 7396 merge patch: a scalar in the patch replaces the stored value under
+    that key rather than merging into it, and a key the patch does not name keeps its stored value.
+    A nested object in the patch merges into the stored object instead of replacing it."""
+    s = await _make_session(db, status="running")
+    await _seed_node_metadata(
+        db, s["id"], '{"khive_injection": {"other": 1}, "untouched": {"keep": true}}'
+    )
+
+    await db.merge_session_node_metadata(s["id"], {"khive_injection": "flat"})
+
+    row = await db.get_session(s["id"])
+    assert _metadata_of(row) == {
+        "khive_injection": "flat",
+        "untouched": {"keep": True},
+    }
+
+
+async def test_merge_session_node_metadata_keeps_a_stored_non_object(db: StateDB):
+    """A stored non-object is kept under _discarded_node_metadata, not lost."""
+    s = await _make_session(db, status="running")
+    await _seed_node_metadata(db, s["id"], "[1]")
+
+    await db.merge_session_node_metadata(s["id"], {"linked": "engine-1"})
+
+    row = await db.get_session(s["id"])
+    stored = _metadata_of(row)
+    assert stored["linked"] == "engine-1"
+    assert stored["_discarded_node_metadata"] == [1]
+    assert isinstance(stored["_discarded_at"], float)
 
 
 async def test_update_session_current_phase(db: StateDB):
