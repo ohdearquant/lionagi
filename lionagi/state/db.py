@@ -163,6 +163,14 @@ class NoCursorClaim:
         return "NO_CURSOR_CLAIM"
 
 
+class ScheduleOwnershipConflictError(RuntimeError):
+    """A ScheduleSet update no longer matches the row state it planned against."""
+
+    def __init__(self, schedule_ids: list[str]) -> None:
+        self.schedule_ids = schedule_ids
+        super().__init__("schedule row changed under this apply: " + ", ".join(schedule_ids))
+
+
 # Distinguishes "this write claims no due instant" from "it claims one whose value is NULL".
 # Public because callers several layers up have to state which of the two they mean.
 NO_CURSOR_CLAIM = NoCursorClaim()
@@ -4735,18 +4743,44 @@ class StateDB:
         creates: list[dict[str, Any]],
         updates: list[tuple[str, dict[str, Any]]],
         disables: list[str],
+        expect_owner_keys: dict[str, str | None] | None = None,
+        expect_updated_at: dict[str, float] | None = None,
     ) -> None:
-        """Atomically commit a ScheduleSet plan; all members must be valid before reaching here."""
+        """Atomically commit a ScheduleSet plan and any enablement edges.
+
+        When supplied, *expect_owner_keys* claims the ownership value each
+        update was planned against, and *expect_updated_at* the ``updated_at``
+        value, which every schedule write moves. A row that no longer matches
+        its claims makes the entire apply fail.
+        """
+        claims = expect_owner_keys or {}
+        stamps = expect_updated_at or {}
         async with self._tx() as conn:
             for schedule in creates:
                 stmt, params = self._build_schedule_insert_stmt(schedule)
                 await conn.execute(stmt, params)
             for schedule_id, fields in updates:
-                stmt, params = self._build_update_schedule_stmt(schedule_id, fields)
-                await conn.execute(stmt, params)
+                claimed = schedule_id in claims
+                stmt, params = self._build_update_schedule_stmt(
+                    schedule_id,
+                    fields,
+                    expect_owner_key=claims[schedule_id] if claimed else NO_CURSOR_CLAIM,
+                    expect_updated_at=stamps.get(schedule_id, NO_CURSOR_CLAIM),
+                )
+                result = await conn.execute(stmt, params)
+                if (claimed or schedule_id in stamps) and result.rowcount == 0:
+                    raise ScheduleOwnershipConflictError([schedule_id])
             for schedule_id in disables:
-                stmt, params = self._build_update_schedule_stmt(schedule_id, {"enabled": 0})
-                await conn.execute(stmt, params)
+                claimed = schedule_id in claims
+                stmt, params = self._build_update_schedule_stmt(
+                    schedule_id,
+                    {"enabled": 0},
+                    expect_owner_key=claims[schedule_id] if claimed else NO_CURSOR_CLAIM,
+                    expect_updated_at=stamps.get(schedule_id, NO_CURSOR_CLAIM),
+                )
+                result = await conn.execute(stmt, params)
+                if (claimed or schedule_id in stamps) and result.rowcount == 0:
+                    raise ScheduleOwnershipConflictError([schedule_id])
 
     async def list_schedules(
         self,
@@ -4844,6 +4878,7 @@ class StateDB:
         guard_cursor_forward: bool = False,
         expect_next_fire_at: CursorClaim = NO_CURSOR_CLAIM,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        expect_owner_key: str | None | NoCursorClaim = NO_CURSOR_CLAIM,
         **fields: Any,
     ) -> bool:
         """Update one schedule; returns whether a row matched.
@@ -4862,6 +4897,7 @@ class StateDB:
             guard_cursor_forward=guard_cursor_forward,
             expect_next_fire_at=expect_next_fire_at,
             expect_github_cursor=expect_github_cursor,
+            expect_owner_key=expect_owner_key,
         )
         async with self._tx() as conn:
             result = await conn.execute(stmt, params)
@@ -4876,6 +4912,8 @@ class StateDB:
         guard_cursor_forward: bool = False,
         expect_next_fire_at: CursorClaim = NO_CURSOR_CLAIM,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        expect_owner_key: str | None | NoCursorClaim = NO_CURSOR_CLAIM,
+        expect_updated_at: float | None | NoCursorClaim = NO_CURSOR_CLAIM,
     ):
         """Validate and build the ``UPDATE schedules`` statement and params, no transaction."""
         bad = set(fields) - cls._SCHEDULE_UPDATE_ALLOWED_FIELDS
@@ -4928,6 +4966,8 @@ class StateDB:
         for column, expected, bind in (
             ("next_fire_at", expect_next_fire_at, "_expect_nfa"),
             ("github_cursor", expect_github_cursor, "_expect_ghc"),
+            ("owner_key", expect_owner_key, "_expect_owner"),
+            ("updated_at", expect_updated_at, "_expect_updated_at"),
         ):
             if expected is NO_CURSOR_CLAIM:
                 continue

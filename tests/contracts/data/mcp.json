@@ -1850,7 +1850,7 @@
           },
           "adopt": {
             "type": "boolean",
-            "description": "Migrate a same-named row owned by another set/quick-create into this set. Not yet supported.",
+            "description": "Take an existing unowned row into this set in place, keeping its id and history. Refuses unless the member declares the row's behavior, compared by how the scheduler acts on each column, enablement included.",
             "default": false,
             "x-flag": "--adopt"
           },

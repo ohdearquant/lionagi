@@ -91,8 +91,11 @@ def _find_git_root(cwd: Path) -> Path | None:
     return None
 
 
-def find_lionagi_dirs() -> list[Path]:
+def find_lionagi_dirs(cwd: Path | None = None) -> list[Path]:
     """Find `.lionagi/` dirs: git root, then cwd and its parents, then `~/.lionagi/`.
+
+    *cwd* defaults to the process working directory; pass another directory to
+    see what a process started there would find.
 
     When the password database identifies the account home, its `.lionagi` is
     excluded from project candidates at the git root and on the ancestor walk.
@@ -103,7 +106,7 @@ def find_lionagi_dirs() -> list[Path]:
     Uncached: every call re-resolves the git root and re-checks the paths, so
     the result always reflects the current cwd and git context.
     """
-    cwd = Path.cwd()
+    cwd = Path.cwd() if cwd is None else cwd
     home = Path.home()
     dirs: list[Path] = []
 

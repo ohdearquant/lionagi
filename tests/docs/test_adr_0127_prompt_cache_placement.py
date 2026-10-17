@@ -237,6 +237,17 @@ def test_minimum_cacheable_length_is_stated_the_same_way_in_context_and_decision
     clause = "shorter than the model's minimum cacheable length"
     assert clause in context
     assert clause in _decision(5)
+    assert "is processed without caching and without an error" in context
+    assert "A mark is placed whatever the length of its prefix" in _decision(5)
+    assert "minimum cacheable length is not placed" not in _decision(5)
+
+
+def test_context_states_the_read_price_per_model() -> None:
+    flat = _flat()
+    context = flat[flat.index("## Context") : flat.index("## Decision")]
+    assert "a read 0.1 times for most models" in context
+    assert "0.05 times for Opus 5.5 and Sonnet 5.5" in context
+    assert "0.025 times for Fable 5.1 and Mythos 5.1" in context
 
 
 def test_consequences_state_the_write_prices() -> None:
@@ -245,7 +256,7 @@ def test_consequences_state_the_write_prices() -> None:
     assert "once per entry lifetime" in consequences
     assert "1.25 times input for a five-minute entry" in consequences
     assert "2 times for a one-hour entry" in consequences
-    assert "the read price (0.1 times input)" in consequences
+    assert "the read price (0.1 times input, less on the newest models)" in consequences
     assert "full input price for the stable and run segments" not in _flat()
 
 
