@@ -11,6 +11,7 @@ in-memory DB, mirrors test_scheduler_budget.py's sum_schedule_spend tests).
 from __future__ import annotations
 
 import contextlib
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -1496,3 +1497,187 @@ async def test_cause_counting_still_respects_the_window_and_the_status_filter():
 
     assert await state.metric_value("failed_sessions", window_start=50.0) == 2.0
     await state.close()
+
+
+@pytest.mark.parametrize("include_finished", [False, True])
+async def test_metric_value_p95_latency_excludes_cancelled_observation_time(
+    tmp_path, include_finished
+):
+    from lionagi.state.db import StateDB
+
+    async with StateDB(tmp_path / "state.db") as db:
+        await db.create_invocation(
+            {
+                "id": "cancelled",
+                "skill": "agent",
+                "status": "cancelled",
+                "started_at": 100.0,
+                "ended_at": 7300.0,
+            }
+        )
+        if include_finished:
+            for index, status in enumerate(
+                ["completed", "completed_empty", "failed", "timed_out", "aborted"]
+            ):
+                await db.create_invocation(
+                    {
+                        "id": f"finished-{index}",
+                        "skill": "agent",
+                        "status": status,
+                        "started_at": 100.0,
+                        "ended_at": 101.0 + index,
+                    }
+                )
+        assert await db.metric_value("p95_latency_ms", window_start=50.0) == (
+            5000.0 if include_finished else 0.0
+        )
+
+
+async def test_p95_latency_excludes_reaper_observed_rows(tmp_path, monkeypatch):
+    """A reaped row's ended_at is when the reaper noticed a stale run, not how
+    long anything ran, so it must not enter the latency sample.
+
+    The reaper writes a ``{"kind": "invocation"}`` entry into
+    ``status_evidence_refs`` and a run's own deadline write does not, so the
+    metric can tell the two apart by that entry even though both carry status
+    ``timed_out`` and reason code ``run.timed_out.deadline``. Here a 2 h row the
+    reaper ends sits beside a 30 s row the run recorded itself: the percentile
+    must be the 30 s row's.
+    """
+    import time as _time
+    from types import SimpleNamespace
+
+    from lionagi.state.db import StateDB
+    from lionagi.studio.services import lifecycle as lifecycle_mod
+
+    path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    monkeypatch.setattr(lifecycle_mod, "time", SimpleNamespace(time=lambda: 1_000_000.0))
+    async with StateDB(path) as db:
+        await db.create_invocation(
+            {
+                "id": "reaped",
+                "skill": "agent",
+                "status": "running",
+                "started_at": 992_000.0,
+                "session_count": 1,
+            }
+        )
+        await db.create_invocation(
+            {
+                "id": "finished",
+                "skill": "agent",
+                "status": "completed",
+                "started_at": 999_970.0,
+                "ended_at": 1_000_000.0,
+            }
+        )
+
+    assert await lifecycle_mod.reap_stale_invocations(deadline_seconds=7200) == 1
+
+    async with StateDB(path) as db:
+        reaped = await db.get_invocation("reaped")
+        assert reaped["status"] == "timed_out"
+        assert reaped["ended_at"] == 1_000_000.0
+        # The reaper's 8000s observation is excluded; the 30s of real work stands.
+        assert await db.metric_value("p95_latency_ms", window_start=0.0) == 30_000.0
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        json.dumps({"nested": {"kind": "invocation"}}),
+        json.dumps([json.dumps({"kind": "invocation"})]),
+    ],
+    ids=["object-holding-the-entry", "array-of-strings"],
+)
+async def test_p95_latency_reads_only_object_entries_as_reaper_evidence(tmp_path, evidence):
+    """Only an object element of the evidence array is the reaper's entry.
+
+    The predicate walks ``status_evidence_refs`` for a ``{"kind": "invocation"}``
+    object member. A value that is a whole object, or an array whose elements are
+    strings whose text happens to hold that JSON, is not the reaper's entry: a
+    member of an object is the object's contents rather than its value, and a
+    string element must not be unquoted and parsed as if it were the entry. The
+    row's own latency stands.
+    """
+    from lionagi.state.db import StateDB
+
+    async with StateDB(tmp_path / "state.db") as db:
+        await db.create_invocation(
+            {
+                "id": "row",
+                "skill": "agent",
+                "status": "completed",
+                "started_at": 100.0,
+                "ended_at": 130.0,
+            }
+        )
+        await db.execute(
+            "UPDATE invocations SET status_evidence_refs = :v WHERE id = 'row'",
+            {"v": evidence},
+        )
+        assert await db.metric_value("p95_latency_ms", window_start=0.0) == 30_000.0
+
+
+async def test_p95_latency_still_excludes_a_reaper_tagged_row(tmp_path):
+    """The exclusion still holds for the shape the reaper writes: an object
+    member of the evidence array tagged ``{"kind": "invocation"}`` whose latency
+    is an observation rather than a run time."""
+    from lionagi.state.db import StateDB
+
+    async with StateDB(tmp_path / "state.db") as db:
+        await db.create_invocation(
+            {
+                "id": "reaped",
+                "skill": "agent",
+                "status": "timed_out",
+                "started_at": 100.0,
+                "ended_at": 7300.0,
+            }
+        )
+        await db.create_invocation(
+            {
+                "id": "finished",
+                "skill": "agent",
+                "status": "completed",
+                "started_at": 100.0,
+                "ended_at": 130.0,
+            }
+        )
+        await db.execute(
+            "UPDATE invocations SET status_evidence_refs = :v WHERE id = 'reaped'",
+            {"v": '[{"kind": "invocation", "id": "reaped"}]'},
+        )
+        assert await db.metric_value("p95_latency_ms", window_start=0.0) == 30_000.0
+
+
+async def test_p95_latency_keeps_a_run_recorded_timeout(tmp_path):
+    """A run's own deadline write carries no reaper evidence entry, so its
+    recorded duration still enters the sample."""
+    from lionagi.state.db import StateDB
+
+    path = tmp_path / "state.db"
+    async with StateDB(path) as db:
+        for index, evidence in enumerate(([], [{"kind": "session", "id": "child"}])):
+            await db.create_invocation(
+                {
+                    "id": f"own-timeout-{index}",
+                    "skill": "agent",
+                    "status": "running",
+                    "started_at": 100.0,
+                }
+            )
+            await db.update_status(
+                "invocation",
+                f"own-timeout-{index}",
+                new_status="timed_out",
+                reason_code="run.timed_out.deadline",
+                reason_summary="Flow timed out after 3600s",
+                evidence_refs=evidence,
+                source="executor",
+                actor=f"own-timeout-{index}",
+                expected_statuses={"running"},
+                extra_fields={"ended_at": 145.0},
+            )
+        assert await db.metric_value("p95_latency_ms", window_start=0.0) == 45_000.0

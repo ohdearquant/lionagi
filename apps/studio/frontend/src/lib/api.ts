@@ -45,39 +45,30 @@ declare global {
 }
 
 /**
- * Return the per-launch bearer token injected by the desktop shell, if any.
+ * Constrain the desktop shell's bearer token when a viewer overrides the API.
+ * Requests use the base selected when this module loaded. Later SPA query or
+ * storage changes cannot change that destination, so credential admission must
+ * use the same frozen base. A loopback address alone does not establish trust:
+ * another local process can listen on a different address or port.
  *
- * The token authenticates against the daemon the shell started, and the shell
- * names that daemon in `__STUDIO_API_BASE__` when it injects the token. A
- * `?api=` override takes priority over that base, so without a check here the
- * page would keep sending the token after being pointed at a *different*
- * daemon. Restricting the override to loopback bounds who that can be; it does
- * not make them trusted, since any process able to listen on a local port would
- * then be handed the credential by the next request.
- *
- * So the token travels only to the origin it was issued for. If an override is
- * active and that origin cannot be established, the token is withheld:
- * withholding costs an unauthenticated request against a daemon the viewer
- * redirected the page to deliberately, and sending costs the credential itself.
- *
- * Decided here rather than at the call sites because there are several of them,
- * and a rule about where a credential may travel should not be re-implemented
- * once per request builder.
+ * Without a viewer override at load time, trusted runtime/build configuration
+ * retains its token behavior, including relative bases and same-origin requests.
+ * For a viewer override, the injected issuing base is captured at load time too.
+ * Withhold the token if that origin is unknown, unparseable, or different from
+ * the loaded destination. Later injection changes cannot establish new trust.
  */
 export function resolveAuthToken(): string | undefined {
   if (typeof window === "undefined") return undefined;
   const token = window.__STUDIO_AUTH_TOKEN__;
   // Without an injected token, the bearer `li studio` paired this page with.
-  if (!token) return pairedBearer(resolveApiBase());
+  if (!token) return pairedBearer(API_BASE);
 
-  const override = resolveApiOverride();
-  if (!override) return token;
+  if (!API_OVERRIDE) return token;
 
-  const issuedFor = window.__STUDIO_API_BASE__;
+  const issuedFor = TOKEN_ISSUING_BASE;
   if (!issuedFor) return undefined;
   try {
-    // resolveApiOverride already returns a bare origin, so both sides normalize.
-    return new URL(issuedFor).origin === override ? token : undefined;
+    return new URL(issuedFor).origin === new URL(API_BASE).origin ? token : undefined;
   } catch {
     return undefined;
   }
@@ -110,8 +101,9 @@ function resolveApiOverride(): string | undefined {
     } catch {
       return undefined;
     }
+    // URL canonicalizes valid IPv4 literals to dotted decimal; all of 127/8 is loopback.
     const loopback =
-      parsed.hostname === "127.0.0.1" ||
+      /^127(?:\.\d{1,3}){3}$/.test(parsed.hostname) ||
       parsed.hostname === "localhost" ||
       parsed.hostname === "[::1]" ||
       parsed.hostname === "::1";
@@ -137,16 +129,16 @@ function resolveApiOverride(): string | undefined {
   }
 }
 
-export function resolveApiBase(): string {
+function resolveApiBase(): string {
   // Priority: ?api= loopback override (per-tab) >
   // window.__STUDIO_API_BASE__ (runtime injection) >
   // VITE_STUDIO_API_BASE (build-time env) > origin logic.
   // Treat empty string as "not configured" — defense against baking an empty
   // env var that silently produced same-origin /api/* requests.
-  const override = resolveApiOverride();
-  if (override) {
-    return override;
-  }
+  return API_OVERRIDE ?? resolveConfiguredApiBase();
+}
+
+function resolveConfiguredApiBase(): string {
   if (typeof window !== "undefined" && window.__STUDIO_API_BASE__) {
     return window.__STUDIO_API_BASE__;
   }
@@ -171,6 +163,8 @@ export function resolveApiBase(): string {
   return "http://localhost:8765";
 }
 
+const API_OVERRIDE = resolveApiOverride();
+const TOKEN_ISSUING_BASE = typeof window === "undefined" ? undefined : window.__STUDIO_API_BASE__;
 export const API_BASE = resolveApiBase();
 
 export class ApiError extends Error {
@@ -1681,6 +1675,8 @@ export async function listArtifactsForSession(
 }
 
 export interface InvocationListResponse {
+  /** Latest recorded start across all matching rows; omitted by older servers. */
+  latest_started_at?: number | null;
   invocations: InvocationSummary[];
   limit: number;
   offset: number;
@@ -1691,6 +1687,8 @@ export interface InvocationListResponse {
   /** Total matching the filters with status == "completed" specifically,
    * ignoring `params.status` — always a meaningful success-rate numerator. */
   completed_total: number;
+  /** Terminal records matching skill/plugin, ignoring params.status; older servers omit it. */
+  finished_total?: number | null;
 }
 
 export interface InvocationListParams {
@@ -1699,6 +1697,8 @@ export interface InvocationListParams {
   status?: string;
   limit?: number;
   offset?: number;
+  /** Ask the server for the recorded-usage aggregates; polls leave it off. */
+  includeUsage?: boolean;
 }
 
 export async function listInvocations(
@@ -1710,6 +1710,7 @@ export async function listInvocations(
   if (params?.status) query.set("status", params.status);
   if (params?.limit !== undefined) query.set("limit", String(params.limit));
   if (params?.offset !== undefined) query.set("offset", String(params.offset));
+  if (params?.includeUsage) query.set("include_usage", "true");
   const qs = query.toString();
   return fetchJson<InvocationListResponse>(`/api/invocations/${qs ? `?${qs}` : ""}`);
 }
@@ -2380,11 +2381,14 @@ export async function listSchedules(params?: {
   enabled?: boolean;
   trigger_type?: string;
   project?: string;
+  include_recent_runs?: boolean;
 }): Promise<ScheduleListResponse> {
   const query = new URLSearchParams();
   if (params?.enabled !== undefined) query.set("enabled", String(params.enabled));
   if (params?.trigger_type) query.set("trigger_type", params.trigger_type);
   if (params?.project) query.set("project", params.project);
+  if (params?.include_recent_runs !== undefined)
+    query.set("include_recent_runs", String(params.include_recent_runs));
   const qs = query.toString();
   return fetchJson<ScheduleListResponse>(`/api/schedules/${qs ? `?${qs}` : ""}`);
 }

@@ -29,7 +29,6 @@ import os
 import tempfile
 import threading
 import time
-from copy import deepcopy
 from functools import partial
 from pathlib import Path
 from typing import Annotated, Any
@@ -38,6 +37,7 @@ from urllib.parse import urlparse
 import anyio
 from fastapi import Body, HTTPException
 
+from lionagi import ln
 from lionagi._errors import LionError
 from lionagi._paths import LIONAGI_HOME
 from lionagi.libs.path_safety import validate_bare_name
@@ -534,7 +534,7 @@ async def check_server_connection(name: str) -> dict[str, Any] | None:
     if entry is None:
         return None
 
-    probed_config = deepcopy(entry["config"])
+    probed_config = ln.copy(entry["config"])
     outcome = await _attempt_connection(probed_config)
     last_check = {
         "ok": outcome["ok"],

@@ -118,6 +118,16 @@ async def _act(
             )
 
     except Exception as e:
+        from lionagi.state.compat import refusal_in
+
+        # A hook or the call itself can wrap the refusal in a task group, so it is looked up
+        # however deeply nested rather than read off the outermost error alone.
+        refusal = refusal_in(e)
+        if refusal is not None:
+            # The store refused a write in compatibility mode (ADR-0128 D6), including one a
+            # TOOL_POST handler made: the run stops rather than recording it as a tool error,
+            # and the refusal leaves as itself so a caller's check finds it.
+            raise refusal  # noqa: B904 -- raised as found, keeping its own cause
         if _hooks is not None:
             from lionagi.hooks.bus import HookPoint
 

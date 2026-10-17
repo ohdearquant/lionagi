@@ -6,8 +6,60 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Upgrading from 0.35.5
+
+`li schedule apply` now reads a member's `execution.project` written as YAML null as no
+project (see Changed). A project-scoped document applied with an earlier release whose
+members write their project as null plans an `UPDATE` on its next apply that removes the
+project those rows ran under. To keep the project, name it in those members.
+
+### Added
+
+- A compatibility open mode for `StateDB` (ADR-0128): `StateDB(path, compatibility=profile)`
+  writes into a SQLite store whose schema another application manages without migrating,
+  stamping or reconfiguring it. A `CompatibilityProfile` declares the exact structure of the
+  tables it depends on, the columns it inserts and updates, and the operations it serves; the store
+  is admitted only when that structure matches, every connection carries a default-deny SQLite
+  authorizer, and anything outside the profile raises `StateCompatibilityRefused`. The minimum
+  aiosqlite version rises to 0.22.0, the first release that exposes `set_authorizer`.
+- A writable `StateDB` open refuses a store whose `schema_meta` `lineage` row names another
+  application, raising `ForeignLineageError` (exported from `lionagi.state`). The row is read from
+  the file the URL opens before any writable connection exists, without writing the file, its
+  journal, its write-ahead log or the log's `-shm` index: beside a journal an interrupted
+  transaction left, or a log with no readable index, it is read from a private copy in a temporary
+  directory that is removed before the read returns; a process killed while it copies leaves the
+  copy in that directory. Each copy is made through a descriptor this process keeps open on the
+  store's file and never closes, since closing any descriptor of the file drops the POSIX locks
+  this process's other connections hold on it: each distinct store copied keeps one descriptor for
+  the life of the process, the opens are serialised by a lock, so a descriptor that stays open and
+  unfiled needs the file replaced between the `stat` and the `open`, and a run that copies very
+  many distinct stores can meet the process's open-file limit (`EMFILE`) there, which makes that
+  copy's read fail, so the writable connection's own read of the row decides. Each writable
+  connection reads the row again before its own settings, for a row written in between; a store
+  refused there may have had its journal rolled back, its index
+  written or its log folded into the file by that connection. The managing application writes that
+  row when it creates the store, and compatibility mode admits only a store that has it, so a
+  native open in another process cannot migrate a store being written in compatibility mode;
+  compatibility mode in turn refuses a store this process has open natively. A store without the
+  row opens and migrates natively as before. Studio's own store opener is not covered yet.
+
 ### Changed
 
+- `li studio --docker` publishes the daemon's port on the address `--host` names, loopback
+  (`127.0.0.1`) by default, where it published on every host interface, so with
+  `LIONAGI_STUDIO_AUTH_TOKEN` unset other machines on the network could reach the API. The
+  container's own bind inside the image is unchanged; the host half of the port mapping is what
+  decides who can reach it. Pass `--host` an IP address to publish there, which exposes the
+  daemon to that interface, or run the image with your own `docker run -p`; a name, an address
+  carrying a port or an IPv6 zone is now refused before docker runs; `--host` takes the address
+  and `--port` the port. The published address is passed to the container as
+  `LIONAGI_STUDIO_HOST`, so the daemon admits requests to it; `0.0.0.0` and
+  `::` name no single address a client connects to, so a client elsewhere reaches the daemon by
+  one of the machine's real addresses and that address must be the variable's value. The daemon's
+  `Host` check is a DNS-rebinding guard, not access control: it reads the header, never the source
+  address, so the bearer token is the access control. When `LIONAGI_STUDIO_AUTH_TOKEN` is set in
+  the environment, the container now receives it (by name, so the value stays out of the argument
+  list).
 - The Antigravity (`gemini_code` / `gemini-code` / `gemini-cli`) backend knows the Gemini 4 Argon
   family that `agy models` now lists: `gemini-4-argon` (and `gemini-4`, `argon`) resolves to
   `Gemini 4 Argon (High)`, the `-low` / `-medium` / `-high` suffixes and `--effort` pick the tier,
@@ -56,9 +108,63 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   releases read High). An effort that is not a string also counts as none (earlier releases
   read a number as an unknown effort, which gave Medium, or High on Pro, and raised `TypeError`
   on a list or dict).
+- `li schedule apply` reads a member's `execution.project` written as YAML null
+  (`project: null`, `project: ~` or a blank `project:`) as no project. Earlier
+  releases gave that member the document's `metadata.project` in a project-scoped
+  document, so re-applying an export of a row stored without a project gave the
+  row the export's project. An omitted project, or `project: ""`, still inherits
+  the document's `metadata.project` in a project-scoped document (a global one
+  has none). A project-scoped document already applied whose member writes its
+  project as null in any of those spellings plans an `UPDATE` on its next apply
+  that removes the project the member ran under. Such a row also loses the
+  project's registered path as its fallback working directory: if its stored
+  `cwd` is set and is not an existing absolute directory, and the project's
+  registered path is usable, it is refused when it fires instead of running there
+  (with no usable project path it was refused already). A row whose `cwd` is an
+  existing absolute directory runs there, and an `agent` or `flow_yaml` run then
+  takes its project from the one detected in that directory, since its command no
+  longer receives `--project`. `li schedule export` writes every member's stored
+  project, `null` included.
+- `close_shared_db()` raises a `RuntimeError` naming each handle it could not close, with the
+  error that handle's `close()` raised, instead of suppressing every error and returning as if
+  the sweep were done. A handle whose close is refused by another event loop, whose close is
+  cancelled (a cancellation is raised as `CancelledError`, not collected into that
+  `RuntimeError`), or whose close raises any other error, stays in the shared registry so a later
+  lookup or sweep still reaches it; run teardown logs the refusal as it logs a failed
+  `StateDB.close()`. `register_shared_db()` raises any error the displaced handle's close raised,
+  a refusal included, rather than replacing the entry over a handle that is still open.
 
 ### Fixed
 
+- A streamed HTTP call whose provider said, inside a stream it had accepted with HTTP 200, that
+  the call failed (an `error` event, `response.failed` with or without a nested error, a chat
+  completion chunk carrying an error) ended `COMPLETED`, so neither `iModel.stream()` nor a direct
+  `APICalling.stream()` caller saw a failure. The HTTP converter now marks such a chunk
+  `call_failed`; the chunk is still delivered, and once the stream ends the call fails with the new
+  `ProviderStreamError` (status `FAILED`), which `iModel.stream()` raises as it does other stream
+  failures. The error quotes an error chunk's text as the consumer was shown it, after any key
+  redaction. An item failure inside a call (`response.mcp_call.failed`) still leaves it
+  `COMPLETED`, and `Endpoint.stream()` itself still yields the marked chunk without raising.
+- An SSE event whose `event:` field says the call failed (`error`, `response.error`,
+  `response.failed`, `turn.failed`) was read from its data alone, so `event: error` with data
+  holding only a message, an error subtype or plain text read as an ordinary event. Such a name
+  now fails the call whatever the data holds: it stands in for a `type` the JSON data lacks (never
+  one it carries), data that is not a JSON object becomes an error chunk, and the chunk records the
+  name as `sse_event`. Any other name (`message`, `ping`) leaves the chunk exactly as before. The
+  routed Anthropic stream reads names the same way, and records such an attempt's end as
+  `stream_error`.
+- Streamed HTTP events are framed by one reader for the plain and the routed Anthropic stream. A
+  blank line ends an event, and an `event:` field names the event being assembled, before or after
+  its data. In a stream without blank lines, an `event:` field after a named event's data starts
+  the next event, as does a `data:` line after data that is already complete JSON. A line that is
+  no SSE field is an event of its own and drops a pending name; the plain stream used to drop such
+  a line when an event was waiting.
+- A stream that named its served model only on the Responses API's `response.completed` event
+  recorded none. That provider event is now read (other result chunks, such as a CLI run record,
+  still are not), and once a stream reports a failure no later chunk restores a served model.
+- A read-only `StateDB` open of a store whose path contains `#` or `%` opened another file: SQLite
+  read the path as a URI, so `#` started a fragment, which also dropped read-only mode and created
+  that file, and `%` started an escape. The path is now passed as a file URI, so it names the file.
 - JSON Schema loading now caches generated Pydantic models by schema-node identity, keeping
   distinct definitions separate when their display names sanitize to the same name. Repeated
   references to one node still reuse its model, and a colliding definition cannot replace the
@@ -66,6 +172,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Flow synthesis now reuses the bounded observer-write drain before state storage is closed,
   including failure and cancellation paths. Branch-status and segment metadata writes created
   during synthesis receive the same cleanup as writes from the execution phase (#3211).
+- A ReAct round that declares `"sequential"` runs its tool calls one at a time. `operate` reads
+  the declaration from the parsed turn and runs that turn's batch in request order with one call
+  in flight, under the caller's `call_params` except `max_concurrent`, which is 1 for that batch.
+  Only a field the parsed turn actually set is a declaration, so a response model that defaults
+  the field does not narrow a turn that omits it, while a value a validator assigns or injects
+  counts. The declaration only narrows: a turn that declares nothing keeps the prepared strategy,
+  and a `ReActStream` caller that passes its own `"sequential"` action parameters keeps them on
+  every round. Through `ReAct()`, the first round used to run concurrently whatever it declared,
+  and each extension round used to run under the strategy the round before it declared.
+
+### Docs
+
+- The Studio trust texts now say what a daemon without `LIONAGI_STUDIO_AUTH_TOKEN` can actually
+  promise about an Operator decision: any process that can reach the listener, other local accounts
+  included, can allow or deny a pending proposal, so the permission prompt is a workflow safeguard
+  rather than isolation from local programs. In open mode, do not auto-allow a tool that can make
+  HTTP requests to the daemon: a run holding such a tool can approve its own proposals. Behaviour
+  is unchanged.
 
 ## [0.35.5] - 2026-10-11
 

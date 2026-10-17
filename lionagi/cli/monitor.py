@@ -436,11 +436,13 @@ def _session_to_row(sess: dict[str, Any]) -> dict[str, Any]:
         "type": sess.get("invocation_kind") or "session",
         "project": sess.get("project") or "-",
         "status": sess.get("status") or "?",
-        # live flow phase (executing/synthesizing) wins over the static
-        # orchestrator/playbook name once a flow leaves planning.
+        # Older terminal records can retain a phase from their live execution.
         "phase": (
-            sess.get("current_phase") or sess.get("agent_name") or sess.get("playbook_name") or "-"
-        ),
+            None if sess.get("status") in SESSION_TERMINAL_STATUSES else sess.get("current_phase")
+        )
+        or sess.get("agent_name")
+        or sess.get("playbook_name")
+        or "-",
         "elapsed": _elapsed(
             sess.get("started_at"),
             sess.get("ended_at"),
@@ -1249,6 +1251,10 @@ async def _effective_session_status(db: Any, row: dict[str, Any]) -> dict[str, A
                 source="executor",
                 actor=row["id"],
                 expected_statuses={row["status"]},
+                # The reconciled row is terminal, so it must not keep the live
+                # phase the engine session reported; the clear rides this same
+                # statement rather than a second write that can be skipped.
+                extra_fields={"current_phase": None},
             )
         except TransitionRejectedError:
             # Raced with another writer that took the row terminal first —
@@ -1790,7 +1796,8 @@ def add_monitor_subparser(subparsers: argparse._SubParsersAction) -> None:
         choices=["session", "invocation", "show", "play", "command"],
         help=(
             "Narrow the table to one kind of entity: session, invocation, show or play. "
-            "`command` narrows to invocations launched as a command action."
+            "`command` narrows to invocations launched as a command action. "
+            "Use `session` for flow runs, or `invocation` for registered invocation records."
         ),
     )
     mon.add_argument(
@@ -1955,6 +1962,8 @@ _ENTITY_BOOL_FIELDS = frozenset({"ended_at_is_approximate"})
 
 
 def _machine_entity(kind: str, row: dict[str, Any]) -> dict[str, Any]:
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+
     from .machine import optional_flag
 
     entity: dict[str, Any] = {"kind": kind}
@@ -1962,6 +1971,8 @@ def _machine_entity(kind: str, row: dict[str, Any]) -> dict[str, Any]:
         value = row.get(field)
         if kind == "invocation" and field == "action_kind":
             value = _invocation_kind(row)
+        if field == "current_phase" and row.get("status") in SESSION_TERMINAL_STATUSES:
+            value = None
         entity[field] = optional_flag(value) if field in _ENTITY_BOOL_FIELDS else value
     return entity
 
