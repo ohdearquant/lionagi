@@ -28,3 +28,10 @@ time measurements continue to use `time.monotonic()`.
 `lionagi.testing.helpers.assert_eventually` measures its polling timeout with a
 monotonic clock. Wall-clock adjustments do not change the timeout; its polling
 continues to use asyncio.
+
+`lionagi.ln.coerce_created_at` accepts datetime objects, numeric epoch seconds
+and timestamp strings. Naive datetime objects and naive ISO strings are read
+as UTC; an existing timezone offset is retained. A trailing `Z` is normalized
+before ISO parsing, including on Python 3.10. Numeric strings take precedence
+over ISO parsing: `"20250101"` means epoch seconds, not January 1, 2025.
+Booleans are not timestamps and raise `ValueError`.

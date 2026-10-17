@@ -416,6 +416,8 @@ def to_uuid(value: Any) -> UUID:
 
 def coerce_created_at(v: Any) -> datetime:
     """Coerce value to UTC-aware datetime (datetime, timestamp, or ISO string)."""
+    if isinstance(v, bool):
+        raise ValueError("Expected datetime/timestamp/string, got bool")
     if isinstance(v, datetime):
         return v.replace(tzinfo=timezone.utc) if v.tzinfo is None else v
 
@@ -426,7 +428,8 @@ def coerce_created_at(v: Any) -> datetime:
         with contextlib.suppress(ValueError):
             return datetime.fromtimestamp(float(v), tz=timezone.utc)
         with contextlib.suppress(ValueError):
-            return datetime.fromisoformat(v)
+            parsed = datetime.fromisoformat(v[:-1] + "+00:00" if v.endswith("Z") else v)
+            return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
         raise ValueError(f"String '{v}' is neither timestamp nor ISO format")
 
     raise ValueError(f"Expected datetime/timestamp/string, got {type(v).__name__}")

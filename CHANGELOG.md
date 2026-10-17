@@ -63,6 +63,9 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Changed
 
+- `lionagi.ln.coerce_created_at` rejects booleans, interprets naive ISO strings as
+  UTC, and accepts a trailing `Z` on Python 3.10. Numeric strings still parse as
+  epoch seconds before ISO dates, including compact strings such as `"20250101"`.
 - `assert_eventually` uses a monotonic clock for its timeout, so wall-clock changes
   no longer shorten or extend the polling deadline.
 - CLI stream result parsers measure elapsed time with the active async backend's
