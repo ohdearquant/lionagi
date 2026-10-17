@@ -164,6 +164,7 @@ sessions = Table(
     Column("created_at", Float, nullable=False),
     Column("node_metadata", JSON),
     Column("name", Text),
+    Column("user_label", Text),
     Column("user", Text),
     Column("progression_id", Text, ForeignKey("progressions.id"), nullable=False),
     Column("first_msg_id", Text, ForeignKey("messages.id")),

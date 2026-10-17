@@ -23,23 +23,15 @@ from __future__ import annotations
 
 import asyncio
 import time
-import unicodedata
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from lionagi.state.session_naming import validate_name_characters
+
 from .redact import public_project
 from .run_progress import resolve_run
 from .store import OperatorStore
-
-# Cc/Cf: C0/C1 controls (incl. NUL, DEL) and Unicode formatting chars (incl.
-# bidi overrides) -- not printable characters a human ever intends to type
-# into a name. Zl/Zp: line/paragraph separators -- structurally the same
-# problem as an embedded newline. Deliberately category-based rather than an
-# enumerated blocklist so it does not need updating as new control code
-# points are assigned. Zs (ordinary space) is NOT included -- an internal
-# space is a normal, expected part of a name.
-_REJECTED_NAME_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
 
 RENAME_SESSION_COMMAND_TYPE = "rename_session"
 
@@ -67,14 +59,7 @@ class RenameSessionInput(_StrictInput):
     @field_validator("name")
     @classmethod
     def _reject_control_characters(cls, value: str) -> str:
-        for char in value:
-            category = unicodedata.category(char)
-            if category in _REJECTED_NAME_CATEGORIES:
-                raise ValueError(
-                    f"name must not contain control or line/paragraph-separator "
-                    f"characters (found {char!r}, category {category})"
-                )
-        return value
+        return validate_name_characters(value)
 
 
 def _identity() -> tuple[OperatorStore, str, str]:

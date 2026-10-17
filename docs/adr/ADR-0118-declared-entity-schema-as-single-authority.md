@@ -22,11 +22,11 @@ written down in these hand-maintained forms:
 1. `lionagi/state/schema_meta.py` (1,224 lines): a SQLAlchemy `MetaData` declaring 32 tables,
    380 columns and 83 `Index(...)` objects. Its own docstring calls it the "single source of
    truth for schema DDL". It is what production actually creates from:
-   `await conn.run_sync(metadata.create_all)` at `state/db.py:981`.
+   `await conn.run_sync(metadata.create_all)` at `state/db.py:1529`.
 2. `lionagi/state/schema.sql` (1,021 lines): 32 `CREATE TABLE` and 87 `CREATE INDEX`
    statements declaring the same schema in DDL text. Its header line reads
    `-- lionagi state schema v1` while line 22 seeds `version` `'3'`. It is bound to
-   `_SCHEMA_PATH` (`state/db.py:122`) and read only by tests; production open never executes
+   `_SCHEMA_PATH` (`state/db.py:154`) and read only by tests; production open never executes
    it.
 3. 16 hand-written `CREATE TABLE` statements across 6 files in 3 packages that bypass both, of
    three distinct kinds: 3 rebuild targets in `state/db.py` (`sessions_new`, `invocations_new`,
@@ -39,8 +39,8 @@ written down in these hand-maintained forms:
 4. `MIGRATION_COLUMNS` / `MIGRATION_INDEXES` in `state/schema_migrations.py`: a per-table
    ledger of additive columns (the `sessions` list alone carries ~30 entries) and a per-dialect
    index list, both re-stating what 1 and 2 already declare.
-5. Five `_*_COLUMNS` frozensets in `state/db.py` (`_SESSION_COLUMNS` 229, `_INVOCATION_COLUMNS`
-   299, `_SHOW_COLUMNS` 313, `_PLAY_COLUMNS` 327, `_BRANCH_COLUMNS` 350) guarding the dynamic
+5. Five `_*_COLUMNS` frozensets in `state/db.py` (`_SESSION_COLUMNS` 251, `_INVOCATION_COLUMNS`
+   308, `_SHOW_COLUMNS` 322, `_PLAY_COLUMNS` 336, `_BRANCH_COLUMNS` 359) guarding the dynamic
    UPDATE builders, plus the hand-written column lists inside each `_build_*_insert_stmt`.
    The file also holds `_MIGRATION_COLUMNS` and `_SPEND_ROLLUP_COLUMNS`, which are a different
    thing and are not part of this five.
@@ -67,7 +67,7 @@ outside what it pins. Two divergences are live in the tree right now and green:
   declares none that `schema.sql` does not: the metadata is a strict subset. The four are
   `idx_def_unique_version`, `idx_plays_show_name`, `idx_session_signals_seq` and
   `idx_sessions_run_id`. Absolute counts on 2026-08-15: 87 and 83.
-- `schema.sql` declares 15 indexes with `DESC` key direction (`:93,198,204,283,311,378,…`);
+- `schema.sql` declares 15 indexes with `DESC` key direction (`:93,203,209,303,331,398,…`);
   `schema_meta.py` declares zero. Production databases, built by `create_all`, therefore have
   none of those descending indexes. (SQLite and PostgreSQL can both scan an ascending index
   backwards, so the query-plan consequence is unmeasured; the definitional drift is proven.)
@@ -105,16 +105,16 @@ none: `LifecyclePolicy.table` and `patch_fields` are plain `str`/`frozenset[str]
 (`state/lifecycle/models.py:77-89`), the registry does not validate them as identifiers, and
 they are interpolated into SQL at `state/lifecycle/service.py:115` and elsewhere.
 
-**P5 — migration is an additive ledger that fails open, and the version is not a shape
+**P5 — migration is an additive ledger, and the version is not a shape
 identity.** Schema evolution is `MIGRATION_COLUMNS` applied at startup plus bespoke `*_new`
 copy-and-rename rebuilds for anything SQLite's `ALTER TABLE` cannot express (`sessions_new`,
 `invocations_new`, `schedule_runs_new`, `schedules_new`). There is no introspection of the live
-schema, no diff against the declared schema, and no risk classification. `_reconcile_columns`
-wraps its inspection in `except Exception: continue` (`state/db.py:1045-1046`), and the open sequence
-then stamps `SCHEMA_VERSION` unconditionally — so a database whose columns could not be
-inspected still reports the current version. `version = 3` means "this build opened it", not
-"this shape is known". Notably, the schedules rebuild already *derives its target table from
-`schema_meta.py`* via `to_metadata` (`state/db.py:1631`, and again verbatim at `:1737`) — the
+schema beyond column inspection, no diff against the declared schema, and no risk classification.
+The original inspection-failure hole is resolved: `_reconcile_columns` now logs inspection
+errors and re-raises them (`state/db.py:1602-1609`), so such a failure stops open before a schema
+version is stamped. The version still identifies the supported schema revision rather than
+proving full shape parity. Notably, the schedules rebuild already *derives its target table from
+`schema_meta.py`* via `to_metadata` (`state/db.py:2102`, and again at `:2190`) — the
 generated path half-exists and works on SQLite.
 
 **P6 — the layer is decoupled from the rest of the codebase and oversized for what it does.**
@@ -387,7 +387,7 @@ used to bypass ownership.
 
 The current rebuilds do the opposite: they read the live catalog and replay it, assembling the
 copy statement's column list from catalog-read names and re-executing index DDL strings taken from
-`sqlite_master` (`state/db.py:1418-1422`, and the same shape in the six other rebuild paths).
+`sqlite_master` (`state/db.py:1934-1946`, and the same shape in the six other rebuild paths).
 That faithfully preserves whatever the database happens to contain, including objects nothing
 declares, so a rebuild carries drift forward instead of resolving it — a database built from the
 old DDL path keeps its 15 descending indexes through every future migration. It is also the one
@@ -919,7 +919,7 @@ summed: a declaration, a statement string, and an execution call are different t
 | Where | Declares schema | Issues DDL | Builds SQL | Notes |
 |---|---|---|---|---|
 | `state/schema_meta.py` | 32 tables, 380 columns, 83 indexes | via `create_all` | — | what production builds from; also 34 PK columns, 27 FKs, 20 CHECKs, 8 uniques, 29 partial indexes, 37 server defaults — Phase 1 compares generated objects and Phase 2 compares physical catalogs |
-| `state/schema.sql` | 32 tables, 87 indexes, 5 pragmas, 3 seeds | tests only | — | `_SCHEMA_PATH` at `db.py:122`; not executed by writable open |
+| `state/schema.sql` | 32 tables, 87 indexes, 5 pragmas, 3 seeds | tests only | — | `_SCHEMA_PATH` at `db.py:154`; not executed by writable open |
 | `state/schema_migrations.py` | 127 additive column declarations over 14 tables | 10 indexes per dialect | — | the two dialect tuples are textually identical |
 | `state/db.py` | 3 inline `CREATE TABLE` (rebuild targets) | yes | 256 execution calls | 6,683 lines; 5 `_*_COLUMNS` allow-lists; 45 `S608` |
 | `state/lifecycle/` | — | — | 8 execution calls | policy table/patch identifiers unvalidated |

@@ -883,6 +883,8 @@ async def health_report() -> dict[str, Any]:
     )
     from lionagi.studio.config import scheduler_timezone_report
 
+    from .sessions import _user_label_selection
+
     require_file_store()
     if not store_exists():
         return {
@@ -899,6 +901,7 @@ async def health_report() -> dict[str, Any]:
         total_cur = await db.execute("SELECT COUNT(*) AS n FROM sessions")
         total_row = await total_cur.fetchone()
         total_sessions = int(total_row["n"]) if total_row else 0
+        user_label = await _user_label_selection(db, alias="s")
         # Classifying a session stats its artifact tree and can shell out to
         # `ps`, so the pass is bounded to the most recent window and the
         # response says how much of the store it covered. Reporting on every
@@ -906,7 +909,7 @@ async def health_report() -> dict[str, Any]:
         # daemon -- and a health check that can hurt a sick store is worse
         # than no health check.
         cur = await db.execute(
-            """
+            f"""
             WITH page AS (
                 SELECT id AS page_id FROM sessions ORDER BY updated_at DESC LIMIT ?
             )
@@ -916,7 +919,7 @@ async def health_report() -> dict[str, Any]:
             -- session is named one way here and another way in the API and
             -- UI. Selecting a column short of what the resolver reads is the
             -- same two-names-for-one-session defect, one layer down.
-            SELECT s.id, s.name, s.status, s.invocation_kind, s.agent_name,
+            SELECT s.id, s.name, {user_label}, s.status, s.invocation_kind, s.agent_name,
                    s.playbook_name, s.show_play_name, s.started_at, s.ended_at,
                    s.updated_at,
                    s.last_message_at, s.artifacts_path, s.node_metadata,
@@ -927,7 +930,7 @@ async def health_report() -> dict[str, Any]:
             LEFT JOIN progressions p ON p.id = b.progression_id
             GROUP BY s.id
             ORDER BY s.updated_at DESC
-            """,
+            """,  # noqa: S608
             (HEALTH_SCAN_LIMIT,),
         )
         rows = await cur.fetchall()

@@ -145,6 +145,7 @@ The StateDB session projection used by this ADR is:
 ```sql
 -- selected columns from lionagi/state/schema.sql:sessions
 id                          TEXT PRIMARY KEY,
+user_label                  TEXT,
 progression_id              TEXT,
 first_msg_id                TEXT,
 last_msg_id                 TEXT,
@@ -163,6 +164,12 @@ updated_at                  REAL
 
 **Exact semantics**:
 
+- `user_label` is a nullable display-name override. Its dedicated setter changes only
+  that column, preserving lifecycle state, provenance, `name`, `node_metadata`,
+  `updated_at`, and `last_message_at`. A stored label takes precedence in list and
+  detail display names; clearing it restores the existing fallback chain. Labels are
+  stripped, limited to 160 characters, and reject Unicode categories Cc, Cf, Zl, and
+  Zp. Null or an empty stripped label clears the override.
 - `allocate_run` creates `branches/` and `stream/`, but does not create the artifact
   directory unless the caller invokes `ensure_artifact_root` or work writes there.
 - `agent_artifact_dir` requires a safe path component and verifies containment after

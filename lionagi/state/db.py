@@ -1976,6 +1976,7 @@ class StateDB:
                               created_at      REAL    NOT NULL,
                               node_metadata   JSON,
                               name            TEXT,
+                              user_label      TEXT,
                               user            TEXT,
                               progression_id  TEXT    NOT NULL REFERENCES progressions(id),
                               first_msg_id    TEXT    REFERENCES messages(id),
@@ -3732,6 +3733,31 @@ class StateDB:
                     system_branch_id,
                     system_msg_id=msg["id"],
                 )
+
+    @_operation("set_session_user_label")
+    async def set_session_user_label(self, session_id: str, user_label: str | None) -> bool:
+        """Set or clear a label without changing the session's activity or system name.
+
+        Return False when the session does not exist. Generic session updates
+        deliberately exclude this column because they advance updated_at.
+        """
+        from lionagi.state.session_naming import normalize_session_user_label
+
+        user_label = normalize_session_user_label(user_label)
+        if self._compat is not None:
+            self._require_created("sessions", session_id, "session")
+        clause, owner = self._owner_predicate("sessions")
+        async with self._tx() as conn:
+            if self._compat is not None:
+                await self._require_owned(conn, "sessions", session_id, "session")
+            result = await conn.execute(
+                text(
+                    "UPDATE sessions SET user_label = :user_label "  # noqa: S608
+                    "WHERE id = :id" + clause
+                ),
+                {"user_label": user_label, "id": session_id, **owner},
+            )
+            return bool(result.rowcount)
 
     @_operation("update_session")
     async def update_session(
