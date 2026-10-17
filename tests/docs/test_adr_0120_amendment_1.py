@@ -127,7 +127,7 @@ def test_durable_subscriber_source_is_a_confirmed_session_signals_row() -> None:
     assert "is not a committed row and is no durable subscriber's source" in flat
     assert "whose forward read defaults to 500 rows" in flat
     assert "`emitter_role`, versioned payload type" in flat
-    assert "without destructive truncation" in flat
+    assert "filter-required data without destructive truncation; every page is read" in flat
     assert "read through a frozen closure cutoff" in flat
     assert "`persist_dropped` is therefore binding-local dropped-plus-in-flight" in flat
     assert "zero does not prove" in flat
@@ -147,7 +147,7 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     assert "no execution attempt object" in flat
     assert "one admitted run, the unit ADR-0123 D1 names" in flat
     assert "lionagi/session/signal.py:163" in flat
-    # H1: no flow- or invocation-terminal signal exists today, and the closure path
+    # No flow- or invocation-terminal signal exists today, and the closure path
     # is named as a prerequisite rather than described as present.
     assert "No flow- or" in flat
     assert "invocation-terminal session Signal exists today" in flat
@@ -211,7 +211,7 @@ def test_batch_growth_is_bounded_by_attempt_length_not_declaration() -> None:
 
 def test_delivery_default_matches_the_outbox_tier_it_cites() -> None:
     flat = _flat()
-    # H2: retryable is the default; ADR-0059's transport-success completion is the
+    # Retryable is the default; ADR-0059's transport-success completion is the
     # contrast, not the model.
     assert "`retryable` is the default for" in flat
     assert "`ObservancePolicy`: it persists batches and retries failed consumer executions" in flat
@@ -261,7 +261,7 @@ def test_overflow_rule_and_row_three_fixture() -> None:
         in flat
     )
     assert "A held wake counts toward `max_wakes_per_attempt` only once it is" in flat
-    # M1: a retryable held or closing wake coalesces; a best_effort wake on a full
+    # A retryable held or closing wake coalesces; a best_effort wake on a full
     # queue is dropped and counted.
     assert "a held or closing `retryable` wake is coalesced into the pending batch" in flat
     assert "A full queue drops a `best_effort`" in flat
