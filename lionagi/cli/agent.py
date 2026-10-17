@@ -204,7 +204,7 @@ def _profile_api_launch(profile) -> dict | None:
         return None
     name = getattr(profile, "name", "<unknown>")
     tools = extra["api_tools"]
-    if tools not in _API_TOOL_SETS:
+    if not isinstance(tools, str) or tools not in _API_TOOL_SETS:
         raise ConfigurationError(
             f"agent profile {name!r} sets api_tools to {tools!r}; an API model runs only "
             f"with the read set ('read': {', '.join(_API_TOOL_SETS['read'])}). Tools that "
@@ -212,12 +212,33 @@ def _profile_api_launch(profile) -> dict | None:
             "with this process's own permissions, and this path has no sandbox for them."
         )
     rounds = extra.get("max_extensions", _API_DEFAULT_MAX_EXTENSIONS)
-    if isinstance(rounds, bool) or not isinstance(rounds, int) or not 1 <= rounds <= 100:
+    if not _is_round_bound(rounds):
         raise ConfigurationError(
             f"agent profile {name!r} sets max_extensions to {rounds!r}; "
             "it must be a whole number from 1 to 100."
         )
     return {"tools": tools, "max_extensions": rounds}
+
+
+def _is_round_bound(rounds: object) -> bool:
+    return not isinstance(rounds, bool) and isinstance(rounds, int) and 1 <= rounds <= 100
+
+
+def _recorded_api_launch(recorded: object) -> dict:
+    """The tool loop a stored branch was launched with.
+
+    A record naming a tool set or a round bound this version does not run is
+    refused here, before a run exists.
+    """
+    if isinstance(recorded, dict):
+        tools, rounds = recorded.get("tools"), recorded.get("max_extensions")
+        if isinstance(tools, str) and tools in _API_TOOL_SETS and _is_round_bound(rounds):
+            return {"tools": tools, "max_extensions": rounds}
+    raise ConfigurationError(
+        f"this branch was launched on an API model's tool loop, but its stored launch "
+        f"record {recorded!r} names a tool set or a round bound this version does not "
+        "run; start a new branch."
+    )
 
 
 def _make_api_agent_spec(
@@ -1129,8 +1150,8 @@ async def _run_agent(
         # The display flags are CLI endpoint options; an API model sends its
         # config's kwargs with each request, so a branch on the tool loop is
         # handed neither.
-        on_tool_loop = not getattr(branch.chat_model, "is_cli", False) and isinstance(
-            branch.metadata.get(_API_LAUNCH_KEY), dict
+        on_tool_loop = (
+            not getattr(branch.chat_model, "is_cli", False) and _API_LAUNCH_KEY in branch.metadata
         )
         if verbose and not on_tool_loop:
             cfg["verbose_output"] = True
@@ -1220,13 +1241,8 @@ async def _run_agent(
     # launched with, and a resume runs the loop again from that record. A branch
     # without the record runs as it did before the loop existed.
     api_launch = None
-    recorded = branch.metadata.get(_API_LAUNCH_KEY)
-    if (
-        not getattr(branch.chat_model, "is_cli", False)
-        and isinstance(recorded, dict)
-        and recorded.get("tools") in _API_TOOL_SETS
-    ):
-        api_launch = dict(recorded)
+    if not getattr(branch.chat_model, "is_cli", False) and _API_LAUNCH_KEY in branch.metadata:
+        api_launch = _recorded_api_launch(branch.metadata[_API_LAUNCH_KEY])
         declared = _profile_api_launch(profile) if is_resumed_branch else None
         if is_resumed_branch and profile is not None and declared is None:
             raise ConfigurationError(

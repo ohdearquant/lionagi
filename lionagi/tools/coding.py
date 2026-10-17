@@ -594,7 +594,8 @@ class CodingToolkit(LionTool):
                 limit = max_results or 50
                 # -e: a pattern that starts with "-" is a pattern, never an option.
                 # --null ends each file name with a NUL, so a row's file is read exactly.
-                cmd = ["grep", "-rn", "--null", "-E", "-e", pattern, search_path]
+                # -I skips binary files, whose one-line notice carries no NUL to read by.
+                cmd = ["grep", "-rnI", "--null", "-E", "-e", pattern, search_path]
                 if include:
                     cmd.insert(3, f"--include={include}")
                 raw = await run_sync(_subprocess_sync, cmd, False, 30.0, None)

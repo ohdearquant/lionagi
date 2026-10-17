@@ -318,6 +318,22 @@ async def test_search_does_not_follow_a_symlink_out_of_the_workspace(tmp_path):
     assert result["content"] == f"{workspace / 'in.txt'}:1:TOKEN=in"
 
 
+async def test_search_skips_binary_files_and_reads_names_across_a_newline(tmp_path):
+    (tmp_path / ".env").write_bytes(b"TOKEN=one\x00\n")
+    (tmp_path / "blob.bin").write_bytes(b"TOKEN=two\x00\n")
+    (tmp_path / "sub\ndir").mkdir()
+    (tmp_path / "sub\ndir" / ".env").write_text("TOKEN=three\n")
+    odd = tmp_path / "odd\nname.txt"
+    odd.write_text("TOKEN=four\n")
+    _, _, tools = _make_toolkit(tmp_path)
+
+    result = await _tool_fn(tools, "search")(action="grep", pattern="TOKEN", path=".")
+
+    assert result["success"] is True
+    assert result["total_matches"] == 1
+    assert result["content"] == f"{odd}:1:TOKEN=four"
+
+
 async def test_coding_toolkit_reader_rejects_workspace_escape(tmp_path):
     """ReaderTool rejects paths that escape the workspace root."""
     secret = tmp_path.parent / "secret.txt"

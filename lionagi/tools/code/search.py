@@ -105,16 +105,19 @@ def _visible_grep_lines(stdout: str) -> list[str]:
     of a file whose path holds a protected name (``.env``, a private key).
 
     The reader refuses those files by name, and a recursive search reaches
-    them as well, so their lines are left out here.
+    them as well, so their lines are left out here. A file name can hold a
+    newline but never a NUL, so each row is read from its NUL: the name is
+    everything since the previous row, the line runs to the next newline.
+    Text with no NUL after it is not a row and is dropped.
     """
     rows: list[str] = []
-    for row in stdout.split("\n"):
-        if not row:
-            continue
-        path, sep, rest = row.partition("\0")
-        if not sep:
-            rows.append(row)
-            continue
+    start = 0
+    while (nul := stdout.find("\0", start)) != -1:
+        end = stdout.find("\n", nul + 1)
+        if end == -1:
+            end = len(stdout)
+        path, rest = stdout[start:nul], stdout[nul + 1 : end]
+        start = end + 1
         if any(is_protected_name(part) for part in Path(path).parts):
             continue
         rows.append(f"{path}:{rest}")
@@ -134,11 +137,12 @@ def _grep_sync(
 
     # -e: a pattern that starts with "-" is a pattern, never an option.
     # --null ends each file name with a NUL, so a row's file is read exactly.
-    cmd = ["grep", "-rn", "--null", "-E", "-e", pattern, resolved_path]
+    # -I skips binary files, whose one-line notice carries no NUL to read by.
+    cmd = ["grep", "-rnI", "--null", "-E", "-e", pattern, resolved_path]
     if include:
         cmd += ["--include", include]
 
-    result = _subprocess_sync(cmd, False, 30.0, None)  # noqa: S603  # argv fixed: [grep, -rn, --null, -E, -e, <pattern>, <validated-path>]; shell=False
+    result = _subprocess_sync(cmd, False, 30.0, None)  # noqa: S603  # argv fixed: [grep, -rnI, --null, -E, -e, <pattern>, <validated-path>]; shell=False
 
     if result.get("timed_out"):
         return SearchResponse(success=False, error="grep timed out", count=0)

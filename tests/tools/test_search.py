@@ -104,6 +104,35 @@ async def test_grep_leaves_out_files_the_reader_refuses_by_name(tmp_path):
     assert resp.content == f"{tmp_path / 'notes.txt'}:1:TOKEN=three"
 
 
+async def test_grep_reads_each_file_name_whole_across_a_newline(tmp_path):
+    (tmp_path / ".env" / "sub\ndir").mkdir(parents=True)
+    (tmp_path / ".env" / "sub\ndir" / "inner.txt").write_text("TOKEN=one\n")
+    (tmp_path / "sub\ndir").mkdir()
+    (tmp_path / "sub\ndir" / ".env").write_text("TOKEN=two\n")
+    odd = tmp_path / "odd\nname.txt"
+    odd.write_text("TOKEN=three\n")
+    tool = SearchTool(workspace_root=str(tmp_path))
+    resp = await tool.handle_request(
+        SearchRequest(action=SearchAction.grep, pattern="TOKEN", path=".")
+    )
+    assert resp.success is True
+    assert resp.count == 1
+    assert resp.content == f"{odd}:1:TOKEN=three"
+
+
+async def test_grep_skips_binary_files_without_naming_them(tmp_path):
+    (tmp_path / ".env").write_bytes(b"TOKEN=one\x00\n")
+    (tmp_path / "blob.bin").write_bytes(b"TOKEN=two\x00\n")
+    (tmp_path / "notes.txt").write_text("TOKEN=three\n")
+    tool = SearchTool(workspace_root=str(tmp_path))
+    resp = await tool.handle_request(
+        SearchRequest(action=SearchAction.grep, pattern="TOKEN", path=".")
+    )
+    assert resp.success is True
+    assert resp.count == 1
+    assert resp.content == f"{tmp_path / 'notes.txt'}:1:TOKEN=three"
+
+
 async def test_grep_returns_search_response(tmp_path):
     (tmp_path / "f.py").write_text("content\n")
     tool = SearchTool()

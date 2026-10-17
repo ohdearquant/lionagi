@@ -312,7 +312,7 @@ async def test_a_turn_past_the_timeout_ends_timed_out(leg):
     assert status == "timed_out"
 
 
-@pytest.mark.parametrize("value", ["coding", "write", True, None])
+@pytest.mark.parametrize("value", ["coding", "write", True, None, ["read"]])
 @pytest.mark.asyncio
 async def test_a_tool_set_other_than_read_is_refused_before_a_run_exists(leg, monkeypatch, value):
     import lionagi.cli.agent as agent_mod
@@ -367,17 +367,63 @@ async def test_a_resumed_branch_without_the_launch_record_runs_as_before(leg, mo
     operated = []
 
     async def operate(self, instruction=None, **kw):
-        operated.append(kw)
+        operated.append((self, kw))
         return "the earlier path"
 
     monkeypatch.setattr(Branch, "operate", operate)
     calls_before = len(leg.payloads)
 
-    result, _, _, _, _ = await leg.run(_profile(api_tools="read"), "again", resume=branch_id)
+    result, _, _, _, _ = await leg.run(
+        _profile(api_tools="read"), "again", resume=branch_id, verbose=True, theme="dark"
+    )
 
     assert result == "the earlier path"
-    assert operated and operated[0]["stream_persist"] is True
+    assert operated and operated[0][1]["stream_persist"] is True
     assert len(leg.payloads) == calls_before
+    # Off the tool loop, the display flags reach the model's options as before.
+    options = operated[0][0].chat_model.endpoint.config.kwargs
+    assert options["verbose_output"] is True
+    assert options["cli_display_theme"] == "dark"
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        {"tools": "coding", "max_extensions": 5},
+        {"tools": ["read"], "max_extensions": 5},
+        {"tools": "read"},
+        {"tools": "read", "max_extensions": "5"},
+        {"tools": "read", "max_extensions": True},
+        {"tools": "read", "max_extensions": 0},
+        "read",
+        None,
+    ],
+)
+@pytest.mark.parametrize("with_profile", [True, False], ids=["profile", "no-profile"])
+@pytest.mark.asyncio
+async def test_a_stored_record_this_version_cannot_run_is_refused_before_a_run_exists(
+    leg, monkeypatch, record, with_profile
+):
+    import lionagi.cli.agent as agent_mod
+    from lionagi.cli._runs import find_branch
+
+    leg.replies = [_last_round(), _answer("first")]
+    _, _, branch_id, _, _ = await leg.run(_profile(api_tools="read"))
+    _, path = find_branch(branch_id)
+    stored = json.loads(path.read_text())
+    stored["metadata"]["api_launch"] = record
+    path.write_text(json.dumps(stored))
+    monkeypatch.setattr(
+        agent_mod, "allocate_run", lambda: pytest.fail("a run was allocated for a refused leg")
+    )
+
+    with pytest.raises(ConfigurationError, match="stored launch record"):
+        if with_profile:
+            await leg.run(_profile(api_tools="read"), "again", resume=branch_id)
+        else:
+            await agent_mod._run_agent(
+                MODEL, "again", agent_name=None, cwd=str(leg.workspace), resume=branch_id
+            )
 
 
 @pytest.mark.asyncio
