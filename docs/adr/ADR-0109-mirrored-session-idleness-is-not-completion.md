@@ -9,7 +9,7 @@
 ## Context
 
 The transcript mirrors write a session's status from a silence window.
-`reconcile_status` (`lionagi/state/_mirror_common.py:35-68`) computes
+`reconcile_status` (`lionagi/state/_mirror_common.py:273-372`) computes
 `live = (now - last_message_at) <= live_window`, wants `running` when live and
 `completed` when not, and takes an override write on the way back out of a
 terminal status. `live_window` defaults to 300 seconds
@@ -273,7 +273,7 @@ Three things block it, each read at the source:
   as `system`, so an actor-type rule admits every system writer and restricts
   nothing that matters here.
 - The mirror does not write through the edge-enforcing path at all. It calls
-  `StateDB.update_status` (`lionagi/state/_mirror_common.py:46-68`), which the
+  `StateDB.update_status` (`lionagi/state/_mirror_common.py:343-371`), which the
   compatibility adapter routes to `service._transition`
   (`lionagi/state/lifecycle/adapters.py:98-99`) without passing
   `enforce_edges`. That parameter defaults to `False`
