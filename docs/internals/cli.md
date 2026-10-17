@@ -391,16 +391,36 @@ crash or orphan exit before teardown still leaves the DB accurate.
 
 `_reconstruct_spawned_nodes` rebuilds a checkpoint's `spawned` entries into a
 fresh graph on resume, checked BEFORE any node is added so a refusal never
-leaves the graph partially mutated. Three soundness checks per entry: (1) it
+leaves the graph partially mutated. Four soundness checks per entry: (1) it
 must carry `operation` (CHECKPOINT_VERSION 2+; older checkpoints have nothing
-to rebuild from); (2) if it has a `parent_id`, that parent must itself be
-checkpointed terminal (completed/failed) or be another entry in the same
-`checkpoint_spawned` list — a parent merely existing in the DAG isn't enough,
-since resuming while that parent reruns live risks duplicating or dropping the
-spawn decision; (3) an entry with `assignee` must also carry `spawn_id` (both
-are stamped together unconditionally by `role_node_builder`, so one without
-the other means the checkpoint predates that field or is corrupt). Any failure
-refuses resume for only the affected node(s), never the whole run.
+to rebuild from); (2) its `status` must be `completed` or `failed`; (3) an
+entry with `assignee` must also carry `spawn_id` (both are stamped together
+unconditionally by `role_node_builder`, so one without the other means the
+checkpoint predates that field or is corrupt); (4) if it has a `parent_id`,
+that parent must itself be checkpointed terminal (completed/failed) or be
+another entry in the same `checkpoint_spawned` list — a parent merely existing
+in the DAG isn't enough, since resuming while that parent reruns live risks
+duplicating or dropping the spawn decision. A failure raises
+`FlowResumeError` and refuses the whole resume, naming only the failing
+node(s): no entry is rebuilt, so a checkpoint carrying one unreconstructible
+spawn is not resumed at all.
+
+A checkpoint's planned `completed` and `failed` entries are read the same way
+on the same pass: `_apply_checkpoint_precompletion` pre-marks a planned node
+`COMPLETED` from the entry's recorded `status` and hands it the recorded
+`response`, with no check of anything the node produced, and a checkpoint that
+records a failed planned or spawned node refuses the resume unless
+`--retry-failed` is passed. A completed spawned entry is pre-marked the same
+way from its own recorded `status`. Nothing on either path reads or re-checks
+the declared artifact set. The artifact root the resumed run reads is not the
+original run's: without `--save`, `allocate_run` gives it a fresh
+`<state_root>/artifacts` directory, and with `--save` it is the path `--save`
+names (`lionagi/cli/_runs.py:423-426`), neither read from the original `RunDir`
+that `resolve_checkpoint_target` returned. What a result-verifying resume would
+need — reading the persisted `artifact_contract_json`, checking the declared
+set, the completion-time digest for contract-less nodes, the byte-level check,
+the consumed-producer refusal, and threading the original artifact root — is
+ADR-0069's delta rows 2 and 6-9, not shipped behavior.
 
 Spawn-id sequencing: on resume, the ordinal sequence must start past the MAX
 existing ordinal among restored spawns + 1 (not `count`, since a crashed run

@@ -449,6 +449,66 @@ class TestRemoteOriginNeedsToken:
 
         assert client.get(_UNROUTED, headers=_LOOPBACK).status_code == 404
 
+    @pytest.mark.parametrize("site", ["none", "same-origin", "Same-Origin"])
+    def test_a_request_with_no_origin_from_this_daemon_or_typed_is_accepted(
+        self, make_client, site
+    ):
+        client = make_client()
+
+        resp = client.get(_UNROUTED, headers={**_LOOPBACK, "Sec-Fetch-Site": site})
+
+        assert resp.status_code == 404
+
+    @pytest.mark.parametrize("site", ["cross-site", "Cross-Site", "same-site", "", "unknown"])
+    def test_a_page_whose_browser_sent_no_origin_is_refused(self, make_client, site):
+        """An image, a script or a navigation from another page carries no Origin;
+        its Sec-Fetch-Site still says where it came from."""
+        client = make_client()
+
+        read = client.get(_UNROUTED, headers={**_LOOPBACK, "Sec-Fetch-Site": site})
+        schema = client.get("/openapi.json", headers={**_LOOPBACK, "Sec-Fetch-Site": site})
+
+        assert read.status_code == 401
+        assert "LIONAGI_STUDIO_AUTH_TOKEN" in read.json()["detail"]
+        assert schema.status_code == 401
+
+    def test_two_sec_fetch_site_headers_are_refused(self, make_client):
+        client = make_client()
+
+        resp = client.get(
+            _UNROUTED,
+            headers=[
+                ("Host", "127.0.0.1:8765"),
+                ("Sec-Fetch-Site", "same-origin"),
+                ("Sec-Fetch-Site", "cross-site"),
+            ],
+        )
+
+        assert resp.status_code == 401
+
+    def test_a_loopback_origin_is_judged_by_its_origin_not_its_fetch_site(self, make_client):
+        """A development page on localhost calling the daemon on 127.0.0.1 is
+        cross-site to the browser and sends its Origin."""
+        client = make_client()
+
+        resp = client.get(
+            _UNROUTED,
+            headers={
+                **_LOOPBACK,
+                "Origin": "http://localhost:5173",
+                "Sec-Fetch-Site": "cross-site",
+            },
+        )
+
+        assert resp.status_code == 404
+
+    def test_a_cross_site_navigation_still_loads_the_spa_shell(self, make_client):
+        client = make_client()
+
+        resp = client.get("/runs/abc", headers={**_LOOPBACK, "Sec-Fetch-Site": "cross-site"})
+
+        assert resp.status_code != 401
+
     @pytest.mark.parametrize(
         "origin",
         [
@@ -570,6 +630,18 @@ class TestRemoteOriginWithToken:
 
         assert resp.status_code == 401
 
+    def test_the_bearer_alone_decides_whatever_the_fetch_site(self, make_client):
+        client = make_client()
+        cross = {**_LOOPBACK, "Sec-Fetch-Site": "cross-site"}
+
+        accepted = client.get(
+            _UNROUTED, headers={**cross, "Authorization": "Bearer studio-test-token"}
+        )
+        refused = client.get(_UNROUTED, headers={**_LOOPBACK, "Sec-Fetch-Site": "same-origin"})
+
+        assert accepted.status_code == 404
+        assert refused.status_code == 401
+
 
 @pytest.mark.parametrize(
     ("origins", "host", "accepted"),
@@ -588,6 +660,25 @@ def test_origin_accepted_without_token(origins, host, accepted):
     from lionagi.studio.app import _origin_accepted_without_token
 
     assert _origin_accepted_without_token(origins, host) is accepted
+
+
+@pytest.mark.parametrize(
+    ("sites", "accepted"),
+    [
+        ([], True),
+        (["none"], True),
+        (["same-origin"], True),
+        ([" SAME-ORIGIN "], True),
+        (["same-site"], False),
+        (["cross-site"], False),
+        ([""], False),
+        (["same-origin", "same-origin"], False),
+    ],
+)
+def test_fetch_site_accepted_without_origin(sites, accepted):
+    from lionagi.studio.app import _fetch_site_accepted_without_origin
+
+    assert _fetch_site_accepted_without_origin(sites) is accepted
 
 
 _PAIR = "/api/studio/pair"
@@ -687,6 +778,19 @@ class TestPairing:
 
         assert token not in os.environ.values()
         assert "LIONAGI_STUDIO_AUTH_TOKEN" not in os.environ
+
+    def test_a_request_with_no_origin_from_another_site_is_accepted_with_the_launch_bearer(
+        self, make_client, fresh_launch
+    ):
+        client = make_client()
+        token = self._pair(client, fresh_launch.mint_pairing_code()).json()["token"]
+        cross = {**_LOOPBACK, "Sec-Fetch-Site": "cross-site"}
+
+        accepted = client.get(_UNROUTED, headers={**cross, "Authorization": f"Bearer {token}"})
+        refused = client.get(_UNROUTED, headers={**cross, "Authorization": "Bearer not-the-one"})
+
+        assert accepted.status_code == 404
+        assert refused.status_code == 401
 
     def test_a_wrong_bearer_from_the_hosted_origin_is_refused(self, make_client, fresh_launch):
         client = make_client()

@@ -17,6 +17,7 @@ import struct
 import time
 import uuid
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -30,8 +31,12 @@ from lionagi.config import settings
 from lionagi.libs.path_safety import check_path_safe as _check_path_safe
 from lionagi.ln import json_dumps as _json_dumps
 from lionagi.ln.concurrency import CancelScope, Lock, get_cancelled_exc_class, shield
+from lionagi.state.compat import CompatibilityProfile, _operation, _sql_tokens, _statement_kind
+from lionagi.state.compat import _Guard as _CompatibilityGuard
+from lionagi.state.compat import _quote as _quote_identifier
 from lionagi.state.engine import (
     dialect_of,
+    make_compatibility_engine,
     make_engine,
     make_readonly_engine,
     mask_credentials,
@@ -575,6 +580,11 @@ def _cancellation_wins(cm_func):
 
 _log = logging.getLogger(__name__)
 
+# The rows a compatibility-mode transaction inserted, recorded as its run's once it commits.
+_COMPAT_INSERTED: ContextVar[list[tuple[str, Any]] | None] = ContextVar(
+    "lionagi_state_compat_inserted", default=None
+)
+
 
 class StateDB:
     """Async SQLAlchemy state layer for sessions, branches, messages, and progressions."""
@@ -585,6 +595,8 @@ class StateDB:
         *,
         url: str | None = None,
         readonly: bool = False,
+        compatibility: CompatibilityProfile | None = None,
+        owner: str | None = None,
     ):
         raw = url if url is not None else path
         if raw is None:
@@ -597,6 +609,25 @@ class StateDB:
         # mutating PRAGMA, opening via SQLite's own read-only URI. A missing file is a loud error,
         # never a silent create.
         self.readonly = readonly
+        # Compatibility mode (ADR-0128) writes into a store another application manages, within
+        # the profile it is given: it never migrates or stamps the store, and refuses what the
+        # profile does not name.
+        self.compatibility = compatibility
+        self._compat: _CompatibilityGuard | None = None
+        # The rows this handle's compatibility-mode operations created, by table: the first
+        # profile writes only rows its run creates (ADR-0128 D4).
+        self._compat_created: dict[str, set[Any]] = {}
+        if compatibility is None and owner is not None:
+            raise ValueError("an owner is written in compatibility mode only")
+        if compatibility is not None:
+            if readonly:
+                raise ValueError("readonly and compatibility are separate open modes; pick one")
+            self._compat = _CompatibilityGuard(compatibility, owner)
+            if self.dialect != "sqlite":
+                raise self._compat.refusal(
+                    f"compatibility mode relies on SQLite's authorizer; {self.dialect} is refused",
+                    operation="open",
+                )
         self._engine = None
         # Per-(kind, name) lock to serialize version increment for save_definition.
         self._definition_locks: dict[tuple[str, str], Lock] = {}
@@ -629,17 +660,20 @@ class StateDB:
             # declared lifecycle initial states and must not get a fabricated creation event.
             return
         policy = _lifecycle_policy.DEFAULT_REGISTRY.get(entity_type)
+        # In compatibility mode the row is this run's, so the update is restricted to its owner.
+        clause, owner = self._owner_predicate(policy.table)
         await conn.execute(
             text(
                 f"UPDATE {policy.table} SET status_reason_code = :reason_code, "  # noqa: S608
                 "status_reason_summary = :reason_summary, "
-                "status_evidence_refs = :evidence_refs WHERE id = :entity_id"
+                f"status_evidence_refs = :evidence_refs WHERE id = :entity_id{clause}"
             ).bindparams(bindparam("evidence_refs", type_=JSON)),
             {
                 "reason_code": reason_code,
                 "reason_summary": "",
                 "evidence_refs": [],
                 "entity_id": entity_id,
+                **owner,
             },
         )
         await self._lifecycle_service().initialize_in_transaction(
@@ -652,6 +686,13 @@ class StateDB:
                 actor=_ActorRecord(type="system", id=actor_id),
             ),
         )
+
+    @property
+    def mode(self) -> str:
+        """``"native"``, ``"readonly"`` or ``"compatibility"``."""
+        if self.readonly:
+            return "readonly"
+        return "native" if self._compat is None else "compatibility"
 
     # backward-compat path property
 
@@ -669,6 +710,9 @@ class StateDB:
 
     async def open(self) -> None:
         if self._engine is not None:
+            return
+        if self._compat is not None:
+            await self._open_compatibility()
             return
         if self.dialect == "sqlite":
             p = self.path
@@ -695,6 +739,93 @@ class StateDB:
         if self.dialect == "sqlite":
             _install_begin_immediate(self._engine.sync_engine)
         await self._apply_schema()
+
+    async def _open_compatibility(self) -> None:
+        # Never _apply_schema(), create_all, a rebuild, a backfill or a version stamp: the store's
+        # schema belongs to its managing application. A failed admission disposes the engine, so
+        # the object stays unopened rather than half-open as a writer.
+        guard = self._compat
+        p = self.path
+        if p is None or str(p) == ":memory:":
+            raise guard.refusal("compatibility mode opens an existing store file", "open")
+        if not p.exists():
+            raise guard.refusal(
+                f"no store at {mask_credentials(str(p))}; compatibility mode never creates one",
+                "open",
+            )
+        self._engine = make_compatibility_engine(self.url, guard)
+        try:
+            async with self.read_snapshot() as conn:
+                await conn.run_sync(guard.admit)
+        except BaseException:
+            with CancelScope(shield=True):
+                await self.close()
+            raise
+
+    def _refuse_in_compatibility(self, operation: str, reason: str) -> None:
+        if self._compat is not None:
+            raise self._compat.refusal(reason, operation)
+
+    # Compatibility-mode rows (ADR-0128 D4, D5). The first profile writes only rows its run
+    # creates: a row an operation inserts must not exist yet, carries the configured owner, and is
+    # recorded as this run's once its transaction commits; a row an operation links to must be one
+    # of those.
+
+    def _owner_values(self, table: str) -> dict[str, str]:
+        """The owner column and value an insert into *table* writes; empty when it has none."""
+        guard = self._compat
+        if guard is None or table not in guard.owned_tables:
+            return {}
+        return {guard.profile.owner.column: guard.owner}
+
+    def _owner_predicate(self, table: str) -> tuple[str, dict[str, str]]:
+        """A conjunct restricting a WHERE clause on *table* to the owner's rows, and its parameter."""
+        owned = self._owner_values(table)
+        if not owned:
+            return "", {}
+        ((column, owner),) = owned.items()
+        return f" AND {_quote_identifier(column)} = :_compat_owner", {"_compat_owner": owner}
+
+    def _require_created(self, table: str, row_id: Any, what: str) -> None:
+        if not isinstance(row_id, str):
+            # A set lookup is by Python equality, under which 1 and 1.0 are one id.
+            raise self._compat.refusal(
+                f"{what} {row_id!r} is not a string id; compatibility mode links rows by "
+                "their string ids"
+            )
+        if row_id not in self._compat_created.get(table, ()):
+            raise self._compat.refusal(
+                f"{what} {row_id!r} was not created by this run; compatibility mode writes only "
+                "rows its run creates"
+            )
+
+    async def _insert_new_row(
+        self, conn, table: str, values: dict[str, Any], json_columns: tuple[str, ...] = ()
+    ) -> None:
+        found = (
+            await conn.execute(
+                text(f"SELECT 1 FROM {table} WHERE id = :id"),  # noqa: S608 -- table is a literal
+                {"id": values["id"]},
+            )
+        ).first()
+        if found is not None:
+            raise self._compat.refusal(
+                f"{table} row {values['id']!r} already exists; compatibility mode writes only "
+                "rows its run creates"
+            )
+        row = {**values, **self._owner_values(table)}
+        names = list(row)
+        stmt = text(
+            f"INSERT INTO {table} ({', '.join(_quote_identifier(n) for n in names)}) "  # noqa: S608
+            f"VALUES ({', '.join(f':c{i}' for i in range(len(names)))})"
+        )
+        json_params = [
+            bindparam(f"c{i}", type_=JSON) for i, name in enumerate(names) if name in json_columns
+        ]
+        if json_params:
+            stmt = stmt.bindparams(*json_params)
+        await conn.execute(stmt, {f"c{i}": row[name] for i, name in enumerate(names)})
+        _COMPAT_INSERTED.get().append((table, values["id"]))
 
     async def close(self) -> None:
         if self._engine is not None:
@@ -767,13 +898,26 @@ class StateDB:
     @_cancellation_wins
     @asynccontextmanager
     async def _tx(self):
-        if self.dialect == "sqlite":
-            async with self._write_lock:
+        # Compatibility mode refuses here, before the write lock and before any statement, when
+        # no operation the profile names is running.
+        scope = None if self._compat is None else self._compat.require_scope("transaction")
+        inserted: list[tuple[str, Any]] = []
+        token = None if scope is None else _COMPAT_INSERTED.set(inserted)
+        try:
+            if self.dialect == "sqlite":
+                async with self._write_lock:
+                    async with self._engine.begin() as conn:
+                        yield conn
+            else:
                 async with self._engine.begin() as conn:
                     yield conn
-        else:
-            async with self._engine.begin() as conn:
-                yield conn
+        finally:
+            if token is not None:
+                _COMPAT_INSERTED.reset(token)
+        if scope is not None:
+            scope.committed.append(f"{scope.name} transaction {len(scope.committed) + 1}")
+            for table, row_id in inserted:
+                self._compat_created.setdefault(table, set()).add(row_id)
 
     # Public query surface, portable across both dialects. Accepts the legacy qmark (?) form with a
     # sequence, or named (:name) SQL with a dict. Rows come back as plain dicts with JSON columns
@@ -815,13 +959,23 @@ class StateDB:
             raise ValueError(f"param count mismatch: {i} placeholders, {len(seq)} params")
         return "".join(out), {f"p{j}": v for j, v in enumerate(seq)}
 
+    def _refuse_unless_read(self, operation: str, sql: str) -> None:
+        if self._compat is not None and _statement_kind(_sql_tokens(sql)) != "read":
+            raise self._compat.refusal(
+                "compatibility mode serves the profile's operations only, and this statement is "
+                "not a read",
+                operation,
+            )
+
     async def fetch_all(self, sql: str, params: Any = None) -> list[dict[str, Any]]:
+        self._refuse_unless_read("fetch_all", sql)
         sql, p = self._to_named(sql, params)
         async with self._read() as conn:
             result = await conn.execute(text(sql), p)
             return [dict(r) for r in result.mappings().all()]
 
     async def fetch_one(self, sql: str, params: Any = None) -> dict[str, Any] | None:
+        self._refuse_unless_read("fetch_one", sql)
         sql, p = self._to_named(sql, params)
         async with self._read() as conn:
             result = await conn.execute(text(sql), p)
@@ -829,11 +983,20 @@ class StateDB:
             return dict(row) if row is not None else None
 
     async def execute(self, sql: str, params: Any = None) -> None:
+        self._refuse_in_compatibility(
+            "execute",
+            "compatibility mode serves the profile's operations only; read with fetch_all() "
+            "or fetch_one()",
+        )
         sql, p = self._to_named(sql, params)
         async with self._tx() as conn:
             await conn.execute(text(sql), p)
 
     def transaction(self):
+        self._refuse_in_compatibility(
+            "transaction",
+            "compatibility mode serves the profile's operations only; read with read_snapshot()",
+        )
         return self._tx()
 
     async def _raw_sqlite_exec(self, sql: str, *, fetch: bool = False):
@@ -848,6 +1011,7 @@ class StateDB:
             return row
 
     async def vacuum(self) -> None:
+        self._refuse_in_compatibility("vacuum", "maintenance belongs to the managing application")
         if self.dialect == "sqlite":
             await self._raw_sqlite_exec("VACUUM")
         else:
@@ -857,6 +1021,9 @@ class StateDB:
     async def checkpoint(self, mode: str = "PASSIVE") -> tuple[int, int, int] | None:
         # WAL checkpoint is sqlite-only maintenance and, like VACUUM, must bypass the adapter's
         # implicit transaction. Returns (busy, log_pages, checkpointed), or None off sqlite.
+        self._refuse_in_compatibility(
+            "checkpoint", "manual checkpoints belong to the managing application"
+        )
         if self.dialect != "sqlite":
             return None
         mode = mode.upper()
@@ -925,6 +1092,7 @@ class StateDB:
         self._raise_if_schema_too_new(row[0] if row else None)
 
     async def _apply_schema(self) -> None:
+        self._refuse_in_compatibility("migration", "the store's schema belongs to its manager")
         await self._reconcile_columns()
         if self.dialect == "sqlite":
             await self._rebuild_legacy_sessions_table()
@@ -2163,6 +2331,21 @@ class StateDB:
     async def _insert_message_in_tx(self, conn, msg: dict[str, Any]) -> None:
         lion_class_str = (msg.get("node_metadata") or {}).get("lion_class", "")
         type_id = await self._resolve_lion_class_in_tx(conn, lion_class_str)
+        values = {
+            "id": msg["id"],
+            "created_at": msg["created_at"],
+            "node_metadata": msg.get("node_metadata"),
+            "content": msg["content"],
+            "embedding": _pack_embedding(msg.get("embedding")),
+            "sender": msg.get("sender"),
+            "recipient": msg.get("recipient"),
+            "channel": msg.get("channel"),
+            "role": msg["role"],
+            "lion_class": type_id,
+        }
+        if self._compat is not None:
+            await self._write_message_compat(conn, values)
+            return
 
         # ON CONFLICT(id) DO UPDATE so re-emitted hooks overwrite stale content.
         await conn.execute(
@@ -2184,20 +2367,39 @@ class StateDB:
                 bindparam("node_metadata", type_=JSON),
                 bindparam("content", type_=JSON),
             ),
-            {
-                "id": msg["id"],
-                "created_at": msg["created_at"],
-                "node_metadata": msg.get("node_metadata"),
-                "content": msg["content"],
-                "embedding": _pack_embedding(msg.get("embedding")),
-                "sender": msg.get("sender"),
-                "recipient": msg.get("recipient"),
-                "channel": msg.get("channel"),
-                "role": msg["role"],
-                "lion_class": type_id,
-            },
+            values,
         )
 
+    async def _write_message_compat(self, conn, values: dict[str, Any]) -> None:
+        # A message this run wrote is rewritten in place, as a re-emitted hook does natively, and
+        # refuses when the store has deleted it or given it to another owner; any other existing
+        # id refuses, and a new one is inserted with its owner.
+        if values["id"] not in self._compat_created.get("messages", ()):
+            await self._insert_new_row(
+                conn, "messages", values, json_columns=("node_metadata", "content")
+            )
+            return
+        clause, owner = self._owner_predicate("messages")
+        result = await conn.execute(
+            text(
+                "UPDATE messages SET node_metadata = :node_metadata, content = :content, "  # noqa: S608 -- the clause is this module's
+                "embedding = :embedding, sender = :sender, recipient = :recipient, "
+                "channel = :channel, role = :role, lion_class = :lion_class "
+                f"WHERE id = :id{clause}"
+            ).bindparams(
+                bindparam("node_metadata", type_=JSON),
+                bindparam("content", type_=JSON),
+            ),
+            {**values, **owner},
+        )
+        if result.rowcount == 0:
+            raise self._compat.refusal(
+                f"message {values['id']!r}, which this run wrote, is gone or no longer "
+                f"belongs to {self._compat.owner!r}; compatibility mode rewrites only its own "
+                "rows"
+            )
+
+    @_operation("insert_message")
     async def insert_message(self, msg: dict[str, Any]) -> None:
         self._validate_message(msg)
 
@@ -2236,12 +2438,18 @@ class StateDB:
         """Get or create a message_types row within an existing transaction."""
         if not lion_class_str:
             return self._UNKNOWN_TYPE_ID
+        # In compatibility mode an owned lookup table gets its owner like any other insert.
+        params = {"lc": lion_class_str}
+        owner_column = owner_value = ""
+        for name, owner in self._owner_values("message_types").items():
+            owner_column, owner_value = f", {_quote_identifier(name)}", ", :_compat_owner"
+            params["_compat_owner"] = owner
         await conn.execute(
             text(
-                "INSERT INTO message_types (lion_class) VALUES (:lc) "
+                f"INSERT INTO message_types (lion_class{owner_column}) VALUES (:lc{owner_value}) "  # noqa: S608 -- the column is this module's
                 "ON CONFLICT (lion_class) DO NOTHING"
             ),
-            {"lc": lion_class_str},
+            params,
         )
         row = (
             (
@@ -2257,9 +2465,22 @@ class StateDB:
 
     # Progressions
 
+    @_operation("create_progression")
     async def create_progression(
         self, progression_id: str, collection: list[str] | None = None
     ) -> None:
+        if self._compat is not None:
+            # The messages a progression lists are rows this run created.
+            for message_id in collection or ():
+                self._require_created("messages", message_id, "message")
+            values = {
+                "id": progression_id,
+                "created_at": time.time(),
+                "collection": _to_json_column(collection or []),
+            }
+            async with self._tx() as conn:
+                await self._insert_new_row(conn, "progressions", values)
+            return
         async with self._tx() as conn:
             await conn.execute(
                 text(
@@ -2335,6 +2556,7 @@ class StateDB:
 
     # Sessions
 
+    @_operation("create_session")
     async def create_session(self, session: dict[str, Any]) -> None:
         _validate_session_status(session.get("status"))
         _validate_enum(
@@ -2377,6 +2599,44 @@ class StateDB:
             and isinstance(ended_at, int | float)
         ):
             duration_ms = max(0.0, (ended_at - started_at) * 1000)
+        params = {
+            "id": session["id"],
+            "cc_session_id": session.get("cc_session_id"),
+            "run_id": session.get("run_id"),
+            "created_at": created_at,
+            "node_metadata": session.get("node_metadata"),
+            "name": session.get("name"),
+            "user": session.get("user"),
+            "progression_id": session["progression_id"],
+            "first_msg_id": session.get("first_msg_id"),
+            "last_msg_id": session.get("last_msg_id"),
+            "updated_at": updated_at,
+            "playbook_name": session.get("playbook_name"),
+            "agent_name": session.get("agent_name"),
+            "invocation_kind": session.get("invocation_kind"),
+            "show_topic": session.get("show_topic"),
+            "show_play_name": session.get("show_play_name"),
+            "artifacts_path": session.get("artifacts_path"),
+            "artifact_contract_json": session.get("artifact_contract_json"),
+            "artifact_verification_json": session.get("artifact_verification_json"),
+            "source_kind": session.get("source_kind", "live"),
+            "status": session.get("status"),
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "ended_at_is_approximate": int(ended_at_is_approximate),
+            "last_message_at": last_message_at,
+            "invocation_id": session.get("invocation_id"),
+            "model": session.get("model"),
+            "provider": session.get("provider"),
+            "effort": session.get("effort"),
+            "agent_hash": session.get("agent_hash"),
+            "project": session.get("project"),
+            "project_source": session.get("project_source"),
+            "duration_ms": duration_ms,
+        }
+        if self._compat is not None:
+            await self._create_session_compat(session, params, now)
+            return
         async with self._tx() as conn:
             result = await conn.execute(
                 text(
@@ -2404,41 +2664,7 @@ class StateDB:
                     bindparam("artifact_contract_json", type_=JSON),
                     bindparam("artifact_verification_json", type_=JSON),
                 ),
-                {
-                    "id": session["id"],
-                    "cc_session_id": session.get("cc_session_id"),
-                    "run_id": session.get("run_id"),
-                    "created_at": created_at,
-                    "node_metadata": session.get("node_metadata"),
-                    "name": session.get("name"),
-                    "user": session.get("user"),
-                    "progression_id": session["progression_id"],
-                    "first_msg_id": session.get("first_msg_id"),
-                    "last_msg_id": session.get("last_msg_id"),
-                    "updated_at": updated_at,
-                    "playbook_name": session.get("playbook_name"),
-                    "agent_name": session.get("agent_name"),
-                    "invocation_kind": session.get("invocation_kind"),
-                    "show_topic": session.get("show_topic"),
-                    "show_play_name": session.get("show_play_name"),
-                    "artifacts_path": session.get("artifacts_path"),
-                    "artifact_contract_json": session.get("artifact_contract_json"),
-                    "artifact_verification_json": session.get("artifact_verification_json"),
-                    "source_kind": session.get("source_kind", "live"),
-                    "status": session.get("status"),
-                    "started_at": started_at,
-                    "ended_at": ended_at,
-                    "ended_at_is_approximate": int(ended_at_is_approximate),
-                    "last_message_at": last_message_at,
-                    "invocation_id": session.get("invocation_id"),
-                    "model": session.get("model"),
-                    "provider": session.get("provider"),
-                    "effort": session.get("effort"),
-                    "agent_hash": session.get("agent_hash"),
-                    "project": session.get("project"),
-                    "project_source": session.get("project_source"),
-                    "duration_ms": duration_ms,
-                },
+                params,
             )
             # Only increment session_count when INSERT actually created a row.
             if result.rowcount and session.get("status") is not None:
@@ -2464,6 +2690,65 @@ class StateDB:
                 project_name,
                 session.get("project_source") or "git_remote",
             )
+
+    async def _create_session_compat(
+        self, session: dict[str, Any], params: dict[str, Any], now: float
+    ) -> None:
+        # The id must not exist; the owner is written on the session and on its first transition.
+        # The progression and messages it links are rows this run created, and an invocation it
+        # names must already belong to the owner. Project registration updates a row the run did
+        # not create, so it is left to the managing application and the project stays on the
+        # session row (ADR-0128 Appendix A).
+        if params["progression_id"] is not None:
+            self._require_created("progressions", params["progression_id"], "progression")
+        for link in ("first_msg_id", "last_msg_id"):
+            if params[link] is not None:
+                self._require_created("messages", params[link], "message")
+        invocation_id = params["invocation_id"]
+        if invocation_id is not None and "invocations" not in self._compat.owned_tables:
+            raise self._compat.refusal(
+                f"the session names invocation {invocation_id!r}, which this run did not create, "
+                "and the profile records no owner to admit it by"
+            )
+        clause, owner = self._owner_predicate("invocations")
+        async with self._tx() as conn:
+            if invocation_id is not None:
+                found = (
+                    await conn.execute(
+                        text(f"SELECT 1 FROM invocations WHERE id = :inv_id{clause}"),  # noqa: S608
+                        {"inv_id": invocation_id, **owner},
+                    )
+                ).first()
+                if found is None:
+                    raise self._compat.refusal(
+                        f"invocation {invocation_id!r} does not belong to {self._compat.owner!r}"
+                    )
+            await self._insert_new_row(
+                conn,
+                "sessions",
+                params,
+                json_columns=(
+                    "node_metadata",
+                    "artifact_contract_json",
+                    "artifact_verification_json",
+                ),
+            )
+            if session.get("status") is not None:
+                await self._initialize_managed_entity_in_tx(
+                    conn,
+                    entity_type="session",
+                    entity_id=session["id"],
+                    status=session["status"],
+                    actor_id="create_session",
+                )
+            if invocation_id is not None:
+                await conn.execute(
+                    text(
+                        "UPDATE invocations SET session_count = session_count + 1, "  # noqa: S608 -- the clause is this module's
+                        f"updated_at = :now WHERE id = :inv_id{clause}"
+                    ),
+                    {"now": now, "inv_id": invocation_id, **owner},
+                )
 
     @staticmethod
     def _decrement_invocation_session_count_sql(dialect: str) -> str:
@@ -4961,7 +5246,33 @@ class StateDB:
 
     # Branches
 
+    @_operation("create_branch")
     async def create_branch(self, branch: dict[str, Any]) -> None:
+        values = {
+            "id": branch["id"],
+            "created_at": branch.get("created_at", time.time()),
+            "node_metadata": branch.get("node_metadata"),
+            "user": branch.get("user"),
+            "name": branch.get("name"),
+            "session_id": branch["session_id"],
+            "progression_id": branch["progression_id"],
+            "system_msg_id": branch.get("system_msg_id"),
+            "model": branch.get("model"),
+            "provider": branch.get("provider"),
+            "agent_name": branch.get("agent_name"),
+        }
+        if self._compat is not None:
+            # The session, progression and system message a branch links are rows this run
+            # created, so they share its owner.
+            self._require_created("sessions", values["session_id"], "session")
+            self._require_created("progressions", values["progression_id"], "progression")
+            if values["system_msg_id"] is not None:
+                self._require_created("messages", values["system_msg_id"], "system message")
+            async with self._tx() as conn:
+                await self._insert_new_row(
+                    conn, "branches", values, json_columns=("node_metadata",)
+                )
+            return
         async with self._tx() as conn:
             await conn.execute(
                 text(
@@ -4971,19 +5282,7 @@ class StateDB:
                                :session_id, :progression_id, :system_msg_id, :model, :provider, :agent_name)
                        ON CONFLICT (id) DO NOTHING"""
                 ).bindparams(bindparam("node_metadata", type_=JSON)),
-                {
-                    "id": branch["id"],
-                    "created_at": branch.get("created_at", time.time()),
-                    "node_metadata": branch.get("node_metadata"),
-                    "user": branch.get("user"),
-                    "name": branch.get("name"),
-                    "session_id": branch["session_id"],
-                    "progression_id": branch["progression_id"],
-                    "system_msg_id": branch.get("system_msg_id"),
-                    "model": branch.get("model"),
-                    "provider": branch.get("provider"),
-                    "agent_name": branch.get("agent_name"),
-                },
+                values,
             )
 
     async def get_branch(self, branch_id: str) -> dict[str, Any] | None:
@@ -6364,9 +6663,12 @@ class StateDB:
 
 # Shared singleton accessor: one open StateDB per DB URL, reused across hook firings, which avoids
 # the per-firing connect and schema-check cost. Keyed by normalized URL so tests redirecting
-# DEFAULT_DB_PATH get their own isolated instance.
+# DEFAULT_DB_PATH get their own isolated instance, and a compatibility handle by its profile
+# and owner too, so a native and a compatibility handle on one file are never the same object.
 
-_SHARED: dict[str, StateDB] = {}
+# A native or read-only handle is keyed by its url alone, as it always was; a compatibility
+# handle by (url, mode, profile, owner), so it is never the shared handle of the same file.
+_SHARED: dict[str | tuple[str, str, CompatibilityProfile | None, str | None], StateDB] = {}
 # Guards the lazy-open window; created on first async call (anyio.Lock
 # must be instantiated inside an active backend task context).
 _SHARED_OPEN_LOCK: Lock | None = None
@@ -6379,12 +6681,20 @@ _SHARED_TEARDOWN_RACE = (
 )
 
 
+def _shared_key(db: StateDB) -> str | tuple[str, str, CompatibilityProfile | None, str | None]:
+    if db.mode != "compatibility":
+        return db.url
+    owner = None if db._compat is None else db._compat.owner
+    return (db.url, db.mode, db.compatibility, owner)
+
+
 async def get_shared_db(path: str | Path | None = None) -> StateDB:
     """Return the process-wide open StateDB for *path* (default: DEFAULT_DB_PATH)."""
     global _SHARED_OPEN_LOCK  # noqa: PLW0603
     # Resolve the key through StateDB's own cascade so a monkeypatched DEFAULT_DB_PATH is honored;
     # normalize_state_db_url(None) would bypass it to the real home db.
-    key = StateDB(path).url
+    url = StateDB(path).url
+    key = url
     if key in _SHARED:
         return _SHARED[key]
     if _SHARED_OPEN_LOCK is None:
@@ -6398,7 +6708,7 @@ async def get_shared_db(path: str | Path | None = None) -> StateDB:
             raise RuntimeError(_SHARED_TEARDOWN_RACE)
         # Double-checked: another coroutine may have opened it while we waited.
         if key not in _SHARED:
-            db = StateDB(url=key)
+            db = StateDB(url=url)
             await db.open()
             _SHARED[key] = db
     return _SHARED[key]
@@ -6416,17 +6726,19 @@ async def register_shared_db(db: StateDB) -> None:
     async with lock:
         if _SHARED_CLOSE_GEN != gen:
             raise RuntimeError(_SHARED_TEARDOWN_RACE)
-        existing = _SHARED.get(db.url)
+        key = _shared_key(db)
+        existing = _SHARED.get(key)
         if existing is not None and existing is not db:
             with contextlib.suppress(Exception):
                 await existing.close()
-        _SHARED[db.url] = db
+        _SHARED[key] = db
 
 
 def unregister_shared_db(db: StateDB) -> None:
     """Drop *db* from the shared registry iff it is the registered instance."""
-    if _SHARED.get(db.url) is db:
-        del _SHARED[db.url]
+    key = _shared_key(db)
+    if _SHARED.get(key) is db:
+        del _SHARED[key]
 
 
 async def close_shared_db() -> None:
