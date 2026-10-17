@@ -15,7 +15,9 @@ Three layers enforce this, because each alone has a known way around it:
   names, and only in a transaction the guard opened for it;
 - a statement check on every statement SQLAlchemy sends, which refuses REPLACE forms, every
   conflict clause but ABORT, RETURNING and anything but INSERT and UPDATE inside an operation, and
-  anything but a read outside one;
+  anything but a read outside one; with an owner rule it also refuses an INSERT into an owned
+  table that does not bind the owner column to the owner, and an UPDATE of one that does not
+  restrict its rows to the owner, since the authorizer sees neither values nor WHERE clauses;
 - the authorizer, a ceiling on every connection that sees what reaches SQLite by any path: INSERT
   only into the profile's tables, UPDATE only of its columns, a short list of PRAGMAs, and no commit
   of a transaction in which anything was denied.
@@ -51,6 +53,7 @@ __all__ = (
     "ColumnShape",
     "CompatibilityProfile",
     "ForeignKeyShape",
+    "OwnerRule",
     "SchemaObject",
     "StateCompatibilityRefused",
     "TableShape",
@@ -417,6 +420,399 @@ def _resolutions(tokens: list[tuple[str, str]]) -> list[tuple[str, str]]:
     return found
 
 
+def _name(token: tuple[str, str]) -> str | None:
+    """The table or column a token names, folded as SQLite folds a name; SQLite also takes a
+    string literal as one."""
+    kind, text = token
+    if kind == _STRING:
+        return _fold(text[1:-1].replace("''", "'"))
+    return text if kind in (_WORD, _IDENT) else None
+
+
+def _depths(tokens: list[tuple[str, str]]) -> list[int]:
+    """Each token's parenthesis depth; a parenthesis is at the depth outside the list it bounds."""
+    depths: list[int] = []
+    depth = 0
+    for token in tokens:
+        if token == (_PUNCT, ")"):
+            depth = max(0, depth - 1)
+        depths.append(depth)
+        if token == (_PUNCT, "("):
+            depth += 1
+    return depths
+
+
+def _spans(tokens: list[tuple[str, str]], start: int) -> tuple[list[tuple[int, int]], int]:
+    """The comma-separated items of the list opening at ``tokens[start]`` as ``(first, end)``
+    index ranges, and the index of the parenthesis closing it (``len(tokens)`` when none does).
+    """
+    spans: list[tuple[int, int]] = []
+    depth, first = 0, start + 1
+    for index in range(start + 1, len(tokens)):
+        token = tokens[index]
+        if depth == 0 and token in ((_PUNCT, ","), (_PUNCT, ")")):
+            spans.append((first, index))
+            if token == (_PUNCT, ")"):
+                return spans, index
+            first = index + 1
+        elif token == (_PUNCT, "("):
+            depth += 1
+        elif token == (_PUNCT, ")"):
+            depth -= 1
+    return spans, len(tokens)
+
+
+def _write_target(tokens: list[tuple[str, str]]) -> tuple[str, str | None, int] | None:
+    """``(verb, table, after)`` for an INSERT or UPDATE: the table it writes, lowercased, or None
+    when it cannot be read, and the index of the token after the table's name. None for any other
+    statement.
+    """
+    depths = _depths(tokens)
+    start = next(
+        (
+            index
+            for index, token in enumerate(tokens)
+            if depths[index] == 0 and token in ((_WORD, "insert"), (_WORD, "update"))
+        ),
+        None,
+    )
+    if start is None:
+        return None
+    verb = tokens[start][1]
+    index = start + 1
+    if tokens[index : index + 1] == [(_WORD, "or")]:
+        index += 2
+    if verb == "insert":
+        if tokens[index : index + 1] != [(_WORD, "into")]:
+            return verb, None, index
+        index += 1
+    if tokens[index + 1 : index + 2] == [(_PUNCT, ".")]:
+        index += 2  # a schema prefix
+    table = _name(tokens[index]) if index < len(tokens) else None
+    return verb, table, index + 1
+
+
+def _duplicate_column(names: list[str | None]) -> str | None:
+    """A column an INSERT's column list names more than once, or None when it names none twice.
+
+    SQLite takes the first value a statement binds for a column it names twice and raises no
+    error, so the columns an INSERT says it writes are not the columns it writes.
+    """
+    return next(
+        (name for name in names if name is not None and names.count(name) > 1),
+        None,
+    )
+
+
+def _insert_columns(tokens: list[tuple[str, str]], after: int) -> list[str | None] | None:
+    """The column names an INSERT's column list names, in order, or None when it has no list."""
+    if tokens[after : after + 1] != [(_PUNCT, "(")]:
+        return None
+    columns, _ = _spans(tokens, after)
+    return [_name(tokens[first]) if end == first + 1 else None for first, end in columns]
+
+
+def _insert_owner_values(
+    tokens: list[tuple[str, str]], after: int, column: str
+) -> list[tuple[int, int]] | str:
+    """Where an INSERT writes *column* in each row it writes, as a ``(first, end)`` span of tokens
+    per row, or why that cannot be read. *after* indexes the token after the table's name.
+    """
+    if tokens[after : after + 1] != [(_PUNCT, "(")]:
+        return f"leaves out the owner column {column}"
+    columns, close = _spans(tokens, after)
+    names = [_name(tokens[first]) if end == first + 1 else None for first, end in columns]
+    twice = _duplicate_column(names)
+    if twice is not None:
+        return f"names the column {twice} twice, so the value SQLite writes cannot be read"
+    if column not in names:
+        return f"leaves out the owner column {column}"
+    at = names.index(column)
+    index = close + 1
+    if tokens[index : index + 1] != [(_WORD, "values")]:
+        return "takes its rows from a query, so the owner it writes cannot be read"
+    index += 1
+    rows: list[tuple[int, int]] = []
+    while tokens[index : index + 1] == [(_PUNCT, "(")]:
+        items, close = _spans(tokens, index)
+        if len(items) != len(names):
+            return "writes a row whose values do not match its columns"
+        rows.append(items[at])
+        index = close + 1
+        if tokens[index : index + 1] != [(_PUNCT, ",")]:
+            break
+        index += 1
+    if not rows:
+        return "writes rows the guard cannot read"
+    depths = _depths(tokens)
+    if any(depths[i] == 0 and tokens[i] == (_WORD, "update") for i in range(index, len(tokens))):
+        return "is an upsert, whose update can rewrite a row of another owner"
+    return rows
+
+
+def _update_owner_values(
+    tokens: list[tuple[str, str]], after: int, column: str
+) -> list[tuple[int, int]] | str:
+    """What each top-level ``<column> = <value>`` term of an UPDATE's WHERE clause compares the
+    column with, as ``(first, end)`` spans of tokens, or why the clause cannot be read.
+
+    Only a WHERE clause that is a conjunction is read, so each term found holds for every row the
+    UPDATE writes: a top-level OR, BETWEEN (whose AND is not a conjunction) or CASE refuses.
+    """
+    depths = _depths(tokens)
+    top = [index for index in range(after, len(tokens)) if depths[index] == 0]
+    where = next((index for index in top if tokens[index] == (_WORD, "where")), None)
+    if where is None:
+        return "has no WHERE clause, so it writes the rows of every owner"
+    if any(tokens[index] == (_WORD, "from") for index in top if index < where):
+        return "joins another table, so the guard cannot read which rows it writes"
+    end = next(
+        (
+            index
+            for index in top
+            if index > where
+            and tokens[index] in ((_WORD, "returning"), (_WORD, "order"), (_WORD, "limit"))
+        ),
+        len(tokens),
+    )
+    clause = [index for index in top if where < index < end]
+    if any(
+        tokens[index] in ((_WORD, "or"), (_WORD, "between"), (_WORD, "case")) for index in clause
+    ):
+        return (
+            "has a WHERE clause that is not a plain conjunction, so its owner term cannot be read"
+        )
+    cuts = [where, *(index for index in clause if tokens[index] == (_WORD, "and")), end]
+    found = [
+        value
+        for first, last in zip(cuts[:-1], cuts[1:], strict=True)
+        if (value := _owner_value(tokens, first + 1, last, column)) is not None
+    ]
+    return found or f"does not restrict its rows by the owner column {column}"
+
+
+def _enclosing(tokens: list[tuple[str, str]], first: int, last: int) -> tuple[int, int]:
+    """*first* and *last* with each parenthesis pair that encloses the whole span removed."""
+    while last - first >= 2 and tokens[first] == (_PUNCT, "("):
+        depth, close = 0, None
+        for index in range(first, last):
+            if tokens[index] == (_PUNCT, "("):
+                depth += 1
+            elif tokens[index] == (_PUNCT, ")"):
+                depth -= 1
+                if depth == 0:
+                    close = index
+                    break
+        if close != last - 1:
+            break
+        first, last = first + 1, last - 1
+    return first, last
+
+
+def _names_column(tokens: list[tuple[str, str]], first: int, last: int, column: str) -> bool:
+    """Whether the span is exactly the owner column's name, parentheses aside."""
+    first, last = _enclosing(tokens, first, last)
+    return last - first == 1 and tokens[first][0] in (_WORD, _IDENT) and tokens[first][1] == column
+
+
+def _owner_value(
+    tokens: list[tuple[str, str]], first: int, last: int, column: str
+) -> tuple[int, int] | None:
+    """What the term between *first* and *last* compares *column* with, as a token span.
+
+    The comparison is read in either order (``column = value`` and ``value = column``) and through
+    parentheses that enclose the term or the value. None when the term does not compare the column
+    with one value: an operator other than ``=``, several, or a term that is not a comparison.
+    """
+    first, last = _enclosing(tokens, first, last)
+    at, depth = None, 0
+    for index in range(first, last):
+        token = tokens[index]
+        if token == (_PUNCT, "("):
+            depth += 1
+        elif token == (_PUNCT, ")"):
+            depth -= 1
+        elif token == (_PUNCT, "=") and depth == 0:
+            if at is not None:
+                return None
+            at = index
+    if at is None:
+        return None
+    if _names_column(tokens, first, at, column):
+        return _enclosing(tokens, at + 1, last)
+    if _names_column(tokens, at + 1, last, column):
+        return _enclosing(tokens, first, at)
+    return None
+
+
+def _placeholders(tokens: list[tuple[str, str]]) -> list[int] | None:
+    """The index of each ``?`` placeholder in order, or None when the statement binds a value in
+    another form (``?NNN``, ``:name``, ``@name``, ``$name``, ``#name``), which a position cannot be
+    read for. SQLite numbers a named parameter as it numbers ``?``, so a ``?`` after one takes a
+    later argument than the position it sits at.
+    """
+    found: list[int] = []
+    for index, (kind, text) in enumerate(tokens):
+        after = tokens[index + 1 : index + 2]
+        if (kind, text) == (_PUNCT, "?"):
+            if after and after[0][0] == _WORD and after[0][1][:1].isdigit():
+                return None
+            found.append(index)
+        elif kind == _PUNCT and text in ":@#" and after and after[0][0] in (_WORD, _IDENT):
+            return None
+        elif kind == _WORD and text.startswith("$"):
+            return None
+    return found
+
+
+def _parameter_rows(parameters: Any, many: bool) -> list[tuple | list] | None:
+    """The positional parameter rows a statement runs with, or None when they are not positional."""
+    rows = list(parameters) if many else [parameters]
+    return rows if all(isinstance(row, (tuple, list)) for row in rows) else None
+
+
+def _copies_owner(value: list[tuple[str, str]], column: str, rows: tuple[str, ...]) -> bool:
+    """Whether *value* reads *column* from a row a trigger's event makes readable (`NEW`, `OLD`)."""
+    return (
+        len(value) == 3
+        and value[0][0] == _WORD
+        and value[0][1] in rows
+        and value[1] == (_PUNCT, ".")
+        and value[2][0] in (_WORD, _IDENT)
+        and value[2][1] == column
+    )
+
+
+_EVENT_WORDS = frozenset({(_WORD, "insert"), (_WORD, "update"), (_WORD, "delete")})
+
+
+def _trigger_event(sql: str) -> str | None:
+    """The event a trigger fires on: INSERT, UPDATE or DELETE.
+
+    A created trigger names exactly one event, and SQLite refuses a trigger that names more than
+    one (``AFTER DELETE OR INSERT ON t`` is a syntax error), so one event word is read: the first
+    unquoted INSERT, UPDATE or DELETE before the ``ON`` that names the table. SQLite reserves those
+    three words, so a trigger's name or a column of ``UPDATE OF`` spells one of them only quoted,
+    and a quoted name is not an event word. BEFORE, AFTER and INSTEAD are not reserved: a trigger
+    or an ``UPDATE OF`` column may be named after them bare, which is why the timing is not where
+    the reading starts.
+    """
+    tokens = _sql_tokens(sql)
+    depths = _depths(tokens)
+    top = [index for index in range(len(tokens)) if depths[index] == 0]
+    on = next((index for index in top if tokens[index] == (_WORD, "on")), None)
+    if on is None:
+        return None
+    return next(
+        (tokens[index][1] for index in top if index < on and tokens[index] in _EVENT_WORDS), None
+    )
+
+
+def _trigger_statements(sql: str) -> list[list[tuple[str, str]]]:
+    """The statements of a trigger body, each as its tokens, or none when there is no body.
+
+    The trigger's own name may be the keyword BEGIN, so the body starts at the first BEGIN after
+    the ON that names the table the trigger fires on, and the statements it holds are separated
+    by the semicolons at parenthesis depth zero.
+    """
+    tokens = _sql_tokens(sql)
+    depths = _depths(tokens)
+    top = [index for index in range(len(tokens)) if depths[index] == 0]
+    on = next((index for index in top if tokens[index] == (_WORD, "on")), None)
+    begin = next(
+        (
+            index
+            for index in top
+            if tokens[index] == (_WORD, "begin") and (on is None or index > on)
+        ),
+        None,
+    )
+    if begin is None:
+        return []
+    statements: list[list[tuple[str, str]]] = [[]]
+    for index in range(begin + 1, len(tokens)):
+        if depths[index] == 0 and tokens[index] == (_PUNCT, ";"):
+            statements.append([])
+        else:
+            statements[-1].append(tokens[index])
+    return statements
+
+
+def _trigger_deletions(sql: str) -> list[str]:
+    """What each top-level DELETE of a trigger's body deletes, as ``DELETE FROM <table>``, or
+    ``DELETE`` when the table it names cannot be read.
+
+    The authorizer refuses every DELETE on a compatibility connection, so a trigger that runs one
+    is refused at admission rather than at the write that fires it.
+    """
+    found: list[str] = []
+    for statement in _trigger_statements(sql):
+        depths = _depths(statement)
+        for index, token in enumerate(statement):
+            if depths[index] or token != (_WORD, "delete"):
+                continue
+            rest = statement[index + 1 :]
+            name = None
+            if rest[:1] == [(_WORD, "from")] and len(rest) > 1:
+                name = _name(rest[1])
+            # Text for the refusal message; it is never executed.
+            found.append(f"DELETE FROM {name}" if name else "DELETE")  # noqa: S608
+    return found
+
+
+def _trigger_owner_problems(sql: str, column: str, owned: frozenset[str]) -> list[str]:
+    """How a trigger's statements write an owned table other than with the owner of the row that
+    fired it: an INSERT must copy ``NEW.<column>`` (``OLD.<column>`` in a DELETE trigger) into
+    every row, and an UPDATE must restrict its rows by a term comparing the column with one of
+    the rows its event makes readable.
+    """
+    statements = _trigger_statements(sql)
+    if not statements:
+        return []
+    # A DELETE trigger reads OLD and an INSERT trigger reads NEW; a trigger names exactly one
+    # event, so the other of the two is not a column of it at all.
+    rows = {"insert": ("new",), "delete": ("old",)}.get(_trigger_event(sql), ("new", "old"))
+    problems: list[str] = []
+    for statement in statements:
+        target = _write_target(statement)
+        if target is None:
+            continue
+        verb, table, after = target
+        if table is None:
+            problems.append(f"writes a table that cannot be read ({verb.upper()})")
+            continue
+        if table not in owned:
+            continue
+        what = f"{'inserts into' if verb == 'insert' else 'updates'} {table}"
+        # `UPDATE t AS new` names the row being written NEW inside the statement, so a term
+        # comparing the owner with NEW.<column> compares the row with itself and holds for
+        # every owner's row.
+        alias = (
+            _name(statement[after + 1])
+            if verb == "update"
+            and statement[after : after + 1] == [(_WORD, "as")]
+            and after + 1 < len(statement)
+            else None
+        )
+        if alias in ("new", "old"):
+            problems.append(
+                f"{what} under the alias {alias.upper()}, which hides the row that fired it"
+            )
+            continue
+        reader = _insert_owner_values if verb == "insert" else _update_owner_values
+        values = reader(statement, after, column)
+        if isinstance(values, str):
+            problems.append(f"{what} and {values}")
+            continue
+        written = [_copies_owner(statement[first:end], column, rows) for first, end in values]
+        if not (all(written) if verb == "insert" else any(written)):
+            owner = " or ".join(f"{name.upper()}.{column}" for name in rows)
+            problems.append(
+                f"{what} with an owner other than {owner}, the owner of the row that fired it"
+            )
+    return problems
+
+
 def _pragma_reads(tokens: list[tuple[str, str]]) -> bool:
     rest = tokens[1:]
     if len(rest) >= 2 and rest[1] == (_PUNCT, "."):
@@ -484,6 +880,12 @@ def _write_refusal(tokens: list[tuple[str, str]]) -> str | None:
                 return f"the OR {action.upper()} conflict clause {effect}"
     if "returning" in top:
         return "RETURNING is not admitted"
+    if verb == "insert":
+        target = _write_target(tokens)
+        names = None if target is None else _insert_columns(tokens, target[2])
+        twice = None if names is None else _duplicate_column(names)
+        if twice is not None:
+            return f"the INSERT names the column {twice} twice"
     return None
 
 
@@ -561,6 +963,11 @@ class TableShape:
     options: frozenset[str] = frozenset()
     conflicts: frozenset[str] = frozenset()
     definitions: frozenset[str] = frozenset()
+    # Each column with the collation its own definition declares, read from the table's SQL while
+    # a quoted name is still one token, so a column named "primary" or "collate", or one whose
+    # quoted name starts with another column's, is read as the column it is. Derived from the
+    # same SQL as ``definitions``, so it takes no part in comparing a store with a profile.
+    collations: frozenset[tuple[str, str]] = field(default=frozenset(), compare=False)
 
 
 @dataclass(frozen=True)
@@ -824,6 +1231,77 @@ def _virtual_table_names(tokens: list[tuple[str, str]]) -> set[str]:
     return found
 
 
+def _column_collation(definition: str) -> str:
+    """The collation a column's definition declares, its name folded as SQLite folds a name.
+
+    ``binary`` is the answer for a definition that declares none. Only a clause at parenthesis
+    depth zero of the definition counts: a ``COLLATE`` inside a CHECK, a DEFAULT or a GENERATED
+    expression collates one comparison of that expression, not the column. When the definition
+    carries several such clauses SQLite compares the column under the last of them, so the last
+    one is read. Folding is by ASCII letters only, so a name spelled with another character in
+    the place of one, ``bınary``, is not the folded ``binary``.
+    """
+    return _declared_collation(_sql_tokens(definition))
+
+
+def _declared_collation(tokens: list[tuple[str, str]]) -> str:
+    """The collation the last depth-zero ``COLLATE`` of *tokens* names, or ``binary``."""
+    depths = _depths(tokens)
+    collation = "binary"
+    for index, token in enumerate(tokens):
+        if depths[index] or token != (_WORD, "collate"):
+            continue
+        name = _name(tokens[index + 1]) if index + 1 < len(tokens) else None
+        if name is not None:
+            collation = name
+    return collation
+
+
+def _column_collations(tokens: list[tuple[str, str]]) -> frozenset[tuple[str, str]]:
+    """Each column of a CREATE TABLE with the collation its own definition declares.
+
+    A definition is a column's unless it is a table constraint, and a table constraint starts
+    with a bare word (``CHECK``, ``UNIQUE``, ``PRIMARY KEY``, ``FOREIGN KEY``, ``CONSTRAINT``), so
+    a definition whose first token is a quoted name or a string is a column's whatever that name
+    spells. The name is the first token alone, and the collation is read from what follows it,
+    so a column named ``collate`` is not read as its own clause.
+    """
+    start = next((i for i, token in enumerate(tokens) if token == (_PUNCT, "(")), None)
+    if start is None:
+        return frozenset()
+    found: set[tuple[str, str]] = set()
+    for group in _groups(tokens, start):
+        if group[0][0] == _WORD and _is_table_constraint([text for _, text in group]):
+            continue
+        # Table SQL is read spelled, so a quoted name that a bare word cannot spell keeps its
+        # quotes; the column it names is read between them.
+        if group[0][0] in (_WORD, _IDENT, _STRING):
+            found.add((_unquoted(*group[0]), _declared_collation(group[1:])))
+    return frozenset(found)
+
+
+def _is_table_constraint(words: list[str]) -> bool:
+    """Whether a definition that starts with a bare word, as its words, is a table constraint.
+
+    A table constraint is ``CHECK (``, ``UNIQUE (``, ``PRIMARY KEY (``, ``FOREIGN KEY (``, or one
+    of those after ``CONSTRAINT <name>``; a column's type is a word, never a parenthesis.
+    """
+    if words[:2] in (["check", "("], ["unique", "("]):
+        return True
+    if words[:3] in (["primary", "key", "("], ["foreign", "key", "("]):
+        return True
+    return words[:1] == ["constraint"] and _is_table_constraint(words[2:])
+
+
+def _ordered_collation(table: TableShape, column: str) -> str | None:
+    """The collation *column* compares under in *table*, read from its own definition, or None
+    when the table's SQL does not hold exactly one definition for it: the owner check then
+    refuses rather than assume binary.
+    """
+    found = [collation for name, collation in table.collations if name == column]
+    return found[0] if len(found) == 1 else None
+
+
 def _indexed_terms(index_sql: str, columns: frozenset[str]) -> list[str]:
     """The terms of a CREATE INDEX, each in one spelling: a column, an expression, a COLLATE."""
     tokens = _sql_tokens(index_sql, spelled=True, columns=columns)
@@ -899,6 +1377,7 @@ def _table_shape(fetch: _Fetch, name: str, sql: str, entries: Mapping) -> TableS
         options,
         _conflicts(tokens),
         _module_arguments(sql) if "virtual" in options else _definitions(tokens),
+        _column_collations(tokens),
     )
 
 
@@ -1151,6 +1630,35 @@ class TableWrites:
         )
 
 
+@dataclass(frozen=True)
+class OwnerRule:
+    """Where a store records who owns a row (ADR-0128 D5).
+
+    Every table in the profile's closure that has a column named ``column`` is owned. Compatibility
+    mode writes the configured owner into that column on every insert, never leaving it to the
+    column's default, and restricts every update of an owned table to the owner's rows. The
+    statement check holds every statement to that: an INSERT into an owned table must name the
+    column and bind it, in every row, to a ``?`` parameter whose value is the owner, and must not
+    be an upsert that updates; an UPDATE of one must have a WHERE clause that is a conjunction
+    with a term ``column = ?`` bound to the owner. A table it cannot read refuses. Admission
+    refuses a store whose triggers write an owned table without copying the owner of the row that
+    fired them (``NEW.column``, or ``OLD.column`` in a DELETE trigger). The owner must exist as a
+    ``key`` value of the ``principals`` table, read at admission and again in every write
+    transaction.
+    """
+
+    column: str
+    principals: str
+    key: str = "id"
+
+    def __post_init__(self) -> None:
+        for name in ("column", "principals", "key"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"OwnerRule.{name} names a column or table: {value!r}")
+            object.__setattr__(self, name, _fold(value))
+
+
 def _rowid_alias(column: ColumnShape, table: TableShape) -> bool:
     return (
         column.pk == 1
@@ -1168,7 +1676,9 @@ class CompatibilityProfile:
     table, the columns inserted and updated; ``operations`` the StateDB operations served.
     ``store_versions``, when set, narrows the stores a profile is tried on by their
     ``schema_meta`` version; a version never admits a store on its own. ``invariants`` states the
-    reader invariants the operations keep. Profiles compare by identity.
+    reader invariants the operations keep. ``owner``, when set, names where the store records who
+    owns a row; every owned table the profile inserts into must insert the owner column, and none may
+    update it. Profiles compare by identity.
     """
 
     name: str
@@ -1178,6 +1688,7 @@ class CompatibilityProfile:
     operations: frozenset[str]
     store_versions: frozenset[str] | None = None
     invariants: tuple[str, ...] = ()
+    owner: OwnerRule | None = None
 
     def __post_init__(self) -> None:
         if not self.name or "@" in self.name:
@@ -1191,6 +1702,8 @@ class CompatibilityProfile:
         tables = {table.name: table for table in self.closure.tables}
         for name, spec in writes.items():
             self._check_writes(name, spec, tables.get(name))
+        if self.owner is not None:
+            self._check_owner(self.owner, writes, tables)
         object.__setattr__(self, "operations", operations)
         object.__setattr__(self, "writes", MappingProxyType(writes))
         if self.store_versions is not None:
@@ -1231,6 +1744,43 @@ class CompatibilityProfile:
                     f"{where}: {column} is NOT NULL with no default, so an insert leaving it "
                     "out fails"
                 )
+
+    def _check_owner(
+        self, owner: OwnerRule, writes: Mapping[str, TableWrites], tables: Mapping[str, TableShape]
+    ) -> None:
+        if not isinstance(owner, OwnerRule):
+            raise TypeError(f"profile {self.name}: owner takes an OwnerRule, got {type(owner)!r}")
+        principals = tables.get(owner.principals)
+        if principals is None:
+            raise ValueError(
+                f"profile {self.name}: the principals table {owner.principals} is not in the closure"
+            )
+        if owner.key not in {column.name for column in principals.columns}:
+            raise ValueError(
+                f"profile {self.name}: {owner.principals} has no column {owner.key} to find an owner by"
+            )
+        for name, spec in writes.items():
+            if owner.column not in {column.name for column in tables[name].columns}:
+                continue
+            where = f"profile {self.name}, table {name}"
+            if owner.column in spec.update:
+                raise ValueError(f"{where}: the owner column {owner.column} is never updated")
+            if spec.insert and owner.column not in spec.insert:
+                raise ValueError(
+                    f"{where}: inserts write the owner column {owner.column}; a default is never "
+                    "the owner"
+                )
+
+    @property
+    def owned_tables(self) -> frozenset[str]:
+        """The closure's tables that carry the owner column; empty without an owner rule."""
+        if self.owner is None:
+            return frozenset()
+        return frozenset(
+            table.name
+            for table in self.closure.tables
+            if any(column.name == self.owner.column for column in table.columns)
+        )
 
     @property
     def label(self) -> str:
@@ -1282,8 +1832,9 @@ class _ConnectionState:
     """Enforcement state of one connection, shared by its authorizer and the engine listeners.
 
     ``write_txn`` is set only by the guard's begin listener, once it has reserved the writer and
-    checked the schema. It is cleared when a COMMIT, a ROLLBACK or a BEGIN outside a transaction
-    is prepared, and when a statement finds the connection out of the transaction it marked.
+    checked the schema and the owner. It is cleared when a COMMIT, a ROLLBACK or a BEGIN outside
+    a transaction is prepared, and when a statement finds the connection out of the transaction
+    it marked.
     ``denied`` poisons the current write transaction: its COMMIT is denied. A BEGIN prepared
     inside an open transaction is denied, so it poisons that transaction.
     """
@@ -1328,10 +1879,16 @@ def _is_auth_error(exc: BaseException) -> bool:
 class _Guard:
     """Admission and enforcement for one compatibility-mode StateDB."""
 
-    def __init__(self, profile: CompatibilityProfile) -> None:
+    def __init__(self, profile: CompatibilityProfile, owner: str | None = None) -> None:
         if not isinstance(profile, CompatibilityProfile):
             raise TypeError(f"compatibility takes a CompatibilityProfile, got {type(profile)!r}")
+        if profile.owner is not None and (not isinstance(owner, str) or not owner):
+            raise ValueError(f"profile {profile.label} records owners, so an owner is required")
+        if profile.owner is None and owner is not None:
+            raise ValueError(f"profile {profile.label} records no owner, so none can be given")
         self.profile = profile
+        self.owner = owner
+        self.owned_tables = profile.owned_tables
         # PRAGMA schema_version as admitted; a write transaction that finds another value
         # re-reads the closure before any statement runs.
         self.schema_version: int | None = None
@@ -1409,6 +1966,61 @@ class _Guard:
                 f"resolution: {shown}",
                 operation,
             )
+        # A trigger runs inside the write that fires it, and every DELETE is refused there by
+        # the authorizer, so a trigger that runs one is refused when the store is admitted.
+        deletions = [
+            f"trigger {item.name} {problem}"
+            for item in sorted(self.profile.closure.objects, key=lambda o: o.name)
+            if item.type == "trigger"
+            for problem in _trigger_deletions(item.sql)
+        ]
+        if deletions:
+            raise self.refusal(
+                f"{when}: compatibility mode admits no DELETE, and a trigger's DELETE runs "
+                f"inside the write that fires it: " + "; ".join(deletions),
+                operation,
+            )
+        rule = self.profile.owner
+        if rule is not None:
+            # `owner = ?` compares under the column's collation, so an owner that is not binary
+            # takes a variant of the owner's name as the owner, and writes another owner's row.
+            collations = {
+                table.name: _ordered_collation(table, rule.column)
+                for table in self.profile.closure.tables
+                if rule.column in {column.name for column in table.columns}
+            }
+            unread = [name for name, collation in collations.items() if collation is None]
+            if unread:
+                raise self.refusal(
+                    f"{when}: the collation of the owner column could not be read from the "
+                    f"table's SQL, so it cannot be shown to be binary: "
+                    + ", ".join(f"{name}.{rule.column}" for name in sorted(unread)),
+                    operation,
+                )
+            variants = [
+                f"{name}.{rule.column} compares under {collation}"
+                for name, collation in sorted(collations.items())
+                if collation != "binary"
+            ]
+            if variants:
+                raise self.refusal(
+                    f"{when}: the owner column compares under a collation, not binary, so its "
+                    f"rows cannot be told from a variant's: {'; '.join(variants)}",
+                    operation,
+                )
+            # A trigger's statements pass no statement check, so what they write is read here.
+            unowned = [
+                f"trigger {item.name} {problem}"
+                for item in sorted(self.profile.closure.objects, key=lambda o: o.name)
+                if item.type == "trigger"
+                for problem in _trigger_owner_problems(item.sql, rule.column, self.owned_tables)
+            ]
+            if unowned:
+                raise self.refusal(
+                    f"{when}: a trigger writes an owned table without the owner: "
+                    + "; ".join(unowned),
+                    operation,
+                )
         versions = self.profile.store_versions
         if versions is not None:
             present = fetch(
@@ -1438,11 +2050,29 @@ class _Guard:
 
         try:
             self._check_store(fetch, "admission", "open")
+            self._check_owner(connection, "admission", "open")
             self.schema_version = int(fetch("PRAGMA schema_version")[0][0])
         except StateCompatibilityRefused:
             raise
         except (sqlite3.Error, DBAPIError) as exc:
             raise self.refusal(f"the store could not be read: {exc}", operation="open") from exc
+
+    def _check_owner(self, connection, when: str, operation: str | None) -> None:
+        rule = self.profile.owner
+        if rule is None:
+            return
+        # BINARY, whatever the key column's collation is: a key that names an owner only through
+        # case folding names one whose rows the statement check, which compares the owner column
+        # under that column's own collation, would then treat as another owner's.
+        found = connection.exec_driver_sql(
+            f"SELECT 1 FROM {_quote(rule.principals)} "  # noqa: S608 -- the names are the rule's
+            f"WHERE {_quote(rule.key)} = ? COLLATE BINARY",
+            (self.owner,),
+        ).fetchall()
+        if not found:
+            raise self.refusal(
+                f"{when}: the owner {self.owner!r} is not in {rule.principals}", operation
+            )
 
     def _recheck(self, connection) -> None:
         def fetch(sql: str) -> list:
@@ -1580,6 +2210,9 @@ class _Guard:
         state.last_denial = None
         try:
             self._recheck(connection)
+            # Under the writer's lock, so the principal cannot go between this read and the
+            # transaction's writes.
+            self._check_owner(connection, "the write transaction", None)
         except BaseException:
             try:
                 connection.exec_driver_sql("ROLLBACK")
@@ -1588,7 +2221,7 @@ class _Guard:
             raise
         state.write_txn = True
 
-    def _on_statement(self, connection, _cursor, statement, _parameters, _context, _many) -> None:
+    def _on_statement(self, connection, _cursor, statement, parameters, _context, many) -> None:
         state = connection.info.get(_STATE_KEY)
         if state is None:
             raise self.refusal("this connection was not configured for compatibility mode")
@@ -1613,12 +2246,56 @@ class _Guard:
                 "with it; no later write runs outside a transaction"
             )
         else:
-            reason = _write_refusal(tokens)
+            reason = _write_refusal(tokens) or self._owner_refusal(tokens, parameters, many)
             if reason is None:
                 return
         if state.write_txn:
             state.denied = True
         raise self.refusal(reason)
+
+    def _owner_refusal(
+        self, tokens: list[tuple[str, str]], parameters: Any, many: bool
+    ) -> str | None:
+        # The authorizer sees the table and columns a write touches, never the values it writes or
+        # the rows its WHERE clause picks, so the owner of an owned row is checked here.
+        rule = self.profile.owner
+        target = None if rule is None else _write_target(tokens)
+        if rule is None or target is None:
+            return None
+        verb, table, after = target
+        if table is None:
+            return f"the table this {verb.upper()} writes cannot be read"
+        if table not in self.owned_tables:
+            return None
+        if verb == "insert":
+            what = f"an INSERT into {table}"
+            values = _insert_owner_values(tokens, after, rule.column)
+            if isinstance(values, str):
+                return f"{what} {values}; a default is never the owner"
+        else:
+            what = f"an UPDATE of {table}"
+            values = _update_owner_values(tokens, after, rule.column)
+            if isinstance(values, str):
+                return f"{what} {values}"
+        slots = _placeholders(tokens)
+        rows = _parameter_rows(parameters, many)
+        if slots is None or rows is None:
+            return f"{what} binds its values in a form whose owner cannot be read"
+
+        def bound(first: int, end: int) -> bool:
+            if end != first + 1 or first not in slots:
+                return False
+            at = slots.index(first)
+            return all(
+                len(row) > at and type(row[at]) is str and row[at] == self.owner for row in rows
+            )
+
+        found = [bound(first, end) for first, end in values]
+        if all(found) if verb == "insert" else any(found):
+            return None
+        if verb == "insert":
+            return f"{what} writes the owner column {rule.column} with a value other than the owner"
+        return f"{what} does not restrict its rows to the owner by a bound {rule.column} = ?"
 
     def _on_error(self, context) -> None:
         if isinstance(context.original_exception, StateCompatibilityRefused):
