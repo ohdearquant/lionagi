@@ -2,7 +2,11 @@
 
 - **Status**: Proposed
 - **Kind**: Aspirational
-- **Implementation-status**: not-started
+- **Implementation-status**: partial — the `prompt_caching` option and the provider declaration,
+  the tool section in the stable segment (D2), the system text as its own block (D3), the one-hour
+  mark on the stable segment and the five-minute mark on the turn (D5), and cache writes recorded per
+  lifetime (D6) are shipped; the conversation segment and its mark (D1, D4), the lookback mark, the
+  segment-change count and the multi-round acceptance test (D7) are open
 - **Area**: messages-context
 - **Date**: 2026-10-16
 - **Relations**: amends ADR-0007 D1 (the tool definitions' lifetime), D2 steps 2, 4 and 5, and D4,
@@ -270,9 +274,9 @@ compiler does not emit the native system field. For Anthropic:
   on the previous request's last block, so the next read still finds the previous write.
 
 At most four marks; one-hour marks precede five-minute marks. A mark is placed whatever the length of
-its prefix: one shorter than the model's minimum cacheable length is not cached and adds no cost,
-and the adapter holds no exact token count to compare with the minimum. The lifetimes are settings of
-the model configuration, with these as defaults.
+its prefix: one shorter than the model's minimum cacheable length is not cached, and the adapter
+holds no exact token count to compare with the minimum. The lifetimes are settings of the model
+configuration, with these as defaults.
 
 The option is `prompt_caching` (bool, default False), a field of the endpoint configuration. The
 adapter reads it from that configuration before the request-option filter runs, so a filtered
