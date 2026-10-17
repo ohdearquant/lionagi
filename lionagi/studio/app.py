@@ -144,15 +144,18 @@ def _emit_startup_warnings() -> None:
         if bind_host == "0.0.0.0":  # noqa: S104
             _log.warning(
                 "Studio running WITHOUT authentication on host 0.0.0.0 — "
-                "API requests that carry no browser origin are accepted from any "
+                "API requests with neither Origin nor Sec-Fetch-Site are accepted from any "
                 "network interface. This is unsafe in containers or cloud deployments. "
                 "Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token."
             )
         else:
             _log.warning(
-                "Studio running WITHOUT authentication — a request that carries no Origin "
-                "header is accepted, and browsers send none on some cross-site GET "
-                "requests; a request that carries an Origin from another site is refused. "
+                "Studio running WITHOUT authentication — requests with neither Origin nor "
+                "Sec-Fetch-Site are accepted (CLI, scripts, indistinguishable browsers); "
+                "without Origin, Sec-Fetch-Site none/same-origin pass, "
+                "same-site/cross-site/other/repeated values need the paired bearer; "
+                "Origin outside loopback/the daemon needs the paired bearer. "
+                "Header admission does not prove locality. "
                 "Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token."
             )
 

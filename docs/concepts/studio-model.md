@@ -15,14 +15,16 @@ source checkout can run a local development frontend. In the other modes,
 `--host` sets the bind address and defaults to `127.0.0.1`, so a non-loopback
 value such as `--host 0.0.0.0` exposes the API to other machines.
 
-With `LIONAGI_STUDIO_AUTH_TOKEN` unset, API authentication is disabled: a
-request with no `Origin` header, as from the CLI or a script, can call the
-`/api` endpoints, subject to their normal request validation. Browsers also
-send no `Origin` on some cross-site GET requests, so that admission is a
-property of the request, not proof that the caller is local. A browser page is
-admitted only from a loopback origin, the daemon's own origin, or an origin
-that sends the bearer this launch paired it with; a request that carries an
-`Origin` from another site gets 401. The default `CORS_ORIGINS` lists
+With `LIONAGI_STUDIO_AUTH_TOKEN` unset, a request with neither an `Origin`
+nor a `Sec-Fetch-Site` header, as from the command line or a script, can call
+the `/api` endpoints, subject to their normal request validation. A browser
+request without `Origin` is judged by `Sec-Fetch-Site`: `none` and
+`same-origin` pass; `same-site`, `cross-site`, any other value and repeated
+headers need the bearer this launch paired the page with. A browser that
+sends no `Sec-Fetch-Site` is not told apart from a script. This admission is
+a property of the request, not proof that the caller is local. A request
+carrying `Origin` passes from a loopback origin or the daemon's own origin;
+any other origin needs that bearer or gets 401. The default `CORS_ORIGINS` lists
 `http://localhost:5173`, `http://localhost:3000`, `http://localhost:3765`, and
 `https://lion-studio.khive.ai`, and only a page on one of them can redeem a
 pairing code. Host validation and CORS do not authenticate the caller or

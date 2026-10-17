@@ -50,9 +50,14 @@ Studio" section for the other launch modes (`--docker`, `--no-frontend`, `--dev`
 ## Auth: loopback vs everything else
 
 The default daemon binds `127.0.0.1` and runs without a configured token. Loopback is
-reachable by every local account and process, and a request with no `Origin` header is
-accepted, so the OS user boundary is not a security boundary: set a token before
-starting the daemon on a shared machine. A page on another origin still has to show that
+reachable by every local account and process. A request with neither an `Origin` nor a
+`Sec-Fetch-Site` header, as from the command line or a script, is accepted. A browser
+request without `Origin` is judged by `Sec-Fetch-Site`: `none` and `same-origin` pass;
+`same-site`, `cross-site`, any other value and repeated headers need the launch bearer.
+A browser that sends no `Sec-Fetch-Site` is not told apart from a script. This admission
+is a property of the request, not proof the caller is local, so the OS user boundary is
+not a security boundary: set a token before starting the daemon on a shared machine.
+A page on another origin still has to show that
 `li studio` opened it. With no token, the daemon refuses API requests from a browser
 origin that is neither loopback nor its own unless they carry the bearer of its launch,
 which it keeps in memory only. `li studio` opens the hosted page with a one-time

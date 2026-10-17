@@ -64,12 +64,15 @@ second daemon. Use `--no-open` when you do not want LionAGI to open a browser;
 ### Authentication and browser trust
 
 By default, `LIONAGI_STUDIO_AUTH_TOKEN` is unset and the daemon requires no
-bearer token. A request with no `Origin` header is accepted, and browsers send
-none on some cross-site GET requests, so any client that can reach the port and
-sends no `Origin` can call the API. A browser page is accepted when its origin
-is loopback (`localhost`, `127.0.0.0/8`, or `::1`), when it is the daemon's own
-origin, or when it sends the bearer this launch paired it with. A request that
-carries an `Origin` from another site is refused with 401. `li studio` opens the
+bearer token for a request with neither an `Origin` nor a `Sec-Fetch-Site`
+header, as from the command line or a script. A browser request without
+`Origin` is judged by `Sec-Fetch-Site`: `none` and `same-origin` pass;
+`same-site`, `cross-site`, any other value and repeated headers need the bearer
+this launch paired the page with. A browser that sends no `Sec-Fetch-Site` is
+not told apart from a script. This admission is a property of the request, not
+proof the caller is local. A request carrying `Origin` passes when its origin
+is loopback (`localhost`, `127.0.0.0/8`, or `::1`) or the daemon's own origin;
+any other origin needs that bearer or is refused with 401. `li studio` opens the
 hosted page with a one-time pairing code and the page exchanges that code for
 the bearer, which is how the hosted page works without a token configured. Host
 validation and CORS do not authenticate the caller and are not proof that a
