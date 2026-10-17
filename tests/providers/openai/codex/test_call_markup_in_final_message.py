@@ -1433,9 +1433,151 @@ async def test_a_line_that_is_a_block_of_its_own_pairs_no_backtick_after_it(text
 
 
 def test_code_spans_cost_stays_near_linear_in_the_runs():
-    from lionagi.providers.openai.codex import _strip_code_spans
+    from lionagi.providers.openai.codex import _has_tool_call_markup
 
     segment = "\\`` " * 40_000
     started = time.perf_counter()
-    _strip_code_spans(segment)
+    _has_tool_call_markup(segment)
     assert time.perf_counter() - started < 2.0
+
+
+INVOKE = f'<{BAR}DSML{BAR}invoke name="x">'
+
+
+@pytest.mark.parametrize(
+    ("text", "fails"),
+    [
+        # Fences inside lists and quotes close where their container puts the closer.
+        (f"- ```\n  {INVOKE}\n    ```", False),
+        (f"> - ```\n>   {INVOKE}\n>     ```", False),
+        (f"- > ```\n  > {INVOKE}\n    > ```", False),
+        (f"- > - ```\n  >   {INVOKE}\n  >     ```", False),
+        (f"- - ```\n    {INVOKE}\n    ```", False),
+        (f"- - ~~~ {INVOKE}\n    code\n    ~~~", False),
+        (f"> - ```\n>   {INVOKE}\n>\n>   ```", False),
+        (f"> - ```\n>   {INVOKE}\n> \n>   ```", False),
+        (f"> -\t```\n>   {INVOKE}\n>   ```", False),
+        (f"> - ```\n>   {INVOKE}\n>   ```", False),
+        # A closer indented past its item is fence text; the line after the real closer is prose.
+        (f"- ```xml\n\t   ```\n  ```\n  {INVOKE}\n  ```", True),
+        (f"> - ```xml\n>       ```\n>   ```\n>   {INVOKE}\n>   ```", True),
+        (f"> - ```\n>       ```\n>   ```\n>     {INVOKE}\n>     ```", True),
+        (f"- ```xml\n    ````\n{INVOKE} ```", True),
+        (f"- ```xml\n  ```\n    {INVOKE}", True),
+        # A code span runs across the lines of one paragraph, quoted or not.
+        (f"> `{INVOKE}\n> `", False),
+        (f"> `` `a`\n> {INVOKE} ``", False),
+        (f"`` `a` {INVOKE} ``", False),
+        # Only a bullet, or `1.` / `1)` followed by text, interrupts a paragraph.
+        (f"> The call `\n> 2. {INVOKE} `", False),
+        (f"The call `\n2.\n{INVOKE}`", False),
+        (f"The call `\n1.\n{INVOKE}`", False),
+        (f"Here are the steps:\n2. ```\n   {INVOKE}\n   ```", True),
+        (f"Paragraph\n2.\n    {INVOKE}", True),
+        (f"1. `\n2. {INVOKE} `", True),
+        (f"1) `\n2) {INVOKE} `", True),
+        # A setext underline ends a heading; the paragraph after it is prose.
+        (f"The call `\n-\n{INVOKE}`", True),
+        (f"Stray ` backtick\n---\n{INVOKE}", True),
+        (f"# Heading `\n{INVOKE} `", True),
+        (f"> Heading\n> ===\n>     {INVOKE}", False),
+        (f"> Heading\n> ===\n    {INVOKE}", False),
+        (f"> Heading\n> ===\n    `\n{INVOKE} `", True),
+        # An underline cannot continue a quoted or listed paragraph lazily, so it is text.
+        (f"> Paragraph\n===\n    {INVOKE}", True),
+        (f"- Paragraph\n===\n    {INVOKE}", True),
+        # Indentation is counted in columns from the start of the line.
+        (f"> \t{INVOKE}", True),
+        (f"-\n    {INVOKE}", True),
+        # A quote ends at a line without its marker, and a fence in it ends there too.
+        (f"> ```xml\n{INVOKE} ```", True),
+        (f"> ```xml\n\n> {INVOKE}\n> ```", True),
+    ],
+)
+@pytest.mark.asyncio
+async def test_markup_is_read_where_commonmark_puts_it(text, fails):
+    """Markup fails the turn exactly when CommonMark reads it as prose."""
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is fails, f"read wrongly: {text!r}"
+    assert len(_markup_errors(chunks)) == (1 if fails else 0)
+
+
+@pytest.mark.parametrize(
+    ("text", "fails"),
+    [
+        (f"```\n{INVOKE}", True),
+        (f"```\n{INVOKE}\n", True),
+        (f"```\n\n{INVOKE}\n\n", True),
+        (f"```\n{INVOKE}\n```", False),
+        (f"```\n{INVOKE}\n```\n", False),
+        (f"> ```\n> {INVOKE}", True),
+        (f"> ```\n> {INVOKE}\n> ```", False),
+        (f"- ```\n  {INVOKE}", True),
+        (f"- ```\n  {INVOKE}\n  ```", False),
+        (f"~~~ {INVOKE}\ntext", True),
+        (f"~~~ {INVOKE}\ntext\n~~~", False),
+        (f"```\nUse `{INVOKE}` like this", False),
+        (f"```xml\n    {INVOKE}", False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_fence_that_never_closes_is_read_again_as_markdown(text, fails):
+    """An unclosed fence's information string and text are read as Markdown; a
+    closed fence, however it ends, is code."""
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is fails, f"read wrongly: {text!r}"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f'<`x`{BAR}DSML{BAR}invoke name="x">',
+        f'Ends with <\n\n{BAR}DSML{BAR}invoke name="x">',
+        f'<{BAR}DSML{BAR}\n\ninvoke name="x">',
+    ],
+)
+@pytest.mark.asyncio
+async def test_no_tag_is_pieced_together_across_a_code_span_or_a_block(text):
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is False, f"a tag was pieced together: {text!r}"
+
+
+@pytest.mark.parametrize(
+    ("text", "fails"),
+    [
+        (f"<div>\n{INVOKE}\n</div>", True),
+        (f"<pre>\n{INVOKE}\n</pre>", True),
+        (f'<div>\n&lt;{BAR}DSML{BAR}invoke name="x"&gt;\n</div>', True),
+        (f'<div>\n&lt{BAR}DSML{BAR}invoke name="x"&gt;\n</div>', False),
+        (f"![{INVOKE}](x.png)", True),
+        (f"![`{INVOKE}`](x.png)", False),
+        (f"[{INVOKE}](https://example.com)", True),
+    ],
+)
+@pytest.mark.asyncio
+async def test_raw_html_and_link_text_are_read_as_prose(text, fails):
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is fails, f"read wrongly: {text!r}"
+
+
+@pytest.mark.parametrize(
+    ("text", "fails"),
+    [
+        ("> " * 19 + INVOKE, True),
+        ("> " * 20 + INVOKE, False),
+        ("\n".join("  " * i + "-" for i in range(9)) + " " + INVOKE, True),
+        ("\n".join("  " * i + "-" for i in range(10)) + " " + INVOKE, False),
+    ],
+    ids=["19-quotes", "20-quotes", "9-lists", "10-lists"],
+)
+@pytest.mark.asyncio
+async def test_text_at_the_nesting_limit_is_not_read(text, fails):
+    """Text at the parser's nesting limit is not read, which completes the turn
+    as it completed before this check."""
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is fails
