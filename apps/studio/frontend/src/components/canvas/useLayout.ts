@@ -273,12 +273,16 @@ export function foldWideGraph(nodes: Node[], edges: Edge[] = []): Node[] {
   // source's horizontal position in whatever row it lands in, whether that is
   // the next row or one below it.
   //
-  // The chain link at `cut` itself is the one edge this exempts. It is the
-  // fold's own return sweep, the edge the canvas marks as a continuation
-  // (markContinuationEdges below), and it lands at the next row's left edge by
-  // construction. No other edge may cross backwards, so no chord is ever folded
-  // backwards and no chord is ever marked. A break that no other edge crosses
-  // is admissible by this rule.
+  // The chain link at `cut` itself is the one edge this exempts. When the break
+  // is not at the row's own first column, that link is the fold's return sweep:
+  // it leaves the row's last column and re-enters at the next row's left edge,
+  // so its target lands left of its source and the canvas marks it as a
+  // continuation (markContinuationEdges below). A break at the row's first
+  // column (`cut === rowStart`) puts both ends of the link in the same column,
+  // so the link runs straight down and is not marked — correctly, since nothing
+  // turned it around. No other edge may cross backwards, so no chord is ever
+  // folded backwards and no chord is ever marked. A break that no other edge
+  // crosses is admissible by this rule.
   //
   // This replaces the earlier "no other edge may cross at all" test, which a
   // single chord spanning the row defeated outright: with no admissible break

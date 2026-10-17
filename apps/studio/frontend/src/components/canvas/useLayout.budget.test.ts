@@ -145,30 +145,31 @@ function assertFoldInvariants(nodes: Node[], edges: Edge[]) {
   return rowWidths(nodes);
 }
 
-// Re-derive the rule's own row plan over the columns the layout produced and
-// return the rows that exceed FOLD_MAX_ROW_WIDTH while still holding an
-// admissible chain-link break within the fit width. The plan is the fold's:
-// starting at each column, break at the last admissible boundary inside the
-// width bound, else at the first admissible one past it, else run whole to the
-// end. An empty result means the fold is exactly this plan, and therefore every
-// row wider than the bound is a row the rule left whole or had to reach past the
-// bound for — no admissible break was available inside it. A non-empty result
-// would mean a row should have broken earlier than it did.
+// Read the rows the layout ACTUALLY produced and return each one that is wider
+// than FOLD_MAX_ROW_WIDTH while holding an admissible chain-link break inside
+// that bound — a break the rule could have taken and did not. An empty result
+// means every row wider than the bound is a row the rule left whole or had to
+// reach past the bound for, because no admissible break was available inside it.
+//
+// It reads the rows off the folded output rather than re-walking its own
+// recomputed plan, so a row the layout left unfolded is judged as it stands.
+// Recomputing the plan and walking that instead made this helper agree with
+// itself by construction: an unfolded chain was re-planned into rows that fit
+// and reported clean, whatever the layout had done.
 //
 // Columns are recovered from the folded output: each row's leftmost card sits at
 // the shared left margin, a row's internal spacing is its original spacing, and
-// the original pitch is the first positive gap any row shows.
+// the original pitch is the first positive gap any row shows. A row's span is
+// the chain position of its first and last card. The rule's own plan is still
+// re-derived, because deciding whether a crossing edge runs backwards needs to
+// know which row its target lands in.
 function rowsWithAdmissibleBreakInside(nodes: Node[], edges: Edge[]): number[] {
   const rows = foldRows(nodes);
   const columnOf = new Map<string, number>();
-  const rowOf = new Map<string, number>();
-  const rowLocalColumn: number[][] = [];
   let offset = 0;
-  rows.forEach((row, i) => {
+  rows.forEach((row) => {
     const xs = [...new Set(row.map((entry) => Math.round(entry.position.x)))].sort((a, b) => a - b);
-    rowLocalColumn.push(xs.map((x) => x - row[0]!.position.x));
     row.forEach((entry) => {
-      rowOf.set(entry.id, i);
       columnOf.set(entry.id, offset + xs.indexOf(Math.round(entry.position.x)));
     });
     offset += xs.length;
@@ -257,22 +258,39 @@ function rowsWithAdmissibleBreakInside(nodes: Node[], edges: Edge[]): number[] {
     nextRowStart[rowStart] = handover < 0 ? columns : handover;
   }
   const offenders: number[] = [];
-  for (let rowStart = 0; rowStart < columns; ) {
-    const next = nextRowStart[rowStart]!;
-    const width = columnX(next - 1) - columnX(rowStart) + NODE_WIDTH;
-    const rowIndex = rowOf.get([...atColumn.get(rowStart)!][0]!)!;
-    if (width > FOLD_MAX_ROW_WIDTH) {
-      let inside = -1;
-      for (let cut = rowStart; cut < next - 1; cut++) {
-        if (columnX(cut) - columnX(rowStart) + NODE_WIDTH > FOLD_MAX_ROW_WIDTH) break;
-        if (admissible(cut, rowStart)) inside = cut;
+  rows.forEach((row, rowIndex) => {
+    const rowStart = Math.min(...row.map((entry) => columnOf.get(entry.id)!));
+    const rowEnd = Math.max(...row.map((entry) => columnOf.get(entry.id)!));
+    if (columnX(rowEnd) - columnX(rowStart) + NODE_WIDTH <= FOLD_MAX_ROW_WIDTH) return;
+    for (let cut = rowStart; cut < rowEnd; cut++) {
+      if (columnX(cut) - columnX(rowStart) + NODE_WIDTH > FOLD_MAX_ROW_WIDTH) break;
+      if (admissible(cut, rowStart)) {
+        offenders.push(rowIndex);
+        return;
       }
-      if (inside >= 0) offenders.push(rowIndex);
     }
-    rowStart = next;
-  }
+  });
   return offenders;
 }
+
+// The helper above is the oracle every fold assertion in this file rests on,
+// so it needs a case it must reject. A ten-node chain left unfolded in one row
+// is wide enough to need folding and holds five admissible breaks inside the
+// width bound, so the rule could have broken it; a helper that returns no
+// offender for it cannot fail, whatever the layout does.
+describe("rowsWithAdmissibleBreakInside — it reads the rows the layout produced", () => {
+  it("reports an unfolded chain that holds an admissible break inside the width bound", () => {
+    const ids = Array.from({ length: 10 }, (_, index) => `c${index}`);
+    const nodes = ids.map((id, index) => ({
+      ...node(id),
+      position: { x: 28 + 272 * index, y: 24 },
+    }));
+    const edges = ids.slice(1).map((id, index) => edge(ids[index]!, id));
+    // 2658 px wide, and every one of c0|c1 .. c4|c5 is an admissible break
+    // inside the bound: a plain chain link with no other edge crossing it.
+    expect(rowsWithAdmissibleBreakInside(nodes, edges)).toEqual([0]);
+  });
+});
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -528,15 +546,27 @@ describe("bounded graph layout", () => {
   });
 
   it("folds a chained graph with a short chord without any row crossing the bound", () => {
-    // c3->c6 crosses the boundaries around the middle of the row. The boundary
-    // the row reaches its bound at is still admissible because the chord lands
-    // at or right of its source once folded, so the fill breaks there; every
-    // resulting row fits the bound.
+    // c3->c6 crosses the boundary the row first overflows at, c4|c5. That
+    // boundary is NOT admissible: folding there would put c6 one column into
+    // the row beginning at c5 while its source c3 sits three columns into the
+    // row above, so the chord would be drawn running backwards. The fill
+    // therefore takes the last admissible boundary inside the bound instead,
+    // c2|c3 — the chord stays inside the row that boundary starts, so it never
+    // crosses the break — and every resulting row fits the bound:
+    // [c0 c1 c2] [c3..c7] [c8 c9].
     const ids = Array.from({ length: 10 }, (_, index) => `c${index}`);
     const nodes = ids.map(node);
     const edges = ids.slice(1).map((id, index) => edge(ids[index], id));
     edges.push(edge("c3", "c6"));
     const result = getLayoutedElements(nodes, edges, "LR");
+    // The break the row reaches its bound at (c4|c5) is the boundary the chord
+    // would fold backwards, so the row does not take it: it breaks at c2|c3 and
+    // keeps the chord inside the next row.
+    expect(foldRowIds(result.nodes)).toEqual([
+      ["c0", "c1", "c2"],
+      ["c3", "c4", "c5", "c6", "c7"],
+      ["c8", "c9"],
+    ]);
     const rowTops = new Set(result.nodes.map((entry) => Math.round(entry.position.y)));
     expect(rowTops.size).toBeGreaterThan(1);
     for (const w of rowWidths(result.nodes)) expect(w).toBeLessThanOrEqual(1500);
@@ -745,6 +775,40 @@ describe("fold breaks only where the rule admits one", () => {
       rows: [["c0", "c1", "c7", "c2", "c8", "c3", "c9", "c4", "side", "c5", "c6"]],
       marked: [],
       over: [0],
+    },
+    {
+      name: "break at the row's first column",
+      ids: chainIds(10),
+      chords: [["c1", "c3"], ["c3", "c5"], ["c5", "c7"]],
+      // The head of the chain is cut off on its own: c0|c1 is a chain link and
+      // no chord crosses it, so it is admissible and is the last admissible
+      // boundary inside the bound. That break is at the row's first column, so
+      // both ends of the c0->c1 link land in the same column and the link runs
+      // straight down: it is not marked, because nothing turned it around.
+      // Every boundary inside the bound in the row that break starts is crossed
+      // by one of the three chords, so none of them is admissible and the row
+      // stays whole; the next break, c7|c8, is past the bound and is marked.
+      rows: [["c0"], ["c1", "c2", "c3", "c4", "c5", "c6", "c7"], ["c8", "c9"]],
+      marked: ["c7-c8"],
+      over: [1],
+    },
+    {
+      name: "chord across two breaks",
+      ids: chainIds(16),
+      chords: [["c4", "c13"]],
+      // c4->c13 leaves its own row, crosses the break c9|c10, and lands three
+      // columns into the row below that. Deciding whether it runs backwards
+      // there needs the row its target lands in, which is not the row the
+      // break hands over to but the one after it: c13 sits at column 3 of row
+      // 2 against c4's column 0, so the chord still reads forward and both
+      // breaks stay admissible.
+      rows: [
+        ["c0", "c1", "c2", "c3"],
+        ["c4", "c5", "c6", "c7", "c8", "c9"],
+        ["c10", "c11", "c12", "c13", "c14", "c15"],
+      ],
+      marked: ["c3-c4", "c9-c10"],
+      over: [],
     },
     {
       name: "one spanning chord",

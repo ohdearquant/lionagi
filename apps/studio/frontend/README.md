@@ -131,13 +131,16 @@ source's position in the row it lands in. A break no other edge crosses is
 admissible by that rule. A row with no admissible break inside 1500 px runs on
 to its first admissible break past the bound, and a row with no admissible
 break at all stays whole and is left unfolded, because breaking it would draw a
-real dependency as the row boundary. Only the chain link at each break actually
-taken is marked as a continuation; a chord is never marked, whatever it does on
-the canvas. Final correctness tests retain the seven/eight sibling and five/six
-chain boundaries, along with folding on the fallback path. Branch/join
-boundaries and tall graphs still prevent folding. The two visual thresholds do
-not decide Dagre admission, and this work leaves them as they were: they were
-re-checked for geometry, not re-derived from measured layout time.
+real dependency as the row boundary. The chain link at each break actually taken
+is marked as a continuation when the fold turns it around, meaning its target
+lands left of its source; a break at a row's first column leaves both ends of
+the link in the same column, so the link runs straight down and is not marked.
+A chord is never marked, whatever it does on the canvas. Final correctness tests
+retain the seven/eight sibling and five/six chain boundaries, along with folding
+on the fallback path. Branch/join boundaries and tall graphs still prevent
+folding. The two visual thresholds do not decide Dagre admission, and this work
+leaves them as they were: they were re-checked for geometry, not re-derived from
+measured layout time.
 
 There is no hysteresis or position cache across graph changes. Crossing an
 admission boundary can move many existing nodes, and Dagre can also reposition
