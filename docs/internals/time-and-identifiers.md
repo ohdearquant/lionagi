@@ -35,3 +35,8 @@ as UTC; an existing timezone offset is retained. A trailing `Z` is normalized
 before ISO parsing, including on Python 3.10. Numeric strings take precedence
 over ISO parsing: `"20250101"` means epoch seconds, not January 1, 2025.
 Booleans are not timestamps and raise `ValueError`.
+
+Run, team and show imports and the Claude and Codex transcript mirrors use this
+conversion for timestamp fields. Naive ISO strings mean UTC regardless of the
+host timezone. A conversion outside the platform timestamp range falls back to
+the importer's existing filesystem timestamp or missing value.

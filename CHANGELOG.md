@@ -63,6 +63,9 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Changed
 
+- Run, team and show imports and transcript mirrors interpret naive ISO timestamps
+  as UTC and accept numeric epoch strings. Out-of-range timestamp values keep
+  each importer's existing filesystem-time or missing-value fallback.
 - `lionagi.ln.coerce_created_at` rejects booleans, interprets naive ISO strings as
   UTC, and accepts a trailing `Z` on Python 3.10. Numeric strings still parse as
   epoch seconds before ISO dates, including compact strings such as `"20250101"`.

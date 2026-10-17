@@ -17,10 +17,10 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from lionagi.ln import coerce_created_at
 from lionagi.protocols.messages.action_request import ActionRequest
 from lionagi.protocols.messages.action_response import ActionResponse
 from lionagi.protocols.messages.assistant_response import AssistantResponse
@@ -210,8 +210,8 @@ def _ts(iso: str | None) -> float | None:
     if not iso:
         return None
     try:
-        return datetime.fromisoformat(str(iso).replace("Z", "+00:00")).timestamp()
-    except (ValueError, TypeError):
+        return coerce_created_at(iso).timestamp()
+    except (ValueError, TypeError, OverflowError, OSError):
         return None
 
 
