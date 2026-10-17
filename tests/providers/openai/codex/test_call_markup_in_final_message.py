@@ -1006,6 +1006,9 @@ async def test_a_legacy_result_event_text_is_read_before_it_is_trimmed(text, fai
 
     assert session.is_error is fails, f"the legacy result text was misread: {text!r}"
     assert len(_markup_errors(chunks)) == int(fails)
+    if not fails:
+        # Read untrimmed, kept trimmed: the result is the text without its indent.
+        assert session.result == text.strip(), f"the result kept its indent: {session.result!r}"
 
 
 # --- a legacy block list reads output_text blocks too ---
