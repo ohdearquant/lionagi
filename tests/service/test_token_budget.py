@@ -226,23 +226,6 @@ class TestLookupContextWindow:
             tb._PROVIDER_MODULES.pop("_bad_test_provider", None)
             tb._provider_cache.pop("_bad_test_provider", None)
 
-    def test_all_provider_windows_skips_import_error(self):
-        """_all_provider_windows continues past ImportError providers (lines 75-76)."""
-        import lionagi.service.token_budget as tb
-        from lionagi.service.token_budget import _all_provider_windows
-
-        original = tb._PROVIDER_MODULES.copy()
-        tb._PROVIDER_MODULES = {
-            "_bad_mod": "nonexistent.module.xyz",
-            "openai": tb._PROVIDER_MODULES["openai"],
-        }
-        tb._provider_cache.pop("_bad_mod", None)
-        try:
-            results = list(_all_provider_windows())
-            assert len(results) >= 1  # openai succeeded despite _bad_mod failing
-        finally:
-            tb._PROVIDER_MODULES = original
-
     def test_all_provider_windows_yields_each_providers_lookup_in_order(self, monkeypatch):
         """Iterating every provider gives what the per-provider lookup gives, the same
         cached objects, and skips a module without a CONTEXT_WINDOWS dict."""

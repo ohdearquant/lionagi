@@ -1,6 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Endpoints built without a config retry three times, the ``EndpointConfig`` default."""
+"""Endpoints built without a config take the ``EndpointConfig`` default ``max_retries`` of 3,
+a cap on total attempts."""
 
 from importlib import import_module
 
@@ -24,14 +25,14 @@ ENDPOINTS = [
 
 
 @pytest.mark.parametrize(("module", "name"), ENDPOINTS, ids=[name for _, name in ENDPOINTS])
-def test_an_endpoint_without_a_config_retries_three_times(module, name):
+def test_an_endpoint_without_a_config_allows_three_attempts(module, name):
     endpoint = getattr(import_module(module), name)()
 
     assert endpoint.config.max_retries == 3
 
 
 @pytest.mark.parametrize(("module", "name"), ENDPOINTS, ids=[name for _, name in ENDPOINTS])
-def test_an_endpoint_keeps_the_retry_count_it_is_given(module, name):
+def test_an_endpoint_keeps_the_attempt_cap_it_is_given(module, name):
     endpoint = getattr(import_module(module), name)(max_retries=5)
 
     assert endpoint.config.max_retries == 5
