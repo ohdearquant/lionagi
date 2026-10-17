@@ -1546,6 +1546,23 @@ async def test_no_tag_is_pieced_together_across_a_code_span_or_a_block(text):
 
 
 @pytest.mark.parametrize(
+    "text",
+    [
+        f'<{BAR}DSML{BAR}invoke\nname="x">',
+        f'<{BAR}DSML{BAR}invoke  \nname="x">',
+        f'> <{BAR}DSML{BAR}invoke\n> name="x">',
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_tag_written_across_the_lines_of_one_paragraph_fails_the_turn(text):
+    """A line break inside a paragraph reads as a space, so a tag split over two
+    of its lines is still a tag."""
+    chunks, session = await _parse([_agent_message(text), _turn_completed()])
+
+    assert session.is_error is True, f"a tag over two lines was missed: {text!r}"
+
+
+@pytest.mark.parametrize(
     ("text", "fails"),
     [
         (f"<div>\n{INVOKE}\n</div>", True),
