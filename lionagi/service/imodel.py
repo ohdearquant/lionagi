@@ -16,6 +16,7 @@ from lionagi.protocols.generic import ID, Event, EventStatus, Log
 from lionagi.providers._agentic_handlers import RUNTIME_STATE_NAMES
 
 from .connections import AgenticEndpoint, APICalling, Endpoint, match_endpoint
+from .connections.endpoint import _event_reports_call_failure
 from .hooks import (
     HookedEvent,
     HookEvent,
@@ -56,14 +57,6 @@ def _terminal_stream_error(api_call: APICalling) -> BaseException | None:
     if isinstance(err, BaseException):
         return err
     return RuntimeError(str(err) if err is not None else "stream failed without a recorded cause")
-
-
-# The event types that say the call itself failed: the Responses API's
-# ``response.failed`` and Codex's ``turn.failed``. A bare ``failed`` is read the same
-# way, although no provider in this package sends one. Any other type ending in
-# ``.failed``, such as ``response.mcp_call.failed``, is read as about an item inside the
-# call; a type that ends in ``failed`` without the dot is read like any other event.
-_CALL_FAILED_EVENT_TYPES = frozenset({"response.failed", "turn.failed", "failed"})
 
 
 class iModel:  # noqa: N801
@@ -370,33 +363,10 @@ class iModel:  # noqa: N801
     def _event_failed(event: Any) -> bool:
         """Whether a provider event or response says the call failed.
 
-        The event counts as failed when its type is one that says the call itself
-        failed (``_CALL_FAILED_EVENT_TYPES``). Any other type ending in ``.failed``,
-        such as ``response.mcp_call.failed``, is read as about an item inside the call
-        and does not count, whatever else the event carries. Otherwise it counts when
-        the event itself, its ``message`` or its ``response`` has an ``error`` or
-        ``is_error`` that is set, a ``status`` of ``failed``, or a choice whose
-        ``finish_reason`` is ``error``.
+        The rule is the endpoint's (``_event_reports_call_failure``), so the chunk the
+        endpoint marks ``call_failed`` and the event read here agree.
         """
-        if not isinstance(event, dict):
-            return False
-        event_type = str(event.get("type", ""))
-        if event_type in _CALL_FAILED_EVENT_TYPES:
-            return True
-        if event_type.endswith(".failed"):
-            return False
-        for holder in (event, event.get("message"), event.get("response")):
-            if not isinstance(holder, dict):
-                continue
-            if holder.get("error") or holder.get("is_error") or holder.get("status") == "failed":
-                return True
-            choices = holder.get("choices")
-            if isinstance(choices, list) and any(
-                isinstance(choice, dict) and choice.get("finish_reason") == "error"
-                for choice in choices
-            ):
-                return True
-        return False
+        return _event_reports_call_failure(event)
 
     @staticmethod
     def _reports_failure(value: Any) -> bool:
@@ -430,8 +400,12 @@ class iModel:  # noqa: N801
         stream chunk keeps the provider event under ``metadata["raw"]``, where
         the model sits at the top level (chat completion chunks), under
         ``message`` (Anthropic ``message_start``) or under ``response``
-        (Responses events). Result chunks are never read: a CLI result chunk is
-        the run record, which may name the requested model. A chunk or response
+        (Responses events). Result chunks are not read: a CLI result chunk is
+        the run record, which may name the requested model. The one result chunk
+        read is the Responses API's own ``response.completed`` event, kept under
+        ``metadata["raw"]`` by the HTTP converter: it is the provider's terminal
+        event, and for a stream that named its model nowhere earlier it is the only
+        report. A chunk or response
         that says the call failed (see ``_reports_failure``) is never read
         either. A call cut short rather than refused is read, because the model
         it names is the one that ran: an incomplete response (a content filter
@@ -441,10 +415,15 @@ class iModel:  # noqa: N801
         if iModel._reports_failure(value):
             return None
         if isinstance(value, StreamChunk):
-            if value.type not in ("system", "text"):
-                return None
             metadata = value.metadata if isinstance(value.metadata, dict) else {}
             raw = metadata.get("raw")
+            provider_terminal = (
+                value.type == "result"
+                and isinstance(raw, dict)
+                and raw.get("type") == "response.completed"
+            )
+            if value.type not in ("system", "text") and not provider_terminal:
+                return None
             if isinstance(raw, dict):
                 holders = [raw, raw.get("message"), raw.get("response")]
             elif value.type == "system":
@@ -521,10 +500,13 @@ class iModel:  # noqa: N801
         if self.executor.processor._concurrency_sem:
             async with self.executor.processor._concurrency_sem:
                 stream_error = None
+                failed = False
                 try:
                     async for i in api_call.stream():
-                        if self._reports_failure(i):
-                            # A failure voids any model read before it.
+                        if failed or self._reports_failure(i):
+                            # A failure voids any model read before it, and no chunk after
+                            # it names one: the call failed whatever came next.
+                            failed = True
                             served_model = None
                         else:
                             reported_model = self._reported_served_model(i)
@@ -553,9 +535,11 @@ class iModel:  # noqa: N801
                     raise ValueError(f"Failed to stream API call: {stream_error}") from stream_error
         else:
             stream_error = None
+            failed = False
             try:
                 async for i in api_call.stream():
-                    if self._reports_failure(i):
+                    if failed or self._reports_failure(i):
+                        failed = True
                         served_model = None
                     else:
                         reported_model = self._reported_served_model(i)

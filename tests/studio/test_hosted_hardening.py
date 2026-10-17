@@ -153,6 +153,22 @@ class TestHostHeaderValidation:
         resp = client.get("/api/sessions/", headers={"Host": "evil.example.com"})
         assert resp.status_code == 400
 
+    def test_the_wildcard_bind_host_is_refused_on_an_api_origin_request(
+        self, monkeypatch, tmp_path, make_client
+    ):
+        """A page whose origin is the wildcard it was bound to does not get the
+        API: `::` is not a name a browser opens Studio at, so a request naming it
+        as its own Host is refused before any origin is considered."""
+        monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+        monkeypatch.setenv("LIONAGI_STUDIO_HOST", "::")
+        client = make_client()
+
+        resp = client.get(
+            "/api/plugins", headers={"Host": "[::]:8765", "Origin": "http://[::]:8765"}
+        )
+
+        assert resp.status_code == 400
+
     def test_configured_non_loopback_bind_host_accepted(self, monkeypatch, tmp_path, make_client):
         """When the operator explicitly binds to a routable host/hostname,
         that value (with any port) is accepted, alongside loopback."""
@@ -170,6 +186,150 @@ class TestHostHeaderValidation:
 
         resp = client.get("/health", headers={"Host": "0.0.0.0:8765"})
         assert resp.status_code == 400
+
+    @pytest.mark.parametrize(
+        ("bind_host", "refused_hosts"),
+        [
+            ("0.0.0.0", ["0.0.0.0:8765", "0.0.0.0"]),
+            ("::", ["[::]:8765", "[::]"]),
+        ],
+    )
+    def test_an_unspecified_bind_host_is_refused_for_every_spelling(
+        self, monkeypatch, tmp_path, make_client, bind_host, refused_hosts
+    ):
+        """An unspecified address (`0.0.0.0`, `::`) binds every interface; it is
+        never a name a page is opened at, so it is not an admitted Host in either
+        spelling. Admitting it would let any page reach the API by naming the
+        wildcard, and would leave the published-URL checks unable to fail."""
+        monkeypatch.setenv("LIONAGI_STUDIO_HOST", bind_host)
+        client = make_client()
+
+        for refused in refused_hosts:
+            resp = client.get("/health", headers={"Host": refused})
+            assert resp.status_code == 400, f"{refused} was admitted with {bind_host!r} set"
+
+    @pytest.mark.parametrize(
+        ("bind_host", "admitted", "refused"),
+        [
+            (
+                "[2001:db8::1]",
+                ["[2001:db8::1]:8765", "[2001:0db8::1]:8765", "[2001:DB8::1]"],
+                ["[2001:db8::2]:8765", "192.168.1.5:8765", "2001:db8::1:8765"],
+            ),
+            (
+                "2001:0db8::1",
+                ["[2001:db8::1]:8765", "[2001:0db8::1]:8765"],
+                ["[2001:db8::2]:8765"],
+            ),
+            (
+                " 192.168.1.5 ",
+                ["192.168.1.5:8765", "192.168.1.5"],
+                ["192.168.1.6:8765", "localhost:8765.example.com"],
+            ),
+            (
+                "[192.168.1.5]",
+                ["192.168.1.5:8765"],
+                ["192.168.1.6:8765"],
+            ),
+            (
+                "[fe80::1]",
+                ["[fe80::1]:8765", "[fe80:0000::1]:8765"],
+                ["[fe80::2]:8765", "fe80::1:8765"],
+            ),
+            (
+                "::ffff:192.168.1.5",
+                ["192.168.1.5:8765", "[::ffff:c0a8:105]:8765", "[::ffff:7f00:1]"],
+                # A dotted address inside brackets stays refused at the grammar, and
+                # the mapped address of another IPv4 address is another address.
+                ["192.168.1.6:8765", "[::ffff:c0a8:106]:8765", "[::ffff:192.168.1.5]:8765"],
+            ),
+        ],
+    )
+    def test_a_bind_address_admits_its_own_spellings_and_nothing_else(
+        self, monkeypatch, tmp_path, make_client, bind_host, admitted, refused
+    ):
+        """The Host guard judges the address a Host names, not how it is spelled.
+
+        A bind written with brackets, in a non-canonical IPv6 spelling or as an
+        IPv4-mapped address used to widen nothing, because the raw value was added
+        to the admitted set while the request's Host was parsed into another
+        string: a browser sending the address it was given got 400.
+        """
+        monkeypatch.setenv("LIONAGI_STUDIO_HOST", bind_host)
+        client = make_client()
+
+        for host in admitted:
+            resp = client.get("/health", headers={"Host": host})
+            assert resp.status_code == 200, f"{host!r} was refused with {bind_host!r} set"
+        for host in refused:
+            resp = client.get("/health", headers={"Host": host})
+            assert resp.status_code == 400, f"{host!r} was admitted with {bind_host!r} set"
+
+    @pytest.mark.parametrize(
+        "bind_host",
+        ["[2001:db8::1]", " 192.168.1.5 ", "::ffff:192.168.1.5", "[fe80::1]", ""],
+    )
+    def test_a_bind_address_still_admits_the_loopback_names(
+        self, monkeypatch, tmp_path, make_client, bind_host
+    ):
+        """The bind address is added to the loopback names, not instead of them."""
+        monkeypatch.setenv("LIONAGI_STUDIO_HOST", bind_host)
+        client = make_client()
+
+        for host in ("localhost:8765", "127.0.0.1:8765", "[::1]:8765"):
+            resp = client.get("/health", headers={"Host": host})
+            assert resp.status_code == 200, f"{host!r} was refused with {bind_host!r} set"
+
+    @pytest.mark.parametrize(
+        ("bind_host", "refused"),
+        [
+            ("[0:0:0:0:0:0:0:0]", ["[::]:8765", "[::]", "[0:0:0:0:0:0:0:0]:8765"]),
+            ("[0.0.0.0]", ["0.0.0.0:8765", "0.0.0.0", "[0.0.0.0]:8765"]),
+            ("::ffff:0.0.0.0", ["0.0.0.0:8765", "0.0.0.0", "[::ffff:0.0.0.0]:8765"]),
+            ("[]", ["[]:8765", "0.0.0.0:8765"]),
+        ],
+    )
+    def test_an_unspecified_bind_host_is_unspecified_in_every_spelling(
+        self, monkeypatch, tmp_path, make_client, bind_host, refused
+    ):
+        """A wildcard written another way is still a wildcard: it binds every
+        interface, so it is still not a Host a page is opened at, and it must not
+        widen the admitted set to include its own spelling."""
+        monkeypatch.setenv("LIONAGI_STUDIO_HOST", bind_host)
+        client = make_client()
+
+        for host in refused:
+            resp = client.get("/health", headers={"Host": host})
+            assert resp.status_code == 400, f"{host!r} was admitted with {bind_host!r} set"
+
+    @pytest.mark.parametrize(
+        ("bind_host", "host_header"),
+        [
+            ("[2001:db8::1]", "[2001:db8::1]:8765"),
+            ("2001:0db8::1", "[2001:0db8::1]:8765"),
+            ("::ffff:192.168.1.5", "[::ffff:c0a8:105]:8765"),
+            (" 192.168.1.5 ", "192.168.1.5:8765"),
+        ],
+    )
+    def test_a_tokenless_origin_naming_the_request_host_is_accepted(
+        self, monkeypatch, tmp_path, make_client, bind_host, host_header
+    ):
+        """A page the daemon itself serves sends its own authority as its Origin.
+
+        The Origin rule already unwraps an IPv4-mapped address on its loopback
+        branch, so the same-origin branch is the one exercised here: it compares
+        the Origin's authority with the request's Host, as the SPA on a daemon
+        bound to another address does.
+        """
+        monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+        monkeypatch.setenv("LIONAGI_STUDIO_HOST", bind_host)
+        client = make_client()
+
+        resp = client.get(
+            _UNROUTED, headers={"Host": host_header, "Origin": f"http://{host_header}"}
+        )
+
+        assert resp.status_code == 404, resp.text
 
     @pytest.mark.parametrize(
         "malformed_host",
