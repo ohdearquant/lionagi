@@ -9,7 +9,6 @@ of a terminal state, and the per-run locking/outcome contract.
 from __future__ import annotations
 
 import contextlib
-import copy
 import json
 import logging
 import math
@@ -27,6 +26,7 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
+from lionagi import ln
 from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.ln._proc import (
     CREATE_TIME_TOLERANCE,
@@ -480,7 +480,7 @@ def _locked_job(run_id: str) -> Iterator[_GuardedJob]:
     try:
         record, state = _read_job_state(run_id)
         guard = _GuardedJob(record, state)
-        before = copy.deepcopy(record)
+        before = ln.copy(record)
         yield guard
         if guard.record is not None and guard.record != before:
             _write_job(guard.record)

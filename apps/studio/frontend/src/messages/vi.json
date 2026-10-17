@@ -666,6 +666,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "Không tải được lần chạy gần đây",
     "title": "lịch chạy",
     "subtitle": "tự động hóa cố định trên cron, interval và trigger GitHub",
     "calendar": "lịch",

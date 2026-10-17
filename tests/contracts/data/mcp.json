@@ -1035,7 +1035,7 @@
               "play",
               "command"
             ],
-            "description": "Narrow the table to one kind of entity: session, invocation, show or play. `command` narrows to invocations launched as a command action.",
+            "description": "Narrow the table to one kind of entity: session, invocation, show or play. `command` narrows to invocations launched as a command action. Use `session` for flow runs, or `invocation` for registered invocation records.",
             "x-flag": "--type",
             "x-aliases": [
               "-t"
@@ -1097,7 +1097,7 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Running flow, playbook run, or agent leg to message, by session, invocation, play, or run id (full, or an unambiguous prefix).",
+            "description": "Running flow, playbook run, or agent leg to message, by session, invocation, play, or run id (exact, an unambiguous 8-character hex prefix, or an unambiguous run-id prefix through the T after its date).",
             "x-positional": true
           },
           "text": {
@@ -1130,7 +1130,7 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Running flow to pause, by session, invocation, play, or run id (full, or an unambiguous prefix). The pause lands at the next op boundary, not mid-op.",
+            "description": "Running flow to pause, by session, invocation, play, or run id (full, an unambiguous 8-character hex prefix, or an unambiguous run-id prefix through the T after its date). In-flight operations are not interrupted.",
             "x-positional": true
           }
         },
@@ -1197,7 +1197,7 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Paused flow to release, by session, invocation, play, or run id (full, or an unambiguous prefix).",
+            "description": "Paused flow to release, by session, invocation, play, or run id (full, an unambiguous 8-character hex prefix, or an unambiguous run-id prefix through the T after its date).",
             "x-positional": true
           }
         },
