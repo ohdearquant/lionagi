@@ -102,7 +102,7 @@ async def open_db(path: str) -> AsyncIterator[aiosqlite.Connection]:
     # connections this way would otherwise never say which timeout it uses.
     # The announcement is once per process, so two call sites is one line.
     _state_engine.announce_busy_timeout()
-    async with aiosqlite.connect(path) as db:
+    async with aiosqlite.connect(path, factory=_state_engine._RollbackOnCloseConnection) as db:
         _ACTIVE_CONNECTIONS += 1
         try:
             await db.execute("PRAGMA journal_mode = WAL")
