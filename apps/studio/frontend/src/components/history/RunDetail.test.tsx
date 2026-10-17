@@ -3358,11 +3358,16 @@ describe("history/RunDetail.tsx — a response for a run the reader has left", (
   }
 
   async function mount() {
-    const [{ getSession }, { default: RunDetail }] = await Promise.all([
+    const [{ getSession, getInvocation }, { default: RunDetail }] = await Promise.all([
       import("@/lib/api"),
       import("./RunDetail"),
     ]);
     vi.mocked(getSession).mockReset();
+    // A resume watch polls the invocation it was accepted for, so a call one
+    // test leaves behind would let a later test read its own resume as
+    // accepted on an earlier visit's poll. Reset beside getSession: nothing in
+    // the vitest config resets mocks between tests.
+    vi.mocked(getInvocation).mockReset();
     const container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -4155,10 +4160,18 @@ describe("history/RunDetail.tsx — a response for a run the reader has left", (
     }
   });
 
-  it("a resume accepted on one run does not replace the run the reader switched to", async () => {
+  it("a resume refresh that answers for another run does not replace the run on screen", async () => {
     const h = await mount();
+    const { getInvocation } = await import("@/lib/api");
+    // The watch's invocation poll is not what this case is about; its read
+    // fails so the poll retries on its own timer rather than reading the
+    // session a third time.
+    vi.mocked(getInvocation).mockRejectedValue(new Error("no invocation in this test"));
     vi.mocked(h.getSession)
+      // The run the reader is on.
       .mockResolvedValueOnce(runA as never)
+      // The eager refresh the accepted resume asks for, answering with a
+      // different run's detail than the one it was asked about.
       .mockResolvedValueOnce(runB as never);
     try {
       await h.render("run-a");
@@ -4166,12 +4179,11 @@ describe("history/RunDetail.tsx — a response for a run the reader has left", (
       const acceptedOnRunA = resumeRunProps.current;
       expect(acceptedOnRunA, "setup: the resume control was rendered").not.toBeNull();
 
-      await h.render("run-b");
-      expect(h.container.textContent).toContain("second-run-name");
-
-      // The reader accepts a resume on the first run only after switching
-      // away. That run is no longer the one this pane is for, so its refresh
-      // is not asked for at all and there is nothing left to land here.
+      // The resume is accepted while this run is still the one on screen, so
+      // the refresh it starts belongs to this visit and its guards pass. The
+      // snapshot it carries describes a different run: writing it here would
+      // put that run's name and rows under the one the reader is looking at,
+      // so the pane must keep the run it has.
       await act(async () => {
         void acceptedOnRunA?.onResumed({ run_id: "run-a", invocation_id: "inv-1" });
         await Promise.resolve();
@@ -4179,9 +4191,9 @@ describe("history/RunDetail.tsx — a response for a run the reader has left", (
       await h.flush();
 
       expect(h.getSession).toHaveBeenCalledTimes(2);
-      expect(h.container.textContent).toContain("second-run-name");
-      expect(h.container.textContent).not.toContain("first-run-name");
-      expect(h.container.textContent).not.toContain("first-branch");
+      expect(h.container.textContent).toContain("first-run-name");
+      expect(h.container.textContent).not.toContain("second-run-name");
+      expect(h.container.textContent).not.toContain("second-branch");
     } finally {
       act(() => h.root.unmount());
       h.container.remove();
