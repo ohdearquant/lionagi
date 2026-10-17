@@ -11,7 +11,6 @@ carries by committing a settings line. Every mutator here goes through
 from __future__ import annotations
 
 import contextlib
-import copy
 import os
 import sys
 from pathlib import Path
@@ -19,6 +18,7 @@ from typing import Any
 
 import yaml
 
+from lionagi import ln
 from lionagi._paths import ensure_lionagi_dir
 
 if sys.platform == "win32":
@@ -166,7 +166,7 @@ def locked_user_settings():
         try:
             fp.seek(0)
             data = _load_yaml_dict(fp.read())
-            before = copy.deepcopy(data)
+            before = ln.copy(data)
             yield data
             if data == before:
                 return
