@@ -39,6 +39,7 @@ from lionagi.config import settings
 from lionagi.libs.path_safety import check_path_safe as _check_path_safe
 from lionagi.ln import json_dumps as _json_dumps
 from lionagi.ln.concurrency import CancelScope, Lock, get_cancelled_exc_class, run_sync, shield
+from lionagi.ln.types import SingletonType
 from lionagi.state.compat import (
     _LINEAGE_KEY,
     CompatibilityProfile,
@@ -154,10 +155,13 @@ _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
 
 
-class NoCursorClaim:
+class NoCursorClaim(SingletonType):
     """The type of :data:`NO_CURSOR_CLAIM`, so a claim is not typed as ``Any`` end to end."""
 
     __slots__ = ()
+
+    def __bool__(self) -> bool:
+        return True
 
     def __repr__(self) -> str:
         return "NO_CURSOR_CLAIM"
