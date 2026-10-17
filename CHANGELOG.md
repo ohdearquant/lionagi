@@ -121,6 +121,22 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Fixed
 
+- A streamed HTTP call whose provider said, inside a stream it had accepted with HTTP 200, that
+  the call failed (an `error` event, `response.failed` with or without a nested error, a chat
+  completion chunk carrying an error) ended `COMPLETED`, so neither `iModel.stream()` nor a direct
+  `APICalling.stream()` caller saw a failure. The HTTP converter now marks such a chunk
+  `call_failed`; the chunk is still delivered, and once the stream ends the call fails with the new
+  `ProviderStreamError` (status `FAILED`), which `iModel.stream()` raises as it does other stream
+  failures. An item failure inside a call (`response.mcp_call.failed`) still leaves it
+  `COMPLETED`, and `Endpoint.stream()` itself still yields the marked chunk without raising.
+- An SSE event that named itself only in its `event:` field (`event: error` with a body holding
+  just the message) lost that name, so the error read as an ordinary event. The name now stands in
+  for a `type` the JSON body lacks (never one it carries), and the chunk records it as
+  `sse_event`. A stream that separates events without blank lines converts the waiting event under
+  its own name before the next `event:` line.
+- A stream that named its served model only on the Responses API's `response.completed` event
+  recorded none. That provider event is now read (other result chunks, such as a CLI run record,
+  still are not), and once a stream reports a failure no later chunk restores a served model.
 - A read-only `StateDB` open of a store whose path contains `#` or `%` opened another file: SQLite
   read the path as a URI, so `#` started a fragment, which also dropped read-only mode and created
   that file, and `%` started an escape. The path is now passed as a file URI, so it names the file.

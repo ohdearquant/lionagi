@@ -52,6 +52,14 @@ response. `provider_metadata["served_model"]` describes whichever call finished
 last; when several calls share one `iModel` concurrently, it says nothing about
 a particular call. Non-CLI session lookup reads `provider_metadata["session_id"]`.
 
+A provider can accept a streamed HTTP call and then say, inside the stream, that the
+call failed (an `error` event, `response.failed`). The chunk that says so is marked
+`call_failed` in its metadata and still delivered; when the stream ends the call fails
+with `ProviderStreamError`, so its status is `FAILED` and `iModel.stream()` raises
+`ValueError` from that cause. A failure of one item inside the call (such as
+`response.mcp_call.failed`) does not fail the call. Once a stream reports a failure,
+no model named after it is recorded as served.
+
 ## Endpoint types
 
 ### Chat / LLM

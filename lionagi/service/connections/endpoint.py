@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel
@@ -23,6 +24,71 @@ from .endpoint_config import AUTHORIZATION_KWARG_NAMES, EndpointConfig
 from .header_factory import HeaderFactory
 
 _CONFIGURED_TIMEOUT = object()
+
+# The event types that say the call itself failed: the Responses API's
+# ``response.failed`` and Codex's ``turn.failed``. A bare ``failed`` is read the same
+# way, although no provider in this package sends one. Any other type ending in
+# ``.failed``, such as ``response.mcp_call.failed``, is read as about an item inside the
+# call; a type that ends in ``failed`` without the dot is read like any other event.
+_CALL_FAILED_EVENT_TYPES = frozenset({"response.failed", "turn.failed", "failed"})
+
+
+def _event_reports_call_failure(event: Any) -> bool:
+    """Whether a provider event or response says the call failed.
+
+    The event counts as failed when its type is one that says the call itself
+    failed (``_CALL_FAILED_EVENT_TYPES``). Any other type ending in ``.failed``,
+    such as ``response.mcp_call.failed``, is read as about an item inside the call
+    and does not count, whatever else the event carries. Otherwise it counts when
+    the event itself, its ``message`` or its ``response`` has an ``error`` or
+    ``is_error`` that is set, a ``status`` of ``failed``, or a choice whose
+    ``finish_reason`` is ``error``.
+    """
+    if not isinstance(event, dict):
+        return False
+    event_type = str(event.get("type", ""))
+    if event_type in _CALL_FAILED_EVENT_TYPES:
+        return True
+    if event_type.endswith(".failed"):
+        return False
+    for holder in (event, event.get("message"), event.get("response")):
+        if not isinstance(holder, dict):
+            continue
+        if holder.get("error") or holder.get("is_error") or holder.get("status") == "failed":
+            return True
+        choices = holder.get("choices")
+        if isinstance(choices, list) and any(
+            isinstance(choice, dict) and choice.get("finish_reason") == "error"
+            for choice in choices
+        ):
+            return True
+    return False
+
+
+def _call_failure_detail(chunk: StreamChunk) -> str:
+    """What a chunk marked ``call_failed`` says went wrong, for the error that ends the call."""
+    raw = chunk.metadata.get("raw")
+    if isinstance(raw, dict):
+        for holder in (raw, raw.get("response")):
+            if not isinstance(holder, dict):
+                continue
+            error = holder.get("error")
+            if isinstance(error, dict) and error.get("message"):
+                return str(error["message"])
+            if isinstance(error, str) and error:
+                return error
+        if raw.get("message"):
+            return str(raw["message"])
+        return f"provider event {raw.get('type') or 'without a type'}"
+    return chunk.content or "provider reported a failed call"
+
+
+@dataclass(slots=True)
+class _SSEFrame:
+    """One server-sent event being assembled: its data lines and its ``event:`` name."""
+
+    data: list[str] = field(default_factory=list)
+    event: str | None = None
 
 
 class _NonRetryableClientError(Exception):
@@ -696,62 +762,75 @@ class Endpoint:
                     )
 
                 pending = ""
-                event_data: list[str] = []
+                frame = _SSEFrame()
                 async for raw in response.content:
                     if not raw:
                         continue
                     pending += raw.decode("utf-8")
                     while "\n" in pending:
                         line, pending = pending.split("\n", 1)
-                        chunk = self._stream_line_to_chunk(line, event_data)
+                        chunk = self._stream_line_to_chunk(line, frame)
                         if chunk is not None:
                             yield chunk
 
                 if pending:
-                    chunk = self._stream_line_to_chunk(pending, event_data)
+                    chunk = self._stream_line_to_chunk(pending, frame)
                     if chunk is not None:
                         yield chunk
-                if event_data:
-                    yield self._line_to_stream_chunk("\n".join(event_data))
+                if frame.data:
+                    yield self._dispatch_sse_frame(frame)
+
+    def _dispatch_sse_frame(self, frame: _SSEFrame) -> StreamChunk:
+        """Convert the event *frame* holds and start a new one."""
+        data = "\n".join(frame.data)
+        name = frame.event
+        frame.data.clear()
+        frame.event = None
+        return self._line_to_stream_chunk(data, sse_event=name)
 
     def _stream_line_to_chunk(
         self,
         line: str,
-        event_data: list[str],
+        frame: _SSEFrame,
     ) -> StreamChunk | None:
         """Parse one HTTP stream line, handling SSE framing when present."""
         text = line.rstrip("\r")
         stripped = text.strip()
 
         if not stripped:
-            if not event_data:
+            if not frame.data:
+                frame.event = None
                 return None
-            data = "\n".join(event_data)
-            event_data.clear()
-            return self._line_to_stream_chunk(data)
+            return self._dispatch_sse_frame(frame)
 
         if stripped.startswith(":"):
             return None
 
-        if stripped.startswith(("event:", "id:", "retry:")):
+        if stripped.startswith("event:"):
+            # A stream without blank lines between events starts the next one here, so a
+            # complete event still waiting is converted under its own name first.
+            previous = None
+            if frame.data and self._looks_like_complete_stream_data(frame.data):
+                previous = self._dispatch_sse_frame(frame)
+            frame.event = stripped.removeprefix("event:").strip() or None
+            return previous
+
+        if stripped.startswith(("id:", "retry:")):
             return None
 
         if stripped.startswith("data:"):
             data = stripped.removeprefix("data:")
             if data.startswith(" "):
                 data = data[1:]
-            if event_data and self._looks_like_complete_stream_data(event_data):
-                previous = "\n".join(event_data)
-                event_data.clear()
-                event_data.append(data)
-                return self._line_to_stream_chunk(previous)
-            event_data.append(data)
+            if frame.data and self._looks_like_complete_stream_data(frame.data):
+                previous = self._dispatch_sse_frame(frame)
+                frame.data.append(data)
+                return previous
+            frame.data.append(data)
             return None
 
-        if event_data:
-            data = "\n".join(event_data)
-            event_data.clear()
-            return self._line_to_stream_chunk(data)
+        if frame.data:
+            return self._dispatch_sse_frame(frame)
 
         return self._line_to_stream_chunk(stripped)
 
@@ -766,8 +845,19 @@ class Endpoint:
             return False
         return True
 
-    def _line_to_stream_chunk(self, line: str) -> StreamChunk:
-        """Convert a generic HTTP stream line into the StreamChunk contract."""
+    def _line_to_stream_chunk(self, line: str, sse_event: str | None = None) -> StreamChunk:
+        """Convert a generic HTTP stream line into the StreamChunk contract.
+
+        *sse_event* is the name the event's SSE ``event:`` field gave it. It stands in
+        for a ``type`` the JSON body does not carry (``event: error`` with a body that
+        holds only the message), and never replaces one the body does carry.
+
+        A chunk whose event says the call itself failed (an ``error`` event, or what
+        ``_event_reports_call_failure`` reads as one) is marked ``call_failed`` in its
+        metadata. The chunk keeps the type it converts to, so its content still reaches
+        the consumer; ``APICalling`` reads the mark and fails the call when the stream
+        ends.
+        """
         data = line
         if line.startswith("data:"):
             data = line.removeprefix("data:").strip()
@@ -793,10 +883,19 @@ class Endpoint:
                 metadata={"raw": event},
             )
 
+        named_by_sse = bool(sse_event) and "type" not in event
+        if named_by_sse:
+            event = {**event, "type": sse_event}
+
         chunk = self._event_to_stream_chunk(event)
-        if chunk is not None:
-            return chunk
-        return StreamChunk(type="system", metadata={"raw": event})
+        if chunk is None:
+            chunk = StreamChunk(type="system", metadata={"raw": event})
+        if named_by_sse:
+            # The raw event carries the type the SSE field gave it; say so.
+            chunk.metadata["sse_event"] = sse_event
+        if (chunk.type == "error" and chunk.is_error) or _event_reports_call_failure(event):
+            chunk.metadata["call_failed"] = True
+        return chunk
 
     def _event_to_stream_chunk(self, event: dict) -> StreamChunk | None:
         """Best-effort conversion for OpenAI-compatible and SSE JSON events."""
