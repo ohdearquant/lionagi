@@ -148,7 +148,6 @@ async def _stream_with_liveness(
     if liveness_timeout is None and idle_timeout is None:
         api_call = await model.create_event(**kw)
         api_call_holder.append(api_call)
-        await model.executor.append(api_call)
         agen = _stream_with_deadline(model, api_call, stream_deadline)
         try:
             async for chunk in agen:
@@ -179,7 +178,6 @@ async def _stream_with_liveness(
     attempts = max_attempts if liveness_timeout is not None else 1
     for attempt in range(attempts):
         api_call = await model.create_event(**kw)
-        await model.executor.append(api_call)
         if api_call_holder:
             api_call_holder[0] = api_call
         else:

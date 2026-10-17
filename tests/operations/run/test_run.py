@@ -10,6 +10,7 @@ import contextlib
 import json
 import types
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 from pydantic import BaseModel
@@ -23,6 +24,7 @@ from lionagi.operations.run.run import (
     run_and_collect,
 )
 from lionagi.operations.types import ChatParam
+from lionagi.protocols.generic.progression import Progression
 from lionagi.protocols.messages import (
     ActionRequest,
     ActionResponse,
@@ -1039,7 +1041,9 @@ async def test_imodel_stream_propagates_cancellation():
     m.endpoint = SlowEndpoint()
 
     api_call = AsyncMock(spec=APICalling)
-    api_call.id = "test-api-call-id"
+    # A real UUID: Progression.exclude() rejects anything else, which would
+    # make the pending-queue bookkeeping below a no-op.
+    api_call.id = uuid4()
     api_call.metadata = {}
     api_call.execution = AsyncMock()
     api_call.execution.status = EventStatus.PENDING
@@ -1054,16 +1058,20 @@ async def test_imodel_stream_propagates_cancellation():
         yield StreamChunk(type="text", content="late")
 
     api_call.stream = fake_core_stream
+    pending = Progression()
     m.executor = types.SimpleNamespace(
-        append=AsyncMock(),
-        pile=types.SimpleNamespace(pop=lambda *a, **kw: None),
-        pending=types.SimpleNamespace(exclude=lambda *a, **kw: None),
+        append=AsyncMock(side_effect=lambda event: pending.include(event.id)),
+        pending=pending,
+        pile=types.SimpleNamespace(ainclude=AsyncMock(), pop=lambda *a, **kw: None),
         processor=types.SimpleNamespace(
             _concurrency_sem=None,
             is_stopped=lambda: False,
         ),
         config={},
     )
+
+    # A caller that queued the call itself before streaming it.
+    await m.executor.append(api_call)
 
     chunks_yielded: list = []
     with pytest.raises(TimeoutError):
@@ -1078,6 +1086,9 @@ async def test_imodel_stream_propagates_cancellation():
         f"stream yielded {len(chunks_yielded)} chunk(s) after cancellation — "
         "CancelledError was swallowed instead of propagated"
     )
+    # The call does not stay in the pending queue the executor's forward()
+    # would later pop.
+    assert len(pending) == 0
 
 
 # Worker-liveness watchdog — regression for a CLI subprocess that dies at/near
