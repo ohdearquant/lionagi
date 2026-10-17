@@ -159,8 +159,12 @@ def _classify_round(
     text: str,
     target: Any,
     action_results: dict[str, Any],
+    max_actions: int | None = None,
 ) -> tuple[RoundOutcome, list[ActionCall], dict[str, Any] | None]:
-    """Parse and assemble one round's raw text into a RoundOutcome; returns (outcome, pending_action_calls, assembled_dict)."""
+    """Parse and assemble one round's raw text into a RoundOutcome; returns (outcome, pending_action_calls, assembled_dict).
+
+    A round declaring more than ``max_actions`` ``<lact>`` calls is a repair round: none of its calls runs.
+    """
     blocks = extract_lndl_blocks(text)
     if not blocks:
         return Continue(), [], None
@@ -169,6 +173,19 @@ def _classify_round(
         normalized = normalize_lndl_text("\n\n".join(blocks))
         tokens = Lexer(normalized).tokenize()
         program = Parser(tokens, source_text=normalized).parse()
+
+        if max_actions is not None and len(program.lacts) > max_actions:
+            return (
+                Retry(
+                    error=(
+                        f"this round declares {len(program.lacts)} <lact> calls and a round may "
+                        f"declare at most {max_actions}; none of them ran. Declare at most "
+                        f"{max_actions} now and the rest in a later round."
+                    )
+                ),
+                [],
+                None,
+            )
 
         if program.out_block is None:
             pending = [build_action_call(la.alias, la) for la in program.lacts]
@@ -182,8 +199,15 @@ def _classify_round(
     return Success(output=assembled), pending, assembled
 
 
-def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET):
-    """Build an LNDL seam Middle (ADR-0024 §1) with a custom round budget; ``lndl_middle`` is the ready-to-use default."""
+def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET, max_actions: int | None = None):
+    """Build an LNDL seam Middle (ADR-0024 §1) with a custom round budget; ``lndl_middle`` is the ready-to-use default.
+
+    ``max_actions`` bounds the ``<lact>`` calls one round may declare; None leaves them unbounded.
+    """
+    if max_actions is not None and (
+        isinstance(max_actions, bool) or not isinstance(max_actions, int) or max_actions < 1
+    ):
+        raise ValueError(f"max_actions must be a positive integer or None, got {max_actions!r}")
 
     async def _lndl_middle(
         branch: Branch,
@@ -207,9 +231,14 @@ def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET):
         if base_guidance:
             guidance_parts.append(base_guidance)
         lndl_guidance = "\n\n".join(guidance_parts)
-        # LNDL uses a free-text <lact>/OUT{} protocol, not native
-        # function-calling, so strip tool schemas and response_format here.
-        stripped_chat_param = chat_param.with_updates(tool_schemas=[], response_format=None)
+        # LNDL replies in free text, so the response format is dropped. The tools stay: a
+        # <lact> names a tool, and an endpoint that does not place the prompt cache shows the
+        # model its tools only in the current instruction. With none passed, every tool the
+        # branch registers is listed, since a <lact> may call any of them.
+        tool_schemas = chat_param.tool_schemas or branch.acts.schema_list
+        stripped_chat_param = chat_param.with_updates(
+            tool_schemas=tool_schemas, response_format=None
+        )
 
         action_results: dict[str, Any] = {}
         last_error: str | None = None
@@ -227,7 +256,9 @@ def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET):
             round_instruction = _round_instruction(instruction, round_num, round_budget, last_error)
 
             text = await _run_round_chat(branch, round_instruction, round_chat_param)
-            outcome, pending, assembled = _classify_round(text, target, action_results)
+            outcome, pending, assembled = _classify_round(
+                text, target, action_results, max_actions=max_actions
+            )
 
             if isinstance(outcome, Retry):
                 last_error = outcome.error

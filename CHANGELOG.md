@@ -15,6 +15,15 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Added
 
+- An API-model `li agent` leg can run batched LNDL rounds in place of ReAct: a profile that
+  declares `api_tools: read` may set `api_loop: lndl` (default `react`). A round may declare up
+  to 16 tool calls, which run together; the turn ends when the model writes its answer as text.
+  A turn that uses up its rounds without an answer ends `failed` with the error recorded. The
+  loop is recorded on the branch and a resume runs the recorded one.
+- Every API-model `li agent` turn records what it spent under `metadata["api_launch"]["spend"]`
+  (`requests`, `tool_calls`, `wall_seconds`, counted for that turn only) and prints it as
+  `[api] spend: ...` before the resume hint.
+
 - `lionagi.ln.concurrency.temporary_signal_handlers(handler, signals=(SIGINT, SIGTERM))`, a
   context manager that installs one handler for the length of a block and restores each prior
   handler on exit. Like `run_async`, it installs nothing off the main thread and leaves alone a

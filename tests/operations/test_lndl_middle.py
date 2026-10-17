@@ -558,9 +558,19 @@ class TestPromptInjection:
         assert calls[0].last_user_message.count("Specs:") == base_specs_count
 
 
-class TestChatParamStripping:
+def _has_tools_section(message: str) -> bool:
+    """The instruction's own Tools key, unindented; the guidance's worked examples
+    mention tools too, but only inside its indented block."""
+    return any(line.startswith("Tools:") for line in message.splitlines())
+
+
+class TestRoundToolsAndResponseFormat:
+    """A round replies in free text, so the response format is dropped, but a
+    <lact> names a tool, so every round's instruction lists the tools it may
+    call. Native tool calling is never requested."""
+
     @pytest.mark.asyncio
-    async def test_tool_schemas_and_response_format_stripped_from_round_call(self):
+    async def test_passed_tool_schemas_listed_and_response_format_dropped(self):
         branch = TestBranch.from_text("```lndl\n<lvar a>hi</lvar>\nOUT{answer: [a]}\n```")
         branch.register_tools([lookup])
         chat_param = ChatParam(
@@ -571,6 +581,110 @@ class TestChatParamStripping:
 
         calls = TestBranch.calls(branch)
         assert calls[0].tool_names == []
+        assert _has_tools_section(calls[0].last_user_message)
+        assert "lookup" in calls[0].last_user_message
+        assert "Return a canned lookup result" in calls[0].last_user_message
+        assert "ResponseSchema" not in calls[0].last_user_message
+
+    @pytest.mark.asyncio
+    async def test_registered_tools_listed_when_none_passed(self):
+        branch = TestBranch.from_text("```lndl\n<lvar a>hi</lvar>\nOUT{answer: [a]}\n```")
+        branch.register_tools([lookup])
+        await lndl_middle(branch, "say hi", ChatParam(response_format=AnswerModel))
+
+        assert _has_tools_section(TestBranch.calls(branch)[0].last_user_message)
+        assert "lookup" in TestBranch.calls(branch)[0].last_user_message
+
+    @pytest.mark.asyncio
+    async def test_every_round_lists_the_tools(self):
+        branch = TestBranch.from_text(
+            [
+                '```lndl\n<lact q a>lookup(query="x")</lact>\n```',
+                "```lndl\nOUT{answer: [missing]}\n```",
+                "```lndl\n<lvar b>read it</lvar>\nOUT{answer: [b]}\n```",
+            ]
+        )
+        branch.register_tools([lookup])
+        await lndl_middle(branch, "look it up", ChatParam(response_format=AnswerModel))
+
+        calls = TestBranch.calls(branch)
+        assert len(calls) == 3
+        assert all(_has_tools_section(call.last_user_message) for call in calls)
+        assert all("lookup" in call.last_user_message for call in calls)
+
+    @pytest.mark.asyncio
+    async def test_no_tools_section_without_tools(self):
+        branch = TestBranch.from_text("```lndl\n<lvar a>hi</lvar>\nOUT{answer: [a]}\n```")
+        await lndl_middle(branch, "say hi", ChatParam(response_format=AnswerModel))
+
+        assert not _has_tools_section(TestBranch.calls(branch)[0].last_user_message)
+
+
+class TestMaxActions:
+    @staticmethod
+    def _round(n: int, *, out: bool = False) -> str:
+        lacts = "".join(f'<lact q{i} a{i}>lookup(query="{i}")</lact>\n' for i in range(n))
+        return f"```lndl\n{lacts}{'OUT{answer: [a0]}' + chr(10) if out else ''}```"
+
+    def test_round_at_the_limit_runs_every_call(self):
+        outcome, pending, _ = _classify_round(self._round(3), AnswerModel, {}, max_actions=3)
+        assert isinstance(outcome, Continue)
+        assert len(pending) == 3
+
+    def test_round_over_the_limit_is_a_repair_round_with_nothing_pending(self):
+        outcome, pending, assembled = _classify_round(
+            self._round(4), AnswerModel, {}, max_actions=3
+        )
+        assert isinstance(outcome, Retry)
+        assert "declares 4 <lact> calls" in outcome.error
+        assert "at most 3" in outcome.error
+        assert "none of them ran" in outcome.error
+        assert pending == []
+        assert assembled is None
+
+    def test_round_with_out_over_the_limit_is_refused_too(self):
+        outcome, pending, _ = _classify_round(
+            self._round(4, out=True), AnswerModel, {}, max_actions=3
+        )
+        assert isinstance(outcome, Retry)
+        assert pending == []
+
+    def test_no_limit_by_default(self):
+        outcome, pending, _ = _classify_round(self._round(20), AnswerModel, {})
+        assert isinstance(outcome, Continue)
+        assert len(pending) == 20
+
+    @pytest.mark.parametrize("bad", [0, -1, 1.5, "3", True, False])
+    def test_build_rejects_a_bad_limit(self, bad):
+        with pytest.raises(ValueError, match="max_actions must be a positive integer"):
+            build_lndl_middle(max_actions=bad)
+
+    @pytest.mark.asyncio
+    async def test_over_limit_round_runs_no_call_and_repairs(self):
+        calls_made: list[str] = []
+
+        def counted_lookup(query: str) -> str:
+            """Return a canned lookup result for a query."""
+            calls_made.append(query)
+            return f"result for {query}"
+
+        middle = build_lndl_middle(round_budget=3, max_actions=2)
+        branch = TestBranch.from_text(
+            [
+                "```lndl\n"
+                + "".join(f'<lact q{i} a{i}>counted_lookup(query="{i}")</lact>\n' for i in range(3))
+                + "```",
+                '```lndl\n<lact q a>counted_lookup(query="one")</lact>\n```',
+                "```lndl\n<lvar b>done</lvar>\nOUT{answer: [b]}\n```",
+            ]
+        )
+        branch.register_tools([counted_lookup])
+        result = await middle(branch, "look it up", ChatParam(response_format=AnswerModel))
+
+        assert result.answer == "done"
+        assert calls_made == ["one"]
+        calls = TestBranch.calls(branch)
+        assert "declares 3 <lact> calls" in calls[1].last_user_message
 
 
 class TestRoundBudget:

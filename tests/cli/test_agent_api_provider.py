@@ -68,6 +68,34 @@ def _answer(text: str) -> dict:
     return _reply({"answer": text})
 
 
+def _text(text: str) -> dict:
+    reply = _reply({})
+    reply["content"] = [{"type": "text", "text": text}]
+    return reply
+
+
+_LNDL_READ = '```lndl\n<lact r>reader(action="read", path="notes.txt")</lact>\n```'
+_LNDL_RESULT_AS_ANSWER = (
+    '```lndl\n<lact r>reader(action="read", path="notes.txt")</lact>\nOUT{answer: [r]}\n```'
+)
+_LNDL_MISSING = "```lndl\nOUT{answer: [missing]}\n```"
+
+
+def _lndl_answer(text: str) -> dict:
+    return _text(f"```lndl\n<lvar a>{text}</lvar>\nOUT{{answer: [a]}}\n```")
+
+
+def _last_user_text(payload: dict) -> str:
+    for message in reversed(payload.get("messages") or []):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        return "".join(part.get("text", "") for part in content if isinstance(part, dict))
+    return ""
+
+
 def _profile(**extra) -> AgentProfile:
     return AgentProfile(name="reader-leg", raw_body="You read files and answer.", extra=extra)
 
@@ -89,11 +117,18 @@ def leg(monkeypatch, tmp_path):
     monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
 
     seen = SimpleNamespace(
-        replies=[], payloads=[], branch=None, status=None, workspace=workspace, delay=None
+        replies=[],
+        payloads=[],
+        branch=None,
+        status=None,
+        exception=None,
+        workspace=workspace,
+        delay=None,
     )
 
     async def teardown(ctx, *, status="completed", **kw):
         seen.status = status
+        seen.exception = kw.get("exception")
         return status
 
     monkeypatch.setattr(agent_mod, "teardown_agent_persist", teardown)
@@ -194,7 +229,9 @@ async def test_the_leg_is_offered_the_read_set_and_nothing_that_writes(leg):
     await leg.run(_profile(api_tools="read"))
 
     assert set(leg.branch.acts.registry) == {"reader", "search", "context"}
-    assert leg.branch.metadata["api_launch"] == {"tools": "read", "max_extensions": 10}
+    record = leg.branch.metadata["api_launch"]
+    assert set(record) == {"tools", "max_extensions", "loop", "spend"}
+    assert (record["tools"], record["max_extensions"], record["loop"]) == ("read", 10, "react")
 
 
 @pytest.mark.asyncio
@@ -395,6 +432,9 @@ async def test_a_resumed_branch_without_the_launch_record_runs_as_before(leg, mo
         {"tools": "read", "max_extensions": "5"},
         {"tools": "read", "max_extensions": True},
         {"tools": "read", "max_extensions": 0},
+        {"tools": "read", "max_extensions": 5, "loop": "batch"},
+        {"tools": "read", "max_extensions": 5, "loop": None},
+        {"tools": "read", "max_extensions": 5, "loop": "LNDL"},
         "read",
         None,
     ],
@@ -608,3 +648,223 @@ async def test_an_api_leg_recalls_from_khive_but_writes_no_read_output_back(
     assert any(op.startswith("memory.recall(") for op in ops_seen)
     assert not any(op.startswith("memory.remember(") for op in ops_seen)
     assert "hello from the notes" not in "".join(ops_seen)
+
+
+# What a turn spent (ADR-0132 D3) and the batched LNDL loop (D1, D2).
+
+
+def _capture_hints(monkeypatch) -> list[str]:
+    import lionagi.cli.agent as agent_mod
+
+    lines: list[str] = []
+    monkeypatch.setattr(agent_mod, "hint", lines.append)
+    return lines
+
+
+@pytest.mark.asyncio
+async def test_a_react_turn_records_and_prints_what_it_spent(leg, monkeypatch):
+    from lionagi.cli._runs import find_branch
+
+    hints = _capture_hints(monkeypatch)
+    leg.replies = [_read_round("notes.txt"), _last_round(), _answer("the notes say hello")]
+
+    _, _, branch_id, status, _ = await leg.run(_profile(api_tools="read"))
+
+    assert status == "completed"
+    spend = leg.branch.metadata["api_launch"]["spend"]
+    assert (spend["requests"], spend["tool_calls"]) == (3, 1)
+    assert isinstance(spend["wall_seconds"], float) and spend["wall_seconds"] >= 0
+    assert f"[api] spend: 3 request(s), 1 tool call(s), {spend['wall_seconds']:.1f}s" in hints
+    _, path = find_branch(branch_id)
+    assert json.loads(path.read_text())["metadata"]["api_launch"]["spend"] == spend
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_turn_counts_only_its_own_spend(leg):
+    from lionagi.cli._runs import find_branch
+
+    leg.replies = [_last_round(), _answer("first")]
+    _, _, branch_id, _, _ = await leg.run(_profile(api_tools="read"))
+    first = leg.branch.metadata["api_launch"]["spend"]
+    assert (first["requests"], first["tool_calls"]) == (2, 0)
+
+    leg.replies = [_read_round("notes.txt"), _last_round(), _answer("read it")]
+    await leg.run(_profile(api_tools="read"), "read the notes now", resume=branch_id)
+
+    # A resume rebuilds the branch from its stored form, so the record is read there.
+    _, path = find_branch(branch_id)
+    spend = json.loads(path.read_text())["metadata"]["api_launch"]["spend"]
+    assert (spend["requests"], spend["tool_calls"]) == (3, 1)
+
+
+@pytest.mark.asyncio
+async def test_a_second_turn_on_the_same_branch_counts_only_its_own_spend(leg, tmp_path):
+    """A queued steer runs one more turn on the same branch and the same model, so
+    the counts are read from a baseline taken at the turn's start."""
+    import lionagi.cli.agent as agent_mod
+
+    leg.replies = [_read_round("notes.txt"), _last_round(), _answer("first")]
+    await leg.run(_profile(api_tools="read"))
+    assert leg.branch.metadata["api_launch"]["spend"]["requests"] == 3
+
+    leg.replies = [_read_round("notes.txt"), _last_round(), _answer("second")]
+    result = await agent_mod._run_api_turn(
+        leg.branch,
+        "read them again",
+        timeout=None,
+        max_extensions=10,
+        snapshot_dir=str(tmp_path / "branches"),
+    )
+
+    assert result == "second"
+    spend = leg.branch.metadata["api_launch"]["spend"]
+    assert (spend["requests"], spend["tool_calls"]) == (3, 1)
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_fails_still_records_its_spend(leg):
+    from lionagi.cli._runs import find_branch
+
+    leg.replies = [_read_round("notes.txt")]
+
+    with pytest.raises(Exception):  # noqa: B017 — the script runs out; any error ends the turn
+        await leg.run(_profile(api_tools="read"))
+
+    assert leg.status == "failed"
+    spend = leg.branch.metadata["api_launch"]["spend"]
+    assert (spend["requests"], spend["tool_calls"]) == (2, 1)
+    _, path = find_branch(str(leg.branch.id))
+    assert json.loads(path.read_text())["metadata"]["api_launch"]["spend"] == spend
+
+
+@pytest.mark.asyncio
+async def test_an_lndl_leg_reads_then_answers_in_two_requests(leg):
+    leg.replies = [_text(_LNDL_READ), _lndl_answer("the notes say hello")]
+
+    result, _, _, status, _ = await leg.run(_profile(api_tools="read", api_loop="lndl"))
+
+    assert (result, status) == ("the notes say hello", "completed")
+    assert leg.replies == []
+    record = leg.branch.metadata["api_launch"]
+    assert record["loop"] == "lndl"
+    assert (record["spend"]["requests"], record["spend"]["tool_calls"]) == (2, 1)
+    responses = [m for m in leg.branch.msgs.messages if type(m).__name__ == "ActionResponse"]
+    assert len(responses) == 1
+    assert "hello from the notes" in json.dumps(responses[0].content.to_dict())
+    # Every round names the tools a <lact> may call, whatever the endpoint caches.
+    assert len(leg.payloads) == 2
+    for payload in leg.payloads:
+        sent = _last_user_text(payload)
+        assert any(line.startswith("Tools:") for line in sent.splitlines())
+        assert "reader" in sent
+
+
+@pytest.mark.asyncio
+async def test_an_lndl_answer_that_is_a_tool_result_is_refused_and_repaired(leg):
+    leg.replies = [_text(_LNDL_RESULT_AS_ANSWER), _lndl_answer("the notes say hello")]
+
+    result, _, _, status, _ = await leg.run(_profile(api_tools="read", api_loop="lndl"))
+
+    assert (result, status) == ("the notes say hello", "completed")
+    assert "the answer must be text you write" in _last_user_text(leg.payloads[1])
+    spend = leg.branch.metadata["api_launch"]["spend"]
+    assert (spend["requests"], spend["tool_calls"]) == (2, 1)
+
+
+@pytest.mark.asyncio
+async def test_an_lndl_turn_that_spends_its_rounds_ends_failed_with_the_cause(leg):
+    from lionagi.lndl import LNDLError
+
+    leg.replies = [_text(_LNDL_MISSING), _text(_LNDL_MISSING)]
+
+    with pytest.raises(LNDLError) as exc:
+        await leg.run(_profile(api_tools="read", api_loop="lndl", max_extensions=1))
+
+    assert leg.replies == []
+    assert leg.status == "failed"
+    assert leg.exception is exc.value
+    assert "undeclared alias" in str(exc.value)
+    assert leg.branch.metadata["api_launch"]["spend"]["requests"] == 2
+
+
+@pytest.mark.asyncio
+async def test_an_lndl_round_over_the_call_limit_runs_none_of_its_calls(leg):
+    lacts = "".join(
+        f'<lact r{i}>reader(action="read", path="notes.txt")</lact>\n' for i in range(17)
+    )
+    leg.replies = [_text(f"```lndl\n{lacts}```"), _lndl_answer("split it")]
+
+    result, _, _, status, _ = await leg.run(_profile(api_tools="read", api_loop="lndl"))
+
+    assert (result, status) == ("split it", "completed")
+    assert "declares 17 <lact> calls" in _last_user_text(leg.payloads[1])
+    assert leg.branch.metadata["api_launch"]["spend"]["tool_calls"] == 0
+
+
+@pytest.mark.parametrize("value", ["batch", "LNDL", "", None, True, ["lndl"]])
+@pytest.mark.asyncio
+async def test_a_loop_other_than_react_or_lndl_is_refused_before_a_run_exists(
+    leg, monkeypatch, value
+):
+    import lionagi.cli.agent as agent_mod
+
+    monkeypatch.setattr(
+        agent_mod, "allocate_run", lambda: pytest.fail("a run was allocated for a refused leg")
+    )
+
+    with pytest.raises(ConfigurationError, match="sets api_loop to"):
+        await leg.run(_profile(api_tools="read", api_loop=value))
+
+
+@pytest.mark.asyncio
+async def test_a_loop_without_the_read_set_is_refused_before_a_run_exists(leg, monkeypatch):
+    import lionagi.cli.agent as agent_mod
+
+    monkeypatch.setattr(
+        agent_mod, "allocate_run", lambda: pytest.fail("a run was allocated for a refused leg")
+    )
+
+    with pytest.raises(ConfigurationError, match="sets api_loop but no api_tools"):
+        await leg.run(_profile(api_loop="lndl"))
+
+
+@pytest.mark.asyncio
+async def test_a_record_without_a_loop_resumes_on_react(leg):
+    from lionagi.cli._runs import find_branch
+
+    leg.replies = [_last_round(), _answer("first")]
+    _, _, branch_id, _, _ = await leg.run(_profile(api_tools="read"))
+    _, path = find_branch(branch_id)
+    stored = json.loads(path.read_text())
+    del stored["metadata"]["api_launch"]["loop"]
+    path.write_text(json.dumps(stored))
+
+    # The record decides the loop on resume, whatever the profile now names.
+    leg.replies = [_last_round(), _answer("second")]
+    result, _, _, status, _ = await leg.run(
+        _profile(api_tools="read", api_loop="lndl"), "again", resume=branch_id
+    )
+
+    assert (result, status) == ("second", "completed")
+    assert leg.replies == []
+
+
+@pytest.mark.asyncio
+async def test_an_lndl_branch_resumes_on_lndl_from_its_record(leg):
+    import lionagi.cli.agent as agent_mod
+    from lionagi.cli._runs import find_branch
+
+    leg.replies = [_text(_LNDL_READ), _lndl_answer("first")]
+    _, _, branch_id, _, _ = await leg.run(_profile(api_tools="read", api_loop="lndl"))
+
+    leg.replies = [_lndl_answer("second")]
+    result, _, _, status, _ = await agent_mod._run_agent(
+        MODEL, "and now?", agent_name=None, cwd=str(leg.workspace), resume=branch_id
+    )
+
+    assert (result, status) == ("second", "completed")
+    assert leg.replies == []
+    _, path = find_branch(branch_id)
+    record = json.loads(path.read_text())["metadata"]["api_launch"]
+    assert record["loop"] == "lndl"
+    assert (record["spend"]["requests"], record["spend"]["tool_calls"]) == (1, 0)
