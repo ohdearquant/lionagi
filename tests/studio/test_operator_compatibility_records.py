@@ -221,10 +221,16 @@ async def test_a_cancel_during_teardown_still_finishes_the_turn(tmp_path, monkey
 class _BlockingEngine:
     """Holds the turn open mid-stream so a cancel lands while its run exists."""
 
+    # Set once the coordinator has recorded the first event and asked for the next, so no
+    # store write of the turn is in flight while the engine waits.
+    parked: asyncio.Event | None = None
+
     async def _stream(self, _turn):
         yield OperatorEngineEvent(
             "text", {"content": "reply", "format": "plain", "role": "assistant"}
         )
+        if self.parked is not None:
+            self.parked.set()
         await asyncio.Event().wait()
 
     def stream(self, turn):
@@ -483,6 +489,8 @@ async def test_a_native_turn_is_still_cancelled_by_shutdown(tmp_path, monkeypatc
 
     monkeypatch.setattr(runs_mod, "setup_agent_persist", setup)
     monkeypatch.setattr(runs_mod, "teardown_agent_persist", teardown)
+    parked = asyncio.Event()
+    monkeypatch.setattr(_BlockingEngine, "parked", parked)
 
     coordinator = OperatorCoordinator(
         store=OperatorStore(tmp_path / "state.db"), engine_factory=_BlockingEngine
@@ -499,6 +507,9 @@ async def test_a_native_turn_is_still_cancelled_by_shutdown(tmp_path, monkeypatc
     # Wait until the turn is streaming: its run exists, so shutdown cancels it as before.
     while not list(runs_root.glob("operator-*/run.json")):
         await anyio.sleep(0.02)
+    # And until the engine is parked past its first event: a shutdown that cancels a store
+    # write in flight is a different case from the one this test reads.
+    await asyncio.wait_for(parked.wait(), 5)
     await coordinator.shutdown()
 
     turn = await coordinator.store.get_turn(request_id)
