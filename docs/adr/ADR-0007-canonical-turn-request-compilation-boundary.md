@@ -619,8 +619,8 @@ lines:
   `lionagi/protocols/context_providers.py:25`) and per-provider maxima; nothing bounds the
   system section, and the history section is shaped before compilation by the active view rather
   than by a bound. What exists for history and tool results is the model-window lookup
-  (`lookup_context_window()`, `lionagi/service/token_budget.py:88`, reached through
-  `get_context_window()` at `:128-147`, the limit `get_token_budget()` at `:150` measures usage
+  (`lookup_context_window()`, `lionagi/service/token_budget.py:78`, reached through
+  `get_context_window()` at `:118-137`, the limit `get_token_budget()` at `:140` measures usage
   against), whose result informs the nudger (`lionagi/agent/nudge.py:207`) rather than the compiler, so it never
   cuts or records anything.
 

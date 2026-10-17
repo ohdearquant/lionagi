@@ -720,21 +720,21 @@ def test_the_untyped_authority_and_budget_shapes_are_where_cited() -> None:
     )
     _in_span(
         "lionagi/service/token_budget.py",
-        88,
-        88,
+        78,
+        78,
         "def lookup_context_window(model_name: str, provider: str | None = None) -> int:",
     )
     _in_span(
         "lionagi/service/token_budget.py",
-        128,
-        147,
+        118,
+        137,
         "def get_context_window(branch: Branch) -> int:",
         "return lookup_context_window(model_name, provider)",
     )
     _in_span(
         "lionagi/service/token_budget.py",
-        150,
-        150,
+        140,
+        140,
         "def get_token_budget(branch: Branch)",
     )
     _in_span("lionagi/agent/nudge.py", 207, 207, "get_token_budget(self.branch)")
