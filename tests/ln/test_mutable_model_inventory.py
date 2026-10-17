@@ -539,9 +539,7 @@ def _bindings_of(
     keys = _binding_keys(node, scope)
     if keys is None:
         return None
-    return {
-        key: frozenset(aliases[key]) for key in keys if key in aliases
-    }
+    return {key: frozenset(aliases[key]) for key in keys if key in aliases}
 
 
 def _binding_count(node: ast.AST, counts: dict[str, int] | None, scope: str) -> int:
@@ -884,7 +882,6 @@ def _scope_suites(node: ast.stmt, module: str) -> Iterator[list[ast.stmt]]:
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         return
     yield from _suite_bodies(node, module)
-
 
 
 def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
@@ -1519,9 +1516,7 @@ def _scan_sources(sources: dict[str, tuple[str, str]]) -> _Scan:
             # A ``dataclass`` call outside a decorator position is refused above; it does
             # not need a second refusal here.
             continue
-        if any(
-            _canonicals(argument, result.aliases) & declared_classes for argument in arguments
-        ):
+        if any(_canonicals(argument, result.aliases) & declared_classes for argument in arguments):
             # The call passes a class the scan inventories and a hash keyword that is not
             # false, so it can turn on a generated hash for that class. The scan does not
             # follow what the call does with it, so the call is refused rather than read.
@@ -2265,8 +2260,7 @@ _UNRESOLVED_SHAPE_CASES: list[tuple[str, str, str, dict[str, tuple[str, str]] | 
     (
         "I06-global",
         "a class base the scan cannot read",
-        "def make():\n    global Base\n    Base = HashableModel\n"
-        "    class Added(Base): pass",
+        "def make():\n    global Base\n    Base = HashableModel\n    class Added(Base): pass",
         None,
     ),
     (
@@ -2323,6 +2317,8 @@ def test_a_function_scope_import_fallback_binding_a_base_is_left_refused():
     )
     errors = _violations(scan, {*_ROOTS, "sample.make.<locals>.Added"})
     assert any("a class base the scan cannot read" in error for error in errors), errors
+
+
 @pytest.mark.parametrize(
     "statement",
     [
