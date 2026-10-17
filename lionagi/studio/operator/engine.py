@@ -734,6 +734,9 @@ def _operator_extra_mcp() -> tuple[dict[str, Any], list[str]]:
     turn. The two request-scoped servers cannot be overridden, and an allowed
     tool must name a server declared in the same file — the allowlist can
     widen only toward servers this config itself attaches.
+
+    In open mode, do not auto-allow a tool that can make HTTP requests to the
+    daemon: a run holding such a tool can approve its own proposals.
     """
     from lionagi._paths import LIONAGI_HOME
 
@@ -846,7 +849,9 @@ def build_operator_branch(
             # directly: reads are bounded, UI effects remain client-ACKed, and
             # launch_playbook performs its own durable human proposal. Extra
             # tools are granted only by the explicit operator_mcp.json config,
-            # and only toward servers that config itself attaches.
+            # and only toward servers that config itself attaches. In open mode,
+            # do not auto-allow a tool that can make HTTP requests to the daemon:
+            # a run holding such a tool can approve its own proposals.
             "allowed_tools": [*_OPERATOR_MCP_TOOLS, *extra_tools],
             "permission_prompt_tool_name": "mcp__studio_permission__request_permission",
             "strict_mcp_config": True,
