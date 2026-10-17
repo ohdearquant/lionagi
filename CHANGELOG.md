@@ -172,6 +172,21 @@ project those rows ran under. To keep the project, name it in those members.
 - Flow synthesis now reuses the bounded observer-write drain before state storage is closed,
   including failure and cancellation paths. Branch-status and segment metadata writes created
   during synthesis receive the same cleanup as writes from the execution phase (#3211).
+- A ReAct round that declares `"sequential"` runs its tool calls one at a time. `operate` reads
+  the declaration from the parsed turn and runs that turn's batch in request order with one call
+  in flight, under the caller's `call_params` except `max_concurrent`, which is 1 for that batch.
+  Only a field the parsed turn actually set is a declaration, so a response model that defaults
+  the field does not narrow a turn that omits it, while a value a validator assigns or injects
+  counts. The declaration only narrows: a turn that declares nothing keeps the prepared strategy,
+  and a `ReActStream` caller that passes its own `"sequential"` action parameters keeps them on
+  every round. Through `ReAct()`, the first round used to run concurrently whatever it declared,
+  and each extension round used to run under the strategy the round before it declared.
+
+### Security
+
+- Raised the `mcp` floor in the `mcp` extra to 1.30.0 (GHSA-84m7-p3x7-pcfv: sessions accumulate
+  without bound in the StreamableHTTP server transport). `li mcp` serves over stdio, so its own
+  server was not exposed; the floor keeps installs off the affected releases.
 
 ### Docs
 

@@ -4,17 +4,20 @@
 """Tests for ReAct tool execution flows and initial invocation."""
 
 import asyncio
+from unittest.mock import patch
 
 import pytest
 
+from lionagi.operations.ReAct.utils import Analysis, ReActAnalysis
 from lionagi.protocols.messages import ActionResponse
+from lionagi.testing import LionAGIMockFactory
 from lionagi.testing import TestBranch as ScriptedBranch
 
 from ._tool_trace import tool_branch
 
 
 class _ToolOrderMismatch(AssertionError):
-    """The only failure the strict tool-order cases expect."""
+    """A tool batch ran in an order its declared action strategy does not allow."""
 
 
 def _assert_tool_order(trace, expected):
@@ -37,8 +40,8 @@ def _require_react_result(branch, result, *, answer, outputs, model_calls):
 def _each_ran_once(trace, expected):
     """Fail outright unless every expected trace entry occurred exactly once.
 
-    The ordering tests below expect only _ToolOrderMismatch. A pytest failure
-    reports a missing, repeated or wrong-argument call as a broken precondition.
+    The ordering tests below report a wrong order as _ToolOrderMismatch; a pytest
+    failure reports a missing, repeated or wrong-argument call as a broken precondition.
     """
     if sorted(trace) != sorted(expected):
         pytest.fail(f"tools did not each run once: {trace!r}")
@@ -81,23 +84,68 @@ async def test_single_tool_invocation():
     assert "42" in final_messages
 
 
+def make_mocked_branch_for_react():
+    """Create a mocked Branch for ReAct testing."""
+    return LionAGIMockFactory.create_mocked_branch(
+        name="ReActTestBranch",
+        user="tester",
+        response="mocked_response",
+        model="gpt-4o-mini",
+    )
+
+
+@pytest.mark.asyncio
+async def test_extension_round_is_prepared_from_the_concurrent_default():
+    """When the caller gives no action parameters, a round is prepared from the concurrent
+    default, never from the round before it.
+
+    The round that declares ``sequential`` narrows its own batch inside ``operate``,
+    which is mocked here; test_react_round_strategy.py runs that path for real.
+    """
+    branch = make_mocked_branch_for_react()
+
+    with patch("lionagi.operations.operate.operate.operate") as mock_operate:
+        # Round 1: First tool call with sequential strategy
+        round1 = ReActAnalysis(
+            analysis="Calculate 100 * 5",
+            extension_needed=True,
+            action_strategy="sequential",
+        )
+
+        # Round 2: Second tool call
+        round2 = ReActAnalysis(
+            analysis="Now divide by 10",
+            extension_needed=False,
+            action_strategy="sequential",
+        )
+
+        # Final answer
+        final = Analysis(answer="50")
+
+        mock_operate.side_effect = [round1, round2, final]
+
+        result = await branch.ReAct(
+            instruct={"instruction": "Calculate (100 * 5) / 10 using tools"},
+            max_extensions=2,
+        )
+
+        assert result == "50"
+        assert mock_operate.call_count == 3
+
+        # This branch has no tools, so the extension round is prepared from the concurrent
+        # default rather than from round 1's declaration. Round 2's own 'sequential' would
+        # narrow its batch inside operate, which is mocked here.
+        extension_call = mock_operate.call_args_list[1]
+        action_param = extension_call[1]["action_param"]
+        assert action_param.strategy == "concurrent"
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "first_round",
     [
         pytest.param({"action_strategy": "sequential"}, id="declared-on-both-rounds"),
-        pytest.param(
-            {},
-            id="declared-on-the-second-round-only",
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=_ToolOrderMismatch,
-                reason=(
-                    "an analysis turn's declared action strategy should govern its own "
-                    "tool batch, but the batch takes the strategy of the analysis before it"
-                ),
-            ),
-        ),
+        pytest.param({}, id="declared-on-the-second-round-only"),
     ],
 )
 async def test_multiple_tool_calls_sequential_strategy(first_round):
@@ -162,14 +210,6 @@ async def test_multiple_tool_calls_sequential_strategy(first_round):
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    raises=_ToolOrderMismatch,
-    reason=(
-        "an analysis turn's declared action strategy should govern its own tool batch, "
-        "but the first batch always runs concurrently"
-    ),
-)
 async def test_first_round_declared_sequential_runs_in_order():
     """Two actions declared sequential on the first turn complete one after the other."""
     trace = []
@@ -216,14 +256,6 @@ async def test_first_round_declared_sequential_runs_in_order():
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    raises=_ToolOrderMismatch,
-    reason=(
-        "an analysis turn's declared action strategy should govern its own tool batch, "
-        "but a batch takes the strategy of the analysis before it"
-    ),
-)
 async def test_later_round_declared_concurrent_overlaps():
     """A turn declared concurrent overlaps when the turn before it was sequential."""
     trace = []
