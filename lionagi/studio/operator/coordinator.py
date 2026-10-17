@@ -658,21 +658,11 @@ class OperatorCoordinator:
                     if event.type == "tool_result":
                         call_id = event.payload.get("callId")
                         if isinstance(call_id, str):
-                            completed = await self.store.complete_provider_permission(
+                            await self.store.complete_provider_permission(
                                 request_id,
                                 call_id,
                                 ok=bool(event.payload.get("ok")),
                             )
-                            if completed is not None:
-                                await self.store.append_frame(
-                                    conversation_id,
-                                    request_id,
-                                    "confirmation",
-                                    {
-                                        "proposalId": completed["id"],
-                                        "state": "executed",
-                                    },
-                                )
                     await self.store.append_frame(
                         conversation_id, request_id, event.type, event.payload
                     )
@@ -1074,20 +1064,6 @@ class OperatorCoordinator:
                 raise OperatorAuditUnavailableError(
                     "Target conflict outcome is indeterminate; reconciliation is required"
                 ) from persist_exc
-            await self.store.append_frame(
-                conversation_id,
-                proposal["requestId"],
-                "tool_result",
-                {
-                    "callId": proposal_id,
-                    "ok": False,
-                    "error": {
-                        "code": "stale_context",
-                        "message": str(exc),
-                        "retryable": False,
-                    },
-                },
-            )
             return self._proposal_result(proposal)
 
         try:
@@ -1127,26 +1103,14 @@ class OperatorCoordinator:
                 raise OperatorAuditUnavailableError(
                     "Command outcome is indeterminate; reconciliation is required"
                 ) from persist_exc
-            await self.store.append_frame(
-                conversation_id,
-                proposal["requestId"],
-                "tool_result",
-                {
-                    "callId": proposal_id,
-                    "ok": False,
-                    "error": {
-                        "code": "service_failure",
-                        "message": public_message,
-                        "retryable": False,
-                        "details": details,
-                    },
-                },
-            )
             return self._proposal_result(proposal)
 
         try:
             proposal = await self.store.complete_proposal(
-                proposal_id, status="succeeded", result=result, audit=True
+                proposal_id,
+                status="succeeded",
+                result=result,
+                audit=True,
             )
         except Exception as exc:  # noqa: BLE001
             # Execution happened. Never rewrite this as a safe failure or run
@@ -1156,22 +1120,6 @@ class OperatorCoordinator:
             raise OperatorAuditUnavailableError(
                 "Command outcome is indeterminate; reconciliation is required"
             ) from exc
-        await self.store.append_frame(
-            conversation_id,
-            proposal["requestId"],
-            "confirmation",
-            {"proposalId": proposal_id, "state": "executed"},
-        )
-        await self.store.append_frame(
-            conversation_id,
-            proposal["requestId"],
-            "tool_result",
-            {
-                "callId": proposal_id,
-                "ok": True,
-                "result": result,
-            },
-        )
         href = result.get("href")
         if isinstance(href, str):
             label = "Open run" if result.get("run_id") else "Open launch invocation"
