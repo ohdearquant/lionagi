@@ -287,7 +287,5 @@ async def test_applied_transition_id_names_the_written_row(db: StateDB) -> None:
 
     assert result.applied is True
     assert result.transition_id is not None
-    rows = await db.fetch_all(
-        "SELECT id FROM status_transitions WHERE entity_id = ?", (run_id,)
-    )
+    rows = await db.fetch_all("SELECT id FROM status_transitions WHERE entity_id = ?", (run_id,))
     assert result.transition_id in {row["id"] for row in rows}

@@ -465,9 +465,7 @@ async def test_act_tool_returning_none_persists_a_linked_action_response():
         calls.append(value)
 
     branch = Branch(tools=[record])
-    results = await branch.act(
-        {"function": "record", "arguments": {"value": "hello"}}
-    )
+    results = await branch.act({"function": "record", "arguments": {"value": "hello"}})
 
     requests = [m for m in branch.messages if isinstance(m, ActionRequest)]
     responses = [m for m in branch.messages if isinstance(m, ActionResponse)]
