@@ -2601,3 +2601,27 @@ def test_schedule_apply_refusal_names_each_row_once(agent_profile_cwd, temp_stat
     joined = " ".join(warnings)
     assert "INVALID  demo/nightly-review  " in joined
     assert "demo/demo/" not in joined
+
+
+def test_schedule_apply_dry_run_prints_a_refused_row_through_the_warning_channel(
+    agent_profile_cwd, temp_state_db, capsys, monkeypatch
+):
+    """A plan's refused rows are emitted like every other refusal this CLI reports,
+    through the warning channel, while the rest of the plan stays ordinary output."""
+    from lionagi.studio.cli import run_schedule
+
+    monkeypatch.setattr("lionagi.studio.config.SCHEDULER_TZ", "America/New_York")
+    manifest = _write_manifest(agent_profile_cwd)
+    _create_unowned_schedule(agent_profile_cwd, cron_expr="17 4 * * *")
+
+    with _cli_warnings() as warnings:
+        result = run_schedule(
+            _parse_schedule_args(["apply", str(manifest), "--dry-run", "--adopt"])
+        )
+    out = capsys.readouterr().out
+    assert result == 1
+    assert any(message.startswith("ERROR      demo/nightly-review  ") for message in warnings)
+    assert any("cron_expr" in message for message in warnings)
+    # The refused line is not duplicated onto stdout, and the plan summary stays there.
+    assert "ERROR      " not in out
+    assert "Plan: 0 create, 0 update, 0 unchanged, 0 disable" in out

@@ -1692,8 +1692,12 @@ def _cmd_apply_set(args: argparse.Namespace) -> int:
         )
     else:
         for entry in plan:
-            stream = sys.stderr if entry.action == "ERROR" else sys.stdout
-            print(_fmt_plan_line(entry, set_ref), file=stream)
+            # A refused entry goes through the CLI's warning channel, as every
+            # other refusal here does; the rest of the plan is ordinary output.
+            if entry.action == "ERROR":
+                warn(_fmt_plan_line(entry, set_ref))
+            else:
+                print(_fmt_plan_line(entry, set_ref))
         created = sum(1 for e in plan if e.action == "CREATE")
         adopted = sum(1 for e in plan if e.action == "ADOPT")
         updated = sum(1 for e in plan if e.action == "UPDATE")

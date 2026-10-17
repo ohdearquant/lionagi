@@ -32,7 +32,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, NamedTuple
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -859,36 +859,62 @@ _ADOPT_UNDECLARED_COLUMNS = (
 # The engine polls a github_poll row every poll_interval_sec, else interval_sec,
 # else this many seconds; a poll_interval_sec at this value changes nothing.
 _GITHUB_POLL_DEFAULT_SEC = 300
-_PROJECT_FLAG_ACTION_KINDS = frozenset({"agent", "flow", "fanout", "flow_yaml"})
 # The launch kinds a declaration target resolves to: every member's target is an
 # agent, a flow_yaml snapshot, a playbook or a command.
 _MEMBER_ACTION_KINDS = frozenset(_TARGET_KIND_TO_ACTION_KIND.values())
-# The launch kinds whose argv passes action_agent on: an agent launch passes the
-# profile as --agent, and an engine launch reads it as the engine kind. Every
-# other kind validates the identifier and then drops it.
-_AGENT_READING_ACTION_KINDS = frozenset({"agent", "engine"})
-# The launch kinds whose argv passes action_model on: an agent launch passes it as
-# a positional, a flow or fanout launch as the model positional after '--', a
-# flow_yaml launch merges it into the spec, and an engine launch passes it as
-# --model. Every other kind validates it and drops it.
-_MODEL_READING_ACTION_KINDS = frozenset({"agent", "flow", "fanout", "flow_yaml", "engine"})
-# The launch kinds whose argv passes action_prompt on: an agent, flow or fanout
-# launch passes it as a positional, a play launch appends it as the playbook's
-# input, and an engine launch passes it as the engine spec. A flow_yaml launch
-# carries its prompt inside the spec and a command launch has no prompt slot, so
-# both validate it and drop it.
-_PROMPT_READING_ACTION_KINDS = frozenset({"agent", "flow", "fanout", "play", "engine"})
+# The column each of those launch kinds names itself in: the profile an agent
+# launch runs, the snapshot a flow_yaml launch passes, the playbook a play launch
+# runs, the executable a command launch spawns.
+_MEMBER_TARGET_COLUMNS = {
+    "agent": "action_agent",
+    "flow_yaml": "action_flow_yaml",
+    "play": "action_playbook",
+    "command": "action_command",
+}
+
+
+# The columns build_argv validates before it branches on the kind, so a value the
+# launch refuses fails at every fire whatever the kind that would otherwise drop
+# it. Every action kind consults such a column; the table below names the kinds
+# that then act on an accepted value. Kept beside the table rather than in it, so
+# a table row stays the (kinds, triggers) pair it reads as.
+_VALIDATED_EVERY_KIND = frozenset(
+    {"action_project", "action_agent", "action_model", "action_prompt", "action_playbook"}
+)
+
+
+class _LaunchReading(NamedTuple):
+    """Which launch consults one stored column, and how.
+
+    ``kinds`` names the action kinds whose launch puts an accepted value into the
+    argv or otherwise acts on it; ``triggers`` the trigger types whose path from a
+    due row to a launched child consults it. ``None`` means every kind or every
+    trigger; an empty set means no launch reads it. ``validated_every_kind`` marks
+    a column the launch validates before it branches on the kind.
+    """
+
+    kinds: frozenset[str] | None
+    triggers: frozenset[str] | None
+    validated_every_kind: bool = False
+
+    def consults(self, kind: str | None) -> bool:
+        """Whether a launch of *kind* consults this column at all."""
+        return self.validated_every_kind or self.kinds is None or kind in self.kinds
+
+    def acts_on(self, kind: str | None) -> bool:
+        """Whether a launch of *kind* acts on the value, beyond validating it."""
+        return self.kinds is None or kind in self.kinds
+
 
 # Which launch reads which stored column. For every column a declaration writes,
 # this names the action kinds and the trigger types whose path from a due row to
 # a launched child consults it -- to build the argv, to resolve the execution
-# root, or to validate the value the launch would refuse at every fire. ``None``
-# means every kind or every trigger; an empty set means no launch reads it. It is
-# the single source for the adoption comparison: a column no launch of the row's
-# kind and trigger reads changes nothing about a fire, so two stored values act
-# alike there and adoption neither compares the column nor refuses the row for
-# it. Read off _tick (which trigger dispatches), the cron arming, the missed-fire
-# check, the fire path, build_argv and the github poll.
+# root, or to validate the value the launch would refuse at every fire. It is the
+# single source for the adoption comparison: a column no launch of the row's kind
+# and trigger reads changes nothing about a fire, so two stored values act alike
+# there and adoption neither compares the column nor refuses the row for it. Read
+# off _tick (which trigger dispatches), the cron arming, the missed-fire check,
+# the fire path, build_argv and the github poll.
 _LAUNCH_READERS: dict[str, tuple[frozenset[str] | None, frozenset[str] | None]] = {
     # _tick dispatches on trigger_type and lists only enabled rows; every fire
     # then builds an argv from action_kind and resolves its execution root.
@@ -927,15 +953,24 @@ _LAUNCH_READERS: dict[str, tuple[frozenset[str] | None, frozenset[str] | None]] 
     "on_fail": (None, None),
     # build_argv validates an action_project and extra tokens for every kind, and
     # passes --project on only for the agent and flow-yaml families.
-    "action_project": (None, None),
+    "action_project": (frozenset({"agent", "flow", "fanout", "flow_yaml"}), None),
     "action_extra_args": (None, None),
-    # The launch-specific columns every kind validates and only some pass on: a
-    # value the launch refuses fails at every fire whatever the kind, and a value
-    # it accepts is dropped by the kinds that read none of it.
-    "action_agent": (None, None),
-    "action_model": (None, None),
-    "action_prompt": (None, None),
-    "action_playbook": (None, None),
+    # The launch-specific columns: build_argv validates every one of them before
+    # it branches on the kind, so a value the launch refuses fails at every fire
+    # whatever the kind, and only the kinds named here then put a value it accepts
+    # into the argv. An agent launch passes action_agent as --agent and an engine
+    # launch reads it as the engine kind; an agent launch passes action_model as a
+    # positional, a flow or fanout launch as the model positional after '--', a
+    # flow_yaml launch merges it into the spec, and an engine launch passes it as
+    # --model; an agent, flow or fanout launch passes action_prompt as a
+    # positional, a play launch appends it as the playbook's input, and an engine
+    # launch passes it as the engine spec; a play launch appends action_playbook
+    # as the playbook name. A flow_yaml launch carries its prompt inside the spec
+    # and a command launch has no prompt slot, so both drop it.
+    "action_agent": (frozenset({"agent", "engine"}), None),
+    "action_model": (frozenset({"agent", "flow", "fanout", "flow_yaml", "engine"}), None),
+    "action_prompt": (frozenset({"agent", "flow", "fanout", "play", "engine"}), None),
+    "action_playbook": (frozenset({"play"}), None),
     # The columns only their own kind reads: a command launch spawns the
     # executable and renders its args, and a flow_yaml launch writes the snapshot
     # to the spec file it passes. No other kind consults them at all.
@@ -959,6 +994,19 @@ def _row_action_kind(row: dict[str, Any]) -> str | None:
     return _ALIAS_ACTION_KINDS.get(kind, kind)
 
 
+def _launch_reading(name: str) -> _LaunchReading:
+    """The launch reading for *name*, or one that names every kind and trigger.
+
+    A name the table does not list reads as a column every launch consults, so a
+    column added to the declaration without a table row is compared rather than
+    silently adopted against a row that stores something else.
+    """
+    entry = _LAUNCH_READERS.get(name)
+    if entry is None:
+        return _LaunchReading(None, None)
+    return _LaunchReading(*entry, name in _VALIDATED_EVERY_KIND)
+
+
 def _column_read_by(name: str, schedule: dict[str, Any]) -> bool:
     """Whether any launch of *schedule*'s kind and trigger consults this column.
 
@@ -966,12 +1014,10 @@ def _column_read_by(name: str, schedule: dict[str, Any]) -> bool:
     the declaration without a table row would otherwise be adopted against a row
     that stores something else in silence.
     """
-    if name not in _LAUNCH_READERS:
-        return True
-    kinds, triggers = _LAUNCH_READERS[name]
-    if kinds is not None and _row_action_kind(schedule) not in kinds:
+    reading = _launch_reading(name)
+    if not reading.consults(_row_action_kind(schedule)):
         return False
-    return triggers is None or schedule.get("trigger_type") in triggers
+    return reading.triggers is None or schedule.get("trigger_type") in reading.triggers
 
 
 def _is_adoptable(row: dict[str, Any]) -> bool:
@@ -1010,11 +1056,16 @@ async def _adopt_model_pair(
             from lionagi.cli._providers import load_agent_profile
 
             try:
-                current = (
-                    load_agent_profile(row["action_agent"], cwd=Path(root_path)).model or current
-                )
+                profile_model = load_agent_profile(row["action_agent"], cwd=Path(root_path)).model
             except (FileNotFoundError, OSError, ValueError):
                 pass
+            else:
+                # A profile's model is read only when it is a model name. Any other
+                # value a profile file can carry -- a number, a mapping, a list --
+                # names no model, so the row is read as leaving its model unset
+                # rather than failing the whole plan here.
+                if isinstance(profile_model, str):
+                    current = profile_model or current
     return (
         _adopt_comparable("action_model", row, current),
         _adopt_comparable("action_model", {**row, **declared_fields}, declared),
@@ -1054,10 +1105,10 @@ async def _adopt_project_pair(
                 _validate_identifier(project, "action_project")
             except ValueError:
                 return ("refused",), f"{project!r}, which the launch refuses"
-            if schedule.get("action_kind") not in _PROJECT_FLAG_ACTION_KINDS:
+            if not _launch_reading("action_project").acts_on(_row_action_kind(schedule)):
                 return ("unused",), "none, the action takes no project argument"
             return ("project", str(project)), f"{project!r}, set explicitly"
-        if schedule.get("action_kind") not in _PROJECT_FLAG_ACTION_KINDS:
+        if not _launch_reading("action_project").acts_on(_row_action_kind(schedule)):
             return ("unused",), "none, the action takes no project argument"
         if root[0][0] == "refused":
             return ("not-launched",), "none, the action does not launch"
@@ -1152,8 +1203,8 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
     if name == "action_agent":
         # An empty identifier passes nothing on. Every launch validates a
         # non-empty one, so a value the launch refuses fails at every fire
-        # whatever the kind; only an agent or an engine launch then passes it on,
-        # and the other kinds drop it after the check.
+        # whatever the kind; only the kinds whose launch passes it on then put it
+        # into the argv, and the other kinds drop it after the check.
         if not value:
             return None
         from lionagi.studio.scheduler.subprocess import _validate_identifier
@@ -1162,10 +1213,10 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
             _validate_identifier(value, "action_agent")
         except ValueError:
             return value
-        return value if _row_action_kind(schedule) in _AGENT_READING_ACTION_KINDS else None
+        return value if _launch_reading(name).acts_on(_row_action_kind(schedule)) else None
     if name == "action_model":
         # Same reading as action_agent: every launch validates the model, only the
-        # listed kinds then pass it on.
+        # named kinds then pass it on.
         if not value:
             return None
         from lionagi.studio.scheduler.subprocess import _validate_action_model
@@ -1174,7 +1225,7 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
             _validate_action_model(value)
         except ValueError:
             return value
-        return value if _row_action_kind(schedule) in _MODEL_READING_ACTION_KINDS else None
+        return value if _launch_reading(name).acts_on(_row_action_kind(schedule)) else None
     if name == "action_prompt":
         # A launch reads the prompt only when it is set: an unset and an empty
         # prompt are passed alike (an agent launch passes one empty positional,
@@ -1191,7 +1242,7 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
             return value
         if _row_action_kind(schedule) == "play" and value.startswith("-"):
             return value
-        return value if _row_action_kind(schedule) in _PROMPT_READING_ACTION_KINDS else None
+        return value if _launch_reading(name).acts_on(_row_action_kind(schedule)) else None
     if name == "cron_expr":
         # Only a cron trigger reads the expression.
         return value if schedule.get("trigger_type") == "cron" else None
@@ -1207,8 +1258,8 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
         # Only an interval or github_poll trigger reads the interval.
         return value if trigger_type == "interval" else None
     if name == "action_playbook":
-        # Every kind validates the identifier; only a play launch then appends the
-        # name as a positional.
+        # Every kind validates the identifier; only the named kind then appends
+        # the name as a positional.
         if not value:
             return None
         from lionagi.studio.scheduler.subprocess import _validate_identifier
@@ -1217,7 +1268,7 @@ def _adopt_comparable(name: str, schedule: dict[str, Any], value: Any) -> Any:
             _validate_identifier(value, "action_playbook")
         except ValueError:
             return value
-        return value if _row_action_kind(schedule) == "play" else None
+        return value if _launch_reading(name).acts_on(_row_action_kind(schedule)) else None
     if name == "action_command":
         # Only a command launch spawns the executable, and it validates the name
         # and its allow-list membership before it does; a name either check
@@ -1355,6 +1406,12 @@ async def _adopt_undeclarable(
     if name == "action_kind":
         # A member's target resolves to an agent, flow_yaml, play or command launch.
         return row.get("action_kind") not in _MEMBER_ACTION_KINDS
+    if name == _MEMBER_TARGET_COLUMNS.get(_row_action_kind(row)) and not current:
+        # The active kind's own target column names what the launch runs: the
+        # profile, the snapshot, the playbook or the executable. A row that stores
+        # none of it launches nothing in that column's place, and no member's target
+        # resolves to an empty one, so the row cannot be matched by a member edit.
+        return True
     if name == "action_agent" and current is not None:
         # The launch validates the identifier however the kind, and reads the
         # profile from the row's own execution root. A member always names a
@@ -1448,15 +1505,11 @@ async def _adopt_undeclarable(
             return True
         if is_global or stored:
             return False
-        # Every member of a project's set runs with a project, its own or the set's, so a
-        # row that sets none and detects none from its root cannot be matched by one.
-        try:
-            from lionagi.cli._project import detect_project
-
-            project, _source = detect_project(Path(root_path))
-        except (OSError, RuntimeError, ValueError):
-            return True
-        return not project
+        # A member of a project's set that names no project inherits the set's, but a
+        # member writing an explicit ``project: null`` declares no project, which
+        # resolves to this row's None: a difference a member edit closes, so the refusal
+        # names that edit rather than calling the value undeclarable.
+        return False
     return False
 
 
@@ -1503,6 +1556,14 @@ async def _adopt_plan_entry(
             )
         elif len(unrecorded_zone) == len(differences):
             remedy = "."
+        elif any(d[0] == "action_project" and "run project: none" in d[1] for d in differences):
+            # The row runs with no project and the member declares the set's, and a
+            # member can close that: a project written as ``project: null`` declares
+            # no project. Name the edit rather than the generic remedy.
+            remedy = (
+                "; edit the member to match the row, declaring no project with "
+                "execution: {project: null}."
+            )
         else:
             remedy = "; edit the member to match the row."
         reasons.append(

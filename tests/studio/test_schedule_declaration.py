@@ -2372,7 +2372,6 @@ async def test_adopt_reads_a_repeated_notify_status_as_one(
     [
         ("action_prompt", {"action_prompt": "--"}),
         ("action_model", {"action_model": "anthropic/claude-sonnet-5[1m]"}),
-        ("action_project", {"action_project": None}),
     ],
 )
 @pytest.mark.asyncio
@@ -2390,6 +2389,38 @@ async def test_adopt_offers_no_member_edit_for_a_value_no_member_can_declare(
     assert [entry.action for entry in plan] == ["ERROR"]
     assert f"no member can declare the row's {column}" in detail
     assert "edit the member to match the row" not in detail
+
+
+@pytest.mark.asyncio
+async def test_adopt_names_the_null_project_edit_for_a_row_running_without_one(
+    temp_db_path, agent_profile, pinned_scheduler_tz, monkeypatch
+):
+    """A row holding no project whose root detects none runs with no project, which
+    an explicit ``project: null`` on the member declares. The refusal is therefore a
+    difference a member edit can close, and it names that edit rather than calling
+    the value one no member can declare."""
+    from lionagi.cli import _project
+
+    monkeypatch.setattr(_project, "detect_project", lambda path: (None, "none"))
+    doc = parse_schedule_set(_agent_manifest("nightly", cwd=agent_profile))
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_adoption_row("nightly", cwd=agent_profile, action_project=None)
+        )
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+        detail = plan[0].detail
+        assert [entry.action for entry in plan] == ["ERROR"], detail
+        assert "action_project" in detail
+        assert "no member can declare" not in detail
+        assert "declaring no project with execution: {project: null}." in detail
+
+        # The edit the refusal names is one that works: the member declaring no
+        # project resolves the row's stored None rather than the document's project.
+        null_project = parse_schedule_set(
+            _agent_manifest("nightly", cwd=agent_profile, extra_member="      project: null")
+        )
+        plan, _ = await build_plan(db, null_project, agent_profile, adopt=True)
+        assert [entry.action for entry in plan] == ["ADOPT"], plan[0].detail
 
 
 @pytest.mark.asyncio
@@ -2414,6 +2445,35 @@ async def test_adopt_reads_an_unpinned_model_at_the_execution_root_not_the_apply
     assert ("action_model", "anthropic/claude-sonnet-5", "anthropic/root-model") in (
         await _adopt_spec_differences(pinned_elsewhere, resolved)
     )
+
+
+@pytest.mark.asyncio
+async def test_adopt_reads_a_profile_model_that_is_not_text_as_no_model(
+    temp_db_path, agent_profile, pinned_scheduler_tz
+):
+    """A profile file can carry any value under ``model``; only a string names a
+    model. A row that leaves its model to a profile naming a number is read as
+    naming no model, not as a crash while the plan is built."""
+    (agent_profile / ".lionagi" / "agents" / "numbered.md").write_text(
+        "---\nmodel: 123\n---\nBody.\n"
+    )
+    doc = parse_schedule_set(
+        _agent_manifest("nightly", cwd=agent_profile)
+        .replace("profile: reviewer", "profile: numbered")
+        .replace(
+            'prompt: "check things"',
+            'prompt: "check things"\n      model: anthropic/claude-sonnet-5',
+        )
+    )
+    resolved = resolve_schedule_set(doc, agent_profile)["nightly"]
+    row = _legacy_adoption_row(
+        "nightly", cwd=agent_profile, action_model=None, action_agent="numbered"
+    )
+    # The profile names no model, so the row names none and the member's pinned model
+    # is a difference -- not an unhandled exception from reading 123 as a model name.
+    assert await _adopt_spec_differences(row, resolved) == [
+        ("action_model", None, "anthropic/claude-sonnet-5")
+    ]
 
 
 @pytest.mark.asyncio
@@ -3940,3 +4000,312 @@ async def test_adoption_reads_a_column_only_under_the_launch_that_reads_it(
         # The refusal names the column it read, and where no member could state the
         # stored value it says so instead of offering a member edit nobody can make.
         assert column in plan[0].detail, f"{column}: {tag}: {plan[0].detail}"
+
+
+# ---------------------------------------------------------------------------
+# Every column names, per kind and trigger, the launches whose path reads it
+# ---------------------------------------------------------------------------
+#
+# The cases above are hand-written, one per table row. These walks are derived: for
+# every column carrying an action-kind set and every kind a member target can
+# produce, one case builds a row of that kind differing in that one column, and the
+# same for every trigger the table distinguishes. What each case expects comes from
+# the ``_PINNED_*`` maps below -- independent copies of the table's kind and trigger
+# sets -- so a kind or trigger dropped from a table entry leaves the case in place
+# and turns it red instead of removing the only case that would have caught it.
+
+# The row overrides that store a different value than the member declares, per
+# column. Every value is one the launch accepts, so a kind or trigger whose launch
+# reads no part of the column has nothing to differ in, and one whose launch reads
+# it has a real difference to report. The kind walk and the trigger walk each carry
+# only the columns their axis varies.
+_DIFFERING_ROW_OVERRIDES = {
+    "action_project": {"action_project": "other-project"},
+    # A profile the row's own execution root resolves, so the launch accepts it.
+    "action_agent": {"action_agent": "other"},
+    "action_model": {"action_model": "anthropic/claude-opus-5"},
+    "action_prompt": {"action_prompt": "other things"},
+    "action_playbook": {"action_playbook": "other-pb"},
+}
+_DIFFERING_TRIGGER_ROW_OVERRIDES = {
+    "cron_expr": {"cron_expr": "0 3 * * *"},
+    # A row with no stored zone is read in the zone the scheduler recorded on it.
+    "resolved_timezone": {"effective_timezone": "Europe/Berlin"},
+    "interval_sec": {"interval_sec": 7200},
+    "github_repo": {"github_repo": "acme/other"},
+    "github_filter": {"github_filter": {"state": "open"}},
+    "poll_interval_sec": {"poll_interval_sec": 60},
+    "missed_fire_policy": {"missed_fire_policy": "run_once"},
+    "overlap_policy": {"overlap_policy": "allow"},
+}
+# An independent copy of the kinds the table names for each column the kind walk
+# varies.
+_PINNED_ACTION_KINDS = {
+    "action_project": {"agent", "flow", "fanout", "flow_yaml"},
+    "action_agent": {"agent", "engine"},
+    "action_model": {"agent", "flow", "fanout", "flow_yaml", "engine"},
+    "action_prompt": {"agent", "flow", "fanout", "play", "engine"},
+    "action_playbook": {"play"},
+}
+# An independent copy of the triggers the table names for each column the trigger
+# walk varies.
+_PINNED_READING_TRIGGERS = {
+    "cron_expr": {"cron"},
+    "resolved_timezone": {"cron"},
+    "interval_sec": {"interval", "github_poll"},
+    "github_repo": {"github_poll"},
+    "github_filter": {"github_poll"},
+    "poll_interval_sec": {"github_poll"},
+    "missed_fire_policy": {"cron", "interval", "at"},
+    "overlap_policy": {"cron", "interval", "at"},
+}
+# The kinds a member target can produce, and the member/row target block for each.
+_TABLE_KINDS = {"agent": "agent", "flow_yaml": "flow", "play": "play", "command": "command"}
+# The trigger types the table distinguishes, and for each the member manifest block
+# and the stored row's trigger. The one-shot row is stored under the default
+# missed-fire policy, so that policy is not the difference a one-shot case is about.
+_TABLE_TRIGGERS = {
+    "cron": ("cron", "cron"),
+    "interval": ("interval", "interval"),
+    "at": ("at", "at_skip"),
+    "github_poll": ("github", "github"),
+}
+
+
+def _table_kind_cases() -> list[tuple[str, str]]:
+    """(column, kind) for every column the table gives an action-kind set."""
+    from lionagi.studio.services.schedule_declaration import _LAUNCH_READERS
+
+    return [
+        (column, kind)
+        for column, (kinds, _triggers) in sorted(_LAUNCH_READERS.items())
+        if kinds is not None and column in _DIFFERING_ROW_OVERRIDES
+        for kind in _TABLE_KINDS
+    ]
+
+
+def _table_trigger_cases() -> list[tuple[str, str]]:
+    """(column, trigger) for every column the table gives a trigger set."""
+    from lionagi.studio.services.schedule_declaration import _LAUNCH_READERS
+
+    return [
+        (column, trigger)
+        for column, (_kinds, triggers) in sorted(_LAUNCH_READERS.items())
+        if triggers is not None and column in _DIFFERING_TRIGGER_ROW_OVERRIDES
+        for trigger in _TABLE_TRIGGERS
+    ]
+
+
+_TABLE_KIND_CASES = _table_kind_cases()
+_TABLE_TRIGGER_CASES = _table_trigger_cases()
+
+
+def test_the_walks_pin_every_column_whose_reader_set_they_vary():
+    """Each walk's pin covers every column the table still gives that axis a set
+    for, and names only columns the walk can build a row for -- so a table entry
+    the walk dropped a kind from cannot quietly leave the walk with no case."""
+    from lionagi.studio.services.schedule_declaration import _LAUNCH_READERS
+
+    kind_columns = {
+        column for column, (kinds, _triggers) in _LAUNCH_READERS.items() if kinds is not None
+    }
+    trigger_columns = {
+        column for column, (_kinds, triggers) in _LAUNCH_READERS.items() if triggers is not None
+    }
+    assert set(_PINNED_ACTION_KINDS) & kind_columns == kind_columns & set(_DIFFERING_ROW_OVERRIDES)
+    assert set(_PINNED_READING_TRIGGERS) & trigger_columns == trigger_columns & set(
+        _DIFFERING_TRIGGER_ROW_OVERRIDES
+    )
+    assert set(_TABLE_KIND_CASES) and set(_TABLE_TRIGGER_CASES)
+
+
+@pytest.mark.parametrize(
+    "column,kind",
+    _TABLE_KIND_CASES,
+    ids=[f"{column}-{kind}" for column, kind in _TABLE_KIND_CASES],
+)
+@pytest.mark.asyncio
+async def test_a_row_of_a_kind_the_table_names_for_a_column_is_refused(
+    column, kind, temp_db_path, agent_profile, pinned_scheduler_tz, monkeypatch
+):
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index,other-cmd")
+    (agent_profile / ".lionagi" / "agents" / "other.md").write_text(
+        "---\nmodel: anthropic/claude-sonnet-5\n---\nBody.\n"
+    )
+    flows = agent_profile / "flows"
+    flows.mkdir(exist_ok=True)
+    (flows / "nightly.yaml").write_text("workers: 2\n")
+
+    target = _TABLE_KINDS[kind]
+    doc = parse_schedule_set(_member_manifest(cwd=agent_profile, target=target))
+    stored = _member_row(cwd=agent_profile, target=target, **_DIFFERING_ROW_OVERRIDES[column])
+    async with StateDB() as db:
+        for existing in await db.list_schedules():
+            await db.delete_schedule(existing["id"])
+        await db.create_schedule(dict(stored))
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+
+    if kind in _PINNED_ACTION_KINDS[column]:
+        assert plan[0].action == "ERROR", f"{column}: {kind}: {plan[0].detail}"
+        assert column in plan[0].detail, f"{column}: {kind}: {plan[0].detail}"
+    else:
+        assert plan[0].action == "ADOPT", f"{column}: {kind}: {plan[0].detail}"
+
+
+@pytest.mark.parametrize(
+    "column,trigger",
+    _TABLE_TRIGGER_CASES,
+    ids=[f"{column}-{trigger}" for column, trigger in _TABLE_TRIGGER_CASES],
+)
+@pytest.mark.asyncio
+async def test_a_row_on_a_trigger_the_table_names_for_a_column_is_refused(
+    column, trigger, temp_db_path, agent_profile, pinned_scheduler_tz, monkeypatch
+):
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
+
+    member_trigger, row_trigger = _TABLE_TRIGGERS[trigger]
+    doc = parse_schedule_set(_member_manifest(cwd=agent_profile, trigger=member_trigger))
+    stored = _member_row(
+        cwd=agent_profile, trigger=row_trigger, **_DIFFERING_TRIGGER_ROW_OVERRIDES[column]
+    )
+    async with StateDB() as db:
+        for existing in await db.list_schedules():
+            await db.delete_schedule(existing["id"])
+        await db.create_schedule(dict(stored))
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+
+    if trigger in _PINNED_READING_TRIGGERS[column]:
+        assert plan[0].action == "ERROR", f"{column}: {trigger}: {plan[0].detail}"
+        assert column in plan[0].detail, f"{column}: {trigger}: {plan[0].detail}"
+    else:
+        assert plan[0].action == "ADOPT", f"{column}: {trigger}: {plan[0].detail}"
+
+
+# ---------------------------------------------------------------------------
+# A row whose own target column names nothing is undeclarable
+# ---------------------------------------------------------------------------
+#
+# Every member target resolves the column its launch runs by: an agent's profile,
+# a playbook's name, a command's executable, a flow's snapshot. None of them
+# resolves an empty one, so a row that stores none of its own column launches
+# nothing there and no member can be edited to match it.
+
+_MISSING_OWN_COLUMN_CASES = {
+    "agent": (_AGENT_TARGET_BLOCK, {"action_agent": None}),
+    "play": (
+        _PLAY_TARGET_BLOCK,
+        {
+            "action_kind": "play",
+            "action_agent": None,
+            "action_model": None,
+            "action_prompt": None,
+            "action_playbook": None,
+        },
+    ),
+    "command": (
+        _COMMAND_TARGET_BLOCK,
+        {
+            "action_kind": "command",
+            "action_agent": None,
+            "action_model": None,
+            "action_prompt": None,
+            "action_command": None,
+        },
+    ),
+    "flow": (
+        _FLOW_TARGET_BLOCK,
+        {
+            "action_kind": "flow_yaml",
+            "action_agent": None,
+            "action_model": None,
+            "action_prompt": None,
+            "action_flow_yaml": None,
+        },
+    ),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_MISSING_OWN_COLUMN_CASES))
+@pytest.mark.asyncio
+async def test_adopt_names_a_row_missing_its_own_target_column_as_undeclarable(
+    kind, temp_db_path, agent_profile, pinned_scheduler_tz, monkeypatch
+):
+    from lionagi.studio.services.schedule_declaration import _MEMBER_TARGET_COLUMNS
+
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
+    flows = agent_profile / "flows"
+    flows.mkdir(exist_ok=True)
+    (flows / "nightly.yaml").write_text("workers: 2\n")
+
+    target_block, overrides = _MISSING_OWN_COLUMN_CASES[kind]
+    kind_of_row = overrides.get("action_kind", "agent")
+    column = _MEMBER_TARGET_COLUMNS[kind_of_row]
+    doc = parse_schedule_set(
+        _manifest_with_target("nightly", cwd=agent_profile, target=target_block)
+    )
+    async with StateDB() as db:
+        await db.create_schedule(_legacy_adoption_row("nightly", cwd=agent_profile, **overrides))
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+    detail = plan[0].detail
+    assert [entry.action for entry in plan] == ["ERROR"], detail
+    assert f"no member can declare the row's {column}" in detail
+    assert "cannot be adopted as it stands" in detail
+    assert "edit the member to match the row" not in detail
+
+
+# The plan-level walk above can only store a kind a member target produces, so the
+# kinds a member never produces -- flow, fanout and engine -- are pinned here on the
+# comparison itself: a launch of such a kind acts on a value exactly when the table
+# names that kind for the column.
+
+# One value the launch accepts for each column the comparison reads by kind.
+_COMPARABLE_VALUES = {
+    "action_agent": "reviewer",
+    "action_model": "anthropic/claude-sonnet-5",
+    "action_prompt": "check things",
+    "action_playbook": "health-audit",
+}
+# Every launch kind, member-producible or not.
+_ALL_LAUNCH_KINDS = ("agent", "command", "engine", "fanout", "flow", "flow_yaml", "play")
+
+_COMPARABLE_KIND_CASES = [
+    (column, kind) for column in sorted(_COMPARABLE_VALUES) for kind in _ALL_LAUNCH_KINDS
+]
+
+
+@pytest.mark.parametrize(
+    "column,kind",
+    _COMPARABLE_KIND_CASES,
+    ids=[f"{column}-{kind}" for column, kind in _COMPARABLE_KIND_CASES],
+)
+def test_the_comparison_acts_on_a_value_exactly_under_the_kinds_the_table_names(column, kind):
+    value = _COMPARABLE_VALUES[column]
+    acted_on = _adopt_comparable(column, {"action_kind": kind}, value)
+    if kind in _PINNED_ACTION_KINDS[column]:
+        assert acted_on == value, f"{column}: {kind}: a value the launch passes on was dropped"
+    else:
+        # A row of a kind the table names none for acts on no value in this column,
+        # so two stored values act alike there whatever they say.
+        assert acted_on is None, f"{column}: {kind}: {acted_on!r} was acted on"
+
+
+def test_the_comparison_walk_covers_every_kind_a_launch_can_carry():
+    """The walk varies every launch kind, and the table's kind sets name only ones
+    the walk covers -- so a kind the table names cannot be added without the walk
+    varying it."""
+    from lionagi.studio.scheduler.subprocess import (
+        _ALIAS_ACTION_KINDS,
+        _VALID_ACTION_KINDS,
+    )
+
+    assert set(_ALL_LAUNCH_KINDS) >= _VALID_ACTION_KINDS
+    # A legacy spelling is canonicalized before the comparison reads it, so its
+    # target is what the walk must cover -- not the spelling itself.
+    assert set(_ALIAS_ACTION_KINDS.values()) <= set(_ALL_LAUNCH_KINDS)
+    for spelling, canonical in _ALIAS_ACTION_KINDS.items():
+        for column in _COMPARABLE_VALUES:
+            assert _adopt_comparable(
+                column, {"action_kind": spelling}, _COMPARABLE_VALUES[column]
+            ) == _adopt_comparable(column, {"action_kind": canonical}, _COMPARABLE_VALUES[column])
+    named = set().union(*_PINNED_ACTION_KINDS.values())
+    assert named <= set(_ALL_LAUNCH_KINDS)
