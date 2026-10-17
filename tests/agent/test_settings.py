@@ -321,6 +321,7 @@ async def test_a_hook_whose_exchange_fails_ends_its_process_group(monkeypatch, p
         assert await hook("bash", "run", {}, {}) is None
 
     cleanup.assert_awaited_once_with(mock_proc, grace=None, group_witnesses=witnesses)
+    mock_proc.wait.assert_awaited()
 
 
 def _pid_alive(pid: int) -> bool:
@@ -336,6 +337,7 @@ def _pid_alive(pid: int) -> bool:
 async def test_cancelling_a_pre_hook_kills_the_hook_and_the_process_it_started(tmp_path):
     """A real hook and its own child are both gone once the cancelled call returns."""
     import asyncio
+    import contextlib
     import os
     import signal
     import sys
@@ -374,9 +376,186 @@ async def test_cancelling_a_pre_hook_kills_the_hook_and_the_process_it_started(t
     finally:
         if not task.done():
             task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
         for pid in pids:
             if _pid_alive(pid):
                 os.kill(pid, signal.SIGKILL)
+
+
+async def test_cancelling_a_hook_that_exited_kills_the_process_it_left_running(tmp_path):
+    """A hook's child holding the pipes open is killed after the hook itself was reaped."""
+    import asyncio
+    import contextlib
+    import os
+    import signal
+    import sys
+
+    from lionagi.agent.settings import _make_shell_hook
+
+    pids_file = tmp_path / "pids"
+    script = tmp_path / "hook.py"
+    script.write_text(
+        "import os, subprocess, sys\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        "with open(sys.argv[1] + '.tmp', 'w') as f:\n"
+        "    f.write(f'{os.getpid()} {child.pid}')\n"
+        "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
+    )
+    hook = _make_shell_hook([sys.executable, str(script), str(pids_file)], "pre", "bash")
+    task = asyncio.create_task(hook("bash", "run", {}))
+    pids: list[int] = []
+    try:
+        for _ in range(200):
+            if pids_file.exists():
+                break
+            await asyncio.sleep(0.05)
+        pids = [int(pid) for pid in pids_file.read_text().split()]
+        hook_pid, child_pid = pids
+        for _ in range(200):
+            if not _pid_alive(hook_pid):
+                break
+            await asyncio.sleep(0.05)
+        assert not _pid_alive(hook_pid)
+        assert not task.done()
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        for _ in range(100):
+            if not _pid_alive(child_pid):
+                break
+            await asyncio.sleep(0.05)
+        assert not _pid_alive(child_pid)
+    finally:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+        for pid in pids:
+            if _pid_alive(pid):
+                os.kill(pid, signal.SIGKILL)
+
+
+async def test_a_hook_cancelled_while_it_is_being_spawned_is_killed_once_it_exists(
+    tmp_path, monkeypatch
+):
+    """Cancellation inside the spawn call does not lose the hook's process group."""
+    import asyncio
+    import contextlib
+    import os
+    import signal
+    import sys
+
+    from lionagi.agent.settings import _make_shell_hook
+
+    real_create = asyncio.create_subprocess_exec
+    release = asyncio.Event()
+
+    async def create_then_hold(*args, **kwargs):
+        proc = await real_create(*args, **kwargs)
+        await release.wait()
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_then_hold)
+
+    pids_file = tmp_path / "pids"
+    script = tmp_path / "hook.py"
+    script.write_text(
+        "import os, subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        "with open(sys.argv[1] + '.tmp', 'w') as f:\n"
+        "    f.write(f'{os.getpid()} {child.pid}')\n"
+        "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
+        "time.sleep(30)\n"
+    )
+    hook = _make_shell_hook([sys.executable, str(script), str(pids_file)], "pre", "bash")
+    task = asyncio.create_task(hook("bash", "run", {}))
+    pids: list[int] = []
+    try:
+        for _ in range(200):
+            if pids_file.exists():
+                break
+            await asyncio.sleep(0.05)
+        pids = [int(pid) for pid in pids_file.read_text().split()]
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        release.set()
+
+        for _ in range(100):
+            if not any(_pid_alive(pid) for pid in pids):
+                break
+            await asyncio.sleep(0.05)
+        assert [pid for pid in pids if _pid_alive(pid)] == []
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+        for pid in pids:
+            if _pid_alive(pid):
+                os.kill(pid, signal.SIGKILL)
+
+
+@pytest.mark.parametrize("phase", ["pre", "post"])
+async def test_a_scope_cancelled_while_a_failed_hook_is_ended_stays_cancelled(monkeypatch, phase):
+    """The cancellation is delivered, not replaced by the hook's own error handling."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    import anyio
+
+    from lionagi.agent.settings import _make_shell_hook
+
+    scopes: list[anyio.CancelScope] = []
+
+    async def wait_while_the_scope_is_cancelled():
+        scopes[0].cancel()
+
+    mock_proc = MagicMock()
+    mock_proc.pid = 5555
+    mock_proc.communicate = AsyncMock(side_effect=OSError("pipe closed"))
+    mock_proc.wait = wait_while_the_scope_is_cancelled
+    witnesses = ((5555, 14.0),)
+    _, cleanup = _patch_hook_spawn(monkeypatch, mock_proc, 14.0, witnesses)
+
+    hook = _make_shell_hook(["guard"], phase, "bash")
+    with anyio.CancelScope() as scope:
+        scopes.append(scope)
+        if phase == "pre":
+            await hook("bash", "run", {})
+        else:
+            await hook("bash", "run", {}, {})
+
+    assert scope.cancelled_caught
+    cleanup.assert_awaited_once_with(mock_proc, grace=None, group_witnesses=witnesses)
+
+
+@pytest.mark.parametrize("phase", ["pre", "post"])
+async def test_any_payload_serialization_failure_is_handled_without_spawning(monkeypatch, phase):
+    from unittest.mock import MagicMock
+
+    import lionagi.agent.settings as settings_mod
+    from lionagi.agent.settings import _make_shell_hook
+
+    def too_deep(*args, **kwargs):
+        raise RecursionError("maximum recursion depth exceeded while encoding")
+
+    spawn, cleanup = _patch_hook_spawn(monkeypatch, MagicMock(), 1.0, ())
+    monkeypatch.setattr(settings_mod.json, "dumps", too_deep)
+
+    hook = _make_shell_hook(["guard"], phase, "bash")
+    if phase == "pre":
+        with pytest.raises(PermissionError, match="maximum recursion depth"):
+            await hook("bash", "run", {})
+    else:
+        assert await hook("bash", "run", {}, {}) is None
+
+    spawn.assert_not_awaited()
+    cleanup.assert_not_awaited()
 
 
 # aterminate_process_group must never signal the init/session process group.

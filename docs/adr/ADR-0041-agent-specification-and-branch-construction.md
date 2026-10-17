@@ -251,7 +251,11 @@ starts. A mapping that cannot be serialized, non-zero exit, subprocess creation 
 mapping and log/swallow serialization, subprocess or timeout failure; a result that cannot be
 serialized starts no subprocess. On a timeout, a failed exchange with the subprocess, or
 cancellation, both hooks terminate the process group, then wait up to 2 seconds for exit;
-cancellation is re-raised after the wait. Ten and two seconds are inherited
+cancellation is re-raised after the wait, and a cancellation that arrives during the wait is
+raised in place of the hook's own error. The group is terminated even when the hook process has
+already exited while a process it started holds its pipes: members carrying the marker set at
+spawn identify the group. A cancellation that arrives while the subprocess is being created
+terminates its group once creation completes. Ten and two seconds are inherited
 implementation values; no recorded rationale establishes those exact thresholds. An `on_error`
 command currently builds the post-shaped callable and is appended to `error:<tool>`, but the
 shipped Tool execution path never invokes error handlers (ADR-0044 records the target repair).
