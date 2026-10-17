@@ -1265,3 +1265,94 @@ def test_health_counts_the_rows_whose_lock_scan_did_not_finish(tmp_path, monkeyp
         "would be about some other set of rows"
     )
     assert sess["lock_scan_truncated"] == 3
+
+
+def test_a_finalize_lock_beside_the_artifact_root_reaches_the_classifier(tmp_path):
+    """A run's ``finalize.lock`` sits one level above the ``artifacts`` directory
+    that a session records as its ``artifacts_path``.
+
+    A walk rooted at that directory descends only, so it cannot reach a lock
+    beside it: for the runs whose artifact path is the run dir's ``artifacts``
+    child, the lock evidence was unreachable and the classification silently
+    fell through to ``process_dead``. The run directory itself has to be
+    checked as well as the artifact subtree under it.
+    """
+    import lionagi.studio.services.admin as admin_svc
+
+    run_dir = tmp_path / "run-1"
+    artifacts_dir = run_dir / "artifacts"
+    artifacts_dir.mkdir(parents=True)
+    _aged(run_dir / "finalize.lock", 7200)
+
+    now = time.time()
+    stale_row = {
+        "id": str(uuid.uuid4()),
+        "updated_at": now - 7200,
+        "artifacts_path": str(artifacts_dir),
+    }
+    assert (
+        admin_svc._classify_phantom(stale_row, now=now, stale_seconds=3600, ps_snapshot="")
+        == "stale_lock"
+    )
+
+
+def test_a_finalize_lock_names_the_phantom_reason_a_caller_reads(tmp_path, monkeypatch):
+    """The same unreachability, seen through the phantom list a caller reads.
+
+    A running session whose process is gone and whose run directory holds a
+    stale ``finalize.lock`` must be reported with the lock's reason, not the
+    generic dead-process one.
+    """
+    import lionagi.studio.services.admin as admin_svc
+
+    db_path = tmp_path / "state.db"
+    run_dir = tmp_path / "run-1"
+    artifacts_dir = run_dir / "artifacts"
+    artifacts_dir.mkdir(parents=True)
+    _aged(run_dir / "finalize.lock", 7200)
+    _run(
+        _seed_running_session(
+            db_path,
+            str(uuid.uuid4()),
+            artifacts_path=str(artifacts_dir),
+            updated_at=time.time() - 7200,
+        )
+    )
+
+    client = _make_client(tmp_path, monkeypatch, db_path)
+    phantoms = client.get("/api/admin/doctor").json()["phantom_sessions"]
+    assert [entry["reason"] for entry in phantoms] == ["stale_lock"], (
+        "the lock beside the artifact root was not reached, so the classifier "
+        "fell through to the generic dead-process reason"
+    )
+
+
+def test_a_job_lock_under_the_job_directory_reaches_the_classifier(tmp_path, monkeypatch):
+    """The MCP server's ``job.lock`` lives under ``JOBS_DIR/{run_id}``, which is
+    not under any run's artifact root either, so it needs the same explicit
+    look-up.
+    """
+    import lionagi.mcp.config as mcp_config
+    import lionagi.studio.services.admin as admin_svc
+
+    jobs_dir = tmp_path / "jobs"
+    monkeypatch.setattr(mcp_config, "JOBS_DIR", jobs_dir)
+
+    run_id = "run-with-a-job-lock"
+    run_dir = tmp_path / run_id
+    artifacts_dir = run_dir / "artifacts"
+    artifacts_dir.mkdir(parents=True)
+    job_dir = jobs_dir / run_id
+    job_dir.mkdir(parents=True)
+    _aged(job_dir / "job.lock", 7200)
+
+    now = time.time()
+    stale_row = {
+        "id": run_id,
+        "updated_at": now - 7200,
+        "artifacts_path": str(artifacts_dir),
+    }
+    assert (
+        admin_svc._classify_phantom(stale_row, now=now, stale_seconds=3600, ps_snapshot="")
+        == "stale_lock"
+    )

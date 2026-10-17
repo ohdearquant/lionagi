@@ -146,6 +146,10 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Fixed
 
+- Session health finds a stale `finalize.lock` in a run's directory and a stale `job.lock` in its
+  MCP job directory. Both sit beside the `artifacts` directory a session records, which is the only
+  tree the check walked, so for most runs a stale lock was never seen and the session was classified
+  by its process alone.
 - The Studio operator stores a proposal's outcome frame (the `confirmation`, `error` or
   `tool_result` the conversation shows for it) in the same transaction that decides, expires or
   completes the proposal. The frame used to be appended after that commit, so a turn that finished
