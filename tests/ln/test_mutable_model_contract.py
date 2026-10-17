@@ -12,8 +12,9 @@ from dataclasses import dataclass, field
 from importlib import import_module
 from pathlib import Path
 
+import msgspec
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from lionagi.libs.schema.function_to_schema import FunctionSchema
 from lionagi.ln import to_list
@@ -427,6 +428,57 @@ def test_dedup_keeps_two_distinct_cyclic_models_instead_of_raising():
     assert fields._validate_listable_field(None, [first, second]) == [first, second]
 
 
+class _CyclicStruct(msgspec.Struct):
+    """An msgspec struct whose field can hold the struct itself."""
+
+    child: object = None
+
+
+class _CyclicModel(BaseModel):
+    """A Pydantic model whose field can hold the model itself."""
+
+    child: _CyclicModel | None = None
+
+
+_CyclicModel.model_rebuild()
+
+
+def test_a_cyclic_struct_reports_unhashable_from_its_content_key():
+    """``msgspec.to_builtins`` descends into a struct that holds itself and reaches the
+    recursion limit before the content hash can walk it, so the content key reports the
+    same unhashable ``TypeError`` a cyclic container reports and the equality path
+    takes it."""
+    from lionagi.ln import hash_dict
+
+    cyclic = _CyclicStruct()
+    cyclic.child = cyclic
+    with pytest.raises(TypeError, match="cannot key a cyclic or too deeply nested"):
+        hash_dict(cyclic)
+    assert to_list([cyclic, cyclic], flatten=True, unique=True) == [cyclic]
+
+
+def test_a_cyclic_model_reports_unhashable_from_its_content_key():
+    """Pydantic's ``model_dump`` refuses a model that holds itself with ``ValueError``;
+    that is read as the same unhashable state and the equality path takes it."""
+    from lionagi.ln import _hash
+
+    cyclic = _CyclicModel()
+    cyclic.child = cyclic
+    with pytest.raises(TypeError, match="cannot key a cyclic or too deeply nested"):
+        _hash._generate_hashable_representation(cyclic)
+
+
+def test_a_value_nested_past_the_recursion_limit_falls_back_to_equality():
+    """A value that nests past the recursion limit raises ``RecursionError`` while its
+    content key is built; the keying falls back to the equality path, so two equal
+    values are one instead of the error escaping ``to_list``."""
+    deep = {"x": _nested(sys.getrecursionlimit())}
+    assert len(to_list([deep, dict(deep)], flatten=True, unique=True)) == 1
+    first = fields.ActionResponseModel(output=_nested(sys.getrecursionlimit()))
+    second = fields.ActionResponseModel(output=_nested(sys.getrecursionlimit()))
+    assert len(to_list([first, second], flatten=True, unique=True)) == 1
+
+
 def test_structural_hash_of_a_cyclic_value_reports_unhashable():
     """A cyclic container reports ``TypeError`` from the content key instead of
     descending to the recursion limit, the same failure a value reports when it cannot
@@ -720,11 +772,11 @@ def _nested(depth):
     ids=["writable-memoryview", "past-the-recursion-limit"],
 )
 def test_dataclass_dedup_keeps_a_value_whose_structure_cannot_be_keyed(make):
-    """DataClass equality cannot compare such a value either, so it is kept unless it
-    is the same object as a kept value, and the values around it are deduplicated."""
+    """A writable memoryview hashes with ``ValueError`` and a value nested past the
+    recursion limit cannot be keyed at all, so each falls back to the equality path: a
+    value is kept unless it is the same object as a kept value or a kept value's own
+    equality calls it equal, and the values around it are deduplicated."""
     first, equal_content, plain = Holder(make()), Holder(make()), Holder("plain")
-    with pytest.raises((ValueError, RecursionError)):
-        operator.eq(first, equal_content)
     result = to_list(
         [first, plain, equal_content, first, Holder("plain")], flatten=True, unique=True
     )
@@ -732,6 +784,90 @@ def test_dataclass_dedup_keeps_a_value_whose_structure_cannot_be_keyed(make):
     assert result[0] is first
     assert result[1] is plain
     assert result[2] is equal_content
+
+
+class FrozenMemoryHolder(HashableModel, frozen=True):
+    """A frozen model whose only field holds a writable memoryview."""
+
+    value: object = None
+
+
+@dataclass(slots=True, unsafe_hash=True)
+class UnsafeHashHolder(DataClass):
+    """Its own generated hash reaches a field that hashes with ``ValueError``."""
+
+    value: object = None
+
+
+class ValueErrorHash:
+    """A value whose own ``__hash__`` reports a defect with ``ValueError``."""
+
+    def __hash__(self):
+        raise ValueError("a broken hash")
+
+
+def _memoryviews():
+    return memoryview(bytearray(b"ab")), memoryview(bytearray(b"ab"))
+
+
+def test_a_writable_memoryview_element_is_flattened_not_hashed():
+    """A writable memoryview is iterable, so a listable field flattens it to its bytes
+    before any hash is taken; the equal bytes deduplicate to one copy."""
+    first, second = _memoryviews()
+    assert fields._validate_listable_field(None, [first, second]) == [97, 98]
+
+
+def test_a_writable_memoryview_in_a_tuple_falls_back_to_equality():
+    """A tuple holds its memoryview, so keying the tuple hashes the memoryview, which
+    refuses with ``ValueError``; read as unhashable, the equal tuples deduplicate to
+    one value instead of raising."""
+    first, second = _memoryviews()
+    result = fields._validate_listable_field(None, [(first,), (second,)])
+    assert len(result) == 1
+    assert result[0] == (first,)
+
+
+def test_a_writable_memoryview_field_of_a_self_hashed_dataclass_falls_back_to_equality():
+    """A ``DataClass`` whose own generated hash reaches a memoryview field refuses with
+    ``ValueError``; read as unhashable, two equal values deduplicate to one."""
+    first, second = _memoryviews()
+    result = to_list([UnsafeHashHolder(first), UnsafeHashHolder(second)], flatten=True, unique=True)
+    assert len(result) == 1
+    assert result[0].value == first
+
+
+def test_a_writable_memoryview_field_of_a_frozen_model_keeps_equal_values_separate():
+    """A frozen model hashes its field values, so a memoryview field makes its hash
+    refuse with ``ValueError``; the value takes the equality path, where its content
+    key follows the memoryview's own representation, so two models holding distinct
+    memoryviews are two values rather than raising."""
+    first, second = _memoryviews()
+    result = to_list(
+        [FrozenMemoryHolder(value=first), FrozenMemoryHolder(value=second)],
+        flatten=True,
+        unique=True,
+    )
+    assert len(result) == 2
+    assert result[0].value == first
+    assert result[1].value == second
+
+
+def test_a_writable_memoryview_content_compares_as_an_unhashable_structural_value():
+    """The base equality keys a value's contents, so a ``ValueError`` there is the same
+    unhashable state a ``TypeError`` reports: two ``DataClass`` values holding equal
+    writable memoryviews compare instead of raising."""
+    first, second = _memoryviews()
+    assert (MutableContext([first]) == MutableContext([second])) is False
+    assert (MutableContext([second]) == MutableContext([first])) is False
+
+
+def test_a_user_hash_that_raises_valueerror_still_propagates():
+    """Only the writable-memoryview refusal is read as unhashable; a ``ValueError`` a
+    value's own ``__hash__`` raises is a defect in that ``__hash__`` and propagates."""
+    with pytest.raises(ValueError, match="a broken hash"):
+        to_list([ValueErrorHash()], flatten=True, unique=True)
+    with pytest.raises(ValueError, match="a broken hash"):
+        fields._validate_listable_field(None, [ValueErrorHash()])
 
 
 @pytest.mark.parametrize("kind", ["mapping", "pydantic", "msgspec"])

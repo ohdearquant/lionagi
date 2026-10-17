@@ -85,9 +85,26 @@ def _generate_hashable_representation(item: Any) -> Any:
 
     A cyclic container raises ``TypeError``: no finite representation exists for it, so
     it reports the same failure a value reports when it cannot be keyed rather than
-    descending until the recursion limit.
+    descending until the recursion limit. A model whose own serializer cannot build a
+    value -- a cycle it detects, or nesting past the recursion limit -- raises
+    ``TypeError`` for the same reason.
     """
     return _hashable_representation(item, set())
+
+
+def _builtins_of_model(item: Any, build: Callable[[], Any]) -> Any:
+    """Return *build()*'s mapping, or raise ``TypeError`` when it cannot be built.
+
+    ``msgspec.to_builtins`` and Pydantic's ``model_dump`` raise ``RecursionError`` or
+    ``ValueError`` for a value that holds itself or nests past the recursion limit
+    before this module can walk it, so the failure is reported as the same
+    ``TypeError`` a value that cannot be keyed reports, and the equality fallback takes
+    it. Any other error from the model's own serializer propagates.
+    """
+    try:
+        return build()
+    except (RecursionError, ValueError) as exc:
+        raise TypeError(f"cannot key a cyclic or too deeply nested {type(item).__name__}") from exc
 
 
 def _hashable_representation(item: Any, active: set[int]) -> Any:
@@ -101,7 +118,9 @@ def _hashable_representation(item: Any, active: set[int]) -> Any:
             active,
             lambda: (
                 _TYPE_MARKER_MSGSPEC,
-                _hashable_representation(_msgspec.to_builtins(item), active),
+                _hashable_representation(
+                    _builtins_of_model(item, lambda: _msgspec.to_builtins(item)), active
+                ),
             ),
         )
 
@@ -111,7 +130,9 @@ def _hashable_representation(item: Any, active: set[int]) -> Any:
             active,
             lambda: (
                 _TYPE_MARKER_PYDANTIC,
-                _hashable_representation(item.model_dump(), active),
+                _hashable_representation(
+                    _builtins_of_model(item, lambda: item.model_dump()), active
+                ),
             ),
         )
 

@@ -692,11 +692,20 @@ def _project(
 
     if value_semantics:
         type_key = _IdentityKey(value_type)
+        try:
+            value_token = _encode_int(hash(value))
+        except (TypeError, ValueError) as exc:
+            # The value reports itself unhashable, so no content key exists for it and
+            # the base equality that asks for one reads it as an uncomparable state
+            # rather than letting the refusal escape. A writable memoryview is the one
+            # built-in whose hash refusal is ValueError; a TypeError is the ordinary
+            # refusal. Every other error from the value's own __hash__ propagates.
+            raise UnhashableStructuralValueError(path, value_type) from exc
         return _StructuralKey(
             (_OPAQUE, type_key, _ValueEqualityKey(value)),
             cache_stable=False,
             hash_safe=True,
-            _sort_token=_frame(b"o", _identity_token(value_type), _encode_int(hash(value))),
+            _sort_token=_frame(b"o", _identity_token(value_type), value_token),
         )
     identity = _IdentityKey(value)
     return _StructuralKey(

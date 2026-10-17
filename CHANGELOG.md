@@ -81,17 +81,21 @@ project those rows ran under. To keep the project, name it in those members.
   state cannot be hashed, such as one holding a writable memoryview, is compared with the kept
   values that define their own equality and is kept as a separate value unless it is the same
   object or a kept value's own equality calls it equal; a value whose own hash reports itself
-  unhashable with `TypeError` has no key and is compared by identity and equality. A mapping
-  or model value in the plain `unique=True` branch that cannot be keyed is compared against
-  every kept value, the keyed ones included, and a keyed one is compared against the keyless
-  ones too, so a keyless and a keyable value that are equal are one value in either order. A
+  unhashable with `TypeError`, or with the one `ValueError` a writable `memoryview` raises,
+  has no key and is compared by identity and equality. A mapping or model value in the plain
+  `unique=True` branch that cannot be keyed is compared against every kept value, the keyed
+  ones included, and a keyed one is compared against the keyless ones too, so a keyless and a
+  keyable value that are equal are one value in either order. A mapping or model whose
+  contents give no key -- a cycle a container, struct or model holds, which the content key
+  reports as `TypeError`, or a value nested past the recursion limit -- is compared the same
+  way, so a struct or model that holds itself no longer escapes as a serializer error. A
   `DataClass` value is never compared with a plain mapping: the two are deduplicated in
   separate branches, so a pair that only the `DataClass` equality would join across the two
   stays two values. Equality-only values are compared pairwise, so a list of n such values costs
   up to n*(n-1)/2 comparisons. A value's own `__hash__` is read exactly as a `set` reads it:
-  only `TypeError` means the value is unhashable and takes the equality path, and any other
-  error from it, such as one that reads a field the value no longer carries, is a bug in that
-  `__hash__` and propagates.
+  only `TypeError`, or the `ValueError` a writable `memoryview` raises, means the value is
+  unhashable and takes the equality path, and any other error from it, such as one that reads
+  a field the value no longer carries, is a bug in that `__hash__` and propagates.
 - The Antigravity (`gemini_code` / `gemini-code` / `gemini-cli`) backend knows the Gemini 4 Argon
   family that `agy models` now lists: `gemini-4-argon` (and `gemini-4`, `argon`) resolves to
   `Gemini 4 Argon (High)`, the `-low` / `-medium` / `-high` suffixes and `--effort` pick the tier,

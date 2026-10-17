@@ -276,16 +276,19 @@ class Note(BaseModel):
   base equality either, so it is compared with the kept values that define their own
   equality and stays a separate value unless it is the same object or a kept value's own
   equality calls it equal. A value whose own hash raises `TypeError` reports itself
-  unhashable, as a `set` reads it, and is compared by identity and equality; any other
-  error from a value's own `__hash__`, such as reading a deleted field or descending into
-  a cycle without end, is a defect in that hash and propagates. A `DataClass` value is
+  unhashable, as a `set` reads it, and is compared by identity and equality, and so does a
+  writable `memoryview`, whose own hash reports itself unhashable with `ValueError`; any
+  other error from a value's own `__hash__`, such as reading a deleted field or descending
+  into a cycle without end, is a defect in that hash and propagates. A `DataClass` value is
   never compared with a plain mapping; the two are deduplicated in separate branches.
   Equality-only values are compared pairwise, so a list of n such values costs up to
   n*(n-1)/2 comparisons. Generic mappings, Pydantic models, and msgspec structs retain
   transient hash buckets with equality confirmation; one whose contents give no
-  structural hash (a cycle, or state that will not serialize) is compared with every
-  kept value of those kinds, bucketed ones included, and each bucketed value is also
-  compared with those. The operation DTO listable-field
+  structural hash (a cycle, which the content key reports as `TypeError` whether the value
+  is a container or a struct or model whose own serializer detects it, or state that will
+  not serialize, or an acyclic value nested past the recursion limit, which the keying
+  catches) is compared with every kept value of those kinds, bucketed ones included, and
+  each bucketed value is also compared with those. The operation DTO listable-field
   validator keys each value it can and compares it inside its key's group, and compares a
   value it cannot key with every kept value; opaque outputs whose equality differs from
   their representation dedupe by equality, and a pair whose equality gives no single

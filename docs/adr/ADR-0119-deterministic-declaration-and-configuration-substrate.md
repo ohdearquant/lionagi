@@ -457,9 +457,10 @@ them; a non-transitive `__eq__` can still make the result depend on the order th
 in. A value whose field state cannot be hashed is compared with the kept values that define their
 own equality and stays separate unless it is the same object or a kept value's own equality calls
 it equal. A value whose own hash raises `TypeError` reports itself unhashable, as a `set` reads
-it, and is compared by identity and equality; any other error from a value's own `__hash__`, such
-as reading a deleted field or descending into a cycle without end, is a defect in that hash and
-propagates. A `DataClass` value is never compared with a plain mapping; the two are
+it, and is compared by identity and equality, and so does a writable `memoryview`, whose own
+hash reports itself unhashable with `ValueError`; any other error from a value's own `__hash__`,
+such as reading a deleted field or descending into a cycle without end, is a defect in that hash
+and propagates. A `DataClass` value is never compared with a plain mapping; the two are
 deduplicated in separate branches. Equality-only values are compared pairwise, so a list of n such
 values costs up to n*(n-1)/2 comparisons. The four operation DTOs at their shared listable-field
 validator key each value they can and compare it inside its key's group, and compare a value they
@@ -468,10 +469,12 @@ cannot key with every kept value; a pair whose equality gives no single truth va
 stays two values.
 Generic mapping, Pydantic, and msgspec deduplication retains its existing transient hash buckets
 and confirms equality inside each bucket; a value whose contents give no structural hash (a
-cycle, or state that will not serialize) is compared with every kept value of those kinds,
-bucketed ones included, and each bucketed value is also compared with those. Mutable operation
-outputs may be opaque values whose
-equality does not match their representation, so that boundary cannot use a content hash.
+cycle, which the content key reports as `TypeError` whether the value is a container or a
+struct or model whose own serializer detects it, or state that will not serialize, or an
+acyclic value nested past the recursion limit, which the keying catches) is compared with
+every kept value of those kinds, bucketed ones included, and each bucketed value is also
+compared with those. Mutable operation outputs may be opaque values whose equality does not
+match their representation, so that boundary cannot use a content hash.
 Arbitrary default-field declarations remain fresh, validator functions have stable identities, and
 the six named lazy field constants retain singleton identity. Container keys must instead be stable
 identifiers; changing a mutable value after admission cannot repair container membership.

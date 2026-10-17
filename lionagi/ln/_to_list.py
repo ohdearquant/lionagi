@@ -26,6 +26,11 @@ _SKIP_TYPE = None
 _SKIP_TUPLE_SET = None
 _BYTE_LIKE = (str, bytes, bytearray)
 _TUPLE_SET = (tuple, set, frozenset)
+# A writable ``memoryview`` is the one built-in whose hash refusal is ``ValueError``
+# rather than ``TypeError``; the message is the interpreter's own and is stable across
+# supported versions. Recognizing it keeps the promised equality fallback for that one
+# type without swallowing any other ``ValueError`` a value's own ``__hash__`` raises.
+_WRITABLE_MEMORYVIEW_REFUSAL = "cannot hash writable memoryview object"
 
 
 def _do_init() -> None:
@@ -48,6 +53,17 @@ def _do_init() -> None:
     _SINGLETONE_TYPES = (UndefinedType, UnsetType, PydanticUndefinedType)
     _SKIP_TYPE = (*_BYTE_LIKE, *_MAP_LIKE, _Enum)
     _SKIP_TUPLE_SET = (*_SKIP_TYPE, *_TUPLE_SET)
+
+
+def _is_writable_memoryview_refusal(exc: ValueError) -> bool:
+    """Whether *exc* is the ``ValueError`` a writable ``memoryview``'s hash raises.
+
+    Hashing a writable ``memoryview`` -- on its own or nested in a container or model
+    whose hash reaches it -- raises this one ``ValueError``. Every other ``ValueError``
+    from a value's own ``__hash__`` is a defect in that ``__hash__`` and must propagate,
+    so the refusal is recognized by its own message rather than by the exception type.
+    """
+    return exc.args == (_WRITABLE_MEMORYVIEW_REFUSAL,)
 
 
 def _equal_either_way(left: Any, right: Any) -> bool:
@@ -103,12 +119,18 @@ def _own_content_key(value: DataClass) -> int | None:
     in seen`` membership test and a ``set`` read it. Any other error from a value's own
     ``__hash__`` -- a name it no longer carries, a descent into a cycle without end --
     is a bug in that ``__hash__``, and it propagates rather than being hidden as "no
-    key".
+    key". A writable ``memoryview`` is the one built-in that reports itself unhashable
+    with ``ValueError``; that refusal is read as unhashable too, and every other
+    ``ValueError`` propagates.
     """
     try:
         return hash(value)
     except TypeError:
         return None
+    except ValueError as exc:
+        if _is_writable_memoryview_refusal(exc):
+            return None
+        raise
 
 
 # Deduplication keys each ``DataClass`` value by one of two hashes. A value that keeps
@@ -204,9 +226,9 @@ def _operation_content_key(value: Any) -> int | None:
 
     A mapping or model value has no key here, because its hash would follow mutable
     contents; it is compared by identity and equality instead. A value that reports
-    itself unhashable with ``TypeError`` has no key and is compared the same way. Any
-    other error from a value's own ``__hash__`` is a bug in that ``__hash__`` and
-    propagates.
+    itself unhashable with ``TypeError`` has no key and is compared the same way, as is
+    the one ``ValueError`` a writable ``memoryview`` raises; any other error from a
+    value's own ``__hash__`` is a bug in that ``__hash__`` and propagates.
     """
     if isinstance(value, _MAP_LIKE):
         return None
@@ -214,6 +236,10 @@ def _operation_content_key(value: Any) -> int | None:
         return hash(value)
     except TypeError:
         return None
+    except ValueError as exc:
+        if _is_writable_memoryview_refusal(exc):
+            return None
+        raise
 
 
 def to_list(
@@ -317,6 +343,12 @@ def to_list(
                 # Unhashable item (e.g. a dict or a model): mirror the identity-first
                 # fast path native set membership gives, over the content key.
                 duplicate = None
+            except ValueError as exc:
+                # A writable memoryview refuses membership with ValueError; read it as
+                # unhashable the same way, and let any other ValueError propagate.
+                if not _is_writable_memoryview_refusal(exc):
+                    raise
+                duplicate = None
             if duplicate is False:
                 seen.add(i)
                 out.append(i)
@@ -330,9 +362,11 @@ def to_list(
                 ) from None
             try:
                 key = hash_dict(i)
-            except (AttributeError, TypeError, ValueError):
-                # The contents give no key -- a cycle, or state that will not
-                # serialize -- so this value is compared against every kept value.
+            except (AttributeError, RecursionError, TypeError, ValueError):
+                # The contents give no key -- a cycle the content hash reports as
+                # ``TypeError``, a value that will not serialize, or an acyclic value
+                # deep enough to exhaust the recursion limit -- so this value is
+                # compared against every kept value.
                 bucket = keyless
                 compared: Iterable = chain(chain.from_iterable(keyed.values()), keyless)
             else:
