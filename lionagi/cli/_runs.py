@@ -701,6 +701,54 @@ async def _teardown_write(committed: list[str] | None, name: str, call: Any) -> 
     return result
 
 
+@dataclass(frozen=True)
+class _TerminalStatus:
+    """The terminal session status a teardown decided, written once the lifecycle emits have run."""
+
+    status: str
+    reason_code: str
+    reason_summary: str
+    evidence_refs: list[dict] | None
+    metadata: dict | None
+    ended_at: float
+    duration_ms: float | None
+
+
+def _run_may_clear_current_phase(db: StateDB) -> bool:
+    """Whether this run may clear the stored ``current_phase`` in a terminal status write.
+
+    Natively a run owns the column and always clears it with the status. In compatibility mode
+    every write this run made was authorized against the same profile, so a profile that does not
+    admit ``sessions.current_phase`` means the run never wrote a phase: there is nothing of its own
+    to clear, and naming the column would make the profile refuse the status write itself
+    (ADR-0128 D5, D6).
+    """
+    if db.mode != "compatibility":
+        return True
+    profile = getattr(db, "compatibility", None)
+    writes = getattr(profile, "writes", None)
+    if writes is None:
+        return False
+    sessions = writes.get("sessions")
+    return sessions is not None and "current_phase" in sessions.update
+
+
+def _terminal_status_extra_fields(
+    db: StateDB, *, ended_at: float, duration_ms: float | None
+) -> dict[str, Any]:
+    """The same-row columns this run's terminal status write may set.
+
+    ``current_phase`` is included only where :func:`_run_may_clear_current_phase` admits it, so a
+    profile without that column grant still takes the status write.
+    """
+    fields: dict[str, Any] = {"ended_at": ended_at}
+    if duration_ms is not None:
+        fields["duration_ms"] = duration_ms
+    if _run_may_clear_current_phase(db):
+        fields["current_phase"] = None
+    return fields
+
+
 async def _teardown_common(
     db: StateDB,
     *,
@@ -723,7 +771,15 @@ async def _teardown_common(
     defer_terminal: bool = False,
     reason_out: dict | None = None,
     committed: list[str] | None = None,
+    terminal_out: list[_TerminalStatus] | None = None,
 ) -> str:
+    """Run the teardown's store writes and decide the run's terminal status.
+
+    By default this writes the terminal session status itself and returns it. When
+    *terminal_out* is given, the decision is appended there instead and no status write is made:
+    the caller writes it, once the lifecycle emits have run, so a refusal those emits record is
+    the run's reason rather than landing after a status already written (ADR-0128 D6).
+    """
     from lionagi.state.artifact_verifier import (
         missing_artifact_evidence,
         missing_artifact_summary,
@@ -1063,84 +1119,113 @@ async def _teardown_common(
             ]
 
     if reason_out is not None:
-        # The outcome this teardown decided for its own run, whether or not the write below
-        # lands: a row already terminal, or a write that loses its compare-and-set, keeps the
-        # status and reason another run left on it (a resume reuses the session row).
+        # The outcome this teardown decided for its own run, whether or not the write it
+        # makes below lands: a row already terminal, or a write that loses its compare-and-set,
+        # keeps the status and reason another run left on it (a resume reuses the session row).
         reason_out["terminal_reason"] = (final_status, final_reason_summary)
 
+    decision = _TerminalStatus(
+        status=final_status,
+        reason_code=final_reason_code,
+        reason_summary=final_reason_summary,
+        evidence_refs=final_evidence_refs,
+        metadata=metadata,
+        ended_at=ended_at,
+        duration_ms=duration_ms,
+    )
+    if terminal_out is not None:
+        # The caller writes the status itself, after the lifecycle emits.
+        terminal_out.append(decision)
+        return final_status
+    # Snapshot of the status observed at the start of this teardown; used only as the CAS guard
+    # (not updated_at, which this function may itself have touched).
+    return await _write_terminal_session_status(
+        db, session_id, decision, session_row.get("status"), committed=committed
+    )
+
+
+async def _write_terminal_session_status(
+    db: StateDB,
+    session_id: str,
+    terminal: _TerminalStatus,
+    observed_status: Any,
+    *,
+    committed: list[str] | None = None,
+) -> str:
+    """Write the session's terminal status, once the lifecycle emits have run.
+
+    The status write is the run's last store write: a refusal a lifecycle handler records while it
+    runs -- the BRANCH_END and SESSION_END default handlers among them -- then fails the run with
+    that refusal instead of landing after a status the run already wrote (ADR-0128 D6).
+    *observed_status* is the status read just before this write, so the write's compare-and-set
+    reflects what is stored at the moment it runs rather than a read taken before the emits.
+    """
     from lionagi.state.db import SESSION_TERMINAL_STATUSES, TransitionRejectedError
 
-    # Snapshot of status observed at the start of this teardown; used only as the
-    # CAS guard below (not updated_at, which this function may itself have touched).
-    pre_write_status = session_row.get("status")
-
-    if pre_write_status in SESSION_TERMINAL_STATUSES:
-        # Already terminal before this teardown attempted anything (e.g. reattached
-        # to a session an earlier run already finalized) -- skip the redundant write
-        # and report this invocation's own outcome (ADR-0035 protects the earlier record).
-        if pre_write_status != final_status:
+    if observed_status in SESSION_TERMINAL_STATUSES:
+        # Already terminal (a concurrent writer finalized the row, or an earlier run did)
+        # before this write -- skip it and report the outcome this teardown decided
+        # (ADR-0035 protects the earlier record).
+        if observed_status != terminal.status:
             _log.warning(
                 "session %s already terminal at %r; this invocation's %r "
                 "outcome was not persisted (ADR-0094 protects the earlier "
                 "terminal record)",
                 session_id,
-                pre_write_status,
-                final_status,
+                observed_status,
+                terminal.status,
             )
         else:
             _log.debug(
                 "session %s already terminal at %r; skipping duplicate status write",
                 session_id,
-                pre_write_status,
+                observed_status,
             )
-    else:
-        try:
-            written = await _teardown_write(
-                committed,
-                "update_status",
-                db.update_status(
-                    "session",
-                    session_id,
-                    new_status=final_status,
-                    reason_code=final_reason_code,
-                    reason_summary=final_reason_summary,
-                    evidence_refs=final_evidence_refs,
-                    source="executor",
-                    actor=session_id,
-                    metadata=metadata,
-                    expected_statuses={pre_write_status},
-                    extra_fields=(
-                        {"ended_at": ended_at, "current_phase": None}
-                        if duration_ms is None
-                        else {
-                            "ended_at": ended_at,
-                            "duration_ms": duration_ms,
-                            "current_phase": None,
-                        }
-                    ),
-                ),
-            )
-            if not written:
-                # CAS miss: a concurrent teardown of the same session won the race.
-                # Read back the persisted status rather than raising past callers.
-                persisted = await db.get_session(session_id) or {}
-                final_status = persisted.get("status", final_status)
-                _log.debug(
-                    "session %s status changed under this teardown; using persisted status %s",
-                    session_id,
-                    final_status,
-                )
-        except TransitionRejectedError:
-            # Defensive fallback: the row became terminal between this
-            # teardown's snapshot and the write despite the CAS guard above.
-            persisted = await db.get_session(session_id) or {}
-            final_status = persisted.get("status", final_status)
-            _log.debug(
-                "session %s already terminal (%s); skipped duplicate status write",
+        return terminal.status
+
+    try:
+        written = await _teardown_write(
+            committed,
+            "update_status",
+            db.update_status(
+                "session",
                 session_id,
-                final_status,
+                new_status=terminal.status,
+                reason_code=terminal.reason_code,
+                reason_summary=terminal.reason_summary,
+                evidence_refs=terminal.evidence_refs,
+                source="executor",
+                actor=session_id,
+                metadata=terminal.metadata,
+                expected_statuses={observed_status},
+                extra_fields=_terminal_status_extra_fields(
+                    db, ended_at=terminal.ended_at, duration_ms=terminal.duration_ms
+                ),
+            ),
+        )
+        if not written:
+            # CAS miss: a concurrent teardown of the same session won the race.
+            # Read back the persisted status rather than raising past callers.
+            persisted = await db.get_session(session_id) or {}
+            status = persisted.get("status", terminal.status)
+            _log.debug(
+                "session %s status changed under this teardown; using persisted status %s",
+                session_id,
+                status,
             )
-    return final_status
+            return status
+    except TransitionRejectedError:
+        # Defensive fallback: the row became terminal between this teardown's
+        # read and the write despite the CAS guard above.
+        persisted = await db.get_session(session_id) or {}
+        status = persisted.get("status", terminal.status)
+        _log.debug(
+            "session %s already terminal (%s); skipped duplicate status write",
+            session_id,
+            status,
+        )
+        return status
+    return terminal.status
 
 
 async def _has_assistant_output_evidence(db: StateDB, message_ids: list[str]) -> bool:
@@ -1203,6 +1288,7 @@ async def teardown_persist(
         signal_refusal = _signal_persist_refusal(ctx)
         if signal_refusal is not None:
             raise signal_refusal
+        decision: list[_TerminalStatus] = []
         final_status = await _teardown_common(
             db,
             session_id=ctx["session_id"],
@@ -1224,11 +1310,13 @@ async def teardown_persist(
             defer_terminal=defer_terminal,
             reason_out=ctx,
             committed=committed,
+            terminal_out=decision,
         )
 
         # A signal emitted while this teardown ran is refused the same way as one emitted before
         # it: the store declined the write, so the run does not read as one that succeeded
-        # without it (ADR-0128 D6).
+        # without it (ADR-0128 D6). Checked before the terminal status write and again after the
+        # emits below, so a refusal either side of them fails the run.
         signal_refusal = _signal_persist_refusal(ctx)
         if signal_refusal is not None:
             raise signal_refusal
@@ -1274,6 +1362,7 @@ async def teardown_persist(
                         branch_id=str(_b.id),
                         status=final_status,
                         ended_at=_end_at,
+                        db=db,
                     )
 
             await session_obj.hooks.emit(
@@ -1281,7 +1370,26 @@ async def teardown_persist(
                 session_id=ctx["session_id"],
                 status=final_status,
                 error=err_str,
+                db=db,
                 **_usage,
+            )
+
+        # A signal write the emits above declined -- the signal sink keeps such a refusal rather
+        # than raising it -- is not a dropped signal to read past: it fails the run here, before
+        # the terminal status write, exactly as one recorded before the emits does (ADR-0128 D6).
+        signal_refusal = _signal_persist_refusal(ctx)
+        if signal_refusal is not None:
+            raise signal_refusal
+
+        # The terminal status write is the run's last store write, after the BRANCH_END and
+        # SESSION_END emits. A refusal either emit records then leaves the run failed with that
+        # refusal instead of standing beside a status the run had already written (ADR-0128 D6),
+        # and the row is read here so the write's compare-and-set reflects the status stored once
+        # the emits have run, rather than the one read before them.
+        if decision and not defer_terminal:
+            observed = (await db.get_session(ctx["session_id"]) or {}).get("status")
+            final_status = await _write_terminal_session_status(
+                db, ctx["session_id"], decision[0], observed, committed=committed
             )
 
         return final_status
@@ -1819,6 +1927,7 @@ async def setup_agent_persist(
                 agent_name=agent_name,
                 agent_hash=_provenance.agent_definition_hash(agent_name),
                 invocation_id=invocation_id,
+                db=db,
             )
             await session.hooks.emit(
                 HookPoint.BRANCH_CREATE,
@@ -1826,6 +1935,7 @@ async def setup_agent_persist(
                 model=model,
                 provider=provider,
                 agent_name=agent_name,
+                db=db,
             )
 
         new_msg_ids: list = []
@@ -1935,7 +2045,9 @@ async def find_incomplete_session_for_run(run_id: str) -> dict | None:
                 source="executor",
                 actor=row["id"],
                 expected_statuses={status},
-                extra_fields={"current_phase": None},
+                extra_fields=(
+                    {"current_phase": None} if _run_may_clear_current_phase(db) else None
+                ),
             )
             row = await db.get_session(row["id"]) or row
         return row

@@ -933,15 +933,17 @@ nothing in the module assumes a dedicated action_kind.
 
 ### `hooks/builtins.py`
 
-`persist_session_end()` — in the normal CLI flow, `teardown_persist()` always stamps the
-terminal status via `_teardown_common()`'s `update_status()` call before emitting
-`SESSION_END`, so the session row is already terminal by the time this handler runs. In that
-case only pure usage fields are written (input/output tokens, cost, turns, duration) — the
-status/reason_code/ended_at transition is skipped (avoids a duplicate `status_transitions` row
-and a double-fire clobbering an already-recorded status), and `node_metadata` is left
-untouched since `_teardown_common()` already owns it for a terminal row and `update_session()`
-does a plain column SET, not a merge (writing `{"error": ...}` here would clobber richer
-existing data). Related: `persist_session_start`'s explicit `reason_code` on the "running"
+`persist_session_end()` — in the normal CLI flow, `teardown_persist()` writes the terminal
+status itself through `_teardown_common()`'s decision, but only after it has emitted
+`BRANCH_END` and `SESSION_END`; the emits hand this handler the run's own handle, so it knows
+the teardown owns the terminal write and records only pure usage fields (input/output tokens,
+cost, turns, duration), leaving the status, its reason and the end time to that single write.
+This keeps a refusal the emits record from landing after a status the run had already written,
+and avoids a duplicate `status_transitions` row (a double-fire clobbering an
+already-recorded status); `node_metadata` is left untouched since `_teardown_common()` already
+owns it and `update_session()` does a plain column SET, not a merge (writing `{"error": ...}`
+here would clobber richer existing data). An emit that carries no handle (a direct bus emit)
+stamps the status itself, as before. Related: `persist_session_start`'s explicit `reason_code` on the "running"
 transition avoids tripping a deprecation shim that would otherwise raise and get swallowed by
 the bus, silently dropping all the provenance fields passed alongside it.
 

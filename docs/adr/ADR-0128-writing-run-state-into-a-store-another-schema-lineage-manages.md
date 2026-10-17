@@ -389,18 +389,20 @@ the previous one committed.
 | session and branch signals at setup | `SESSION_START` and `BRANCH_CREATE` are emitted before the observer's sink is bound, so neither reaches `session_signals` today | n/a | n/a | unchanged; the manifest does not add them |
 | `persist_session_start` (the default `SESSION_START` handler) | a `get_session` read, and nothing more when the session is missing or terminal; when its reason is not yet `run.started.ok`: the `update_status` transition to `running` as above, then `UPDATE sessions SET` the provenance columns the event carries (`model`, `provider`, `effort`, `agent_name`, `agent_hash`, `invocation_id`), `started_at = COALESCE(started_at, :now)` and `updated_at`; when it already is, only that `UPDATE` | by id; `started_at` keeps the first value written; no owner predicate | the transition in one, the `UPDATE` after its commit | only this run's session; `started_at` written only when null; the owner on the transition (D5); `invocation_id` only when that invocation belongs to the same owner |
 | `persist_branch_provenance` (the default `BRANCH_CREATE` handler) | `UPDATE branches SET model, provider, agent_name WHERE id`, each as the event carries it, a missing one as `NULL` | by id only | one | only this run's branch |
-| `persist_branch_end` (the default `BRANCH_END` handler, through `finalize_branch`) | for a terminal status only: `UPDATE branches SET status, ended_at WHERE id AND (status IS NULL OR status = 'running')` | by id, guarded on a status that is not yet terminal | one | only this run's branch; the guard kept |
-| `persist_session_end` (the default `SESSION_END` handler) | a `get_session` read; when the session is not terminal: the `update_status` transition to the event's status as above, carrying `ended_at`, `duration_ms` and, when the event has an error, `node_metadata` read, merged with `error` in Python and written whole; then `UPDATE sessions SET` the usage columns the event carries (`input_tokens`, `output_tokens`, `total_cost_usd`, `num_turns`) and `updated_at`; when the session is already terminal, the usual order since teardown writes the status first, only `UPDATE sessions SET` those usage columns, `duration_ms` and `updated_at` | by id; no owner predicate | the transition in one, the `UPDATE` after its commit | only this run's session; `node_metadata` written by key merge, never whole; the owner on the transition (D5) |
+| `persist_branch_end` (the default `BRANCH_END` handler, through `finalize_branch`) | for a terminal status only: `UPDATE branches SET status, ended_at WHERE id AND (status IS NULL OR status = 'running')` | by id, guarded on a status that is not yet terminal; with the owner predicate in compatibility mode | one | only this run's branch; the guard kept; in compatibility mode the branch must be one this run created and the UPDATE carries the owner predicate (D5) |
+| `persist_session_end` (the default `SESSION_END` handler) | a `get_session` read; when the session is not terminal: the `update_status` transition to the event's status as above, carrying `ended_at`, `duration_ms` and, when the event has an error, `node_metadata` read, merged with `error` in Python and written whole; then `UPDATE sessions SET` the usage columns the event carries (`input_tokens`, `output_tokens`, `total_cost_usd`, `num_turns`) and `updated_at`; when the teardown handed its handle to the emit, only `UPDATE sessions SET` those usage columns (the teardown owns the terminal status and writes it once the emits have run); when the session is already terminal and no handle was handed over, the same usage-only `UPDATE` | by id; no owner predicate | the transition in one, the `UPDATE` after its commit | only this run's session; `node_metadata` written by key merge, never whole; the owner on the transition (D5) |
 | steer tombstone sweep (`li agent`, after teardown) | `list_pending_session_controls` for the session, then for each control no consumer claimed `UPDATE session_controls SET applied_at, result WHERE id AND result IS NULL` | by id, guarded on an unclaimed control | one per control | only this run's session's controls; the guard kept |
 
-The four default hook handlers take their store from `_db()` in `lionagi/hooks/builtins.py`, the
-process's shared handle looked up by the store's URL. The profile admits their rows only through the
-run's own compatibility handle. A lookup that opens a second, native handle on the same file meets
-A.0's refusal before any statement: the hook bus logs the failure, no write lands, and the run loses
-`started_at` (so teardown cannot derive the session's `duration_ms`), the provenance columns, the
-branch's terminal status and the session's usage columns, with no refusal a caller sees. The steer
-tombstone sweep is the same class: it opens its own native `StateDB()` on the store instead of
-taking the run's handle, so its row is admitted on the same terms.
+The four default hook handlers take their store from `_db()` in `lionagi/hooks/builtins.py`. When a
+run emits a lifecycle event it hands its own open handle to the handler on the event, so the handler
+writes through the run's handle and meets whatever the profile requires of that run; only an emit
+that carries no handle falls back to the process's shared handle looked up by the store's URL. A
+teardown hands its handle to the `BRANCH_END` and `SESSION_END` emits it makes, so the default
+handlers never open or reach a second handle for that run, and a branch row another principal owns
+is left untouched. A handler that does fall back to a URL lookup whose store the process holds in
+compatibility mode meets A.0's refusal before any statement. The steer tombstone sweep is a
+different class: it opens its own native `StateDB()` on the store instead of taking the run's
+handle, so its row is admitted on the same terms.
 
 ### A.3 Reader invariants the profile keeps
 

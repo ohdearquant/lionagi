@@ -65,10 +65,14 @@ sink keeps the first such refusal, logs every later one, and counts none of them
 as dropped, and the run's teardown then fails the run with the kept refusal as
 its reason. Every other failed signal write is still counted as dropped, as
 before.
-The default handlers look the store up by its URL. When the process holds that
-store through a registered compatibility handle they write through it, so their
-writes meet the profile, and a refusal one of them meets is raised by the emit
-as any handler's refusal is.
+A lifecycle emit a run makes hands the run's own open handle to the default
+handlers, so each writes through that handle and meets whatever the store
+requires of the run; an emit that carries no handle falls back to the store
+looked up by its URL, where a registered compatibility handle is returned ahead
+of a native one. A refusal a handler *raises* is raised by the emit as any
+handler's refusal is; a refusal the signal sink *keeps* (the store declined a
+signal write without raising) is not raised by the emit, and the run's teardown
+fails the run with it as its reason.
 
 `USER_PROMPT_SUBMIT` fires at most once per genuine user-originated turn,
 regardless of how many internal calls that turn drives underneath it — see

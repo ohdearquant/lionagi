@@ -2418,6 +2418,87 @@ async def test_an_invocation_id_update_is_refused_by_the_profile_allowlist(db, s
     assert _dump(store) == before
 
 
+async def test_a_refused_link_leaves_the_status_it_was_asked_for_unchanged(db, store):
+    """A status change was written before this call's link checks, so a refused link left a
+    committed status behind. The links are now checked before the status is routed, so a refused
+    link leaves the stored status as it was and the refusal names no committed status write."""
+    from lionagi.state.reasons import RunReasons
+
+    await _setup_run(db)
+    _execute(store, f"UPDATE messages SET {OWNER} = 'principal:b' WHERE id = 'm-sys'")
+    before = _dump(store)
+
+    with pytest.raises(
+        StateCompatibilityRefused, match="does not belong to 'principal:a'"
+    ) as caught:
+        await db.update_session(
+            "s1",
+            status="completed",
+            reason_code=RunReasons.COMPLETED_OK,
+            reason_actor="s1",
+            first_msg_id="m-sys",
+        )
+
+    assert "already committed" not in str(caught.value), str(caught.value)
+    assert _rows(store, "SELECT status FROM sessions WHERE id = 's1'") == [("running",)]
+    assert _dump(store) == before
+
+
+async def test_a_refused_invocation_link_leaves_the_status_unchanged(db, store):
+    """The same holds for an invocation link that names no row: the refusal is raised before the
+    status write, so the stored status is unchanged."""
+    from lionagi.state.reasons import RunReasons
+
+    await _setup_run(db)
+    before = _dump(store)
+
+    with pytest.raises(StateCompatibilityRefused, match="invocation") as caught:
+        await db.update_session(
+            "s1",
+            status="completed",
+            reason_code=RunReasons.COMPLETED_OK,
+            reason_actor="s1",
+            invocation_id="inv-missing",
+        )
+
+    assert "already committed" not in str(caught.value), str(caught.value)
+    assert _rows(store, "SELECT status FROM sessions WHERE id = 's1'") == [("running",)]
+    assert _dump(store) == before
+
+
+async def test_a_link_whose_target_table_records_no_owner_is_refused(tmp_path):
+    """A linked table with no owner column cannot show the row is this run's, so the link is
+    refused, as ``create_session`` refuses an invocation link there."""
+    from lionagi.state.compat import TableWrites
+
+    store = await _managed_store(tmp_path / "managed.db")
+    with closing(sqlite3.connect(store)) as conn:
+        conn.execute(f"ALTER TABLE invocations DROP COLUMN {OWNER}")
+        conn.execute(
+            "INSERT INTO invocations (id, skill, started_at, created_at, updated_at) "
+            "VALUES ('inv-1', 'review', 0, 0, 0)"
+        )
+        conn.commit()
+    base = _profile(store)
+    assert "invocations" not in base.owned_tables
+    writes = dict(base.writes)
+    sessions = writes["sessions"]
+    writes["sessions"] = TableWrites(
+        insert=sessions.insert,
+        update=sessions.update | {"invocation_id"},
+        unwritten=sessions.unwritten,
+    )
+    handle = StateDB(store, compatibility=_profile(store, writes=writes), owner="principal:a")
+    await handle.open()
+    try:
+        await _setup_run(handle)
+
+        with pytest.raises(StateCompatibilityRefused, match="records no owner column"):
+            await handle.update_session("s1", invocation_id="inv-1")
+    finally:
+        await handle.close()
+
+
 # --- The merge keeps a stored non-object under _discarded_node_metadata ---------------------------
 
 

@@ -272,6 +272,7 @@ class SQLAlchemyLifecycleService:
         raise_on_unguarded_conflict: bool = False,
         write_reason_columns: bool = True,
         fill_only_if_absent: frozenset[str] = frozenset(),
+        owned_links: tuple[tuple[str, str, str], ...] = (),
     ) -> TransitionOutcome:
         policy = self._registry.get(command.entity_type)
 
@@ -317,6 +318,12 @@ class SQLAlchemyLifecycleService:
             await self._db._require_owned(
                 conn, policy.table, command.entity_id, command.entity_type
             )
+            # A session update names links (a message it references, an invocation it adopts);
+            # each is checked here, in the same transaction and before the status is read, so a
+            # link that changed hands is refused before the status the update asked for is
+            # written, rather than after it has committed (ADR-0128 D5).
+            for table, row_id, what in owned_links:
+                await self._db._require_owned(conn, table, row_id, what)
             # A status change carries its node_metadata into this same transaction, where the
             # store merges it by key rather than letting the patch below write it whole
             # (ADR-0128 D6); natively the patch is unchanged.

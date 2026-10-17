@@ -1138,9 +1138,25 @@ class StateDB:
             )
 
     async def _require_owned(self, conn, table: str, row_id: Any, what: str) -> None:
-        """Refuse, inside the writing transaction, when the row no longer carries the owner."""
+        """Refuse, inside the writing transaction, when the row no longer carries the owner.
+
+        A table that records no owner column cannot tell one owner's row from another's, and a
+        profile that records owners but not this column cannot show the row is the run's, so the
+        link is refused rather than checked against an owner the table does not carry -- exactly
+        as ``create_session`` refuses an invocation link there.
+        """
+        guard = self._compat
         clause, owner = self._owner_predicate(table)
         if not clause:
+            if (
+                guard is not None
+                and guard.profile.owner is not None
+                and table not in guard.owned_tables
+            ):
+                raise self._compat.refusal(
+                    f"{what} {row_id!r} cannot be shown to belong to this run: the linked table "
+                    f"{table} records no owner column"
+                )
             return
         found = (
             await conn.execute(
@@ -3759,11 +3775,21 @@ class StateDB:
         # fields it is handed whole. The transition merges the value in its own transaction
         # instead (see _prepare_status_patch), and is told here which columns are fills.
         fill_only_if_absent = set_if_null
+        # A status change writes the status in the transition's own transaction, before this
+        # call's fat-field UPDATE runs its in-transaction link checks. The named links are checked
+        # inside that same transaction, before the status is written, so a refused link leaves the
+        # stored status as it was rather than a status the store already committed (ADR-0128 D5).
+        owned_links = tuple(
+            (table, fields[link], what)
+            for link, table, what, _created in _SESSION_LINKS
+            if fields.get(link) is not None
+        )
         await self._route_status_change(
             "session",
             session_id,
             "update_session",
             fields,
+            owned_links=owned_links,
             reason_code=reason_code,
             reason_summary=reason_summary,
             evidence_refs=evidence_refs,
@@ -4053,6 +4079,7 @@ class StateDB:
         override_actor: str | None = None,
         override_justification: str | None = None,
         fill_only_if_absent: frozenset[str] = frozenset(),
+        owned_links: tuple[tuple[str, str, str], ...] = (),
         warn_stacklevel: int = 3,
     ) -> None:
         status_value = fields.pop("status", None)
@@ -4094,6 +4121,7 @@ class StateDB:
             override_actor=override_actor,
             override_justification=override_justification,
             fill_only_if_absent=fill_only_if_absent,
+            owned_links=owned_links,
         )
 
     @_operation("update_status")
@@ -4116,6 +4144,7 @@ class StateDB:
         override_actor: str | None = None,
         override_justification: str | None = None,
         fill_only_if_absent: frozenset[str] = frozenset(),
+        owned_links: tuple[tuple[str, str, str], ...] = (),
     ) -> bool:
         """Atomically transition a status and record the reason, under a terminal-status floor.
 
@@ -4187,6 +4216,7 @@ class StateDB:
                 override_actor=override_actor,
                 override_justification=override_justification,
                 fill_only_if_absent=fill_only_if_absent,
+                owned_links=owned_links,
             )
         except _LifecycleNotFoundError as exc:
             raise LookupError(f"{canonical_type} {entity_id!r} not found (table={table})") from exc
@@ -6006,22 +6036,33 @@ class StateDB:
             stmt = stmt.bindparams(*bind_params)
         await conn.execute(stmt, params)
 
+    @_operation("finalize_branch")
     async def finalize_branch(
         self, branch_id: str, *, status: str, ended_at: float | None = None
     ) -> bool:
-        """Guarded terminal write for a branch row: *status* terminal, row still pre-terminal."""
+        """Guarded terminal write for a branch row: *status* terminal, row still pre-terminal.
+
+        In compatibility mode the branch must be one this run created and still carry the run's
+        owner, and the UPDATE carries the owner predicate, as the session writes do (ADR-0128 D5).
+        """
         if status not in _BRANCH_TERMINAL_STATUSES:
             return False
+        if self._compat is not None:
+            self._require_created("branches", branch_id, "branch")
+        clause, owner = self._owner_predicate("branches")
         async with self._tx() as conn:
+            if self._compat is not None:
+                await self._require_owned(conn, "branches", branch_id, "branch")
             result = await conn.execute(
                 text(
-                    "UPDATE branches SET status = :status, ended_at = :ended_at "
-                    "WHERE id = :id AND (status IS NULL OR status = 'running')"
+                    "UPDATE branches SET status = :status, ended_at = :ended_at "  # noqa: S608
+                    "WHERE id = :id AND (status IS NULL OR status = 'running')" + clause
                 ),
                 {
                     "status": status,
                     "ended_at": ended_at if ended_at is not None else time.time(),
                     "id": branch_id,
+                    **owner,
                 },
             )
         return result.rowcount > 0

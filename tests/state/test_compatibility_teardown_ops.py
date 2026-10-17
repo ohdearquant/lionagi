@@ -14,11 +14,13 @@ import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import event
 
+from lionagi.hooks.bus import HookPoint
 from lionagi.state.compat import StateCompatibilityRefused
 from lionagi.state.db import StateDB, TransitionRejectedError
 from lionagi.state.reasons import RunReasons, ShowReasons
@@ -385,6 +387,73 @@ async def test_teardowns_own_node_metadata_write_still_merges(db, store):
     assert _node_metadata(store) == {"managed": "kept", "run": 1}
 
 
+async def test_a_profile_that_admits_the_phase_lets_teardown_clear_it(tmp_path):
+    """A profile that grants ``sessions.current_phase`` admits the clear, and a phase the run
+    wrote is gone beside the terminal status."""
+    from lionagi.cli import _runs
+    from lionagi.state.compat import TableWrites
+
+    store = await _managed_store(tmp_path / "phase.db")
+    base = _profile(store)
+    writes = dict(base.writes)
+    sessions = writes["sessions"]
+    writes["sessions"] = TableWrites(
+        insert=sessions.insert,
+        update=sessions.update | {"current_phase"},
+        unwritten=sessions.unwritten,
+    )
+    db = StateDB(store, compatibility=_profile(store, writes=writes), owner="principal:a")
+    await db.open()
+    try:
+        await _setup_run(db)
+        _execute(store, "UPDATE sessions SET current_phase = 'plan' WHERE id = 's1'")
+
+        await _runs._teardown_common(
+            db,
+            session_id="s1",
+            session_prog_id="sp",
+            status="completed",
+            exception=None,
+            artifacts_path=None,
+            artifact_contract=None,
+        )
+    finally:
+        await db.close()
+
+    assert _rows(store, "SELECT status, current_phase FROM sessions WHERE id = 's1'") == [
+        ("completed", None)
+    ]
+
+
+async def test_a_native_teardown_still_clears_the_phase(tmp_path):
+    """Natively the run owns the column, so the terminal write clears it as it always has."""
+    from lionagi.cli import _runs
+
+    db = StateDB(tmp_path / "native.db")
+    await db.open()
+    try:
+        await db.create_progression("sp")
+        await db.create_session(
+            {"id": "s1", "progression_id": "sp", "status": "running", "current_phase": "plan"}
+        )
+
+        await _runs._teardown_common(
+            db,
+            session_id="s1",
+            session_prog_id="sp",
+            status="completed",
+            exception=None,
+            artifacts_path=None,
+            artifact_contract=None,
+        )
+        row = await db.get_session("s1")
+    finally:
+        await db.close()
+
+    assert row["status"] == "completed"
+    assert row["current_phase"] is None
+
+
 async def test_the_reason_code_warning_still_names_the_caller_in_compatibility_mode(db, store):
     """The operation wrapper adds a frame in compatibility mode too, and the deprecation warning
     still points at the caller."""
@@ -410,3 +479,215 @@ async def test_the_reason_code_warning_still_names_the_caller(tmp_path):
         await native.close()
 
     assert [warning.filename for warning in caught] == [__file__]
+
+
+# --- The teardown's handle reaches the default handlers, and its status write comes last ---------
+
+
+def _profile_with_branch_finalization(store: Path):
+    """The test profile, admitting a branch's terminal write and the run's usage columns.
+
+    ``finalize_branch`` is named so the default BRANCH_END handler's own write is admitted, and
+    the columns it and the default SESSION_END handler set are in the profile's update sets.
+    """
+    from lionagi.state.compat import CompatibilityProfile, TableWrites
+
+    base = _profile(store)
+    writes = dict(base.writes)
+    branch = writes["branches"]
+    writes["branches"] = TableWrites(
+        insert=branch.insert,
+        update=branch.update | {"status", "ended_at"},
+        unwritten=branch.unwritten,
+    )
+    sessions = writes["sessions"]
+    writes["sessions"] = TableWrites(
+        insert=sessions.insert,
+        update=sessions.update | {"input_tokens", "output_tokens", "num_turns"},
+        unwritten=sessions.unwritten,
+    )
+    return CompatibilityProfile(
+        name=base.name,
+        version=base.version,
+        closure=base.closure,
+        writes=writes,
+        operations=base.operations | {"finalize_branch"},
+        owner=base.owner,
+    )
+
+
+async def test_the_teardowns_own_handle_finalizes_its_branch(tmp_path, monkeypatch):
+    """The teardown hands its handle to the default BRANCH_END handler, which finalizes the run's
+    branch through it: the branch is the run's own, so the write is admitted and the run
+    completes."""
+    from lionagi.cli import _runs
+    from lionagi.session.session import Session
+    from lionagi.state import db as db_mod
+
+    store = await _managed_store(tmp_path / "managed.db")
+    monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", store)
+    handle = StateDB(
+        store, compatibility=_profile_with_branch_finalization(store), owner="principal:a"
+    )
+    await handle.open()
+    try:
+        await _setup_run(handle)
+        ctx = {
+            "db": handle,
+            "session_id": "s1",
+            "session_prog_id": "sp",
+            "session": Session(),
+            "shared_db_registered": False,
+            "branch": SimpleNamespace(id="b1"),
+        }
+        result = await _runs.teardown_persist(ctx, status="completed")
+        branch_status = _rows(store, "SELECT status FROM branches WHERE id = 'b1'")
+        session_status = _rows(store, "SELECT status FROM sessions WHERE id = 's1'")
+    finally:
+        await db_mod.close_shared_db()
+
+    assert ctx.get("store_refusal") is None, repr(ctx.get("store_refusal"))
+    assert result == "completed", (result, ctx.get("terminal_reason"))
+    assert branch_status == [("completed",)], branch_status
+    assert session_status == [("completed",)], session_status
+
+
+async def test_an_unregistered_handle_never_reaches_a_foreign_branch(tmp_path, monkeypatch):
+    """With the run's handle unregistered, the default BRANCH_END handler still writes through the
+    handle the teardown handed it, so a branch row another principal owns is left untouched and no
+    native handle is opened for the file."""
+    from lionagi.cli import _runs
+    from lionagi.session.session import Session
+    from lionagi.state import db as db_mod
+
+    store = await _managed_store(tmp_path / "managed.db")
+    monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", store)
+    handle = StateDB(
+        store, compatibility=_profile_with_branch_finalization(store), owner="principal:a"
+    )
+    await handle.open()
+    try:
+        await _setup_run(handle)
+        _execute(store, f"UPDATE branches SET {OWNER} = 'principal:b' WHERE id = 'b1'")
+        before = _rows(store, f"SELECT status, {OWNER} FROM branches WHERE id = 'b1'")
+        ctx = {
+            "db": handle,
+            "session_id": "s1",
+            "session_prog_id": "sp",
+            "session": Session(),
+            "shared_db_registered": False,
+            "branch": SimpleNamespace(id="b1"),
+        }
+        await _runs.teardown_persist(ctx, status="completed")
+        after = _rows(store, f"SELECT status, {OWNER} FROM branches WHERE id = 'b1'")
+        shared = [getattr(value, "mode", None) for value in db_mod._SHARED.values()]
+    finally:
+        await db_mod.close_shared_db()
+
+    assert after == before, f"the foreign branch row changed: {before} -> {after}"
+    assert "native" not in shared, f"a native handle was opened for the store: {shared}"
+
+
+def _profile_that_admits_no_signal(store: Path):
+    """The test profile without the signal table: a lifecycle emit's own signal record is refused.
+
+    The sink keeps the refusal rather than raising it, which is the case the teardown's last
+    check catches.
+    """
+    from lionagi.state.compat import CompatibilityProfile
+
+    base = _profile(store)
+    writes = {name: spec for name, spec in base.writes.items() if name != "session_signals"}
+    branch = writes["branches"]
+    from lionagi.state.compat import TableWrites
+
+    writes["branches"] = TableWrites(
+        insert=branch.insert,
+        update=branch.update | {"status", "ended_at"},
+        unwritten=branch.unwritten,
+    )
+    sessions = writes["sessions"]
+    writes["sessions"] = TableWrites(
+        insert=sessions.insert,
+        update=sessions.update | {"input_tokens", "output_tokens", "num_turns"},
+        unwritten=sessions.unwritten,
+    )
+    return CompatibilityProfile(
+        name=base.name,
+        version=base.version,
+        closure=base.closure,
+        writes=writes,
+        operations=base.operations - {"insert_session_signal"} | {"finalize_branch"},
+        owner=base.owner,
+    )
+
+
+async def test_a_refusal_recorded_during_the_emits_leaves_the_run_failed(tmp_path, monkeypatch):
+    """The terminal status write is the run's last store write, so a refusal the signal sink
+    records while the emits run -- kept, not raised -- leaves the run failed with that refusal
+    rather than beside a status the run had already written."""
+    from lionagi.cli import _runs
+    from lionagi.session.session import Session
+    from lionagi.state import db as db_mod
+
+    store = await _managed_store(tmp_path / "managed.db")
+    monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", store)
+    handle = StateDB(
+        store, compatibility=_profile_that_admits_no_signal(store), owner="principal:a"
+    )
+    await handle.open()
+    await db_mod.register_shared_db(handle)
+    try:
+        await _setup_run(handle)
+        session = Session()
+        session.observer.bind_db_persistence("s1", db=handle)
+        ctx = {
+            "db": handle,
+            "session_id": "s1",
+            "session_prog_id": "sp",
+            "session": session,
+            "shared_db_registered": True,
+        }
+
+        result = await _runs.teardown_persist(ctx, status="completed")
+        stored = _rows(store, "SELECT status FROM sessions WHERE id = 's1'")
+    finally:
+        await db_mod.close_shared_db()
+
+    assert result == "failed", (result, ctx.get("terminal_reason"))
+    refusal = ctx.get("store_refusal")
+    assert isinstance(refusal, StateCompatibilityRefused), repr(refusal)
+    assert "insert_session_signal refused" in str(refusal), str(refusal)
+    assert "insert_session_signal refused" in ctx["terminal_reason"][1]
+    assert stored == [("running",)], stored
+
+
+async def test_the_terminal_status_write_happens_once(db, store):
+    """A teardown with no refusal writes the terminal status exactly once, after the emits."""
+    from lionagi.cli import _runs
+    from lionagi.session.session import Session
+
+    await _setup_run(db)
+    session = Session()
+    writes = {"n": 0}
+    real_update_status = db.update_status
+
+    async def counting_update_status(*args, **kwargs):
+        if args and args[0] == "session":
+            writes["n"] += 1
+        return await real_update_status(*args, **kwargs)
+
+    db.update_status = counting_update_status
+    ctx = {
+        "db": db,
+        "session_id": "s1",
+        "session_prog_id": "sp",
+        "session": session,
+        "shared_db_registered": False,
+    }
+
+    result = await _runs.teardown_persist(ctx, status="completed")
+
+    assert result == "completed", (result, ctx.get("terminal_reason"))
+    assert writes["n"] == 1, f"the terminal status write ran {writes['n']} times"
+    assert _rows(store, "SELECT status FROM sessions WHERE id = 's1'") == [("completed",)]
