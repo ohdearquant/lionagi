@@ -58,6 +58,21 @@ def test_only_the_named_signals_are_taken_over(saved_handlers):
         assert signal_module.getsignal(signal_module.SIGINT) is saved_handlers[signal_module.SIGINT]
 
 
+def test_a_signal_named_twice_is_taken_over_once_and_given_back(saved_handlers):
+    """Naming a signal twice must not record the block's own handler as the one to restore."""
+    signal_module.signal(signal_module.SIGINT, _handler)
+
+    def block_handler(signum, frame):
+        pass
+
+    with temporary_signal_handlers(
+        block_handler, signals=(signal_module.SIGINT, signal_module.SIGINT)
+    ):
+        assert signal_module.getsignal(signal_module.SIGINT) is block_handler
+
+    assert signal_module.getsignal(signal_module.SIGINT) is _handler
+
+
 def test_a_signal_whose_handler_cannot_be_given_back_is_left_alone(saved_handlers, monkeypatch):
     real_getsignal = signal_module.getsignal
     real_signal = signal_module.signal

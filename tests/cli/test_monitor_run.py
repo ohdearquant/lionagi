@@ -912,6 +912,8 @@ async def test_dispatch_wait_sigterm_inside_a_tick_returns_exit_running(
     """run_async turns a SIGTERM that lands inside its call into
     SigtermInterrupt. The wait stops as it does for SIGINT and reports the run
     still in progress, instead of letting the exception escape."""
+    import signal
+
     import lionagi.ln.concurrency as concurrency_mod
     from lionagi.ln.concurrency import SigtermInterrupt
 
@@ -931,7 +933,12 @@ async def test_dispatch_wait_sigterm_inside_a_tick_returns_exit_running(
 
     monkeypatch.setattr(concurrency_mod, "run_async", _fake_run_async)
 
-    assert _dispatch_wait([run_id], interval=0.05, follow=False) == EXIT_RUNNING
+    saved = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        assert _dispatch_wait([run_id], interval=0.05, follow=False) == EXIT_RUNNING
+    finally:
+        for s, prior in saved.items():
+            signal.signal(s, prior)
 
 
 @pytest.mark.asyncio

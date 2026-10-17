@@ -108,7 +108,7 @@ def temporary_signal_handlers(
     installed: list[tuple[int, Any]] = []
     try:
         if threading.current_thread() is threading.main_thread():
-            for signum in signals:
+            for signum in dict.fromkeys(signals):
                 prior = signal.getsignal(signum)
                 if prior is None:
                     continue

@@ -1604,7 +1604,7 @@ on expiry, whatever is still pending is reported the same way an interrupt would
 exit code is whatever the *initial* bounded set already resolved to; new runs discovered during
 the tail print their own lines but don't feed the final aggregate.
 
-**`_run_tick` KeyboardInterrupt handling** — `run_async` raises a bare `KeyboardInterrupt` when
-SIGINT lands during its own call (it installs a temporary handler for that duration — see
-`run_async`'s docstring in `ln/concurrency/utils.py`). Treated exactly like `interrupted` being
-set between ticks: no traceback, no half-updated state, just the same clean stop.
+**`_run_tick` interrupt handling** — `run_async` raises a bare `KeyboardInterrupt` when SIGINT,
+or `SigtermInterrupt` when SIGTERM, lands during its own call (it installs a temporary handler
+for that duration — see `run_async`'s docstring in `ln/concurrency/utils.py`). Either is treated
+exactly like `interrupted` being set between ticks: no traceback, no half-updated state.
