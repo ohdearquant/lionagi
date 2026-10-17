@@ -2391,6 +2391,38 @@ async def test_adopt_offers_no_member_edit_for_a_value_no_member_can_declare(
     assert "edit the member to match the row" not in detail
 
 
+@pytest.mark.parametrize(
+    "extra_member", ["", "      project: null"], ids=["set-project", "null-project"]
+)
+@pytest.mark.asyncio
+async def test_adopt_names_no_null_project_edit_for_a_row_of_a_kind_without_a_project(
+    temp_db_path, agent_profile, pinned_scheduler_tz, monkeypatch, extra_member
+):
+    """A play row takes no project argument, so its project effect reads "none" for a
+    reason ``project: null`` on an agent member does not close: the kinds differ."""
+    from lionagi.cli import _project
+
+    monkeypatch.setattr(_project, "detect_project", lambda path: (None, "none"))
+    doc = parse_schedule_set(
+        _agent_manifest("nightly", cwd=agent_profile, extra_member=extra_member)
+    )
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_adoption_row(
+                "nightly",
+                cwd=agent_profile,
+                action_kind="play",
+                action_playbook="nightly-review",
+                action_project="demo",
+            )
+        )
+        plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
+    detail = plan[0].detail
+    assert [entry.action for entry in plan] == ["ERROR"], detail
+    assert "action_kind" in detail
+    assert "execution: {project: null}" not in detail
+
+
 @pytest.mark.asyncio
 async def test_adopt_names_the_null_project_edit_for_a_row_running_without_one(
     temp_db_path, agent_profile, pinned_scheduler_tz, monkeypatch

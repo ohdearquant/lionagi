@@ -1556,10 +1556,17 @@ async def _adopt_plan_entry(
             )
         elif len(unrecorded_zone) == len(differences):
             remedy = "."
-        elif any(d[0] == "action_project" and "run project: none" in d[1] for d in differences):
+        elif any(
+            d[0] == "action_project"
+            and "run project: none detected from the execution root" in d[1]
+            and "set explicitly" in str(d[2])
+            for d in differences
+        ):
             # The row runs with no project and the member declares the set's, and a
             # member can close that: a project written as ``project: null`` declares
-            # no project. Name the edit rather than the generic remedy.
+            # no project. Name the edit rather than the generic remedy. A row whose kind
+            # takes no project argument differs in kind, which ``project: null`` does
+            # not close.
             remedy = (
                 "; edit the member to match the row, declaring no project with "
                 "execution: {project: null}."
