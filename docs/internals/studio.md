@@ -219,6 +219,76 @@ between `build_argv()` and this function gives a revoked
 
 ## lionagi/studio/services/schedules.py
 
+- **Recent-run list contract v1** — `GET /api/schedules/?include_recent_runs=true` adds optional
+  `recent_runs_summary` to each definition: `{version: 1, limit: 25, status,
+  has_next, runs}`. Available slices contain up to 25 occurrences in
+  `fired_at DESC, id DESC` order, including chain children and every status.
+  `has_next: true` means older history exists; fewer than 25 with
+  `has_next: false` is a complete short slice, and an available empty slice
+  means no run rows were found. A failed slice has `status: "unavailable"`,
+  `has_next: null`, and `runs: []`, and so does a slice whose version the client
+  does not support. A row that omits the field altogether -- a daemon that
+  predates it -- is read through that definition's own history endpoint and
+  marked unavailable only when that read fails; that read asks for one row past
+  the displayed count so it can state `has_next` truthfully, and the client
+  holds the result to the same rules as a field-bearing slice. None of these is
+  evidence of empty history. That read is one request per such definition, so a
+  page whose daemon omits the field costs the list request plus one history
+  request each; only a page the daemon answers with the field costs a single
+  request.
+  The flag defaults to false; Mission, operator MCP, and machine list callers
+  retain their existing response and do not compute these histories.
+  One batched statement selects at most 26 keys per listed definition through
+  a per-group ordered `LIMIT 26`, then loads occurrence payloads and error
+  details only for its displayed 25. The statement's collection functions are
+  dialect-specific: SQLite aggregates and expands the keys with
+  `json_group_array`/`json_each`, PostgreSQL with `jsonb_agg` and
+  `jsonb_array_elements_text ... WITH ORDINALITY`. Each group uses the
+  schedule/time index, and the limit is applied after the ordering: a set of
+  runs that share one `fired_at` at the boundary is read in full to be
+  ordered by id, so a tie group is not a constant-cost read however many rows
+  it holds.
+  Invocation and session evidence is joined in two additional set queries.
+  All linked sessions participate in the existing outcome reducer; session
+  count is not capped because an omitted active child could change its verdict.
+  Public rows retain occurrence status, timestamps, exit code, and chain depth;
+  error classification uses the same reconciled outcome as detail history.
+  Occurrence status is not a combined child-session status. An unreported child
+  failure need not produce an error class when the occurrence has no error text;
+  the detail view retains the separate reconciled outcome.
+  On the field path, raw error text, prompts, event payloads, and artifact
+  paths stay withheld. A row read through the older daemon's history endpoint
+  arrives as the wider run view that endpoint serves, so the client projects
+  each row onto the fields the list contract's slice carries -- dropping
+  duration, artifact paths, session ids, and the reconciled outcome -- which
+  leaves a field-path row and a fallback row the same shape. The raw error text
+  stays withheld there too.
+  A shared batch read failure is followed by one liveness read that does not
+  touch the failing statement. When that read fails too the failure is treated
+  as store-wide, and every slice is left unavailable without a read each, so an
+  outage costs two reads rather than one per listed definition. When the store
+  answers, the batch failure is attributed by retrying each definition on its
+  own: a definition whose own rows fail is marked unavailable without hiding
+  the other summaries on the page. A retry that fails for a reason outside the
+  definition's rows (an intermittent store error) marks that definition
+  unavailable too, so an intermittent failure can mark healthy definitions
+  unavailable for that poll. A statement that fails for every definition while
+  the store answers therefore costs N + 2 reads for N listed definitions -- the
+  batch, the liveness read, and one retry each -- and its failing ids are named
+  on one line per page rather than a traceback each; the retries' own errors are
+  not logged. Only the store-wide case is two reads. A store-wide read failure
+  leaves every slice unavailable, never an
+  available empty slice. Projection failures are isolated to one schedule.
+  Existing health/count queries, budget rollups, schedule-list limits, and
+  filters are unchanged.
+  Cards and table mark an unavailable schedule's own row; the shared banner
+  names every unavailable schedule for all views, including the calendar.
+  A failed list load with no schedules suppresses the empty-state claim, which
+  would otherwise read as a successful load that found none.
+  Refreshes are single-flight with at most one queued refresh. Explicit
+  detail history keeps its separate pagination and does not use this slice; its
+  ordering gains the same id tie-break (`fired_at DESC, id DESC`, where it was
+  `fired_at DESC`), so it orders an exact tie the same way.
 - **`_svc_validate_action_command`** — Delegates to the subprocess validators
   so charset/allow-list rules live in one place. `build_argv` re-checks the
   allow-list again at spawn time since `LIONAGI_SCHEDULER_COMMAND_ALLOWLIST`

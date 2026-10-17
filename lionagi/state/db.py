@@ -4735,7 +4735,7 @@ class StateDB:
             conds.append(f"status IN ({placeholders})")
             params.update({f"status{i}": s for i, s in enumerate(statuses)})
         query = "SELECT * FROM schedule_runs WHERE " + " AND ".join(conds)  # noqa: S608
-        query += " ORDER BY fired_at DESC LIMIT :limit OFFSET :offset"
+        query += " ORDER BY fired_at DESC, id DESC LIMIT :limit OFFSET :offset"
         params["limit"] = limit
         params["offset"] = offset
         async with self._read() as conn:
