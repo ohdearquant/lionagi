@@ -6,6 +6,7 @@ Covers lifecycle, cancellation, error handling, and edge cases.
 import anyio
 import pytest
 
+from lionagi.ln import move_on_after
 from lionagi.ln.concurrency.patterns import CompletionStream
 
 pytestmark = pytest.mark.anyio
@@ -128,6 +129,61 @@ async def test_completion_stream_early_break_exits_cleanly(anyio_backend):
     assert at_exit[1] == at_exit[0]
     await anyio.sleep(0.05)
     assert (sorted(started), sorted(settled)) == at_exit
+
+
+async def test_completion_stream_leaving_early_waits_for_remaining_tasks(anyio_backend):
+    """Test that leaving the iteration early does not cancel the remaining awaitables.
+
+    A ``break`` out of ``async for`` stops consuming results only. The block's
+    ``__aexit__`` waits for every awaitable, so all of them have finished by the
+    time the block is left.
+    """
+    finished = []
+    NUM_TASKS = 20
+    LIMIT = 5
+
+    async def task(x):
+        await anyio.sleep(0.005)
+        finished.append(x)
+        return x
+
+    with anyio.fail_after(5):
+        async with CompletionStream([task(i) for i in range(NUM_TASKS)], limit=LIMIT) as stream:
+            async for _idx, _result in stream:
+                # The consumer stops after one result while the tail of the work
+                # is still queued behind the concurrency limit.
+                assert len(finished) < NUM_TASKS
+                break
+
+    # Not just the awaitables the loop consumed: __aexit__ ran every one of them.
+    assert sorted(finished) == list(range(NUM_TASKS))
+    await anyio.sleep(0.05)
+    assert sorted(finished) == list(range(NUM_TASKS))
+
+
+async def test_completion_stream_cancelling_an_enclosing_scope_stops_remaining_tasks(anyio_backend):
+    """Cancelling an enclosing scope before the block exits stops the remaining awaitables.
+
+    This is the documented way to leave early and not wait: without the cancel,
+    ``__aexit__`` would wait out the slow awaitable and the outer deadline fails
+    the test.
+    """
+    finished = []
+
+    async def task(x):
+        await anyio.sleep(0.001 if x == 0 else 5.0)
+        finished.append(x)
+        return x
+
+    with anyio.fail_after(2):
+        with move_on_after(None) as scope:
+            async with CompletionStream([task(0), task(1)]) as stream:
+                async for _idx, _result in stream:
+                    scope.cancel()
+                    break
+
+    assert scope.cancelled_caught
+    assert finished == [0]
 
 
 # Test removed - timing-dependent behavior hard to test reliably

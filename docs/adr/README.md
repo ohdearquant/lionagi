@@ -102,6 +102,8 @@ its area block.
 - [ADR-0008](ADR-0008-pre-turn-context-provider-execution-and-attribution.md) — Pre-turn context-
   provider execution and attribution
 - 0009-0010 — unused (intentional gaps)
+- [ADR-0127](ADR-0127-prompt-cache-placement-for-prefix-caching-providers.md) — Prompt-cache
+  placement for prefix-caching providers (sequential number; see Numbering)
 - [ADR-0130](ADR-0130-per-request-input-ceiling-and-context-management-past-it.md) — Per-request
   input ceiling and context management past it (sequential number; see Numbering)
 
@@ -283,6 +285,9 @@ its area block.
   primary run canvas (sequential number; see Numbering)
 - [ADR-0116](ADR-0116-editor-client-capability-expansion.md) — Editor client capability
   expansion; revises ADR-0082 D2 (sequential number; see Numbering)
+- [ADR-0131](ADR-0131-operator-decisions-require-a-launcher-issued-decision-capability.md) —
+  Operator decisions require a launcher-issued decision capability (sequential number; see
+  Numbering)
 
 ### governance (0086-0089)
 

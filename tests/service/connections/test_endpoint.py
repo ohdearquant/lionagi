@@ -364,6 +364,64 @@ class TestEndpoint:
             assert result == {"response": "success"}
 
     @pytest.mark.asyncio
+    async def test_error_handling_isolation(self, openai_config):
+        """One failed HTTP request leaves concurrent requests and their cleanup intact."""
+        openai_config.max_retries = 1
+        endpoint = Endpoint(config=openai_config)
+        entered = []
+        all_entered = asyncio.Event()
+        sessions = []
+        responses = []
+
+        async def request(*args, **kwargs):
+            label = kwargs["json"]["messages"][0]["content"]
+            entered.append(label)
+            if len(entered) == 3:
+                all_entered.set()
+            await asyncio.wait_for(all_entered.wait(), timeout=2)
+            if label == "second":
+                raise aiohttp.ClientError("second request failed")
+            response = AsyncMock(spec=aiohttp.ClientResponse)
+            response.status = 200
+            response.closed = False
+            response.release = MagicMock()
+            response.json = AsyncMock(return_value={"success": True, "request": label})
+            responses.append(response)
+            return response
+
+        def create_session():
+            session = AsyncMock(spec=aiohttp.ClientSession)
+            session.__aenter__ = AsyncMock(return_value=session)
+            session.__aexit__ = AsyncMock(return_value=False)
+            session.request = AsyncMock(side_effect=request)
+            sessions.append(session)
+            return session
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch.object(endpoint, "_create_http_session", side_effect=create_session):
+                results = await asyncio.gather(
+                    *(
+                        endpoint.call({"messages": [{"role": "user", "content": label}]})
+                        for label in ("first", "second", "third")
+                    ),
+                    return_exceptions=True,
+                )
+
+        assert results[0] == {"success": True, "request": "first"}
+        assert isinstance(results[1], aiohttp.ClientError)
+        assert str(results[1]) == "second request failed"
+        assert results[2] == {"success": True, "request": "third"}
+        assert sorted(entered) == ["first", "second", "third"]
+        assert len(sessions) == 3
+        assert len({id(session) for session in sessions}) == 3
+        for session in sessions:
+            session.request.assert_awaited_once()
+            session.__aexit__.assert_awaited_once()
+        assert len(responses) == 2
+        for response in responses:
+            response.release.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_aiohttp_429_status_code_path(self, openai_config):
         openai_config.openai_compatible = False
         endpoint = Endpoint(config=openai_config)
