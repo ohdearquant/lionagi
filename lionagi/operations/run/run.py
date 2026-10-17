@@ -24,6 +24,7 @@ from lionagi.protocols.messages import (
     Instruction,
 )
 from lionagi.providers._provider_errors import WorkerLivenessError, classify_provider_error
+from lionagi.session.signal import _as_nonneg_int
 
 from .._api_hooks import emit_api_post_call, emit_api_pre_call, emit_api_stream_chunk
 from .._turn_origin import consume_turn_origin
@@ -319,6 +320,11 @@ async def _stream_with_liveness(
             return
 
 
+_CACHE_WRITE_LIFETIME_KEYS = (
+    "ephemeral_5m_input_tokens",
+    "ephemeral_1h_input_tokens",
+)
+
 # Result-chunk metadata fields some CLI providers (codex) emit as a per-turn
 # delta rather than a running total; providers emitting one result chunk per
 # call sum correctly here too since there's nothing else to add.
@@ -328,10 +334,14 @@ _RESULT_META_DELTA_KEYS = ("total_cost_usd", "num_turns")
 def _accumulate_result_meta(result_meta: dict, metadata: dict) -> None:
     """Merge a "result" chunk's metadata into the in-progress accumulator.
 
-    Numeric usage/cost/turn fields are summed -- including the numeric
-    children of the nested ``usage.cache_creation`` cache-write lifetime map,
-    which a provider may split across chunks; everything else is overwritten
-    with the latest value.
+    Numeric usage/cost/turn fields are summed -- including the parts of the
+    nested ``usage.cache_creation`` cache-write lifetime map, which a provider
+    may split across chunks; everything else is overwritten with the latest
+    value. Each chunk's own split is first checked against that chunk's own
+    cache-write total: a chunk whose split is not a token count or does not
+    sum to its own total contributes a part the lifetime extractor cannot
+    certify, so chunks with invalid splits cannot sum into a valid-looking
+    one. A chunk that reports no split adds no part.
     """
     for key, value in metadata.items():
         if key == "usage" and isinstance(value, dict):
@@ -342,15 +352,48 @@ def _accumulate_result_meta(result_meta: dict, metadata: dict) -> None:
                 elif uk == "cache_creation" and isinstance(uv, dict):
                     # The cache-write lifetime split is a nested map: one
                     # result chunk may report the five-minute writes and the
-                    # next the one-hour writes, so its numeric children are
-                    # summed like the flat counters rather than replaced.
+                    # next the one-hour writes, so its parts are summed like
+                    # the flat counters rather than replaced -- but each
+                    # chunk's split is first checked against that chunk's own
+                    # cache-write total, the same count rule the lifetime
+                    # extractor applies. A split that is not a count, or that
+                    # does not sum to its own total, makes the merged split a
+                    # claim that cannot be certified too: the merged part is
+                    # stored as None, which the extractor rejects. A chunk
+                    # with no split adds nothing.
                     merged = usage.setdefault(uk, {})
                     if not isinstance(merged, dict):
                         usage[uk] = merged = {}
-                    for lk, lv in uv.items():
-                        if isinstance(lv, (int, float)) and not isinstance(lv, bool):
-                            merged[lk] = merged.get(lk, 0) + lv
+                    # Only the two lifetimes the extractor reads take part in
+                    # the check and the sum; a lifetime the chunk does not
+                    # mention reads as zero, exactly as the extractor reads it.
+                    chunk_total = _as_nonneg_int(value.get("cache_creation_input_tokens"))
+                    parts = {}
+                    for lifetime in _CACHE_WRITE_LIFETIME_KEYS:
+                        part = _as_nonneg_int(uv[lifetime]) if lifetime in uv else 0
+                        parts[lifetime] = part
+                    certified = (
+                        chunk_total is not None
+                        and all(part is not None for part in parts.values())
+                        and sum(parts.values()) == chunk_total
+                    )
+                    for lifetime, part in parts.items():
+                        if lifetime in merged and merged[lifetime] is None:
+                            continue  # an earlier chunk already broke this part
+                        if not certified:
+                            merged[lifetime] = None
+                        elif isinstance(merged.get(lifetime), int):
+                            merged[lifetime] = merged[lifetime] + part
                         else:
+                            merged[lifetime] = part
+                    for lk, lv in uv.items():
+                        if (
+                            lk not in parts
+                            and isinstance(lv, (int, float))
+                            and not isinstance(lv, bool)
+                        ):
+                            merged[lk] = merged.get(lk, 0) + lv
+                        elif lk not in parts:
                             merged[lk] = lv
                 else:
                     usage[uk] = uv

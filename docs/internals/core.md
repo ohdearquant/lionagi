@@ -157,25 +157,41 @@ breaking field removal/rename; adding a field (with a default) is non-breaking.
   `prompt_tokens` *includes* cached reads, split out under
   `prompt_tokens_details.cached_tokens`, so it's subtracted here. `is_valid`
   is False when an OpenAI-style report violates the token-count invariants (a
-  negative prompt total, or `cached_tokens` greater than `prompt_tokens`);
+  negative prompt total, or `cached_tokens` greater than `prompt_tokens`), and
+  when an Anthropic-style `cache_creation_input_tokens` cannot be a token
+  count (a fractional float, a numeric-looking string, a bool, a negative):
+  it then reads as 0 so no split can be certified against it, though the other
+  Anthropic fields keep the plain `int(...)` reading they had;
   the returned numbers are still clamped into a safe, non-negative shape so a
   caller that ignores validity still gets a sane aggregate, but a billing
   consumer that checks `is_valid` can distinguish a genuine full-cache hit
   from a provider sending garbage.
+- Cache-write lifetimes are reported only when the lifetimes cover the whole
+  `cache_write_tokens` total they sit beside; otherwise both read 0. A split
+  that does not cover the total because the provider did not split (part or
+  all of) its writes is not a fault: `usage_valid` stays as it was. A split the
+  provider did claim that cannot be a count, or that does not sum to the total
+  of the same report, is a fault: both lifetimes read 0 and `usage_valid` is
+  False. A single unsplit Anthropic report already reads this way; the same
+  rule is applied per message and again to the summed totals.
 - `_extract_cache_write_ttl` reads an Anthropic-style report's cache-write
   lifetime split (`cache_creation.ephemeral_5m_input_tokens` /
   `ephemeral_1h_input_tokens`) against the `cache_creation_input_tokens` total
-  it splits, and reports it only when each part is a non-negative integer (an
-  integral float such as `200.0` states 200 tokens) and the parts sum exactly
-  to that total. Otherwise both lifetimes are 0. A report that carries no
-  split at all -- no `cache_creation`, a non-mapping one, any non-Anthropic
-  shape -- makes no claim to check, so the report stays valid; a split that
-  cannot be priced (a part that is not a count, or parts that do not sum to
-  the total) zeroes both and sets `usage_valid` False. A claude_code
-  `modelUsage` map supersedes the flat usage dict and reports no split; a
-  split on that flat dict covers the top-level loop only and cannot be
-  attributed to the whole-tree totals, so it is never reported and
-  `usage_valid` is False. `cache_write_tokens` stays the total either way.
+  it splits, under the rule above: each part must be a non-negative integer (an
+  integral float such as `200.0` states 200 tokens) and the parts must sum
+  exactly to that total, or both lifetimes are 0 and `certified` is False. A
+  report that carries no split at all -- no `cache_creation`, a non-mapping
+  one, any non-Anthropic shape -- makes no claim to check, so it stays valid
+  (`certified` True). `_collect_branch_usage` and `_collect_multi_branch_usage`
+  apply the same rule again to the summed parts: if a message (or branch)
+  reports its writes unsplit, the summed lifetimes no longer cover the summed
+  total, so both read 0 and validity is unchanged. A claude_code flat split is
+  read against the whole-tree `modelUsage` total only when the two cache-write
+  totals are equal (so no other model wrote); when the map's total is larger
+  the flat split covers part of the tree only, both lifetimes read 0, and the
+  unsplit remainder leaves validity unchanged. When the totals are equal but
+  the flat split does not sum to that total, the split cannot be certified.
+  `cache_write_tokens` stays the total either way.
 - `_sum_model_usage` sums per-model whole-tree token counts from a
   claude_code CLI `modelUsage` map; unlike the flat top-level `usage` field
   (top-level-loop only), each entry here already includes descendant

@@ -59,7 +59,7 @@ class RunStart(Signal):
 
 
 class RunEnd(Signal):
-    """Run lifecycle: completed. total_cost_usd is None (unknown) unless a provider actually reports a dollar cost — never coerced to 0.0 (free). input_tokens is uncached prompt tokens in both provider conventions; cached_tokens/cache_write_tokens carry the billing dimensions that convention otherwise drops or folds in. cache_write_5m_tokens/cache_write_1h_tokens split cache_write_tokens by the lifetime Anthropic billed each write at (its ``usage.cache_creation``); each part must be a non-negative integer (an integral float such as 200.0 states 200 tokens) and they are 0 unless the parts sum exactly to the cache-write total, and a split that cannot be priced -- including a claude_code flat split beside the whole-tree modelUsage totals it does not cover -- zeroes both and makes usage_valid False. usage_valid is False when a provider usage report violated a token-count invariant (e.g. cached_tokens > prompt_tokens) — the numeric fields are still a safe clamped shape, but a billing consumer needing to distinguish a real full-cache hit from a provider bug must check this flag."""
+    """Run lifecycle: completed. total_cost_usd is None (unknown) unless a provider actually reports a dollar cost — never coerced to 0.0 (free). input_tokens is uncached prompt tokens in both provider conventions; cached_tokens/cache_write_tokens carry the billing dimensions that convention otherwise drops or folds in. cache_write_5m_tokens/cache_write_1h_tokens split cache_write_tokens by the lifetime Anthropic billed each write at (its ``usage.cache_creation``), and are reported only when the lifetimes cover the whole cache_write_tokens total they sit beside; otherwise both read 0. A split that does not cover the total because the provider did not split (part or all of) its writes — including a claude_code flat split short of the whole-tree modelUsage total, or a branch that mixed split and unsplit messages — is not a fault: usage_valid stays as it was. A split the provider did claim that cannot be a count (a part must be a non-negative integer; an integral float such as 200.0 states 200 tokens), or that does not sum to the total of the same report, is a fault: both lifetimes read 0 and usage_valid is False. usage_valid is False when a provider usage report violated a token-count invariant (e.g. cached_tokens > prompt_tokens) — the numeric fields are still a safe clamped shape, but a billing consumer needing to distinguish a real full-cache hit from a provider bug must check this flag."""
 
     input_tokens: int = 0
     output_tokens: int = 0
@@ -297,9 +297,9 @@ def _extract_usage_dims(usage: dict[str, Any]) -> tuple[int, int, int, int, bool
     output_tokens = int(usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0)
     if _anthropic_usage_shape(usage):
         cached = int(usage.get("cache_read_input_tokens", 0) or 0)
-        cache_write = int(usage.get("cache_creation_input_tokens", 0) or 0)
+        cache_write = _as_nonneg_int(usage.get("cache_creation_input_tokens", 0))
         input_tokens = int(usage.get("input_tokens", 0) or 0)
-        return input_tokens, output_tokens, cached, cache_write, True
+        return input_tokens, output_tokens, cached, cache_write or 0, cache_write is not None
 
     prompt_tokens = int(usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0)
     details = usage.get("prompt_tokens_details")
@@ -314,12 +314,22 @@ def _extract_cache_write_ttl(usage: dict[str, Any], total: int) -> tuple[int, in
     """Split a usage dict's cache writes by lifetime as (five-minute, one-hour, certified).
 
     Anthropic reports the split under ``usage["cache_creation"]``, beside the
-    ``cache_creation_input_tokens`` *total* the caller passes in. The split is
-    read only from that shape: any other shape, a missing or non-mapping
-    ``cache_creation``, or a report that simply does not split its writes
-    reads as zero for both lifetimes and certifies nothing (``certified`` is
-    True -- the provider made no claim to check, and ``cache_write_tokens``
-    keeps the total either way).
+    ``cache_creation_input_tokens`` *total* the caller passes in. The rule for
+    reading them (docs/internals/core.md, session/signal.py):
+
+        The lifetime fields are reported only when the lifetimes cover the
+        whole ``cache_write_tokens`` total they sit beside; otherwise both
+        read 0. A split that does not cover the total because the provider did
+        not split (part or all of) its writes is not a fault: ``usage_valid``
+        stays as it was. A split the provider did claim that cannot be a
+        count, or that does not sum to the total of the same report, is a
+        fault: both lifetimes read 0 and ``usage_valid`` is False.
+
+    So the split is read only from the Anthropic shape: any other shape, a
+    missing or non-mapping ``cache_creation``, or a report that simply does
+    not split its writes reads zero for both lifetimes and certifies nothing
+    (``certified`` is True -- the provider made no claim to check, and
+    ``cache_write_tokens`` keeps the total either way).
 
     A part that cannot be a token count -- a negative, a bool, a
     numeric-looking string, an explicit None, a fractional float -- or parts
@@ -444,13 +454,16 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
             usage_valid = usage_valid and split_certified
             cache_write_5m_tokens += m_write_5m
             cache_write_1h_tokens += m_write_1h
-        elif _anthropic_usage_shape(usage) and isinstance(usage.get("cache_creation"), dict):
-            # The totals above are the whole tree's, from modelUsage, which
-            # reports no split; the flat dict's split covers the top-level
-            # loop only and so cannot be attributed to them -- not even when
-            # its parts happen to sum to the whole-tree total. It is not
-            # reported and the report is not valid.
-            usage_valid = False
+        elif _as_nonneg_int(usage.get("cache_creation_input_tokens")) == m_cache_write:
+            # The map's totals are the whole tree's (it sums non-negative
+            # per-model counts, including descendant subagent spend); the flat
+            # dict describes the top-level loop. Equal cache-write totals mean
+            # no other model wrote, so the flat split covers the whole tree and
+            # is read against that total, its certification folded in below.
+            m_write_5m, m_write_1h, split_certified = _extract_cache_write_ttl(usage, m_cache_write)
+            usage_valid = usage_valid and split_certified
+            cache_write_5m_tokens += m_write_5m
+            cache_write_1h_tokens += m_write_1h
         input_tokens += m_in
         output_tokens += m_out
         cached_tokens += m_cached
@@ -466,6 +479,14 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
         if isinstance(cost, (int, float)):
             total_cost_usd = (total_cost_usd or 0.0) + float(cost)
         num_turns += int(mr.get("num_turns", 0) or 0)
+
+    if cache_write_5m_tokens + cache_write_1h_tokens != cache_write_tokens:
+        # The lifetimes read so far cover only the messages that split their
+        # writes; a message that reported its writes unsplit leaves them short
+        # of the branch total, so neither is reported. Validity is already the
+        # conjunction of the per-message checks and is not changed here.
+        cache_write_5m_tokens = 0
+        cache_write_1h_tokens = 0
 
     return {
         "input_tokens": input_tokens,
@@ -504,6 +525,13 @@ def _collect_multi_branch_usage(branches: Iterable[Any]) -> dict[str, Any]:
             total_cost_usd = (total_cost_usd or 0.0) + usage["total_cost_usd"]
         num_turns += usage["num_turns"]
         usage_valid = usage_valid and usage["usage_valid"]
+
+    if cache_write_5m_tokens + cache_write_1h_tokens != cache_write_tokens:
+        # Across branches the lifetimes cover the run's total only when every
+        # branch split its writes; otherwise neither is reported. Validity is
+        # already the conjunction of the per-branch checks and is unchanged.
+        cache_write_5m_tokens = 0
+        cache_write_1h_tokens = 0
 
     return {
         "input_tokens": input_tokens,
