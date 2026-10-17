@@ -68,13 +68,13 @@ def _snapshot(path):
         )
 
 
-async def test_tool_commits_metadata_effect_and_result_frame_before_reporting_success(
-    tmp_path, monkeypatch
-):
+async def test_tool_commits_metadata_and_effect_without_emitting_a_frame(tmp_path, monkeypatch):
     from lionagi.studio.operator.store import OperatorStore
 
     path, store, cid, rid = await _active(tmp_path, monkeypatch)
     other = await store.create_conversation(title="Other conversation")
+    frames_before = await store.list_frames(cid)
+    sequence_before = (await store.get_conversation(cid))["nextSequence"]
     value = await _update(
         conversation_id=cid, title="  Café planning  ", description="  Notes\n\tfor tomorrow  "
     )
@@ -103,16 +103,8 @@ async def test_tool_commits_metadata_effect_and_result_frame_before_reporting_su
         ).fetchone()
     assert persisted[:4] == (cid, rid, "conversation_updated", "applied")
     assert json.loads(persisted[4]) == effect
-    frames = await reopened.list_frames(cid)
-    outcomes = [frame for frame in frames if frame["type"] == "tool_result"]
-    assert len(outcomes) == 1
-    assert outcomes[0]["payload"] == {
-        "callId": effect["id"],
-        "ok": True,
-        "result": {"updated": True, "effect": effect},
-    }
-    assert outcomes[0]["requestId"] == rid
-    assert not any(frame["type"] == "ui_command" for frame in frames)
+    assert await reopened.list_frames(cid) == frames_before
+    assert row["nextSequence"] == sequence_before
 
 
 async def test_tool_partial_updates_preserve_omitted_fields_and_clear_description(
@@ -251,10 +243,10 @@ async def test_tool_checks_each_active_turn_guard_independently(tmp_path, monkey
 
 
 @pytest.mark.parametrize("budget", ["frame_size", "frame_count", "turn_bytes"])
-async def test_metadata_outcome_budget_refusal_rolls_back_all_tables(tmp_path, monkeypatch, budget):
+async def test_metadata_update_is_independent_of_stream_frame_budget(tmp_path, monkeypatch, budget):
     import lionagi.studio.operator.store as store_module
 
-    path, _, _, rid = await _active(tmp_path, monkeypatch)
+    path, store, cid, rid = await _active(tmp_path, monkeypatch)
     await _update(title="Before", description="Before description")
     with sqlite3.connect(path) as db:
         frame_count, payload_bytes = db.execute(
@@ -268,26 +260,41 @@ async def test_metadata_outcome_budget_refusal_rolls_back_all_tables(tmp_path, m
         monkeypatch.setattr(store_module, "MAX_FRAMES_PER_TURN", frame_count)
     else:
         monkeypatch.setattr(store_module, "MAX_TURN_PAYLOAD_BYTES", payload_bytes)
-    before = _snapshot(path)
-    response, value = await _call({"title": "After", "description": "Must roll back"})
-    assert not response.get("isError")
-    assert value == {"updated": False, "reason": "turn_budget_exceeded"}
-    assert _snapshot(path) == before
+    frames_before = await store.list_frames(cid)
+    sequence_before = (await store.get_conversation(cid))["nextSequence"]
+    value = await _update(title="After", description="Independent of frame retention")
+    assert value["conversation"]["title"] == "After"
+    assert value["effect"]["description"] == "Independent of frame retention"
+    assert value["conversation"]["nextSequence"] == sequence_before
+    assert await store.list_frames(cid) == frames_before
+    with sqlite3.connect(path) as db:
+        persisted = db.execute(
+            "SELECT effect_json, status FROM studio_operator_effects WHERE id=?",
+            (value["effect"]["id"],),
+        ).fetchone()
+    assert json.loads(persisted[0]) == value["effect"] and persisted[1] == "applied"
 
 
-@pytest.mark.parametrize("table", ["studio_operator_effects", "studio_operator_frames"])
-async def test_effect_or_result_frame_failure_rolls_back_metadata(tmp_path, monkeypatch, table):
-    path, _, _, _ = await _active(tmp_path, monkeypatch)
+@pytest.mark.parametrize("timing", ["BEFORE", "AFTER"])
+async def test_effect_failure_after_metadata_write_rolls_back_all_tables(
+    tmp_path, monkeypatch, timing
+):
+    path, store, cid, _ = await _active(tmp_path, monkeypatch)
     await _update(title="Before", description="Before description")
     before = _snapshot(path)
     with sqlite3.connect(path) as db:
+        # The trigger fires only after the metadata UPDATE is visible in the
+        # same transaction, before or after its associated effect INSERT.
         db.execute(
-            f"CREATE TRIGGER refuse_metadata_outcome BEFORE INSERT ON {table} "
-            "BEGIN SELECT RAISE(ABORT, 'outcome write failed'); END"
+            f"CREATE TRIGGER refuse_metadata_effect {timing} INSERT ON studio_operator_effects "
+            "WHEN (SELECT title FROM studio_operator_conversations "
+            "WHERE id=NEW.conversation_id)='After' "
+            "BEGIN SELECT RAISE(ABORT, 'effect write failed after metadata'); END"
         )
     response, _ = await _call({"title": "After", "description": "Must roll back"})
     assert response.get("isError") is True
     assert _snapshot(path) == before
+    assert (await store.get_conversation(cid))["title"] == "Before"
 
 
 async def test_old_conversation_store_migrates_description_and_keeps_existing_writes(tmp_path):

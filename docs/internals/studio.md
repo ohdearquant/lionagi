@@ -1406,7 +1406,11 @@ stopping unrelated schedules or swallowing scheduler shutdown.
 The Operator (ADR-0083) is a durable, human-gated chat surface over Studio:
 one long-lived conversation per project view, backed by SQLite
 (`store.py`'s `OperatorStore`), that can read run state and propose
-mutating actions but never executes one without an explicit human decision.
+mutating application actions through explicit human decisions. Its own conversation
+title and description are presentation metadata that the active turn can update
+directly; their write and applied effect persist in one transaction. The tool writes
+no extra result frame. The provider's result identifies the call, and the frontend
+re-reads conversation metadata on that result or on turn completion if it is missing.
 The package splits into the durable store, a Branch-backed engine that
 drives one provider turn (`engine.py`), a coordinator that wires turns to
 proposals (`coordinator.py`), a set of MCP-exposed read/write tools

@@ -427,9 +427,13 @@ must create a new proposal with a new hash and idempotency key.
 
 ### D5 — Declarative effects require client acknowledgement
 
-An own-conversation metadata update is applied by the server. The conversation change,
-`conversation_updated` effect with status `applied`, and standard `tool_result` frame
-are persisted together. This result requires no browser action or acknowledgement.
+An own-conversation metadata update is applied by the server. The conversation change
+and the `conversation_updated` effect row with status `applied` persist together in
+the tool's transaction. The tool writes no frame; the provider's native `tool_result`
+is the call's only result frame and carries its provider call id. The client re-reads
+the conversation and list when that successful result arrives, or when the turn ends
+after such a call without a result. A provider failure after the write leaves the
+change and applied effect durable. This update requires no browser acknowledgement.
 The acknowledgement rules below apply to emitted UI commands.
 
 The acknowledgement endpoint accepts:

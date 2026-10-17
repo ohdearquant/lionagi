@@ -514,7 +514,7 @@ class OperatorStore:
         title: str | None | UnsetType = Unset,
         description: str | None | UnsetType = Unset,
     ) -> dict[str, Any]:
-        """Apply presentation metadata and its durable outcome for the current turn."""
+        """Commit metadata with its applied effect; the provider owns the result frame."""
         supplied = {}
         if title is not Unset:
             supplied["title"] = title
@@ -626,54 +626,14 @@ class OperatorStore:
                     "status": "applied",
                     "appliedAt": now,
                 }
-                sequence = int(row["next_sequence"])
-                await self._record_conversation_update(
-                    db, conversation_id, request_id, sequence, effect, now
+                await db.execute(
+                    "INSERT INTO studio_operator_effects "
+                    "(id, conversation_id, request_id, effect_type, effect_json, status, emitted_at) "
+                    "VALUES (?, ?, ?, 'conversation_updated', ?, 'applied', ?)",
+                    (effect_id, conversation_id, request_id, self._json(effect), now),
                 )
-                conversation["nextSequence"] = sequence + 1
             await db.commit()
         return conversation, effect
-
-    async def _record_conversation_update(
-        self,
-        db: Any,
-        conversation_id: str,
-        request_id: str,
-        sequence: int,
-        effect: dict[str, Any],
-        now: float,
-    ) -> None:
-        """Record an applied outcome inside the caller's metadata-write transaction."""
-        payload = {
-            "callId": effect["id"],
-            "ok": True,
-            "result": {"updated": True, "effect": effect},
-        }
-        encoded = self._json(payload)
-        size = self._byte_len(encoded)
-        if size > MAX_FRAME_PAYLOAD_BYTES or await self._turn_budget_exceeded(db, request_id, size):
-            await db.rollback()
-            raise OperatorConflictError(
-                "Conversation update outcome exceeds the turn's retention budget",
-                details={"code": "turn_budget_exceeded"},
-            )
-        await db.execute(
-            "INSERT INTO studio_operator_effects "
-            "(id, conversation_id, request_id, effect_type, effect_json, status, emitted_at) "
-            "VALUES (?, ?, ?, 'conversation_updated', ?, 'applied', ?)",
-            (effect["id"], conversation_id, request_id, self._json(effect), now),
-        )
-        # The server applied this change; the browser has no action to perform or acknowledge.
-        await db.execute(
-            "INSERT INTO studio_operator_frames "
-            "(conversation_id, sequence, request_id, frame_type, payload_json, created_at) "
-            "VALUES (?, ?, ?, 'tool_result', ?, ?)",
-            (conversation_id, sequence, request_id, encoded, now),
-        )
-        await db.execute(
-            "UPDATE studio_operator_conversations SET next_sequence=? WHERE id=?",
-            (sequence + 1, conversation_id),
-        )
 
     async def fork_conversation(
         self,
