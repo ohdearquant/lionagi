@@ -237,6 +237,11 @@ signal must not strand the others with this runner's handler still
 installed. Restore failures are logged rather than raised, since raising
 here would replace whatever the caller was actually failing on.
 
+`temporary_signal_handlers` (same module) applies the same rule to a caller's
+own handler for the length of a `with` block, and installs nothing off the
+main thread, where `signal.signal` raises. `li monitor run` and the
+`li monitor --watch` loop take their SIGINT/SIGTERM handlers through it.
+
 ## untrusted-recall-wrapper
 
 `KhiveInjectionProvider` (`lionagi/tools/khive_injection.py`) wraps recalled

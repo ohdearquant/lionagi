@@ -20,6 +20,10 @@ dependencies = [
     # longer supplied transitively and must be declared here.
     "sniffio>=1.3.0",
     "json-repair>=0.58.0",
+    # CommonMark parser: the Codex provider reads a turn's final message as a
+    # Markdown reader sees it, to tell call markup written as prose from markup
+    # quoted as code.
+    "markdown-it-py>=3.0.0",
     "msgspec>=0.20.0",
     "pydantic>=2.8.0",
     "pydantic-settings>=2.8.0",

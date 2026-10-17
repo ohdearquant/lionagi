@@ -3,11 +3,11 @@
 
 """Perplexity Sonar chat endpoint (real-time web search via the Sonar API)."""
 
-from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from lionagi.ln.types import Enum
 from lionagi.service.connections.endpoint import Endpoint
 
 from ._config import PerplexityConfigs

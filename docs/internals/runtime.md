@@ -1346,8 +1346,15 @@ file on retry without this snapshot.
   `type == "error"` exactly (`"turn.failed"` is never considered benign); the *raw* payload is
   exactly `{}` (an explicit `null`, once normalised to `{}`, must NOT qualify, hence checking
   `_raw_err` pre-normalization); and no other failure-indicating keys (`code`/`message`/
-  `status`) are present in the outer event. Getting any of these three conditions wrong either
-  misclassifies a real failure as benign or vice versa.
+  `status`) are present in the outer event. The classification runs before the session is
+  touched, so the sentinel itself never sets the session's result or clears a failure; every
+  other error event that is not a reconnect notice still fails the session. The sentinel does
+  close the turn: it first reads the turn's pending text, and call markup there fails the
+  session as at `turn.completed`,
+  then it emits its non-error chunk. With no failure recorded, a resumed session's result is
+  the reply text gathered at the stream's end; before, it was the sentinel's own error text.
+  Getting any of these three conditions wrong either misclassifies a real failure as benign or
+  vice versa.
 
 ### `pi/cli.py`
 

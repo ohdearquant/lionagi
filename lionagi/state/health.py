@@ -4,8 +4,9 @@
 
 from __future__ import annotations
 
-from enum import Enum
 from typing import Any
+
+from lionagi.ln.types import Enum
 
 from .staleness import staleness_check
 
