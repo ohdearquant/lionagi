@@ -3009,14 +3009,25 @@ class StateDB:
         if dialect == "sqlite":
             # json() normalizes both sides of a parseable value, so a different
             # spelling of the same document still matches; json_valid guards the
-            # decode, since json() raises on text that is not JSON.
+            # decode, since json() raises on text that is not JSON. A value the
+            # column never held reads back as None and stores as JSON null, so
+            # every absent spelling matches an absent expectation.
             return (
-                "(CASE WHEN json_valid(node_metadata) THEN json(node_metadata) "
-                "ELSE node_metadata END) IS "
-                "(CASE WHEN json_valid(:expected) THEN json(:expected) ELSE :expected END)"
+                "(CASE "
+                "WHEN node_metadata IS NULL THEN :expected IS NULL "
+                "WHEN json_valid(node_metadata) = 0 THEN node_metadata IS :expected "
+                "WHEN json_type(node_metadata) = 'null' THEN :expected IS NULL "
+                "ELSE json(node_metadata) IS "
+                "(CASE WHEN json_valid(:expected) THEN json(:expected) ELSE :expected END) "
+                "END)"
             )
+        # A json column cannot hold text that is not JSON, so the decode below
+        # cannot raise; an absent value is JSON null rather than SQL NULL, and
+        # so matches an absent expectation through jsonb_typeof.
         return (
             "((node_metadata IS NULL AND CAST(:expected AS text) IS NULL) "
+            " OR (node_metadata IS NOT NULL AND CAST(:expected AS text) IS NULL "
+            "     AND jsonb_typeof(node_metadata::jsonb) = 'null') "
             " OR (node_metadata IS NOT NULL AND CAST(:expected AS text) IS NOT NULL "
             "     AND node_metadata::jsonb = CAST(:expected AS jsonb)))"
         )
@@ -3031,8 +3042,9 @@ class StateDB:
         a row that moved changes zero rows and reports ``False``, and the caller
         re-reads and retries. *expected* is the value as a reader saw it: a
         mapping compares in its normalized JSON text, so spacing and key order
-        do not matter, text that is not JSON compares as the text it is, and
-        NULL compares as NULL.
+        do not matter, text that is not JSON compares as the text it is, and an
+        absent metadata -- ``None`` to a reader, whether the column holds SQL
+        NULL or JSON null -- compares as absent.
         """
         expected_text = (
             None

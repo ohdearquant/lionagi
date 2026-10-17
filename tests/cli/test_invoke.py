@@ -480,3 +480,84 @@ def test_run_invoke_end_same_status_reports_failure_when_the_merge_cannot_land(
             return await db.get_invocation("closed")
 
     assert asyncio.run(read())["node_metadata"] == {"kept": True}
+
+
+def test_run_invoke_end_records_metadata_when_the_row_has_no_node_metadata(
+    tmp_path, monkeypatch
+) -> None:
+    """A row recorded without ``node_metadata`` stores JSON null, which reads
+    back as ``None``. The close still saves its payload: the compare-and-set
+    matches the absent value it read instead of reporting the write lost."""
+    import asyncio
+
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            await db.create_invocation(
+                {
+                    "id": "fresh",
+                    "skill": "example",
+                    "started_at": 100.0,
+                    "status": "running",
+                }
+            )
+
+    asyncio.run(seed())
+
+    rc = run_invoke(
+        _end_args(invocation_id="fresh", status="completed", metadata='{"result": "pr-url"}')
+    )
+    assert rc == 0
+
+    async def read():
+        async with StateDB(db_path) as db:
+            return await db.get_invocation("fresh")
+
+    row = asyncio.run(read())
+    assert row["status"] == "completed"
+    assert row["node_metadata"] == {"result": "pr-url"}
+
+
+def test_run_invoke_end_same_status_close_merges_onto_a_row_without_node_metadata(
+    tmp_path, monkeypatch
+) -> None:
+    """The same-status close of a row recorded without ``node_metadata`` merges
+    its payload onto the absent value instead of exiting 1 as if it were lost."""
+    import asyncio
+
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            await db.create_invocation(
+                {
+                    "id": "closed",
+                    "skill": "example",
+                    "started_at": 100.0,
+                    "ended_at": 200.0,
+                    "status": "completed",
+                }
+            )
+
+    asyncio.run(seed())
+
+    rc = run_invoke(
+        _end_args(invocation_id="closed", status="completed", metadata='{"result": "pr-url"}')
+    )
+    assert rc == 0
+
+    async def read():
+        async with StateDB(db_path) as db:
+            return await db.get_invocation("closed")
+
+    row = asyncio.run(read())
+    assert row["status"] == "completed"
+    assert row["ended_at"] == 200.0
+    assert row["node_metadata"] == {"result": "pr-url"}
