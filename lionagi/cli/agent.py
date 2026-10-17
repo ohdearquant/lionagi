@@ -76,6 +76,17 @@ from ._util import EXIT_CODE_BY_STATUS, classify_exception, validate_cwd_exists
 _PRESET_CHOICES = ("coding",)
 # The MCP choice a branch was launched with, replayed by a resume that names none.
 _MCP_LAUNCH_KEY = "mcp_launch"
+# An API model has no tool loop of its own, so lionagi runs one in-process, and
+# only for a profile that names the tool set the leg may use (`api_tools`). The
+# read set is the only one: the tools run with this process's own permissions,
+# and tools that write or run commands wait for an operating-system sandbox.
+_API_TOOL_SETS: dict[str, tuple[str, ...]] = {"read": ("reader", "search", "context")}
+# The tool set and round bound an API branch was launched with, read again on resume.
+_API_LAUNCH_KEY = "api_launch"
+# Rounds of the tool loop after the first; a profile's `max_extensions` replaces it.
+_API_DEFAULT_MAX_EXTENSIONS = 10
+# The Anthropic messages endpoint refuses a request that names no output limit.
+_ANTHROPIC_DEFAULT_MAX_TOKENS = 8192
 
 _DETACHED_EXECUTION_BOUNDARY = """[DETACHED EXECUTION BOUNDARY]
 This process was launched as a detached MCP job. No interactive harness is attached, so this turn cannot receive a background completion notification. Keep every command in the foreground. If a command tool yields a live execution handle, poll that same handle until it reaches a terminal result. Do not arm a monitor or finish a turn waiting for an external notification. Verify the requested outputs before reporting completion."""
@@ -180,6 +191,87 @@ def _make_coding_preset(
     from lionagi.agent.spec import AgentSpec
 
     return AgentSpec.coding(cwd=cwd, effort=effort, system_prompt=system_prompt, role=role)
+
+
+def _profile_api_launch(profile) -> dict | None:
+    """The API tool loop a profile declares, or None when it declares none.
+
+    `api_tools` names the tool set; `max_extensions` bounds the rounds after the
+    first (1 to 100). A value outside either is refused here, before a run exists.
+    """
+    extra = (getattr(profile, "extra", None) or {}) if profile is not None else {}
+    if "api_tools" not in extra:
+        return None
+    name = getattr(profile, "name", "<unknown>")
+    tools = extra["api_tools"]
+    if tools not in _API_TOOL_SETS:
+        raise ConfigurationError(
+            f"agent profile {name!r} sets api_tools to {tools!r}; an API model runs only "
+            f"with the read set ('read': {', '.join(_API_TOOL_SETS['read'])}). Tools that "
+            "write files or run commands are not offered to an API model: they would run "
+            "with this process's own permissions, and this path has no sandbox for them."
+        )
+    rounds = extra.get("max_extensions", _API_DEFAULT_MAX_EXTENSIONS)
+    if isinstance(rounds, bool) or not isinstance(rounds, int) or not 1 <= rounds <= 100:
+        raise ConfigurationError(
+            f"agent profile {name!r} sets max_extensions to {rounds!r}; "
+            "it must be a whole number from 1 to 100."
+        )
+    return {"tools": tools, "max_extensions": rounds}
+
+
+def _make_api_agent_spec(
+    *,
+    cwd: str | None,
+    effort: str | None,
+    system_prompt: str | None,
+    role: str,
+    tools: str,
+):
+    """The AgentSpec for an API-model leg: the named read tools, path-guarded to cwd."""
+    from lionagi.agent.spec import AgentSpec, _wire_secure_guards
+
+    spec = AgentSpec.compose(
+        role, effort=effort, tools=["coding"], system_prompt=system_prompt, cwd=cwd
+    )
+    spec.coding_tools = _API_TOOL_SETS[tools]
+    _wire_secure_guards(spec, cwd)
+    return spec
+
+
+async def _run_api_turn(
+    branch,
+    instruction: str,
+    *,
+    timeout: float | None,
+    max_extensions: int,
+    snapshot_dir: str,
+) -> str:
+    """One turn of an API-model leg: lionagi's tool loop over the branch's tools.
+
+    The loop is ``Branch.ReAct``; *timeout* bounds the whole turn and raises
+    ``TimeoutError`` past it. The branch is written to *snapshot_dir* however the
+    turn ends, so a resume finds it. Returns the final answer's text.
+    """
+    import contextlib
+
+    import anyio
+
+    from lionagi.operations.run.run import _write_branch_snapshot
+
+    deadline = anyio.fail_after(timeout) if timeout is not None else contextlib.nullcontext()
+    try:
+        with deadline:
+            result = await branch.ReAct(
+                instruction=instruction,
+                tools=True,
+                max_extensions=max_extensions,
+            )
+    finally:
+        with anyio.CancelScope(shield=True):
+            await _write_branch_snapshot(branch, snapshot_dir)
+    answer = getattr(result, "answer", result)
+    return "" if answer is None else str(answer)
 
 
 # WorkForm loading helpers (for --form).
@@ -435,6 +527,7 @@ async def _drain_pending_steers(
     operate_kwargs: dict,
     deadline: float | None,
     owner: str | None = None,
+    run_turn=None,
 ) -> object | None:
     """Consume queued `message` session controls as warm continuation turns.
 
@@ -447,6 +540,10 @@ async def _drain_pending_steers(
 
     *owner* names this leg on the rows it claims, so a concurrent leg and the
     teardown can both tell this leg's in-flight work from their own.
+
+    *run_turn*, when given, runs each continuation as ``run_turn(instruction,
+    timeout)`` instead of ``branch.operate``: an API-model leg's turn is its tool
+    loop, not one model call.
 
     Returns the last continuation result, or None if nothing was consumed.
     """
@@ -507,16 +604,18 @@ async def _drain_pending_steers(
             break
         joined = "\n".join(f"- {t}" for t in texts if t.strip())
         hint(f"[steer] applying {len(claimed)} queued operator message(s) as a continuation turn")
-        kwargs = dict(operate_kwargs)
-        if remaining is not None:
-            # What is actually left, never a floor. Flooring the budget would
-            # hand the continuation a fresh second that the caller's deadline
-            # has already spent.
-            kwargs["timeout"] = remaining
-        last_res = await branch.operate(
-            instruction=_AGENT_STEER_TEMPLATE.format(lines=joined),
-            **kwargs,
-        )
+        steer_instruction = _AGENT_STEER_TEMPLATE.format(lines=joined)
+        if run_turn is not None:
+            # The same budget rule as below: what is left, never a floor.
+            last_res = await run_turn(steer_instruction, remaining)
+        else:
+            kwargs = dict(operate_kwargs)
+            if remaining is not None:
+                # What is actually left, never a floor. Flooring the budget would
+                # hand the continuation a fresh second that the caller's deadline
+                # has already spent.
+                kwargs["timeout"] = remaining
+            last_res = await branch.operate(instruction=steer_instruction, **kwargs)
         for row, claim_token in claimed:
             # Unconditional on the clock, deliberately. The deadline gates when
             # new provider work may start, which the recheck above enforces;
@@ -872,12 +971,31 @@ async def _run_agent(
             contain_account_integrations=contain_account_integrations,
         )
         effort = resolve_persisted_effort(provider, chat_model, effort)
+        # A bare spec string is what the branch would turn into a model anyway; it is
+        # turned here so the provider's kind is known before the spawn shape is chosen.
+        if isinstance(chat_model, str):
+            from lionagi.service.imodel import iModel
+
+            chat_model = iModel(model=chat_model)
+        # An API model runs lionagi's own tool loop, only for a profile that declares it.
+        api_launch = None if chat_model.is_cli else _profile_api_launch(profile)
+        if api_launch is not None and preset == "coding":
+            raise ConfigurationError(
+                "--preset coding binds tools that write files and run commands; an API "
+                "model runs only with its profile's read set (api_tools: read)."
+            )
+        if api_launch is not None and images:
+            raise ConfigurationError("--image is not supported for an API model yet.")
+        if api_launch is not None and chat_model.endpoint.config.provider == "anthropic":
+            chat_model.endpoint.config.kwargs.setdefault(
+                "max_tokens", _ANTHROPIC_DEFAULT_MAX_TOKENS
+            )
         # Two spawn shapes hand the set over in two different places, so the
         # message has to read the one that applies. A plain leg gets only what
         # build_chat_model already put on the request, which is knowable here;
         # a create_agent leg is handed the set inside create_agent, so its
         # message waits for the request that call produces (below).
-        takes_create_agent_path = preset == "coding" or has_role_key
+        takes_create_agent_path = preset == "coding" or has_role_key or api_launch is not None
         if not takes_create_agent_path:
             from lionagi.agent.factory import request_kwargs_carry_forwarded_mcp
 
@@ -902,12 +1020,21 @@ async def _run_agent(
             # Use profile.raw_body, not profile.system_prompt, to avoid
             # duplicating LION_SYSTEM_MESSAGE (see docs/internals/cli.md).
             profile_extra = (getattr(profile, "raw_body", None) or "") if profile else ""
-            spec = _make_coding_preset(
-                cwd=cwd,
-                effort=effort or "high",
-                system_prompt=profile_extra or None,
-                role=profile_role if has_role_key else "implementer",
-            )
+            if api_launch is not None:
+                spec = _make_api_agent_spec(
+                    cwd=cwd,
+                    effort=effort or "high",
+                    system_prompt=profile_extra or None,
+                    role=profile_role if has_role_key else "reviewer",
+                    tools=api_launch["tools"],
+                )
+            else:
+                spec = _make_coding_preset(
+                    cwd=cwd,
+                    effort=effort or "high",
+                    system_prompt=profile_extra or None,
+                    role=profile_role if has_role_key else "implementer",
+                )
             if profile is not None:
                 spec.khive_injection = getattr(profile, "khive_injection", None)
             # AgentSpec.coding()/compose() default lion_system=True regardless
@@ -923,19 +1050,30 @@ async def _run_agent(
                 chat_model=chat_model,
                 log_config=DataLoggerConfig(auto_save_on_exit=False),
                 load_settings=False,
+                # An API-model leg is handed no MCP server: its tools are the read set.
                 resolved_mcp_servers=(
-                    {} if mcp_resolution.declared_empty else mcp_resolution.servers
+                    {}
+                    if api_launch is not None or mcp_resolution.declared_empty
+                    else mcp_resolution.servers
                 ),
                 resolved_mcp_explicit=mcp_resolution.explicit,
             )
-            # The hand-over happened inside create_agent, so the request it
-            # produced is the only honest source for what this leg is getting.
-            _report_mcp_resolution(
-                mcp_resolution,
-                provider=provider,
-                cwd=cwd,
-                forwarded=request_carries_forwarded_mcp(branch),
-            )
+            if api_launch is not None:
+                branch.metadata[_API_LAUNCH_KEY] = dict(api_launch)
+                hint(
+                    f"[api] {provider} runs lionagi's tool loop with the read set "
+                    f"({', '.join(_API_TOOL_SETS[api_launch['tools']])}), up to "
+                    f"{api_launch['max_extensions']} more round(s); no MCP server is handed to it"
+                )
+            else:
+                # The hand-over happened inside create_agent, so the request it
+                # produced is the only honest source for what this leg is getting.
+                _report_mcp_resolution(
+                    mcp_resolution,
+                    provider=provider,
+                    cwd=cwd,
+                    forwarded=request_carries_forwarded_mcp(branch),
+                )
         else:
             branch = Branch(
                 chat_model=chat_model,
@@ -955,13 +1093,15 @@ async def _run_agent(
         # prefix (e.g. 'gpt-5.3-codex-spark' vs 'codex/gpt-5.3-codex-spark')
         # must not persist a run/session recorded as a failed reliability event.
         # New-branch only — a resume model override never swaps the provider.
-        if not branch.chat_model.is_cli:
+        if not branch.chat_model.is_cli and api_launch is None:
             cli_provider = getattr(branch.chat_model.endpoint.config, "provider", provider)
             raise ConfigurationError(
                 f"run operation only supports CLI endpoints, but got provider={cli_provider!r}. "
                 "Use one of the CLI endpoint prefixes: claude_code, codex, gemini-cli, pi. "
                 "Did you mean 'gemini-cli/<model>' instead of 'gemini/<model>'? "
-                "The 'gemini' prefix routes to the REST API, not the local Gemini CLI."
+                "The 'gemini' prefix routes to the REST API, not the local Gemini CLI. "
+                "An API model runs through an agent profile (-a) that declares "
+                "'api_tools: read'."
             )
     else:
         cfg = branch.chat_model.endpoint.config.kwargs
@@ -1065,6 +1205,21 @@ async def _run_agent(
                 cwd=cwd,
                 forwarded=forwarded,
             )
+
+    # A branch launched onto the tool loop records the tool set and bound it was
+    # launched with, and a resume runs the loop again from that record. A branch
+    # without the record runs as it did before the loop existed.
+    api_launch = None
+    recorded = branch.metadata.get(_API_LAUNCH_KEY)
+    if (
+        not getattr(branch.chat_model, "is_cli", False)
+        and isinstance(recorded, dict)
+        and recorded.get("tools") in _API_TOOL_SETS
+    ):
+        api_launch = dict(recorded)
+        declared = _profile_api_launch(profile) if is_resumed_branch else None
+        if declared is not None:
+            api_launch["max_extensions"] = declared["max_extensions"]
 
     # Skip the profile system prompt for a branch that carries (or would carry)
     # a create_agent-composed system message — full rationale in
@@ -1329,16 +1484,31 @@ async def _run_agent(
         _heartbeat_task = None
 
     _leg_deadline = (time.monotonic() + timeout) if timeout is not None else None
+    _api_turn = None
+    if api_launch is not None:
+
+        async def _api_turn(instruction: str, turn_timeout: float | None):
+            return await _run_api_turn(
+                branch,
+                instruction,
+                timeout=turn_timeout,
+                max_extensions=api_launch["max_extensions"],
+                snapshot_dir=str(run.branches_dir),
+            )
+
     try:
-        res = await branch.operate(
-            instruction=prompt,
-            stream_persist=True,
-            persist_dir=str(run.stream_dir),
-            snapshot_dir=str(run.branches_dir),
-            timeout=timeout,
-            **({"images": images} if images else {}),
-            **({"repo": cwd} if cwd else {}),
-        )
+        if _api_turn is not None:
+            res = await _api_turn(prompt, timeout)
+        else:
+            res = await branch.operate(
+                instruction=prompt,
+                stream_persist=True,
+                persist_dir=str(run.stream_dir),
+                snapshot_dir=str(run.branches_dir),
+                timeout=timeout,
+                **({"images": images} if images else {}),
+                **({"repo": cwd} if cwd else {}),
+            )
         steer_res = await _drain_pending_steers(
             live,
             branch,
@@ -1355,6 +1525,7 @@ async def _run_agent(
             # could not tell two legs apart, which is the whole point of naming
             # the claimant.
             owner=run.run_id,
+            run_turn=_api_turn,
         )
         if steer_res is not None:
             res = steer_res

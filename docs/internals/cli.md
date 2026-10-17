@@ -1127,6 +1127,34 @@ own branch and not the `will_auto_resume` computed earlier in teardown: that one
 the effective status is applied, so suppressing on it could silence a leg that then does not
 recurse.
 
+**`_run_agent` API-model tool loop** — a CLI provider runs its own tool loop, so one
+`branch.operate` call is the whole leg. An API model (`anthropic/...`, `openai/...`) has none, so
+`li agent` runs lionagi's: `Branch.ReAct(tools=True, max_extensions=N)` over the branch's tools,
+bounded as a whole by `--timeout` (`anyio.fail_after`; past it the run ends `timed_out`). The path
+is opt-in per profile and refused otherwise, with the same "only supports CLI endpoints" error as
+before plus a pointer to the opt-in:
+
+- `api_tools: read` — the only tool set: `reader`, `search` and `context`, bound through
+  `create_agent` with `AgentSpec.coding_tools` and the path guard on `reader` scoped to `cwd`
+  (`search` resolves its path inside the workspace itself). Tools that write files or run
+  commands are not offered: they would run with this process's own permissions, and this path
+  has no operating-system sandbox. Any other value is refused before a run exists.
+- `max_extensions` — rounds after the first, a whole number from 1 to 100 (default 10).
+
+`--preset coding` and `--image` are refused for an API model. The leg is handed no MCP server.
+The Anthropic endpoint requires an output limit, so an API leg on it sets `max_tokens` (8192)
+unless the endpoint's settings already carry one. The default role is `reviewer` (a
+declared `role:` key still wins).
+
+The branch records `{"tools", "max_extensions"}` under `metadata["api_launch"]`; the snapshot is
+written to the run's branches dir after every turn, however the turn ends, so `li agent -r`
+finds it and runs the loop again from that record (a profile's current `max_extensions`
+replaces the recorded bound). A non-CLI branch without the record runs the earlier
+`branch.operate` path unchanged. Queued operator messages drain as further turns of the loop
+(`_drain_pending_steers(run_turn=...)`), on the budget the deadline leaves. Messages persist
+through the same branch-level hooks as a CLI leg; there is no stream dir, since nothing streams
+from a subprocess.
+
 ## `_agent_depth.py` — inherited agent-depth env marker
 
 `LIONAGI_AGENT_DEPTH` (integer string; unset/`0` = top-level, `>=1` = spawned worker) lets an
