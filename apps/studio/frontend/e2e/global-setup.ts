@@ -384,6 +384,7 @@ export default async function globalSetup(_config: FullConfig) {
             ),
             "studio-daemon",
           ),
+          "studio-daemon",
         ),
       (proc) =>
         waitForOutput(proc, (line) => line.includes("studio-e2e-daemon-ready"), {
@@ -412,6 +413,7 @@ export default async function globalSetup(_config: FullConfig) {
             ),
             "vite-preview",
           ),
+          "vite-preview",
         ),
       (proc) =>
         waitForOutput(proc, (line) => /Local:\s*http/i.test(line), {
