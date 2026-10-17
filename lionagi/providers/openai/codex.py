@@ -142,32 +142,37 @@ _RECONNECT_NOTICE_RE = re.compile(r"^\s*Reconnecting\.\.\.\s*\d+/\d+\s*\(")
 _TOOL_CALL_MARKUP_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
         r"</?\s*[\uff5c|]+\s*DSML\s*[\uff5c|]+\s*"
-        r"(?:function_calls|parameter|invoke|calls)(?:\s[^<>]*)?/?>"
+        r"(?:function_calls|parameter|invoke|calls)(?:\s[^<>\0]*)?/?>"
     ),
 )
 
 # The markup check reads the text as a Markdown reader sees it. The text is
 # parsed as CommonMark (markdown-it-py), and the markup is looked for only in
-# what a reader sees as prose: code spans, fenced code blocks and indented code
+# what a reader sees as prose: code spans, fenced code blocks (a fence nothing
+# closes included, which runs to the end of its container) and indented code
 # blocks are left out, wherever quotes and lists put them, so markup quoted as
-# code never fails a turn. Two choices go past CommonMark, and both err toward
-# failing a turn that was fine:
+# code never fails a turn. Link destinations and titles and link reference
+# definitions are not shown as text, so they are not read either. Each block is
+# read on its own, and a code span stands between the text on either side of it,
+# so no tag is pieced together across a block or a span.
 #
-# - A fenced code block that never closes runs to the end of its container in
-#   CommonMark. Here its information string and its text are read again as
-#   Markdown, so markup after an opener that nothing closes still fails the turn.
-# - Raw HTML is read as prose, the text of a `<pre>` or `<code>` element included.
+# One choice goes past CommonMark and errs toward failing a turn that was fine:
+# raw HTML is read as prose, the text of a `<pre>` or `<code>` element included.
 #
-# One errs the other way, toward completing the turn as it completed before this
-# check: text at the parser's nesting limit is not read. The limit is 20 levels,
+# Two err the other way, toward completing the turn as it completed before this
+# check. Text at the parser's nesting limit is not read: the limit is 20 levels,
 # and a list and its item count as one each, so text inside 20 nested quotes or
-# 10 nested lists is dropped.
+# 10 nested lists is dropped. And a message longer than
+# `_MARKUP_CHECK_MAX_CHARS` is not read at all, which bounds the parse: on text
+# built to be slow for it (a run of unclosed brackets) the parser takes about
+# half a second at that length and grows faster than the length past it.
 #
 # The parser decodes character references in prose itself. In a raw HTML block
 # one is decoded only where it ends with a semicolon and names an entry of the
 # HTML entity table (or is numeric); a bare `&lt` is literal text to a reader,
 # so it names no tag.
 _ENTITY_RE = re.compile(r"&(?:#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[a-zA-Z][a-zA-Z0-9]{0,30});")
+_MARKUP_CHECK_MAX_CHARS = 64_000
 
 # Completed items that are a call the CLI ran, or a call's result. One of these
 # after a message means the turn went on past that message, so the message is
@@ -218,18 +223,6 @@ def _decode_references(text: str) -> str:
     return _ENTITY_RE.sub(_replace, text)
 
 
-def _fence_closed(token: Token) -> bool:
-    """Whether a ``fence`` token ended on a closing fence line.
-
-    The token spans its opener, its text and, when one was found, its closer;
-    a fence that runs to the end of its container has no closer line.
-    """
-    content = token.content
-    lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
-    start, end = token.map or (0, 0)
-    return end - start == lines + 2
-
-
 def _inline_text(children: Sequence[Token], parts: list[str]) -> None:
     """Append the text a reader sees in ``children``.
 
@@ -260,20 +253,14 @@ def _visible_blocks(text: str) -> list[str]:
     Each block is read on its own, so a tag is never pieced together from the
     end of one block and the start of the next.
     """
-    parser = _markdown_parser()
     blocks: list[str] = []
-    pending = [text]
-    while pending:
-        for token in parser.parse(pending.pop()):
-            if token.type == "inline":
-                parts: list[str] = []
-                _inline_text(token.children or (), parts)
-                blocks.append("".join(parts))
-            elif token.type == "html_block":
-                blocks.append(_decode_references(token.content))
-            elif token.type == "fence" and not _fence_closed(token):
-                blocks.append(token.info)
-                pending.append(token.content)
+    for token in _markdown_parser().parse(text):
+        if token.type == "inline":
+            parts: list[str] = []
+            _inline_text(token.children or (), parts)
+            blocks.append("".join(parts))
+        elif token.type == "html_block":
+            blocks.append(_decode_references(token.content))
     return blocks
 
 
@@ -283,7 +270,7 @@ def _has_tool_call_markup(text: object) -> bool:
     The visible text is read as its reader sees it, so an HTML entity that
     spells a tag (`&lt;...&gt;`) names one too.
     """
-    if not isinstance(text, str) or not text:
+    if not isinstance(text, str) or not text or len(text) > _MARKUP_CHECK_MAX_CHARS:
         return False
     return any(
         p.search(block) for block in _visible_blocks(text) for p in _TOOL_CALL_MARKUP_PATTERNS

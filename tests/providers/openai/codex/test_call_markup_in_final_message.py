@@ -1090,13 +1090,14 @@ async def test_a_backtick_line_with_a_backtick_in_its_info_string_opens_no_fence
 
 
 @pytest.mark.asyncio
-async def test_an_unclosed_fence_leaves_its_text_visible():
-    """A fence that never closes is not treated as code."""
+async def test_an_unclosed_fence_is_code_to_the_end_of_the_message():
+    """A fence that never closes runs to the end of its container, as CommonMark
+    reads it, so markup after its opener is code."""
     text = f"```\n{MARKUP_TAIL}"
     chunks, session = await _parse([_agent_message(text), _turn_completed()])
 
-    assert session.is_error is True, f"an unclosed fence hid the markup: {text!r}"
-    assert len(_markup_errors(chunks)) == 1, f"expected one markup error chunk, got {chunks}"
+    assert session.is_error is False, f"markup inside an unclosed fence was read: {text!r}"
+    assert _markup_errors(chunks) == []
 
 
 @pytest.mark.asyncio
@@ -1295,8 +1296,8 @@ async def test_a_line_outside_the_openers_quote_ends_the_fence():
 @pytest.mark.asyncio
 async def test_a_line_outside_the_openers_list_indent_ends_the_fence():
     """A body line indented less than the list item's content leaves the item, so
-    the fence ends there and the markup after it is prose."""
-    text = f'- ```xml\n  <{BAR}DSML{BAR} invoke name="x">\n```'
+    the fence ends there and the markup on that line is prose."""
+    text = f'- ```xml\n  code\n<{BAR}DSML{BAR} invoke name="x">'
     chunks, session = await _parse([_agent_message(text), _turn_completed()])
 
     assert session.is_error is True, (
@@ -1432,6 +1433,30 @@ async def test_a_line_that_is_a_block_of_its_own_pairs_no_backtick_after_it(text
     assert len(_markup_errors(chunks)) == 1
 
 
+@pytest.mark.parametrize(("padding", "fails"), [(0, True), (1, False)], ids=["at", "past"])
+def test_a_message_past_the_length_limit_is_not_read(padding, fails):
+    from lionagi.providers.openai.codex import _MARKUP_CHECK_MAX_CHARS, _has_tool_call_markup
+
+    tail = f"\n\n{INVOKE}"
+    text = "x" * (_MARKUP_CHECK_MAX_CHARS - len(tail) + padding) + tail
+
+    assert _has_tool_call_markup(text) is fails
+
+
+@pytest.mark.parametrize(
+    "unit",
+    ["[", "[a ", "*a _b ", "`a ``b ", "<a ", "```a\n", ">" * 1000 + " x\n"],
+    ids=["brackets", "bracket-words", "emphasis", "backticks", "lt", "fences", "quotes"],
+)
+def test_a_message_at_the_length_limit_is_read_in_bounded_time(unit):
+    from lionagi.providers.openai.codex import _MARKUP_CHECK_MAX_CHARS, _has_tool_call_markup
+
+    text = (unit * (_MARKUP_CHECK_MAX_CHARS // len(unit) + 1))[:_MARKUP_CHECK_MAX_CHARS]
+    started = time.perf_counter()
+    _has_tool_call_markup(text)
+    assert time.perf_counter() - started < 5.0
+
+
 def test_code_spans_cost_stays_near_linear_in_the_runs():
     from lionagi.providers.openai.codex import _has_tool_call_markup
 
@@ -1506,25 +1531,36 @@ async def test_markup_is_read_where_commonmark_puts_it(text, fails):
 @pytest.mark.parametrize(
     ("text", "fails"),
     [
-        (f"```\n{INVOKE}", True),
-        (f"```\n{INVOKE}\n", True),
-        (f"```\n\n{INVOKE}\n\n", True),
+        (f"```\n{INVOKE}", False),
+        (f"```\n{INVOKE}\n", False),
+        (f"```\n\n{INVOKE}\n\n", False),
         (f"```\n{INVOKE}\n```", False),
         (f"```\n{INVOKE}\n```\n", False),
-        (f"> ```\n> {INVOKE}", True),
+        (f"> ```\n> {INVOKE}", False),
         (f"> ```\n> {INVOKE}\n> ```", False),
-        (f"- ```\n  {INVOKE}", True),
+        (f"- ```\n  {INVOKE}", False),
         (f"- ```\n  {INVOKE}\n  ```", False),
-        (f"~~~ {INVOKE}\ntext", True),
+        (f"~~~ {INVOKE}\ntext", False),
         (f"~~~ {INVOKE}\ntext\n~~~", False),
         (f"```\nUse `{INVOKE}` like this", False),
         (f"```xml\n    {INVOKE}", False),
+        (f" ```xml\n    {INVOKE}", False),
+        (f"Paragraph\n```xml\n    {INVOKE}", False),
+        (f"> ```\n>\t{INVOKE}", False),
+        (f"> ```\n> `{INVOKE}\n`", False),
+        (f"- ~~~\n  ```\n  {INVOKE}\n  \t```", False),
+        (f"~~~ `{INVOKE}`\ntext", False),
+        ('``` &lt;\uff5cDSML\uff5cinvoke name="x"&gt;\ntext', False),
+        # The container ends, and the fence in it ends with it.
+        (f"> ```\n> code\n\n{INVOKE}", True),
+        (f"> ```\n> code\n{INVOKE}", True),
+        (f"- ```\n  code\n\n{INVOKE}", True),
     ],
 )
 @pytest.mark.asyncio
-async def test_a_fence_that_never_closes_is_read_again_as_markdown(text, fails):
-    """An unclosed fence's information string and text are read as Markdown; a
-    closed fence, however it ends, is code."""
+async def test_a_fence_that_never_closes_runs_to_the_end_of_its_container(text, fails):
+    """A fence is code to its closer or, with none, to the end of its container;
+    its information string is not shown, so it is not read either."""
     chunks, session = await _parse([_agent_message(text), _turn_completed()])
 
     assert session.is_error is fails, f"read wrongly: {text!r}"
@@ -1536,6 +1572,9 @@ async def test_a_fence_that_never_closes_is_read_again_as_markdown(text, fails):
         f'<`x`{BAR}DSML{BAR}invoke name="x">',
         f'Ends with <\n\n{BAR}DSML{BAR}invoke name="x">',
         f'<{BAR}DSML{BAR}\n\ninvoke name="x">',
+        f'<{BAR}DSML{BAR}invoke `name="x"`>',
+        f"Write <{BAR}DSML{BAR}invoke `attr` when x > 0.",
+        f"<{BAR}DSML{BAR}invoke\n`x`>",
     ],
 )
 @pytest.mark.asyncio
