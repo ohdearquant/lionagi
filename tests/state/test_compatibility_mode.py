@@ -1264,6 +1264,140 @@ async def test_a_read_only_handle_is_shared_by_its_url_as_before(store):
         await db_mod.close_shared_db()
 
 
+async def test_a_cancel_in_a_compatibility_disposal_leaves_the_next_open_the_compatibility_path(
+    store, reference, monkeypatch
+):
+    """A second native cancel delivered while ``_open_compatibility()``'s shielded disposal is in
+    progress escapes it, so the compatibility engine stays set and the handle is untracked. The
+    interrupted close is recorded, so the next ``open()`` disposes that engine (once more) and
+    takes the compatibility path, never running the native schema over a store another application
+    manages."""
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy.ext.asyncio import AsyncEngine
+
+    dispose_calls = {"n": 0}
+    stalled = asyncio.Event()
+    real_dispose = AsyncEngine.dispose
+
+    async def counted_dispose(self, *args, **kwargs):
+        dispose_calls["n"] += 1
+        if dispose_calls["n"] == 1:
+            stalled.set()
+            await asyncio.sleep(10)
+        await real_dispose(self, *args, **kwargs)
+
+    entered = asyncio.Event()
+    first_admission = True
+    real_snapshot = StateDB.read_snapshot
+
+    @asynccontextmanager
+    async def stalling_snapshot(self):
+        nonlocal first_admission
+        if first_admission:
+            first_admission = False
+            entered.set()
+            await asyncio.sleep(60)
+        async with real_snapshot(self) as conn:
+            yield conn
+
+    schema_calls = {"n": 0}
+    real_schema = StateDB._apply_schema
+
+    async def counting_schema(self):
+        schema_calls["n"] += 1
+        await real_schema(self)
+
+    monkeypatch.setattr(AsyncEngine, "dispose", counted_dispose)
+    monkeypatch.setattr(StateDB, "read_snapshot", stalling_snapshot)
+    monkeypatch.setattr(StateDB, "_apply_schema", counting_schema)
+
+    handle = _RunsDB(store, compatibility=_profile(reference))
+    handle.entered = []
+    opening = asyncio.ensure_future(handle.open())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        opening.cancel()
+        await asyncio.wait_for(stalled.wait(), timeout=10)
+        opening.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(opening, timeout=10)
+
+        assert handle._engine is not None
+        assert dispose_calls["n"] == 1, "the cancel did not interrupt the disposal"
+
+        await handle.open()
+        assert dispose_calls["n"] == 2, (
+            "the next open did not dispose the engine the interruption left set"
+        )
+        assert schema_calls["n"] == 0, (
+            "the native schema ran over a store another application manages"
+        )
+        assert handle.mode == "compatibility"
+        await handle.start_run("r1")
+        assert _rows(store, "SELECT id FROM runs") == [("r1",)]
+    finally:
+        if handle._engine is not None:
+            await handle.close()
+
+
+async def test_a_refused_retry_on_a_kept_engine_leaves_the_handle_ready_for_compatibility(
+    tmp_path, monkeypatch
+):
+    """A plain native open that fails after its connection read the store keeps its engine. When the
+    store is then marked as another application's and a retry refuses on that engine's own
+    connection, the refusal disposes the kept engine and drops it from the open-native registry, so
+    a compatibility open of the same store in this process still succeeds."""
+    from lionagi.state import db as db_mod
+    from lionagi.state.db import ForeignLineageError
+
+    store = _store(tmp_path / "later-managed.db")
+    with closing(sqlite3.connect(store)) as conn:
+        conn.execute("DELETE FROM schema_meta WHERE key = 'lineage'")
+        conn.commit()
+
+    real_schema = StateDB._apply_schema
+    calls = {"n": 0}
+
+    async def read_then_fail(self):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            await self.fetch_all("SELECT 1")
+            raise RuntimeError("transient failure after the connection read the store")
+        await real_schema(self)
+
+    monkeypatch.setattr(StateDB, "_apply_schema", read_then_fail)
+    handle = StateDB(store)
+    profile = None
+    try:
+        with pytest.raises(RuntimeError, match="transient failure"):
+            await handle.open()
+        assert handle._engine is not None, "a plain open keeps the engine it built"
+        assert handle in db_mod._OPEN_NATIVE
+
+        with closing(sqlite3.connect(store)) as conn:
+            conn.execute(
+                "INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager') "
+                "ON CONFLICT (key) DO UPDATE SET value = excluded.value"
+            )
+            conn.commit()
+
+        with pytest.raises(ForeignLineageError, match="'manager' as the application"):
+            await handle.open()
+        assert handle._engine is None, "a refused retry left the kept engine set"
+        assert handle not in db_mod._OPEN_NATIVE, (
+            "a refused retry left the handle registered as an open native one"
+        )
+
+        profile = _profile(store)
+        compat = _RunsDB(store, compatibility=profile)
+        await compat.open()
+        await compat.close()
+    finally:
+        if handle._engine is not None:
+            await handle.close()
+
+
 # Profiles
 
 

@@ -659,6 +659,11 @@ class StateDB:
         # its schema, so a later call that finds that engine completes the open instead of
         # returning over a store whose schema never ran.
         self._schema_applied = False
+        # Whether a close() of this handle is in progress. Set on entry to _close(), before the
+        # disposal, and cleared only once the engine is gone: a close a second native cancel
+        # interrupts leaves the engine set and this flag set, so the next open or close finishes
+        # that disposal rather than opening over it.
+        self._closing = False
         # One open at a time: a native open reads the store in a worker thread before its engine
         # exists, so two opens running together would each build an engine and lose one.
         self._open_lock: Lock = Lock()
@@ -811,13 +816,34 @@ class StateDB:
                     self._open_lock_loop = None
 
     async def _open(self) -> None:
+        if self._closing:
+            # A close was interrupted after it had discarded this handle but before it disposed
+            # the engine; finish it here, so this open builds over a disposed engine rather than
+            # one a live disposal still holds.
+            await self._close()
         if self._engine is not None:
             if self._schema_applied:
                 return
             # An engine kept by an open that failed after its connection read the store: its
             # schema never ran, so this call completes the open rather than reporting success
-            # over a store with no schema.
-            await self._apply_schema()
+            # over a store with no schema. A store this process holds in compatibility mode, or
+            # one whose lineage row names another application, refuses here as the fresh path
+            # does, and that refusal disposes the kept engine rather than leaving it open and
+            # registered.
+            try:
+                if self._compat is None:
+                    held = _open_in_compatibility_mode(self.url)
+                    if held is not None:
+                        raise held._compat.refusal(
+                            "this process holds the store in compatibility mode, and a native "
+                            "open would apply this package's schema to it",
+                            "open",
+                        )
+                await self._apply_schema()
+            except (ForeignLineageError, StateCompatibilityRefused):
+                with CancelScope(shield=True):
+                    await self._close()
+                raise
             self._schema_applied = True
             return
         if self._compat is not None:
@@ -1104,12 +1130,18 @@ class StateDB:
             await self._close()
 
     async def _close(self) -> None:
+        # Marked before anything is discarded, and cleared only once the engine is gone: a second
+        # native cancel delivered while the shielded disposal below is in progress escapes it and
+        # leaves the engine set, and this flag is how the next open or close knows to enter the
+        # disposal again rather than open over the engine it left.
+        self._closing = True
+        self._schema_applied = False
         _OPEN_COMPAT.discard(self)
         _OPEN_NATIVE.discard(self)
         if self._engine is not None:
             await self._engine.dispose()
             self._engine = None
-        self._schema_applied = False
+        self._closing = False
 
     async def __aenter__(self) -> StateDB:
         # __aexit__ does not run when __aenter__ fails, so the entry marks its own open call:
@@ -7313,8 +7345,9 @@ async def register_shared_db(db: StateDB) -> None:
     The handle being displaced is closed before the entry is replaced. Any error that close raises
     reaches the caller, not just a refusal, and the registry keeps the handle that is still open
     rather than filing one with no entry to reach it by. A caller that registers for a run takes
-    that error as a setup failure: ``setup_agent_persist`` disables persistence for the run and
-    reports it degraded, while orchestration admission fails the run with the error as its reason.
+    that error as a setup failure: both ``setup_agent_persist`` and orchestration admission disable
+    persistence for the run, record it degraded and leave it running, and only a
+    ``StateCompatibilityRefused`` fails the run with the refusal as its reason.
     """
     gen = _SHARED_CLOSE_GEN
     async with _holding_shared_lock():
@@ -7348,18 +7381,22 @@ async def close_shared_db() -> None:
     is kept in the registry and raised together with the others once the sweep is done: reported as
     closed, it would keep its engine with nothing left to reach it by.
     """
-    global _SHARED_OPEN_LOCK, _SHARED_CLOSE_GEN  # noqa: PLW0603
+    global _SHARED_OPEN_LOCK, _SHARED_CLOSE_GEN, _SHARED_LOCK_USERS  # noqa: PLW0603
 
     # Hold the open lock so an in-flight get_shared_db()/register_shared_db() cannot repopulate
     # _SHARED after the sweep; bump the generation and null the lock last, so a waiter that raced
     # this close refuses to resurrect it. Every sweep takes the lock, the one after a refused close
     # included: that close kept its handle registered and left the lock unset, and a sweep that ran
     # without a lock over that entry would let a lookup register a second handle for the store,
-    # which the sweep would then return over or the re-file below would orphan.
+    # which the sweep would then return over or the re-file below would orphan. The lock is unset
+    # only by the last caller waiting on it: a sweep queued behind this one captured this lock
+    # while this one held it, so nulling it here would send that queued sweep's own lookup to a
+    # fresh lock, running beside the queued sweep instead of behind it.
     async with _holding_shared_lock():
         refused = await _sweep_shared_handles()
         _SHARED_CLOSE_GEN += 1
-        _SHARED_OPEN_LOCK = None
+        if _SHARED_LOCK_USERS == 1:
+            _SHARED_OPEN_LOCK = None
     _raise_refused_closes(refused)
 
 

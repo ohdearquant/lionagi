@@ -735,6 +735,197 @@ async def test_a_queued_entry_after_a_plain_open_that_failed_completes_the_store
             await handle.close()
 
 
+def _counting_dispose(monkeypatch) -> dict:
+    """Patch ``AsyncEngine.dispose`` to count calls, stalling only the first in progress."""
+    from sqlalchemy.ext.asyncio import AsyncEngine
+
+    real = AsyncEngine.dispose
+    state: dict = {"calls": 0, "stalled": asyncio.Event()}
+
+    async def dispose(self, *args, **kwargs):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            state["stalled"].set()
+            await asyncio.sleep(10)
+        await real(self, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncEngine, "dispose", dispose)
+    return state
+
+
+async def test_a_second_cancel_in_the_shielded_disposal_leaves_the_next_open_a_tracked_engine(
+    tmp_path, monkeypatch
+):
+    """A second native cancel delivered while ``open()``'s shielded disposal is in progress escapes
+    it, so the engine stays set and the handle is untracked. The interrupted close is recorded, so
+    the next ``open()`` disposes that engine (once more) and opens a tracked native handle."""
+    import lionagi.state.db as db_mod
+
+    store = tmp_path / "state.db"
+    seed = StateDB(store)
+    await seed.open()
+    await seed.close()
+
+    dispose = _counting_dispose(monkeypatch)
+    original_schema = StateDB._apply_schema
+    entered = asyncio.Event()
+    first_schema = True
+
+    async def hang_once(self):
+        nonlocal first_schema
+        if first_schema:
+            first_schema = False
+            await self.fetch_all("SELECT 1")
+            entered.set()
+            await asyncio.sleep(60)
+        await original_schema(self)
+
+    monkeypatch.setattr(StateDB, "_apply_schema", hang_once)
+
+    handle = StateDB(store)
+    entry = asyncio.ensure_future(handle.__aenter__())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        assert handle in db_mod._OPEN_NATIVE
+        entry.cancel()
+        await asyncio.wait_for(dispose["stalled"].wait(), timeout=10)
+        entry.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(entry, timeout=10)
+
+        assert handle._engine is not None
+        assert dispose["calls"] == 1, "the disposal was not the one the cancel interrupted"
+
+        await handle.open()
+        assert dispose["calls"] == 2, (
+            "the next open did not dispose the engine the interruption left set"
+        )
+        assert handle in db_mod._OPEN_NATIVE, "the native handle the next open built is untracked"
+        assert await handle.fetch_all("SELECT 1")
+    finally:
+        if handle._engine is not None:
+            await handle.close()
+
+
+async def test_a_cancelled_close_leaves_the_next_open_a_tracked_engine(tmp_path, monkeypatch):
+    """A ``close()`` cancelled while its disposal is in progress leaves the engine set and the
+    handle untracked. The interrupted close is recorded, so the next ``open()`` disposes that engine
+    (once more) and opens a tracked native handle."""
+    import lionagi.state.db as db_mod
+
+    store = tmp_path / "state.db"
+    seed = StateDB(store)
+    await seed.open()
+    await seed.close()
+
+    dispose = _counting_dispose(monkeypatch)
+    handle = StateDB(store)
+    try:
+        await handle.open()
+        assert handle in db_mod._OPEN_NATIVE
+
+        closing = asyncio.ensure_future(handle.close())
+        await asyncio.wait_for(dispose["stalled"].wait(), timeout=10)
+        closing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+
+        assert handle._engine is not None, "the cancel reached a disposal the close shielded"
+        assert dispose["calls"] == 1
+
+        await handle.open()
+        assert dispose["calls"] == 2, (
+            "the next open did not dispose the engine the cancelled close left set"
+        )
+        assert handle in db_mod._OPEN_NATIVE, "the open native handle is missing from _OPEN_NATIVE"
+        assert await handle.fetch_all("SELECT 1")
+    finally:
+        if handle._engine is not None:
+            await handle.close()
+
+
+async def test_a_lookup_queued_behind_a_second_sweep_waits_for_it(tmp_path, monkeypatch):
+    """A second sweep queued behind the first keeps the registry lock the first held. A lookup
+    issued while that sweep awaits a close waits on the same lock rather than opening a handle the
+    sweep then returns over, and the lock is released only once no sweep is left waiting on it."""
+    import lionagi.state.db as db_mod
+    from lionagi.state.db import close_shared_db, get_shared_db, register_shared_db
+
+    monkeypatch.setattr(db_mod, "_SHARED", {})
+    monkeypatch.setattr(db_mod, "_SHARED_OPEN_LOCK", None)
+    monkeypatch.setattr(db_mod, "_SHARED_LOCK_USERS", 0)
+    monkeypatch.setattr(db_mod, "_SHARED_LOCK_LOOP", None)
+    store = tmp_path / "state.db"
+    handle = StateDB(store)
+    await handle.open()
+    await register_shared_db(handle)
+
+    first_call = asyncio.Event()
+    sweeping = asyncio.Event()
+    release = asyncio.Event()
+    calls = {"n": 0}
+
+    async def staged_close():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Held, so the second sweep queues on the lock this first one holds.
+            first_call.set()
+            await asyncio.sleep(0.3)
+            raise OSError("the first sweep refused")
+        sweeping.set()
+        await release.wait()
+        await StateDB.close(handle)
+
+    outcome: dict = {}
+
+    async def lookup():
+        try:
+            outcome["handle"] = await get_shared_db(store)
+        except RuntimeError as exc:
+            outcome["error"] = exc
+
+    racing = None
+    try:
+        with mock.patch.object(handle, "close", staged_close):
+            sweep1 = asyncio.ensure_future(close_shared_db())
+            await asyncio.wait_for(first_call.wait(), timeout=10)
+            # Queued on the lock the first sweep still holds.
+            sweep2 = asyncio.ensure_future(close_shared_db())
+            with pytest.raises(RuntimeError, match="could not be closed"):
+                await sweep1
+
+            # The second sweep now holds the lock, has emptied the registry and awaits a close.
+            await asyncio.wait_for(sweeping.wait(), timeout=10)
+            assert not db_mod._SHARED, "the second sweep's lookup would meet a registered handle"
+            racing = asyncio.ensure_future(lookup())
+            for _ in range(60):
+                if racing.done():
+                    break
+                await asyncio.sleep(0.05)
+            assert not racing.done(), (
+                "a lookup ran beside the queued sweep instead of waiting on its lock"
+            )
+            release.set()
+            await asyncio.wait_for(sweep2, timeout=10)
+            await asyncio.wait_for(racing, timeout=10)
+    finally:
+        release.set()
+        if racing is not None and not racing.done():
+            racing.cancel()
+        for db in list(db_mod._SHARED.values()):
+            if db._engine is not None:
+                await db.close()
+        if handle._engine is not None:
+            await handle.close()
+
+    assert "handle" not in outcome, "a lookup beside the queued sweep opened its own handle"
+    assert isinstance(outcome.get("error"), RuntimeError), outcome
+    assert "torn down" in str(outcome["error"])
+    assert not [db for db in db_mod._SHARED.values() if db._engine is not None], (
+        "a sweep returned over a handle a lookup opened while it awaited a close"
+    )
+
+
 # Schema
 
 
