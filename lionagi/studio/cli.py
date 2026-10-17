@@ -27,6 +27,7 @@ from lionagi._paths import ensure_lionagi_dir
 from lionagi.cli._argtypes import JsonArgument
 from lionagi.cli._logging import log_error, warn
 from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES
+from lionagi.studio._host import normalize_host
 
 _STUDIO_IMAGE = "ghcr.io/ohdearquant/lion-studio:latest"
 _HOSTED_URL = "https://lion-studio.khive.ai"
@@ -371,18 +372,17 @@ def _published_host(host: str) -> str:
 
     An IPv4-mapped IPv6 address (``::ffff:192.168.1.5``) is returned as the
     IPv4 address it maps, since that is what a client reaches it as and what the
-    daemon's Host grammar accepts.
+    daemon's Host grammar accepts -- `normalize_host` does that unwrapping, so the
+    spelling in brackets and the compressed spelling reach the same address.
 
     Raises:
         ValueError: *host* is not an address the port can be published on.
     """
-    stripped = host.strip()
-    if stripped.startswith("[") and stripped.endswith("]"):
-        stripped = stripped[1:-1].strip()
-    if not stripped:
+    normalized = normalize_host(host)
+    if not normalized:
         return "127.0.0.1"
     try:
-        address = ipaddress.ip_address(stripped)
+        address = ipaddress.ip_address(normalized)
     except ValueError:
         raise ValueError(
             f"--host {host!r} is not an IP address; --host takes an address, not an "
@@ -396,7 +396,7 @@ def _published_host(host: str) -> str:
         ) from None
     # An IPv4-mapped IPv6 address is the IPv4 address in another spelling; a
     # browser sends the IPv4 form, which is also the form the daemon admits.
-    return str(getattr(address, "ipv4_mapped", None) or address)
+    return str(address)
 
 
 def _bracketed(address: str) -> str:
@@ -953,17 +953,24 @@ def _url_authority(host: str) -> str:
     address of the same family. An IPv6 literal is bracketed, or its own colons
     read as the port separator and the URL fails to parse. Anything else is left
     as the caller wrote it.
+
+    Every value is read through `normalize_host` first, so a URL is built from the
+    address the value names rather than from its spelling: a blank value is a URL
+    with no host at all (`http://:8765` does not even parse), `[localhost]` is a
+    bracketed name, and an IPv4-mapped address is the IPv4 address a client
+    connects to. The authority here is also the Host the URL sends, so each of
+    these has to be one the daemon's Host guard admits under the same value.
     """
-    stripped = host.strip()
-    if stripped.startswith("[") and stripped.endswith("]"):
-        stripped = stripped[1:-1].strip()
+    normalized = normalize_host(host)
+    if not normalized:
+        return "127.0.0.1"
     try:
-        address = ipaddress.ip_address(stripped)
+        address = ipaddress.ip_address(normalized)
     except ValueError:
-        return host
+        return normalized
     if address.is_unspecified:
         return "[::1]" if address.version == 6 else "127.0.0.1"
-    return f"[{stripped}]" if address.version == 6 else stripped
+    return f"[{normalized}]" if address.version == 6 else normalized
 
 
 def _base_url() -> str:

@@ -406,6 +406,55 @@ def test_a_wildcard_bind_host_is_not_admitted_as_a_host(docker_run, host):
     assert not _guard_admits(_host_header(host), host)
 
 
+@pytest.mark.parametrize(
+    ("host", "published"),
+    [
+        ("[2001:db8::1]", "2001:db8::1"),
+        ("2001:0db8::1", "2001:db8::1"),
+        (" 192.168.1.5 ", "192.168.1.5"),
+        ("[fe80::1]", "fe80::1"),
+        ("::ffff:192.168.1.5", "192.168.1.5"),
+        ("[::ffff:c0a8:105]", "192.168.1.5"),
+    ],
+)
+def test_a_bind_spelling_publishes_the_address_it_names(docker_run, capsys, host, published):
+    """One spelling of an address is published, passed and printed as the address
+    itself, and the Host a browser sends for it is admitted.
+
+    A bind written in brackets or in a non-canonical IPv6 spelling used to widen
+    no admitted Host, so the browser's Host for that very address answered 400
+    even though the CLI had printed that address as the link to open.
+    """
+    invoke, _, _ = docker_run
+    argv = invoke("--host", host)
+    assert f"LIONAGI_STUDIO_HOST={published}" in argv
+    assert argv[argv.index("-p") + 1].startswith(f"{_host_header(published)}:")
+    printed = _printed_host(capsys.readouterr().out)
+    assert printed == _host_header(published), printed
+    assert _guard_admits(f"{printed}:8765", _bind_host_from_argv(argv)), (
+        f"the daemon refuses Host {printed}:8765 with {_bind_host_from_argv(argv)!r} set"
+    )
+
+
+@pytest.mark.parametrize(
+    ("host", "published"),
+    [
+        ("[::ffff:192.168.1.5]", "192.168.1.5"),
+        ("[::]", "::"),
+        ("[0:0:0:0:0:0:0:0]", "::"),
+        ("[::ffff:0.0.0.0]", "0.0.0.0"),
+        ("[ ]", "127.0.0.1"),
+    ],
+)
+def test_a_bind_spelling_that_is_a_special_address_keeps_its_rule(host, published):
+    """Brackets change the spelling, never what the value means: an unspecified
+    address stays unspecified and is not published or admitted, and a blank stays
+    blank and takes the loopback default."""
+    from lionagi.studio.cli import _published_host
+
+    assert _published_host(host) == published
+
+
 @pytest.mark.parametrize("host", ["[::1]:8765", "127.0.0.1:8765"])
 def test_an_address_carrying_a_port_names_the_port_flag(docker_run, host, capsys):
     """`--host` takes an address, not an address and port, so a value carrying a
