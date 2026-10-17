@@ -1272,6 +1272,135 @@ async def test_application_mcp_resume_run_rejects_instruction_for_flow_kind_befo
     await coordinator.shutdown()
 
 
+async def _seed_foreign_project_run(db, *, project: str = "someone-elses-project") -> str:
+    """A running run that a turn with no declared project cannot prove it
+    owns -- the exact row an unscoped write tool must not reach by full id."""
+    import uuid
+
+    run_id = str(uuid.uuid4())
+    progression_id = str(uuid.uuid4())
+    await db.create_progression(progression_id)
+    await db.create_session(
+        {
+            "id": run_id,
+            "progression_id": progression_id,
+            "status": "running",
+            "started_at": time.time(),
+            "project": project,
+        }
+    )
+    return run_id
+
+
+async def _unscoped_running_turn(store: OperatorStore, path: Path, monkeypatch) -> str:
+    """A conversation with no project of its own and a turn in it that is
+    running: the caller identity is present, the declared project is not."""
+    conversation = await store.create_conversation(project=None)
+    cid = conversation["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="act on a run",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    request_id = accepted["requestId"]
+    assert await store.mark_running(request_id)
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", request_id)
+    return request_id
+
+
+@pytest.mark.asyncio
+async def test_cancel_run_full_id_of_a_foreign_run_is_refused_with_no_project(
+    tmp_path, monkeypatch
+):
+    """A turn with no declared project must not propose a cancel by full id
+    for a run in another project: cancellation mutates that run, so the turn
+    is refused before the reference is resolved, and no proposal is created
+    for a human to approve."""
+    from lionagi.state.db import StateDB
+    from lionagi.studio.operator.cancel_run import cancel_run
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        foreign_run = await _seed_foreign_project_run(db)
+
+    store = OperatorStore(path)
+    await store.ensure_schema()
+    request_id = await _unscoped_running_turn(store, path, monkeypatch)
+
+    result = await asyncio.wait_for(cancel_run({"run": foreign_run}), timeout=2)
+
+    assert result == {
+        "cancelled": False,
+        "reason": "missing_owner_context",
+        "run_untouched": True,
+    }
+    assert await store.list_proposals_for_request(request_id) == []
+    async with StateDB() as db:
+        row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (foreign_run,))
+        assert row["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_rename_session_full_id_of_a_foreign_run_is_refused_with_no_project(
+    tmp_path, monkeypatch
+):
+    """Same fence on the rename path: a full id of another project's run gets
+    no rename proposal from a turn that declares no project."""
+    from lionagi.state.db import StateDB
+    from lionagi.studio.operator.rename_session import rename_session
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        foreign_run = await _seed_foreign_project_run(db)
+
+    store = OperatorStore(path)
+    await store.ensure_schema()
+    request_id = await _unscoped_running_turn(store, path, monkeypatch)
+
+    result = await asyncio.wait_for(
+        rename_session({"run": foreign_run, "name": "not this project's run"}), timeout=2
+    )
+
+    assert result == {"renamed": False, "reason": "missing_owner_context"}
+    assert await store.list_proposals_for_request(request_id) == []
+    async with StateDB() as db:
+        row = await db.fetch_one("SELECT name FROM sessions WHERE id = ?", (foreign_run,))
+        assert row["name"] is None
+
+
+@pytest.mark.asyncio
+async def test_resume_run_full_id_of_a_foreign_run_is_refused_with_no_project(
+    tmp_path, monkeypatch
+):
+    """Same fence on the resume path: a full id of another project's run gets
+    no resume proposal from a turn that declares no project -- and nothing is
+    launched for it."""
+    from lionagi.state.db import StateDB
+    from lionagi.studio.operator.resume_run import resume_run
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        foreign_run = await _seed_foreign_project_run(db)
+        await db.update_session(foreign_run, invocation_kind="agent")
+
+    store = OperatorStore(path)
+    await store.ensure_schema()
+    request_id = await _unscoped_running_turn(store, path, monkeypatch)
+
+    result = await asyncio.wait_for(
+        resume_run({"run": foreign_run, "instruction": "keep going"}), timeout=2
+    )
+
+    assert result == {"resumed": False, "reason": "missing_owner_context"}
+    assert await store.list_proposals_for_request(request_id) == []
+
+
 async def _noop() -> None:
     return None
 

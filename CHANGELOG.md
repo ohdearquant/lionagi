@@ -146,6 +146,12 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Fixed
 
+- The Studio operator's `cancel_run`, `rename_session` and `resume_run` tools refuse with
+  `missing_owner_context` on a turn that has an owner but no declared project, before resolving the
+  reference, a full run id and `"current"` included, as `run_control` (pause, resume, message)
+  already did. They used to resolve a full id on such a turn with no project check, so the turn
+  could propose changing a run in another project, and the found or not-found answer told it
+  whether that id existed. The read tools still resolve a full id on such a turn.
 - A streamed HTTP call whose provider said, inside a stream it had accepted with HTTP 200, that
   the call failed (an `error` event, `response.failed` with or without a nested error, a chat
   completion chunk carrying an error) ended `COMPLETED`, so neither `iModel.stream()` nor a direct

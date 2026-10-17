@@ -19,7 +19,6 @@ un-gate of a cancelled run's status.
 from __future__ import annotations
 
 import asyncio
-import re
 import time
 from typing import Any
 
@@ -103,15 +102,6 @@ def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-# A full canonical UUID (36 characters, 8-4-4-4-12 hex). Mirrors
-# ``run_progress.py``'s own copy, kept separate for the same reason
-# ``_allowed_project`` is: this module's identity/store handling stays
-# self-contained.
-_EXACT_UUID_RE = re.compile(
-    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-)
-
-
 async def _current_run_id(store: OperatorStore, request_id: str) -> str | None:
     """The run the human was looking at when this instruction was sent.
 
@@ -150,8 +140,9 @@ async def _allowed_project(store: OperatorStore, request_id: str) -> str:
     if not isinstance(project, str) or not project:
         raise MissingOwnerContextError(
             "operator turn has no project context -- refusing to resolve or "
-            "cancel a run by prefix or name. Pass the run's full 36-character "
-            "id instead, or cancel the run the human has open ('current')."
+            "cancel a run, including one named by its full 36-character id: "
+            "cancelling changes the run it names, so this turn cannot prove "
+            "it owns that run."
         )
     return project
 
@@ -243,7 +234,17 @@ async def _resolve_run(db: Any, ref: str, *, project: str) -> dict[str, Any] | N
 async def _resolve_reference(store: OperatorStore, request_id: str, ref: str) -> dict[str, Any]:
     """Resolve *ref* to a tool-facing outcome. Never guesses, never raises
     for an ordinary resolution failure -- ambiguous and not-found are both
-    first-class reported outcomes."""
+    first-class reported outcomes.
+
+    A turn with no declared project raises :class:`MissingOwnerContextError`
+    rather than resolving anything, for every reference form including an
+    exact full UUID -- the same position ``run_control._propose_run_control``
+    takes, and for the same reasons: cancelling mutates the run it names, so
+    "an exact id cannot enumerate" stops being the relevant property, and
+    refusing before resolution keeps the two refusals from becoming an oracle
+    for which run ids exist in projects this turn cannot see. The read-only
+    resolver (``run_progress.resolve_run``) keeps the exact-id exception.
+    """
     from lionagi.state.db import StateDB
 
     if ref == "current":
@@ -252,23 +253,7 @@ async def _resolve_reference(store: OperatorStore, request_id: str, ref: str) ->
             return {"found": False}
         ref = run_id
 
-    ref = ref.strip()
-    try:
-        project = await _allowed_project(store, request_id)
-    except MissingOwnerContextError:
-        if _EXACT_UUID_RE.fullmatch(ref) is None:
-            raise
-        # A turn with an owner but no declared project may still resolve one
-        # run by its full id: an exact 36-character UUID identifies at most
-        # one row and cannot enumerate anything, the same position
-        # ``run_detail`` already takes for a bare id. Prefix and
-        # name-substring resolution stay behind the fence, and a turn that
-        # *does* declare a project keeps full ownership scoping on every arm.
-        async with StateDB() as db:
-            row = await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (ref,))
-            if row is None:
-                return {"found": False}
-            return {"found": True, "ambiguous": False, "run": db._row_to_dict(row)}
+    project = await _allowed_project(store, request_id)
 
     async with StateDB() as db:
         try:
@@ -361,7 +346,14 @@ async def cancel_run(arguments: dict[str, Any]) -> dict[str, Any]:
     args = CancelRunInput.model_validate(arguments)
     store, conversation_id, request_id = _identity()
 
-    resolution = await _resolve_reference(store, request_id, args.run)
+    # A turn that declares no project gets the refusal as a reported outcome
+    # rather than a raised error -- the same shape ``run_control`` returns, so
+    # a caller sees one refusal vocabulary across the write tools rather than
+    # an exception from one and a reason code from another.
+    try:
+        resolution = await _resolve_reference(store, request_id, args.run)
+    except MissingOwnerContextError:
+        return {"cancelled": False, "reason": "missing_owner_context", "run_untouched": True}
     if not resolution["found"]:
         return {"cancelled": False, "reason": "not_found", "run_untouched": True}
     if resolution["ambiguous"]:
