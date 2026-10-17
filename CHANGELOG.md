@@ -146,6 +146,13 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Fixed
 
+- A settings shell hook (`hooks.pre` / `hooks.post` with a `command`) runs in a session of its
+  own, so cancelling the tool call it guards left the hook and anything it started running, and an
+  error while exchanging data with it did the same. The hook's process group is now killed on
+  cancellation and on any such error, as it already was on a timeout. A pre-hook payload, or a
+  post-hook result, that cannot be serialized to JSON was found only after the hook had been
+  started, and that hook was never stopped; it is now serialized first, so the pre-hook refuses the
+  call and the post-hook is skipped without starting anything.
 - A streamed HTTP call whose provider said, inside a stream it had accepted with HTTP 200, that
   the call failed (an `error` event, `response.failed` with or without a nested error, a chat
   completion chunk carrying an error) ended `COMPLETED`, so neither `iModel.stream()` nor a direct

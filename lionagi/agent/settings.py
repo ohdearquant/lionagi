@@ -19,6 +19,7 @@ from lionagi.ln import (
     observe_process_group_leader,
     prepare_process_group_env,
 )
+from lionagi.ln.concurrency import shield
 
 __all__ = (
     "apply_hooks_from_settings",
@@ -224,6 +225,22 @@ async def _wait_proc(proc: asyncio.subprocess.Process, grace: float = 2.0) -> No
         logger.debug("Timed out waiting for process %s to exit", proc.pid, exc_info=True)
 
 
+async def _end_hook_group(proc: Any, leader_created: float | None) -> None:
+    """Kill a hook child and the process group it leads, then wait for the child.
+
+    The kill is sent before the first suspension point, so it reaches the child even
+    when the hook's own task is being cancelled; the wait is shielded so that
+    cancellation does not leave the child unreaped.
+    """
+    group_witnesses = (
+        capture_group_witnesses(proc, expected_leader_created=leader_created)
+        if leader_created is not None
+        else ()
+    )
+    await aterminate_process_group(proc, grace=None, group_witnesses=group_witnesses)
+    await shield(_wait_proc, proc)
+
+
 def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) -> Callable:
     """Create an async hook running an argv command; pre-hooks raise PermissionError on non-zero exit."""
     if not isinstance(command_template, list) or not all(
@@ -246,6 +263,12 @@ def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) ->
 
         async def shell_pre_hook(tn: str, action: str, args: dict) -> dict | None:
             argv = _render_argv(args)
+            # The payload is serialized before the child exists, so a value that
+            # cannot be serialized refuses the call without leaving a child behind.
+            try:
+                payload = json.dumps(args).encode()
+            except (TypeError, ValueError) as e:
+                raise PermissionError(f"Hook execution error: {e}") from e
             proc = None
             leader_created = None
             child_env, group_marker = prepare_process_group_env()
@@ -263,29 +286,24 @@ def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) ->
                     expected_marker=group_marker,
                 )
                 _, stderr_bytes = await asyncio.wait_for(
-                    proc.communicate(json.dumps(args).encode()),
+                    proc.communicate(payload),
                     timeout=10,
                 )
             except asyncio.TimeoutError as err:
                 # Kill the whole process group so lingering children can't
                 # continue side effects after the hook times out.
                 if proc is not None:
-                    group_witnesses = (
-                        capture_group_witnesses(
-                            proc,
-                            expected_leader_created=leader_created,
-                        )
-                        if leader_created is not None
-                        else ()
-                    )
-                    await aterminate_process_group(
-                        proc,
-                        grace=None,
-                        group_witnesses=group_witnesses,
-                    )
-                    await _wait_proc(proc)
+                    await _end_hook_group(proc, leader_created)
                 raise PermissionError(f"Hook timed out: {argv[0]!r}") from err
+            except asyncio.CancelledError:
+                # A cancelled tool call must not leave its hook running in its own
+                # session, where nothing else would ever stop it.
+                if proc is not None:
+                    await _end_hook_group(proc, leader_created)
+                raise
             except Exception as e:
+                if proc is not None:
+                    await _end_hook_group(proc, leader_created)
                 raise PermissionError(f"Hook execution error: {e}") from e
             if proc.returncode != 0:
                 msg = stderr_bytes.decode(errors="replace").strip() or f"Hook blocked: {argv[0]!r}"
@@ -298,6 +316,12 @@ def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) ->
 
         async def shell_post_hook(tn: str, action: str, args: dict, result: dict) -> dict | None:
             argv = _render_argv({**args, **result})
+            # Serialized before the child exists, as in the pre-hook.
+            try:
+                payload = json.dumps(result).encode()
+            except (TypeError, ValueError) as exc:
+                logger.warning("hook subprocess error (swallowed)", exc_info=exc)
+                return None
             proc = None
             leader_created = None
             child_env, group_marker = prepare_process_group_env()
@@ -315,29 +339,22 @@ def _make_shell_hook(command_template: list[str], phase: str, tool_name: str) ->
                     expected_marker=group_marker,
                 )
                 await asyncio.wait_for(
-                    proc.communicate(json.dumps(result).encode()),
+                    proc.communicate(payload),
                     timeout=10,
                 )
             except asyncio.TimeoutError as exc:
                 # Kill process group on post-hook timeout so no delayed side effects
                 # occur after the hook is silently dropped.
                 if proc is not None:
-                    group_witnesses = (
-                        capture_group_witnesses(
-                            proc,
-                            expected_leader_created=leader_created,
-                        )
-                        if leader_created is not None
-                        else ()
-                    )
-                    await aterminate_process_group(
-                        proc,
-                        grace=None,
-                        group_witnesses=group_witnesses,
-                    )
-                    await _wait_proc(proc)
+                    await _end_hook_group(proc, leader_created)
                 logger.warning("hook subprocess timed out (swallowed)", exc_info=exc)
+            except asyncio.CancelledError:
+                if proc is not None:
+                    await _end_hook_group(proc, leader_created)
+                raise
             except Exception as exc:
+                if proc is not None:
+                    await _end_hook_group(proc, leader_created)
                 logger.warning("hook subprocess error (swallowed)", exc_info=exc)
             return None
 

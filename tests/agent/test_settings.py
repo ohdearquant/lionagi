@@ -223,6 +223,106 @@ async def test_post_hook_timeout_passes_spawn_bound_group_witnesses(monkeypatch)
     assert asyncio.create_subprocess_exec.await_args.kwargs["env"] == {"MARKED": "post"}
 
 
+def _patch_hook_spawn(monkeypatch, mock_proc, created, witnesses):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    import lionagi.agent.settings as settings_mod
+
+    spawn = AsyncMock(return_value=mock_proc)
+    cleanup = AsyncMock()
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(settings_mod, "prepare_process_group_env", lambda env=None: ({}, "token"))
+    monkeypatch.setattr(
+        settings_mod, "observe_process_group_leader", lambda pid, *, expected_marker: created
+    )
+    monkeypatch.setattr(settings_mod, "capture_group_witnesses", lambda *a, **k: witnesses)
+    monkeypatch.setattr(settings_mod, "aterminate_process_group", cleanup)
+    return spawn, cleanup
+
+
+@pytest.mark.parametrize("phase", ["pre", "post"])
+async def test_a_cancelled_hook_ends_its_process_group(monkeypatch, phase):
+    """Cancelling the tool call kills the hook's group instead of leaving it running."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    from lionagi.agent.settings import _make_shell_hook
+
+    mock_proc = MagicMock()
+    mock_proc.pid = 7777
+    mock_proc.communicate = AsyncMock(side_effect=asyncio.CancelledError)
+    mock_proc.wait = AsyncMock(return_value=None)
+    witnesses = ((7777, 12.0),)
+    _, cleanup = _patch_hook_spawn(monkeypatch, mock_proc, 12.0, witnesses)
+
+    hook = _make_shell_hook(["guard"], phase, "bash")
+    with pytest.raises(asyncio.CancelledError):
+        if phase == "pre":
+            await hook("bash", "run", {})
+        else:
+            await hook("bash", "run", {}, {})
+
+    cleanup.assert_awaited_once_with(mock_proc, grace=None, group_witnesses=witnesses)
+    mock_proc.wait.assert_awaited()
+
+
+async def test_a_pre_hook_payload_that_cannot_be_serialized_refuses_without_spawning(
+    monkeypatch,
+):
+    from unittest.mock import MagicMock
+
+    from lionagi.agent.settings import _make_shell_hook
+
+    spawn, cleanup = _patch_hook_spawn(monkeypatch, MagicMock(), 1.0, ())
+
+    hook = _make_shell_hook(["guard"], "pre", "bash")
+    with pytest.raises(PermissionError, match="Hook execution error"):
+        await hook("bash", "run", {"value": object()})
+
+    spawn.assert_not_awaited()
+    cleanup.assert_not_awaited()
+
+
+async def test_a_post_hook_result_that_cannot_be_serialized_is_dropped_without_spawning(
+    monkeypatch,
+):
+    from unittest.mock import MagicMock
+
+    from lionagi.agent.settings import _make_shell_hook
+
+    spawn, cleanup = _patch_hook_spawn(monkeypatch, MagicMock(), 1.0, ())
+
+    hook = _make_shell_hook(["notifier"], "post", "bash")
+    assert await hook("bash", "run", {}, {"value": object()}) is None
+
+    spawn.assert_not_awaited()
+    cleanup.assert_not_awaited()
+
+
+@pytest.mark.parametrize("phase", ["pre", "post"])
+async def test_a_hook_whose_exchange_fails_ends_its_process_group(monkeypatch, phase):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from lionagi.agent.settings import _make_shell_hook
+
+    mock_proc = MagicMock()
+    mock_proc.pid = 6666
+    mock_proc.communicate = AsyncMock(side_effect=OSError("pipe closed"))
+    mock_proc.wait = AsyncMock(return_value=None)
+    witnesses = ((6666, 13.0),)
+    _, cleanup = _patch_hook_spawn(monkeypatch, mock_proc, 13.0, witnesses)
+
+    hook = _make_shell_hook(["guard"], phase, "bash")
+    if phase == "pre":
+        with pytest.raises(PermissionError, match="pipe closed"):
+            await hook("bash", "run", {})
+    else:
+        assert await hook("bash", "run", {}, {}) is None
+
+    cleanup.assert_awaited_once_with(mock_proc, grace=None, group_witnesses=witnesses)
+
+
 # aterminate_process_group must never signal the init/session process group.
 # A test double (or a not-yet-spawned proc) whose ``pid`` coerces to 1 via
 # __index__ would make os.killpg(1, ...) signal process group 1 — which on a
