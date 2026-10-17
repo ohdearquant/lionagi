@@ -10,6 +10,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from lionagi.state.compat import StateCompatibilityRefused
+
 
 @dataclass(slots=True)
 class PendingMessageEvent:
@@ -70,9 +72,13 @@ class MessagePersistRetryQueue:
         """Queue ``event`` and persist pending events in their original order."""
         async with self._lock:
             self._pending.append(event)
-            if self._retry_deferred:
+            from lionagi.state.compat import is_compatibility_store  # noqa: PLC0415
+
+            if self._retry_deferred and not is_compatibility_store(self._db):
                 return False
-            return await self._drain_locked()
+            # In compatibility mode a deferred queue still attempts its head: the store may be
+            # refusing it, and a refusal stops the run now rather than at teardown (ADR-0128 D6).
+            return await self._drain_locked(force=self._retry_deferred)
 
     async def flush(self) -> bool:
         """Make the one additional teardown attempt for every pending event."""
@@ -90,6 +96,9 @@ class MessagePersistRetryQueue:
         deduped by pending count rather than re-logged every call: a repeated
         identical count is the same incident restated, a changed count is new
         information. See docs/internals/plugin-runtime.md#hook-lifecycle.
+
+        A write the store refuses in compatibility mode is raised, with its event
+        kept at the head, and is not reported as lost.
         """
         flushed = await self.flush()
         if flushed:
@@ -125,6 +134,10 @@ class MessagePersistRetryQueue:
                     ),
                     activity_at=event.activity_at,
                 )
+            except StateCompatibilityRefused:
+                # The store refuses the same write on every retry, so the refusal is raised to the
+                # caller with the event kept at the head, instead of being retried (ADR-0128 D6).
+                raise
             except ValueError as exc:
                 # StateDB._validate_message raises ValueError for a
                 # deterministically malformed message (missing content/role);

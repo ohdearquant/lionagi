@@ -1757,6 +1757,8 @@ async def setup_orchestration_persist(
     extra_node_metadata: dict | None = None,
 ) -> dict | None:
     db = None
+    from lionagi.state.compat import refusal_in
+
     try:
         session_id = str(session.id)
         session_dict = session.to_dict(mode="db")
@@ -1860,6 +1862,33 @@ async def setup_orchestration_persist(
 
         return ctx
     except Exception as exc:
+        refusal = refusal_in(exc)
+        if refusal is not None:
+            # The store refused an admission write in compatibility mode, alone or inside a
+            # group, so the run fails with that refusal as its reason instead of going on without
+            # persistence (ADR-0128 D6). The refusal is recorded on the run's own manifest here,
+            # the way `li agent` records it at its setup: setup returns no context, so nothing
+            # downstream writes the reason for this run.
+            _log_orch.error("live persist setup refused: %s", refusal)
+            if run is not None and run_manifest is not None:
+                run_manifest["status"] = "failed"
+                run_manifest["ended_at"] = time.time()
+                run_manifest["error"] = f"The store refused a write: {refusal}"
+                try:
+                    run.write_manifest(run_manifest)
+                except Exception as write_exc:  # noqa: BLE001 — the refusal is what to report
+                    _log_orch.warning("could not record the refusal on this run: %s", write_exc)
+            if db is not None:
+                try:
+                    await db.close()
+                except Exception as close_exc:
+                    _log_orch.warning(
+                        "fallback db.close after setup refusal also failed: %s", close_exc
+                    )
+                from lionagi.state.db import unregister_shared_db
+
+                unregister_shared_db(db)
+            raise
         _log_orch.warning(
             "live persist setup failed (%r) — disabling persistence for this run",
             exc,
@@ -2047,6 +2076,18 @@ async def stop_live_persist(
         cwd=env.cwd,
     )
     env._run_manifest["status"] = final_status
+    decided = ctx.get("terminal_reason") if ctx is not None else None
+    from lionagi.state.compat import is_compatibility_store
+
+    if (
+        final_status == "failed"
+        and decided
+        and decided[0] == final_status
+        and is_compatibility_store(ctx.get("db"))
+    ):
+        # In compatibility mode run.json names the reason teardown decided, as `li agent`'s
+        # does, so a run the store refused a write of says so (ADR-0128 D6).
+        env._run_manifest["error"] = decided[1]
     from lionagi.state.db import SESSION_TERMINAL_STATUSES
 
     if final_status in SESSION_TERMINAL_STATUSES:

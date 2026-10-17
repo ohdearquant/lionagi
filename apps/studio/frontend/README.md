@@ -37,11 +37,77 @@ experience, use `li studio --dev`.
 | `/mission`   | Attention, active work, recent history, pulse, and spend   |
 | `/library`   | Agents, playbooks, skills, plugins, teams, and MCP servers |
 | `/schedules` | Calendar, schedule editing, and execution history          |
-| `/designer`  | Visual orchestration designer                              |
 | `/system`    | Health, maintenance, definitions, engines, and engine runs |
 
-Legacy deep links such as `/runs/:id`, `/playbooks/:name`, `/teams`, and
-`/admin/maintenance` remain routed to their current space.
+Legacy deep links such as `/designer` (redirects to the Library with
+`tab=workflow`, whose Workflow tab and items are hidden), `/runs/:id`,
+`/playbooks/:name`, `/teams`, and `/admin/maintenance` remain routed to their
+current space. For the hidden kinds, see the
+[Library availability note](../../../docs/reference/studio-surfaces.md#currently-unavailable-library-kinds).
+
+## Recorded usage
+
+Skill and plugin details show recorded invocations only. Per-skill and per-plugin
+tracking coverage is unknown; zero records display Not recorded for both count
+and last use, without claiming that the skill or plugin has never been used.
+Counts cover all matching records. Recorded success rate divides `completed`
+records by all finished records (`completed`, `completed_empty`, `failed`,
+`timed_out`, `aborted`, and `cancelled`); running records are excluded, and empty
+completions and cancellations are not successes. No finished records, or an older
+server missing their aggregate, display an unavailable rate.
+
+The usage request asks the server for the recorded-usage aggregates explicitly
+(`include_usage`); the Fleet and Mission Control polls omit that flag and read
+only the recent rows, so they do not pay for aggregates they never show.
+
+The recent list contains five records ordered by update time, with ages measured
+from those updates. Failed usage requests show an unavailable state with a retry
+action, without replacing failure with zero or an empty-history claim. Last
+tracked use is the latest recorded start across all matching records, independent
+of the recent list and later completion or cleanup; that includes a scheduled fire
+that lost its claim and never launched, whose row keeps its start time. Older
+servers without this aggregate show Unknown for nonempty results.
+
+## Library catalogs
+
+Each Library tab loads only its own catalog; Playbook loads both bundled templates
+and custom playbooks. All loads the visible catalogs. Hidden workflow and engine
+catalogs are loaded only for an explicit detail deep link on any tab except Hooks;
+withheld tab names alone do not load them. A workflow detail opens the shared
+workflow editor, whose engine picker needs the engine catalog, so that pane
+fetches the engine catalog itself; a failure there leaves the editor usable and
+reports the failure inline with its own retry. Hooks is a full-page configuration surface:
+it owns its configuration requests and does not load a hidden Library detail.
+Selecting or leaving a hidden detail does not reload the visible catalog.
+Switching tabs loads the sources that tab has not fetched yet and renders a tab
+already visited from what it fetched; a late response from the previous tab
+cannot replace the active list or its errors. The create form belongs to the tab
+that opened it and closes when the tab changes, and a tab change returns the
+collapsed layout to its list. Create, delete, and clone completions refresh the
+current tab even if navigation occurred while the change was pending, and drop
+the completed kind's catalog so a tab that lists it fetches it again on its next
+visit. They update selection only if the tab still matches the tab where the
+action began: a create or clone writes a selection only while it has not moved
+since the action began, and a delete clears it only while it still names the
+deleted item. They do not navigate after the Library unmounts. Visible catalog failures are named
+in the master banner; hidden failures and loading appear in their detail pane.
+Retrying one pane does not reload the other pane's catalogs. Failed reloads clear
+previously loaded agent and engine detail data. A missing engine is reported as
+not found only after a successful catalog response. The
+`tab` and `sel` query parameters remain the links to a tab and selected item.
+
+Catalog-list request counts are one for Agent, Skill, Plugin or MCP; two for Playbook;
+six for All; and zero for Hooks or a withheld tab name alone. In development React
+StrictMode mounts each effect twice, so a tab's first load issues each of these requests
+twice; the second request is a development artifact, not a duplicate the page issues in
+production. An explicit hidden detail adds one request outside Hooks; a workflow detail
+adds a second for the engine catalog its editor picks from, and retries only that catalog
+when it fails. Row selection adds none; a tab already visited renders what it fetched
+and requests nothing again, except a source that failed or one a completion dropped,
+which are attempted again on the next visit. Retry requests only the sources that
+failed. A completion refreshes the current tab's sources and any current hidden detail.
+A workflow created on All loads six visible sources plus its workflow catalog, along
+with the engine catalog its editor picks from.
 
 ## API resolution
 
@@ -71,4 +137,4 @@ The Playwright suite builds the SPA and launches an isolated seeded daemon; it
 does not use your normal `~/.lionagi/state.db`.
 
 For the backend, desktop shell, and product-level instructions, see the
-[Studio README](../README.md) and [Studio guide](../../../docs/guides/studio.md).
+[Studio README](../README.md) and [Studio getting-started guide](../../../docs/guides/studio-getting-started.md).

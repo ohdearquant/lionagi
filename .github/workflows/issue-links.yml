@@ -10,7 +10,12 @@ name: Issue links
 # somebody fixed a typo in a description.
 on:
   pull_request:
-    types: [ opened, edited, reopened, synchronize ]
+    # ready_for_review: the job skips drafts (below), so a draft gets its first
+    # check when it is marked ready. A pull request converted back to draft and
+    # marked ready again while its run is in progress gets one duplicate run: the
+    # new run cancels the one in progress (cancel-in-progress below) and checks
+    # the same body again. This check is not required, so nothing waits on it.
+    types: [ opened, edited, reopened, synchronize, ready_for_review ]
     branches: [ main, develop ]
 
 permissions:
@@ -24,6 +29,11 @@ concurrency:
 
 jobs:
   closing-keywords:
+    # This advisory job can be switched off without editing this file: set the
+    # repository variable ADVISORY_PR_CHECKS to "off" and it is skipped without
+    # taking a runner. Draft pull requests skip it too. It is not a required
+    # check, so a skip blocks no merge.
+    if: vars.ADVISORY_PR_CHECKS != 'off' && !github.event.pull_request.draft
     runs-on: ubuntu-latest
     steps:
     # A fork's PR code is attacker-controlled and this job runs a script out of

@@ -2511,6 +2511,87 @@ async def test_context_compilation_groups_complete_turns_merges_deltas_and_persi
 
 
 @pytest.mark.asyncio
+async def test_daemon_shutdown_during_a_store_write_terminalizes_and_can_restart(
+    tmp_path, monkeypatch
+):
+    """Drive the daemon's shutdown entry while an Operator store write owns SQLite's lock."""
+    import sqlite3
+
+    import lionagi.state.engine as state_engine
+    import lionagi.studio.services.operator as operator_service
+    from lionagi.studio.services._db import open_db
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    monkeypatch.setattr(state_engine, "SQLITE_BUSY_TIMEOUT_MS", 50)
+    coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=ScriptedEngine)
+    monkeypatch.setattr(operator_service, "get_operator_coordinator", lambda: coordinator)
+    await coordinator.startup()
+    native = sqlite3.connect(path)
+    try:
+        native.execute("CREATE TABLE shutdown_probe (value INTEGER)")
+    finally:
+        native.close()
+
+    parked = asyncio.Event()
+    append = coordinator.store.append_frame
+
+    async def held_append(cid, rid, frame_type, payload):
+        if frame_type == "text" and payload.get("content") == "first ":
+            async with open_db(str(path)) as connection:
+                await connection.execute("BEGIN IMMEDIATE")
+                await connection.execute("INSERT INTO shutdown_probe VALUES (1), (2)")
+                cursor = await connection.execute("SELECT value FROM shutdown_probe")
+                await cursor.fetchone()  # leave the statement unfinished in the cancelled frame
+                parked.set()
+                await asyncio.Event().wait()
+        return await append(cid, rid, frame_type, payload)
+
+    monkeypatch.setattr(coordinator.store, "append_frame", held_append)
+    try:
+        cid = (await coordinator.create_conversation())["conversation"]["id"]
+        accepted = await coordinator.submit(
+            cid,
+            instruction="stop during the write",
+            context={"space": "mission", "route": "/", "filters": {}},
+            expected_last_sequence=0,
+        )
+        request_id = accepted["requestId"]
+        await asyncio.wait_for(parked.wait(), 5)
+        task = coordinator._tasks[
+            request_id
+        ]  # retain its cancelled write's cursor through assertions
+        await asyncio.wait_for(operator_service.operator_shutdown(), 10)
+        turn = await coordinator.store.get_turn(request_id)
+        assert turn["status"] == "cancelled"
+        assert task.cancelled()
+        assert not coordinator._tasks
+        frames = await coordinator.store.list_frames(cid)
+        assert frames[-1]["type"] == "done"
+        external = sqlite3.connect(path, timeout=0, isolation_level=None)
+        try:
+            external.execute("BEGIN IMMEDIATE")
+            assert external.execute("SELECT value FROM shutdown_probe").fetchall() == []
+            external.execute("ROLLBACK")
+        finally:
+            external.close()
+
+        monkeypatch.setattr(coordinator.store, "append_frame", append)
+        await coordinator.startup()
+        next_cid = (await coordinator.create_conversation())["conversation"]["id"]
+        next_turn = await coordinator.submit(
+            next_cid,
+            instruction="continue after restart",
+            context={"space": "mission", "route": "/", "filters": {}},
+            expected_last_sequence=0,
+        )
+        await _wait_done(coordinator.store, next_cid)
+        assert (await coordinator.store.get_turn(next_turn["requestId"]))["status"] == "completed"
+    finally:
+        await asyncio.wait_for(operator_service.operator_shutdown(), 10)
+
+
+@pytest.mark.asyncio
 async def test_immediate_and_repeated_cancel_always_terminalize(tmp_path, monkeypatch):
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)

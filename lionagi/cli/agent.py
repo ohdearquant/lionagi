@@ -542,8 +542,17 @@ async def _drain_pending_steers(
     return last_res
 
 
-async def _tombstone_pending_steers(live: dict | None) -> None:
+async def _tombstone_pending_steers(
+    live: dict | None,
+    *,
+    result: str = (
+        "rejected: run reached terminal status before the steer could land — use `li agent -r`"
+    ),
+) -> None:
     """Finalize never-claimed session controls as rejected at run teardown.
+
+    *result* is the outcome recorded on each closed row; a flow run's teardown
+    passes its own, since its controls are not steers.
 
     A steer enqueued while the run was live but never drained must not sit
     pending forever. Best-effort: a failure here logs and leaves the row
@@ -591,10 +600,7 @@ async def _tombstone_pending_steers(live: dict | None) -> None:
             # recorded as never delivered.
             await live["db"].finalize_session_control(
                 row["id"],
-                result=(
-                    "rejected: run reached terminal status before "
-                    "the steer could land — use `li agent -r`"
-                ),
+                result=result,
                 only_if_unclaimed=True,
             )
     except Exception as exc:  # noqa: BLE001 — teardown must not raise
@@ -1128,23 +1134,37 @@ async def _run_agent(
         playbook_artifacts=None,
         agent_defaults=profile.artifact_defaults if profile else None,
     )
-    live = await setup_agent_persist(
-        branch,
-        agent_name=agent_name,
-        artifacts_path=str(run.artifact_root),
-        artifact_contract=artifact_contract,
-        invocation_id=invocation_id,
-        model=resolved_model_spec,
-        provider=provider,
-        effort=effort,
-        project=project,
-        run_id=run.run_id,
-        run_manifest=run_manifest,
-        # This runner drains queued operator messages at turn end and
-        # tombstones whatever it did not take, so controls aimed at it have a
-        # consumer.
-        drains_controls=True,
-    )
+    from lionagi.state.compat import StateCompatibilityRefused
+
+    try:
+        live = await setup_agent_persist(
+            branch,
+            agent_name=agent_name,
+            artifacts_path=str(run.artifact_root),
+            artifact_contract=artifact_contract,
+            invocation_id=invocation_id,
+            model=resolved_model_spec,
+            provider=provider,
+            effort=effort,
+            project=project,
+            run_id=run.run_id,
+            run_manifest=run_manifest,
+            # This runner drains queued operator messages at turn end and
+            # tombstones whatever it did not take, so controls aimed at it have a
+            # consumer.
+            drains_controls=True,
+        )
+    except StateCompatibilityRefused as exc:
+        # The run stops before it starts (ADR-0128 D6), and its run.json says so rather than
+        # reading `running` with no process behind it.
+        if _write_run_manifest is not None:
+            run_manifest.update(
+                status="failed",
+                ended_at=time.time(),
+                error=f"The store refused a write: {exc}",
+            )
+            _write_run_manifest(run_manifest)
+        raise
     if live is None and _write_run_manifest is not None:
         # Setup returned no session (it may have committed a row before it failed, which `li
         # monitor` lists under that row's own id; nothing here prints it), so the run id names no
@@ -1432,7 +1452,12 @@ async def _run_agent(
             # boundary, since StateDB re-raises out of __aenter__ and an
             # unguarded `async with` here would turn a completed run into a
             # reported infrastructure exception.
-            if not will_auto_resume and live:
+            # Not on a store in compatibility mode: its control rows are not ones this run
+            # created, the only rows the profile lets it write (ADR-0128 D4), and the sweep's
+            # native open would apply this package's schema to the store.
+            from lionagi.state.compat import is_compatibility_store
+
+            if not will_auto_resume and live and not is_compatibility_store(live.get("db")):
                 from lionagi.state.db import StateDB
 
                 try:
