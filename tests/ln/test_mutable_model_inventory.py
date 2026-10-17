@@ -155,8 +155,8 @@ _ALLOWLIST: dict[str, str] = {
     "lionagi.protocols.messages.instruction:146:17": "a declared field set by name",
     "lionagi.protocols.messages.message:181:9": "a declared field set by name",
     "lionagi.protocols.messages.message:193:13": "a render-input field set by name",
-    "lionagi.providers.anthropic.claude_code:1100:17": "a runtime field copied by name",
-    "lionagi.service.connections.endpoint_config:207:17": "a config key set by name",
+    "lionagi.providers.anthropic.claude_code:1108:17": "a runtime field copied by name",
+    "lionagi.service.connections.endpoint_config:222:17": "a config key set by name",
     "lionagi.service.connections.mcp_wrapper:76:9": "a probe attribute set on an exception",
     "lionagi.state.compat:1702:13": (
         "a frozen dataclass folding its own string fields in __post_init__"
