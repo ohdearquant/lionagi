@@ -687,9 +687,10 @@ class TestRequestModelsCarryThem:
             with pytest.raises(TypeError) as excinfo:
                 model(prompt="hi", env={"TOKEN": secret, "BROKEN": 1})
             message = str(excinfo.value)
-            assert "BROKEN" in message
+            assert "entry 1 (value is int)" in message
             assert secret not in message
             assert "TOKEN" not in message
+            assert "BROKEN" not in message
 
     def test_both_default_to_absent(self):
         from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
@@ -1068,9 +1069,8 @@ class TestTheEnvironmentSurvivesNoErrorPath:
 
     @pytest.mark.parametrize("model_path", _REQUEST_MODELS)
     def test_a_non_string_key_is_reported_by_position_not_printed(self, model_path):
-        """A string key is a variable NAME and naming it is what makes the
-        error actionable. A key of any other type is not a name, and printing
-        it prints whatever the caller put in it."""
+        """A key of any other type is not a name, and printing it prints
+        whatever the caller put in it."""
         model = _load(model_path)
         secret_key = (self.SECRET,)
 
@@ -1082,13 +1082,17 @@ class TestTheEnvironmentSurvivesNoErrorPath:
         assert "entry 0" in message and "tuple" in message
 
     @pytest.mark.parametrize("model_path", _REQUEST_MODELS)
-    def test_a_string_key_is_still_named_because_a_name_is_not_a_secret(self, model_path):
+    def test_a_string_key_is_reported_by_position_too(self, model_path):
+        """A string key can carry a credential as easily as a value: a token pasted
+        where a name belongs, or ``NAME=value`` written as a name."""
         model = _load(model_path)
 
         with pytest.raises(TypeError) as excinfo:
             model(prompt="hi", env={"CARGO_TARGET_DIR": 3})
 
-        assert "CARGO_TARGET_DIR" in str(excinfo.value)
+        message = str(excinfo.value)
+        assert "entry 0 (value is int)" in message
+        assert "CARGO_TARGET_DIR" not in message
 
     @pytest.mark.parametrize("model_path", _REQUEST_MODELS)
     def test_an_environment_that_is_not_a_mapping_is_not_printed(self, model_path):

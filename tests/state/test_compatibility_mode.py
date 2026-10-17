@@ -26,6 +26,7 @@ from lionagi.state.compat import (
     _operation,
     _sql_tokens,
     _statement_kind,
+    _trigger_slot,
     _write_refusal,
     read_closure,
 )
@@ -1509,12 +1510,14 @@ async def test_a_body_that_quotes_a_name_in_another_case_is_refused(object_sql, 
     assert db._engine is None
 
 
-# A literal keeps its quotes, a blob is one token, and a trigger's order counts (D2)
+# A literal keeps its quotes, a blob is one token, and a trigger's order counts
 
 
-async def _refused_against(reference: Path, store: Path) -> str:
+async def _refused_against(
+    reference: Path, store: Path, profile: CompatibilityProfile | None = None
+) -> str:
     """The reference store is admitted against its own closure; the other store is refused."""
-    profile = _profile(reference)
+    profile = profile or _profile(reference)
     await (await _open(reference, profile)).close()
     db = _RunsDB(store, compatibility=profile)
     with pytest.raises(StateCompatibilityRefused, match="does not match the profile") as caught:
@@ -1619,12 +1622,810 @@ async def test_two_triggers_in_the_other_order_are_refused(tmp_path):
         closure = read_closure(conn, ["runs", "events"])
     assert {(o.name, o.position) for o in closure.objects} == {("fa", 0), ("fb", 1)}
     reason = await _refused_against(reference, store)
-    assert "position" in reason
+    assert "trigger fa is at position 1" in reason
+    assert "trigger fb is at position 0" in reason
+    # Each moved trigger is reported once, by its position, and never also as missing.
+    assert "missing or changed" not in reason
 
 
 async def test_two_triggers_in_the_same_order_are_admitted(tmp_path):
     reference = _store(tmp_path / "reference.db", _SCHEMA + _TRIGGER_A + _TRIGGER_B)
     store = _store(tmp_path / "managed.db", _SCHEMA + _TRIGGER_A + _TRIGGER_B)
+    db = await _open(store, _profile(reference))
+    await db.close()
+
+
+_BEFORE_INSERT = "CREATE TRIGGER tb BEFORE INSERT ON events BEGIN SELECT 1; END;\n"
+_AFTER_UPDATE = "CREATE TRIGGER tu AFTER UPDATE ON events BEGIN SELECT 2; END;\n"
+
+
+async def test_triggers_for_different_events_in_the_other_order_are_admitted(tmp_path):
+    """SQLite orders a table's triggers by creation only among those for one event and timing,
+    so a BEFORE INSERT and an AFTER UPDATE trigger created in the other order are the same
+    closure."""
+    reference = _store(tmp_path / "reference.db", _SCHEMA + _BEFORE_INSERT + _AFTER_UPDATE)
+    store = _store(tmp_path / "managed.db", _SCHEMA + _AFTER_UPDATE + _BEFORE_INSERT)
+    with closing(sqlite3.connect(store)) as conn:
+        closure = read_closure(conn, ["runs", "events"])
+    assert {(o.name, o.position) for o in closure.objects} == {("tb", 0), ("tu", 0)}
+    db = await _open(store, _profile(reference))
+    await db.close()
+
+
+async def test_a_trigger_without_a_timing_is_ordered_with_the_before_triggers(tmp_path):
+    """A trigger that names no timing fires BEFORE, so it shares its place in the order with the
+    BEFORE triggers for its event."""
+    schema = (
+        _SCHEMA
+        + "CREATE TRIGGER t1 INSERT ON events BEGIN SELECT 1; END;\n"
+        + "CREATE TRIGGER t2 BEFORE INSERT ON events BEGIN SELECT 2; END;\n"
+    )
+    with closing(sqlite3.connect(_store(tmp_path / "store.db", schema))) as conn:
+        closure = read_closure(conn, ["runs", "events"])
+    assert {(o.name, o.position) for o in closure.objects} == {("t1", 0), ("t2", 1)}
+
+
+# A trigger's place in the order SQLite fires, read from its header
+
+
+_ORDER_TABLE = "CREATE TABLE fired (seq INTEGER PRIMARY KEY AUTOINCREMENT, who TEXT NOT NULL);\n"
+_ORDER_SETUP = (
+    "INSERT INTO runs (id, status) VALUES ('r1', 'running')",
+    "INSERT INTO events (run_id, body) VALUES ('r1', 'b')",
+)
+
+
+def _order_trigger(header: str, who: str) -> str:
+    """A trigger whose header is *header* and whose body logs *who* when it fires."""
+    return f"CREATE TRIGGER {header} BEGIN INSERT INTO fired (who) VALUES ('{who}'); END;\n"
+
+
+def _fired_order(path: Path, writes) -> list:
+    """The *who* values the store's triggers log, in the order they fired."""
+    with closing(sqlite3.connect(path)) as conn:
+        for statement in writes:
+            conn.execute(statement)
+        conn.commit()
+        return [row[0] for row in conn.execute("SELECT who FROM fired ORDER BY seq")]
+
+
+async def _refusal_of(store: Path, profile: CompatibilityProfile) -> str | None:
+    """The reason *store* is refused against *profile*, or None when it is admitted."""
+    db = _RunsDB(store, compatibility=profile)
+    try:
+        await db.open()
+        return None
+    except StateCompatibilityRefused as exc:
+        return exc.reason
+    finally:
+        await db.close()
+
+
+async def test_update_and_update_of_in_the_other_order_are_refused(tmp_path):
+    """UPDATE and UPDATE OF are one event, so SQLite fires those triggers in creation order: the
+    same two created in the other order are another closure and the store is refused."""
+    plain = _order_trigger("ux AFTER UPDATE ON events", "x")
+    of_column = _order_trigger("uz AFTER UPDATE OF body ON events", "z")
+    writes = (*_ORDER_SETUP, "UPDATE events SET body = 'u' WHERE seq = 1")
+    schema = _SCHEMA + _ORDER_TABLE
+    reference = _store(tmp_path / "reference.db", schema + plain + of_column)
+    store = _store(tmp_path / "managed.db", schema + of_column + plain)
+    assert _fired_order(reference, writes) != _fired_order(store, writes)
+    reason = await _refusal_of(store, _profile(reference))
+    assert reason is not None and "creation order" in reason
+
+
+_SAME_SLOT_HEADERS = {
+    "bare name spelled as a timing word": "after INSERT ON events",
+    "quoted name spelled as a timing word": '"after" INSERT ON events',
+    "block comment spelled as a timing word": "x /* after */ INSERT ON events",
+    "line comment spelled as a timing word": "x -- after\n INSERT ON events",
+    "schema-qualified name spelled as a timing word": "main.after INSERT ON events",
+    "IF NOT EXISTS, no timing": "IF NOT EXISTS x INSERT ON events",
+    "lower-case keywords": "x before insert on events",
+    "quoted table name": 'x BEFORE INSERT ON "events"',
+    "upper-case table name": "x BEFORE INSERT ON EVENTS",
+    "mixed-case event, no timing": "x Insert ON events",
+    "a name that is a trigger event word": '"insert" BEFORE INSERT ON events',
+}
+
+
+@pytest.mark.parametrize("header", _SAME_SLOT_HEADERS.values(), ids=list(_SAME_SLOT_HEADERS))
+async def test_a_trigger_header_reads_the_timing_and_event_past_the_name(header, tmp_path):
+    """A trigger's own name may spell a timing or an event word, or be schema-qualified, so the
+    name is skipped before the timing and the event are read. Each header below names a BEFORE
+    INSERT trigger, the one slot the second trigger shares with it, so SQLite fires the two in
+    creation order and one order is another closure."""
+    assert _trigger_slot(f"CREATE TRIGGER {header} BEGIN SELECT 1; END") == ("before", "insert")
+    header_trigger = _order_trigger(header, "n")
+    other = _order_trigger("yb BEFORE INSERT ON events", "y")
+    schema = _SCHEMA + _ORDER_TABLE
+    reference = _store(tmp_path / "reference.db", schema + header_trigger + other)
+    store = _store(tmp_path / "managed.db", schema + other + header_trigger)
+    assert _fired_order(reference, _ORDER_SETUP) != _fired_order(store, _ORDER_SETUP)
+    with closing(sqlite3.connect(reference)) as conn:
+        closure = read_closure(conn, ["runs", "events"])
+    positions = sorted(o.position for o in closure.objects if o.type == "trigger")
+    assert positions == [0, 1]
+    reason = await _refusal_of(store, _profile(reference))
+    assert reason is not None and "creation order" in reason
+
+
+async def test_a_trigger_header_read_the_same_way_in_the_same_order_is_admitted(tmp_path):
+    """The reading is of the header, not a blanket refusal: the same two triggers in the same
+    order are one closure."""
+    header_trigger = _order_trigger(
+        _SAME_SLOT_HEADERS["schema-qualified name spelled as a timing word"], "n"
+    )
+    other = _order_trigger("yb BEFORE INSERT ON events", "y")
+    schema = _SCHEMA + _ORDER_TABLE + header_trigger + other
+    reference = _store(tmp_path / "reference.db", schema)
+    store = _store(tmp_path / "managed.db", schema)
+    assert await _refusal_of(store, _profile(reference)) is None
+
+
+_LEDGER_TRIGGER = (
+    "CREATE TRIGGER keep AFTER INSERT ON events BEGIN "
+    "INSERT INTO ledger (entry) VALUES (NEW.body); END;\n"
+)
+_LEDGER = "CREATE TABLE ledger (entry TEXT);\n"
+
+
+def _event_insert_succeeds(schema: str) -> bool:
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.executescript(schema)
+        try:
+            conn.execute("INSERT INTO events (run_id, body) VALUES ('r', 'b')")
+        except sqlite3.OperationalError:
+            return False
+        return True
+
+
+async def test_a_table_only_the_stores_closure_reaches_is_refused(tmp_path):
+    """A closure trigger that writes a table the profile's store lacks fails there and succeeds
+    in a store that has the table, so a table only the store's closure reaches refuses it."""
+    reference_schema = _SCHEMA + _LEDGER_TRIGGER
+    store_schema = _SCHEMA + _LEDGER + _LEDGER_TRIGGER
+    assert not _event_insert_succeeds(reference_schema)
+    assert _event_insert_succeeds(store_schema)
+    reference = _store(tmp_path / "reference.db", reference_schema)
+    store = _store(tmp_path / "managed.db", store_schema)
+    reason = await _refused_against(reference, store)
+    assert "table ledger is not in the profile" in reason
+
+
+# A quoted name that a bare word reads otherwise is not that word
+
+
+def _with_column(definition: str) -> str:
+    return _SCHEMA.replace(_NOTE_COLUMN, f"{_NOTE_COLUMN}\n    {definition},", 1)
+
+
+def _profile_with_column(reference: Path, name: str) -> CompatibilityProfile:
+    runs = _WRITES["runs"]
+    unwritten = {**runs.unwritten, name: "the managing application writes it"}
+    writes = {**_WRITES, "runs": TableWrites(runs.insert, runs.update, unwritten)}
+    return _profile(reference, writes=writes)
+
+
+def _runs_accepts(schema: str, column: str, value: str | None) -> bool:
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.executescript(schema)
+        try:
+            conn.execute(
+                f"INSERT INTO runs (id, status, {column}) VALUES ('r', 'running', ?)", (value,)
+            )
+        except sqlite3.IntegrityError:
+            return False
+        return True
+
+
+# (column as SQL, column as PRAGMA names it, the reference's definition, the store's, a value
+# the reference refuses and the store accepts)
+_QUOTED_NAME_PAIRS = {
+    "double-quoted null": (
+        '"null"',
+        "null",
+        '"null" TEXT CHECK ("null" IS NULL)',
+        '"null" TEXT CHECK (null IS NULL)',
+        "value",
+    ),
+    "bracketed null": (
+        '"null"',
+        "null",
+        "[null] TEXT CHECK ([null] IS NULL)",
+        "[null] TEXT CHECK (null IS NULL)",
+        "value",
+    ),
+    "a name holding quotes": (
+        '"""x"""',
+        '"x"',
+        '"""x""" TEXT CHECK ("""x""" IS NOT NULL)',
+        '"""x""" TEXT CHECK ("x" IS NOT NULL)',
+        None,
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("column", "name", "reference_sql", "store_sql", "value"),
+    _QUOTED_NAME_PAIRS.values(),
+    ids=_QUOTED_NAME_PAIRS,
+)
+async def test_a_quoted_name_is_not_the_bare_word_or_literal_spelled_alike(
+    column, name, reference_sql, store_sql, value, tmp_path
+):
+    """``"null"`` naming a column is that column, the bare ``null`` is the value NULL, and
+    ``"x"`` naming no column is a string, so a CHECK on the column and a CHECK on the value read
+    alike once folded and still refuse different rows."""
+    reference_schema, store_schema = _with_column(reference_sql), _with_column(store_sql)
+    assert not _runs_accepts(reference_schema, column, value)
+    assert _runs_accepts(store_schema, column, value)
+    reference = _store(tmp_path / "reference.db", reference_schema)
+    store = _store(tmp_path / "managed.db", store_schema)
+    reason = await _refused_against(reference, store, _profile_with_column(reference, name))
+    assert "runs" in reason
+
+
+_CURRENT_WORDS = ("current_date", "current_time", "current_timestamp")
+
+
+@pytest.mark.parametrize("word", _CURRENT_WORDS)
+async def test_a_quoted_column_named_like_a_current_word_is_not_the_bare_word(word, tmp_path):
+    """A bare ``current_date``, ``current_time`` or ``current_timestamp`` in a CHECK is the value
+    SQLite computes, so a column whose CHECK quotes the word reads differently and refuses a row
+    the bare word admits."""
+    reference_schema = _with_column(f'"{word}" TEXT CHECK ("{word}" IS NOT NULL)')
+    store_schema = _with_column(f'"{word}" TEXT CHECK ({word} IS NOT NULL)')
+    assert not _runs_accepts(reference_schema, f'"{word}"', None)
+    assert _runs_accepts(store_schema, f'"{word}"', None)
+    reference = _store(tmp_path / "reference.db", reference_schema)
+    store = _store(tmp_path / "managed.db", store_schema)
+    reason = await _refused_against(reference, store, _profile_with_column(reference, word))
+    assert "runs" in reason
+
+
+_VALUE_WORD_COLUMNS = ("true", "false")
+
+
+@pytest.mark.parametrize("word", _VALUE_WORD_COLUMNS)
+async def test_a_column_named_true_or_false_is_read_as_the_column(word, tmp_path):
+    """``true`` and ``false`` are values only where no column of that name stands. With such a
+    column the bare and the quoted spelling in a CHECK both name it, so the two refuse and admit
+    the same rows and each is admitted against the other."""
+    quoted = f'"{word}" TEXT CHECK ("{word}" IS NOT NULL)'
+    bare = f"{word} TEXT CHECK ({word} IS NOT NULL)"
+    assert _runs_accepts(_with_column(quoted), f'"{word}"', "value")
+    assert _runs_accepts(_with_column(bare), f'"{word}"', "value")
+    assert not _runs_accepts(_with_column(quoted), f'"{word}"', None)
+    assert not _runs_accepts(_with_column(bare), f'"{word}"', None)
+    reference = _store(tmp_path / "reference.db", _with_column(quoted))
+    for index, store_sql in enumerate((quoted, bare)):
+        store = _store(tmp_path / f"managed-{index}.db", _with_column(store_sql))
+        db = await _open(store, _profile_with_column(reference, word))
+        await db.close()
+
+
+@pytest.mark.parametrize("word", _VALUE_WORD_COLUMNS)
+async def test_a_quoted_true_or_false_naming_no_column_is_a_string(word, tmp_path):
+    """With no column of that name, a bare ``true`` or ``false`` is the value 1 or 0 while the
+    double-quoted spelling is the string it spells, so the two CHECKs refuse different rows."""
+    reference_schema = _with_column(f'flag TEXT CHECK (flag <> "{word}")')
+    store_schema = _with_column(f"flag TEXT CHECK (flag <> {word})")
+    assert not _runs_accepts(reference_schema, "flag", word)
+    assert _runs_accepts(store_schema, "flag", word)
+    reference = _store(tmp_path / "reference.db", reference_schema)
+    store = _store(tmp_path / "managed.db", store_schema)
+    reason = await _refused_against(reference, store, _profile_with_column(reference, "flag"))
+    assert "runs" in reason
+
+
+_CALL_SPELLINGS = {
+    "bare call": "abs_n INTEGER CHECK (abs(abs_n) >= 0)",
+    "quoted call": 'abs_n INTEGER CHECK ("abs"(abs_n) >= 0)',
+    "quoted call with a space": 'abs_n INTEGER CHECK ("abs" (abs_n) >= 0)',
+}
+
+
+@pytest.mark.parametrize("store_sql", _CALL_SPELLINGS.values(), ids=list(_CALL_SPELLINGS))
+async def test_a_quoted_function_name_in_a_check_reads_as_the_bare_call(store_sql, tmp_path):
+    """A double-quoted token followed by ``(``, after optional whitespace, is a function's name to
+    SQLite, so a CHECK that quotes the call is the bare call in either store."""
+    bare_sql = _CALL_SPELLINGS["bare call"]
+    assert _runs_accepts(_with_column(bare_sql), "note", "x")
+    assert _runs_accepts(_with_column(store_sql), "note", "x")
+    for index, (reference_sql, managed_sql) in enumerate(
+        ((bare_sql, store_sql), (store_sql, bare_sql))
+    ):
+        reference = _store(tmp_path / f"reference-{index}.db", _with_column(reference_sql))
+        store = _store(tmp_path / f"managed-{index}.db", _with_column(managed_sql))
+        db = await _open(store, _profile_with_column(reference, "abs_n"))
+        await db.close()
+
+
+_NOT_CALL_SPELLINGS = {
+    "double-quoted": 'n INTEGER CHECK ("not" (n))',
+    "bracketed": "n INTEGER CHECK ([not] (n))",
+    "backquoted": "n INTEGER CHECK (`not` (n))",
+}
+
+
+def _with_not_function(conn: sqlite3.Connection) -> sqlite3.Connection:
+    # SQLite creates a table whose CHECK calls a function only when one of that name exists.
+    conn.create_function("not", 1, lambda value: 1)
+    return conn
+
+
+@pytest.mark.parametrize("store_sql", _NOT_CALL_SPELLINGS.values(), ids=list(_NOT_CALL_SPELLINGS))
+async def test_a_quoted_call_named_not_is_not_the_not_operator(store_sql, tmp_path):
+    """A bare ``not`` before a parenthesis is the NOT operator; quoted, it names a function, which
+    a store holds only when its application registered one. The two refuse different rows, so the
+    quoted spelling is refused against the bare one."""
+    reference_schema = _with_column("n INTEGER CHECK (not (n))")
+    store_schema = _with_column(store_sql)
+    assert not _runs_accepts(reference_schema, "n", "1")
+    with closing(_with_not_function(sqlite3.connect(":memory:"))) as conn:
+        conn.executescript(store_schema)
+        conn.execute("INSERT INTO runs (id, status, n) VALUES ('r', 'running', 1)")
+    reference = _store(tmp_path / "reference.db", reference_schema)
+    store = tmp_path / "managed.db"
+    with closing(_with_not_function(sqlite3.connect(store))) as conn:
+        conn.execute("PRAGMA journal_mode = wal")
+        conn.executescript(store_schema)
+    reason = await _refused_against(reference, store, _profile_with_column(reference, "n"))
+    assert "runs" in reason
+
+
+async def test_a_quoted_operand_without_a_call_is_still_a_literal(tmp_path):
+    """``"abs"`` with no ``(`` after it is no call, so it stays a double-quoted literal and is not
+    the single-quoted string ``'abs'``."""
+    reference = _store(tmp_path / "reference.db", _with_column('abs_n INTEGER CHECK ("abs" >= 0)'))
+    store = _store(tmp_path / "managed.db", _with_column("abs_n INTEGER CHECK ('abs' >= 0)"))
+    reason = await _refused_against(reference, store, _profile_with_column(reference, "abs_n"))
+    assert "runs" in reason
+
+
+async def test_a_single_quoted_parent_column_in_a_references_list_reads_as_the_name(tmp_path):
+    """SQLite's grammar takes a string in a ``REFERENCES`` column list as the column's name, so
+    ``REFERENCES runs ('id')`` is the same key as ``REFERENCES runs (id)``."""
+    reference = _store(tmp_path / "reference.db", _SCHEMA)
+    store = _store(
+        tmp_path / "managed.db", _SCHEMA.replace("REFERENCES runs(id)", "REFERENCES runs ('id')", 1)
+    )
+    db = await _open(store, _profile(reference))
+    await db.close()
+
+
+async def test_a_single_quoted_literal_outside_a_references_list_is_still_a_literal(tmp_path):
+    """A single-quoted token is a name only inside a ``REFERENCES`` column list; anywhere else it
+    is the string it spells, so a CHECK that differs in its case is another definition."""
+    reference_schema = _SCHEMA.replace("    note TEXT,", "    note TEXT CHECK (note <> 'x'),", 1)
+    store_schema = _SCHEMA.replace("    note TEXT,", "    note TEXT CHECK (note <> 'X'),", 1)
+    assert not _runs_accepts(reference_schema, "note", "x")
+    assert _runs_accepts(store_schema, "note", "x")
+    reference = _store(tmp_path / "reference.db", reference_schema)
+    store = _store(tmp_path / "managed.db", store_schema)
+    reason = await _refused_against(reference, store)
+    assert "runs" in reason
+
+
+async def test_a_single_quoted_collation_after_a_references_list_is_still_a_literal(tmp_path):
+    """The column list after ``REFERENCES <table>`` ends at its closing parenthesis, so a
+    single-quoted collation after it is the string it spells and refused against the bare name."""
+    old = "REFERENCES runs(id)"
+    reference = _store(
+        tmp_path / "reference.db",
+        _SCHEMA.replace(old, "REFERENCES runs (id) COLLATE NOCASE", 1),
+    )
+    store = _store(
+        tmp_path / "managed.db", _SCHEMA.replace(old, "REFERENCES runs (id) COLLATE 'NOCASE'", 1)
+    )
+    reason = await _refused_against(reference, store)
+    assert "events" in reason
+
+
+def _virtual_table(statement: str):
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.execute(statement)
+        # The module's shadow tables join the closure with it; the shape asked for is its own.
+        (table,) = [t for t in read_closure(conn, ["notes"]).tables if t.name == "notes"]
+    return table
+
+
+def _virtual_shape(statement: str, name: str = "docs"):
+    """The shape ``read_closure`` reads of the one table *statement* creates, named *name*."""
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.execute(statement)
+        (table,) = [t for t in read_closure(conn, [name]).tables if t.name == name]
+    return table
+
+
+_VIRTUAL_TABLE_PAIRS = {
+    "a quoted call in an argument": ('fts4("x"(1))', "fts4(x(1))"),
+    "an argument in another case": ("fts4(x)", "fts4(X)"),
+    "another module": ("fts4(x)", "fts3(x)"),
+}
+
+
+@pytest.mark.parametrize(
+    ("reference", "store"), _VIRTUAL_TABLE_PAIRS.values(), ids=list(_VIRTUAL_TABLE_PAIRS)
+)
+def test_a_virtual_table_is_compared_by_its_module_and_each_argument_as_written(reference, store):
+    """SQLite hands a virtual table's module each argument's text, which the module reads as it
+    chooses, so two tables whose columns read alike differ when an argument is spelled otherwise
+    or the module is another."""
+    expected = _virtual_table(f"CREATE VIRTUAL TABLE notes USING {reference}")
+    observed = _virtual_table(f"CREATE VIRTUAL TABLE notes USING {store}")
+    assert expected.columns == observed.columns
+    assert expected.options == observed.options == frozenset({"virtual"})
+    assert expected.definitions != observed.definitions
+
+
+def test_a_virtual_table_module_is_named_without_regard_to_case():
+    """SQLite looks a module up without regard to ASCII case."""
+    assert _virtual_table("CREATE VIRTUAL TABLE notes USING FTS4(x)") == _virtual_table(
+        "CREATE VIRTUAL TABLE notes USING fts4(x)"
+    )
+
+
+# A virtual table whose module arguments name a closure table is part of the closure
+
+
+_VIRTUAL_TABLES_NAMING_EVENTS = {
+    "a content and a rowid": (
+        "CREATE VIRTUAL TABLE docs USING fts5(body, content='events', content_rowid='seq');\n"
+    ),
+    "a double-quoted content": 'CREATE VIRTUAL TABLE docs USING fts5(body, content="events");\n',
+    "a bare content": "CREATE VIRTUAL TABLE docs USING fts5(body, content=events);\n",
+    "another module's bare argument": "CREATE VIRTUAL TABLE docs USING fts5vocab(events, row);\n",
+}
+
+
+@pytest.mark.parametrize(
+    "extra", _VIRTUAL_TABLES_NAMING_EVENTS.values(), ids=_VIRTUAL_TABLES_NAMING_EVENTS
+)
+async def test_a_virtual_table_that_names_a_closure_table_is_refused_without_the_profile(
+    extra, tmp_path
+):
+    """A virtual table a closure table's name reaches through its module arguments is a table of
+    the closure, whatever spelling of the name its arguments carry, so a profile that does not
+    list it refuses the store by the virtual table's name."""
+    reference = _store(tmp_path / "reference.db", _SCHEMA)
+    store = _store(tmp_path / "managed.db", _SCHEMA + extra)
+    reason = await _refused_against(reference, store)
+    assert "table docs is not in the profile" in reason
+
+
+_FTS5_OVER_EVENTS = (
+    "CREATE VIRTUAL TABLE docs USING fts5(body, content='events', content_rowid='seq');\n"
+)
+
+
+async def test_a_virtual_table_that_names_a_closure_table_is_admitted_when_the_profile_lists_it(
+    tmp_path,
+):
+    """A virtual table that names a closure table is compared as the other tables are, so a store
+    whose copy is the profile's is admitted."""
+    schema = _SCHEMA + _FTS5_OVER_EVENTS
+    reference = _store(tmp_path / "reference.db", schema)
+    store = _store(tmp_path / "managed.db", schema)
+    db = await _open(store, _profile(reference))
+    await db.close()
+
+
+async def test_a_virtual_table_that_names_no_closure_table_stays_out_of_the_closure(tmp_path):
+    """A virtual table whose module arguments name no closure table is not in the closure, so a
+    store that holds one against a profile that does not is admitted."""
+    reference = _store(tmp_path / "reference.db", _SCHEMA)
+    store = _store(
+        tmp_path / "managed.db", _SCHEMA + "CREATE VIRTUAL TABLE docs USING fts5(body);\n"
+    )
+    db = await _open(store, _profile(reference))
+    await db.close()
+
+
+def _inject(store: Path, rows: list[tuple]) -> None:
+    """Add rows to *store*'s ``sqlite_master`` directly, for a table SQLite cannot create here."""
+    with closing(sqlite3.connect(store)) as conn:
+        conn.execute("PRAGMA writable_schema = ON")
+        for row in rows:
+            conn.execute(
+                "INSERT INTO sqlite_master (type, name, tbl_name, rootpage, sql) "
+                "VALUES (?, ?, ?, ?, ?)",
+                row,
+            )
+        conn.execute("PRAGMA writable_schema = RESET")
+        conn.commit()
+
+
+async def test_a_virtual_table_whose_module_is_absent_is_refused_by_its_name(tmp_path):
+    """A virtual table whose module this SQLite lacks cannot be read, so the store is refused by
+    the table's name rather than by the driver's error alone."""
+    reference = _store(tmp_path / "reference.db", _SCHEMA)
+    store = _store(tmp_path / "managed.db", _SCHEMA)
+    _inject(
+        store,
+        [
+            (
+                "table",
+                "docs",
+                "docs",
+                0,
+                "CREATE VIRTUAL TABLE docs USING nosuchmodule(content='events')",
+            )
+        ],
+    )
+    db = _RunsDB(store, compatibility=_profile(reference))
+    with pytest.raises(StateCompatibilityRefused) as caught:
+        await db.open()
+    assert "table docs could not be read" in caught.value.reason
+    assert db._engine is None
+
+
+# A virtual table's arguments are compared in order, a table-level constraint's are not
+
+
+_VIRTUAL_ARGUMENT_PAIRS = {
+    "two arguments reordered": (
+        "fts4(body, content='events', prefix=2, prefix=3)",
+        "fts4(body, content='events', prefix=3, prefix=2)",
+    ),
+    "an argument repeated": (
+        "fts4(body, content='events', prefix=2)",
+        "fts4(body, content='events', prefix=2, prefix=2)",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("reference", "store"), _VIRTUAL_ARGUMENT_PAIRS.values(), ids=_VIRTUAL_ARGUMENT_PAIRS
+)
+def test_a_virtual_table_with_its_arguments_reordered_or_repeated_is_another_table(
+    reference, store
+):
+    """SQLite hands the module the arguments' text, so the arguments in order are part of
+    the table's definition: the same arguments in another order, or one twice, are another table,
+    while the spacing around an argument is not."""
+    expected = _virtual_shape(f"CREATE VIRTUAL TABLE docs USING {reference}")
+    observed = _virtual_shape(f"CREATE VIRTUAL TABLE docs USING {store}")
+    assert expected.options == observed.options == frozenset({"virtual"})
+    assert expected.definitions != observed.definitions
+    assert _virtual_shape("CREATE VIRTUAL TABLE docs USING fts4(body,  content='events')") == (
+        _virtual_shape("CREATE VIRTUAL TABLE docs USING fts4(body, content='events')")
+    )
+
+
+@pytest.mark.parametrize(
+    ("reference", "store"), _VIRTUAL_ARGUMENT_PAIRS.values(), ids=_VIRTUAL_ARGUMENT_PAIRS
+)
+async def test_a_virtual_table_with_its_arguments_reordered_or_repeated_is_refused(
+    reference, store, tmp_path
+):
+    """A store whose virtual table reorders or repeats its module arguments is refused against
+    the profile, whose table spells them otherwise."""
+    reference_path = _store(
+        tmp_path / "reference.db",
+        _SCHEMA + f"CREATE VIRTUAL TABLE docs USING {reference};\n",
+    )
+    store_path = _store(
+        tmp_path / "managed.db", _SCHEMA + f"CREATE VIRTUAL TABLE docs USING {store};\n"
+    )
+    reason = await _refused_against(reference_path, store_path)
+    assert "definitions of docs" in reason
+
+
+async def test_a_quoted_module_name_is_the_module_name(tmp_path):
+    """A module's name is read between its quotes, so ``USING "fts5"(...)`` is ``USING fts5(...)``
+    while another module stays another table."""
+    statement = "CREATE VIRTUAL TABLE docs USING fts5(body, content='events');\n"
+    quoted = "CREATE VIRTUAL TABLE docs USING \"fts5\"(body, content='events');\n"
+    other = "CREATE VIRTUAL TABLE docs USING \"fts4\"(body, content='events');\n"
+    reference = _store(tmp_path / "reference.db", _SCHEMA + statement)
+    store = _store(tmp_path / "managed.db", _SCHEMA + quoted)
+    db = await _open(store, _profile(reference))
+    await db.close()
+    store_other = _store(tmp_path / "other.db", _SCHEMA + other)
+    reason = await _refused_against(reference, store_other)
+    assert "definitions of docs" in reason
+
+
+async def test_an_argument_spaced_otherwise_inside_is_another_definition(tmp_path):
+    """SQLite hands the module each argument's text from its first token to its last, and fts4
+    reads ``content= 'events'`` as a table whose name starts with a space and a quote, so the
+    spacing inside an argument is part of the definition while the spacing around one is not."""
+    tight = "CREATE VIRTUAL TABLE docs USING fts4(body, content='events');\n"
+    spaced = "CREATE VIRTUAL TABLE docs USING fts4(body, content= 'events');\n"
+    around = "CREATE VIRTUAL TABLE docs USING fts4( body ,content='events' /* note */ );\n"
+    reference = _store(tmp_path / "reference.db", _SCHEMA + tight)
+    store = _store(tmp_path / "managed.db", _SCHEMA + spaced)
+    reason = await _refused_against(reference, store)
+    assert "definitions of docs" in reason
+    same = _store(tmp_path / "around.db", _SCHEMA + around)
+    await (await _open(same, _profile(reference))).close()
+
+
+# A virtual table the closure reaches by any route brings in what it reads
+
+
+_DOCS_OVER_OTHER = (
+    "CREATE VIRTUAL TABLE docs USING fts5(value, content='other');\n"
+    "CREATE VIEW run_docs AS SELECT runs.id, docs.value FROM runs JOIN docs ON docs.rowid = 1;\n"
+)
+
+
+async def test_a_virtual_table_a_view_reads_brings_its_content_table(tmp_path):
+    """A closure view that reads a virtual table brings the virtual table in, and the table its
+    ``content=`` names joins with it however the virtual table was reached, so a store whose
+    content table differs is refused."""
+    reference = _store(tmp_path / "reference.db", _SCHEMA + _DOCS_OVER_OTHER)
+    changed = _SCHEMA.replace(
+        "CREATE TABLE other (id TEXT PRIMARY KEY, value TEXT);",
+        "CREATE TABLE other (id TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT 'changed');",
+    )
+    store = _store(tmp_path / "managed.db", changed + _DOCS_OVER_OTHER)
+    with closing(sqlite3.connect(reference)) as conn:
+        assert {"docs", "other"} <= read_closure(conn, ["runs", "events"]).table_names
+        assert "other" in read_closure(conn, ["docs"]).table_names
+    reason = await _refused_against(reference, store)
+    assert "other" in reason
+
+
+async def test_a_trigger_on_a_virtual_tables_shadow_table_is_part_of_the_closure(tmp_path):
+    """A module keeps a virtual table's data in shadow tables named after it and writes them when
+    the virtual table is written, so they join the closure with it, and a trigger on one that the
+    profile does not hold refuses the store."""
+    schema = _SCHEMA + _FTS5_OVER_EVENTS
+    reference = _store(tmp_path / "reference.db", schema)
+    store = _store(
+        tmp_path / "managed.db",
+        schema + "CREATE TRIGGER shadow_write AFTER INSERT ON docs_data "
+        "BEGIN INSERT OR REPLACE INTO other VALUES ('keep', 'changed'); END;\n",
+    )
+    with closing(sqlite3.connect(reference)) as conn:
+        assert "docs_data" in read_closure(conn, ["runs", "events"]).table_names
+    reason = await _refused_against(reference, store)
+    assert "shadow_write" in reason
+
+
+async def test_an_fts_argument_other_than_content_names_no_table(tmp_path):
+    """Of a full-text table's arguments only ``content=`` names a table: a column called like a
+    closure table and ``content_rowid='seq'`` name none, so a table that happens to be called
+    ``seq`` stays out of the closure, and reading the closure from the virtual table gives the
+    same closure as reading it from the tables it covers."""
+    unrelated = "CREATE TABLE seq (id INTEGER PRIMARY KEY ON CONFLICT REPLACE, counter TEXT);\n"
+    schema = _SCHEMA + _FTS5_OVER_EVENTS + unrelated
+    reference = _store(tmp_path / "reference.db", schema)
+    with closing(sqlite3.connect(reference)) as conn:
+        closure = read_closure(conn, ["runs", "events"])
+        assert "seq" not in closure.table_names
+        assert closure == read_closure(conn, ["runs", "events", "docs"])
+    await (await _open(_store(tmp_path / "managed.db", schema), _profile(reference))).close()
+    column = _store(
+        tmp_path / "column.db", _SCHEMA + "CREATE VIRTUAL TABLE docs USING fts4(events);\n"
+    )
+    await (await _open(column, _profile(_store(tmp_path / "plain.db", _SCHEMA)))).close()
+
+
+async def test_a_virtual_table_outside_the_closure_is_never_read(tmp_path):
+    """A virtual table whose module this SQLite lacks cannot be read, but one the closure does not
+    reach is read only for its foreign keys, which SQLite lists without the module, so the store
+    is admitted."""
+    reference = _store(tmp_path / "reference.db", _SCHEMA)
+    store = _store(tmp_path / "managed.db", _SCHEMA)
+    _inject(
+        store,
+        [
+            (
+                "table",
+                "elsewhere",
+                "elsewhere",
+                0,
+                "CREATE VIRTUAL TABLE elsewhere USING nosuchmodule(x)",
+            )
+        ],
+    )
+    await (await _open(store, _profile(reference))).close()
+
+
+async def test_a_word_naming_an_index_or_a_trigger_pulls_nothing_in(tmp_path):
+    """Only a table or a view is read through a closure body: a word of a closure trigger that
+    names an index or the trigger itself is no closure object, so a virtual table whose argument
+    is that word stays out of the closure."""
+    guarded = _SCHEMA + (
+        "CREATE TRIGGER guard BEFORE INSERT ON events WHEN NEW.body = '' "
+        "BEGIN SELECT RAISE(ABORT, 'empty'); END;\n"
+    )
+    reference = _store(tmp_path / "reference.db", guarded)
+    for word, extra in (("body", "CREATE INDEX body ON other(value);\n"), ("guard", "")):
+        store = _store(tmp_path / f"{word}.db", guarded + extra)
+        _inject(
+            store,
+            [("table", "vt", "vt", 0, f"CREATE VIRTUAL TABLE vt USING nosuchmodule({word})")],
+        )
+        await (await _open(store, _profile(reference))).close()
+
+
+async def test_a_single_quoted_references_table_is_the_bare_name(tmp_path):
+    """SQLite's grammar takes the single-quoted token after ``REFERENCES`` as the table's name, as
+    the list's single-quoted token is a column's, so both spellings are the same key."""
+    reference = _store(tmp_path / "reference.db", _SCHEMA)
+    store = _store(
+        tmp_path / "managed.db",
+        _SCHEMA.replace("REFERENCES runs(id)", "REFERENCES 'runs' ('id')", 1),
+    )
+    db = await _open(store, _profile(reference))
+    await db.close()
+
+
+_CONSTRAINT_ORDER = {
+    "a unique key and a check": (
+        "    UNIQUE (run_id, body),\n    CHECK (body <> '')",
+        "    CHECK (body <> ''),\n    UNIQUE (run_id, body)",
+    ),
+}
+
+
+@pytest.mark.parametrize(("reference", "store"), _CONSTRAINT_ORDER.values(), ids=_CONSTRAINT_ORDER)
+async def test_table_level_constraints_in_another_order_are_admitted(reference, store, tmp_path):
+    """Table-level constraints are compared as a set, so their order is not part of a table's
+    definition."""
+    old = "    UNIQUE (run_id, body)"
+    assert old in _SCHEMA
+    reference_path = _store(tmp_path / "reference.db", _SCHEMA.replace(old, reference, 1))
+    store_path = _store(tmp_path / "managed.db", _SCHEMA.replace(old, store, 1))
+    db = await _open(store_path, _profile(reference_path))
+    await db.close()
+
+
+_SAME_NAME_PAIRS = {
+    "null in two quote styles": (
+        "null",
+        '"null" TEXT CHECK ("null" IS NULL)',
+        "[null] TEXT CHECK (`null` IS NULL)",
+    ),
+    "a plain name quoted and bare": (
+        "label",
+        '"label" TEXT CHECK ("label" IS NOT NULL)',
+        "label TEXT CHECK (label IS NOT NULL)",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("name", "reference_sql", "store_sql"), _SAME_NAME_PAIRS.values(), ids=_SAME_NAME_PAIRS
+)
+async def test_one_name_quoted_two_ways_is_admitted(name, reference_sql, store_sql, tmp_path):
+    reference = _store(tmp_path / "reference.db", _with_column(reference_sql))
+    store = _store(tmp_path / "managed.db", _with_column(store_sql))
+    db = await _open(store, _profile_with_column(reference, name))
+    await db.close()
+
+
+_NAMED_SPELLINGS = {
+    "referenced column": (
+        "run_id TEXT NOT NULL REFERENCES runs(id)",
+        'run_id TEXT NOT NULL REFERENCES runs("id")',
+    ),
+    "constraint name": (
+        "CONSTRAINT uq UNIQUE (run_id, body)",
+        'CONSTRAINT "uq" UNIQUE (run_id, body)',
+    ),
+}
+_NAMED_SITES = {
+    "referenced column": "run_id TEXT NOT NULL REFERENCES runs(id)",
+    "constraint name": "UNIQUE (run_id, body)",
+}
+
+
+@pytest.mark.parametrize("site", _NAMED_SPELLINGS)
+async def test_a_quoted_token_sqlite_reads_as_a_name_is_compared_as_one(site, tmp_path):
+    """The column list after ``REFERENCES <table>`` and the word after ``CONSTRAINT`` are names,
+    so quoting them changes nothing."""
+    reference_sql, store_sql = _NAMED_SPELLINGS[site]
+    reference = _store(
+        tmp_path / "reference.db", _SCHEMA.replace(_NAMED_SITES[site], reference_sql, 1)
+    )
+    store = _store(tmp_path / "managed.db", _SCHEMA.replace(_NAMED_SITES[site], store_sql, 1))
     db = await _open(store, _profile(reference))
     await db.close()
 

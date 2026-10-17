@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import ipaddress
 import logging
 import os
 import re
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -20,6 +22,7 @@ from lionagi.version import __version__
 
 from ._traceback_dump import arm_traceback_dump, disarm_traceback_dump
 from .config import CORS_ORIGINS, HOST
+from .launch_access import PAIRING_REDEEM_PATH, launch_bearer
 from .registry import iter_studio_routes, load_studio_route_modules
 from .services._db import StoreNotAddressableError
 
@@ -39,6 +42,57 @@ _GUARDED_NON_API_PATHS = frozenset(
         "/docs/oauth2-redirect",
     }
 )
+
+
+# With no token configured, the answer to an API request from a browser origin that is
+# neither loopback nor the daemon's own.
+_REMOTE_ORIGIN_REFUSAL = (
+    "This Studio daemon has no LIONAGI_STUDIO_AUTH_TOKEN, so it accepts a page on another "
+    "origin only with the bearer `li studio` pairs it with. Run `li studio` to open Studio."
+)
+
+
+def _origin_accepted_without_token(origins: list[str], raw_host: str) -> bool:
+    """Whether a request may use the API when no token is configured, by its Origin.
+
+    No Origin header (a command-line or scripted client) is accepted. A browser origin is
+    accepted when its host is loopback (``localhost``, 127.0.0.0/8 or ``::1``) on any port,
+    or when it is the daemon's own origin: its authority equals the request's Host, as for
+    the SPA a daemon bound to another address serves itself. Any other origin, ``null``
+    included, is refused. CORS only decides which pages may read a response; a page on an
+    allowed origin can still act, so it cannot stand in for this check.
+    """
+    if not origins:
+        return True
+    if len(origins) > 1:
+        return False
+    origin = origins[0].strip()
+    try:
+        parts = urlsplit(origin)
+    except ValueError:
+        return False
+    if (
+        parts.scheme not in ("http", "https")
+        or not parts.netloc
+        or "@" in parts.netloc
+        or parts.path
+        or parts.query
+        or parts.fragment
+    ):
+        return False
+    if parts.netloc.lower() == (raw_host or "").strip().lower():
+        return True
+    host = parts.hostname
+    if host == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(host or "")
+    except ValueError:
+        return False
+    # An IPv4-mapped IPv6 address is judged as its IPv4 address on every Python version.
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return address.is_loopback
 
 
 def _bearer_matches(presented: str, token: str) -> bool:
@@ -72,14 +126,15 @@ def _emit_startup_warnings() -> None:
         if bind_host == "0.0.0.0":  # noqa: S104
             _log.warning(
                 "Studio running WITHOUT authentication on host 0.0.0.0 — "
-                "ALL API requests are accepted from any network interface. "
-                "This is unsafe in containers or cloud deployments. "
+                "API requests that carry no browser origin are accepted from any "
+                "network interface. This is unsafe in containers or cloud deployments. "
                 "Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token."
             )
         else:
             _log.warning(
-                "Studio running WITHOUT authentication — all API requests are "
-                "accepted. Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token."
+                "Studio running WITHOUT authentication — API requests from the command "
+                "line and from pages on this machine are accepted; a page on any other "
+                "origin is refused. Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token."
             )
 
     if "*" in CORS_ORIGINS:
@@ -407,17 +462,30 @@ def create_app() -> FastAPI:
             return await call_next(request)
         token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
         path = request.url.path
+        # /api/* and schema/docs are gated; non-API GET/HEAD (SPA shell,
+        # hashed assets) stay public or the UI becomes unloadable.
+        is_api = path == "/api" or path.startswith("/api/")
+        is_guarded_non_api = path in _GUARDED_NON_API_PATHS
+        is_public_static = (
+            request.method in ("GET", "HEAD") and not is_api and not is_guarded_non_api
+        )
+        # The pairing exchange is how a page gets its bearer, so it cannot need one;
+        # the one-time code it carries is the credential.
+        is_pairing = request.method == "POST" and path == PAIRING_REDEEM_PATH
+        if path in _PUBLIC_PATHS or is_public_static or is_pairing:
+            return await call_next(request)
         presented = request.headers.get("authorization") or ""
-        if token and not _bearer_matches(presented, token):
-            # /api/* and schema/docs are gated; non-API GET/HEAD (SPA shell,
-            # hashed assets) stay public or the UI becomes unloadable.
-            is_api = path == "/api" or path.startswith("/api/")
-            is_guarded_non_api = path in _GUARDED_NON_API_PATHS
-            is_public_static = (
-                request.method in ("GET", "HEAD") and not is_api and not is_guarded_non_api
-            )
-            if path not in _PUBLIC_PATHS and not is_public_static:
+        if token:
+            if not _bearer_matches(presented, token):
                 return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        elif not _origin_accepted_without_token(
+            request.headers.getlist("origin"), request.headers.get("host", "")
+        ):
+            # A page on another origin is accepted with the bearer this launch
+            # handed it through pairing.
+            bearer = launch_bearer()
+            if bearer is None or not _bearer_matches(presented, bearer):
+                return JSONResponse({"detail": _REMOTE_ORIGIN_REFUSAL}, status_code=401)
         return await call_next(request)
 
     @application.middleware("http")
