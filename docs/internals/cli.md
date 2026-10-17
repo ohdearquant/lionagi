@@ -1145,6 +1145,8 @@ before plus a pointer to the opt-in:
 - `max_extensions` — rounds after the first, a whole number from 1 to 100 (default 10).
 
 `--preset coding` and `--image` are refused for an API model. The leg is handed no MCP server.
+A profile's `khive_injection` keeps its recall on the leg, and its writeback is turned off
+(`_recall_only`): the read set runs in this process, so writeback would store file text in khive.
 An API model is built from its model spec alone: the display options `-v` and `--theme` are CLI
 endpoint settings and are not put on its request, so its key and endpoint stay its own.
 The Anthropic endpoint requires an output limit, so an API leg on it sets `max_tokens` (8192)

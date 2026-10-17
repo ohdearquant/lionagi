@@ -23,7 +23,8 @@ Decision:
 - `li agent` builds an API-model leg through `create_agent` only when its agent profile declares
   `api_tools: read`. The spec binds `coding_tools=("reader", "search", "context")`, the secure
   guards scoped to the leg's working directory, the profile's `role:` (default `reviewer`), and
-  no MCP server. The leg runs `Branch.ReAct(tools=True, max_extensions=N)`, with `N` from the
+  no MCP server. A profile's `khive_injection` keeps its recall on the leg with writeback off,
+  whatever the profile sets, so no read output is stored in khive. The leg runs `Branch.ReAct(tools=True, max_extensions=N)`, with `N` from the
   profile's `max_extensions` (a whole number from 1 to 100, default 10), under the leg's
   `--timeout`.
 - `read` is the only tool set. Any other `api_tools` value, `--preset coding` and `--image` are
