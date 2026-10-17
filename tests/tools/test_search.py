@@ -133,6 +133,26 @@ async def test_grep_skips_binary_files_without_naming_them(tmp_path):
     assert resp.content == f"{tmp_path / 'notes.txt'}:1:TOKEN=three"
 
 
+async def test_grep_is_asked_to_skip_binary_files(tmp_path, monkeypatch):
+    # A matching binary file is reported by a notice with no NUL. Where it comes
+    # before another file's row, the row reader would take it as the start of
+    # that row's file name, so grep is told to skip binary files outright.
+    import lionagi.tools.code.search as search_mod
+
+    seen = []
+
+    def run(cmd, *args, **kwargs):
+        seen.append(cmd)
+        return {"returncode": 1, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(search_mod, "_subprocess_sync", run)
+    tool = SearchTool(workspace_root=str(tmp_path))
+    await tool.handle_request(SearchRequest(action=SearchAction.grep, pattern="TOKEN", path="."))
+
+    flags = seen[0][1 : seen[0].index("-e")]
+    assert any(f.startswith("-") and not f.startswith("--") and "I" in f for f in flags)
+
+
 async def test_grep_returns_search_response(tmp_path):
     (tmp_path / "f.py").write_text("content\n")
     tool = SearchTool()

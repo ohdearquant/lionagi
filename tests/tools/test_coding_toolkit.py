@@ -334,6 +334,24 @@ async def test_search_skips_binary_files_and_reads_names_across_a_newline(tmp_pa
     assert result["content"] == f"{odd}:1:TOKEN=four"
 
 
+async def test_search_asks_grep_to_skip_binary_files(tmp_path, monkeypatch):
+    import lionagi.tools.coding as coding_mod
+
+    seen = []
+
+    def run(cmd, *args, **kwargs):
+        seen.append(cmd)
+        return {"returncode": 1, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(coding_mod, "_subprocess_sync", run)
+    _, _, tools = _make_toolkit(tmp_path)
+
+    await _tool_fn(tools, "search")(action="grep", pattern="TOKEN", path=".")
+
+    flags = seen[0][1 : seen[0].index("-e")]
+    assert any(f.startswith("-") and not f.startswith("--") and "I" in f for f in flags)
+
+
 async def test_coding_toolkit_reader_rejects_workspace_escape(tmp_path):
     """ReaderTool rejects paths that escape the workspace root."""
     secret = tmp_path.parent / "secret.txt"
