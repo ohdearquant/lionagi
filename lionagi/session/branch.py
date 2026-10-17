@@ -638,7 +638,10 @@ class Branch(Element, Relational):
             raise ValueError(f"Tool with name '{name}' already exists.")
 
         async def _connect(**kwargs):
-            api_call = await imodel.invoke(**kwargs)
+            from lionagi.service.imodel import _branch_routing_context
+
+            with _branch_routing_context(self.id, imodel):
+                api_call = await imodel.invoke(**kwargs)
             await self.emit_and_log(api_call)
             return api_call.response
 

@@ -714,9 +714,12 @@ async def run(
                 raise
             except RuntimeError as _exc:
                 # ProviderError is a RuntimeError subclass — avoid double-wrapping; re-raise if already classified.
+                # A write the store refused in compatibility mode is no provider failure, and keeps
+                # its type (ADR-0128 D6).
                 from lionagi.providers._provider_errors import ProviderError
+                from lionagi.state.compat import StateCompatibilityRefused
 
-                if isinstance(_exc, ProviderError):
+                if isinstance(_exc, (ProviderError, StateCompatibilityRefused)):
                     _run_exc = _exc
                     raise
                 classified = classify_provider_error(str(_exc))

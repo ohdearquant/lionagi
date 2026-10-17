@@ -7,14 +7,21 @@ S3 + CDN, etc.) can serve as-is. On Vercel, set the project root directory to
 declared in `vercel.json` alongside a catch-all rewrite to `index.html` (client-side
 routing) and long-lived immutable caching for the hashed `/assets/*` bundle files.
 
-At runtime the app resolves its API base URL in this order: an injected
-`window.__STUDIO_API_BASE__` (highest priority), a build-time `VITE_STUDIO_API_BASE`
-env var, a same-hostname `:8765` guess when served from a Vite dev port, and otherwise
-the same origin the page was loaded from. Same-origin is the right default for a
-single-origin deploy where one server (a Docker image or reverse proxy) serves both the
-SPA and the API. It is the wrong default for a hosted _static_ deploy, whose origin
-has no API at all — so those deploys must set the base explicitly, via either of the
-first two overrides.
+At runtime the app resolves its API base URL in this order: a `?api=` query override
+(highest priority, persisted per browser tab), an injected `window.__STUDIO_API_BASE__`,
+a build-time `VITE_STUDIO_API_BASE` env var, and otherwise the same origin the page was
+loaded from. The query override accepts HTTP(S) origins on `localhost`, any IPv4
+loopback address in `127.0.0.0/8`, or IPv6 `::1`. Hostnames under `*.localhost`
+and IPv4-mapped IPv6 addresses are deliberately excluded from this browser override;
+use an explicit supported loopback address instead. For example,
+`?api=http://127.0.0.2:8766` selects a daemon bound to that loopback address and port.
+
+Same-origin is the right default for a single-origin deploy where one server (a Docker
+image or reverse proxy) serves both the SPA and the API. It is the wrong default for a
+hosted _static_ deploy, whose origin has no API at all — so those deploys must set the
+base explicitly through injected `window.__STUDIO_API_BASE__` or the build-time
+`VITE_STUDIO_API_BASE` environment variable. The `?api=` option is a viewer-selected
+loopback override, not deployment configuration.
 
 The lion-studio hosted deploy is one of those static deploys, and it is local-first:
 the hosted page has no backend of its own. It is a static client that talks directly to
@@ -31,7 +38,9 @@ resolved API base doesn't answer, or something other than the daemon answers the
 program already on port 8765), `NoDaemonGate` (`src/components/shell/NoDaemonGate.tsx`)
 shows a recovery screen in place of the app with the fix for each case, and retries in
 the background. A daemon that answers but refuses the page (401) gets its own screen,
-which names `li studio` as the fix and does not retry.
+which names `li studio` as the fix and does not retry. The data-dependent application
+renders only after a daemon answers successfully; the recovery screen cannot be
+dismissed to reveal it.
 
 On the CLI side, bare `li studio` (equivalently `li studio --web`) is the mode built
 for this deploy: it starts only the local daemon and prints/opens this hosted URL,
@@ -68,3 +77,23 @@ desktop shell does this) or the one `li studio` pairs it with. `li studio` asks 
 daemon on `127.0.0.1`, so pairing serves the machine the daemon runs on; a
 token-protected daemon reached over a tunnel or a LAN is for API and desktop-shell use.
 Rotate the token like any credential; never commit it.
+
+The API destination is selected once at page load and shared by data requests,
+health probes, pairing, and the endpoint display. Query or session storage changes
+during client-side navigation take effect only after reloading the page.
+
+When a viewer override selects that destination, the shell token is sent only if
+the destination has the same absolute origin as the injected `__STUDIO_API_BASE__`
+captured at page load. If the issuing origin is missing, cannot be parsed, or differs
+from the destination, the override receives no token. Changing the injected base
+after load does not change this issuer match.
+Without a viewer override at load time, the loaded base retains token authentication,
+including relative proxy paths such as `/proxy`, the empty same-origin base, and
+injected or build-time absolute bases. Adding `?api=` after load no longer withholds
+the token for that loaded base: both requests and their authentication continue to use
+the loaded destination until reload. The token itself is read when each request is made,
+so a token injected after load is sent to the loaded destination under these same rules;
+a base injected after load changes neither the destination nor the issuing origin.
+These deployment settings are trusted and used as supplied: the viewer-override origin
+check does not validate configured URLs or prevent requests caused by malformed
+deployment settings.

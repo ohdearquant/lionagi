@@ -161,6 +161,25 @@ async def test_make_readonly_engine_can_read_existing_file(tmp_path):
         await ro_engine.dispose()
 
 
+@pytest.mark.parametrize("name", ["a#b.db", "p%41.db", "q r.db"])
+async def test_make_readonly_engine_reads_the_file_its_path_names(tmp_path, name):
+    """Written raw into the URI, '#' starts a fragment that also drops mode=ro, and '%' starts an
+    escape, so another file was opened, and created, in place of this one."""
+    db_file = tmp_path / name
+    conn = sqlite3.connect(db_file)
+    conn.execute("CREATE TABLE t (v TEXT)")
+    conn.execute("INSERT INTO t VALUES ('here')")
+    conn.commit()
+    conn.close()
+    ro_engine = make_readonly_engine(f"sqlite+aiosqlite:///{db_file}")
+    try:
+        async with ro_engine.connect() as conn:
+            assert (await conn.execute(sa.text("SELECT v FROM t"))).scalar() == "here"
+    finally:
+        await ro_engine.dispose()
+    assert sorted(path.name for path in tmp_path.iterdir()) == [name]
+
+
 async def test_make_readonly_engine_rejects_writes(tmp_path):
     db_file = tmp_path / "ro_write_test.db"
     write_engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}", echo=False)
