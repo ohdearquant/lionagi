@@ -1126,9 +1126,15 @@ async def _run_agent(
                 kwarg = PROVIDER_EFFORT_KWARG.get(provider)
                 if kwarg and cfg.get(kwarg) is not None:
                     cfg[kwarg] = reclamp_effort_for_model(provider, cfg[kwarg], model)
-        if verbose:
+        # The display flags are CLI endpoint options; an API model sends its
+        # config's kwargs with each request, so a branch on the tool loop is
+        # handed neither.
+        on_tool_loop = not getattr(branch.chat_model, "is_cli", False) and isinstance(
+            branch.metadata.get(_API_LAUNCH_KEY), dict
+        )
+        if verbose and not on_tool_loop:
             cfg["verbose_output"] = True
-        if theme is not None:
+        if theme is not None and not on_tool_loop:
             cfg["cli_display_theme"] = theme
         if effort is not None:
             kwarg = PROVIDER_EFFORT_KWARG.get(provider)
@@ -1222,8 +1228,16 @@ async def _run_agent(
     ):
         api_launch = dict(recorded)
         declared = _profile_api_launch(profile) if is_resumed_branch else None
+        if is_resumed_branch and profile is not None and declared is None:
+            raise ConfigurationError(
+                f"agent profile {getattr(profile, 'name', agent_name)!r} declares no "
+                "api_tools, but this branch was launched on an API model's tool loop; "
+                "resume it with a profile that declares 'api_tools: read', or without -a."
+            )
         if declared is not None:
             api_launch["max_extensions"] = declared["max_extensions"]
+        if is_resumed_branch and images:
+            raise ConfigurationError("--image is not supported for an API model yet.")
         if is_resumed_branch:
             # A stored branch keeps its messages, not its tools, so the read set
             # is bound again, guarded to this invocation's working directory.

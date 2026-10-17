@@ -419,3 +419,98 @@ async def test_a_queued_steer_runs_as_one_more_turn_of_the_tool_loop():
     assert len(turns) == 1
     assert "also check the readme" in turns[0][0]
     assert turns[0][1] is None
+
+
+@pytest.mark.asyncio
+async def test_the_read_set_is_guarded_to_the_working_directory(tmp_path):
+    import lionagi.cli.agent as agent_mod
+
+    spec = agent_mod._make_api_agent_spec(
+        cwd=str(tmp_path), effort=None, system_prompt=None, role="reviewer", tools="read"
+    )
+
+    assert spec.coding_tools == ("reader", "search", "context")
+    (guard,) = spec.hook_handlers["security_pre:reader"]
+    assert await guard("reader", "read", {"path": "notes.txt"}) is None
+    with pytest.raises(PermissionError):
+        await guard("reader", "read", {"path": str(tmp_path.parent / "outside.txt")})
+
+
+@pytest.mark.parametrize("resumed", [False, True], ids=["new", "resumed"])
+@pytest.mark.asyncio
+async def test_an_image_is_refused_for_an_api_model_before_a_run_exists(leg, monkeypatch, resumed):
+    import lionagi.cli.agent as agent_mod
+
+    kwargs = {}
+    if resumed:
+        leg.replies = [_last_round(), _answer("first")]
+        _, _, kwargs["resume"], _, _ = await leg.run(_profile(api_tools="read"))
+    monkeypatch.setattr(
+        agent_mod, "allocate_run", lambda: pytest.fail("a run was allocated for a refused leg")
+    )
+
+    with pytest.raises(ConfigurationError, match="--image"):
+        await leg.run(_profile(api_tools="read"), "look at this", images=["a.png"], **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_a_resume_under_a_profile_without_the_read_set_is_refused(leg, monkeypatch):
+    import lionagi.cli.agent as agent_mod
+
+    leg.replies = [_last_round(), _answer("first")]
+    _, _, branch_id, _, _ = await leg.run(_profile(api_tools="read"))
+    monkeypatch.setattr(
+        agent_mod, "allocate_run", lambda: pytest.fail("a run was allocated for a refused leg")
+    )
+
+    with pytest.raises(ConfigurationError, match="declares no api_tools"):
+        await leg.run(_profile(), "and now?", resume=branch_id)
+
+
+@pytest.mark.asyncio
+async def test_a_resume_without_a_profile_runs_the_loop_from_the_record(leg):
+    import lionagi.cli.agent as agent_mod
+
+    leg.replies = [_last_round(), _answer("first")]
+    _, _, branch_id, _, _ = await leg.run(_profile(api_tools="read"))
+
+    leg.replies = [_read_round("notes.txt"), _last_round(), _answer("read it")]
+    result, _, _, status, _ = await agent_mod._run_agent(
+        MODEL, "read the notes now", agent_name=None, cwd=str(leg.workspace), resume=branch_id
+    )
+
+    assert (result, status) == ("read it", "completed")
+    assert leg.replies == []
+
+
+@pytest.mark.asyncio
+async def test_a_resume_takes_the_round_bound_its_profile_names_now(leg):
+    leg.replies = [_last_round(), _answer("first")]
+    _, _, branch_id, _, _ = await leg.run(_profile(api_tools="read", max_extensions=10))
+
+    leg.payloads.clear()
+    leg.replies = [*(_read_round("notes.txt") for _ in range(3)), _answer("stopped at the bound")]
+    result, _, _, status, _ = await leg.run(
+        _profile(api_tools="read", max_extensions=2), "again", resume=branch_id
+    )
+
+    assert (result, status) == ("stopped at the bound", "completed")
+    assert leg.replies == []
+    assert len(leg.payloads) == 4
+
+
+@pytest.mark.asyncio
+async def test_display_flags_on_a_resume_stay_off_the_api_request(leg):
+    leg.replies = [_last_round(), _answer("first")]
+    _, _, branch_id, _, _ = await leg.run(_profile(api_tools="read"))
+
+    leg.payloads.clear()
+    leg.replies = [_last_round(), _answer("second")]
+    result, _, _, status, _ = await leg.run(
+        _profile(api_tools="read"), "and now?", resume=branch_id, verbose=True, theme="dark"
+    )
+
+    assert (result, status) == ("second", "completed")
+    for payload in leg.payloads:
+        assert "verbose_output" not in json.dumps(payload, default=str)
+        assert "cli_display_theme" not in json.dumps(payload, default=str)
