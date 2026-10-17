@@ -192,6 +192,12 @@ project those rows ran under. To keep the project, name it in those members.
   every round. Through `ReAct()`, the first round used to run concurrently whatever it declared,
   and each extension round used to run under the strategy the round before it declared.
 
+### Security
+
+- Raised the `mcp` floor in the `mcp` extra to 1.30.0 (GHSA-84m7-p3x7-pcfv: sessions accumulate
+  without bound in the StreamableHTTP server transport). `li mcp` serves over stdio, so its own
+  server was not exposed; the floor keeps installs off the affected releases.
+
 ### Docs
 
 - The Studio trust texts now say what a daemon without `LIONAGI_STUDIO_AUTH_TOKEN` can actually
