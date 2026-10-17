@@ -17,6 +17,19 @@
   to this repository's ADR corpus and held here at `lion1/docs/adr/028-anthropic/`; read with
   ADR-0125 step 2, whose request compiler inherits these rules
 
+**Instruction.** This record serves an instruction the project's maintainer gave on 2026-10-16
+(13:46 to 13:55 ET): "the problem with our own harness for too much stuff is the caching
+management, mainly"; the "system prompt and common front-loaded prompts cached, commonly 1 hour";
+and a run is one operation of many model calls, so the cache spans the run. The decisions carry
+it: a one-hour entry on the system text and the tool section, a five-minute mark at the end of the
+conversation segment and on the moving tail, cache writes accounted per lifetime (D6), and all of it
+off unless the caching option is on. The same instruction asked that a model kept under a
+per-request context ceiling for price reasons get context management from the library when work
+continues past that ceiling ("lionagi needs to do context management, similar to auto
+compaction"). This record departs from that part: the per-request input ceiling and the context
+management past it are deferred to their own record, not yet written and not yet numbered (Out of
+scope).
+
 Purpose: repeated model calls inside one conversation should reuse the provider's prompt cache, so a
 conversation on a per-token API model pays the write price for the tokens each call adds and the read
 price for the rest, instead of the full input price for everything.
@@ -94,8 +107,9 @@ ledger needs read and write counts per lifetime to price a run in its own sense 
 | Accounting | D6: each call records input, cache read, cache write per lifetime and output, side by side. |
 | Acceptance | D7: the prefix test, the Anthropic payload test, the two option-off byte-identity tests, the stable-segment test and the two body-absence tests. |
 
-**Out of scope.** A per-request input ceiling and what happens past it (a separate record or an
-amendment; D1's classes are what any folding must respect). The provider's native `tools` field,
+**Out of scope.** A per-request input ceiling and the context management past it, which the
+instruction this record serves asked for (deferred to their own record, not yet written or
+numbered; D1's classes are what any folding must respect). The provider's native `tools` field,
 until a record maps its `tool_use` and `tool_result` blocks to action requests and responses
 (D2). Providers that cache without marks. CLI providers, whose prompt the CLI assembles. Price
 tables and budgets (ADR-0126).
@@ -121,8 +135,8 @@ option says. There is no ungated change.
 
 Every part of a request belongs to one class:
 
-- **stable**: the system text and the tool definitions. It is the same for every call of every
-  conversation of one configuration.
+- **stable**: the system text and the tool definitions. It is the same for every call of one
+  configuration, and the tool set the Branch exposes (D2) is part of that configuration.
 - **conversation**: what is fixed when a conversation starts and kept until it ends, today the
   context blocks a context provider returns for the conversation (D4). The Branch owns this segment.
   It is keyed by the Branch's conversation identity and built once, under the Branch lock a

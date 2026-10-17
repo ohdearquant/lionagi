@@ -347,3 +347,30 @@ def test_amended_records_carry_a_pointer_to_this_record() -> None:
     ):
         text = re.sub(r"\s+", " ", (adr_dir / name).read_text(encoding="utf-8"))
         assert "Amended by ADR-0127" in text, name
+
+
+def test_the_record_names_its_instruction_and_the_part_it_defers() -> None:
+    flat = _flat()
+    head = flat[flat.index("- **Relations**:") : flat.index("Purpose:")]
+    assert (
+        "**Instruction.** This record serves an instruction the project's maintainer gave on 2026-10-16"
+        in head
+    )
+    assert "the caching management, mainly" in head
+    assert "commonly 1 hour" in head
+    assert (
+        "This record departs from that part: the per-request input ceiling and the context management past it are deferred to their own record, not yet written and not yet numbered"
+        in head
+    )
+    assert (
+        "which the instruction this record serves asked for (deferred to their own record" in flat
+    )
+
+
+def test_the_stable_class_counts_the_branch_tool_set_as_configuration() -> None:
+    d1 = _decision(1)
+    assert (
+        "It is the same for every call of one configuration, and the tool set the Branch exposes (D2) is part of that configuration."
+        in d1
+    )
+    assert "every call of every conversation" not in d1
