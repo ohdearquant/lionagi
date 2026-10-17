@@ -1466,34 +1466,36 @@ many runs across its life.
 `run_progress.py::resolve_run` (reused by `run_findings.py`,
 `resume_run.py`, and `rename_session.py`) and `cancel_run.py`'s own
 `_resolve_run` both accept the same reference vocabulary: an exact run/session
-id, an 8+ hex id prefix, a name or playbook substring (minimum 3
+id, an id prefix, a name or playbook substring (minimum 3
 characters), or the literal `"current"`. Id/prefix resolution reuses
 `lionagi.cli._util.fetch_unique_row`, the same primitive `li kill` uses, so
 a reference this tool accepts resolves identically to one typed at the CLI.
-Every arm is scoped to the calling turn's own project — read from the
-turn's stored context, never accepted as an argument — and a foreign
-project's run is reported exactly like a nonexistent one (`{"found": False}`)
-rather than surfaced as an ambiguity candidate or a resolved id, either of
-which would itself disclose that the id exists. A turn with no owner
-mapping at all raises `MissingOwnerContextError` rather than falling back
-to matching every project's runs (both modules keep their own small copy
-of this check and error rather than sharing one, so each stays
-self-contained). Nothing is ever guessed: an ambiguous prefix or substring
-match returns candidates instead of picking one, capped at `MAX_CANDIDATES`
-(10) with a `truncated` flag when more existed.
+When the turn names a project, each arm checks that project from the stored
+turn context rather than accepting it as a tool argument, and prefix resolution
+carries that project into the query itself, so its bounded id-ordered window is
+filled from that project's rows alone. Foreign rows are excluded from resolved
+ids and ambiguity candidates, and cannot push an in-scope match out of the
+window or hide one behind them. The resolver's failure
+reasons can differ for a foreign id and a nonexistent reference; identical
+not-found responses are not guaranteed. An owned turn with no project can
+still resolve a full 36-character UUID, including one selected by `"current"`;
+prefix and substring lookup require project context. An ambiguous match
+returns candidates rather than choosing one: substring results are capped at
+`MAX_CANDIDATES` (10), and id-prefix candidates — for both the shared resolver
+and cancellation's own resolver — at the CLI helper's own listing size (5),
+with `truncated` true only when more rows matched than are returned.
+Truncation for an id prefix is counted over that project's rows, because the
+project predicate is what the prefix query's window counted.
 
-`"current"` resolves against the turn's own frozen context, not a
-later-reported live view — deliberately, because a cancellation or rename
-acting on a view reported *after* the instruction was sent could target a
-run the human was never looking at when they issued it. (Contrast this
-with `get_current_view`, below, which does prefer a later live report — a
-read has no such hazard.) The frontend's selection payload for this key is
-carried under `"s"` for mission/history views (`OperatorPanel.tsx`'s
-`selection` writer) and under `"sel"` for the library space; there is never
-a `runId`/`run_id`/`sessionId` key on the wire for the former, which is why
-`cancel_run._current_run_id` reads `"s"` specifically while
-`run_progress._resolve_current` also tries the longer names for the paths
-that do use them.
+`run_progress.resolve_run("current")` calls `get_current_view`, which can use a
+later observation from the same browser page. Tools that reuse this resolver
+share that selection behavior, including resume, rename, and run control.
+Project authorization still comes from the frozen turn context. Cancellation
+uses a separate resolver: `cancel_run._current_run_id` reads the turn's frozen
+selection and does not follow a later view report. The frontend carries the
+run selection under `"s"` and the Library selection under `"sel"`;
+`run_progress._resolve_current` additionally accepts the longer run/session
+id keys used by other callers.
 
 ### View freshness: observation count, not wall clock
 

@@ -49,7 +49,7 @@ RENAME_SESSION_DESCRIPTION = (
     "conversation's own name, which has a "
     "separate rename path outside this tool. Goes through a human approval "
     "flow; it is never automatic, and a denied proposal leaves the run's "
-    "name untouched. Accepts a run UUID, an 8+ hex id prefix, a name "
+    "name untouched. Accepts a run UUID, an id prefix, a name "
     "substring (minimum 3 characters), or 'current' for the run open when "
     "this instruction was sent. Ambiguous references return candidates "
     "rather than guessing."
