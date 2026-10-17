@@ -64,12 +64,12 @@ def test_in_process_spawn_paths_are_present_where_named() -> None:
 
 def test_flow_bus_spawn_and_escalation_paths_are_present() -> None:
     assert "observe(self.spawn_type, self._on_bus_spawn)" in _line(
-        "lionagi/operations/flow.py", 1113
+        "lionagi/operations/flow.py", 1165
     )
     assert "observe(EscalationRequest, self._on_bus_escalation)" in _line(
-        "lionagi/operations/flow.py", 1114
+        "lionagi/operations/flow.py", 1166
     )
-    assert "def _inject_request" in _line("lionagi/operations/flow.py", 1389)
+    assert "def _inject_request" in _line("lionagi/operations/flow.py", 1458)
 
 
 def test_observer_gate_still_applies_before_routes_and_subscribers() -> None:
@@ -121,8 +121,8 @@ def test_durable_subscriber_source_is_a_confirmed_session_signals_row() -> None:
     assert "never the in-memory emit" in flat
     assert "reaches `best_effort` subscribers only" in flat
     assert "lionagi/state/schema.sql:797-801" in flat
-    assert "lionagi/state/db.py:5569-5577" in flat
-    assert "lionagi/state/db.py:5592-5607" in flat
+    assert "lionagi/state/db.py:6215-6223" in flat
+    assert "lionagi/state/db.py:6238-6253" in flat
     assert "the cursor is a position in that sequence, read forward with `after_seq`" in flat
     assert "is not a committed row and is no durable subscriber's source" in flat
     assert "whose forward read defaults to 500 rows" in flat
@@ -138,7 +138,7 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     assert "Settlement is the exit of the invocation owning this subscription" in flat
     assert "A nested operation's `RunEnd` or `RunFailed` does not settle its parent" in flat
     assert "lionagi/session/branch.py:441-469" in flat
-    assert "lionagi/operations/run/run.py:777-788" in flat
+    assert "lionagi/operations/run/run.py:780-791" in flat
     assert "`unbind_db_persistence`" in flat
     assert "lionagi/session/observer.py:542-559" in flat
     assert "observer unbinding is cleanup, not settlement" in flat
@@ -157,7 +157,7 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     assert "so the owner-scoped finalizer that records closure is" in flat
     assert "a prerequisite delta below" in flat
     assert "the writes it tracked are known to have finished" in flat
-    assert "lionagi/cli/_runs.py:1284" in flat
+    assert "lionagi/cli/_runs.py:1295" in flat
     assert "lionagi/studio/services/workflow_run.py:110" in flat
 
 
@@ -244,7 +244,7 @@ def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are
     flat = _flat()
     assert "lionagi/cli/orchestrate/_orchestration.py:1378" in flat
     assert "lionagi/state/schema.sql:463" in flat
-    assert "lionagi/state/db.py:3850-3852" in flat
+    assert "lionagi/state/db.py:4481-4483" in flat
     assert "the store advances it only forward, so a stale write cannot move it back" in flat
     assert "ADR-0070, Accepted" in flat
     assert "per-completion batch of targets, not a per-subscriber position" in flat
@@ -395,7 +395,7 @@ def test_amendment_citations_match_the_head_line_ranges() -> None:
     assert "already-committed source fact (`:493-498`)" in flat
     assert "durable delivery state (`:493-498`)" in flat
     assert "ADR-0125:495-499" in flat
-    assert "lionagi/session/branch.py:441-469`, `:1063-1116" in flat
+    assert "lionagi/session/branch.py:441-469`, `:1066-1119" in flat
     assert ":487-494" not in flat
     assert "(`:559`)" not in flat
     assert "`:1102-1115" not in flat
