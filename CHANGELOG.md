@@ -146,6 +146,15 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Fixed
 
+- A dispatch notify command that ran past its timeout was killed as a single process, so anything
+  it started kept running, and nothing waited for the command to exit. On Python 3.10, where the timeout
+  raises `asyncio.TimeoutError` rather than the builtin `TimeoutError`, it was not killed at all
+  and was reported as an execution error with an empty message. A cancelled delivery also left it
+  running. A timeout now reports as a timeout on every supported version, and a timeout, a failed
+  exchange or a cancelled delivery kills the command's whole process group and waits for the
+  command to exit.
+  `li o ctl resolve` reports a busy `state.db` and exits unknown, as queueing a control does,
+  instead of failing with a timeout traceback.
 - A settings shell hook (`hooks.pre` / `hooks.post` with a `command`) runs in a session of its
   own, so cancelling the tool call it guards left the hook and anything it started running, and an
   error while exchanging data with it did the same. The hook's process group is now killed on

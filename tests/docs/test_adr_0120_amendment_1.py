@@ -91,9 +91,9 @@ def test_schedule_reader_position_is_the_github_poll_cursor() -> None:
 
 
 def test_outbox_row_defaults_and_attempt_bound_anchors() -> None:
-    assert "DEFAULT_MAX_ATTEMPTS" in _line("lionagi/dispatch/outbox.py", 47)
-    assert "ack_required: bool = False" in _line("lionagi/dispatch/outbox.py", 178)
-    assert "max_attempts: int = DEFAULT_MAX_ATTEMPTS" in _line("lionagi/dispatch/outbox.py", 179)
+    assert "DEFAULT_MAX_ATTEMPTS" in _line("lionagi/dispatch/outbox.py", 48)
+    assert "ack_required: bool = False" in _line("lionagi/dispatch/outbox.py", 166)
+    assert "max_attempts: int = DEFAULT_MAX_ATTEMPTS" in _line("lionagi/dispatch/outbox.py", 167)
 
 
 def test_team_round_batches_pending_targets_per_completion() -> None:
@@ -225,8 +225,8 @@ def test_delivery_default_matches_the_outbox_tier_it_cites() -> None:
     assert "`best_effort` is an explicit volatile option with no durable cursor" in flat
     assert "docs/adr/ADR-0059-durable-dispatch-outbox.md:391`, `:609" in flat
     assert "`enqueue_dispatch` inserts a row unconditionally" in flat
-    assert "acknowledgement is the opt-in (`:178`)" in flat
-    assert "the only per-call bound is `max_attempts` (`:179`)" in flat
+    assert "acknowledgement is the opt-in (`:166`)" in flat
+    assert "the only per-call bound is `max_attempts` (`:167`)" in flat
 
 
 def test_d1_gains_a_durable_observing_subscriber_row() -> None:
@@ -349,7 +349,7 @@ def test_failure_advances_the_cursor_only_on_success_or_a_durable_dead_letter() 
     assert "`max_attempts` counts total automatic execution attempts, including the first" in flat
     assert "Failure retains the batch and cursor until retry succeeds" in flat
     assert "a dead-letter row is re-queueable regardless of cursor position" in flat
-    assert "lionagi/dispatch/outbox.py:47`, `:518-535`, `:591-621" in flat
+    assert "lionagi/dispatch/outbox.py:48`, `:506-523`, `:579-609" in flat
     row_four = next(line for line in text.splitlines() if line.startswith("| 4 |"))
     assert "advanced only on a batch's success or its durable dead-letter" in row_four
     assert "re-queueable irrespective of cursor position" in row_four

@@ -23,6 +23,7 @@ from typing import Any
 from sqlalchemy import bindparam, text
 from sqlalchemy.types import JSON
 
+from lionagi.ln._proc import communicate_in_process_group
 from lionagi.session.signal import DispatchSignal
 from lionagi.state.reasons import DispatchReasons
 from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
@@ -128,7 +129,8 @@ async def _exec_notify_template(
     """Run the notify template argv-exec (never through a shell); returns (success, error).
 
     Success means only that the transport command exited zero. It is not a
-    consumer acknowledgement.
+    consumer acknowledgement. A timeout, a failed exchange or a cancelled caller
+    kills the command's whole process group, so nothing it started keeps running.
     """
     try:
         _validate_notify_template(template)
@@ -139,31 +141,17 @@ async def _exec_notify_template(
     # If the template does not place the payload inline, feed it on stdin so
     # templates that read the body from stdin still receive it.
     needs_stdin = _PAYLOAD_TOKEN not in template
-    proc = None
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        returncode, _, stderr_bytes = await communicate_in_process_group(
+            argv, payload_json.encode() if needs_stdin else b"", timeout=timeout
         )
-        stdin_bytes = payload_json.encode() if needs_stdin else b""
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            proc.communicate(stdin_bytes),
-            timeout=timeout,
-        )
-    except (TimeoutError, asyncio.TimeoutError):
-        if proc is not None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
+    except (TimeoutError, asyncio.TimeoutError):  # 3.10 support: not aliased until 3.11
         return False, f"notify template timed out after {timeout}s: {argv[0]!r}"
     except Exception as exc:  # noqa: BLE001
         return False, f"notify template execution error: {exc}"
 
-    if proc.returncode != 0:
-        err = stderr_bytes.decode(errors="replace").strip() or f"exit {proc.returncode}"
+    if returncode != 0:
+        err = stderr_bytes.decode(errors="replace").strip() or f"exit {returncode}"
         return False, err[:2000]
     return True, ""
 
