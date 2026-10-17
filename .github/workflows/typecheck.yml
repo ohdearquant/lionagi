@@ -6,8 +6,13 @@ on:
     paths-ignore:
       - '**/*.ipynb'
   # ready_for_review is not a default activity type, so without this a draft PR
-  # marked ready starts no run. Naming types replaces the defaults rather than
-  # extending them, so the three defaults are listed back.
+  # marked ready starts no run. Converting a pull request back to draft starts no
+  # run (converted_to_draft is not listed), so a run in progress goes on; marking
+  # it ready again starts a run in the same concurrency group, which cancels the
+  # one in progress and checks the same commit again. The cost is one duplicate
+  # run, and nothing is decided by it, since this check is not required.
+  # Naming types replaces the defaults rather than extending them, so the three
+  # defaults are listed back.
   pull_request:
     types: [ opened, synchronize, reopened, ready_for_review ]
     branches: [ main, develop ]
@@ -25,6 +30,12 @@ concurrency:
 
 jobs:
   pyright:
+    # Pull-request runs of this advisory job can be switched off without editing
+    # this file: set the repository variable ADVISORY_PR_CHECKS to "off" and the
+    # job is skipped without taking a runner. Draft pull requests skip it too.
+    # Other events always run. It is not a required check, so a skip blocks no
+    # merge.
+    if: github.event_name != 'pull_request' || (vars.ADVISORY_PR_CHECKS != 'off' && !github.event.pull_request.draft)
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7

@@ -16,8 +16,11 @@ records the shape this code understands. A writable `StateDB.open()` rewrites
 an older on-disk database into the current shape and stamps the new version;
 if the on-disk version is *higher* than `SCHEMA_VERSION`, open refuses rather
 than guessing what a later release's shape means (`SchemaTooNewError`).
-Read-only opens apply no schema migration at all and are unaffected by this
-check.
+It also refuses a SQLite store whose `schema_meta` `lineage` row names another
+application (`ForeignLineageError`, ADR-0128 D7), reading that row on each
+writable connection before the connection's settings change the file; a store
+with no such row, or one naming lionagi, opens as before. Read-only opens
+apply no schema migration at all and are unaffected by these checks.
 
 Three kinds of schema change show up in the code:
 
@@ -225,7 +228,12 @@ its full lifecycle, and they're worth reading as one sequence:
 1. **`insert_session_control`** admits a new control row only if the target
    session is still `running` (see the admission-condition pattern above),
    and returns the new control's id, or `None` if the session had already
-   terminalized.
+   terminalized. Its operator callers also ask it to re-check the flow/play
+   delivery marker in the same statement: a run's teardown publishes
+   `flow_control_poller='stopped'` before it stops applying controls, so a
+   marker read moments earlier can already be stale by the time this write
+   runs. Without the re-check the control commits against a consumer that is
+   gone; with it the insert refuses the same way the terminal case does.
 2. **`mark_session_control_applying`** is how a consumer claims a pending row
    before attempting it: a compare-and-set that moves `result` from `NULL` to
    `applying[:<owner>]`, returning the exact claim string it wrote, or `None`

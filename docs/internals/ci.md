@@ -131,8 +131,9 @@ verification shell with mock HTTP responses. These checks do not publish images.
 
 ## Test lanes
 
-The required `test` matrix runs Python 3.10 and 3.14 on pull requests and the
-full 3.10-3.14 matrix on protected-branch pushes. Python 3.10 carries coverage.
+The required `test` matrix runs the full Python 3.10-3.14 set on pull requests
+and on protected-branch pushes; a manual run can ask for 3.10 and 3.14 only.
+Python 3.10 carries coverage on pushes and manual runs, never on pull requests.
 The required marker expression is:
 
 ```text
@@ -144,14 +145,18 @@ a catastrophic-failure ceiling of 25 because it is the critical path. Local
 commands retain the faster defaults of 3 and 1. Worker restarts remain disabled
 so a hard crash names the test that owned the worker.
 
-`performance` tests stay in the benchmark workflow. Tests marked `slow_timing`
-exercise real deadline behavior and must have at least 10x scheduling margin.
-There are no blanket test retries.
+`performance` tests run serially in `ci.yml`'s advisory `performance` job,
+outside the required matrix. Tests marked `slow_timing` exercise real deadline
+behavior and must have at least 10x scheduling margin. There are no blanket
+test retries.
 
 The separate `quarantine` job runs only `flaky_quarantine` tests on Python 3.12.
 It is `continue-on-error` and intentionally absent from `ci-gate`; its result is
-visible but cannot block a merge. `ci-gate` remains fail-closed for every
-existing hard gate, with Studio Docker as its sole path-filtered exception.
+visible but cannot block a merge. `performance` and `publish` are not among
+`ci-gate`'s needs either. `ci-gate` is fail-closed for every job it needs: each
+hard gate must succeed, and the five path-filtered gates (Studio Docker, minimal
+import, no eager heavies, lionrs and lion1) may skip only when the `changes` job
+succeeded and reported their inputs unchanged.
 
 ## Quarantine lifecycle
 

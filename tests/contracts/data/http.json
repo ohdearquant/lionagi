@@ -11282,6 +11282,16 @@
               }
             },
             {
+              "name": "include_recent_runs",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "boolean",
+                "default": false,
+                "title": "Include Recent Runs"
+              }
+            },
+            {
               "name": "project",
               "in": "query",
               "required": false,

@@ -25,7 +25,7 @@ from .._providers import add_common_cli_args
 from .._util import EXIT_CODE_BY_STATUS
 from ._checkpoint import FlowResumeError
 from .fanout import FanoutPlanError, _run_fanout
-from .flow import FlowPlanError, _resume_flow, _run_flow
+from .flow import FlowPlanError, _resume_flow, _run_flow, _validate_flow_invocation
 
 # ── flow-spec helpers ────────────────────────────────────────────────────────
 
@@ -822,8 +822,10 @@ def add_orchestrate_subparser(
     ctl_pause.add_argument(
         "id",
         help=(
-            "Running flow to pause, by session, invocation, play, or run id (full, or an "
-            "unambiguous prefix). The pause lands at the next op boundary, not mid-op."
+            "Running flow to pause, by session, invocation, play, or run id (full, an "
+            "unambiguous 8-character hex prefix, or an unambiguous run-id prefix "
+            "through the T after its date). "
+            "In-flight operations are not interrupted."
         ),
     )
 
@@ -835,8 +837,9 @@ def add_orchestrate_subparser(
     ctl_resume.add_argument(
         "id",
         help=(
-            "Paused flow to release, by session, invocation, play, or run id (full, or an "
-            "unambiguous prefix)."
+            "Paused flow to release, by session, invocation, play, or run id (full, an "
+            "unambiguous 8-character hex prefix, or an unambiguous run-id prefix "
+            "through the T after its date)."
         ),
     )
 
@@ -856,7 +859,8 @@ def add_orchestrate_subparser(
         "id",
         help=(
             "Running flow, playbook run, or agent leg to message, by session, "
-            "invocation, play, or run id (full, or an unambiguous prefix)."
+            "invocation, play, or run id (exact, an unambiguous 8-character hex prefix, "
+            "or an unambiguous run-id prefix through the T after its date)."
         ),
     )
     ctl_msg.add_argument(
@@ -1199,6 +1203,14 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             return 1
 
         if background:
+            if getattr(args, "invocation", None) is not None:
+                _unused, validation_rc = _run_orch_command(
+                    _validate_flow_invocation(args.invocation),
+                    verbose=args.verbose,
+                    extra_handlers=((FlowPlanError, EXIT_CODE_BY_STATUS["failed"]),),
+                )
+                if validation_rc:
+                    return validation_rc
             import os as _os
             import subprocess
             import uuid as _uuid
@@ -1219,7 +1231,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                     env=bg_env,
                 )
             hint(f"Flow running in background (PID {proc.pid})")
-            hint(f"Session: {bg_session_id[:16]}  →  li monitor {bg_session_id[:16]}")
+            hint(f"Session: {bg_session_id}  →  li monitor {bg_session_id[:8]}")
             hint(f"Output: {log_path}")
             return 0
 
