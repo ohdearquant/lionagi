@@ -178,7 +178,9 @@ project those rows ran under. To keep the project, name it in those members.
 - The Studio trust texts now say what a daemon without `LIONAGI_STUDIO_AUTH_TOKEN` can actually
   promise about an Operator decision: any process that can reach the listener, other local accounts
   included, can allow or deny a pending proposal, so the permission prompt is a workflow safeguard
-  rather than isolation from local programs. Behaviour is unchanged.
+  rather than isolation from local programs. In open mode, do not auto-allow a tool that can make
+  HTTP requests to the daemon: a run holding such a tool can approve its own proposals. Behaviour
+  is unchanged.
 
 ## [0.35.5] - 2026-10-11
 
