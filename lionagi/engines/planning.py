@@ -45,16 +45,85 @@ def _synthesis_instruction(prompt: str, outputs: list[str]) -> str:
 
 
 def _inherit_worker_providers(branch: Branch) -> None:
-    """Carry managed worker context providers with independent registry accounting."""
+    """Carry a role template's settings onto the managed clone that will run its task.
+
+    ``Branch.clone`` keeps the template's system prompt but resets the capability
+    grant and the branch name, and it does not copy context providers. A clone
+    would therefore drop the template's spawn grant, so a fenced
+    ``spawn_request`` an agent emits is never extracted, and its role name, so
+    khive injection recalls and tags as the generic ``agent``. A clone that has
+    no providers of its own takes the template's registry at the template's
+    budget, under its own entry accounting.
+    """
     source = branch.metadata.get("clone_from")
-    if source is None or source._context_providers is None:
+    if source is None:
         return
+    if branch._capabilities is None and source._capabilities is not None:
+        branch._capabilities = source._capabilities
+    if branch.name is None and source.name:
+        branch.name = source.name
     registry = source._context_providers
+    if registry is None or not registry or branch._context_providers is not None:
+        return
     branch.providers.budget = registry.budget
     for entry in registry._entries:
         branch.providers.register(
             entry.provider, priority=entry.priority, max_tokens=entry.max_tokens, name=entry.name
         )
+
+
+def _emitter_role_template(roles: dict[str, Branch], session: Any, emitter: Any) -> Branch | None:
+    """Resolve the role template a spawn emitter ran from, for an unassigned spawn.
+
+    The planned clone carries its role name, and the clone walks back to its
+    template through ``clone_from``; either name resolves to the template, which
+    carries the engine's worker settings and no task conversation.
+    """
+    branch_id = getattr(emitter, "branch_id", None)
+    if not branch_id:
+        return None
+    try:
+        emitter_branch = session.branches[branch_id]
+    except Exception:
+        return None
+    name = getattr(emitter_branch, "name", None)
+    if name in roles:
+        return roles[name]
+    source = emitter_branch.metadata.get("clone_from")
+    name = getattr(source, "name", None)
+    return roles.get(name)
+
+
+def _role_template_node_builder(roles: dict[str, Branch], session: Any) -> Any:
+    """Wrap ``role_node_builder`` so an unassigned spawn keeps the emitter's settings.
+
+    A request with no assignee reaches the executor with no branch of its own and
+    no role to route to, so the executor falls back to the bare default branch
+    and the spawn loses every engine setting. Naming the emitter's role template
+    as the node's branch source makes the executor clone that template instead,
+    exactly as a role-targeted spawn already does. That clone carries the
+    engine's worker settings and none of the emitter's conversation, which is
+    what an independent spawn must not inherit (``Branch.clone`` copies the
+    emitter's messages).
+    """
+    builder = role_node_builder(roles)
+
+    def build(req: Any, emitter: Any) -> Any:
+        node = builder(req, emitter)
+        # An independent request with no assignee has no role to route to, so the
+        # executor would otherwise fall back to the bare default branch — the one
+        # spawn kind that loses the engine's worker settings. Name the emitter's
+        # role template as the node's own branch source instead. Only for
+        # independent requests: a dependent unassigned spawn stays on the
+        # emitter's branch, whose conversation is its context.
+        if node.branch_id is None and getattr(req, "assignee", None) is None:
+            if getattr(req, "independent", False):
+                template = _emitter_role_template(roles, session, emitter)
+                if template is not None:
+                    node.branch_id = template.id
+        return node
+
+    return build
 
 
 class PlanningEngine(Engine):
@@ -110,7 +179,10 @@ class PlanningEngine(Engine):
         assignees = {ta.assignee for ta in assignments}
         roles = {}
         for assignee in assignees:
-            branch = await run.make_agent(assignee, name=assignee)
+            # Exempt: a role template is scaffolding the plan already fixed, not a
+            # discretionary agent, so a max_agents at or below the assignee count
+            # must not abort the run before any task executes.
+            branch = await run.make_agent(assignee, name=assignee, exempt=True)
             if self.reactive:
                 grant_spawn(branch, assignees=assignees)
             roles[assignee] = branch
@@ -123,7 +195,9 @@ class PlanningEngine(Engine):
             graph,
             reactive=self.reactive,
             spawn_type=SpawnRequest if self.reactive else None,
-            node_builder=role_node_builder(roles) if self.reactive else None,
+            node_builder=(
+                _role_template_node_builder(roles, run.session) if self.reactive else None
+            ),
             max_concurrent=max(len(assignments), 1),
             on_branch_created=_inherit_worker_providers,
             verbose=False,

@@ -108,11 +108,16 @@ Worker roles use the shared engine agent builder, so `model`, `effort`, `yolo`,
 apply to workers as well as the planning and synthesis stages. Engine settings
 override role-profile defaults; injection receives the run's namespace unless
 the caller pins one. Planned and reactively spawned worker clones retain their
-template's context providers, with separate registry budgets and statistics.
+template's context providers, with separate registry budgets and statistics,
+along with their role name and `SpawnRequest` grant, so a clone still records
+recalls and writebacks under its role and still grows the live DAG.
 
-Each distinct worker role template counts toward `max_agents` and triggers
-`on_branch_created`; task clones do not consume another agent slot. Synthesis
-keeps its existing budget exemption. `agent_env` and
+Each distinct worker role template triggers `on_branch_created`; task clones do
+not. Role templates are exempt from `max_agents`, like synthesis: they are the
+scaffolding the plan already fixed, so a budget at or below the assignee count
+still runs every planned task. A reactively spawned node with no assignee runs
+on a clone of its emitter's role template, so it carries the engine's worker
+settings without inheriting the emitter's conversation. `agent_env` and
 `contain_account_integrations=True` remain unsupported: managed-DAG worker
 clones do not yet have verified environment/containment provenance.
 

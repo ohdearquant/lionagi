@@ -120,8 +120,9 @@ async def test_run_wires_plan_build_execute_synth(monkeypatch):
         captured["planned"] = prompt
         return assignments
 
-    async def fake_make(role, *, name):
+    async def fake_make(role, *, name, exempt=False):
         captured["worker"] = SimpleNamespace(name=name)
+        captured["exempt"] = exempt
         assert role == "researcher"
         return captured["worker"]
 
@@ -132,7 +133,8 @@ async def test_run_wires_plan_build_execute_synth(monkeypatch):
         assert roles == {"researcher": captured["worker"]}
         return (graph, ["n1"])
 
-    def fake_role_node_builder(roles):
+    def fake_role_template_node_builder(roles, session):
+        assert set(roles) == {"researcher"}
         return "NODE_BUILDER"
 
     async def fake_run_dag(graph, **kw):
@@ -149,12 +151,15 @@ async def test_run_wires_plan_build_execute_synth(monkeypatch):
     run.make_agent = fake_make
     monkeypatch.setattr("lionagi.engines.planning.grant_spawn", fake_grant_spawn)
     monkeypatch.setattr("lionagi.engines.planning.build_dag_graph", fake_build_dag_graph)
-    monkeypatch.setattr("lionagi.engines.planning.role_node_builder", fake_role_node_builder)
+    monkeypatch.setattr(
+        "lionagi.engines.planning._role_template_node_builder", fake_role_template_node_builder
+    )
 
     out = await eng._run(run, "do the work")
     assert out == "FINAL"
     assert captured["planned"] == "do the work"
     assert captured["spawners"] == (captured["worker"], {"researcher"})
+    assert captured["exempt"] is True  # role templates are exempt from the agent budget
     assert captured["run_dag"]["graph"] is graph
     assert captured["run_dag"]["reactive"] is True
     assert captured["run_dag"]["spawn_type"] is SpawnRequest
