@@ -48,7 +48,7 @@ _ALIAS_ACTION_KINDS: dict[str, str] = {"playbook": "play"}
 # action_model must be a safe model-spec token: alphanumerics, dots, slashes,
 # colons, hyphens and underscores only.  Values starting with '-' are rejected
 # unconditionally to block flag injection into the spawned li process (CWE-88).
-_MODEL_RE = re.compile(r"^[a-zA-Z0-9_./:@-]+$")
+_MODEL_RE = re.compile(r"^[a-zA-Z0-9_./:@-]+\Z")
 
 # Identifier fields (action_agent, action_project, action_playbook) share the
 # same character set as model specs: they name agents, projects, and playbooks

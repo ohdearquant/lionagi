@@ -40,9 +40,11 @@ Several providers cache a request by its prefix: a later request that starts wit
 reads that part from cache at a fraction of the input price. Anthropic's Messages API, read on
 2026-10-16, works this way. A request places at most four cache marks; a hit looks back at most 20
 content positions from a mark; a write costs 1.25 times the input price for a five-minute entry and
-2 times for a one-hour entry, a read 0.1 times, and a hit renews the entry's lifetime; one-hour marks
+2 times for a one-hour entry, a read 0.1 times for most models (0.05 times for Opus 5.5 and Sonnet
+5.5, 0.025 times for Fable 5.1 and Mythos 5.1), and a hit renews the entry's lifetime; one-hour marks
 must come before five-minute marks; a mark whose prefix is shorter than the model's minimum
-cacheable length is not placed.
+cacheable length (512 tokens on the current models, up to 4,096 on older ones) is not cached: the
+request is processed without caching and without an error.
 
 Two records use "run" for different things, so this record names both senses. ADR-0126 D3 defines a
 **run**, for this router, as the lifetime of one Branch conversation identity; ADR-0123 D1 defines a
@@ -267,9 +269,10 @@ compiler does not emit the native system field. For Anthropic:
 - when a turn adds more than the provider's lookback, one five-minute mark at that recorded position,
   on the previous request's last block, so the next read still finds the previous write.
 
-At most four marks; one-hour marks precede five-minute marks; a mark whose prefix is shorter than the
-model's minimum cacheable length is not placed. The lifetimes are settings of the model
-configuration, with these as defaults.
+At most four marks; one-hour marks precede five-minute marks. A mark is placed whatever the length of
+its prefix: one shorter than the model's minimum cacheable length is not cached and adds no cost,
+and the adapter holds no exact token count to compare with the minimum. The lifetimes are settings of
+the model configuration, with these as defaults.
 
 The option is `prompt_caching` (bool, default False), a field of the endpoint configuration. The
 adapter reads it from that configuration before the request-option filter runs, so a filtered
@@ -322,8 +325,9 @@ probe that drives the same rounds against the code before this record; they are 
 
 - Conversations on prefix-caching providers pay the write price for the stable and conversation
   segments once per entry lifetime (1.25 times input for a five-minute entry, 2 times for a one-hour
-  entry), the write price for each turn's new content once, and the read price (0.1 times input) for
-  the rest. A conversation that changes its tool set mid-conversation pays a new write, visibly.
+  entry), the write price for each turn's new content once, and the read price (0.1 times input, less
+  on the newest models) for the rest. A conversation that changes its tool set mid-conversation pays a
+  new write, visibly.
 - The compiled request for those providers changes shape: a system block holding the tool section,
   the conversation blocks after it, every response section inside the instruction that asks for it,
   context blocks kept for the conversation, and marks from the caching option. Every other provider
@@ -357,7 +361,9 @@ probe that drives the same rounds against the code before this record; they are 
 ## Notes
 
 - Provider facts are from Anthropic's prompt-caching and pricing documentation as read on
-  2026-10-16; other providers that cache by prefix declare their own marks and lifetimes.
+  2026-10-16; the per-model read prices and the minimum-length behaviour were corrected from the
+  same pages read on 2026-10-17; other providers that cache by prefix declare their own marks and
+  lifetimes.
 - The measurements in Context were taken at commit 54176709 by the probe described there. They are a
   characterization of the code before this record, not a D7 acceptance test; the D7 tests are written
   to pass after the change.
