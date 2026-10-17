@@ -4,6 +4,19 @@ Non-obvious invariants, protocol contracts, and design rationale for
 `lionagi/studio/` that don't belong inline as long-form comments. Terse
 reference — not a narrative. Organized by module path.
 
+## lionagi/studio/_host.py
+
+**`normalize_host`** — the one reader of a host value's spelling: whitespace
+and one bracket pair removed, lowercased, and, when `ipaddress` parses what is
+left, printed in its compressed lowercase form with an IPv4-mapped address
+unwrapped to its IPv4 address. Every reader of `LIONAGI_STUDIO_HOST` compares
+values through it, so a bind written in brackets, in a non-canonical IPv6
+spelling or as an IPv4-mapped address names the same admitted `Host` as any
+other spelling of that address. Deliberately imports only `ipaddress`: the CLI
+imports this module and must not pull the web stack in with it. A value that is
+not an address is returned as the stripped lowercase name, and a blank one stays
+blank.
+
 ## lionagi/studio/app.py
 
 **Host-header validation (`_HOST_AUTHORITY_RE`/`validate_host_header`)** —
@@ -16,7 +29,10 @@ against DNS rebinding, where a malicious page points a browser at
 CORS/auth, reaches the daemon as if same-origin — registered outermost
 (added after CORSMiddleware, so it runs first under Starlette's LIFO
 middleware wrapping) so every request, including preflight OPTIONS, has its
-Host checked before CORS can answer.
+Host checked before CORS can answer. The grammar is unchanged by
+`normalize_host`: it still refuses a dotted IPv4 inside brackets and an
+authority carrying two ports, and the normalizer only says which address an
+authority the grammar admits names.
 
 **Middleware order** in `create_app()`: Host validation -> CORS ->
 Content-Type/CSRF check -> bearer-token gate -> route. A real preflight

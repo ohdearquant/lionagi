@@ -37,11 +37,13 @@ experience, use `li studio --dev`.
 | `/mission`   | Attention, active work, recent history, pulse, and spend   |
 | `/library`   | Agents, playbooks, skills, plugins, teams, and MCP servers |
 | `/schedules` | Calendar, schedule editing, and execution history          |
-| `/designer`  | Visual orchestration designer                              |
 | `/system`    | Health, maintenance, definitions, engines, and engine runs |
 
-Legacy deep links such as `/runs/:id`, `/playbooks/:name`, `/teams`, and
-`/admin/maintenance` remain routed to their current space.
+Legacy deep links such as `/designer` (redirects to the Library with
+`tab=workflow`, whose Workflow tab and items are hidden), `/runs/:id`,
+`/playbooks/:name`, `/teams`, and `/admin/maintenance` remain routed to their
+current space. For the hidden kinds, see the
+[Library availability note](../../../docs/reference/studio-surfaces.md#currently-unavailable-library-kinds).
 
 ## Recorded usage
 
@@ -94,4 +96,4 @@ The Playwright suite builds the SPA and launches an isolated seeded daemon; it
 does not use your normal `~/.lionagi/state.db`.
 
 For the backend, desktop shell, and product-level instructions, see the
-[Studio README](../README.md) and [Studio guide](../../../docs/guides/studio.md).
+[Studio README](../README.md) and [Studio getting-started guide](../../../docs/guides/studio-getting-started.md).
