@@ -405,6 +405,10 @@
          <lastmod>2026-10-17</lastmod>
     </url>
     <url>
+         <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0127-prompt-cache-placement-for-prefix-caching-providers/</loc>
+         <lastmod>2026-10-17</lastmod>
+    </url>
+    <url>
          <loc>https://ohdearquant.github.io/lionagi/adr/ADR-0128-writing-run-state-into-a-store-another-schema-lineage-manages/</loc>
          <lastmod>2026-10-17</lastmod>
     </url>
