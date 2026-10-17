@@ -6,12 +6,12 @@
 from __future__ import annotations
 
 import logging
-from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from lionagi.ln.types import Enum
 from lionagi.protocols.action.tool import Tool
 
 from ..base import LionTool

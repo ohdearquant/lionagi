@@ -5,11 +5,11 @@
 
 from __future__ import annotations
 
-from enum import Enum
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
+from lionagi.ln.types import Enum
 from lionagi.protocols.action.tool import Tool
 from lionagi.service.token_calculator import TokenCalculator
 
