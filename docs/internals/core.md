@@ -166,32 +166,33 @@ breaking field removal/rename; adding a field (with a default) is non-breaking.
   caller that ignores validity still gets a sane aggregate, but a billing
   consumer that checks `is_valid` can distinguish a genuine full-cache hit
   from a provider sending garbage.
-- Cache-write lifetimes are reported only when the lifetimes cover the whole
-  `cache_write_tokens` total they sit beside; otherwise both read 0. A split
-  that does not cover the total because the provider did not split (part or
-  all of) its writes is not a fault: `usage_valid` stays as it was. A split the
-  provider did claim that cannot be a count, or that does not sum to the total
-  of the same report, is a fault: both lifetimes read 0 and `usage_valid` is
-  False. A single unsplit Anthropic report already reads this way; the same
-  rule is applied per message and again to the summed totals.
-- `_extract_cache_write_ttl` reads an Anthropic-style report's cache-write
-  lifetime split (`cache_creation.ephemeral_5m_input_tokens` /
-  `ephemeral_1h_input_tokens`) against the `cache_creation_input_tokens` total
-  it splits, under the rule above: each part must be a non-negative integer (an
-  integral float such as `200.0` states 200 tokens) and the parts must sum
-  exactly to that total, or both lifetimes are 0 and `certified` is False. A
-  report that carries no split at all -- no `cache_creation`, a non-mapping
-  one, any non-Anthropic shape -- makes no claim to check, so it stays valid
-  (`certified` True). `_collect_branch_usage` and `_collect_multi_branch_usage`
-  apply the same rule again to the summed parts: if a message (or branch)
-  reports its writes unsplit, the summed lifetimes no longer cover the summed
-  total, so both read 0 and validity is unchanged. A claude_code flat split is
-  read against the whole-tree `modelUsage` total only when the two cache-write
-  totals are equal (so no other model wrote); when the map's total is larger
-  the flat split covers part of the tree only, both lifetimes read 0, and the
-  unsplit remainder leaves validity unchanged. When the totals are equal but
-  the flat split does not sum to that total, the split cannot be certified.
-  `cache_write_tokens` stays the total either way.
+- **Cache-write lifetimes.** A provider may report its cache writes split by
+  lifetime, under `usage.cache_creation` (`ephemeral_5m_input_tokens` /
+  `ephemeral_1h_input_tokens`), beside the `cache_creation_input_tokens` total
+  those lifetimes split. One predicate reads that split for every consumer:
+  `service/accounts/_pricing.py::cache_write_split`, used by
+  `_pricing.price_usage`, by `session/signal.py`'s `_collect_branch_usage`
+  (and its `_collect_multi_branch_usage`), and by `operations/run/run.py`'s
+  `_accumulate_result_meta`. A split is valid when `cache_creation` is a
+  mapping whose keys are a subset of the two lifetime keys, each present value
+  is a non-negative int (not a bool, not a float -- including an integral one
+  -- not a str, not None), an absent lifetime reads 0, and the two sum exactly
+  to the report's `cache_creation_input_tokens`. No reader raises on a
+  malformed split; every malformed shape is "not a valid split".
+
+  Within one report, a split that is present but not valid is a fault: both
+  lifetimes read 0 and `usage_valid` is False. An empty split map against a
+  non-zero total is such a fault. A report with no `cache_creation` at all
+  claims no split, is not a fault, and reports both lifetimes as 0. Across
+  messages, branches, and the flat-versus-whole-tree comparison, lifetimes
+  that cover only part of the total because some reports did not split are not
+  a fault: they read 0 and `usage_valid` is unchanged from its per-report
+  conjunction. A claude_code flat split is always checked against the flat
+  total it sits beside; its lifetimes are attributed to the whole-tree total
+  only when the flat and `modelUsage` cache-write totals are equal (so no
+  other model wrote); when the map's total is larger the flat split covers
+  part of the tree only, both lifetimes read 0, and the unsplit remainder
+  leaves validity unchanged. `cache_write_tokens` stays the total either way.
 - `_sum_model_usage` sums per-model whole-tree token counts from a
   claude_code CLI `modelUsage` map; unlike the flat top-level `usage` field
   (top-level-loop only), each entry here already includes descendant

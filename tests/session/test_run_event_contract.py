@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from lionagi.hooks.bus import HookBus, HookPoint, HookSignal
+from lionagi.service.accounts._pricing import CURRENT_REVISION, price_usage
 from lionagi.session.signal import (
     SIGNAL_SCHEMA_VERSION,
     NodeCompleted,
@@ -774,21 +775,37 @@ def test_collect_branch_usage_splits_anthropic_cache_writes_by_lifetime():
 
 def test_cache_write_lifetimes_read_zero_without_a_split():
     """No split is claimed, so nothing can be contradicted: an Anthropic-shaped
-    report that omits ``cache_creation``, an OpenAI-shaped one, and any other
-    shape -- even one carrying a ``cache_creation`` mapping -- read zero for
+    report that omits ``cache_creation`` and an OpenAI-shaped one read zero for
     both lifetimes and leave the report valid."""
     usage = _collect_branch_usage(
         _branch_with_usage_dicts(
             {"input_tokens": 80, "cache_creation_input_tokens": 25},
             {"prompt_tokens": 50, "prompt_tokens_details": {"cached_tokens": 10}},
-            {"input_tokens": 1, "cache_creation": {"ephemeral_1h_input_tokens": 300}},
-            {"input_tokens": 1, "cache_creation": "not a mapping"},
         )
     )
     assert usage["cache_write_tokens"] == 25
     assert usage["cache_write_5m_tokens"] == 0
     assert usage["cache_write_1h_tokens"] == 0
     assert usage["usage_valid"] is True
+
+
+@pytest.mark.parametrize(
+    "report",
+    [
+        pytest.param({"input_tokens": 1, "cache_creation": {"ephemeral_1h_input_tokens": 300}}),
+        pytest.param({"input_tokens": 1, "cache_creation": "not a mapping"}),
+    ],
+)
+def test_a_present_cache_creation_that_is_not_a_valid_split_is_a_fault(report):
+    """A report that carries a ``cache_creation`` value has claimed a split;
+    one that is not a valid split against its own total is a fault, not a
+    claim to ignore -- the same answer ``price_usage`` gives for the same
+    report."""
+    usage = _collect_branch_usage(_branch_with_usage_dicts(report))
+    assert usage["cache_write_5m_tokens"] == 0
+    assert usage["cache_write_1h_tokens"] == 0
+    assert usage["usage_valid"] is False
+    assert price_usage(CURRENT_REVISION, frozenset({"5m", "1h"}), "claude-opus-5-5", report) is None
 
 
 def test_anthropic_split_that_does_not_sum_to_its_total_is_dropped_and_flagged():
@@ -835,22 +852,128 @@ def test_anthropic_split_with_a_non_count_part_is_dropped_and_flagged():
         assert usage["usage_valid"] is False
 
 
-def test_anthropic_split_keeps_an_integral_float_part():
-    """A provider reporting 200.0 states 200 tokens: an integral float is read
-    as that integer, a fractional one is not a count at all."""
+def test_anthropic_split_with_an_integral_float_part_is_not_a_count():
+    """A count is a non-negative integer. An integral float such as 200.0 is
+    not one, so a split carrying it is a claim that cannot be certified:
+    both lifetimes read 0 and the report is not valid -- the same answer
+    ``price_usage`` gives for the same report."""
+    report = {
+        "input_tokens": 3,
+        "output_tokens": 5,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 1234,
+        "cache_creation": {"ephemeral_5m_input_tokens": 1000.0, "ephemeral_1h_input_tokens": 234},
+    }
+    usage = _collect_branch_usage(_branch_with_usage_dicts(report))
+    assert usage["cache_write_tokens"] == 1234
+    assert usage["cache_write_5m_tokens"] == 0
+    assert usage["cache_write_1h_tokens"] == 0
+    assert usage["usage_valid"] is False
+    assert price_usage(CURRENT_REVISION, frozenset({"5m", "1h"}), "claude-opus-5-5", report) is None
+
+
+def test_anthropic_split_of_integers_agrees_with_price_usage():
+    """One rule reads a report's split for every consumer: the identical
+    integer split that ``RunEnd`` reports also prices, with the same
+    lifetimes."""
+    report = {
+        "input_tokens": 3,
+        "output_tokens": 5,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 1234,
+        "cache_creation": {"ephemeral_5m_input_tokens": 1000, "ephemeral_1h_input_tokens": 234},
+    }
+    usage = _collect_branch_usage(_branch_with_usage_dicts(report))
+    assert (
+        usage["cache_write_5m_tokens"],
+        usage["cache_write_1h_tokens"],
+        usage["usage_valid"],
+    ) == (1000, 234, True)
+    priced = price_usage(CURRENT_REVISION, frozenset({"5m", "1h"}), "claude-opus-5-5", report)
+    assert priced is not None
+    assert (priced.cache_write_5m_tokens, priced.cache_write_1h_tokens) == (1000, 234)
+
+
+@pytest.mark.parametrize(
+    "creation",
+    [
+        pytest.param({"ephemeral_5m_input_tokens": None, "ephemeral_1h_input_tokens": 50}),
+        pytest.param({"ephemeral_5m_input_tokens": 50, "ephemeral_1h_input_tokens": None}),
+        pytest.param({"ephemeral_5m_input_tokens": {"nested": 50}}),
+        pytest.param({"ephemeral_5m_input_tokens": None}),
+        pytest.param({"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 50, "x": 0}),
+    ],
+)
+def test_a_malformed_anthropic_split_reads_zero_without_raising(creation):
+    """Every malformed split shape -- a non-count value before or after a
+    numeric one, a nested mapping, None, a key that is not a lifetime -- is
+    not a valid split: both lifetimes read 0, the report is not valid, and
+    reading it never raises."""
     usage = _collect_branch_usage(
         _branch_with_usage_dicts(
             {
                 "input_tokens": 1,
-                "cache_creation_input_tokens": 200,
-                "cache_creation": {"ephemeral_5m_input_tokens": 200.0},
+                "cache_creation_input_tokens": 50,
+                "cache_creation": creation,
             }
         )
     )
-    assert usage["cache_write_tokens"] == 200
-    assert usage["cache_write_5m_tokens"] == 200
+    assert usage["cache_write_tokens"] == 50
+    assert usage["cache_write_5m_tokens"] == 0
     assert usage["cache_write_1h_tokens"] == 0
-    assert usage["usage_valid"] is True
+    assert usage["usage_valid"] is False
+
+
+def test_anthropic_split_with_an_unknown_lifetime_key_is_not_a_valid_split():
+    """A split whose keys are not a subset of the two lifetimes is not one a
+    reader can certify, whatever its two known parts say."""
+    usage = _collect_branch_usage(
+        _branch_with_usage_dicts(
+            {
+                "input_tokens": 1,
+                "cache_creation_input_tokens": 50,
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": 50,
+                    "ephemeral_24h_input_tokens": 0,
+                },
+            }
+        )
+    )
+    assert usage["cache_write_tokens"] == 50
+    assert usage["cache_write_5m_tokens"] == 0
+    assert usage["cache_write_1h_tokens"] == 0
+    assert usage["usage_valid"] is False
+
+
+def test_anthropic_empty_split_map_is_a_fault_against_a_non_zero_total():
+    """A present but empty split map says nothing can be attributed to either
+    lifetime while the report claims writes happened, so it is a fault."""
+    usage = _collect_branch_usage(
+        _branch_with_usage_dicts(
+            {
+                "input_tokens": 1,
+                "cache_creation_input_tokens": 5,
+                "cache_creation": {},
+            }
+        )
+    )
+    assert usage["cache_write_tokens"] == 5
+    assert usage["cache_write_5m_tokens"] == 0
+    assert usage["cache_write_1h_tokens"] == 0
+    assert usage["usage_valid"] is False
+
+
+def test_anthropic_empty_split_map_with_no_total_is_a_fault():
+    """A split map is present, so the provider did claim a split; with no
+    cache-write total to check it against it cannot be certified, and reading
+    it must not raise."""
+    usage = _collect_branch_usage(
+        _branch_with_usage_dicts({"cache_read_input_tokens": 5, "cache_creation": {}})
+    )
+    assert usage["cache_write_tokens"] == 0
+    assert usage["cache_write_5m_tokens"] == 0
+    assert usage["cache_write_1h_tokens"] == 0
+    assert usage["usage_valid"] is False
 
 
 def _model_usage_response(flat_usage: dict, cache_creation_input_tokens: int):
@@ -927,6 +1050,20 @@ def test_flat_split_beside_a_larger_model_usage_reads_zero_and_stays_valid():
     assert usage["cache_write_5m_tokens"] == 0
     assert usage["cache_write_1h_tokens"] == 0
     assert usage["usage_valid"] is True
+
+
+def test_flat_split_is_checked_against_its_own_total_beside_a_larger_model_usage():
+    """The flat split is read against the flat total whatever the whole-tree
+    total is. A flat split that does not sum to its own total is a claim that
+    cannot be certified, so the report is not valid even though the map's
+    total is larger and its own lifetimes are not attributed."""
+    usage = _collect_branch_usage(
+        _branch_with_model_usage(_model_usage_response(_flat_split_usage(1234, 5000), 2000))
+    )
+    assert usage["cache_write_tokens"] == 2000
+    assert usage["cache_write_5m_tokens"] == 0
+    assert usage["cache_write_1h_tokens"] == 0
+    assert usage["usage_valid"] is False
 
 
 def test_flat_split_that_does_not_sum_to_the_matching_total_is_flagged():
@@ -1058,7 +1195,11 @@ def test_anthropic_unsplit_negative_cache_write_total_reads_zero_and_is_flagged(
     assert usage["usage_valid"] is False
 
 
-def test_run_end_carries_cache_write_lifetimes_across_branches():
+def test_multi_branch_usage_sums_cache_write_lifetimes_a_single_run_end_does_not():
+    """The multi-branch aggregate sums each branch's lifetimes, so two branches
+    splitting different lifetimes keep both. No multi-branch path builds a
+    ``RunEnd``: ``build_run_end`` reads one branch, so a ``RunEnd`` built from
+    the first branch carries only that branch's lifetime."""
     first = _branch_with_usage_dicts(
         {
             "input_tokens": 1,

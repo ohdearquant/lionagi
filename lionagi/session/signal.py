@@ -11,6 +11,7 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from ..protocols.generic.element import Element
+from ..service.accounts._pricing import cache_write_split
 
 __all__ = (
     "Signal",
@@ -59,7 +60,25 @@ class RunStart(Signal):
 
 
 class RunEnd(Signal):
-    """Run lifecycle: completed. total_cost_usd is None (unknown) unless a provider actually reports a dollar cost — never coerced to 0.0 (free). input_tokens is uncached prompt tokens in both provider conventions; cached_tokens/cache_write_tokens carry the billing dimensions that convention otherwise drops or folds in. cache_write_5m_tokens/cache_write_1h_tokens split cache_write_tokens by the lifetime Anthropic billed each write at (its ``usage.cache_creation``), and are reported only when the lifetimes cover the whole cache_write_tokens total they sit beside; otherwise both read 0. A split that does not cover the total because the provider did not split (part or all of) its writes — including a claude_code flat split short of the whole-tree modelUsage total, or a branch that mixed split and unsplit messages — is not a fault: usage_valid stays as it was. A split the provider did claim that cannot be a count (a part must be a non-negative integer; an integral float such as 200.0 states 200 tokens), or that does not sum to the total of the same report, is a fault: both lifetimes read 0 and usage_valid is False. usage_valid is False when a provider usage report violated a token-count invariant (e.g. cached_tokens > prompt_tokens) — the numeric fields are still a safe clamped shape, but a billing consumer needing to distinguish a real full-cache hit from a provider bug must check this flag."""
+    """Run lifecycle: completed.
+
+    total_cost_usd is None (unknown) unless a provider actually reports a
+    dollar cost — never coerced to 0.0 (free). input_tokens is uncached prompt
+    tokens in both provider conventions; cached_tokens/cache_write_tokens
+    carry the billing dimensions that convention otherwise drops or folds in.
+    cache_write_5m_tokens/cache_write_1h_tokens split cache_write_tokens by the
+    lifetime Anthropic billed each write at (its ``usage.cache_creation``), and
+    are reported only when the lifetimes cover the whole cache_write_tokens
+    total they sit beside; otherwise both read 0. The rule for reading a
+    report's split, and which malformed or partial splits are a fault, is
+    stated once as "Cache-write lifetimes" in docs/internals/core.md
+    (``session/``).
+
+    usage_valid is False when a provider usage report violated a token-count
+    invariant (e.g. cached_tokens > prompt_tokens) — the numeric fields are
+    still a safe clamped shape, but a billing consumer needing to distinguish a
+    real full-cache hit from a provider bug must check this flag.
+    """
 
     input_tokens: int = 0
     output_tokens: int = 0
@@ -310,57 +329,6 @@ def _extract_usage_dims(usage: dict[str, Any]) -> tuple[int, int, int, int, bool
     return prompt_tokens - cached, output_tokens, cached, 0, is_valid
 
 
-def _extract_cache_write_ttl(usage: dict[str, Any], total: int) -> tuple[int, int, bool]:
-    """Split a usage dict's cache writes by lifetime as (five-minute, one-hour, certified).
-
-    Anthropic reports the split under ``usage["cache_creation"]``, beside the
-    ``cache_creation_input_tokens`` *total* the caller passes in. The rule for
-    reading them (docs/internals/core.md, session/signal.py):
-
-        The lifetime fields are reported only when the lifetimes cover the
-        whole ``cache_write_tokens`` total they sit beside; otherwise both
-        read 0. A split that does not cover the total because the provider did
-        not split (part or all of) its writes is not a fault: ``usage_valid``
-        stays as it was. A split the provider did claim that cannot be a
-        count, or that does not sum to the total of the same report, is a
-        fault: both lifetimes read 0 and ``usage_valid`` is False.
-
-    So the split is read only from the Anthropic shape: any other shape, a
-    missing or non-mapping ``cache_creation``, or a report that simply does
-    not split its writes reads zero for both lifetimes and certifies nothing
-    (``certified`` is True -- the provider made no claim to check, and
-    ``cache_write_tokens`` keeps the total either way).
-
-    A part that cannot be a token count -- a negative, a bool, a
-    numeric-looking string, an explicit None, a fractional float -- or parts
-    that do not sum exactly to *total* is a claim that cannot be priced: both
-    lifetimes read zero and ``certified`` is False, so the caller marks the
-    whole report invalid rather than passing off a partial split as exact. An
-    integral float such as ``200.0`` states 200 tokens and is read as that.
-    """
-    if not _anthropic_usage_shape(usage):
-        return 0, 0, True
-    creation = usage.get("cache_creation")
-    if not isinstance(creation, dict):
-        return 0, 0, True
-    # A lifetime the response does not mention had no writes: absent reads as
-    # zero. A lifetime it does mention has to be a count.
-    five_min = _ttl_part(creation, "ephemeral_5m_input_tokens")
-    one_hour = _ttl_part(creation, "ephemeral_1h_input_tokens")
-    if five_min is None or one_hour is None or five_min + one_hour != total:
-        return 0, 0, False
-    return five_min, one_hour, True
-
-
-def _ttl_part(creation: dict[str, Any], key: str) -> int | None:
-    """One lifetime's share of a cache-write split: 0 when the response does
-    not mention it, its count when it does, None when what it mentions cannot
-    be a token count."""
-    if key not in creation:
-        return 0
-    return _as_nonneg_int(creation.get(key))
-
-
 _MODEL_USAGE_ENTRY_KEYS = frozenset(
     {"inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"}
 )
@@ -450,20 +418,25 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
         if not has_valid_model_usage:
             m_in, m_out, m_cached, m_cache_write, m_valid = _extract_usage_dims(usage)
             usage_valid = usage_valid and m_valid
-            m_write_5m, m_write_1h, split_certified = _extract_cache_write_ttl(usage, m_cache_write)
-            usage_valid = usage_valid and split_certified
-            cache_write_5m_tokens += m_write_5m
-            cache_write_1h_tokens += m_write_1h
-        elif _as_nonneg_int(usage.get("cache_creation_input_tokens")) == m_cache_write:
+            flat_split = cache_write_split(usage)
+            usage_valid = usage_valid and flat_split is not None
+            if flat_split is not None:
+                cache_write_5m_tokens += flat_split[0]
+                cache_write_1h_tokens += flat_split[1]
+        else:
             # The map's totals are the whole tree's (it sums non-negative
             # per-model counts, including descendant subagent spend); the flat
-            # dict describes the top-level loop. Equal cache-write totals mean
-            # no other model wrote, so the flat split covers the whole tree and
-            # is read against that total, its certification folded in below.
-            m_write_5m, m_write_1h, split_certified = _extract_cache_write_ttl(usage, m_cache_write)
-            usage_valid = usage_valid and split_certified
-            cache_write_5m_tokens += m_write_5m
-            cache_write_1h_tokens += m_write_1h
+            # dict describes the top-level loop. The flat split is always
+            # checked against the flat total it sits beside; its lifetimes are
+            # attributed only when the two cache-write totals are equal, so no
+            # other model wrote and the split covers the whole tree.
+            flat_split = cache_write_split(usage)
+            usage_valid = usage_valid and flat_split is not None
+            if flat_split is not None and (
+                _as_nonneg_int(usage.get("cache_creation_input_tokens")) == m_cache_write
+            ):
+                cache_write_5m_tokens += flat_split[0]
+                cache_write_1h_tokens += flat_split[1]
         input_tokens += m_in
         output_tokens += m_out
         cached_tokens += m_cached

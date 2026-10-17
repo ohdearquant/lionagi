@@ -27,10 +27,12 @@ from ._types import (
 )
 
 __all__ = (
+    "CACHE_WRITE_LIFETIMES",
     "CURRENT_REVISION",
     "ModelPrice",
     "PriceRevision",
     "PriceTier",
+    "cache_write_split",
     "freeze_request",
     "price_usage",
     "quote_ceiling",
@@ -429,7 +431,38 @@ _USAGE_KEYS = frozenset(
         "output_tokens_details",
     }
 )
-_SPLIT_KEYS = frozenset({"ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens"})
+# The two cache-write lifetimes a provider report may split by, in the order
+# the split is returned as ``(five_minute, one_hour)``.
+CACHE_WRITE_LIFETIMES = ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")
+_SPLIT_KEYS = frozenset(CACHE_WRITE_LIFETIMES)
+
+
+def cache_write_split(usage: Mapping[str, Any]) -> tuple[int, int] | None:
+    """Read one provider report's cache-write lifetime split.
+
+    Returns ``(five_minute, one_hour)`` as ints, or None when the report
+    states a split that cannot be certified. Keys must be a subset of
+    ``CACHE_WRITE_LIFETIMES``, each present value must be a non-negative int,
+    an absent lifetime reads 0, and the two must sum exactly to the report's
+    ``cache_creation_input_tokens``. A report with no ``cache_creation`` at all
+    claims no split and returns ``(0, 0)``. See the cache-write lifetime rule
+    in docs/internals/core.md (``session/``) for the consumer-facing meaning.
+    """
+    total = usage.get("cache_creation_input_tokens")
+    split = usage.get("cache_creation")
+    if split is None:
+        return 0, 0
+    if not isinstance(split, Mapping) or not set(split) <= _SPLIT_KEYS:
+        return None
+    if not _is_count(total):
+        return None
+    five_minute = split.get(CACHE_WRITE_LIFETIMES[0], 0)
+    one_hour = split.get(CACHE_WRITE_LIFETIMES[1], 0)
+    if not (_is_count(five_minute) and _is_count(one_hour)):
+        return None
+    if five_minute + one_hour != total:
+        return None
+    return five_minute, one_hour
 
 
 def _cache_writes(usage: Mapping[str, Any], ttls: frozenset[str]) -> tuple[int, int] | None:
@@ -443,13 +476,7 @@ def _cache_writes(usage: Mapping[str, Any], ttls: frozenset[str]) -> tuple[int, 
     if not _is_count(total):
         return None
     if split is not None:
-        if not isinstance(split, Mapping) or not set(split) <= _SPLIT_KEYS:
-            return None
-        w5 = split.get("ephemeral_5m_input_tokens", 0)
-        w1 = split.get("ephemeral_1h_input_tokens", 0)
-        if not (_is_count(w5) and _is_count(w1)) or w5 + w1 != total:
-            return None
-        return w5, w1
+        return cache_write_split(usage)
     if total == 0:
         return 0, 0
     # No split: derivable only when the request asked for exactly one TTL.
