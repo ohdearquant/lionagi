@@ -1,0 +1,363 @@
+# ADR-0127: Prompt-cache placement for prefix-caching providers
+
+- **Status**: Proposed
+- **Kind**: Aspirational
+- **Implementation-status**: not-started
+- **Area**: messages-context
+- **Date**: 2026-10-16
+- **Relations**: amends ADR-0007 D1 (the tool definitions' lifetime), D2 steps 2, 4 and 5, and D4,
+  and ADR-0008 D4, for providers that accept a native system block and cache by prompt prefix, and
+  only while the prompt-caching option is on; depends on ADR-0018 D2 (Proposed), whose Branch lock
+  makes the conversation segment safe to build once, and on ADR-0027 D4, which gives the adapter the
+  native system field; changes one promise of ADR-0125 step 2 — context providers keep their gather
+  count and order and their source attribution, but first-turn context block delivery, that
+  promise's "today's behavior", is the one promise D4 changes, and only while the option is on, so
+  with the option off the promise holds; carries the cache placement ADR-0126 R3 assigns to this
+  record, whose reference is Claude Code's placement (lion1 ADR-0028 S10 and A1), a claim external
+  to this repository's ADR corpus and held here at `lion1/docs/adr/028-anthropic/`; read with
+  ADR-0125 step 2, whose request compiler inherits these rules
+
+**Instruction.** This record serves an instruction the project's maintainer gave on 2026-10-16
+(13:46 to 13:55 ET): "the problem with our own harness for too much stuff is the caching
+management, mainly"; the "system prompt and common front-loaded prompts cached, commonly 1 hour";
+and a run is one operation of many model calls, so the cache spans the run. The decisions carry
+it: a one-hour entry on the system text and the tool section, a five-minute mark at the end of the
+conversation segment and on the moving tail, cache writes accounted per lifetime (D6), and all of it
+off unless the caching option is on. The same instruction asked that a model kept under a
+per-request context ceiling for price reasons get context management from the library when work
+continues past that ceiling ("lionagi needs to do context management, similar to auto
+compaction"). This record departs from that part: the per-request input ceiling and the context
+management past it are deferred to their own record, not yet written and not yet numbered (Out of
+scope).
+
+Purpose: repeated model calls inside one conversation should reuse the provider's prompt cache, so a
+conversation on a per-token API model pays the write price for the tokens each call adds and the read
+price for the rest, instead of the full input price for everything.
+
+## Context
+
+Several providers cache a request by its prefix: a later request that starts with the same bytes
+reads that part from cache at a fraction of the input price. Anthropic's Messages API, read on
+2026-10-16, works this way. A request places at most four cache marks; a hit looks back at most 20
+content positions from a mark; a write costs 1.25 times the input price for a five-minute entry and
+2 times for a one-hour entry, a read 0.1 times, and a hit renews the entry's lifetime; one-hour marks
+must come before five-minute marks; a mark whose prefix is shorter than the model's minimum
+cacheable length is not placed.
+
+Two records use "run" for different things, so this record names both senses. ADR-0126 D3 defines a
+**run**, for this router, as the lifetime of one Branch conversation identity; ADR-0123 D1 defines a
+**Run** as exactly one admitted execution attempt. This record uses **conversation** for the first
+sense — the lifetime of one Branch conversation identity — and fixes the **conversation segment** to
+that lifetime. Inside one conversation, `ReAct` or repeated `operate(actions=True)`
+makes a loop of model calls, and each call sends the system text, the tool definitions, the history
+so far and one new turn. Caching that loop needs each request to be a prefix of the next. Measured at
+commit 54176709 with a scripted endpoint (four `operate(actions=True, tools=True)` rounds; this probe
+is a separate characterization, distinct from the acceptance tests in D7):
+
+**P1: no request in a tool loop is a prefix of the next.** Each pair of consecutive requests first
+differs at the previous round's instruction. While an instruction is current it renders its
+`Tools`, `ResponseSchema` and `ResponseFormat` sections (`protocols/messages/instruction.py:210-215`);
+once it is history it is re-rendered without them (`operations/chat/_prepare.py:228`). Rounds 0 to
+1 differ at message 0, 1 to 2 at message 2, 2 to 3 at message 4. The current instruction is about
+3,170 characters of `json.dumps` of the whole message object, role wrapper included (3,141 of the
+content alone), almost all of it those sections, sent uncached on every call.
+
+**P2: the system text is folded into the first user message,** as ADR-0007 D2 step 4 specifies, so
+it cannot be cached with its own lifetime apart from the conversation, and it moves whenever the
+first message changes.
+
+**P3: a context block injected on the first turn only changes message 0 on the second.** A context
+provider on the first-turn cadence is gathered into the fold for request 0 and absent from requests
+1 and 2; message 0 shrinks from 3,240 to 112 characters of `json.dumps` of the whole message object,
+role wrapper included (3,211 to 83 of the content alone), so request 1 shares no message-level prefix
+with request 0 at all (the two message 0 values share the folded system line, 46 characters of raw
+text, before the injected block makes them differ).
+
+**P4: the Anthropic adapter places one five-minute mark, and whether the flag that asks for it
+reaches the mark code depends on the endpoint.** `providers/anthropic/messages.py:1076-1091` marks only
+the last message's last block, with no lifetime choice, and lifts a native `system` field only when
+the first message has role `system`, which the fold never produces. The `cache_control` flag reaches
+that code on one of two paths, and the two paths differ:
+
+- **A default `iModel` carries a request-option model**, whose fields are the Anthropic request
+  model's; `cache_control` is not one of them, so the request-option filter drops the flag
+  (`service/connections/endpoint.py:297-301`) before `messages.py:1076` looks for it. Building that
+  payload for the probe's last request with `cache_control=True` gave no `system` field and no cache
+  mark.
+- **An endpoint with no request-option filter carries no request-option model** — an `iModel`
+  restored from a serialized config, whose `request_options` comes back None, or a model configured
+  from a plain dict. There the flag is not filtered out, so the flag reaches the mark code and one
+  ephemeral five-minute mark lands on the last message's last block.
+
+`iModel` then pops the same flag from the request (`service/imodel.py:286`) and, in `Endpoint.call`,
+it switches on a local response memo, except for a call routed through an account
+(`service/connections/endpoint.py:427`, `:497-515`), a different feature.
+
+**P5: the run record cannot show what caching saved.** `RunEnd` carries `cached_tokens` and
+`cache_write_tokens` (`session/signal.py:66-67`) without the lifetime of the write, and ADR-0126's
+ledger needs read and write counts per lifetime to price a run in its own sense of the word.
+
+| Concern | Decision |
+|---------|----------|
+| What may change between calls | D1: three lifetime classes, a turn segment whose changes are counted, and a history rewrite as one of those changes. |
+| Tool definitions and response format | D2: the conversation's tool set renders once in the stable segment; every response schema and format renders in the turn segment; an instruction renders the same bytes in every request that contains it. |
+| System text | D3: a native system block, chosen by a declared provider capability. |
+| Context blocks | D4: context gathered for a conversation stays, unchanged, as the system blocks after the stable block. |
+| Marks | D5: the provider adapter places them, only while the caching option is on: one-hour at the end of the stable segment, five-minute on the moving tail. |
+| Accounting | D6: each call records input, cache read, cache write per lifetime and output, side by side. |
+| Acceptance | D7: the prefix test, the Anthropic payload test, the two option-off byte-identity tests, the stable-segment test and the two body-absence tests. |
+
+**Out of scope.** A per-request input ceiling and the context management past it, which the
+instruction this record serves asked for (deferred to their own record, not yet written or
+numbered; D1's classes are what any folding must respect). The provider's native `tools` field,
+until a record maps its `tool_use` and `tool_result` blocks to action requests and responses
+(D2). Providers that cache without marks. CLI providers, whose prompt the CLI assembles. Price
+tables and budgets (ADR-0126).
+
+## Decision
+
+These decisions apply only when both gates are on: the selected provider declares that it accepts a
+native system block and caches by prompt prefix (D3 names the declaration) **and** the model
+configuration turns prompt caching on. The option is `prompt_caching` (bool, default False), off
+unless set (D5). With the option off, every provider's compiled request is byte-identical to today's
+on every path, with no exception: the Anthropic adapter's `cache_control`-triggered last-message mark
+(`providers/anthropic/messages.py:1076-1091`) stays exactly as today wherever it fires today.
+
+Restated for both paths: on a default `iModel` the request-option filter drops the flag before the
+mark code, so no mark is placed; on an endpoint with no request-option filter — an `iModel` restored
+with `request_options` None, or a dict-configured model
+(`service/connections/endpoint.py:297-301`) — the flag reaches the mark code and one five-minute mark
+lands on the last message. With the option on and the declaration present, this record's placement
+replaces that mark. For a provider without the declaration the request is unchanged whatever the
+option says. There is no ungated change.
+
+### D1: three lifetime classes
+
+Every part of a request belongs to one class:
+
+- **stable**: the system text and the tool definitions. It is the same for every call of one
+  configuration, and the tool set the Branch exposes (D2) is part of that configuration.
+- **conversation**: what is fixed when a conversation starts and kept until it ends, today the
+  context blocks a context provider returns for the conversation (D4). The Branch owns this segment.
+  It is keyed by the Branch's conversation identity and built once, under the Branch lock a
+  top-level turn holds (ADR-0018 D2, Proposed), and it keeps the position where its previous
+  request ended. It
+  ends when the Branch is closed or when its conversation identity changes; both end events discard
+  the segment, and the next call builds a new one. Concurrent calls never overwrite or clear it, so
+  ADR-0008 D4's call-local rule holds for everything else a call threads. A retried attempt (an
+  ADR-0123 run) inside one conversation reuses the segment unchanged: a retry is a new attempt, not
+  a new conversation.
+- **turn**: what each call appends. A request's turn segment is the previous request's turn segment
+  followed by what the last call added.
+
+A request is the stable segment, then the conversation segment, then the turn segment. Inside one
+conversation, a request is a byte-for-byte prefix of the next unless the stable or conversation
+segment changed, and a change to either is a new segment: it is allowed, it is not hidden, and the
+run record counts it (D6).
+
+A **history rewrite** is a turn-segment change, not a new class. It is allowed; it breaks the prefix
+from the rewritten message on, so every later request in the conversation is a cache miss from
+there; and the run record counts it (D6). Today's rewrites are the hide, show and summarize
+directives of ADR-0125 step 2 (`operations/chat/_prepare.py:191-247`).
+
+### D2: tools render once; an instruction renders the same everywhere
+
+Amends ADR-0007 D1 (the tool definitions' lifetime and the transient set), its D2 steps 2 and 5, and its D4.
+
+**The stable segment is the system text and the tool definitions only.** Tool definitions leave the
+instruction and render once in the stable segment, as a section of the system block (D3). They are
+the conversation's tool set — the tools the Branch exposes to the operation — not the per-call
+`action_param`. A call that requests no action, such as `ReAct`'s final answer
+(`operations/ReAct/ReAct.py:653` sets `action_param` None), still carries the same tool section in
+the stable segment; its turn content says that no action is requested. A plain `operate()` whose
+tool set differs from the previous call's is therefore a counted stable-segment change (D6).
+
+Rendering the tools from the conversation's tool set rather than from the call's `action_param` is
+what keeps the stable segment stable: `action_param` is None on ReAct's final call, so a tool
+section built from it would drop out of that request and rewrite the stable block, paying the
+one-hour write price again — the defect this decision removes. Reaching for `branch.acts` instead is
+not a new dependency: `operations/operate/operate.py:200-204` already builds the tool schemas from
+the Branch's action manager when a call passes `tools=True`.
+
+The provider's native `tools` field is out of scope: it is not written until a record maps the
+`tool_use` and `tool_result` blocks a native-tools reply carries back to action requests and
+responses, which today's parser does not do (`protocols/messages/assistant_response.py:33-37`).
+
+**Every response schema and response format renders in the turn segment.** The rendered schema is
+the `ResponseSchema` of the request operative: it includes the fields lionagi adds on top of the
+caller's model — `reason` when the call asks for it (`operations/operate/step.py:102-104`) and
+`action_required`, `action_requests` and `action_responses` when the call passes actions
+(`operations/operate/step.py:106-109`), which `operations/operate/operate.py:220-226` requests
+through `Step.request_operative`. It renders there as part of the instruction that asks for it, and
+it renders the same bytes whether it is current or history, instead of appearing in the one request
+and vanishing from the next. A format that changes between turns therefore renders in the turn
+segment and never rewrites the stable segment.
+
+Why this way: rendering the tool section in every historical instruction would also make each
+request a prefix of the next, but it repeats the whole tool set once per turn, so input grows with
+the number of turns times the tool set. Dropping it only from history is what P1 measured. The
+response sections are small beside the tool set and belong to the instruction that asks for them, so
+they stay in the turn segment and repeat with each instruction that carries them.
+
+### D3: system as its own block, by declared capability
+
+Amends ADR-0007 D2 step 4 for these providers. A provider adapter declares whether it accepts a
+native system block and caches by prefix. When it does, the compiler hands the adapter the stable
+blocks — the system text and the tool section — as an ordered list (D5), and the first user message
+carries only its own content. Per-call `guidance` stays in the instruction, in the turn segment,
+where the caller put it; it is not part of the stable block. The compiler chooses from the
+declaration; the adapter never re-folds or re-reads history (ADR-0007 D4 holds), and the adapter is
+what builds the provider's native system field (ADR-0027 D4). Providers without the declaration keep
+today's fold and role sequence.
+
+ADR-0007 rejected a native system message because it changes the provider-visible role sequence on
+surfaces that treat it differently. The declaration confines the change to providers that state
+they accept it, and the characterization in D7 pins the sequence for the rest.
+
+### D4: context gathered for a conversation stays for the conversation
+
+Amends ADR-0008 D4 for these providers and only while caching is on. Context blocks returned for a
+conversation are placed in the system field as the conversation blocks, after the stable block,
+with one mark at the end of the conversation segment (D5). They are sent unchanged on every request
+of the conversation: they are not re-gathered per call and not dropped after the first. A provider
+that returns a block only on the first call of a conversation (one that checks whether the branch
+has a response yet) keeps its block in the conversation segment for the later calls; a block a
+provider returns on a later call is added to the turn segment as new content and does not rewrite
+the conversation segment. The turn segment's first message is the first user message, carrying only
+its own content.
+The block list is threaded to the compiler the way ADR-0008 D4 already threads it; the conversation
+segment itself is held by the Branch (D1), which `_prepare_run_kwargs` reads from the branch it is
+handed.
+
+Placing a second block in the system field is an adapter change, not a compiler-only one. The
+Anthropic adapter today lifts at most one leading system-role message out of the messages and wraps
+that one string in a single-element `system` list (`providers/anthropic/messages.py:1058-1063` and
+`:1093-1095`), so a request carrying two system messages is rejected as an invalid payload. The
+compiler therefore hands the adapter the ordered lists it needs — the stable blocks and the
+conversation blocks — and the adapter must accept an ordered list of system blocks and mark the end
+of each segment, rather than lifting a single message. ADR-0027 D4 owns that boundary: provider
+adapters own vendor request grammar and the payload remapping that goes with it.
+
+ADR-0008 D4's alternatives reject persisting these blocks as ordinary messages partly because
+retrieved material is "refreshed per turn". For these providers with caching on that reading
+changes: a conversation-cadence block is gathered once per conversation and persists for the
+conversation, so it stops being per-turn material. Its other reasons stand: the block is still not a
+conversation record, it is not replayed as a user or system utterance, and the selection and budget
+rules are unchanged.
+
+Attribution and boundaries: source attribution stays in `ProviderReport.fired` (ADR-0008 D5), which
+pairs `fired[i]` with `blocks[i]`; it does not render in the request today, and it moves to
+ADR-0007 D3's canonical JSON once that record is accepted.
+
+The model therefore keeps seeing first-turn context on later turns where today it sees it once. That
+is a change in what the model reads, so it lands behind its own characterization (D7) and the
+injection budget is unchanged.
+
+### D5: marks are placed by the provider adapter
+
+The compiler hands the adapter the ordered lists — the stable blocks and the conversation blocks —
+and the position in this request where the previous request ended; the adapter builds the native
+system blocks from them (ADR-0027 D4) and turns the boundaries into its provider's marks. The
+adapter must accept an ordered list of system blocks and mark the end of each segment (D4); the
+compiler does not emit the native system field. For Anthropic:
+
+- one mark with a one-hour lifetime at the end of the stable segment;
+- one five-minute mark at the end of the conversation segment when it is non-empty;
+- one five-minute mark on the last block of the turn segment;
+- when a turn adds more than the provider's lookback, one five-minute mark at that recorded position,
+  on the previous request's last block, so the next read still finds the previous write.
+
+At most four marks; one-hour marks precede five-minute marks; a mark whose prefix is shorter than the
+model's minimum cacheable length is not placed. The lifetimes are settings of the model
+configuration, with these as defaults.
+
+The option is `prompt_caching` (bool, default False), a field of the endpoint configuration. The
+adapter reads it from that configuration before the request-option filter runs, so a filtered
+endpoint cannot drop it, and it is never written into the request body. With the option off every
+provider's compiled request is byte-identical to today's on every path, the adapter's
+`cache_control`-triggered last-message mark (`providers/anthropic/messages.py:1076-1091`) included
+wherever it fires today. The mark code only runs when the option is on and the provider declares that
+it accepts a native system block and caches by prefix (D3); marks come only from this option. With
+the option on and the declaration present, this decision's placement replaces that one
+`cache_control`-triggered mark: the placement is the mark the stable, conversation and turn segments
+receive, and the adapter's own last-message mark is not placed on top of it. The existing
+`cache_control` flag keeps its other current meaning, the local response memo in `Endpoint.call`.
+
+### D6: accounting beside input
+
+Each model call records, side by side: uncached input tokens, cache-read tokens, cache-write tokens
+per lifetime, and output tokens. The write counts are the provider's own per-lifetime fields. As
+lionagi's extractor reads them (`session/signal.py:290-294`), those are `cache_read_input_tokens`
+and `cache_creation_input_tokens`, the total cache-creation count, so the extractor drops the
+per-lifetime split. This record extends it to carry both, in the per-lifetime shape the provider
+reports and lion1's backend already reads: `ephemeral_5m_input_tokens` and `ephemeral_1h_input_tokens`
+under `cache_creation` (`lion1/hub/backend/anthropic.py:498-501`). The run record sums each field per
+conversation and counts segment changes, including a history rewrite (D1). Billing consumers
+(ADR-0126) price from these fields. These fields land with the first merged change under this record,
+before any caching default changes.
+
+### D7: acceptance
+
+Six tests, all written to pass after this record's change and its first implementation.
+
+The first drives the API chat path on a scripted endpoint for several rounds with the option on and
+the declaration present, with a system message, tools and a first-turn context provider, and
+requires: each request's messages are a strict prefix of the next; the tool section appears once in
+each request, in the system block; the system text is not in any user message; the context block is
+present in every request of the conversation. The second builds the Anthropic payload for the last
+request and requires the stable and conversation blocks in `system`, at most four marks and one-hour
+marks before five-minute ones. The third runs the same rounds with the prompt-caching option off, on
+both an endpoint whose request-option filter is present and one whose `request_options` is None, and
+requires the compiled request to be byte-identical to today's on both paths, the adapter's mark
+included wherever it fires today. The fourth runs a `ReAct` conversation whose final turn changes the
+response format, and requires the tool section's bytes to be identical in every request of the
+conversation, the final call included, so the changed format lands in the turn segment and never
+rewrites the stable segment. The fifth and sixth run one call per path, filtered and unfiltered, with
+the option on, and require the key to be absent from the request body in both.
+
+The P1 to P4 measurements in Context are a separate characterization, taken at commit 54176709 by a
+probe that drives the same rounds against the code before this record; they are not these tests.
+
+## Consequences
+
+- Conversations on prefix-caching providers pay the write price for the stable and conversation
+  segments once per entry lifetime (1.25 times input for a five-minute entry, 2 times for a one-hour
+  entry), the write price for each turn's new content once, and the read price (0.1 times input) for
+  the rest. A conversation that changes its tool set mid-conversation pays a new write, visibly.
+- The compiled request for those providers changes shape: a system block holding the tool section,
+  the conversation blocks after it, every response section inside the instruction that asks for it,
+  context blocks kept for the conversation, and marks from the caching option. Every other provider
+  sees no change, and while the option is off every provider sees byte-identical requests.
+- ADR-0007's compiler, when built, inherits D1 to D5 for these providers; until then they land in the
+  current `_prepare_run_kwargs` path, code that compiler will replace, which ADR-0007 D6 expects.
+- `cache_control` and prompt caching become two options; code that set `cache_control=True` keeps
+  getting the memo it got, while a provider cache mark now comes only from the caching option.
+- Reversal: the capability declaration and the caching option are off switches; D6's fields are
+  additive.
+
+## Alternatives considered
+
+- **Wait for ADR-0007's compiler and build caching on it.** One path and no interim code; it lost
+  because conversations on per-token providers pay uncached prices on every call until that compiler
+  ships, and the rules here carry over to it unchanged.
+- **A separate agent loop for API providers outside `Branch`.** Fastest to write; it lost because it
+  is a second request compiler beside ADR-0007's, which ADR-0007 D5 rules out.
+- **The provider's automatic caching (one top-level mark).** One mark moves with the tail and covers
+  the whole prefix with one lifetime; it lost because the stable segment would be rewritten at the
+  five-minute price whenever the tail's entry lapses, and P1 to P3 still break the prefix.
+- **Keep the fold and mark the first user message.** Fewer changes; it lost because the fold mixes
+  the stable segment with the first turn's content and P3's context block, so its lifetime is the
+  shortest of the three, and P1 still breaks the prefix after it.
+- **Render the tool section in every historical instruction.** Restores the prefix with no new
+  placement for the tools; it lost on input growth (D2), since the whole tool set repeats once per
+  turn.
+- **Drop context blocks after the first turn, as today.** Smaller later requests; it lost because
+  dropping them changes the earliest message of the request and so voids the whole cached prefix.
+
+## Notes
+
+- Provider facts are from Anthropic's prompt-caching and pricing documentation as read on
+  2026-10-16; other providers that cache by prefix declare their own marks and lifetimes.
+- The measurements in Context were taken at commit 54176709 by the probe described there. They are a
+  characterization of the code before this record, not a D7 acceptance test; the D7 tests are written
+  to pass after the change.

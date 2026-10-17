@@ -34,5 +34,6 @@ npm-debug.log*
 # playwright
 /playwright-report/
 /test-results/
+/e2e-logs/
 /blob-report/
 /playwright/.cache/

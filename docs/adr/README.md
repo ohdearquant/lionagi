@@ -90,6 +90,8 @@ its area block.
 - [ADR-0004](ADR-0004-directed-graph-structural-invariants.md) — Directed graph structural
   invariants
 - 0005 — unused (intentional gap)
+- [ADR-0129](ADR-0129-ordering-multiplicity-and-holder-coordination.md) — Ordering multiplicity and
+  holder-side coordination for collections (sequential number; see Numbering)
 
 ### messages-context (0006-0010)
 
@@ -100,6 +102,10 @@ its area block.
 - [ADR-0008](ADR-0008-pre-turn-context-provider-execution-and-attribution.md) — Pre-turn context-
   provider execution and attribution
 - 0009-0010 — unused (intentional gaps)
+- [ADR-0127](ADR-0127-prompt-cache-placement-for-prefix-caching-providers.md) — Prompt-cache
+  placement for prefix-caching providers (sequential number; see Numbering)
+- [ADR-0130](ADR-0130-per-request-input-ceiling-and-context-management-past-it.md) — Per-request
+  input ceiling and context management past it (sequential number; see Numbering)
 
 ### actions-tools (0011-0015)
 
@@ -279,6 +285,9 @@ its area block.
   primary run canvas (sequential number; see Numbering)
 - [ADR-0116](ADR-0116-editor-client-capability-expansion.md) — Editor client capability
   expansion; revises ADR-0082 D2 (sequential number; see Numbering)
+- [ADR-0131](ADR-0131-operator-decisions-require-a-launcher-issued-decision-capability.md) —
+  Operator decisions require a launcher-issued decision capability (sequential number; see
+  Numbering)
 
 ### governance (0086-0089)
 

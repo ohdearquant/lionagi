@@ -54,7 +54,11 @@
 ## Operate
 
 - [Durable operations](https://ohdearquant.github.io/lionagi/guides/durable-operations/)
-- [Studio and schedules](https://ohdearquant.github.io/lionagi/guides/studio/)
+- [Studio getting started](https://ohdearquant.github.io/lionagi/guides/studio-getting-started/)
+- [Studio Operator](https://ohdearquant.github.io/lionagi/guides/studio-operator/)
+- [Studio schedules](https://ohdearquant.github.io/lionagi/guides/studio-schedules/)
+- [Studio model](https://ohdearquant.github.io/lionagi/concepts/studio-model/)
+- [Studio surfaces](https://ohdearquant.github.io/lionagi/reference/studio-surfaces/)
 - [CLI reference](https://ohdearquant.github.io/lionagi/cli-reference/)
 - [Troubleshooting](https://ohdearquant.github.io/lionagi/reference/troubleshooting/)
 

@@ -5202,7 +5202,7 @@
         "operator"
       ],
       "summary": null,
-      "description": null,
+      "description": "Allow a pending Operator proposal.\n\nWithout ``LIONAGI_STUDIO_AUTH_TOKEN``, any process that can reach the daemon's\nlistener, including programs run by other local accounts, can allow or deny\nOperator proposals. The permission prompt is a workflow safeguard, not\nisolation from local programs; set a token on a shared machine.",
       "include_in_schema": true,
       "handler_identity": {
         "module": "lionagi.studio.services.operator",
@@ -5250,7 +5250,7 @@
         "operator"
       ],
       "summary": null,
-      "description": null,
+      "description": "Allow or deny a pending Operator proposal.\n\nWithout ``LIONAGI_STUDIO_AUTH_TOKEN``, any process that can reach the daemon's\nlistener, including programs run by other local accounts, can allow or deny\nOperator proposals. The permission prompt is a workflow safeguard, not\nisolation from local programs; set a token on a shared machine.",
       "include_in_schema": true,
       "handler_identity": {
         "module": "lionagi.studio.services.operator",
@@ -9564,6 +9564,7 @@
             "operator"
           ],
           "summary": "Confirm Operator Proposal",
+          "description": "Allow a pending Operator proposal.\n\nWithout ``LIONAGI_STUDIO_AUTH_TOKEN``, any process that can reach the daemon's\nlistener, including programs run by other local accounts, can allow or deny\nOperator proposals. The permission prompt is a workflow safeguard, not\nisolation from local programs; set a token on a shared machine.",
           "parameters": [
             {
               "name": "conversation_id",
@@ -9626,6 +9627,7 @@
             "operator"
           ],
           "summary": "Decide Operator Proposal",
+          "description": "Allow or deny a pending Operator proposal.\n\nWithout ``LIONAGI_STUDIO_AUTH_TOKEN``, any process that can reach the daemon's\nlistener, including programs run by other local accounts, can allow or deny\nOperator proposals. The permission prompt is a workflow safeguard, not\nisolation from local programs; set a token on a shared machine.",
           "parameters": [
             {
               "name": "conversation_id",
@@ -11279,6 +11281,16 @@
                   }
                 ],
                 "title": "Enabled"
+              }
+            },
+            {
+              "name": "include_recent_runs",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "boolean",
+                "default": false,
+                "title": "Include Recent Runs"
               }
             },
             {

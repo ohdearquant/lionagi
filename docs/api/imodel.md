@@ -52,6 +52,17 @@ response. `provider_metadata["served_model"]` describes whichever call finished
 last; when several calls share one `iModel` concurrently, it says nothing about
 a particular call. Non-CLI session lookup reads `provider_metadata["session_id"]`.
 
+A provider can accept a streamed HTTP call and then say, inside the stream, that the
+call failed (an `error` event, `response.failed`). The chunk that says so is marked
+`call_failed` in its metadata and still delivered; when the stream ends the call fails
+with `ProviderStreamError`, so its status is `FAILED` and `iModel.stream()` raises
+`ValueError` from that cause. An SSE event whose `event:` field names a call failure
+(`error`, `response.error`, `response.failed`, `turn.failed`) fails the call whatever
+its data holds, and its chunk records the name as `sse_event`; any other name leaves the
+chunk as its data converts. A failure of one item inside the call (such as
+`response.mcp_call.failed`) does not fail the call. Once a stream reports a failure,
+no model named after it is recorded as served.
+
 ## Endpoint types
 
 ### Chat / LLM
@@ -62,6 +73,7 @@ a particular call. Non-CLI session lookup reads `provider_metadata["session_id"]
 | `"anthropic"` | `"chat"` | `ANTHROPIC_API_KEY` |
 | `"gemini"` | `"chat"` | `GEMINI_API_KEY` |
 | `"ollama"` | `"chat"` | — (local) |
+| `"lattice"` | `"chat"` | — (local) |
 | `"groq"` | `"chat"` | `GROQ_API_KEY` |
 | `"deepseek"` | `"chat"` | `DEEPSEEK_API_KEY` |
 | `"perplexity"` | `"chat"` | `PERPLEXITY_API_KEY` |
@@ -74,6 +86,7 @@ a particular call. Non-CLI session lookup reads `provider_metadata["session_id"]
 |-------------|-------------|-------------|
 | `"openai"` | `"embed"` / `"embeddings"` | `OPENAI_API_KEY` |
 | `"ollama"` | `"embed"` / `"embeddings"` | — (local) |
+| `"lattice"` | `"embed"` / `"embeddings"` | — (local) |
 | `"nvidia_nim"` | `"embed"` | `NVIDIA_NIM_API_KEY` |
 
 These endpoints are all registered and routable through `match_endpoint()`.
@@ -281,6 +294,7 @@ CLI table above for accepted variants).
 | `"anthropic"` | Anthropic | `ANTHROPIC_API_KEY` |
 | `"gemini"` | Google AI (OpenAI-compat) | `GEMINI_API_KEY` |
 | `"ollama"` | Ollama local | — (no key needed) |
+| `"lattice"` | Lattice local | — (no key needed) |
 | `"nvidia_nim"` | NVIDIA NIM | `NVIDIA_NIM_API_KEY` |
 | `"perplexity"` | Perplexity Sonar | `PERPLEXITY_API_KEY` |
 | `"groq"` | Groq | `GROQ_API_KEY` |

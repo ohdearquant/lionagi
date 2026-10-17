@@ -239,11 +239,12 @@ jobs:
         uv venv
         uv sync --all-extras
 
-    # Coverage runs on 3.10, and only on pushes — never on a pull request.
+    # Coverage runs on 3.10, only on pushes and manual runs — never on a pull
+    # request.
     #
     # Running the suite under coverage instrumentation is materially slower than
-    # running it plain. The 3.10 leg is kept in the reduced pull-request matrix
-    # and ci-gate hard-gates on `test`, so before this split that extra time sat
+    # running it plain. The 3.10 leg runs on every pull request and ci-gate
+    # hard-gates on `test`, so before this split that extra time sat
     # directly on the path every pull request had to clear before it could merge.
     #
     # Coverage is a report rather than a gate, so pushes to a long-lived branch
@@ -448,7 +449,20 @@ jobs:
     - name: Run seeded-daemon e2e smoke tests
       working-directory: apps/studio/frontend
       run: npm run e2e
-    - name: Upload Playwright report
+    # The stop/resume test in the Operator suite has failed intermittently: after
+    # the page reloads, the daemon stops answering and every later request
+    # returns 502. The smoke step above runs it once, which is not enough to
+    # catch an intermittent failure there, so it is repeated three more times
+    # against the same build. Its own global setup boots a fresh seeded daemon
+    # and preview server on free ports, so this invocation starts cleanly on its
+    # own.
+    - name: Repeat the Operator stop/resume test
+      working-directory: apps/studio/frontend
+      run: npx playwright test e2e/operator.spec.ts -g "Operator streams, persists, stops, records a run, and resumes it" --repeat-each 3
+    # The bundle also carries the daemon and preview server logs from
+    # apps/studio/frontend/e2e-logs/, which is where a mid-run server failure
+    # is explained.
+    - name: Upload Playwright report and server logs
       if: failure()
       uses: actions/upload-artifact@v7
       with:
@@ -456,6 +470,20 @@ jobs:
         path: |
           apps/studio/frontend/playwright-report/
           apps/studio/frontend/test-results/
+          apps/studio/frontend/e2e-logs/
+        if-no-files-found: warn
+        retention-days: 7
+    # The daemon and preview server logs are uploaded on every run, so a passing
+    # run carries them too: a failure can be read against a run that passed, and
+    # a run without them is visible as a failed step rather than a missing file.
+    - name: Upload server logs
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: studio-e2e-server-logs
+        path: apps/studio/frontend/e2e-logs/
+        if-no-files-found: error
+        overwrite: true
         retention-days: 7
 
   # Detect which conditional-job inputs changed, to gate the jobs below.
@@ -712,7 +740,7 @@ jobs:
 
   # Single aggregate context for branch protection. Required status checks must
   # reference this job, never the matrix legs directly: matrix names shift with
-  # the event (PRs run a subset of Python versions) and a renamed leg would
+  # the event (a manual run can ask for a subset of Python versions) and a renamed leg would
   # strand PRs on a check that never reports. Fail-closed: every hard gate must
   # report success; a skipped, failed, or cancelled hard gate fails the aggregate.
   # The conditional jobs (studio-docker, minimal-import, no-eager-heavies,

@@ -1078,9 +1078,9 @@ async def _teardown_common(
                 metadata=metadata,
                 expected_statuses={pre_write_status},
                 extra_fields=(
-                    {"ended_at": ended_at}
+                    {"ended_at": ended_at, "current_phase": None}
                     if duration_ms is None
-                    else {"ended_at": ended_at, "duration_ms": duration_ms}
+                    else {"ended_at": ended_at, "duration_ms": duration_ms, "current_phase": None}
                 ),
             )
             if not written:
@@ -1181,14 +1181,9 @@ async def teardown_persist(
             reason_out=ctx,
         )
 
-        from lionagi.hooks import unroute_message_persistence
         from lionagi.hooks.bus import HookPoint
 
-        hook = ctx.get("hook")
-        if hook is not None:
-            unroute_message_persistence(ctx["branch"], hook)
-        for branch, h in ctx.get("hooks", []):
-            unroute_message_persistence(branch, h)
+        _unroute_message_hooks(ctx)
 
         session_obj = ctx.get("session")
         # Skip SESSION_END here when deferred: the resumed leg's own (non-deferred)
@@ -1239,6 +1234,22 @@ async def teardown_persist(
 
         return final_status
     except Exception as exc:
+        from lionagi.state.compat import refusal_in
+
+        # Teardown writes run inside task groups, so the refusal can arrive wrapped beside
+        # another failure; it is still the reason this run fails.
+        refusal = refusal_in(exc)
+        if refusal is not None:
+            # The store refused a write in compatibility mode, so the run fails with that
+            # refusal as its reason instead of reading back a status it could not write
+            # (ADR-0128 D6). Nothing more is written and the message hooks are detached: the
+            # refusal rose either from one of the teardown's own writes, before SESSION_END
+            # was reached, or from a SESSION_END handler, after the emit below had run.
+            _log.error("live persist teardown refused: %s", refusal)
+            _unroute_message_hooks(ctx)
+            ctx["terminal_reason"] = ("failed", f"The store refused a write: {refusal}")
+            ctx["store_refusal"] = refusal
+            return "failed"
         _log.warning("live persist teardown failed: %s", exc, exc_info=True)
         # A failure anywhere in the block above (any of _teardown_common's
         # separate write transactions, or the bookkeeping around them) must
@@ -1289,7 +1300,23 @@ async def teardown_persist(
             # callers opt out so teardown cannot close unrelated shared state.
             from lionagi.state.db import close_shared_db
 
-            await close_shared_db()
+            # The sweep raises for a handle it could not close (one another
+            # event loop is opening). Teardown reports the run's outcome and
+            # must not raise, so the refusal is logged like db.close() above.
+            try:
+                await close_shared_db()
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("live persist shared db sweep failed: %s", exc, exc_info=True)
+
+
+def _unroute_message_hooks(ctx: dict) -> None:
+    from lionagi.hooks import unroute_message_persistence
+
+    hook = ctx.get("hook")
+    if hook is not None:
+        unroute_message_persistence(ctx["branch"], hook)
+    for branch, h in ctx.get("hooks", []):
+        unroute_message_persistence(branch, h)
 
 
 # Keep old names as aliases so callers don't break.
@@ -1345,6 +1372,7 @@ def _make_message_handler(
     from copy import deepcopy
 
     from lionagi.hooks._message_retry import MessagePersistRetryQueue, PendingMessageEvent
+    from lionagi.state.compat import StateCompatibilityRefused
 
     retry_queue = MessagePersistRetryQueue(
         db,
@@ -1379,6 +1407,9 @@ def _make_message_handler(
                     on_persisted=on_persisted,
                 )
             )
+        except StateCompatibilityRefused:
+            # A write the store refused in compatibility mode stops the run (ADR-0128 D6).
+            raise
         except Exception as exc:
             _log.warning(
                 "live persist write failed for branch %s: %s",
@@ -1395,12 +1426,26 @@ async def _flush_pending_message_events(ctx: dict) -> bool:
 
     Returns whether every queue emptied. What follows this reads the run's
     completion evidence, so a queue that gave up here means that evidence is
-    being read against a transcript missing messages the run produced.
+    being read against a transcript missing messages the run produced. A queue
+    the store refuses in compatibility mode raises that refusal, once every
+    queue has been flushed.
     """
+    from lionagi.state.compat import StateCompatibilityRefused
+
     flushed = True
+    refusal = None
     for retry_queue in ctx.get("message_retry_queues", []):
-        if not await retry_queue.flush_final():
-            flushed = False
+        try:
+            if not await retry_queue.flush_final():
+                flushed = False
+        except StateCompatibilityRefused as exc:
+            if refusal is None:
+                refusal = exc
+            else:
+                # The first refusal is raised; each later one is logged, so none goes unreported.
+                _log.error("live persist flush refused another queue: %s", exc)
+    if refusal is not None:
+        raise refusal
     return flushed
 
 
@@ -1750,12 +1795,19 @@ async def setup_agent_persist(
         ctx["hook"] = route_message_persistence(session, branch, _on_message)
         return ctx
     except Exception as exc:
-        _log.warning(
-            "live persist setup failed (%r) — disabling persistence for this run",
-            exc,
-            exc_info=True,
-        )
-        _record_persistence_degraded(exc, run_id=run_id, run_manifest=run_manifest)
+        from lionagi.state.compat import refusal_in
+
+        # A store that refuses a write in compatibility mode stops the run instead of
+        # letting it go on without persistence (ADR-0128 D6); it is raised as itself, after
+        # cleanup, so a caller's check finds it even when a task group wrapped it.
+        refusal = refusal_in(exc)
+        if refusal is None:
+            _log.warning(
+                "live persist setup failed (%r) — disabling persistence for this run",
+                exc,
+                exc_info=True,
+            )
+            _record_persistence_degraded(exc, run_id=run_id, run_manifest=run_manifest)
         # If the wrapper session already claimed the branch, release it so a
         # later setup (or retry) can wrap the same branch again.
         if session is not None:
@@ -1773,6 +1825,8 @@ async def setup_agent_persist(
                 from lionagi.state.db import unregister_shared_db
 
                 unregister_shared_db(db)
+        if refusal is not None:
+            raise refusal  # noqa: B904 -- raised as found, keeping its own cause
         return None
 
 
@@ -1811,6 +1865,7 @@ async def find_incomplete_session_for_run(run_id: str) -> dict | None:
                 source="executor",
                 actor=row["id"],
                 expected_statuses={status},
+                extra_fields={"current_phase": None},
             )
             row = await db.get_session(row["id"]) or row
         return row

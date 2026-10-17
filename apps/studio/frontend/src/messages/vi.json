@@ -303,12 +303,12 @@
       "engineMaxDepth": "độ sâu tối đa",
       "engineMaxAgents": "số tác nhân tối đa",
       "loadFailed": "(không tải được phiên bản)",
-      "invocations": "lần gọi",
-      "successRate": "tỷ lệ thành công",
-      "lastUsed": "dùng gần nhất",
-      "never": "chưa bao giờ",
-      "recentInvocations": "lần gọi gần đây",
-      "noInvocations": "chưa ghi nhận lần gọi nào.",
+      "invocations": "Lượt gọi đã ghi nhận",
+      "successRate": "Tỷ lệ thành công đã ghi nhận",
+      "lastUsed": "Lần dùng được theo dõi gần nhất",
+      "never": "Chưa ghi nhận",
+      "recentInvocations": "Bản ghi cập nhật gần đây",
+      "noInvocations": "Không có lượt gọi nào được ghi nhận.",
       "skillValidationFailed": "Xác thực thất bại. Sửa các lỗi bên dưới trước khi lưu.",
       "pluginOwnedSkillHint": "Được đóng gói cùng plugin — chỉnh sửa trực tiếp tệp của plugin để thay đổi.",
       "readOnly": "Chỉ đọc",
@@ -320,7 +320,10 @@
       "pluginHooksSection": "Cấu hình Hook",
       "pluginReadmeSection": "README",
       "yes": "Có",
-      "no": "Không"
+      "no": "Không",
+      "usageCoverage": "Chưa biết phạm vi theo dõi của kỹ năng hoặc phần bổ trợ này; chỉ hiển thị các lượt gọi đã ghi nhận. Tỷ lệ thành công tính các lần chạy hoàn tất thành công trong số bản ghi đã kết thúc. Thời gian gần đây tính từ lần cập nhật.",
+      "usageUnavailable": "Không có dữ liệu sử dụng đã ghi nhận.",
+      "usageUnknown": "Không xác định"
     },
     "template": {
       "badge": "tích hợp sẵn",
@@ -666,6 +669,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "Không tải được lần chạy gần đây",
     "title": "lịch chạy",
     "subtitle": "tự động hóa cố định trên cron, interval và trigger GitHub",
     "calendar": "lịch",
