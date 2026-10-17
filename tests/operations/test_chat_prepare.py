@@ -4,6 +4,7 @@
 """Tests for lionagi/operations/chat/_prepare.py::_prepare_run_kwargs."""
 
 import pytest
+from pydantic import BaseModel
 
 from lionagi._errors import EmptyOutgoingContentError
 from lionagi.operations.chat._prepare import _prepare_run_kwargs
@@ -262,3 +263,177 @@ def test_current_turn_is_last_message_with_trailing_action_context():
     last = kw["messages"][-1]["content"]
     assert "the current prompt" in last
     assert "a distinctive action result" in last
+
+
+# The prompt-caching option (ADR-0127 D3): the system text becomes its own block
+
+
+class _Endpoint:
+    def __init__(self, places_prompt_cache):
+        self.places_prompt_cache = places_prompt_cache
+
+
+class _Model:
+    def __init__(self, places_prompt_cache):
+        self.endpoint = _Endpoint(places_prompt_cache)
+
+
+def test_a_caching_endpoint_takes_the_system_text_as_a_stable_block():
+    branch = Branch(system="you are a careful editor")
+    branch.msgs.add_message(instruction="an earlier question")
+    branch.msgs.add_message(assistant_response="an earlier answer")
+
+    _ins, kw = _prepare_run_kwargs(branch, "the current prompt", ChatParam(), imodel=_Model(True))
+
+    assert kw["system_blocks"] == [branch.msgs.system.rendered]
+    assert all(
+        "you are a careful editor" not in str(message["content"]) for message in kw["messages"]
+    )
+    assert "an earlier question" in str(kw["messages"][0]["content"])
+    assert "the current prompt" in str(kw["messages"][-1]["content"])
+
+
+@pytest.mark.parametrize("imodel", [None, _Model(False)], ids=["no-model", "not-declared"])
+def test_without_the_placement_the_system_text_is_folded_as_before(imodel):
+    branch = Branch(system="you are a careful editor")
+    branch.msgs.add_message(instruction="an earlier question")
+    branch.msgs.add_message(assistant_response="an earlier answer")
+
+    _ins, kw = _prepare_run_kwargs(branch, "the current prompt", ChatParam(), imodel=imodel)
+    _ins, plain = _prepare_run_kwargs(branch, "the current prompt", ChatParam())
+
+    assert "system_blocks" not in kw
+    assert "you are a careful editor" in str(kw["messages"][0]["content"])
+    assert kw == plain
+
+
+def test_a_caching_endpoint_without_a_system_message_gets_no_stable_block():
+    branch = Branch()
+
+    _ins, kw = _prepare_run_kwargs(branch, "hello", ChatParam(), imodel=_Model(True))
+
+    assert "system_blocks" not in kw
+
+
+# The prompt-caching option (ADR-0127 D2): the tool set renders once, in the system block
+
+
+def lookup_order(order_id: str) -> str:
+    """Find an order by its id."""
+    return order_id
+
+
+UNREGISTERED = {
+    "type": "function",
+    "function": {
+        "name": "unregistered_lookup",
+        "description": "A schema the Branch never registered.",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+}
+
+
+class _Verdict(BaseModel):
+    approved: bool
+
+
+def _branch_with_a_tool(system="you are a careful editor"):
+    branch = Branch(system=system) if system else Branch()
+    branch.register_tools(lookup_order)
+    return branch
+
+
+def _tool_section(branch):
+    from lionagi.libs.schema.minimal_yaml import minimal_yaml
+
+    return minimal_yaml({"Tools": branch.acts.schema_list}).strip()
+
+
+def test_a_caching_endpoint_takes_the_tool_set_after_the_system_text():
+    branch = _branch_with_a_tool()
+
+    _ins, kw = _prepare_run_kwargs(branch, "the current prompt", ChatParam(), imodel=_Model(True))
+
+    assert kw["system_blocks"] == [branch.msgs.system.rendered, _tool_section(branch)]
+    assert "Find an order by its id." in kw["system_blocks"][1]
+    assert all("Find an order by its id." not in str(m["content"]) for m in kw["messages"])
+
+
+def test_a_tool_set_without_a_system_message_is_the_only_stable_block():
+    branch = _branch_with_a_tool(system=None)
+
+    _ins, kw = _prepare_run_kwargs(branch, "hello", ChatParam(), imodel=_Model(True))
+
+    assert kw["system_blocks"] == [_tool_section(branch)]
+
+
+def test_an_instruction_names_its_registered_tools_and_keeps_any_other_schema_whole():
+    branch = _branch_with_a_tool()
+    schemas = [*branch.acts.schema_list, UNREGISTERED]
+
+    _ins, kw = _prepare_run_kwargs(
+        branch, "the current prompt", ChatParam(tool_schemas=schemas), imodel=_Model(True)
+    )
+
+    turn = str(kw["messages"][-1]["content"])
+    assert "- lookup_order" in turn
+    assert "Find an order by its id." not in turn
+    assert "A schema the Branch never registered." in turn
+
+
+def _two_turns(imodel, **param):
+    branch = _branch_with_a_tool()
+    first_param = ChatParam(tool_schemas=branch.acts.schema_list, **param)
+    ins, first = _prepare_run_kwargs(branch, "the first prompt", first_param, imodel=imodel)
+    branch.msgs.add_message(instruction=ins)
+    branch.msgs.add_message(assistant_response="an answer")
+    _ins, second = _prepare_run_kwargs(branch, "the second prompt", ChatParam(), imodel=imodel)
+    return first, second
+
+
+def test_an_instruction_renders_the_same_bytes_current_and_in_history():
+    first, second = _two_turns(_Model(True), response_format=_Verdict)
+
+    assert second["messages"][: len(first["messages"])] == first["messages"]
+    assert "- lookup_order" in str(first["messages"][0]["content"])
+    assert "approved" in str(first["messages"][0]["content"])
+    assert first["system_blocks"] == second["system_blocks"]
+
+
+def test_without_the_placement_history_drops_the_tools_and_the_format_as_before():
+    first, second = _two_turns(None, response_format=_Verdict)
+
+    assert "Find an order by its id." in str(first["messages"][0]["content"])
+    assert "approved" in str(first["messages"][0]["content"])
+    assert "lookup_order" not in str(second["messages"][0]["content"])
+    assert "approved" not in str(second["messages"][0]["content"])
+
+
+def test_a_history_instruction_names_a_tool_registered_after_it_was_sent():
+    branch = Branch(system="you are a careful editor")
+    late = {
+        "type": "function",
+        "function": {
+            "name": "lookup_order",
+            "description": "Find an order by its id.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    }
+    # Not the first instruction: the first is rebuilt every call, a later one renders through
+    # the message's render cache, which this pins.
+    branch.msgs.add_message(instruction="the opening question")
+    branch.msgs.add_message(assistant_response="the opening answer")
+    branch.msgs.add_message(instruction="an earlier question", tool_schemas=[late])
+    branch.msgs.add_message(assistant_response="an earlier answer")
+
+    _ins, before = _prepare_run_kwargs(branch, "now", ChatParam(), imodel=_Model(True))
+    branch.register_tools(lookup_order)
+    _ins, after = _prepare_run_kwargs(branch, "now", ChatParam(), imodel=_Model(True))
+    _ins, uncached = _prepare_run_kwargs(
+        branch, "now", ChatParam(), imodel=_Model(True), _use_render_cache=False
+    )
+
+    assert "Find an order by its id." in str(before["messages"][2]["content"])
+    assert "Find an order by its id." not in str(after["messages"][2]["content"])
+    assert "- lookup_order" in str(after["messages"][2]["content"])
+    assert after["messages"] == uncached["messages"]

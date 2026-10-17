@@ -633,6 +633,8 @@ EXPECTED_ROWS: dict[str, list[dict[str, Any]]] = {
             "kind": "RunEnd",
             "op_id": "",
             "payload": {
+                "cache_write_1h_tokens": 0,
+                "cache_write_5m_tokens": 0,
                 "cache_write_tokens": 0,
                 "cached_tokens": 0,
                 "created_at": "<t:number>",

@@ -14,11 +14,12 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
-from lionagi._errors import ContainmentRefusedError
+from lionagi._errors import CLIInputRefusedError, ContainmentRefusedError
 from lionagi.cli._providers import (
     AgentProfile,
     _parse_profile,
@@ -26,8 +27,9 @@ from lionagi.cli._providers import (
     build_imodel_from_spec,
     profile_config,
 )
+from lionagi.providers.openai import codex as codex_mod
 from lionagi.providers.openai._codex_profile import CODEX_MCP_PROFILE_PREFIX
-from lionagi.providers.openai.codex import CodexCodeRequest
+from lionagi.providers.openai.codex import CodexCodeRequest, _override_pairs
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.imodel import iModel
 
@@ -194,22 +196,19 @@ def test_containment_drops_a_nested_account_feature_override():
     assert _overrides(args) == []
 
 
-def test_containment_refuses_an_override_key_toml_cannot_read():
-    req = CodexCodeRequest(
-        prompt="hi", contain_account_integrations=True, config_overrides={"a b": 1}
+@pytest.mark.parametrize(
+    "key,refusal",
+    [("a b", "entry 0 is not a TOML key"), ("x = 1\nfeatures.apps", "entry 0 holds '='")],
+    ids=["unreadable", "multiline-with-equals"],
+)
+def test_containment_refuses_an_override_key_it_cannot_read(key, refusal):
+    with pytest.raises(CLIInputRefusedError, match=refusal):
+        CodexCodeRequest(prompt="hi", contain_account_integrations=True, config_overrides={key: 1})
+    copied = CodexCodeRequest(prompt="hi", contain_account_integrations=True).model_copy(
+        update={"config_overrides": {key: True}}
     )
-    with pytest.raises(ValueError, match="is not a TOML key"):
-        req.as_cmd_args()
-
-
-def test_containment_refuses_a_multiline_override_key_by_name():
-    req = CodexCodeRequest(
-        prompt="hi",
-        contain_account_integrations=True,
-        config_overrides={"x = 1\nfeatures.apps": True},
-    )
-    with pytest.raises(ValueError, match="is not a TOML key"):
-        req.as_cmd_args()
+    with pytest.raises(ValueError, match=refusal):
+        copied.as_cmd_args()
 
 
 # ── naming a connector lifts the containment ────────────────────────────
@@ -404,8 +403,10 @@ def test_containment_refuses_an_override_that_selects_or_changes_a_profile(key):
     req = CodexCodeRequest(
         prompt="hi", contain_account_integrations=True, config_overrides={key: True}
     )
-    with pytest.raises(ValueError, match=re.escape(f"override {key!r}")):
+    # Named by position: an override key is never printed, whatever it holds.
+    with pytest.raises(ValueError, match=re.escape("override entry 0: it selects")) as exc:
         req.as_cmd_args()
+    assert repr(key) not in str(exc.value)
 
 
 def test_containment_keeps_an_override_whose_first_part_only_starts_like_profile(tmp_path):
@@ -449,7 +450,7 @@ def test_containment_refuses_a_profile_a_model_profile_file_selects(tmp_path):
     )
     assert req.model == "gpt-5.5"
     assert req.config_overrides == {"profile": "work"}
-    with pytest.raises(ValueError, match=re.escape("override 'profile'")):
+    with pytest.raises(ValueError, match=re.escape("override entry 0: it selects")):
         req.as_cmd_args()
 
 
@@ -472,14 +473,12 @@ def test_containment_refuses_a_profile_the_codex_config_selects(tmp_path):
     [
         (None, {"profile": "work"}),
         (None, {"config_overrides": {"profile": "work"}}),
-        (None, {"config_overrides": {"a b": 1}}),
         ('profile = "work"\n', {}),
         ("profile = \n", {}),
     ],
     ids=[
         "profile",
         "override-selects-a-profile",
-        "override-key-unreadable",
         "config-selects-a-profile",
         "config-unreadable",
     ],
@@ -492,6 +491,19 @@ def test_every_containment_refusal_carries_its_own_type(config, fields, tmp_path
     )
     with pytest.raises(ContainmentRefusedError):
         req.as_cmd_args()
+
+
+def test_an_override_key_containment_cannot_read_is_refused_when_the_request_is_built(tmp_path):
+    """Containment reads every override key, so one TOML cannot read is refused as the
+    request is built, by position, as an input the CLI cannot take: a ValueError raised
+    there would arrive wrapped with the whole input."""
+    with pytest.raises(CLIInputRefusedError, match="config override entry 0 is not a TOML key"):
+        CodexCodeRequest(
+            prompt="hi",
+            repo=tmp_path,
+            contain_account_integrations=True,
+            config_overrides={"a b": 1},
+        )
 
 
 def test_containment_reads_the_codex_config_of_the_home_the_child_runs_under(tmp_path):
@@ -892,3 +904,216 @@ def test_a_project_config_that_cannot_be_checked_is_refused_on_every_python(tmp_
             project_codex_profile(repo)
     finally:
         codex_dir.chmod(0o755)
+
+
+# ── an override mapping whose views disagree ────────────────────────────
+# The command line is rendered from the overrides' `items()`, and containment
+# decides from the same pairs, so a mapping whose iteration and `items()` disagree
+# cannot put a profile on the command line past the check.
+
+
+class _OverridesToldByItems(Mapping):
+    """A mapping whose iteration omits the override its ``items()`` yields."""
+
+    def __init__(self, pairs):
+        self._pairs = list(pairs)
+
+    def __iter__(self):
+        return iter(())
+
+    def __len__(self):
+        return len(self._pairs)
+
+    def __getitem__(self, key):
+        raise KeyError(key)
+
+    def items(self):
+        return list(self._pairs)
+
+
+class _OverridesAsADictToldByItems(dict):
+    """A dict whose storage holds an ordinary key while ``items()`` names a profile."""
+
+    def items(self):
+        return [("profile", "work")]
+
+
+class _OverridesAnsweringEachCall(Mapping):
+    """A mapping whose ``items()`` answers a different list of pairs on each call."""
+
+    def __init__(self, answers):
+        self._answers = list(answers)
+        self.calls = 0
+
+    def __iter__(self):
+        return iter(())
+
+    def __len__(self):
+        return 0
+
+    def __getitem__(self, key):
+        raise KeyError(key)
+
+    def items(self):
+        answer = self._answers[min(self.calls, len(self._answers) - 1)]
+        self.calls += 1
+        return list(answer)
+
+
+def _refuse_a_spawn(monkeypatch):
+    def spawned(*_args, **_kwargs):
+        raise AssertionError("the Codex CLI was started")
+
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "ndjson_from_cli", spawned)
+
+
+def _with_those_overrides(tmp_path, overrides, way):
+    """The request with ``overrides`` stored the way a caller without validation leaves it."""
+    request = CodexCodeRequest(prompt="hi", repo=tmp_path, contain_account_integrations=True)
+    if way == "copied":
+        return request.model_copy(update={"config_overrides": overrides})
+    request.config_overrides = overrides
+    return request
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [_OverridesToldByItems([("profile", "work")]), _OverridesAsADictToldByItems({"ok": 1})],
+    ids=["iteration-omits-it", "dict-items-name-it"],
+)
+@pytest.mark.parametrize("way", ["copied", "assigned"], ids=["copied", "assigned"])
+def test_an_override_that_names_a_profile_only_through_items_is_refused(tmp_path, overrides, way):
+    """Containment reads the pairs the command line is rendered from, so an override that
+    only ``items()`` names cannot reach the command line as ``-c profile=...``."""
+    request = _with_those_overrides(tmp_path, overrides, way)
+
+    with pytest.raises(ContainmentRefusedError) as refused:
+        request.as_cmd_args()
+
+    assert "override entry 0: it selects" in str(refused.value)
+    assert "work" not in repr(refused.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "overrides",
+    [_OverridesToldByItems([("profile", "work")]), _OverridesAsADictToldByItems({"ok": 1})],
+    ids=["iteration-omits-it", "dict-items-name-it"],
+)
+@pytest.mark.parametrize("way", ["copied", "assigned"], ids=["copied", "assigned"])
+async def test_an_override_that_names_a_profile_only_through_items_is_refused_before_the_cli(
+    tmp_path, monkeypatch, overrides, way
+):
+    """The same pair is read where the process would start, before any process exists."""
+    _refuse_a_spawn(monkeypatch)
+    request = _with_those_overrides(tmp_path, overrides, way)
+
+    with pytest.raises(ContainmentRefusedError) as refused:
+        async for _ in codex_mod._ndjson_from_cli(request):
+            pass
+
+    assert "override entry 0: it selects" in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    "answers,refused",
+    [
+        ([(), [("profile", "work")]], False),
+        ([[("profile", "work")], ()], True),
+    ],
+    ids=["first-call-empty", "first-call-names-a-profile"],
+)
+def test_the_check_and_the_renderer_share_one_read_of_the_overrides(tmp_path, answers, refused):
+    """``items()`` is read once, so a mapping that answers differently on each call cannot
+    hide a profile from the check and hand it to the renderer, or the other way round."""
+    overrides = _OverridesAnsweringEachCall(answers)
+    request = _with_those_overrides(tmp_path, overrides, "copied")
+
+    if refused:
+        with pytest.raises(ContainmentRefusedError, match="override entry 0: it selects"):
+            request.as_cmd_args()
+    else:
+        assert not any(o.startswith("profile=") for o in _overrides(request.as_cmd_args()))
+    assert overrides.calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "answers,refused",
+    [
+        ([(), [("profile", "work")]], False),
+        ([[("profile", "work")], ()], True),
+    ],
+    ids=["first-call-empty", "first-call-names-a-profile"],
+)
+async def test_the_spawn_reads_the_overrides_once_for_its_check_and_its_render(
+    tmp_path, monkeypatch, answers, refused
+):
+    """Where the process would start, one read serves containment and the render, so a mapping
+    whose ``items()`` answers differently on each call cannot slip a profile past either."""
+    seen = {}
+
+    def spawned(*_args, **_kwargs):
+        seen["argv"] = list(_args)
+        raise AssertionError("the Codex CLI was started")
+
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", "codex")
+    monkeypatch.setattr(codex_mod, "_linked_worktree_git_writable_roots", lambda _cwd: ())
+    monkeypatch.setattr(codex_mod, "ndjson_from_cli", spawned)
+    overrides = _OverridesAnsweringEachCall(answers)
+    request = _with_those_overrides(tmp_path, overrides, "copied")
+
+    if refused:
+        with pytest.raises(ContainmentRefusedError, match="override entry 0: it selects"):
+            async for _ in codex_mod._ndjson_from_cli(request):
+                pass
+    else:
+        with pytest.raises(AssertionError, match="the Codex CLI was started"):
+            async for _ in codex_mod._ndjson_from_cli(request):
+                pass
+        assert not any(o.startswith("profile=") for o in _overrides(seen["argv"]))
+    assert overrides.calls == 1
+
+
+def test_the_renderer_reads_the_pairs_it_is_handed_and_not_the_mapping_again(tmp_path):
+    """The command line is rendered from the pairs handed to it, so a mapping that would name
+    a profile on a later read cannot put one there under containment."""
+    overrides = _OverridesAnsweringEachCall([(), [("profile", "work")]])
+    request = _with_those_overrides(tmp_path, overrides, "copied")
+    pairs = _override_pairs(request.config_overrides)
+
+    assert overrides.calls == 1
+    args = request.as_cmd_args(overrides=pairs)
+    assert overrides.calls == 1
+    assert not any(o.startswith("profile=") for o in _overrides(args))
+
+
+def test_a_validated_override_mapping_is_checked_by_its_copied_keys(tmp_path):
+    """A validated request stores the plain copy of the mapping, so a key only ``items()``
+    yields is not copied and never reaches the command line."""
+    request = CodexCodeRequest(
+        prompt="hi",
+        repo=tmp_path,
+        contain_account_integrations=True,
+        config_overrides=_OverridesToldByItems([("profile", "work")]),
+    )
+
+    assert dict(request.config_overrides) == {}
+    assert not any(o.startswith("profile=") for o in _overrides(request.as_cmd_args()))
+
+
+def test_a_validated_override_dict_is_checked_by_its_storage_not_its_items(tmp_path):
+    """A dict subclass is copied by its storage, so the profile ``items()`` names is not
+    stored and the caller's own key reaches the command line."""
+    request = CodexCodeRequest(
+        prompt="hi",
+        repo=tmp_path,
+        contain_account_integrations=True,
+        config_overrides=_OverridesAsADictToldByItems({"ok": 1}),
+    )
+
+    assert dict(request.config_overrides) == {"ok": 1}
+    args = request.as_cmd_args()
+    assert "ok=1" in _overrides(args)
+    assert not any(o.startswith("profile=") for o in _overrides(args))

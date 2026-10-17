@@ -60,13 +60,22 @@ A store refusal is never suppressed by `suppress_errors`. A
 `TOOL_POST` handler `_act()` fires under its default `suppress_errors=True`, is
 re-raised as itself: a refused write never becomes a swallowed tool error
 result, so a run cannot report a success the store refused to persist. A signal
-whose own persistence is refused is the one exception: the session signal sink
-counts it as a dropped signal and lets the session go on, so the refused signal
-is missing from the stored history while the run's other records still stop.
-The default handlers look the store up by its URL. When the process holds that
-store through a registered compatibility handle they write through it, so their
-writes meet the profile, and a refusal one of them meets is raised by the emit
-as any handler's refusal is.
+whose own persistence is refused is not raised by the emit: the session signal
+sink keeps the first such refusal, logs every later one, and counts none of them
+as dropped, and the run's teardown then fails the run with the kept refusal as
+its reason, also for a refusal recorded while the lifecycle emits run, since the
+terminal status is written after them. Every other failed signal write is still counted as dropped, as
+before.
+A lifecycle emit a run makes hands the run's own open handle to the default
+handlers, so each writes through that handle and meets whatever the store
+requires of the run (the `SESSION_START` and `BRANCH_CREATE` handlers, handed
+the agent setup's handle, write nothing: the rows the setup created already
+carry what they would write); an emit that carries no handle falls back to the store
+looked up by its URL, where a registered compatibility handle is returned ahead
+of a native one. A refusal a handler *raises* is raised by the emit as any
+handler's refusal is; a refusal the signal sink *keeps* (the store declined a
+signal write without raising) is not raised by the emit, and the run's teardown
+fails the run with it as its reason.
 
 `USER_PROMPT_SUBMIT` fires at most once per genuine user-originated turn,
 regardless of how many internal calls that turn drives underneath it — see

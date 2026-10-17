@@ -2,7 +2,11 @@
 
 - **Status**: Proposed
 - **Kind**: Aspirational
-- **Implementation-status**: not-started
+- **Implementation-status**: partial — the `prompt_caching` option and the provider declaration,
+  the tool section in the stable segment (D2), the system text as its own block (D3), the one-hour
+  mark on the stable segment and the five-minute mark on the turn (D5), and cache writes recorded per
+  lifetime (D6) are shipped; the conversation segment and its mark (D1, D4), the lookback mark, the
+  segment-change count and the multi-round acceptance test (D7) are open
 - **Area**: messages-context
 - **Date**: 2026-10-16
 - **Relations**: amends ADR-0007 D1 (the tool definitions' lifetime), D2 steps 2, 4 and 5, and D4,
@@ -40,9 +44,11 @@ Several providers cache a request by its prefix: a later request that starts wit
 reads that part from cache at a fraction of the input price. Anthropic's Messages API, read on
 2026-10-16, works this way. A request places at most four cache marks; a hit looks back at most 20
 content positions from a mark; a write costs 1.25 times the input price for a five-minute entry and
-2 times for a one-hour entry, a read 0.1 times, and a hit renews the entry's lifetime; one-hour marks
+2 times for a one-hour entry, a read 0.1 times for most models (0.05 times for Opus 5.5 and Sonnet
+5.5, 0.025 times for Fable 5.1 and Mythos 5.1), and a hit renews the entry's lifetime; one-hour marks
 must come before five-minute marks; a mark whose prefix is shorter than the model's minimum
-cacheable length is not placed.
+cacheable length (512 tokens on the current models, up to 4,096 on older ones) is not cached: the
+request is processed without caching and without an error.
 
 Two records use "run" for different things, so this record names both senses. ADR-0126 D3 defines a
 **run**, for this router, as the lifetime of one Branch conversation identity; ADR-0123 D1 defines a
@@ -81,7 +87,7 @@ that code on one of two paths, and the two paths differ:
 
 - **A default `iModel` carries a request-option model**, whose fields are the Anthropic request
   model's; `cache_control` is not one of them, so the request-option filter drops the flag
-  (`service/connections/endpoint.py:297-301`) before `messages.py:1076` looks for it. Building that
+  (`service/connections/endpoint.py:298-301`) before `messages.py:1076` looks for it. Building that
   payload for the probe's last request with `cache_control=True` gave no `system` field and no cache
   mark.
 - **An endpoint with no request-option filter carries no request-option model** — an `iModel`
@@ -126,7 +132,7 @@ on every path, with no exception: the Anthropic adapter's `cache_control`-trigge
 Restated for both paths: on a default `iModel` the request-option filter drops the flag before the
 mark code, so no mark is placed; on an endpoint with no request-option filter — an `iModel` restored
 with `request_options` None, or a dict-configured model
-(`service/connections/endpoint.py:297-301`) — the flag reaches the mark code and one five-minute mark
+(`service/connections/endpoint.py:298-301`) — the flag reaches the mark code and one five-minute mark
 lands on the last message. With the option on and the declaration present, this record's placement
 replaces that mark. For a provider without the declaration the request is unchanged whatever the
 option says. There is no ungated change.
@@ -168,7 +174,7 @@ Amends ADR-0007 D1 (the tool definitions' lifetime and the transient set), its D
 instruction and render once in the stable segment, as a section of the system block (D3). They are
 the conversation's tool set — the tools the Branch exposes to the operation — not the per-call
 `action_param`. A call that requests no action, such as `ReAct`'s final answer
-(`operations/ReAct/ReAct.py:653` sets `action_param` None), still carries the same tool section in
+(`operations/ReAct/ReAct.py:658` sets `action_param` None), still carries the same tool section in
 the stable segment; its turn content says that no action is requested. A plain `operate()` whose
 tool set differs from the previous call's is therefore a counted stable-segment change (D6).
 
@@ -267,8 +273,9 @@ compiler does not emit the native system field. For Anthropic:
 - when a turn adds more than the provider's lookback, one five-minute mark at that recorded position,
   on the previous request's last block, so the next read still finds the previous write.
 
-At most four marks; one-hour marks precede five-minute marks; a mark whose prefix is shorter than the
-model's minimum cacheable length is not placed. The lifetimes are settings of the model
+At most four marks; one-hour marks precede five-minute marks. A mark is placed whatever the length of
+its prefix: one shorter than the model's minimum cacheable length is not cached, and the adapter
+holds no exact token count to compare with the minimum. The lifetimes are settings of the model
 configuration, with these as defaults.
 
 The option is `prompt_caching` (bool, default False), a field of the endpoint configuration. The
@@ -322,8 +329,9 @@ probe that drives the same rounds against the code before this record; they are 
 
 - Conversations on prefix-caching providers pay the write price for the stable and conversation
   segments once per entry lifetime (1.25 times input for a five-minute entry, 2 times for a one-hour
-  entry), the write price for each turn's new content once, and the read price (0.1 times input) for
-  the rest. A conversation that changes its tool set mid-conversation pays a new write, visibly.
+  entry), the write price for each turn's new content once, and the read price (0.1 times input, less
+  on the newest models) for the rest. A conversation that changes its tool set mid-conversation pays a
+  new write, visibly.
 - The compiled request for those providers changes shape: a system block holding the tool section,
   the conversation blocks after it, every response section inside the instruction that asks for it,
   context blocks kept for the conversation, and marks from the caching option. Every other provider
@@ -357,7 +365,9 @@ probe that drives the same rounds against the code before this record; they are 
 ## Notes
 
 - Provider facts are from Anthropic's prompt-caching and pricing documentation as read on
-  2026-10-16; other providers that cache by prefix declare their own marks and lifetimes.
+  2026-10-16; the per-model read prices and the minimum-length behaviour were corrected from the
+  same pages read on 2026-10-17; other providers that cache by prefix declare their own marks and
+  lifetimes.
 - The measurements in Context were taken at commit 54176709 by the probe described there. They are a
   characterization of the code before this record, not a D7 acceptance test; the D7 tests are written
   to pass after the change.

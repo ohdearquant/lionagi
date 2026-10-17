@@ -155,6 +155,29 @@ class TestTheEffortIsEncodedLikeEveryOtherOverride:
         # one key, carrying exactly the string given, and nothing else.
         assert toml.loads(pair) == {"reasoning_effort": value}
 
+    @pytest.mark.parametrize(
+        "effort,model",
+        [
+            ("ultra\t", "gpt-5.3-codex-spark"),
+            ("ultra ", "gpt-5.3-codex-spark"),
+            (" ULTRA\u200b", "gpt-5.3-codex-spark"),
+            ("ultra", "gpt-5.3-codex-spark\t"),
+            ("max\n", "gpt-5.3-codex-spark "),
+        ],
+        ids=["tab", "space", "case-and-format", "model-tab", "max-model-space"],
+    )
+    def test_a_name_carrying_control_or_space_is_still_clamped(self, effort, model):
+        """The clamp reads the name without control characters, format characters or
+        surrounding whitespace, so they cannot carry an effort past the model's ceiling."""
+        req = CodexCodeRequest(prompt="hello", model=model, reasoning_effort=effort)
+        assert 'reasoning_effort="xhigh"' in _c_overrides(req.as_cmd_args())
+
+    def test_an_unclamped_name_is_sent_as_given(self):
+        """Only a clamped name is replaced: an effort the model takes keeps its text."""
+        req = CodexCodeRequest(prompt="hello", model="gpt-5.6-sol", reasoning_effort="ultra\t")
+        pair = next(p for p in _c_overrides(req.as_cmd_args()) if p.startswith("reasoning_effort="))
+        assert toml.loads(pair) == {"reasoning_effort": "ultra\t"}
+
     def test_the_ordinary_case_is_a_quoted_string(self):
         """Pins the wire form, so the encoding cannot be dropped while the
         decoded assertions above keep passing on a raw value."""

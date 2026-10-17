@@ -692,12 +692,13 @@ def _warn_if_shadowing_plugin_profile(name: str) -> None:
     )
 
 
-def load_agent_profile(name: str) -> AgentProfile:
+def load_agent_profile(name: str, *, cwd: Path | None = None) -> AgentProfile:
     """Load a named agent profile, searching project-local then global ~/.lionagi/agents/,
 
     then active plugin bundles: a plugin's agent profiles join the search
     only after a project/global miss, and only for a plugin that is trusted +
-    enabled + version-compatible (see ``lionagi.plugins``).
+    enabled + version-compatible (see ``lionagi.plugins``). Project-local
+    directories are found from *cwd*, the process working directory by default.
     """
     plugin_token = "/" in name
     if plugin_token:
@@ -709,7 +710,7 @@ def load_agent_profile(name: str) -> AgentProfile:
     else:
         _validate_bare_name(name)
 
-    dirs = _find_lionagi_dirs()
+    dirs = _find_lionagi_dirs() if cwd is None else _find_lionagi_dirs(cwd)
     unreadable_symlinks: list[tuple[Path, str]] = []
     if not plugin_token:
         for d in dirs:

@@ -172,6 +172,9 @@ class Endpoint:
     is_cli: ClassVar[bool] = False
     transport_arg_keys: ClassVar[tuple[str, ...]] = ()
     _account_routing_provider: ClassVar[str | None] = None
+    # Whether the provider accepts a native system block and caches requests by prompt prefix
+    # (ADR-0127 D3). Only such an endpoint changes a request when ``prompt_caching`` is on.
+    caches_system_prefix: ClassVar[bool] = False
 
     def __init__(
         self,
@@ -230,6 +233,11 @@ class Endpoint:
         caller that has to ask whether an endpoint supports draining will
         eventually skip it for the one that needs it.
         """
+
+    @property
+    def places_prompt_cache(self) -> bool:
+        """True when requests get ADR-0127's cache placement: the option is on and declared here."""
+        return bool(self.config.prompt_caching) and self.caches_system_prefix
 
     @property
     def request_options(self):
@@ -325,6 +333,10 @@ class Endpoint:
                 # one as **kwargs can't leak it into a schema-less payload.
                 "request_model",
                 "operative_model",
+                # The prompt-cache option and the compiler's system blocks are read by the endpoint;
+                # a caller that passes either per call must not get it sent to the provider.
+                "prompt_caching",
+                "system_blocks",
             }
             payload = {k: v for k, v in payload.items() if k not in non_api_params}
 

@@ -437,6 +437,7 @@ async def test_a_field_name_redacts_whatever_separator_it_is_spelled_with(key):
         ("output_tokens", 5678),
         ("total_tokens", 6912),
         ("cached_tokens", 40),
+        ("cache_write_1h_tokens", 300),
         ("reasoning_tokens", 11),
         ("token_count", 7),
     ],

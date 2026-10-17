@@ -39,6 +39,7 @@ class _PreparedContent:
     source: Message | None = None
     cache_variant: str | None = None
     content: MessageContent | None = None
+    tool_refs: list[Any] | None = None
 
     @property
     def base_content(self) -> MessageContent:
@@ -61,13 +62,32 @@ class _PreparedContent:
                 self.content = self.source.content.with_updates(
                     tool_schemas=[], response_format=None
                 )
+            elif self.cache_variant == "instruction_tool_refs":
+                self.content = self.source.content.with_updates(tool_schemas=self.tool_refs or [])
             elif self.cache_variant == "prepared_assistant":
                 self.content = self.source.content.with_updates()
             else:
                 self.content = self.source.content
             self.source = None
             self.cache_variant = None
+            self.tool_refs = None
         return self.content
+
+
+def _tool_name(schema: Any) -> str | None:
+    """The function name a tool schema carries, or None."""
+    if not isinstance(schema, dict):
+        return None
+    function = schema.get("function")
+    name = function.get("name") if isinstance(function, dict) else schema.get("name")
+    return name if isinstance(name, str) and name else None
+
+
+def _tool_refs(schemas: Sequence[Any], registered: frozenset[str]) -> list[Any]:
+    """ADR-0127 D2: the requested tools as an instruction shows them when the system block
+    carries the tool section. A tool the Branch has registered is named, since its definition
+    is in that section; any other schema stays whole, so no definition is lost."""
+    return [name if (name := _tool_name(s)) in registered else s for s in schemas]
 
 
 def _build_instruction(
@@ -178,10 +198,33 @@ def _prepare_run_kwargs(
     *,
     ins: Instruction | None = None,
     context_blocks: Sequence[str] | None = None,
+    imodel: Any = None,
     _use_render_cache: bool = True,
 ) -> tuple[Instruction, dict]:
     if ins is None:
         ins = _build_instruction(branch, instruction, param)
+
+    # ADR-0127 D3: an endpoint that places the prompt cache takes the system text as its own
+    # block, so it is not folded into the first instruction. Off, the fold is unchanged.
+    places_cache = bool(getattr(getattr(imodel, "endpoint", None), "places_prompt_cache", False))
+
+    # ADR-0127 D2: there the Branch's tool set renders once, as a section of the system block,
+    # and every instruction, current or history, renders the same bytes: its requested tools by
+    # name and its response format kept. Off, history drops both, as before.
+    registered: frozenset[str] = frozenset()
+    tool_section = None
+    if places_cache:
+        from lionagi.libs.schema.minimal_yaml import minimal_yaml
+
+        schemas = branch.acts.schema_list
+        registered = frozenset(name for s in schemas if (name := _tool_name(s)))
+        if schemas:
+            tool_section = minimal_yaml({"Tools": schemas}).strip()
+
+    def _as_sent(content: InstructionContent) -> InstructionContent:
+        if not places_cache:
+            return content
+        return content.with_updates(tool_schemas=_tool_refs(content.tool_schemas, registered))
 
     _use_ins_content = None
     _contents: list[_PreparedContent] = []
@@ -225,7 +268,12 @@ def _prepare_run_kwargs(
             )
 
         elif isinstance(msg, Instruction):
-            updates = {"tool_schemas": [], "response_format": None}
+            refs = _tool_refs(msg.content.tool_schemas, registered) if places_cache else None
+            updates = (
+                {"tool_schemas": refs}
+                if places_cache
+                else {"tool_schemas": [], "response_format": None}
+            )
             overlay = bool(_act_res) or i in _leave_out
 
             if i in _leave_out:
@@ -238,11 +286,13 @@ def _prepare_run_kwargs(
                 updates["prompt_context"] = extended_ctx
                 _act_res = []
 
+            variant = "instruction_tool_refs" if places_cache else "prepared_instruction"
             _contents.append(
                 _PreparedContent(
                     source=msg if not overlay else None,
-                    cache_variant="prepared_instruction" if not overlay else None,
+                    cache_variant=variant if not overlay else None,
                     content=(msg.content.with_updates(**updates) if overlay else None),
+                    tool_refs=refs if not overlay else None,
                 )
             )
 
@@ -283,11 +333,15 @@ def _prepare_run_kwargs(
 
                 g = minimal_yaml(g).strip()
             injected = "\n".join(context_blocks) if context_blocks else ""
+            if places_cache:
+                return injected + g
             return branch.msgs.system.rendered + injected + g
 
         if len(_contents) == 0:
             _contents.append(
-                _PreparedContent(content=ins.content.with_updates(guidance=f(ins.content)))
+                _PreparedContent(
+                    content=_as_sent(ins.content.with_updates(guidance=f(ins.content)))
+                )
             )
         elif len(_contents) >= 1:
             first = _contents[0].materialize()
@@ -296,13 +350,21 @@ def _prepare_run_kwargs(
             _contents[0] = _PreparedContent(content=first.with_updates(guidance=f(first)))
             content_to_append = _use_ins_content or ins.content
             if content_to_append is not None:
-                _contents.append(_PreparedContent(content=content_to_append))
+                _contents.append(_PreparedContent(content=_as_sent(content_to_append)))
     else:
         content_to_append = _use_ins_content or ins.content
         if content_to_append is not None:
-            _contents.append(_PreparedContent(content=content_to_append))
+            _contents.append(_PreparedContent(content=_as_sent(content_to_append)))
 
     kw = (param.imodel_kw or {}).copy()
+    if places_cache:
+        stable = []
+        if branch.msgs.system and branch.msgs.system.rendered:
+            stable.append(branch.msgs.system.rendered)
+        if tool_section:
+            stable.append(tool_section)
+        if stable:
+            kw["system_blocks"] = stable
 
     # The current turn's content is always the last entry appended to
     # `_contents` above; captured explicitly by index for the guard below,
@@ -319,6 +381,17 @@ def _prepare_run_kwargs(
                     entry.cache_variant,
                     lambda source=source: (
                         source.content.with_updates(tool_schemas=[], response_format=None).rendered
+                    ),
+                )
+            elif entry.cache_variant == "instruction_tool_refs":
+                # Keyed by the names shown, since which tools are named depends on the
+                # registry, which the content's own revision does not track.
+                refs = entry.tool_refs or []
+                named = "\x00".join(r for r in refs if isinstance(r, str))
+                rendered = source._render_cached(
+                    f"instruction_tool_refs\x00{named}",
+                    lambda source=source, refs=refs: (
+                        source.content.with_updates(tool_schemas=refs).rendered
                     ),
                 )
             else:
