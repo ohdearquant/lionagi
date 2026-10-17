@@ -44,6 +44,17 @@ _GUARDED_NON_API_PATHS = frozenset(
 )
 
 
+# What a no-token daemon can promise about an Operator decision, and what it cannot:
+# the decision routes admit any local caller, so this is a workflow safeguard rather
+# than isolation. Stated on the startup warning and on both decision routes' API
+# descriptions, which are the surfaces a reader meets before trusting the prompt.
+_OPEN_MODE_DECISION_NOTICE = (
+    "Without LIONAGI_STUDIO_AUTH_TOKEN, any process that can reach the daemon's listener, "
+    "including programs run by other local accounts, can allow or deny Operator proposals. "
+    "The permission prompt is a workflow safeguard, not isolation from local programs; "
+    "set a token on a shared machine."
+)
+
 # With no token configured, the answer to an API request from a browser origin that is
 # neither loopback nor the daemon's own.
 _REMOTE_ORIGIN_REFUSAL = (
@@ -148,7 +159,8 @@ def _emit_startup_warnings() -> None:
                 "Studio running WITHOUT authentication on host 0.0.0.0 — "
                 "API requests with neither Origin nor Sec-Fetch-Site are accepted from any "
                 "network interface. This is unsafe in containers or cloud deployments. "
-                "Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token."
+                "Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token. "
+                + _OPEN_MODE_DECISION_NOTICE
             )
         else:
             _log.warning(
@@ -158,7 +170,8 @@ def _emit_startup_warnings() -> None:
                 "same-site/cross-site/other/repeated values need the paired bearer; "
                 "Origin outside loopback/the daemon needs the paired bearer. "
                 "Header admission does not prove locality. "
-                "Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token."
+                "Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token. "
+                + _OPEN_MODE_DECISION_NOTICE
             )
 
     if "*" in CORS_ORIGINS:

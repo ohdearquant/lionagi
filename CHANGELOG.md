@@ -132,6 +132,13 @@ project those rows ran under. To keep the project, name it in those members.
   including failure and cancellation paths. Branch-status and segment metadata writes created
   during synthesis receive the same cleanup as writes from the execution phase (#3211).
 
+### Docs
+
+- The Studio trust texts now say what a daemon without `LIONAGI_STUDIO_AUTH_TOKEN` can actually
+  promise about an Operator decision: any process that can reach the listener, other local accounts
+  included, can allow or deny a pending proposal, so the permission prompt is a workflow safeguard
+  rather than isolation from local programs. Behaviour is unchanged.
+
 ## [0.35.5] - 2026-10-11
 
 ### Added
