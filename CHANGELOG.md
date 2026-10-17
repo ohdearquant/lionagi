@@ -20,7 +20,9 @@ project those rows ran under. To keep the project, name it in those members.
   recorded with the saved change without duplicating the provider's tool result.
   Descriptions appear in the conversation
   list, and forks preserve the source description independently. The store adds
-  nullable `studio_operator_conversations.description`.
+  nullable `studio_operator_conversations.description`. Live conversation titles
+  and descriptions refresh after the tool result, or after a turn ends without
+  one; overlapping rename, pin and archive responses preserve the refreshed state.
 - Studio sessions can set or clear an explicit display label through
   `PUT /api/sessions/{session_id}`. Labels take precedence in session list and
   detail names without changing activity timestamps; clearing a label restores

@@ -76,6 +76,33 @@ const DEFAULT_WIDTH = 408;
 const MIN_WIDTH = 320;
 const MAX_WIDTH = 640;
 
+function recordConversationMetadataCall(
+  pending: Map<string, Set<string>>,
+  frame: OperatorFrame,
+): boolean {
+  const payload = frame.payload as { tool?: unknown; callId?: unknown; ok?: unknown };
+  if (
+    frame.type === "tool_call" &&
+    payload.tool === "mcp__studio_operator__update_conversation" &&
+    typeof payload.callId === "string" &&
+    payload.callId.length > 0
+  ) {
+    const calls = pending.get(frame.requestId) ?? new Set<string>();
+    calls.add(payload.callId);
+    pending.set(frame.requestId, calls);
+  } else if (frame.type === "tool_result" && typeof payload.callId === "string") {
+    const calls = pending.get(frame.requestId);
+    const matched = calls?.delete(payload.callId) ?? false;
+    if (calls?.size === 0) pending.delete(frame.requestId);
+    return matched && payload.ok === true;
+  } else if (frame.type === "done") {
+    const missingResult = (pending.get(frame.requestId)?.size ?? 0) > 0;
+    pending.delete(frame.requestId);
+    return missingResult;
+  }
+  return false;
+}
+
 const OPERATOR_PROVIDER_ORDER: OperatorProvider[] = ["claude_code", "codex", "gemini_code"];
 
 const OPERATOR_PROVIDER_LABELS: Record<OperatorProvider, string> = {
@@ -715,6 +742,119 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const renameButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const previousRenamingIdRef = useRef<string | null>(null);
   const conversationListButtonRef = useRef<HTMLButtonElement>(null);
+  const [metadataMutationEpoch, setMetadataMutationEpoch] = useState(0);
+  const metadataRefreshRef = useRef<{
+    conversationId: string;
+    sequence: number;
+    pending: Map<string, Set<string>>;
+    generation: number;
+    refreshing: boolean;
+    refreshRequested: boolean;
+  } | null>(null);
+  const metadataViewRef = useRef({ conversation: state.conversation, conversations, listFilter });
+
+  useLayoutEffect(() => {
+    metadataViewRef.current = { conversation: state.conversation, conversations, listFilter };
+  }, [state.conversation, conversations, listFilter]);
+
+  useLayoutEffect(
+    () => () => {
+      metadataRefreshRef.current = null;
+    },
+    [state.conversation?.id, state.loadState],
+  );
+
+  const beginMetadataMutation = useCallback((conversationId: string) => {
+    const tracking = metadataRefreshRef.current;
+    const generation = tracking?.generation;
+    const refreshing = tracking?.refreshing;
+    return () => {
+      if (
+        !tracking ||
+        metadataRefreshRef.current !== tracking ||
+        tracking.conversationId !== conversationId ||
+        metadataViewRef.current.conversation?.id !== conversationId ||
+        (!refreshing && tracking.generation === generation)
+      ) {
+        return false;
+      }
+      // A full row returned by a local mutation can predate the tool's write.
+      // Defer to a new read when the mutation overlapped a metadata refresh.
+      tracking.refreshRequested = true;
+      setMetadataMutationEpoch((epoch) => epoch + 1);
+      return true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const conversationId = state.conversation?.id;
+    if (!conversationId || state.loadState !== "ready") return;
+    const initial = metadataRefreshRef.current === null;
+    const tracking = metadataRefreshRef.current ?? {
+      conversationId,
+      sequence: 0,
+      pending: new Map<string, Set<string>>(),
+      generation: 0,
+      refreshing: false,
+      refreshRequested: false,
+    };
+    metadataRefreshRef.current = tracking;
+    let refresh = tracking.refreshRequested;
+    tracking.refreshRequested = false;
+    for (const frame of state.frames) {
+      if (frame.conversationId !== conversationId || frame.sequence <= tracking.sequence) continue;
+      tracking.sequence = frame.sequence;
+      refresh = recordConversationMetadataCall(tracking.pending, frame) || refresh;
+    }
+    // A loaded snapshot already carries current metadata. Retain its pending
+    // calls so a later result or done frame can refresh an in-progress turn.
+    if (initial || !refresh) return;
+    const generation = ++tracking.generation;
+    tracking.refreshing = true;
+    const refreshMetadata = async (): Promise<void> => {
+      const view = metadataViewRef.current;
+      const [snapshot, available] = await Promise.all([
+        getOperatorConversation(conversationId),
+        listOperatorConversations({ status: view.listFilter }),
+      ]);
+      if (
+        metadataRefreshRef.current !== tracking ||
+        tracking.generation !== generation ||
+        metadataViewRef.current.conversation?.id !== conversationId ||
+        snapshot.conversation.id !== conversationId
+      ) {
+        return;
+      }
+      if (metadataViewRef.current.conversation !== view.conversation) {
+        // A pending rename/pin response may contain metadata from before the
+        // tool write. Re-read after that response instead of losing the refresh.
+        return refreshMetadata();
+      }
+      dispatch({ type: "UPDATE_CONVERSATION", conversation: snapshot.conversation });
+      setConversations((current) => {
+        const rows =
+          metadataViewRef.current.listFilter === view.listFilter && current === view.conversations
+            ? available
+            : current;
+        return rows
+          .filter(
+            (item) =>
+              item.id !== conversationId ||
+              snapshot.conversation.status === metadataViewRef.current.listFilter,
+          )
+          .map((item) => (item.id === conversationId ? snapshot.conversation : item));
+      });
+    };
+    void refreshMetadata()
+      .catch((error) => {
+        if (metadataRefreshRef.current === tracking && tracking.generation === generation) {
+          setActionError(error instanceof Error ? error.message : t("errors.load"));
+        }
+      })
+      .finally(() => {
+        if (tracking.generation === generation) tracking.refreshing = false;
+      });
+  }, [metadataMutationEpoch, state.conversation?.id, state.frames, state.loadState, t]);
 
   // Derived rather than synced through an effect: archiving the row being
   // renamed, or switching the filter away from it, removes the row and its
@@ -1244,10 +1384,12 @@ export default function OperatorPanel({ open, onClose }: Props) {
       const existing = conversations.find((item) => item.id === conversationId);
       if (existing && (existing.title ?? "") === trimmed) return;
       setListActionError(null);
+      const refreshAfterMutation = beginMetadataMutation(conversationId);
       try {
         const updated = await updateOperatorConversation(conversationId, {
           title: trimmed.length > 0 ? trimmed : null,
         });
+        if (refreshAfterMutation()) return;
         setConversations((current) =>
           current.map((item) => (item.id === updated.id ? updated : item)),
         );
@@ -1258,17 +1400,19 @@ export default function OperatorPanel({ open, onClose }: Props) {
         setListActionError(error instanceof Error ? error.message : t("errors.rename"));
       }
     },
-    [conversations, state.conversation, t],
+    [beginMetadataMutation, conversations, state.conversation, t],
   );
 
   const togglePin = useCallback(
     async (conversation: OperatorConversation) => {
       setConversationBusyId(conversation.id);
       setListActionError(null);
+      const refreshAfterMutation = beginMetadataMutation(conversation.id);
       try {
         const updated = await updateOperatorConversation(conversation.id, {
           pinned: !conversation.pinned,
         });
+        if (refreshAfterMutation()) return;
         setConversations((current) =>
           current
             .map((item) => (item.id === updated.id ? updated : item))
@@ -1286,7 +1430,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         setConversationBusyId(null);
       }
     },
-    [state.conversation, t],
+    [beginMetadataMutation, state.conversation, t],
   );
 
   const toggleArchive = useCallback(
@@ -1294,10 +1438,12 @@ export default function OperatorPanel({ open, onClose }: Props) {
       const nextStatus = conversation.status === "archived" ? "active" : "archived";
       setConversationBusyId(conversation.id);
       setListActionError(null);
+      const refreshAfterMutation = beginMetadataMutation(conversation.id);
       try {
         const updated = await updateOperatorConversation(conversation.id, {
           status: nextStatus,
         });
+        if (refreshAfterMutation()) return;
         setConversations((current) =>
           updated.status === listFilter
             ? current.map((item) => (item.id === updated.id ? updated : item))
@@ -1312,7 +1458,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         setConversationBusyId(null);
       }
     },
-    [listFilter, state.conversation, t],
+    [beginMetadataMutation, listFilter, state.conversation, t],
   );
 
   const forkConversationById = useCallback(

@@ -863,6 +863,313 @@ describe("OperatorPanel", () => {
       ]);
     });
 
+    describe("live conversation metadata refresh", () => {
+      function metadataCall(sequence: number, requestId = "request-1"): OperatorFrame {
+        return {
+          ...textFrame(sequence, "assistant", ""),
+          requestId,
+          type: "tool_call",
+          payload: {
+            callId: "provider-call-1",
+            tool: "mcp__studio_operator__update_conversation",
+            arguments: { title: "Requested title" },
+            mode: "draft",
+          },
+        };
+      }
+
+      function metadataResult(sequence: number, requestId = "request-1", ok = true): OperatorFrame {
+        return {
+          ...textFrame(sequence, "assistant", ""),
+          requestId,
+          type: "tool_result",
+          payload: { callId: "provider-call-1", ok, result: { nativeToolCompleted: true } },
+        };
+      }
+
+      function metadataDone(sequence: number, requestId = "request-1"): OperatorFrame {
+        return {
+          ...textFrame(sequence, "assistant", ""),
+          requestId,
+          type: "done",
+          payload: { outcome: "failed", lastSequence: sequence },
+        };
+      }
+
+      function deferred<T>() {
+        let resolve!: (value: T) => void;
+        const promise = new Promise<T>((complete) => {
+          resolve = complete;
+        });
+        return { promise, resolve };
+      }
+
+      async function mountMetadataConversation(frames: OperatorFrame[] = []) {
+        const conversation = {
+          id: "conversation-1",
+          title: "Scheduler check",
+          description: "Original scope",
+          status: "active" as const,
+          pinned: true,
+          activeRequestId: "request-1",
+        };
+        const other = {
+          id: "conversation-2",
+          title: "Other conversation",
+          description: "Other scope",
+          status: "active" as const,
+          pinned: false,
+          activeRequestId: null,
+        };
+        window.localStorage.setItem("studio:operator-conversation", conversation.id);
+        api.listOperatorConversations.mockResolvedValue([conversation, other]);
+        api.getOperatorConversation.mockResolvedValue({ conversation, frames });
+        const animationFrames: FrameRequestCallback[] = [];
+        vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+          animationFrames.push(callback);
+          return animationFrames.length;
+        });
+        await mount();
+        await openList();
+        const handlers = api.streamOperatorConversation.mock.calls.at(-1)![2];
+        const emit = async (...incoming: OperatorFrame[]) => {
+          await act(async () => {
+            for (const frame of incoming) handlers.onFrame(frame);
+            animationFrames.shift()?.(0);
+          });
+        };
+        return { conversation, other, emit };
+      }
+
+      function expectMetadata(title: string, description: string, pinned = true) {
+        const picker = container.querySelector('button[aria-label^="Conversations"]');
+        expect(picker?.getAttribute("aria-label")).toBe(`Conversations: ${title}`);
+        const displayedTitle = pinned ? `★ ${title}` : title;
+        const rowTitle = [...container.querySelectorAll("ul li button")].find(
+          (button) => button.querySelector("span")?.textContent === displayedTitle,
+        ) as HTMLButtonElement;
+        expect(rowTitle).toBeDefined();
+        expect(rowTitle.title).toBe(description);
+        expect([...rowTitle.querySelectorAll("span")].map((span) => span.textContent)).toEqual([
+          displayedTitle,
+          description,
+        ]);
+        expect(
+          rowTitle.closest("li")?.querySelector(`button[aria-label="${pinned ? "Unpin" : "Pin"}"]`),
+        ).not.toBeNull();
+        expect(api.acknowledgeOperatorEffect).not.toHaveBeenCalled();
+      }
+
+      it("rereads current metadata and the list after a paired successful native result", async () => {
+        const { conversation, other, emit } = await mountMetadataConversation();
+        const updated = { ...conversation, title: "Stored title", description: "Stored scope" };
+        api.getOperatorConversation.mockResolvedValue({ conversation: updated, frames: [] });
+        api.listOperatorConversations.mockResolvedValue([updated, other]);
+
+        await emit(metadataCall(1));
+        expect(api.getOperatorConversation).toHaveBeenCalledOnce();
+        await emit(metadataResult(2));
+
+        expectMetadata("Stored title", "Stored scope");
+        expect(api.getOperatorConversation).toHaveBeenCalledTimes(2);
+        expect(api.listOperatorConversations).toHaveBeenLastCalledWith({ status: "active" });
+        expect(api.listOperatorConversations).toHaveBeenCalledTimes(2);
+        expect(api.streamOperatorConversation).toHaveBeenCalledOnce();
+        await emit(metadataResult(2), metadataDone(3));
+        expect(api.getOperatorConversation).toHaveBeenCalledTimes(2);
+      });
+
+      it("rereads on done when the provider never reports the metadata call result", async () => {
+        const { conversation, other, emit } = await mountMetadataConversation();
+        const updated = { ...conversation, title: "Durable title", description: "Durable scope" };
+        api.getOperatorConversation.mockResolvedValue({ conversation: updated, frames: [] });
+        api.listOperatorConversations.mockResolvedValue([updated, other]);
+
+        await emit(metadataCall(1), metadataDone(2));
+
+        expectMetadata("Durable title", "Durable scope");
+        expect(api.getOperatorConversation).toHaveBeenCalledTimes(2);
+        expect(api.listOperatorConversations).toHaveBeenCalledTimes(2);
+      });
+
+      it("pairs call ids within the same request and conversation", async () => {
+        const { conversation, other, emit } = await mountMetadataConversation([metadataCall(1)]);
+        const updated = { ...conversation, title: "Paired title", description: "Paired scope" };
+        api.getOperatorConversation.mockResolvedValue({ conversation: updated, frames: [] });
+        api.listOperatorConversations.mockResolvedValue([updated, other]);
+
+        await emit({
+          ...metadataResult(2),
+          payload: { callId: "different-call", ok: true, result: { nativeToolCompleted: true } },
+        });
+        await emit(metadataResult(3, "another-request"));
+        await emit({ ...metadataResult(4), conversationId: "conversation-2" });
+        expect(api.getOperatorConversation).toHaveBeenCalledOnce();
+        await emit(metadataResult(5));
+
+        expectMetadata("Paired title", "Paired scope");
+        expect(api.getOperatorConversation).toHaveBeenCalledTimes(2);
+        await emit(
+          {
+            ...metadataCall(6, "request-2"),
+            payload: { callId: "provider-call-1", tool: "other_tool", arguments: {}, mode: "read" },
+          },
+          metadataResult(7, "request-2"),
+          metadataDone(8, "request-2"),
+        );
+        expect(api.getOperatorConversation).toHaveBeenCalledTimes(2);
+      });
+
+      it("does not refresh a failed result again at done", async () => {
+        const { conversation, other, emit } = await mountMetadataConversation();
+        const updated = {
+          ...conversation,
+          title: "Confirmed title",
+          description: "Confirmed scope",
+        };
+        api.getOperatorConversation.mockResolvedValue({ conversation: updated, frames: [] });
+        api.listOperatorConversations.mockResolvedValue([updated, other]);
+        await emit(metadataCall(1), metadataResult(2));
+        expectMetadata("Confirmed title", "Confirmed scope");
+
+        await emit(metadataCall(3, "request-2"), metadataResult(4, "request-2", false));
+        await emit(metadataDone(5, "request-2"));
+        expect(api.getOperatorConversation).toHaveBeenCalledTimes(2);
+        expect(api.listOperatorConversations).toHaveBeenCalledTimes(2);
+      });
+
+      it("ignores an older metadata read while a newer refresh is pending", async () => {
+        const { conversation, other, emit } = await mountMetadataConversation();
+        const older = { ...conversation, title: "Older title", description: "Older scope" };
+        const newer = { ...conversation, title: "Newer title", description: "Newer scope" };
+        const first = deferred<{ conversation: typeof conversation; frames: OperatorFrame[] }>();
+        const second = deferred<{ conversation: typeof conversation; frames: OperatorFrame[] }>();
+        api.getOperatorConversation
+          .mockReturnValueOnce(first.promise)
+          .mockReturnValueOnce(second.promise);
+        api.listOperatorConversations
+          .mockResolvedValueOnce([older, other])
+          .mockResolvedValueOnce([newer, other]);
+
+        await emit(metadataCall(1), metadataResult(2));
+        await emit(metadataCall(3, "request-2"), metadataResult(4, "request-2"));
+        await act(async () => {
+          first.resolve({ conversation: older, frames: [] });
+        });
+        expectMetadata("Scheduler check", "Original scope");
+        await act(async () => {
+          second.resolve({ conversation: newer, frames: [] });
+        });
+        expectMetadata("Newer title", "Newer scope");
+      });
+
+      it("rereads after a delayed pin response invalidates the metadata snapshot", async () => {
+        const { conversation, other, emit } = await mountMetadataConversation();
+        const unpinned = { ...conversation, pinned: false };
+        const updated = { ...unpinned, title: "Stored title", description: "Stored scope" };
+        const pin = deferred<typeof conversation>();
+        const first = deferred<{ conversation: typeof conversation; frames: OperatorFrame[] }>();
+        const second = deferred<{ conversation: typeof conversation; frames: OperatorFrame[] }>();
+        api.updateOperatorConversation.mockReturnValueOnce(pin.promise);
+        const unpinButton = container.querySelector(
+          'button[aria-label="Unpin"]',
+        ) as HTMLButtonElement;
+        await act(async () => {
+          unpinButton.click();
+        });
+        api.getOperatorConversation
+          .mockReturnValueOnce(first.promise)
+          .mockReturnValueOnce(second.promise);
+        api.listOperatorConversations.mockResolvedValue([updated, other]);
+
+        await emit(metadataCall(1), metadataResult(2));
+        await act(async () => {
+          pin.resolve(unpinned);
+        });
+        expectMetadata("Scheduler check", "Original scope");
+        await act(async () => {
+          first.resolve({ conversation: updated, frames: [] });
+        });
+        expectMetadata("Scheduler check", "Original scope");
+        await act(async () => {
+          second.resolve({ conversation: updated, frames: [] });
+        });
+
+        expectMetadata("Stored title", "Stored scope", false);
+        expect(api.getOperatorConversation).toHaveBeenCalledTimes(3);
+        expect(api.listOperatorConversations).toHaveBeenCalledTimes(3);
+        await emit(metadataDone(3));
+        expect(api.getOperatorConversation).toHaveBeenCalledTimes(3);
+      });
+
+      it("rereads when a delayed pin response arrives after the metadata refresh", async () => {
+        const { conversation, other, emit } = await mountMetadataConversation();
+        const unpinned = { ...conversation, pinned: false };
+        const updated = { ...unpinned, title: "Stored title", description: "Stored scope" };
+        const current = { ...updated, title: "Current title", description: "Current scope" };
+        const pin = deferred<typeof conversation>();
+        const second = deferred<{ conversation: typeof conversation; frames: OperatorFrame[] }>();
+        api.updateOperatorConversation.mockReturnValueOnce(pin.promise);
+        const unpinButton = container.querySelector(
+          'button[aria-label="Unpin"]',
+        ) as HTMLButtonElement;
+        await act(async () => {
+          unpinButton.click();
+        });
+        api.getOperatorConversation
+          .mockResolvedValueOnce({ conversation: updated, frames: [] })
+          .mockReturnValueOnce(second.promise);
+        api.listOperatorConversations
+          .mockResolvedValueOnce([updated, other])
+          .mockResolvedValueOnce([current, other]);
+
+        await emit(metadataCall(1), metadataResult(2));
+        expectMetadata("Stored title", "Stored scope", false);
+        await act(async () => {
+          pin.resolve(unpinned);
+        });
+        expectMetadata("Stored title", "Stored scope", false);
+        await act(async () => {
+          second.resolve({ conversation: current, frames: [] });
+        });
+
+        expectMetadata("Current title", "Current scope", false);
+        expect(api.getOperatorConversation).toHaveBeenCalledTimes(3);
+        expect(api.listOperatorConversations).toHaveBeenCalledTimes(3);
+        await emit(metadataDone(3));
+        expect(api.getOperatorConversation).toHaveBeenCalledTimes(3);
+      });
+
+      it("discards an in-flight metadata read after selecting another conversation", async () => {
+        const { conversation, other, emit } = await mountMetadataConversation();
+        const updated = { ...conversation, title: "Delayed title", description: "Delayed scope" };
+        const pending = deferred<{ conversation: typeof conversation; frames: OperatorFrame[] }>();
+        api.getOperatorConversation.mockReturnValueOnce(pending.promise);
+        api.listOperatorConversations.mockResolvedValueOnce([updated, other]);
+        await emit(metadataCall(1), metadataResult(2));
+        expect(api.getOperatorConversation).toHaveBeenCalledTimes(2);
+        api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+        const otherButton = [...container.querySelectorAll("ul li button")].find(
+          (button) => button.querySelector("span")?.textContent === "Other conversation",
+        ) as HTMLButtonElement;
+        await act(async () => {
+          otherButton.click();
+        });
+        await act(async () => {
+          pending.resolve({ conversation: updated, frames: [] });
+        });
+        await openList();
+
+        expect(
+          container
+            .querySelector('button[aria-label^="Conversations"]')
+            ?.getAttribute("aria-label"),
+        ).toBe("Conversations: Other conversation");
+        expect(container.querySelector("ul")?.textContent).toContain("Scheduler check");
+        expect(container.querySelector("ul")?.textContent).not.toContain("Delayed title");
+      });
+    });
+
     it("renames a conversation inline and reflects the new title", async () => {
       window.localStorage.setItem("studio:operator-conversation", "conversation-1");
       api.updateOperatorConversation.mockResolvedValue({
