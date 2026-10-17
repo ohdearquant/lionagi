@@ -334,9 +334,33 @@ def _mask_content_runs(body: Any, key: Any) -> Any:
     return body
 
 
+def _place_prompt_cache(payload: dict, stable_blocks: list[str]) -> None:
+    """Write the stable blocks as the native system field and mark the segment ends (ADR-0127 D5).
+
+    One one-hour mark ends the stable segment, on its last block; one five-minute mark goes on the
+    last block of the last message, the end of the turn segment. The last message is copied before
+    it is marked, so the caller's message list is left as it was handed in.
+    """
+    if stable_blocks:
+        system = [{"type": "text", "text": text} for text in stable_blocks]
+        system[-1]["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
+        payload["system"] = system
+    messages = payload.get("messages")
+    if not messages:
+        return
+    content = messages[-1].get("content")
+    if isinstance(content, str):
+        content = [{"type": "text", "text": content}] if content else []
+    if not isinstance(content, list) or not content or not isinstance(content[-1], dict):
+        return
+    content = [*content[:-1], {**content[-1], "cache_control": {"type": "ephemeral"}}]
+    payload["messages"] = [*messages[:-1], {**messages[-1], "content": content}]
+
+
 @AnthropicConfigs.MESSAGES.register
 class AnthropicMessagesEndpoint(Endpoint):
     _account_routing_provider = "anthropic"
+    caches_system_prefix = True
 
     def __init__(
         self,
@@ -1043,6 +1067,7 @@ class AnthropicMessagesEndpoint(Endpoint):
         **kwargs,
     ):
         request_dict = request if isinstance(request, dict) else request.model_dump()
+        system_blocks = request_dict.pop("system_blocks", None)
         prompt_cache_control = request_dict.get("cache_control")
         if self._account_routing_enabled() and request_dict.get("service_tier") not in (
             None,
@@ -1072,6 +1097,16 @@ class AnthropicMessagesEndpoint(Endpoint):
             payload["cache_control"] = prompt_cache_control
 
         payload.pop("api_key", None)
+
+        if self.places_prompt_cache:
+            # ADR-0127 D5: this placement replaces the last-message mark `cache_control` would add.
+            # The flag keeps its other meaning, the response memo in Endpoint.call.
+            payload.pop("cache_control", None)
+            stable = [
+                text for text in ([system] if system else []) + list(system_blocks or []) if text
+            ]
+            _place_prompt_cache(payload, stable)
+            return (payload, headers)
 
         if "cache_control" in payload:
             cache_control = payload.pop("cache_control")

@@ -76,6 +76,9 @@ class EndpointConfig(BaseModel):
     openai_compatible: bool = False
     requires_tokens: bool = False
     context_window: int | None = None
+    # Prompt-cache placement (ADR-0127): read by the endpoint, never sent in a request body. It
+    # changes a request only on an endpoint that declares prefix caching of a native system block.
+    prompt_caching: bool = False
     kwargs: dict = Field(default_factory=dict)
     client_kwargs: dict = Field(default_factory=dict)
     allow_local_network: bool = False
