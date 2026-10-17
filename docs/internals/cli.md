@@ -883,6 +883,21 @@ engine model that does include it.
 
 ## `invoke.py` — invocation records
 
+**`_end_invocation`** — the guarded `status` write returns an `InvocationEnd` rather than a
+bare row, so the handler can tell an applied close from a refused one. A refusal means the
+row was already in a *different* terminal status (another closer, the reaper, or a sibling
+launch won the race), so the requested `--status` and `--metadata` were not recorded; the
+command reports that on stderr and exits 1 instead of printing the stored status as a
+successful close. A close naming the status the row already carries is applied: the status
+and end time are left alone and only the `--metadata` payload is merged, which is how a
+finalizer records its result on a row an earlier close already moved. That merge is
+`StateDB.merge_invocation_node_metadata`, one UPDATE that merges the payload inside the
+database, so a second closer merging its own payload meanwhile is merged with rather than
+overwritten; there is no read-modify-write in Python and no retry. The payload lands with
+that write or the write fails and the failure propagates, so a zero exit still means the
+metadata was saved. The status write and the merge are two writes in that order, so a reader
+can see the terminal status a moment before the closer's metadata.
+
 **`_start_invocation`** — invocation records carry no pid marker. `li invoke start` is a
 short-lived CLI command that creates the row and exits (`INV=$(li invoke start ...)`); it is
 NOT the long-lived owner. Recording its pid would be a recycled-PID hazard — a later live

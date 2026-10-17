@@ -45,6 +45,17 @@ _GUARDED_NON_API_PATHS = frozenset(
 )
 
 
+# What a no-token daemon can promise about an Operator decision, and what it cannot:
+# the decision routes admit any local caller, so this is a workflow safeguard rather
+# than isolation. Stated on the startup warning and on both decision routes' API
+# descriptions, which are the surfaces a reader meets before trusting the prompt.
+_OPEN_MODE_DECISION_NOTICE = (
+    "Without LIONAGI_STUDIO_AUTH_TOKEN, any process that can reach the daemon's listener, "
+    "including programs run by other local accounts, can allow or deny Operator proposals. "
+    "The permission prompt is a workflow safeguard, not isolation from local programs; "
+    "set a token on a shared machine."
+)
+
 # With no token configured, the answer to an API request from a browser origin that is
 # neither loopback nor the daemon's own.
 _REMOTE_ORIGIN_REFUSAL = (
@@ -56,12 +67,15 @@ _REMOTE_ORIGIN_REFUSAL = (
 def _origin_accepted_without_token(origins: list[str], raw_host: str) -> bool:
     """Whether a request may use the API when no token is configured, by its Origin.
 
-    No Origin header (a command-line or scripted client) is accepted. A browser origin is
-    accepted when its host is loopback (``localhost``, 127.0.0.0/8 or ``::1``) on any port,
-    or when it is the daemon's own origin: its authority equals the request's Host, as for
-    the SPA a daemon bound to another address serves itself. Any other origin, ``null``
-    included, is refused. CORS only decides which pages may read a response; a page on an
-    allowed origin can still act, so it cannot stand in for this check.
+    A request with no Origin header is accepted here and then judged by its
+    ``Sec-Fetch-Site`` header (``_fetch_site_accepted_without_origin``), because a
+    browser sends no Origin on some cross-site GET requests. A browser origin is accepted
+    when its host is loopback (``localhost``, 127.0.0.0/8 or ``::1``) on any port, or
+    when it is the daemon's own
+    origin: its authority equals the request's Host, as for the SPA a daemon bound to
+    another address serves itself. A request that carries an Origin from another site,
+    ``null`` included, is refused. CORS only decides which pages may read a response; a
+    page on an allowed origin can still act, so it cannot stand in for this check.
     """
     if not origins:
         return True
@@ -171,16 +185,23 @@ def _emit_startup_warnings() -> None:
         if _host_reaches_other_machines(bind_host):
             where = bind_host or "every interface"
             _log.warning(
-                f"Studio running WITHOUT authentication on host {where} — a page "
-                "on any machine that can reach that address is accepted, so other "
-                "machines can reach this Studio. This is unsafe in containers or cloud "
-                "deployments. Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token."
+                f"Studio running WITHOUT authentication on host {where} — API "
+                "requests with neither Origin nor Sec-Fetch-Site are accepted from "
+                "other machines that can reach that address. This is unsafe in "
+                "containers or cloud deployments. Set LIONAGI_STUDIO_AUTH_TOKEN to "
+                "require a bearer token. " + _OPEN_MODE_DECISION_NOTICE
             )
         else:
             _log.warning(
-                "Studio running WITHOUT authentication — API requests from the command "
-                "line and from pages on this machine are accepted; a page on any other "
-                "origin is refused. Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token."
+                "Studio running WITHOUT authentication on loopback (reachable on this "
+                "machine only) — requests with neither Origin nor "
+                "Sec-Fetch-Site are accepted (CLI, scripts, indistinguishable browsers); "
+                "without Origin, Sec-Fetch-Site none/same-origin pass, "
+                "same-site/cross-site/other/repeated values need the paired bearer; "
+                "Origin outside loopback/the daemon needs the paired bearer. "
+                "Header admission does not prove locality. "
+                "Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token. "
+                + _OPEN_MODE_DECISION_NOTICE
             )
 
     if "*" in CORS_ORIGINS:
