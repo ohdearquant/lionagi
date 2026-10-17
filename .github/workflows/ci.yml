@@ -56,6 +56,7 @@ concurrency:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
     - uses: actions/checkout@v7
       with:
@@ -79,6 +80,7 @@ jobs:
 
   core-install:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
     - uses: actions/checkout@v7
       with:
@@ -131,6 +133,7 @@ jobs:
     # is absent.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
     - uses: actions/checkout@v7
       with:
@@ -191,12 +194,15 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    # A pytest-xdist controller can block waiting on a worker that never comes
-    # back, where no per-test timeout reaches it (the max-worker-restart note in
-    # pyproject.toml). Unbounded, that leg runs to the six-hour job limit, and
-    # because runs on a pushed branch share one concurrency group and are never
-    # cancelled, every push in the meantime queues behind it and all but the
-    # newest are cancelled without running. A leg takes 12 to 28 minutes.
+    # Every job in this workflow has a timeout. A test can hang where
+    # pytest-timeout's per-test limit does not end it, and the worker running
+    # it then holds the whole run. Unbounded, that leg runs to the six-hour job
+    # limit, and because runs on a pushed branch share one concurrency group and
+    # are never cancelled, every push in the meantime queues behind it and all
+    # but the newest are cancelled without running. A leg takes 15 to 29
+    # minutes. The test steps stop at 45, before the job's 60, so a stopped leg
+    # still runs the failure telemetry and the peak-RSS report, which names the
+    # test each worker was still running.
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -261,6 +267,7 @@ jobs:
     # plain one.
     - name: Run tests with coverage
       if: matrix.python-version == '3.10' && github.event_name != 'pull_request'
+      timeout-minutes: 45
       run: scripts/ci.sh test-python-cov
       env:
         MAXFAIL: 25
@@ -268,6 +275,7 @@ jobs:
 
     - name: Run tests
       if: matrix.python-version != '3.10' || github.event_name == 'pull_request'
+      timeout-minutes: 45
       run: scripts/ci.sh test-python
       env:
         MAXFAIL: 0
@@ -344,7 +352,7 @@ jobs:
   quarantine:
     continue-on-error: true
     runs-on: ubuntu-latest
-    # The same controller hang as `test` (see there); this lane takes about a minute.
+    # The same hang as `test` (see there); this lane takes about a minute.
     timeout-minutes: 15
     env:
       UV_PYTHON: "3.12"
@@ -366,6 +374,7 @@ jobs:
         uv venv
         uv sync --all-extras
     - name: Run quarantined tests only
+      timeout-minutes: 10
       run: scripts/ci.sh test-python-quarantine
       env:
         MAXFAIL: 0
@@ -389,6 +398,7 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: apps/studio/frontend
@@ -498,6 +508,7 @@ jobs:
   # Detect which conditional-job inputs changed, to gate the jobs below.
   changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       studio: ${{ steps.filter.outputs.studio }}
       adr: ${{ steps.filter.outputs.adr }}
@@ -550,6 +561,7 @@ jobs:
     needs: changes
     if: ${{ always() && needs.changes.result == 'success' && needs.changes.outputs.studio == 'true' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@v7
       with:
@@ -580,6 +592,7 @@ jobs:
     needs: changes
     if: ${{ always() && needs.changes.result == 'success' && needs.changes.outputs.imports == 'true' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -630,6 +643,7 @@ jobs:
     needs: changes
     if: ${{ always() && needs.changes.result == 'success' && needs.changes.outputs.imports == 'true' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -666,6 +680,7 @@ jobs:
     needs: changes
     if: ${{ always() && needs.changes.result == 'success' && needs.changes.outputs.lionrs == 'true' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: lionrs/crates
@@ -691,6 +706,7 @@ jobs:
     needs: changes
     if: ${{ always() && needs.changes.result == 'success' && needs.changes.outputs.lion1 == 'true' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: lion1
@@ -715,6 +731,7 @@ jobs:
 
   vscode:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: apps/vscode
@@ -738,6 +755,7 @@ jobs:
 
   marketplace:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
     - uses: actions/checkout@v7
       with:
@@ -760,6 +778,7 @@ jobs:
   ci-gate:
     if: ${{ always() }}
     needs: [lint, core-install, docs, test, frontend, studio-e2e, changes, studio-docker, minimal-import, no-eager-heavies, lionrs, lion1, vscode, marketplace]
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
     - name: Check aggregate result
@@ -821,6 +840,7 @@ jobs:
   publish:
     needs: [lint, test]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read

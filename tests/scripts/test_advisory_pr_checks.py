@@ -1145,7 +1145,7 @@ CI_GATE_CONDITIONAL_GATES = {
 # a required job (a step's `run:`, `if:` or `continue-on-error`) is not pinned
 # here: these pins cover the aggregate job, the jobs it needs, and the filters and
 # outputs that let a conditional job skip.
-CI_GATE_JOB_KEYS = {"if": "${{ always() }}", "runs-on": "ubuntu-latest"}
+CI_GATE_JOB_KEYS = {"if": "${{ always() }}", "runs-on": "ubuntu-latest", "timeout-minutes": 10}
 CI_GATE_STEP_KEYS = frozenset({"name", "env", "run"})
 CI_CHANGES_FILTERS = {
     "studio": [
