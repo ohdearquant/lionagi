@@ -65,6 +65,7 @@ async def chat(
         chat_param,
         ins=provider_ins or ins,
         context_blocks=context_report.blocks if context_report else None,
+        imodel=imodel,
     )
 
     if not chat_param._is_sentinel(chat_param.include_token_usage_to_model):

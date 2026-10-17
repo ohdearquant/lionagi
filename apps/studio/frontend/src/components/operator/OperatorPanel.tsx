@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link, useLocation, useNavigate } from "@tanstack/react-router";
+import { Link, useLocation, useNavigate, useSearch } from "@tanstack/react-router";
 import { useTranslations } from "use-intl";
 import {
   ApiError,
@@ -67,6 +67,7 @@ import {
   type StoredEffectAcknowledgement,
 } from "./operatorEffects";
 import { nextObservationSeq, observationObserver } from "./observationSequence";
+import { useOperatorProject } from "./OperatorProjectContext";
 import { applyTheme } from "@/lib/theme";
 
 const STORAGE_KEY = "studio:operator-conversation";
@@ -248,6 +249,7 @@ export function formatProposalCommand(command: Record<string, unknown>): Formatt
 function operatorContext(
   pathname: string,
   search: Record<string, unknown>,
+  project: string | null,
 ): OperatorContextSnapshot & { observationSeq: number; observerId: string } {
   let space: OperatorContextSnapshot["space"] = "mission";
   if (pathname.startsWith("/library")) space = "library";
@@ -285,6 +287,7 @@ function operatorContext(
   const queryString = query.toString();
   return {
     space,
+    ...(project ? { project } : {}),
     route: `${pathname}${queryString ? `?${queryString}` : ""}`,
     selection: Object.keys(selection).length ? selection : null,
     filters,
@@ -662,6 +665,8 @@ function FrameCard({
 export default function OperatorPanel({ open, onClose }: Props) {
   const t = useTranslations("operator");
   const location = useLocation();
+  const search = useSearch({ from: "/fleet", shouldThrow: false });
+  const project = useOperatorProject(location.pathname, search ?? {});
   const navigate = useNavigate();
   const [state, dispatch] = useReducer(operatorReducer, initialOperatorState);
   const [instruction, setInstruction] = useState("");
@@ -1036,12 +1041,16 @@ export default function OperatorPanel({ open, onClose }: Props) {
     // the debounce and the network both reorder, so two navigations can reach
     // the server reversed and the server has to keep whichever the browser
     // observed later rather than whichever arrived later.
-    const context = operatorContext(location.pathname, location.search as Record<string, unknown>);
+    const context = operatorContext(
+      location.pathname,
+      location.search as Record<string, unknown>,
+      project,
+    );
     const timer = window.setTimeout(() => {
       void reportOperatorView(conversationId, context).catch(() => {});
     }, 150);
     return () => window.clearTimeout(timer);
-  }, [conversationId, location.pathname, location.search]);
+  }, [conversationId, location.pathname, location.search, project]);
 
   useLayoutEffect(() => {
     const oldHeight = anchorHeightRef.current;
@@ -1084,6 +1093,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
       const context = operatorContext(
         location.pathname,
         location.search as Record<string, unknown>,
+        project,
       );
       // The menu is hydrated from the conversation's pin, so an empty
       // selection here means the operator moved it back to Default. Sending
@@ -1120,6 +1130,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
     instruction,
     location.pathname,
     location.search,
+    project,
     model,
     effectiveEffort,
     sending,
