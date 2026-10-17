@@ -203,9 +203,11 @@ def add_invoke_subparser(subparsers: argparse._SubParsersAction) -> None:
         "--metadata",
         default=None,
         help=(
-            "JSON merged key-by-key into the invocation's existing metadata, so anything written "
-            "during the run survives unless this overwrites that key. A close naming a different "
-            "status than the stored one records neither the status nor this payload."
+            "JSON merged key-by-key into the invocation's existing metadata as an RFC 7396 merge "
+            "patch, so anything written during the run survives unless this overwrites that key. "
+            "A nested object merges into the stored object rather than replacing it, and a key "
+            "set to null is removed. A close naming a different status than the stored one "
+            "records neither the status nor this payload."
         ),
     )
 

@@ -3031,14 +3031,17 @@ class StateDB:
             "END"
         )
         for index, (kind, path, value) in enumerate(ops or []):
-            # A patch key path, spelled as SQL string literals with single quotes doubled. The
-            # keys come from the caller's own patch; doubling is what keeps one from ending the
-            # literal early (this file builds its table names the same way).
-            keys = ", ".join("'" + key.replace("'", "''") + "'" for key in path)
-            at = f"ARRAY[{keys}]"
+            # A patch key path, one bound parameter per element. `ARRAY[...]` takes text values,
+            # and a key the caller supplied is never spelled into the statement: read from inside
+            # a text() statement, a key holding `:name`, a lone `:id`, a backslash or a quote
+            # would be read as a bind parameter, substituted, or unescaped, so the path would not
+            # be the key the caller named.
+            at = "ARRAY[{}]".format(
+                ", ".join(f"CAST(:k{index}_{depth} AS text)" for depth in range(len(path)))
+            )
             if kind == "object":
                 expr = (
-                    f"(SELECT jsonb_set(_doc, {at},"  # noqa: S608 -- a patch key path, quoted
+                    f"(SELECT jsonb_set(_doc, {at},"  # noqa: S608 -- patch key path, bound
                     f" CASE WHEN jsonb_typeof(_doc #> {at}) = 'object'"
                     f" THEN _doc #> {at} ELSE '{{}}'::jsonb END, true)"
                     f" FROM (SELECT {expr} AS _doc) AS _m{index})"
@@ -3064,7 +3067,12 @@ class StateDB:
             params["patch"] = patch
             binds.append(bindparam("patch", type_=JSON))
         else:
-            for index, (kind, _path, value) in enumerate(ops):
+            for index, (kind, path, value) in enumerate(ops):
+                # Every path element the statement reads back, bound in that statement's own
+                # parameter names, so a key cannot reach the SQL text at all.
+                for depth, key in enumerate(path):
+                    params[f"k{index}_{depth}"] = key
+                    binds.append(bindparam(f"k{index}_{depth}"))
                 if kind == "value" and value is not None:
                     params[f"v{index}"] = value
                     binds.append(bindparam(f"v{index}", type_=JSON))

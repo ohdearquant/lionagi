@@ -275,8 +275,17 @@ async def test_fire_happy_path_records_invocation_and_run():
     assert svc.update_status.await_count == 3  # running + completed + invocation
     # Only flush_run_telemetry's merge of node_metadata["coordination"]
     # remains; the ended_at stamp that used to precede the terminal write now
-    # rides it.
+    # rides it. The metadata reaches the store as its own merge, so no
+    # whole-column update_invocation() is issued for it.
+    svc.update_invocation.assert_not_awaited()
     assert svc.merge_invocation_node_metadata.await_count == 1
+    (created_invocation,), _ = svc.create_invocation.await_args
+    (merge_inv_id, merge_patch), _ = svc.merge_invocation_node_metadata.await_args
+    assert merge_inv_id == created_invocation["id"]
+    # The patch is exactly the coordination key, carrying this run's signal
+    # counters -- not a snapshot of the whole node_metadata column.
+    assert set(merge_patch) == {"coordination"}
+    assert merge_patch["coordination"]["signals"]["emitted"] == {"ScheduleRunSucceeded": 1}
 
     terminal_run = [
         call

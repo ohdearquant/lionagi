@@ -545,6 +545,79 @@ def test_sqlite_merge_node_metadata_sql_uses_json_patch():
     assert "json_patch" in sql
 
 
+def test_node_metadata_merge_ops_order_containers_before_contents():
+    """The fold emits a container step for every object node ahead of the
+    values under it, so a value is written through a container that already
+    exists. A nested patch, a null at depth and an empty patch are the three
+    shapes the PostgreSQL statement is built from."""
+    nested = StateDB._node_metadata_merge_ops({"nested": {"a": 1}})
+    assert nested == [("object", ("nested",), None), ("value", ("nested", "a"), 1)]
+
+    deep = StateDB._node_metadata_merge_ops({"a": {"b": {"c": None, "e": 3}}})
+    assert deep == [
+        ("object", ("a",), None),
+        ("object", ("a", "b"), None),
+        ("value", ("a", "b", "c"), None),
+        ("value", ("a", "b", "e"), 3),
+    ]
+    # Every container step sorts ahead of every value step, at every depth.
+    kinds = [kind for kind, _, _ in deep]
+    assert kinds.index("value") > max(i for i, k in enumerate(kinds) if k == "object")
+
+    assert StateDB._node_metadata_merge_ops({}) == []
+
+
+def test_pg_merge_node_metadata_sql_emits_a_step_per_op():
+    """The PostgreSQL statement emits one jsonb_set per object step and per
+    non-null value step, and `#-` for a value the patch sets to null; an empty
+    op list leaves a statement that still reads the stored document."""
+    ops = StateDB._node_metadata_merge_ops({"nested": {"keep": 1, "drop": None}})
+    sql = StateDB._merge_node_metadata_sql("postgresql", ops=ops, table="invocations")
+    # One jsonb_set for the container and one for the surviving value, plus the
+    # `#-` that takes the nulled key out -- and no whole-document null strip.
+    assert sql.count("jsonb_set(") == 2
+    assert "#-" in sql
+    assert "jsonb_strip_nulls" not in sql
+
+    empty = StateDB._merge_node_metadata_sql("postgresql", ops=[], table="invocations")
+    assert "jsonb_set(" not in empty
+    assert "#-" not in empty
+    assert "jsonb_typeof(node_metadata::jsonb) = 'object'" in empty
+
+
+def test_pg_merge_node_metadata_sql_binds_every_path_key():
+    """Every path element is a bind parameter, and no key text reaches the
+    statement. A key read from inside a text() statement as a quoted literal is
+    parsed as a bind parameter: `:foo` raises, `:id` substitutes, `a\\:b` loses
+    its backslash. Each of those is a key the caller named, so each is bound."""
+    import re
+
+    from sqlalchemy import text
+
+    keys = [":foo", ":id", "a\\:b", "quote'key", "café", "{a,b}"]
+    ops = StateDB._node_metadata_merge_ops(
+        {key: 1 for key in keys} | {"nested": {"keep": 1, "drop": None}}
+    )
+    sql = StateDB._merge_node_metadata_sql("postgresql", ops=ops, table="invocations")
+
+    # No key text appears inside a SQL string literal anywhere in the statement.
+    # `:id` and `:now` are the statement's own SET/WHERE binds, so the check is
+    # on literals only -- that is where a formatted key would sit.
+    literals = " ".join(re.findall(r"'[^']*'", sql))
+    for key in keys:
+        assert key not in literals, f"key {key!r} was formatted into a literal: {sql}"
+
+    # Every key the ops carry is named by a bind the statement actually declares.
+    declared = set(text(sql).compile().params)
+    expected = {
+        f"k{index}_{depth}" for index, (_, path, _) in enumerate(ops) for depth in range(len(path))
+    }
+    assert expected <= declared, f"unbound path keys: {sorted(expected - declared)}"
+    # A placeholder the statement declares but no op names would mean a
+    # formatted key slipped back in; nothing else may be declared.
+    assert declared - expected - {"now", "id"} <= {f"v{index}" for index in range(len(ops))}
+
+
 def test_to_named_skips_question_mark_in_string_literal():
     sql, params = StateDB._to_named("SELECT '?' AS q, ? AS v", ["x"])
     assert sql == "SELECT '?' AS q, :p0 AS v"
@@ -693,6 +766,16 @@ _MERGE_PARITY_CASES = [
         {},
         {"segments": [{"op_id": "x", "ended_at": None, "last_heartbeat_at": None}]},
         {"segments": [{"op_id": "x", "ended_at": None, "last_heartbeat_at": None}]},
+    ),
+    (
+        # Keys spelled with characters a SQL path or a bind parser reads
+        # specially: a colon, a backslash before a colon, and a comma. The
+        # merge must persist the exact keys the caller named on both backends,
+        # and drop only the key the patch set to null.
+        "patch_keys_with_colon_backslash_and_comma",
+        {"nested": {"keep": 1}},
+        {"nested": {":foo": 1, "a\\:b": 2, "{c,d}": 3, "keep": None}},
+        {"nested": {":foo": 1, "a\\:b": 2, "{c,d}": 3}},
     ),
 ]
 
@@ -853,6 +936,61 @@ async def test_merge_node_metadata_nested_patch_dialect_parity(sqlite_db: StateD
                 )
     finally:
         await pg.close()
+
+
+async def test_merge_node_metadata_sqlite_arm_of_the_parity_tables(sqlite_db: StateDB):
+    """The SQLite half of the dialect-parity tables, without a Postgres.
+
+    The parity test above takes `pg_url` in the same signature as the SQLite
+    arm, so on a machine with no Postgres container every case in the tables
+    skips, and a SQLite merge that stops landing its keys would not be caught.
+    This runs the same three tables against SQLite alone, so the SQLite
+    behaviour is still pinned when the Postgres arm is skipped."""
+    from sqlalchemy import text
+
+    assert sqlite_db.dialect == "sqlite"
+
+    for name, initial, patch, expected in _MERGE_PARITY_CASES:
+        sid = _uid()
+        await _seed_node_metadata(sqlite_db, sid, initial)
+        await sqlite_db.merge_session_node_metadata(sid, patch)
+        got = _node_metadata(await sqlite_db.get_session(sid))
+        assert got == expected, f"{name} on sqlite: expected {expected!r}, got {got!r}"
+
+    for name, initial, patch, expected in _MERGE_PARITY_NONOBJECT_CASES:
+        sid = _uid()
+        await _seed_node_metadata(sqlite_db, sid, initial)
+        await sqlite_db.merge_session_node_metadata(sid, patch)
+        got = _pop_discarded_at(_node_metadata(await sqlite_db.get_session(sid)))
+        assert got == expected, f"{name} on sqlite: expected {expected!r}, got {got!r}"
+
+    for name, initial, patch, expected in _MERGE_NESTED_CASES:
+        sid = _uid()
+        await _seed_node_metadata(sqlite_db, sid, initial)
+        await sqlite_db.merge_session_node_metadata(sid, patch)
+        got = _node_metadata(await sqlite_db.get_session(sid))
+        assert got == expected, f"{name} on sqlite: expected {expected!r}, got {got!r}"
+
+    # A nested patch whose keys carry the characters the PostgreSQL path syntax
+    # treats specially (and a colon, which text() would read as a bind token)
+    # lands on SQLite as the literal keys the caller named.
+    sid = _uid()
+    await _seed_node_metadata(sqlite_db, sid, {"a.b": {"{c,d}": 1, "q'1": 2}})
+    await sqlite_db.merge_session_node_metadata(
+        sid, {"a.b": {"{c,d}": None, "q'1": 3, ":foo": 4, "a\\:b": 5, "café": 6}}
+    )
+    got = _node_metadata(await sqlite_db.get_session(sid))
+    assert got == {"a.b": {"q'1": 3, ":foo": 4, "a\\:b": 5, "café": 6}}, got
+
+    # True SQL NULL is an absent object to merge into, not a foreign shape.
+    sid = _uid()
+    await _seed_node_metadata(sqlite_db, sid, {"tmp": 1})
+    async with sqlite_db._tx() as conn:
+        await conn.execute(
+            text("UPDATE sessions SET node_metadata = NULL WHERE id = :id"), {"id": sid}
+        )
+    await sqlite_db.merge_session_node_metadata(sid, {"x": 1})
+    assert _node_metadata(await sqlite_db.get_session(sid)) == {"x": 1}
 
 
 async def test_merge_node_metadata_malformed_existing_text_sqlite_only(sqlite_db: StateDB):

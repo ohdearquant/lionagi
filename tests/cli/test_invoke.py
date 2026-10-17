@@ -657,3 +657,25 @@ def test_run_invoke_end_same_status_close_merges_onto_a_row_without_node_metadat
     assert row["status"] == "completed"
     assert row["ended_at"] == 200.0
     assert row["node_metadata"] == {"result": "pr-url"}
+
+
+def _invoke_end_parser() -> argparse.ArgumentParser:
+    """The `li invoke end` parser, for help-text assertions."""
+    from lionagi.cli.invoke import add_invoke_subparser
+
+    parser = argparse.ArgumentParser(prog="li")
+    root = parser.add_subparsers(dest="command", required=True)
+    add_invoke_subparser(root)
+    return root.choices["invoke"]
+
+
+def test_invoke_end_metadata_help_states_the_merge_rule():
+    """The --metadata help must state the RFC 7396 merge rule it applies: a
+    nested object merges into the stored object rather than replacing it, and a
+    key set to null is removed. A reader who has only the help text has to be
+    able to predict both."""
+    end = _invoke_end_parser()
+    help_text = end._subparsers._group_actions[0].choices["end"].format_help()
+    assert "RFC 7396" in help_text, help_text
+    assert "null" in help_text and "removed" in help_text, help_text
+    assert "nested" in help_text, help_text

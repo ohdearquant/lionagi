@@ -227,23 +227,42 @@ async def test_flush_run_telemetry_writes_signals_and_overlap_once():
 
 
 @pytest.mark.asyncio
-async def test_flush_run_telemetry_merges_into_existing_node_metadata():
-    """The flush merges its own key through the store rather than writing a
-    whole-column snapshot, so nothing another writer stored is replaced."""
+async def test_flush_run_telemetry_preserves_keys_already_in_node_metadata(db: StateDB):
+    """The flush merges its own key through the store: a row that already
+    carries another writer's keys keeps them and gains "coordination", rather
+    than having the whole column replaced by the flush's snapshot."""
     from lionagi.studio.services.scheduler_state import flush_run_telemetry
+
+    inv_id = _uid()
+    await db.create_invocation(
+        {
+            "id": inv_id,
+            "skill": "test",
+            "started_at": time.time(),
+            "status": "running",
+            "node_metadata": {"result": "pr-url", "nested": {"keep": 1}},
+        }
+    )
+
+    class _StoreSvc:
+        async def compute_files_overlap(self, invocation_id, *, top_n=5):
+            return {"count": 1, "top": [{"path": "/shared.py", "workers": 2}]}
+
+        async def merge_invocation_node_metadata(self, inv_id, patch):
+            await db.merge_invocation_node_metadata(inv_id, patch)
 
     bus = SchedulerSignalBus()
     await bus.emit(ScheduleRunSucceeded(run_id="run-2", schedule_id="s1", reason_code="ok"))
 
-    svc = _make_svc()
-
-    telemetry = await flush_run_telemetry(svc, bus, run_id="run-2", invocation_id="inv-2")
+    telemetry = await flush_run_telemetry(_StoreSvc(), bus, run_id="run-2", invocation_id=inv_id)
 
     assert telemetry is not None
-    svc.merge_invocation_node_metadata.assert_awaited_once()
-    args, _ = svc.merge_invocation_node_metadata.await_args
-    assert args[0] == "inv-2"
-    assert args[1] == {"coordination": telemetry}
+    row = await db.get_invocation(inv_id)
+    # The keys another writer stored survive, and the flush's key lands beside
+    # them -- including a nested object, which merges rather than replaces.
+    assert row["node_metadata"]["result"] == "pr-url"
+    assert row["node_metadata"]["nested"] == {"keep": 1}
+    assert row["node_metadata"]["coordination"] == telemetry
 
 
 class _StoreBackedSvc:
