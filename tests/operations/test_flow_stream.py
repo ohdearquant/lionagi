@@ -225,3 +225,85 @@ def test_execute_stream_early_break_cancels_driver_under_trio():
 
     seen = anyio.run(scenario, backend="trio")
     assert seen == 1
+
+
+def _progress_log() -> list[tuple[str, str]]:
+    return []
+
+
+def _driver_error_session(*, refusal: bool):
+    """A two-node graph whose first node's task dies in the driver, plus the ids.
+
+    The second node's task never reaches its own terminal: it is announced queued and then
+    cancelled by the task group, so whatever the stream's error path settles it to is the
+    only terminal it gets.
+    """
+    from lionagi.state.compat import StateCompatibilityRefused
+
+    async def first(**kw):
+        return "first"
+
+    async def second(**kw):
+        return "second"
+
+    session = _session(first=first, second=second)
+    graph = Graph()
+    node_a = create_operation("first", parameters={})
+    node_b = create_operation("second", parameters={})
+    graph.add_node(node_a)
+    graph.add_node(node_b)
+
+    async def _run_tracked(node):
+        if node.id == node_a.id:
+            if refusal:
+                raise StateCompatibilityRefused("persist_live_message", "messages@1", "refused")
+            raise RuntimeError("an ordinary driver failure")
+        await anyio.sleep_forever()
+
+    return session, graph, node_a, node_b, _run_tracked
+
+
+async def test_an_ordinary_driver_error_leaves_announced_nodes_queued():
+    """An ordinary driver error is raised as itself and does not sweep announced nodes: a
+    node the driver announced and never reached keeps the ``queued`` it was announced with,
+    which is the signal it held before the refusal path's sweep existed."""
+    from lionagi.ln.concurrency import BaseExceptionGroup
+    from lionagi.operations.flow import ReactiveExecutor
+    from lionagi.state.compat import refusal_in
+
+    session, graph, _node_a, node_b, run_tracked = _driver_error_session(refusal=False)
+    executor = ReactiveExecutor(session=session, graph=graph)
+    progress: list[tuple[str, str]] = []
+    executor.on_progress = lambda op_id, name, status, elapsed: progress.append((op_id, status))
+    executor._run_tracked = run_tracked
+
+    with pytest.raises(BaseExceptionGroup) as caught:
+        async for _ev in executor.execute_stream():
+            pass
+
+    assert refusal_in(caught.value) is None
+    seen = [status for op_id, status in progress if op_id == str(node_b.id)]
+    assert seen, "the node the driver never reached was announced"
+    assert seen[-1] == "queued"
+
+
+async def test_a_refusal_from_the_driver_settles_announced_nodes_and_raises_itself():
+    """A refusal from the driver settles every announced unfinished node with a terminal
+    signal before it is raised as itself (ADR-0128 D6)."""
+    from lionagi.operations.flow import ReactiveExecutor
+    from lionagi.state.compat import StateCompatibilityRefused
+
+    session, graph, node_a, node_b, run_tracked = _driver_error_session(refusal=True)
+    executor = ReactiveExecutor(session=session, graph=graph)
+    progress: list[tuple[str, str]] = []
+    executor.on_progress = lambda op_id, name, status, elapsed: progress.append((op_id, status))
+    executor._run_tracked = run_tracked
+
+    with pytest.raises(StateCompatibilityRefused, match="refused"):
+        async for _ev in executor.execute_stream():
+            pass
+
+    for node in (node_a, node_b):
+        seen = [status for op_id, status in progress if op_id == str(node.id)]
+        assert seen, "the announced node was never announced"
+        assert seen[-1] == "cancelled"

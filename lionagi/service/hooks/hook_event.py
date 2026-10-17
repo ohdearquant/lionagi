@@ -5,10 +5,9 @@ from __future__ import annotations
 
 from typing import Any
 
-import anyio
 from pydantic import Field, PrivateAttr, field_validator
 
-from lionagi.ln.concurrency import fail_after, get_cancelled_exc_class
+from lionagi.ln.concurrency import current_time, fail_after, get_cancelled_exc_class
 from lionagi.protocols.types import Event, EventStatus
 
 from ._types import AssociatedEventInfo, HookEventTypes
@@ -34,7 +33,7 @@ class HookEvent(Event):
         return v
 
     async def invoke(self):
-        start = anyio.current_time()
+        start = current_time()
         self.execution.status = EventStatus.PROCESSING
         try:
             with fail_after(self.timeout):
@@ -72,4 +71,4 @@ class HookEvent(Event):
             self._should_exit = bool(self.exit)
 
         finally:
-            self.execution.duration = anyio.current_time() - start
+            self.execution.duration = current_time() - start
