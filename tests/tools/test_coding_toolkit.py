@@ -301,6 +301,23 @@ async def test_search_leaves_out_files_the_reader_refuses_by_name(tmp_path):
     assert result["content"] == f"{tmp_path / 'notes.txt'}:1:TOKEN=three"
 
 
+async def test_search_does_not_follow_a_symlink_out_of_the_workspace(tmp_path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (tmp_path / "outside.txt").write_text("TOKEN=file\n")
+    (tmp_path / "outdir").mkdir()
+    (tmp_path / "outdir" / "f.txt").write_text("TOKEN=dir\n")
+    (workspace / "link.txt").symlink_to(tmp_path / "outside.txt")
+    (workspace / "linkdir").symlink_to(tmp_path / "outdir")
+    (workspace / "in.txt").write_text("TOKEN=in\n")
+    _, _, tools = _make_toolkit(workspace)
+
+    result = await _tool_fn(tools, "search")(action="grep", pattern="TOKEN", path=".")
+
+    assert result["success"] is True
+    assert result["content"] == f"{workspace / 'in.txt'}:1:TOKEN=in"
+
+
 async def test_coding_toolkit_reader_rejects_workspace_escape(tmp_path):
     """ReaderTool rejects paths that escape the workspace root."""
     secret = tmp_path.parent / "secret.txt"

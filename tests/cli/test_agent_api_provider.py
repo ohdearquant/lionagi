@@ -268,6 +268,41 @@ async def test_the_branch_is_written_where_a_resume_finds_it(leg):
 
 
 @pytest.mark.asyncio
+async def test_a_resumed_leg_calls_the_read_set_again(leg):
+    from lionagi.cli._runs import find_branch
+
+    leg.replies = [_last_round(), _answer("first")]
+    _, _, branch_id, _, _ = await leg.run(_profile(api_tools="read"))
+
+    leg.replies = [_read_round("notes.txt"), _last_round(), _answer("read it")]
+    result, _, _, status, _ = await leg.run(
+        _profile(api_tools="read"), "read the notes now", resume=branch_id
+    )
+
+    assert (result, status) == ("read it", "completed")
+    _, path = find_branch(branch_id)
+    # The tool result is in the stored branch only if the reader ran on resume.
+    assert "hello from the notes" in path.read_text()
+
+
+@pytest.mark.asyncio
+async def test_display_flags_leave_an_api_model_on_its_own_key(leg):
+    leg.replies = [_last_round(), _answer("done")]
+
+    _, _, _, status, _ = await leg.run(_profile(api_tools="read"), verbose=True, theme="dark")
+
+    assert status == "completed"
+    from lionagi.service.imodel import iModel
+
+    endpoint = leg.branch.chat_model.endpoint
+    assert isinstance(endpoint, AnthropicMessagesEndpoint)
+    # The key the spec alone resolves, not a placeholder a CLI model carries.
+    assert endpoint.config._api_key == iModel(model=MODEL).endpoint.config._api_key
+    assert endpoint.config._api_key != "dummy"
+    assert "verbose_output" not in endpoint.config.kwargs
+
+
+@pytest.mark.asyncio
 async def test_a_turn_past_the_timeout_ends_timed_out(leg):
     leg.replies = [_last_round(), _answer("too late")]
     leg.delay = 5

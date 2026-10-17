@@ -971,6 +971,10 @@ async def _run_agent(
             contain_account_integrations=contain_account_integrations,
         )
         effort = resolve_persisted_effort(provider, chat_model, effort)
+        if not isinstance(chat_model, str) and not chat_model.is_cli:
+            # build_chat_model's options are CLI options, and the model it builds
+            # for them carries a placeholder key; an API model is its spec alone.
+            chat_model = f"{provider}/{model}"
         # A bare spec string is what the branch would turn into a model anyway; it is
         # turned here so the provider's kind is known before the spawn shape is chosen.
         if isinstance(chat_model, str):
@@ -1220,6 +1224,21 @@ async def _run_agent(
         declared = _profile_api_launch(profile) if is_resumed_branch else None
         if declared is not None:
             api_launch["max_extensions"] = declared["max_extensions"]
+        if is_resumed_branch:
+            # A stored branch keeps its messages, not its tools, so the read set
+            # is bound again, guarded to this invocation's working directory.
+            from lionagi.agent.factory import _register_coding_tools
+
+            _register_coding_tools(
+                branch,
+                _make_api_agent_spec(
+                    cwd=cwd,
+                    effort=None,
+                    system_prompt=None,
+                    role="reviewer",
+                    tools=api_launch["tools"],
+                ),
+            )
 
     # Skip the profile system prompt for a branch that carries (or would carry)
     # a create_agent-composed system message — full rationale in
