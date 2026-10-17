@@ -156,7 +156,7 @@ rule and the token's narrower meaning.
 
 The decision rows gain the principal id, epoch and issuance method (a store change, versioned with
 the store's own migration). The route contract changes as D4 and D7 state. Readers of both are told
-before the release that ships step 3.
+before the release that ships step 4.
 
 ## Out of scope
 
