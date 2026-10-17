@@ -81,7 +81,7 @@ that code on one of two paths, and the two paths differ:
 
 - **A default `iModel` carries a request-option model**, whose fields are the Anthropic request
   model's; `cache_control` is not one of them, so the request-option filter drops the flag
-  (`service/connections/endpoint.py:297-301`) before `messages.py:1076` looks for it. Building that
+  (`service/connections/endpoint.py:298-301`) before `messages.py:1076` looks for it. Building that
   payload for the probe's last request with `cache_control=True` gave no `system` field and no cache
   mark.
 - **An endpoint with no request-option filter carries no request-option model** — an `iModel`
@@ -126,7 +126,7 @@ on every path, with no exception: the Anthropic adapter's `cache_control`-trigge
 Restated for both paths: on a default `iModel` the request-option filter drops the flag before the
 mark code, so no mark is placed; on an endpoint with no request-option filter — an `iModel` restored
 with `request_options` None, or a dict-configured model
-(`service/connections/endpoint.py:297-301`) — the flag reaches the mark code and one five-minute mark
+(`service/connections/endpoint.py:298-301`) — the flag reaches the mark code and one five-minute mark
 lands on the last message. With the option on and the declaration present, this record's placement
 replaces that mark. For a provider without the declaration the request is unchanged whatever the
 option says. There is no ungated change.
@@ -168,7 +168,7 @@ Amends ADR-0007 D1 (the tool definitions' lifetime and the transient set), its D
 instruction and render once in the stable segment, as a section of the system block (D3). They are
 the conversation's tool set — the tools the Branch exposes to the operation — not the per-call
 `action_param`. A call that requests no action, such as `ReAct`'s final answer
-(`operations/ReAct/ReAct.py:653` sets `action_param` None), still carries the same tool section in
+(`operations/ReAct/ReAct.py:658` sets `action_param` None), still carries the same tool section in
 the stable segment; its turn content says that no action is requested. A plain `operate()` whose
 tool set differs from the previous call's is therefore a counted stable-segment change (D6).
 
