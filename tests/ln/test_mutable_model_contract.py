@@ -471,11 +471,18 @@ def test_a_cyclic_model_reports_unhashable_from_its_content_key():
 def test_a_value_nested_past_the_recursion_limit_falls_back_to_equality():
     """A value that nests past the recursion limit raises ``RecursionError`` while its
     content key is built; the keying falls back to the equality path, so two equal
-    values are one instead of the error escaping ``to_list``."""
-    deep = {"x": _nested(sys.getrecursionlimit())}
+    values are one instead of the error escaping ``to_list``.
+
+    The two values share one nested list, so their comparison takes the identity
+    shortcut and never recurses. Two separate nested lists of this depth cannot be
+    compared on Python 3.10 and 3.11, where that comparison raises ``RecursionError``
+    and reads as unequal."""
+    inner = _nested(sys.getrecursionlimit())
+    deep = {"x": inner}
     assert len(to_list([deep, dict(deep)], flatten=True, unique=True)) == 1
-    first = fields.ActionResponseModel(output=_nested(sys.getrecursionlimit()))
-    second = fields.ActionResponseModel(output=_nested(sys.getrecursionlimit()))
+    first = fields.ActionResponseModel(output=inner)
+    second = fields.ActionResponseModel(output=inner)
+    assert first is not second
     assert len(to_list([first, second], flatten=True, unique=True)) == 1
 
 
