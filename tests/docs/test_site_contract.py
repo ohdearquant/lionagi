@@ -307,8 +307,8 @@ def test_getting_started_names_the_bind_host_flag() -> None:
     assertion is on the paragraph that carries the claim: rewording that
     sentence to drop the default or a mode has to fail here."""
     text = (DOCS / "guides" / "studio-getting-started.md").read_text()
-    paragraphs = [p for p in text.split("\n\n") if "`--host`" in p]
-    assert len(paragraphs) == 1, "`--host` must be documented in exactly one paragraph"
+    paragraphs = [p for p in text.split("\n\n") if p.startswith("`--host` sets")]
+    assert len(paragraphs) == 1, "`--host` must be defined in exactly one paragraph"
     paragraph = paragraphs[0]
     assert "defaults to `127.0.0.1`" in paragraph
     assert "`--no-frontend`" in paragraph

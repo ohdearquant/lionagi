@@ -26,7 +26,13 @@ from lionagi.protocols.messages.action_response import ActionResponse
 from lionagi.protocols.messages.assistant_response import AssistantResponse
 from lionagi.protocols.messages.instruction import Instruction
 
-from ._mirror_common import MIRROR_PROVIDER_ERROR_KEY, SourceLine, bound_mirror_content
+from ._mirror_common import (
+    MIRROR_PROVIDER_ERROR_KEY,
+    SourceLine,
+    bound_mirror_content,
+    name_answered_results,
+    write_mirrored_messages,
+)
 
 if TYPE_CHECKING:
     from lionagi.protocols.messages.message import RoledMessage
@@ -286,7 +292,13 @@ def messages_for_record(
     turn: dict[str, Any] | None = None,
 ) -> list[RoledMessage]:
     """Map one codex rollout record to ordered lionagi messages. ``tool_names`` is
-    read/written in place so a tool output can label its ActionResponse.
+    read/written in place so a tool output can label its ActionResponse; the output consumes
+    its entry, so the map holds the calls still awaiting an output — except a map loaded
+    from an earlier release's key, which also holds answered calls until a repeat of their
+    output consumes them. A second output for a call already answered finds no entry, so its
+    ActionResponse has an empty function name here; ``mirror_session`` names it from the
+    call's own row before it writes the batch, so it replaces the row of the first output,
+    whose message id it shares, keeping the name.
 
     ``turn`` is the most recent ``turn_context`` seen before this record; it is
     stamped onto every message produced so a mirrored turn stays attributable to
@@ -367,7 +379,13 @@ def messages_for_record(
         out = p.get("tools") if kind == "tool_search_output" else p.get("output")
         text = json.dumps(out, default=str) if kind == "tool_search_output" else _text_blocks(out)
         req_id, resp_id = _tool_pair_ids(rollout_uid, call_id, pid)
-        fn = tool_names.get(call_id, "")
+        # Without a call_id an output's fallback key is its own record id, which every unkeyed
+        # call with the same record id (an empty one, for instance) also takes, so the link
+        # could point at any of them and the output would be named after whichever landed
+        # last. Leave it unlinked.
+        if not call_id:
+            req_id = None
+        fn = tool_names.pop(call_id, "")
         specs.append(
             (
                 resp_id,
@@ -570,8 +588,16 @@ async def mirror_session(
         }
     )
 
+    entries: list[tuple[dict[str, Any], SourceLine | None]] = []
     for m, src in zip(messages, message_sources, strict=False):
         md = m.to_dict(mode="db")
+        entries.append((md, src))
+    # Name each repeated output before its content is bounded: the source pointer's
+    # content hash must cover the row as stored, name included, or a reader reconstructing
+    # the unnamed ActionResponse would mismatch and fall back to the stored preview.
+    await name_answered_results(db, [md for md, _ in entries])
+    written: list[dict[str, Any]] = []
+    for md, src in entries:
         if max_preview_chars is not None and src is not None:
             preview, pointer = bound_mirror_content(
                 md["content"],
@@ -585,12 +611,12 @@ async def mirror_session(
             nm = dict(md.get("node_metadata") or {})
             nm["mirror_source"] = pointer
             md["node_metadata"] = nm
-        await db.insert_message(md)
-        await db.append_to_progression(bprog, md["id"])
-        await db.append_to_progression(sprog, md["id"])
+        written.append(md)
 
-    if messages:
-        await db.touch_session_activity(sid, at=last_ts)
+    if written:
+        await write_mirrored_messages(
+            db, written, progression_ids=(bprog, sprog), session_id=sid, activity_at=last_ts
+        )
 
     return len(messages), tally
 

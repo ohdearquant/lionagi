@@ -21,6 +21,7 @@ import threading
 import time
 import uuid
 import weakref
+from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -406,7 +407,9 @@ TEAM_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["team"]
 EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
     # duration_ms is derived from ended_at and ended_at_is_approximate describes it, so both carry
     # the same requirement: they must land in the status write, never a separate earlier one.
-    "session": frozenset({"ended_at", "duration_ms", "ended_at_is_approximate", "node_metadata"}),
+    "session": frozenset(
+        {"ended_at", "duration_ms", "ended_at_is_approximate", "node_metadata", "current_phase"}
+    ),
     "invocation": frozenset({"ended_at"}),
     "schedule_run": frozenset({"ended_at", "error_detail", "exit_code"}),
     "play": frozenset({"ended_at"}),
@@ -453,6 +456,17 @@ def _validate_columns(fields: dict[str, Any], allowed: frozenset[str]) -> None:
     bad = set(fields) - allowed
     if bad:
         raise ValueError(f"Invalid column(s): {bad}")
+
+
+def _is_utf8_str(value: Any) -> bool:
+    """Whether ``value`` is a string that encodes as UTF-8 (no lone surrogate)."""
+    if not isinstance(value, str):
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def _to_json_column(value: Any) -> Any:
@@ -2642,6 +2656,7 @@ class StateDB:
     # Messages
 
     _UNKNOWN_TYPE_ID = 0
+    _MESSAGE_READ_CHUNK = 500
 
     @staticmethod
     def _validate_message(msg: dict[str, Any]) -> None:
@@ -2749,6 +2764,33 @@ class StateDB:
                 .first()
             )
         return self._row_to_dict(row) if row else None
+
+    async def get_messages(self, message_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
+        """Read many messages in one query per 500 ids, keyed by id; absent ids are missing.
+
+        A caller that needs N rows by id (e.g. recovering a name from a stored tool use)
+        reads them in bounded chunks rather than one ``get_message`` per row, which reopens
+        a connection each time. ``_MESSAGE_READ_CHUNK`` keeps each IN list under SQLite's
+        bound-parameter ceiling.
+        """
+        unique = list(dict.fromkeys(message_ids))
+        if not unique:
+            return {}
+        found: dict[str, dict[str, Any]] = {}
+        async with self._read() as conn:
+            for start in range(0, len(unique), self._MESSAGE_READ_CHUNK):
+                chunk = unique[start : start + self._MESSAGE_READ_CHUNK]
+                placeholders = ",".join(f":id{i}" for i in range(len(chunk)))
+                sql = (
+                    f"SELECT m.*, mt.lion_class AS lion_class_str "  # noqa: S608
+                    f"FROM messages m LEFT JOIN message_types mt ON m.lion_class = mt.type_id "
+                    f"WHERE m.id IN ({placeholders})"
+                )
+                params = {f"id{i}": mid for i, mid in enumerate(chunk)}
+                rows = (await conn.execute(text(sql), params)).mappings().all()
+                for row in rows:
+                    found[row["id"]] = self._row_to_dict(row)
+        return found
 
     async def _resolve_lion_class(self, lion_class_str: str) -> int:
         """Get or create a message_types row; race-safe via ON CONFLICT DO NOTHING."""
@@ -2876,6 +2918,94 @@ class StateDB:
         await conn.execute(
             text(self._progression_append_sql(self.dialect) + clause),
             {"v": message_id, "id": progression_id, **owner},
+        )
+
+    @staticmethod
+    def _progression_collection_for_update_sql(dialect: str) -> str:
+        # SQLite's BEGIN IMMEDIATE already holds the writer reservation for the whole transaction;
+        # elsewhere the row lock keeps a concurrent append from being lost between read and write.
+        if dialect == "sqlite":
+            return "SELECT collection FROM progressions WHERE id = :id"
+        return "SELECT collection FROM progressions WHERE id = :id FOR UPDATE"
+
+    async def insert_messages(
+        self,
+        msgs: Sequence[dict[str, Any]],
+        *,
+        progression_ids: Sequence[str] = (),
+        session_id: str | None = None,
+        activity_at: float | None = None,
+    ) -> None:
+        """Write a batch of messages and append their ids to progressions in one transaction.
+
+        Each progression is read once. One that holds an array of string ids, given string
+        ids, is rewritten at most once for the whole batch, where ``insert_message`` plus
+        ``append_to_progression`` per message rewrites each progression's whole array once
+        per message. Ids are appended in batch order and
+        skipped when already present, so re-running a batch leaves a string-id progression
+        unchanged. That single rewrite covers a stored array of string ids given string ids,
+        the shape every writer produces; any other stored value or id goes through
+        ``append_to_progression``'s own statement one id at a time, so it ends as appending
+        one message at a time would. ``session_id`` moves that session's activity clock in
+        the same transaction.
+        """
+        for msg in msgs:
+            self._validate_message(msg)
+        if not msgs:
+            return
+        message_ids = [msg["id"] for msg in msgs]
+        async with self._tx() as conn:
+            for msg in msgs:
+                await self._insert_message_in_tx(conn, msg)
+            for progression_id in progression_ids:
+                await self._extend_progression_in_tx(conn, progression_id, message_ids)
+            if session_id is not None:
+                await self._touch_session_activity_in_tx(conn, session_id, at=activity_at)
+
+    async def _extend_progression_in_tx(
+        self, conn, progression_id: str, message_ids: Sequence[str]
+    ) -> None:
+        row = (
+            (
+                await conn.execute(
+                    text(self._progression_collection_for_update_sql(self.dialect)),
+                    {"id": progression_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if row is None:
+            return
+        current = row["collection"]
+        if isinstance(current, str):
+            try:
+                current = json.loads(current)
+            except ValueError:
+                current = None
+        if (
+            not isinstance(current, list)
+            or not all(_is_utf8_str(item) for item in current)
+            or not all(_is_utf8_str(message_id) for message_id in message_ids)
+        ):
+            # Any other shape (not an array, a non-string or non-finite element, a string that
+            # cannot be encoded as UTF-8 such as a lone surrogate, a non-string id) compares or
+            # encodes differently on each dialect, so it takes the per-message statement. The
+            # SQLite tests cannot tell the two paths apart for a non-string id.
+            for message_id in message_ids:
+                await self._append_to_progression_in_tx(conn, progression_id, message_id)
+            return
+        seen = set(current)
+        added: list[str] = []
+        for message_id in message_ids:
+            if message_id not in seen:
+                seen.add(message_id)
+                added.append(message_id)
+        if not added:
+            return
+        await conn.execute(
+            text("UPDATE progressions SET collection = :col WHERE id = :id"),
+            {"col": _to_json_column([*current, *added]), "id": progression_id},
         )
 
     # Sessions
@@ -6750,26 +6880,51 @@ class StateDB:
         payload: dict[str, Any] | None = None,
         created_at: float | None = None,
         project: str | None = None,
+        require_live_flow_poller: bool = False,
     ) -> str | None:
-        """Queue a control verb for *session_id*; returns its id, or None if it was not admitted."""
+        """Queue a control verb for *session_id*; returns its id, or None if it was not admitted.
+
+        With *require_live_flow_poller*, a flow/play session must also declare
+        a live DAG poller (``node_metadata.flow_control_poller`` of ``pending``
+        or ``active``) in this same statement. The operator admission paths ask
+        for it: they read that marker to decide, and the run can lose its
+        poller between that read and this write -- the teardown publishes the
+        stop before it stops applying controls. Re-checking it here is what
+        stops a control being queued against a consumer that is already gone,
+        the same way the running condition stops one being queued against a
+        terminal run. Left off by default, because a direct caller has already
+        decided who its consumer is.
+        """
         control_id = uuid.uuid4().hex
-        # Four complete literals, selected rather than assembled: the statement text never depends
-        # on a runtime value, and the ownership predicate is visible in the SQL that actually runs.
-        # :project stays a bound parameter.
+        # Every piece of the statement is a fixed literal chosen by the dialect, whether a project
+        # is bound and whether the poller is required; no caller value reaches the text, and the
+        # ownership and delivery predicates are visible in the SQL that actually runs. :project
+        # stays a bound parameter. Only flow and play rows carry the poller marker, so every other
+        # kind keeps the status-only condition.
+        if not require_live_flow_poller:
+            delivery = ""
+        elif self.dialect == "sqlite":
+            delivery = (
+                " AND (COALESCE(invocation_kind, '') NOT IN ('flow', 'play') OR COALESCE("
+                "CASE WHEN json_valid(node_metadata) THEN "
+                "json_extract(node_metadata, '$.flow_control_poller') END, '') "
+                "IN ('pending', 'active'))"
+            )
+        else:
+            delivery = (
+                " AND (COALESCE(invocation_kind, '') NOT IN ('flow', 'play') OR COALESCE("
+                "node_metadata::jsonb->>'flow_control_poller', '') IN ('pending', 'active'))"
+            )
+        owner = " AND project = :project" if project is not None else ""
         if self.dialect == "sqlite":
             admit_source = (
-                "WHERE EXISTS (SELECT 1 FROM sessions WHERE id = :sid "
-                "AND status = 'running' AND project = :project)"
-                if project is not None
-                else "WHERE EXISTS (SELECT 1 FROM sessions WHERE id = :sid AND status = 'running')"
+                "WHERE EXISTS (SELECT 1 FROM sessions WHERE id = :sid AND status = 'running'"  # noqa: S608
+                f"{owner}{delivery})"
             )
         else:
             admit_source = (
-                "FROM (SELECT 1 FROM sessions WHERE id = :sid "
-                "AND status = 'running' AND project = :project FOR UPDATE) _admitted"
-                if project is not None
-                else "FROM (SELECT 1 FROM sessions WHERE id = :sid "
-                "AND status = 'running' FOR UPDATE) _admitted"
+                "FROM (SELECT 1 FROM sessions WHERE id = :sid AND status = 'running'"  # noqa: S608
+                f"{owner}{delivery} FOR UPDATE) _admitted"
             )
         params = {
             "id": control_id,

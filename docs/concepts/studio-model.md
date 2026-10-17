@@ -9,11 +9,10 @@ views.
 
 `li studio` starts a daemon on `127.0.0.1:8765` by default. The hosted client
 at `https://lion-studio.khive.ai` connects to that local service. Docker bundles
-the client and daemon and publishes a host port; its default port mapping is
-not restricted to loopback, and `li studio --docker` takes no host address. A
-source checkout can run a local development frontend. In the other modes,
-`--host` sets the bind address and defaults to `127.0.0.1`, so a non-loopback
-value such as `--host 0.0.0.0` exposes the API to other machines.
+the client and daemon and publishes a host port on the address `--host` names.
+A source checkout can run a local development frontend. In every mode `--host`
+defaults to `127.0.0.1`, so a non-loopback value such as `--host 0.0.0.0`
+exposes the API to other machines.
 
 With `LIONAGI_STUDIO_AUTH_TOKEN` unset, a request with neither an `Origin`
 nor a `Sec-Fetch-Site` header, as from the command line or a script, can call

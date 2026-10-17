@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from lionagi.state.codex_mirror import (
     SOURCE_KIND,
     RecordTally,
     _det,
+    messages_for_record,
     mirror_session,
     session_db_id,
     turn_context,
@@ -62,6 +64,28 @@ def _records() -> list[dict]:
     ]
 
 
+def test_a_tool_output_consumes_its_call_name() -> None:
+    # The output labels its ActionResponse with the call's name and removes the entry, so
+    # a rollout's persisted map holds only calls still awaiting an output.
+    names: dict[str, str] = {}
+    call = _rec(
+        "response_item",
+        {"type": "function_call", "name": "shell", "arguments": "{}", "call_id": "c1", "id": "fc1"},
+    )
+    output = _rec(
+        "response_item", {"type": "function_call_output", "call_id": "c1", "output": "ok"}
+    )
+
+    messages_for_record(call, ROLLOUT_UID, names)
+    assert names == {"c1": "shell"}
+    (response,) = messages_for_record(output, ROLLOUT_UID, names)
+
+    content = response.to_dict(mode="db")["content"]
+    content = json.loads(content) if isinstance(content, str) else content
+    assert content["function"] == "shell"
+    assert names == {}
+
+
 @pytest_asyncio.fixture
 async def db(tmp_path: Path):
     state = StateDB(f"sqlite+aiosqlite:///{tmp_path / 'state.db'}")
@@ -79,6 +103,60 @@ async def _mirror(db, records, *, turn=None, unparseable=0, source_path="/tmp/ro
         unparseable=unparseable,
         source_path=source_path,
     )
+
+
+async def test_a_repeated_tool_output_in_a_later_batch_keeps_the_call_name(db):
+    """The repeat shares the first output's row; the name comes from the stored call row."""
+    call = _rec(
+        "response_item",
+        {"type": "function_call", "name": "shell", "arguments": "{}", "call_id": "c1", "id": "fc1"},
+    )
+
+    def output(text: str) -> dict:
+        return _rec(
+            "response_item", {"type": "function_call_output", "call_id": "c1", "output": text}
+        )
+
+    names: dict[str, str] = {}
+    meta = _rec("session_meta", {"id": ROLLOUT_UID, "cwd": "/x"})
+    for records in ([meta, _user("q", "m1"), call, output("first")], [output("again")]):
+        await mirror_session(
+            db, rollout_uid=ROLLOUT_UID, records=records, tool_names=names, turn={}
+        )
+    assert names == {}
+    session = await db.get_session(session_db_id(ROLLOUT_UID))
+    responses = []
+    for mid in await db.get_progression(session["progression_id"]):
+        content = (await db.get_message(mid))["content"]
+        content = json.loads(content) if isinstance(content, str) else content
+        if "action_request_id" in content:
+            responses.append(content)
+    assert [(r["function"], r["output"]) for r in responses] == [("shell", "again")]
+
+
+async def test_an_output_with_no_call_id_is_never_named_from_a_batch_key(db):
+    """Two calls and an output with no ``call_id`` at all must not be linked together.
+
+    ``_tool_pair_ids`` falls back to the record's own ``id`` when a ``call_id`` is absent, so
+    the two unkeyed calls share one request id, and the unkeyed output shares that id too.
+    Naming the output from a batch keyed by ``call_id`` would take the name of whichever
+    call landed last in the batch; it has no call to name, so it keeps the empty name."""
+    records = [
+        _rec("session_meta", {"id": ROLLOUT_UID, "cwd": "/x"}),
+        _rec("response_item", {"type": "function_call", "name": "shell", "arguments": "{}"}),
+        _rec("response_item", {"type": "function_call", "name": "apply_patch", "arguments": "{}"}),
+        _rec("response_item", {"type": "function_call_output", "output": "X-out"}),
+    ]
+    await mirror_session(db, rollout_uid=ROLLOUT_UID, records=records, tool_names={}, turn={})
+    session = await db.get_session(session_db_id(ROLLOUT_UID))
+    contents = []
+    for mid in await db.get_progression(session["progression_id"]):
+        content = (await db.get_message(mid))["content"]
+        contents.append(json.loads(content) if isinstance(content, str) else content)
+    outputs = [c for c in contents if c.get("output") == "X-out"]
+    assert [c["function"] for c in outputs] == [""]
+    # It points at no request row: the shared fallback id is the two calls' id, not its own.
+    assert "action_request_id" not in outputs[0] or outputs[0].get("action_request_id") is None
 
 
 async def test_mirrored_session_carries_codex_import_provenance(db):

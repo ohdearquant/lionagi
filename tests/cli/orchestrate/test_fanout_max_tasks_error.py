@@ -210,3 +210,43 @@ def test_run_orchestrate_fanout_unhandled_error_still_propagates():
     ):
         with pytest.raises(RuntimeError, match="unrelated failure"):
             run_orchestrate(args)
+
+
+async def test_fanout_refuses_an_unregistered_invocation_before_setup(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """`li o fanout --invocation <unknown>` must refuse before setup, not disable persistence.
+
+    The check is the same one `li o flow` makes: an id that names no recorded
+    invocation leaves the run ungrouped while its caller believes otherwise.
+    It has to run before setup, so nothing is spawned when it fails.
+    """
+    import lionagi.state.db as state_db_mod
+
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr(state_db_mod, "settings", type("S", (), {"LIONAGI_STATE_DB_URL": None})())
+    setup = AsyncMock(side_effect=AssertionError("setup ran before invocation validation"))
+    monkeypatch.setattr(fanout_module, "setup_orchestration", setup)
+
+    with pytest.raises(FanoutPlanError, match="li invoke start"):
+        await fanout_module._run_fanout("codex/model", "work", invocation_id="self-chosen")
+    setup.assert_not_awaited()
+
+
+async def test_fanout_accepts_a_registered_invocation(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """The refusal is the id, not the flag: a registered invocation proceeds to setup."""
+    import lionagi.state.db as state_db_mod
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(state_db_mod, "settings", type("S", (), {"LIONAGI_STATE_DB_URL": None})())
+    async with StateDB(db_path) as db:
+        await db.create_invocation({"id": "ab12cd34", "skill": "fanout", "started_at": 1.0})
+
+    class _SetupReached(Exception):
+        pass
+
+    monkeypatch.setattr(fanout_module, "setup_orchestration", AsyncMock(side_effect=_SetupReached))
+    with pytest.raises(_SetupReached):
+        await fanout_module._run_fanout("codex/model", "work", invocation_id="ab12cd34")

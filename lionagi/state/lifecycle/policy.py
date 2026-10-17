@@ -175,6 +175,8 @@ def build_default_registry() -> PolicyRegistry:
             "total_cost_usd",
             "num_turns",
             "duration_ms",
+            # A live phase ends in the same write as terminal session status.
+            "current_phase",
             # liveness markers a sweep reads; must move atomically with status
             "node_metadata",
         }
