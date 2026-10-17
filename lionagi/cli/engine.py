@@ -573,7 +573,7 @@ async def _maybe_update_db(
                 signal_session_id,
                 new_status=_session_status,
                 reason_code=_reason,
-                extra_fields={"ended_at": ended_at or time.time()},
+                extra_fields={"ended_at": ended_at or time.time(), "current_phase": None},
             )
         except Exception as exc:  # noqa: BLE001
             warn(f"could not update engine session status in StateDB: {exc}")

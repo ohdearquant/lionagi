@@ -12,7 +12,8 @@ name: Image matches PyPI
 # any moment by anyone, it does not depend on catching a failure as it happens,
 # and it stays red until someone fixes it instead of scrolling away.
 #
-# Every run writes its readings to the job summary, pass or fail. That is
+# Every completed reading writes its readings to the job summary; a failed
+# read skips that record. That is
 # deliberate. An alarm whose only output is silence-on-success cannot be told
 # apart from an alarm that stopped running, so the run history carries a dated
 # sequence of readings and a gap in it is a missed run rather than a quiet one.
@@ -76,7 +77,8 @@ jobs:
             exit 1
           fi
 
-          has_tag() { printf '%s\n' "${tags}" | grep -qx "$1"; }
+          # Version punctuation is literal, so similar tag spellings cannot match.
+          has_tag() { grep -qxF -- "$1" <<<"${tags}"; }
 
           # Only version-shaped tags, so that moving labels like `latest` cannot
           # show up in a row whose heading says "newest versions".
@@ -192,8 +194,9 @@ jobs:
           EOF
           )"
 
-          # Written on every run, including the green ones. This is the record
-          # that tells "checked, matched" apart from "never checked".
+          # Written on every completed reading, including the green ones. A
+          # failed read skips this step, so the record is absent for it. This is
+          # the record that tells "checked, matched" apart from "never checked".
           {
             echo "### Readings"
             echo
@@ -209,8 +212,8 @@ jobs:
           if [ "${PRESENT}" = "yes" ] && [ "${LATEST_MATCHES}" = "yes" ]; then
             echo "::notice::registry carries ${VERSION} and latest points at it"
             if [ -n "${existing}" ]; then
-              # Closed by the same job that opens it, so an open issue always
-              # means currently-behind rather than behind-at-some-point.
+              # Closed by the same job that opens it, so an open issue means
+              # behind at the last daily reading, not behind at some past point.
               gh issue close "${existing}" \
                 --comment "Registry now carries \`${VERSION}\` and \`latest\` points at it. Closing automatically."
             fi
@@ -223,14 +226,36 @@ jobs:
 
           ${readings}
 
-          Anyone running \`li studio --docker\`, or pulling \`:latest\`, is on the older
-          image until this is repaired.
+          Anyone running \`li studio --docker\`, or pulling \`:latest\`, is on an older
+          image, or has none, until this is repaired.
 
-          To repair: dispatch the Release workflow at a ref carrying any needed fix,
-          with \`version\` set to the version above.
+          To repair: dispatch the Release workflow from the default branch,
+          with \`version\` set to the version above. Changes to the image source
+          require a new release.
+
+          Manual repair requires a retained successful release-run wheel upload.
+          If the upload reached PyPI but every upload attempt reported failure,
+          manual repair is refused even when the wheel is available. Rerun the
+          original release-event run to retry its image job while GitHub permits
+          reruns, provided that run already includes the release source and wheel
+          checks. Rerunning an older workflow does not add those checks. A newer
+          release does not restore this version's image: once its image becomes the
+          one this check follows, the issue closes and the version above is left
+          without one.
+
+          A queued image job can be cancelled when another image job takes its
+          pending slot. Rerun a displaced release-event run (Actions, then the run,
+          then \`Re-run all jobs\`). That control also re-runs \`deploy\`, which
+          re-attempts \`twine upload\`; when PyPI already has the wheel the
+          duplicate upload can fail and leave the run red even though the image
+          publishes. Or dispatch a manual repair again when successful upload
+          evidence is retained. Avoid
+          overlapping recovery dispatches. This daily check will report the
+          current PyPI version again if its image is still missing or stale.
 
           This issue is opened and closed by the \`Image matches PyPI\` workflow, so it
-          being open means the registry is behind right now, not that it once was.
+          being open means the registry was behind at the last daily reading, not
+          that it once was.
           EOF
           )"
 

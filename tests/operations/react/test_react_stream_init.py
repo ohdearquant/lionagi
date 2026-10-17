@@ -80,8 +80,13 @@ async def test_single_tool_invocation():
 
 
 @pytest.mark.asyncio
-async def test_multiple_tool_calls_sequential_strategy():
-    """Test ReAct specifying sequential action strategy."""
+async def test_extension_round_is_prepared_from_the_concurrent_default():
+    """When the caller gives no action parameters, a round is prepared from the concurrent
+    default, never from the round before it.
+
+    The round that declares ``sequential`` narrows its own batch inside ``operate``,
+    which is mocked here; test_react_round_strategy.py runs that path for real.
+    """
     branch = make_mocked_branch_for_react()
 
     with patch("lionagi.operations.operate.operate.operate") as mock_operate:
@@ -112,10 +117,12 @@ async def test_multiple_tool_calls_sequential_strategy():
         assert result == "50"
         assert mock_operate.call_count == 3
 
-        # Verify sequential strategy was passed to operate calls
+        # This branch has no tools, so the extension round is prepared from the concurrent
+        # default rather than from round 1's declaration. Round 2's own 'sequential' would
+        # narrow its batch inside operate, which is mocked here.
         extension_call = mock_operate.call_args_list[1]
         action_param = extension_call[1]["action_param"]
-        assert action_param.strategy == "sequential"
+        assert action_param.strategy == "concurrent"
 
 
 @pytest.mark.asyncio

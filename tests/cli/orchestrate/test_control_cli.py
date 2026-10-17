@@ -49,6 +49,9 @@ async def _make_session(
             "status": status,
             "invocation_kind": invocation_kind,
             "started_at": time.time(),
+            "node_metadata": (
+                {"flow_control_poller": "active"} if invocation_kind in {"flow", "play"} else {}
+            ),
         }
     )
     return sid
@@ -85,7 +88,7 @@ async def test_pause_resolves_short_prefix(temp_db_path: Path):
     async with StateDB() as db:
         sid = await _make_session(db)
 
-    rc = run_ctl_pause(argparse.Namespace(id=sid[:6]))
+    rc = run_ctl_pause(argparse.Namespace(id=sid[:8]))
     assert rc == 0
 
     async with StateDB() as db:
@@ -108,6 +111,7 @@ async def test_pause_resolves_via_invocation_id(temp_db_path: Path):
                 "invocation_kind": "flow",
                 "invocation_id": inv_id,
                 "started_at": time.time(),
+                "node_metadata": {"flow_control_poller": "active"},
             }
         )
 

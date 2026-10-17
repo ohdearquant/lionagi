@@ -11,12 +11,12 @@ provider request and response parsing. See ``docs/api/operations.md``.
 
 from __future__ import annotations
 
-import copy
 import time
 from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import JsonValue
 
+from lionagi import ln
 from lionagi.protocols.generic.pile import Pile
 from lionagi.protocols.generic.progression import Progression
 from lionagi.protocols.messages.action_request import ActionRequestContent
@@ -125,7 +125,7 @@ def prepare_messages_for_chat(
                 if _is_message(new_instruction)
                 else new_instruction
             )
-            new_content = copy.deepcopy(new_content)
+            new_content = ln.copy(new_content)
             if to_chat:
                 chat_msg = {
                     "role": new_content.role.value,

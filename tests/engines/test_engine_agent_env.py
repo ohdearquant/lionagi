@@ -89,8 +89,8 @@ async def test_the_overlay_keeps_the_inherited_environment():
     ],
     ids=["agent-env", "containment", "both"],
 )
-async def test_planning_engine_refuses_settings_its_workers_drop(settings):
-    """Its workers are built by spawn_roles from the role alone and would get neither."""
+async def test_planning_engine_refuses_unverified_worker_clone_settings(settings):
+    """Managed-DAG clones still require proven environment/containment provenance."""
     from lionagi._errors import ConfigurationError
     from lionagi.engines import PlanningEngine
 
@@ -98,6 +98,8 @@ async def test_planning_engine_refuses_settings_its_workers_drop(settings):
         PlanningEngine(**settings)
     for name in settings:
         assert name in str(exc.value)
+    assert "worker clones" in str(exc.value)
+    assert "provenance" in str(exc.value)
     assert "leg-7" not in str(exc.value)
 
 
