@@ -59,6 +59,18 @@ refused like a foreign origin. A browser that sends no `Sec-Fetch-Site` is not
 told apart from a script. The SPA shell and its assets stay public, so a link
 from another site still opens Studio.
 
+The Operator decision routes (`services/operator.py`'s
+`confirm_operator_proposal` and `decide_operator_proposal`) call the
+coordinator's `decide()` with no principal check of their own, so in open mode
+this admission is the whole gate in front of them. Without
+`LIONAGI_STUDIO_AUTH_TOKEN`, any process that can reach the daemon's listener,
+including programs run by other local accounts, can allow or deny Operator
+proposals. The permission prompt is a workflow safeguard, not isolation from
+local programs; set a token on a shared machine. Do not auto-allow a tool that
+can make HTTP requests to the daemon: a run holding such a tool can approve its
+own proposals. This is a disclosure of existing behaviour — the routes, the
+admission rule and the schemas are unchanged.
+
 A refused origin, or a request without one refused by its `Sec-Fetch-Site`, is
 admitted only with the launch bearer (`launch_access.py`),
 minted per process and held in memory, never put in the environment or written

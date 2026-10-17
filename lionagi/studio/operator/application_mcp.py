@@ -5,8 +5,9 @@
 The bridge exposes a deliberately small capability set. Read tools return
 bounded projections, UI tools only append durable ADR-0083 effects, and the
 single launch tool creates a durable proposal then waits for the daemon's
-authenticated human-decision path. It never accepts a URL, filesystem path,
-shell command, or raw endpoint.
+decision routes, which in open mode admit any process that can reach the
+daemon's listener, including programs run by other local accounts. It never
+accepts a URL, filesystem path, shell command, or raw endpoint.
 """
 
 from __future__ import annotations

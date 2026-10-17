@@ -78,6 +78,13 @@ the bearer, which is how the hosted page works without a token configured. Host
 validation and CORS do not authenticate the caller and are not proof that a
 human approved a request.
 
+Without `LIONAGI_STUDIO_AUTH_TOKEN`, any process that can reach the daemon's
+listener, including programs run by other local accounts, can allow or deny
+Operator proposals. The permission prompt is a workflow safeguard, not
+isolation from local programs; set a token on a shared machine. In open mode,
+do not auto-allow a tool that can make HTTP requests to the daemon: a run
+holding such a tool can approve its own proposals.
+
 The default browser origins, `CORS_ORIGINS`, are `http://localhost:5173`,
 `http://localhost:3000`, `http://localhost:3765`, and
 `https://lion-studio.khive.ai`. Only a page on one of these origins can redeem
