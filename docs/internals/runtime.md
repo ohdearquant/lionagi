@@ -140,7 +140,9 @@ whose schema another application manages, and never migrates, stamps or reconfig
 - **Refusals** raise `StateCompatibilityRefused(operation, profile, reason, committed)`;
   `committed` names the operation's transactions that had already committed. A signal write the
   store refuses is not counted among the sink's dropped signals: teardown fails the run with that
-  refusal, and its reason names the operations the same teardown already committed. `vacuum()`,
+  refusal, and its reason names the operations the same teardown already committed. A refusal
+  the lifecycle emits record while they run fails the run the same way, because teardown writes
+  the terminal status only after those emits. `vacuum()`,
   `checkpoint()` and the migration path refuse before any statement runs.
 - Native and read-only handles are shared by url, as before; a compatibility handle is keyed by
   `(url, mode, profile, owner)`, so a native and a compatibility handle on one file, and two
@@ -148,8 +150,8 @@ whose schema another application manages, and never migrates, stamps or reconfig
 - While this process holds a store open in compatibility mode, a native open of that store
   refuses (a read-only open is left alone), and so does registering a native handle for it as
   the shared one. `get_shared_db()` returns the registered compatibility handle, ahead of any
-  native handle registered for the same store, so a caller naming only the store (the default
-  hook handlers) writes through the profile. It refuses when more than one compatibility handle
+  native handle registered for the same store, so a caller naming only the store (a default
+  hook handler reached by an emit that carries no handle) writes through the profile. It refuses when more than one compatibility handle
   is registered for the store, and when the compatibility handle is open but not registered.
   Another process is not covered: its native open applies this package's schema unless the
   store is at a later one (ADR-0128 Appendix A.0).

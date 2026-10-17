@@ -63,7 +63,8 @@ result, so a run cannot report a success the store refused to persist. A signal
 whose own persistence is refused is not raised by the emit: the session signal
 sink keeps the first such refusal, logs every later one, and counts none of them
 as dropped, and the run's teardown then fails the run with the kept refusal as
-its reason. Every other failed signal write is still counted as dropped, as
+its reason, also for a refusal recorded while the lifecycle emits run, since the
+terminal status is written after them. Every other failed signal write is still counted as dropped, as
 before.
 A lifecycle emit a run makes hands the run's own open handle to the default
 handlers, so each writes through that handle and meets whatever the store
