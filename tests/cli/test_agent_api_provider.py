@@ -212,6 +212,32 @@ async def test_a_read_outside_the_working_directory_is_refused(leg, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_search_does_not_reach_a_file_the_reader_refuses(leg):
+    (leg.workspace / ".env").write_text("API_TOKEN=not-for-this-leg\n")
+    search = _reply(
+        {
+            "analysis": "look for the token",
+            "action_requests": [
+                {"function": "search", "arguments": {"action": "grep", "pattern": "API_TOKEN"}}
+            ],
+            "action_strategy": "sequential",
+            "extension_needed": True,
+            "reason": {"title": "search", "content": "find the token"},
+        }
+    )
+    leg.replies = [search, _last_round(), _answer("no token found")]
+
+    _, _, _, status, _ = await leg.run(_profile(api_tools="read"))
+
+    assert status == "completed"
+    responses = [m for m in leg.branch.msgs.messages if type(m).__name__ == "ActionResponse"]
+    assert len(responses) == 1
+    assert "not-for-this-leg" not in json.dumps(responses[0].content.to_dict())
+    sent = json.dumps(leg.payloads, default=str)
+    assert "not-for-this-leg" not in sent
+
+
+@pytest.mark.asyncio
 async def test_the_round_bound_comes_from_the_profile(leg):
     rounds = [_read_round("notes.txt") for _ in range(3)]
     leg.replies = [*rounds, _answer("stopped at the bound")]

@@ -1136,7 +1136,8 @@ before plus a pointer to the opt-in:
 
 - `api_tools: read` — the only tool set: `reader`, `search` and `context`, bound through
   `create_agent` with `AgentSpec.coding_tools` and the path guard on `reader` scoped to `cwd`
-  (`search` resolves its path inside the workspace itself). Tools that write files or run
+  (`search` resolves its path inside the workspace itself, and leaves out the matches of any
+  file whose path holds a name the reader refuses, such as `.env`). Tools that write files or run
   commands are not offered: they would run with this process's own permissions, and this path
   has no operating-system sandbox. Any other value is refused before a run exists.
 - `max_extensions` — rounds after the first, a whole number from 1 to 100 (default 10).

@@ -91,6 +91,19 @@ async def test_grep_reads_a_leading_dash_as_a_pattern_not_an_option(tmp_path):
     assert resp.count == 0
 
 
+async def test_grep_leaves_out_files_the_reader_refuses_by_name(tmp_path):
+    (tmp_path / ".ENV").write_text("TOKEN=one\n")
+    (tmp_path / "id_ed25519").write_text("TOKEN=two\n")
+    (tmp_path / "notes.txt").write_text("TOKEN=three\n")
+    tool = SearchTool(workspace_root=str(tmp_path))
+    resp = await tool.handle_request(
+        SearchRequest(action=SearchAction.grep, pattern="TOKEN", path=".")
+    )
+    assert resp.success is True
+    assert resp.count == 1
+    assert resp.content == f"{tmp_path / 'notes.txt'}:1:TOKEN=three"
+
+
 async def test_grep_returns_search_response(tmp_path):
     (tmp_path / "f.py").write_text("content\n")
     tool = SearchTool()

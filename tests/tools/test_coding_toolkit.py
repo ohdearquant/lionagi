@@ -287,6 +287,20 @@ async def test_search_reads_a_leading_dash_as_a_pattern_not_an_option(tmp_path):
     assert result["total_matches"] == 0
 
 
+async def test_search_leaves_out_files_the_reader_refuses_by_name(tmp_path):
+    (tmp_path / ".env").write_text("TOKEN=one\n")
+    (tmp_path / "keys").mkdir()
+    (tmp_path / "keys" / "ID_RSA").write_text("TOKEN=two\n")
+    (tmp_path / "notes.txt").write_text("TOKEN=three\n")
+    _, _, tools = _make_toolkit(tmp_path)
+
+    result = await _tool_fn(tools, "search")(action="grep", pattern="TOKEN", path=".")
+
+    assert result["success"] is True
+    assert result["total_matches"] == 1
+    assert result["content"] == f"{tmp_path / 'notes.txt'}:1:TOKEN=three"
+
+
 async def test_coding_toolkit_reader_rejects_workspace_escape(tmp_path):
     """ReaderTool rejects paths that escape the workspace root."""
     secret = tmp_path.parent / "secret.txt"

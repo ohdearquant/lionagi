@@ -8,6 +8,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from lionagi.libs.path_safety import is_protected_name
 from lionagi.libs.path_safety import resolve_workspace_path as _resolve_workspace_path
 from lionagi.ln.concurrency import run_sync
 from lionagi.protocols.action.tool import Tool
@@ -99,6 +100,27 @@ def _validate_search_path(path: str, workspace_root: str | None) -> tuple[str, s
     return str(resolved), None
 
 
+def _visible_grep_lines(stdout: str) -> list[str]:
+    """grep's ``path\\0line:text`` rows as ``path:line:text``, without the rows
+    of a file whose path holds a protected name (``.env``, a private key).
+
+    The reader refuses those files by name, and a recursive search reaches
+    them as well, so their lines are left out here.
+    """
+    rows: list[str] = []
+    for row in stdout.split("\n"):
+        if not row:
+            continue
+        path, sep, rest = row.partition("\0")
+        if not sep:
+            rows.append(row)
+            continue
+        if any(is_protected_name(part) for part in Path(path).parts):
+            continue
+        rows.append(f"{path}:{rest}")
+    return rows
+
+
 def _grep_sync(
     pattern: str,
     path: str,
@@ -111,11 +133,12 @@ def _grep_sync(
         return SearchResponse(success=False, error=err, count=0)
 
     # -e: a pattern that starts with "-" is a pattern, never an option.
-    cmd = ["grep", "-rn", "-E", "-e", pattern, resolved_path]
+    # --null ends each file name with a NUL, so a row's file is read exactly.
+    cmd = ["grep", "-rn", "--null", "-E", "-e", pattern, resolved_path]
     if include:
         cmd += ["--include", include]
 
-    result = _subprocess_sync(cmd, False, 30.0, None)  # noqa: S603  # argv fixed: [grep, -rn, -E, -e, <pattern>, <validated-path>]; shell=False
+    result = _subprocess_sync(cmd, False, 30.0, None)  # noqa: S603  # argv fixed: [grep, -rn, --null, -E, -e, <pattern>, <validated-path>]; shell=False
 
     if result.get("timed_out"):
         return SearchResponse(success=False, error="grep timed out", count=0)
@@ -127,7 +150,7 @@ def _grep_sync(
             success=False, error=result["stderr"].strip() or f"grep exited with code {rc}", count=0
         )
 
-    lines = [line for line in result["stdout"].splitlines() if line][:max_results]
+    lines = _visible_grep_lines(result["stdout"])[:max_results]
     return SearchResponse(
         success=True,
         content="\n".join(lines),

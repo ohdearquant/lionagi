@@ -35,9 +35,13 @@ Decision:
   non-CLI branch without it keeps the earlier path. Queued operator messages drain at turn end as
   further turns of the loop.
 
-Limits: `search` checks the path it is given, not each file a recursive search reaches, so it
-reads names `reader` refuses (`.env`, private keys) inside the working directory. The loop's
-action protocol is lionagi's JSON action request, not a provider's native tool calling.
+`search` is held to what `reader` may read: it resolves its path inside the working directory,
+passes the pattern to grep after `-e` so a pattern is never read as an option, and leaves out
+the matches of every file whose path holds a name `reader` refuses (`.env`, private keys),
+which a recursive search would otherwise reach.
+
+Limits: the loop's action protocol is lionagi's JSON action request, not a provider's native
+tool calling.
 
 ## Context
 

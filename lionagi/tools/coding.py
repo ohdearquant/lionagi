@@ -25,7 +25,7 @@ from .code.bash import BashRequest
 from .code.check import CodeCheckRequest, _resolve_check_paths, _ruff_check_sync
 from .code.nav import NavRequest, _find_definition_sync, _find_references_sync, _outline_sync
 from .code.search import SearchAction as SearchAction  # re-export: preserves the public API
-from .code.search import SearchRequest
+from .code.search import SearchRequest, _visible_grep_lines
 from .context.context import ContextRequest, ContextTool
 from .file.editor import EditorRequest, _write_text_no_follow
 from .file.reader import ReaderRequest, _evict_expired, _open_sync, _read_cached
@@ -593,13 +593,14 @@ class CodingToolkit(LionTool):
                     return {"success": False, "error": str(e)}
                 limit = max_results or 50
                 # -e: a pattern that starts with "-" is a pattern, never an option.
-                cmd = ["grep", "-rn", "-E", "-e", pattern, search_path]
+                # --null ends each file name with a NUL, so a row's file is read exactly.
+                cmd = ["grep", "-rn", "--null", "-E", "-e", pattern, search_path]
                 if include:
                     cmd.insert(3, f"--include={include}")
                 raw = await run_sync(_subprocess_sync, cmd, False, 30.0, None)
                 if raw.get("returncode") == 2:
                     return {"success": False, "error": raw["stderr"].strip()}
-                lines = raw["stdout"].strip().split("\n") if raw["stdout"].strip() else []
+                lines = _visible_grep_lines(raw["stdout"])
                 total = len(lines)
                 return {
                     "success": True,
