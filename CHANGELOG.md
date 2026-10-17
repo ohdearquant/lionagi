@@ -88,28 +88,36 @@ project those rows ran under. To keep the project, name it in those members.
   `__hash__` are both kept, exactly as a `set` would keep them; a non-transitive `__eq__` can
   still make the result depend on the order the values arrive in. A value whose key cannot be
   taken falls back to the equality path rather than raising: a `DataClass` value whose field
-  state cannot be hashed, such as one holding a writable memoryview, is compared with the kept
-  values that define their own equality and is kept as a separate value unless it is the same
-  object or a kept value's own equality calls it equal; a value whose own hash reports itself
-  unhashable with `TypeError`, or with the one `ValueError` a writable `memoryview` raises,
-  has no key and is compared by identity and equality. A mapping or model value in the plain
+  state cannot be hashed, such as one nested past the recursion limit, is compared with the
+  kept values that define their own equality and is kept as a separate value unless it is the
+  same object or a kept value's own equality calls it equal; a value whose own hash reports
+  itself unhashable with `TypeError`, or with a `ValueError` a `memoryview` it reaches raises
+  because the view is writable, holds a non-byte format or has been released, has no key and
+  is compared by identity and equality. A mapping or model value in the plain
   `unique=True` branch that cannot be keyed is compared against every kept value, the keyed
   ones included, and a keyed one is compared against the keyless ones too, so a keyless and a
   keyable value that are equal are one value in either order. A mapping or model whose
   contents give no key -- a cycle a container, struct or model holds, which the content key
   reports as `TypeError`, or a value nested past the recursion limit -- is compared the same
   way, so a struct or model that holds itself no longer escapes as a serializer error. A
-  `memoryview` in a mapping or model is keyed by the bytes it holds, as a bytes object is,
-  because its string is its address; `hash_obj` reads it the same way. Under the base
-  `DataClass` equality, a field holding a Pydantic model or msgspec struct that holds itself
-  compares unequal, as other cyclic values do, rather than raising the serializer's error. A
-  `DataClass` value is never compared with a plain mapping: the two are deduplicated in
-  separate branches, so a pair that only the `DataClass` equality would join across the two
-  stays two values. Equality-only values are compared pairwise, so a list of n such values costs
-  up to n*(n-1)/2 comparisons. A value's own `__hash__` is read exactly as a `set` reads it:
-  only `TypeError`, or the `ValueError` a writable `memoryview` raises, means the value is
-  unhashable and takes the equality path, and any other error from it, such as one that reads
-  a field the value no longer carries, is a bug in that `__hash__` and propagates.
+  `memoryview` in a mapping or model is keyed by the shape and values it compares by, because
+  its string is its address: a one-dimensional view of byte values has the key of the bytes it
+  equals, whatever its format, and a released view, which equals only itself, is keyed by its
+  string; `hash_obj` reads it the same way. A frozen value holding a read-only view of `bytes`
+  is hashable and equals one holding a view of the same shape and values; one holding a
+  writable view, a read-only view of a mutable buffer or a released view refuses its hash, as
+  one holding a `bytearray` does, and the base `DataClass` equality reads a one-dimensional
+  view of byte values as the bytes it equals. Under the base `DataClass` equality, a field
+  holding a Pydantic model or msgspec struct that holds itself compares unequal, as other
+  cyclic values do, rather than raising the serializer's error; any other error from a
+  model's own serializer propagates. A `DataClass` value is never compared with a plain
+  mapping: the two are deduplicated in separate branches, so a pair that only the `DataClass`
+  equality would join across the two stays two values. Equality-only values are compared
+  pairwise, so a list of n such values costs up to n*(n-1)/2 comparisons. A value's own
+  `__hash__` is read exactly as a `set` reads it: only `TypeError`, or a `ValueError` a
+  `memoryview` raises refusing its hash, means the value is unhashable and takes the equality
+  path, and any other error from it, such as one that reads a field the value no longer
+  carries, is a bug in that `__hash__` and propagates.
 - The Antigravity (`gemini_code` / `gemini-code` / `gemini-cli`) backend knows the Gemini 4 Argon
   family that `agy models` now lists: `gemini-4-argon` (and `gemini-4`, `argon`) resolves to
   `Gemini 4 Argon (High)`, the `-low` / `-medium` / `-high` suffixes and `--effort` pick the tier,

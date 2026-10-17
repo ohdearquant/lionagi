@@ -457,8 +457,9 @@ them; a non-transitive `__eq__` can still make the result depend on the order th
 in. A value whose field state cannot be hashed is compared with the kept values that define their
 own equality and stays separate unless it is the same object or a kept value's own equality calls
 it equal. A value whose own hash raises `TypeError` reports itself unhashable, as a `set` reads
-it, and is compared by identity and equality, and so does a writable `memoryview`, whose own
-hash reports itself unhashable with `ValueError`; any other error from a value's own `__hash__`,
+it, and is compared by identity and equality, and so does a value whose hash reaches a
+`memoryview` that reports itself unhashable with `ValueError` because it is writable, holds a
+non-byte format or has been released; any other error from a value's own `__hash__`,
 such as reading a deleted field or descending into a cycle without end, is a defect in that hash
 and propagates. A `DataClass` value is never compared with a plain mapping; the two are
 deduplicated in separate branches. Equality-only values are compared pairwise, so a list of n such

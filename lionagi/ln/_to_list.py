@@ -16,7 +16,7 @@ from ._lazy_init import LazyInit
 from ._structural import (
     UnhashableStructuralValueError,
     _dataclass_structural_key,
-    _is_writable_memoryview_refusal,
+    _is_memoryview_hash_refusal,
 )
 from .types import DataClass, Params
 
@@ -92,9 +92,9 @@ def _dataclass_content_key(value: DataClass) -> int | None:
     """A transient hash of a DataClass value's declared field state, or ``None``.
 
     ``None`` means the state is one the base equality cannot compare either: a deleted
-    field, a writable memoryview, a cycle, or nesting past the recursion limit. Any other
-    error, such as a ``ValueError`` from a field value's own ``__hash__``, is a defect in
-    that value and propagates.
+    field, a cycle, or nesting past the recursion limit. Any other error, such as a
+    ``ValueError`` from a field value's own ``__hash__``, is a defect in that value and
+    propagates.
     """
     try:
         return hash(_dataclass_structural_key(value._field_state()))
@@ -109,8 +109,8 @@ def _own_content_key(value: DataClass) -> int | None:
     in seen`` membership test and a ``set`` read it. Any other error from a value's own
     ``__hash__`` -- a name it no longer carries, a descent into a cycle without end --
     is a bug in that ``__hash__``, and it propagates rather than being hidden as "no
-    key". A writable ``memoryview`` is the one built-in that reports itself unhashable
-    with ``ValueError``; that refusal is read as unhashable too, and every other
+    key". A ``memoryview`` is the one built-in that reports itself unhashable with
+    ``ValueError``; those refusals are read as unhashable too, and every other
     ``ValueError`` propagates.
     """
     try:
@@ -118,7 +118,7 @@ def _own_content_key(value: DataClass) -> int | None:
     except TypeError:
         return None
     except ValueError as exc:
-        if _is_writable_memoryview_refusal(exc):
+        if _is_memoryview_hash_refusal(exc):
             return None
         raise
 
@@ -217,8 +217,8 @@ def _operation_content_key(value: Any) -> int | None:
     A mapping or model value has no key here, because its hash would follow mutable
     contents; it is compared by identity and equality instead. A value that reports
     itself unhashable with ``TypeError`` has no key and is compared the same way, as is
-    the one ``ValueError`` a writable ``memoryview`` raises; any other error from a
-    value's own ``__hash__`` is a bug in that ``__hash__`` and propagates.
+    one whose hash reaches a ``memoryview`` that refuses with ``ValueError``; any other
+    error from a value's own ``__hash__`` is a bug in that ``__hash__`` and propagates.
     """
     if isinstance(value, _MAP_LIKE):
         return None
@@ -227,7 +227,7 @@ def _operation_content_key(value: Any) -> int | None:
     except TypeError:
         return None
     except ValueError as exc:
-        if _is_writable_memoryview_refusal(exc):
+        if _is_memoryview_hash_refusal(exc):
             return None
         raise
 
@@ -334,9 +334,9 @@ def to_list(
                 # fast path native set membership gives, over the content key.
                 duplicate = None
             except ValueError as exc:
-                # A writable memoryview refuses membership with ValueError; read it as
-                # unhashable the same way, and let any other ValueError propagate.
-                if not _is_writable_memoryview_refusal(exc):
+                # A memoryview refuses membership with ValueError; read it as unhashable
+                # the same way, and let any other ValueError propagate.
+                if not _is_memoryview_hash_refusal(exc):
                     raise
                 duplicate = None
             if duplicate is False:

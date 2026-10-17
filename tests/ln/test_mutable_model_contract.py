@@ -8,13 +8,14 @@ from __future__ import annotations
 import json
 import operator
 import sys
+from array import array
 from dataclasses import dataclass, field
 from importlib import import_module
 from pathlib import Path
 
 import msgspec
 import pytest
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_serializer
 
 from lionagi.libs.schema.function_to_schema import FunctionSchema
 from lionagi.ln import to_list
@@ -799,11 +800,11 @@ def _nested(depth):
     [lambda: memoryview(bytearray(b"ab")), lambda: _nested(sys.getrecursionlimit())],
     ids=["writable-memoryview", "past-the-recursion-limit"],
 )
-def test_dataclass_dedup_keeps_a_value_whose_structure_cannot_be_keyed(make):
-    """A writable memoryview hashes with ``ValueError`` and a value nested past the
-    recursion limit cannot be keyed at all, so each falls back to the equality path: a
-    value is kept unless it is the same object as a kept value or a kept value's own
-    equality calls it equal, and the values around it are deduplicated."""
+def test_dataclass_dedup_keeps_a_value_whose_structure_has_no_content_key(make):
+    """A writable memoryview's values can change, so it is keyed by identity as any
+    mutable buffer is, and a value nested past the recursion limit cannot be keyed at
+    all: either way a value is kept unless it is the same object as a kept value or a
+    kept value's own equality calls it equal, and the values around it are deduplicated."""
     first, equal_content, plain = Holder(make()), Holder(make()), Holder("plain")
     result = to_list(
         [first, plain, equal_content, first, Holder("plain")], flatten=True, unique=True
@@ -889,11 +890,12 @@ def test_a_memoryview_is_keyed_by_the_bytes_it_holds():
     assert hash_dict({"v": first}) != hash_dict({"v": memoryview(bytearray(b"ba"))})
 
 
-def test_a_writable_memoryview_content_compares_as_an_unhashable_structural_value():
-    """The base equality keys a value's contents, so a ``ValueError`` there is the same
-    unhashable state a ``TypeError`` reports: two ``DataClass`` values holding equal
-    writable memoryviews compare instead of raising."""
+def test_a_writable_memoryview_content_compares_by_identity():
+    """A writable memoryview's values can change, so the base equality keys it by
+    identity, as it keys a ``bytearray``: two ``DataClass`` values holding the same view
+    are equal, and two holding distinct views are not, whatever the views hold."""
     first, second = _memoryviews()
+    assert MutableContext([first]) == MutableContext([first])
     assert (MutableContext([first]) == MutableContext([second])) is False
     assert (MutableContext([second]) == MutableContext([first])) is False
 
@@ -920,6 +922,127 @@ def test_a_user_hash_that_raises_valueerror_inside_a_field_propagates():
             flatten=True,
             unique=True,
         )
+
+
+def _byte_views():
+    """Two read-only views holding the values 97 and 98 in two formats, and one view
+    holding other values. The two-byte view is built from its own values, so it holds
+    them in either byte order."""
+    return (
+        memoryview(b"ab"),
+        memoryview(array("H", [97, 98]).tobytes()).cast("H"),
+        memoryview(b"ba"),
+    )
+
+
+def _released_view():
+    view = memoryview(b"ab")
+    view.release()
+    return view
+
+
+def test_a_fixed_memoryview_is_keyed_by_the_shape_and_values_it_holds():
+    """A read-only view of ``bytes`` cannot change, so a frozen value holding one is
+    hashable, and it equals one holding a view of the same shape and values in any
+    format, as the views themselves do; other values or another shape are another key."""
+    byte_view, short_view, other = _byte_views()
+    assert byte_view == short_view
+    first, second = Meta("k", byte_view), Meta("k", short_view)
+    assert first == second
+    assert hash(first) == hash(second)
+    assert Meta("k", other) != first
+    assert Meta("k", byte_view.cast("B", (1, 2))) != first
+    assert len(to_list([first, second, Meta("k", other)], flatten=True, unique=True)) == 2
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda: memoryview(bytearray(b"ab")),
+        lambda: memoryview(bytearray(b"ab")).toreadonly(),
+        _released_view,
+    ],
+    ids=["writable", "read-only-over-a-mutable-buffer", "released"],
+)
+def test_a_memoryview_whose_values_can_change_makes_a_frozen_value_unhashable(make):
+    """A writable view, a read-only view of a mutable buffer and a released view do not
+    hold fixed values, so a frozen value holding one refuses its hash, as one holding a
+    ``bytearray`` does, and still equals a value holding the same view."""
+    view = make()
+    holder = Meta("k", view)
+    with pytest.raises(TypeError):
+        hash(holder)
+    assert holder == Meta("k", view)
+
+
+def test_the_base_equality_reads_a_one_dimensional_byte_view_as_the_bytes_it_equals():
+    """The base equality compares field values by value, and a one-dimensional view of
+    byte values equals the bytes holding them, whatever its format; a view of another
+    shape does not."""
+    byte_view, short_view, _ = _byte_views()
+    assert MutableContext([byte_view]) == MutableContext([b"ab"])
+    assert MutableContext([short_view]) == MutableContext([b"ab"])
+    assert MutableContext([byte_view.cast("B", (1, 2))]) != MutableContext([b"ab"])
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda: memoryview(bytearray(b"ab")),
+        lambda: memoryview(array("H", [97, 98]).tobytes()).cast("H"),
+        _released_view,
+    ],
+    ids=["writable", "non-byte-format", "released"],
+)
+def test_a_tuple_whose_memoryview_refuses_its_hash_falls_back_to_equality(make):
+    """Hashing a tuple hashes its memoryview, which refuses with ``ValueError`` when the
+    view is writable, holds a format other than a byte format, or has been released; each
+    refusal reads as unhashable, so the same tuple given twice is one value instead of
+    an error."""
+    view = make()
+    assert len(fields._validate_listable_field(None, [(view,), (view,)])) == 1
+
+
+def test_a_memoryview_content_key_follows_the_shape_and_values_it_compares_by():
+    """A view equals bytes holding the same values when it is one-dimensional, whatever
+    its format, so it then has the content key those bytes have; a view of another shape
+    or of other values has another key, and a released view, which equals only itself,
+    is keyed without being read."""
+    from lionagi.ln import hash_dict
+
+    _, short_view, _ = _byte_views()
+    assert hash_dict({"v": short_view}) == hash_dict({"v": b"ab"})
+    doubles = memoryview(array("d", [1.0, 2.0]).tobytes()).cast("d")
+    assert doubles == b"\x01\x02"
+    assert hash_dict({"v": doubles}) == hash_dict({"v": b"\x01\x02"})
+    square, wide = memoryview(b"abcd").cast("B", (2, 2)), memoryview(b"abcd").cast("H")
+    assert square != b"abcd" and wide != b"abcd"
+    assert hash_dict({"v": square}) != hash_dict({"v": b"abcd"})
+    assert hash_dict({"v": wide}) != hash_dict({"v": b"abcd"})
+    released = _released_view()
+    assert hash_dict({"v": released}) == hash_dict({"v": released})
+
+
+class FailingSerializer(BaseModel):
+    """A model whose own field serializer reports a defect with ``ValueError``."""
+
+    value: int = 0
+
+    @field_serializer("value")
+    def _fail(self, value):
+        raise ValueError("a broken serializer")
+
+
+def test_a_model_serializer_error_propagates_instead_of_reading_as_unhashable():
+    """Only the serializer's refusal of a model that holds itself reads as an unhashable
+    state; any other error from a model's own serializer is a defect in it and propagates
+    from the base equality and from the content key."""
+    from lionagi.ln import hash_dict
+
+    with pytest.raises(ValueError, match="a broken serializer"):
+        _ = MutableContext([FailingSerializer()]) == MutableContext([FailingSerializer()])
+    with pytest.raises(ValueError, match="a broken serializer"):
+        hash_dict({"v": FailingSerializer()})
 
 
 @pytest.mark.parametrize("kind", ["mapping", "pydantic", "msgspec"])

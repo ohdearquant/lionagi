@@ -39,36 +39,63 @@ class UnhashableStructuralValueError(TypeError):
         )
 
 
-# A writable ``memoryview`` is the one built-in whose hash refusal is ``ValueError``
-# rather than ``TypeError``; the message is the interpreter's own and is stable across
-# supported versions. Recognizing it keeps the promised equality fallback for that one
-# type without swallowing any other ``ValueError`` a value's own ``__hash__`` raises.
-_WRITABLE_MEMORYVIEW_REFUSAL = "cannot hash writable memoryview object"
+# ``memoryview`` is the one built-in whose hash refusals are ``ValueError`` rather than
+# ``TypeError``: for a writable view, for a view whose format is not a byte format, and
+# for a released view. The messages are the interpreter's own and are stable across
+# supported versions. Recognizing exactly these keeps the promised equality fallback
+# for a value whose hash reaches a memoryview without swallowing any other
+# ``ValueError`` a value's own ``__hash__`` raises.
+_MEMORYVIEW_HASH_REFUSALS = frozenset(
+    {
+        "cannot hash writable memoryview object",
+        "memoryview: hashing is restricted to formats 'B', 'b' or 'c'",
+        "operation forbidden on released memoryview object",
+    }
+)
+# Pydantic's serializer refuses a model that holds itself with a ``ValueError`` whose
+# message starts with this text, whether it finds the repeated object or runs out of depth.
+_CIRCULAR_REFERENCE = "Circular reference detected"
 
 
-def _is_writable_memoryview_refusal(exc: ValueError) -> bool:
-    """Whether *exc* is the ``ValueError`` a writable ``memoryview``'s hash raises.
+def _is_memoryview_hash_refusal(exc: ValueError) -> bool:
+    """Whether *exc* is a ``ValueError`` a ``memoryview``'s own hash raises.
 
-    Hashing a writable ``memoryview`` -- on its own or nested in a container or model
-    whose hash reaches it -- raises this one ``ValueError``. Every other ``ValueError``
-    from a value's own ``__hash__`` is a defect in that ``__hash__`` and must propagate,
-    so the refusal is recognized by its own message rather than by the exception type.
+    Hashing a writable, non-byte-format or released ``memoryview`` -- on its own or
+    nested in a container or model whose hash reaches it -- raises one of these. Every
+    other ``ValueError`` from a value's own ``__hash__`` is a defect in that ``__hash__``
+    and must propagate, so a refusal is recognized by its own message rather than by
+    the exception type.
     """
-    return exc.args == (_WRITABLE_MEMORYVIEW_REFUSAL,)
+    return (
+        len(exc.args) == 1 and type(exc.args[0]) is str and exc.args[0] in _MEMORYVIEW_HASH_REFUSALS
+    )
+
+
+def _is_circular_reference(exc: ValueError) -> bool:
+    """Whether *exc* is the serializer's refusal of a model that holds itself."""
+    return (
+        len(exc.args) == 1
+        and type(exc.args[0]) is str
+        and exc.args[0].startswith(_CIRCULAR_REFERENCE)
+    )
 
 
 def _serialized(value: Any, path: str, build: Callable[[], Any]) -> Any:
     """Return *build()*, the builtins a model serializes to, or refuse the model.
 
-    Pydantic's ``model_dump`` and ``msgspec.to_builtins`` raise ``ValueError`` or
-    ``RecursionError`` for a model that holds itself or nests past the recursion limit,
-    before the projection can walk it, so the model is refused with the same error a
-    cycle the projection meets on its own path raises. Any other error from the model's
-    own serializer propagates.
+    Pydantic's ``model_dump`` refuses a model that holds itself with ``ValueError``, and
+    ``msgspec.to_builtins`` reaches the recursion limit on one, before the projection can
+    walk it, so the model is refused with the same error a cycle the projection meets on
+    its own path raises. Any other error from the model's own serializer, a
+    ``ValueError`` included, propagates.
     """
     try:
         return build()
-    except (RecursionError, ValueError) as exc:
+    except RecursionError as exc:
+        raise UnhashableStructuralValueError(path, type(value)) from exc
+    except ValueError as exc:
+        if not _is_circular_reference(exc):
+            raise
         raise UnhashableStructuralValueError(path, type(value)) from exc
 
 
@@ -243,6 +270,7 @@ _PATH = 21
 _UUID = 22
 _ELLIPSIS = 23
 _TYPING_SINGLETON = 24
+_MEMORYVIEW = 25
 
 # Keyed by identity, so a frozen dataclass's key is computed once: its fields are assumed not
 # to change after that. A field written through `object.__setattr__` once the key is cached is
@@ -380,6 +408,54 @@ def _is_msgspec_struct(value: Any) -> bool:
     )
 
 
+def _project_memoryview(
+    view: memoryview, path: str, active: set[int], *, value_semantics: bool
+) -> _StructuralKey:
+    """Key a memoryview by the shape and values it holds, or by identity.
+
+    Only a read-only view of a ``bytes`` object holds values that cannot change. A
+    writable view, a read-only view of a mutable buffer, a released view, and a view
+    whose format cannot be unpacked are keyed by identity and are unsafe to hash, as a
+    ``bytearray`` is. A fixed view is keyed by its shape and the values it unpacks to,
+    which is what memoryview equality compares, so views of different formats holding
+    equal values are one value; under value equality a one-dimensional view of byte
+    values is the ``bytes`` it equals. Its key is not cached, because releasing the view
+    later leaves it equal only to itself.
+    """
+    try:
+        values = view.tolist() if view.readonly and type(view.obj) is bytes else None
+    except (ValueError, NotImplementedError):
+        values = None
+    if values is None:
+        return _StructuralKey(
+            (_OPAQUE_MUTABLE, _IdentityKey(view)),
+            cache_stable=False,
+            hash_safe=False,
+            _sort_token=_frame(b"x", _identity_token(view)),
+            _unsafe_path=path,
+            _unsafe_type=memoryview,
+        )
+    if (
+        value_semantics
+        and view.ndim == 1
+        and all(type(item) is int and 0 <= item <= 255 for item in values)
+    ):
+        return _project(bytes(values), path, active, value_semantics=True)
+    # The list is this call's own copy of the values, so it does not make the key unsafe.
+    projected = _project(values, path, active, value_semantics=value_semantics)
+    return _StructuralKey(
+        (_MEMORYVIEW, view.shape, projected.value),
+        cache_stable=False,
+        hash_safe=True,
+        _sort_token=_frame(
+            b"mv",
+            _frame(b"t", *(_encode_int(size) for size in view.shape)),
+            projected._sort_token,
+        ),
+        _pins=projected._pins,
+    )
+
+
 def _project(
     value: Any,
     path: str,
@@ -435,6 +511,8 @@ def _project(
         return _StructuralKey((_STR, value), True, True, _frame(b"s", _encode_text(value)))
     if value_type is bytes:
         return _StructuralKey((_BYTES, value), True, True, _frame(b"y", value))
+    if value_type is memoryview:
+        return _project_memoryview(value, path, active, value_semantics=value_semantics)
 
     sentinel_name = _lion_sentinel_name(value)
     if sentinel_name is not None:
@@ -735,10 +813,10 @@ def _project(
         except (TypeError, ValueError) as exc:
             # The value reports itself unhashable, so no content key exists for it and
             # the base equality that asks for one reads it as an uncomparable state
-            # rather than letting the refusal escape. A writable memoryview is the one
-            # built-in whose hash refusal is ValueError; a TypeError is the ordinary
-            # refusal. Every other error from the value's own __hash__ propagates.
-            if isinstance(exc, ValueError) and not _is_writable_memoryview_refusal(exc):
+            # rather than letting the refusal escape. A TypeError is the ordinary refusal,
+            # and a memoryview the value's hash reaches refuses with ValueError. Every other
+            # error from the value's own __hash__ propagates.
+            if isinstance(exc, ValueError) and not _is_memoryview_hash_refusal(exc):
                 raise
             raise UnhashableStructuralValueError(path, value_type) from exc
         return _StructuralKey(

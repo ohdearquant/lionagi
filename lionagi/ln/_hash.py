@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from ._json_dump import json_dumpb
 from ._lazy_init import LazyInit
+from ._structural import _is_circular_reference
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -54,6 +55,7 @@ _TYPE_MARKER_SET = 3
 _TYPE_MARKER_FROZENSET = 4
 _TYPE_MARKER_PYDANTIC = 5
 _TYPE_MARKER_MSGSPEC = 6
+_TYPE_MARKER_MEMORYVIEW = 7
 
 
 def _through_container(item: Any, active: set[int], build: Callable[[], Any]) -> Any:
@@ -95,15 +97,20 @@ def _generate_hashable_representation(item: Any) -> Any:
 def _builtins_of_model(item: Any, build: Callable[[], Any]) -> Any:
     """Return *build()*'s mapping, or raise ``TypeError`` when it cannot be built.
 
-    ``msgspec.to_builtins`` and Pydantic's ``model_dump`` raise ``RecursionError`` or
-    ``ValueError`` for a value that holds itself or nests past the recursion limit
-    before this module can walk it, so the failure is reported as the same
-    ``TypeError`` a value that cannot be keyed reports, and the equality fallback takes
-    it. Any other error from the model's own serializer propagates.
+    ``msgspec.to_builtins`` reaches the recursion limit on a value that holds itself or
+    nests past it, and Pydantic's ``model_dump`` refuses a model that holds itself with
+    ``ValueError``, before this module can walk it, so the failure is reported as the
+    same ``TypeError`` a value that cannot be keyed reports, and the equality fallback
+    takes it. Any other error from the model's own serializer, a ``ValueError``
+    included, propagates.
     """
     try:
         return build()
-    except (RecursionError, ValueError) as exc:
+    except RecursionError as exc:
+        raise TypeError(f"cannot key a cyclic or too deeply nested {type(item).__name__}") from exc
+    except ValueError as exc:
+        if not _is_circular_reference(exc):
+            raise
         raise TypeError(f"cannot key a cyclic or too deeply nested {type(item).__name__}") from exc
 
 
@@ -181,10 +188,20 @@ def _hashable_representation(item: Any, active: set[int]) -> Any:
         )
 
     if isinstance(item, memoryview):
-        # A memoryview's string is its address, but it compares equal to a view or a
-        # bytes object holding the same values, so it is represented by the bytes it
-        # holds, as a bytes object is.
-        return _hashable_representation(item.tobytes(), active)
+        # A memoryview's string is its address, but it compares equal to any view or
+        # bytes object of the same shape holding equal values, whatever the format, so
+        # it is represented by those values: a one-dimensional view of byte values as the
+        # bytes it equals, any other view by its shape and values. A released view, or
+        # one whose format cannot be unpacked, equals only itself and is represented by
+        # its string.
+        with contextlib.suppress(ValueError, NotImplementedError):
+            values = item.tolist()
+            if item.ndim == 1 and all(
+                isinstance(value, int | float) and 0 <= value <= 255 and value == int(value)
+                for value in values
+            ):
+                return _hashable_representation(bytes(int(value) for value in values), active)
+            return (_TYPE_MARKER_MEMORYVIEW, item.shape, _hashable_representation(values, active))
 
     with contextlib.suppress(Exception):
         return str(item)
