@@ -441,6 +441,45 @@ message ids) must not fall through to `0 or fallback`.
 
 ## lionagi/studio/services/invocations.py
 
+**`list_invocations_route`** — The usage aggregates are opt-in through the
+non-schema `include_usage` query flag, which the library usage panel passes and the
+Fleet and Mission Control polls leave off. Without it the route returns only the
+plain `total` and `completed_total` counts a row-rendering poll reads, and both
+`finished_total` and `latest_started_at` are null — so a 3-second poll over the
+unfiltered invocation list runs the two `COUNT(*)` reads it renders and not the
+`MAX(started_at)` aggregate or the terminal-status `CASE` count that would scan
+the same matching rows for numbers no poll displays. Both paths count every
+matching row; the flag drops the aggregate work, not the scan. With it the route
+additionally returns `latest_started_at`, a nullable
+Unix-second timestamp for the maximum recorded start across every row matching
+`skill`, `plugin`, and `status`; it is computed with `total` in a combined
+`COUNT(*)`/`MAX(started_at)` aggregate SELECT within the existing page/count read
+snapshot, so limit, offset, update order, and cleanup end times cannot change it.
+No matches return null. `completed_total` keeps its status-independent count of
+`completed` records. The additive `finished_total` counts the canonical invocation
+terminal statuses (`completed`, `completed_empty`, `failed`, `timed_out`,
+`aborted`, and `cancelled`) with the same skill/plugin scope, ignoring the page's
+status filter. Both completion counts share one SELECT in that snapshot, without
+increasing query count. Recorded success rate is `completed_total /
+finished_total`; empty completions and cancellations are finished but not
+successes. Older clients can ignore the new fields; newer clients show unknown
+last use or an unavailable rate when their respective aggregate is omitted,
+rather than estimating from a bounded page. Cancellation end times record
+observation of cancellation, including delayed cleanup; cancelled invocations are
+excluded from the scheduler `p95_latency_ms` metric so cleanup delay does not
+become execution latency, and so are the rows the lifecycle reaper ends: its
+`timed_out` write carries a `{"kind": "invocation"}` entry in
+`status_evidence_refs`, which a run's own deadline write does not, so the metric
+excludes a reaper-observed end time by that entry while a run that recorded its
+own timeout still counts. A scheduled fire writes its trigger type into `plugin`
+(`lionagi/studio/scheduler/engine.py`), so the stored-identity filters match a
+same-named plugin to those rows; correcting producer identity and historical rows
+is separate work. Last tracked use counts every matching recorded start, including
+a scheduled fire that lost its claim and never launched: its row keeps its start
+time, and what it does carry — a reason code shared with cancellations that did
+launch, and the scheduler's own `status_evidence_refs` kind — is not a
+dialect-neutral key this aggregate filters on.
+
 **`get_invocation`** — One invocation with its child sessions, artifacts
 and derived health. `readonly` opens the store read-only for callers whose
 contract says they only read; the ordinary open runs schema application,
@@ -889,8 +928,9 @@ telemetry exactly once, riding the invocation's own terminal write
 (`engine.py` calls this only after its own terminal-status guard returns
 `True`). Pops the scheduler signal bus's accumulated counters for the run
 and merges them with the invocation's files-read overlap under a
-`"coordination"` key in `invocations.node_metadata` (read-modify-write,
-since `update_invocation` replaces `node_metadata` wholesale). Returns
+`"coordination"` key in `invocations.node_metadata`, through the store's own
+`merge_invocation_node_metadata` UPDATE, so a key another writer added
+meanwhile (a closer's `result`) survives. Returns
 `None` — leaving `node_metadata` untouched — when there is nothing to
 report (no signal emitted, no file overlap), matching the measure-only
 surfacing rule. Best-effort: it rides an already-committed terminal write,

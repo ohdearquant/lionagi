@@ -3196,7 +3196,12 @@ async def _run_flow(
                         # atomic transition as the status write below -- a
                         # separate prior update_invocation() call could persist
                         # ended_at on a row this status write then fails to move.
-                        await _inv_db.update_status(
+                        # Guarded on the row still running, like every other
+                        # invocation terminal writer: a run a kill (or any other
+                        # finalizer) already closed keeps that outcome and its end
+                        # time, instead of this later write replacing the reason on
+                        # an already-terminal row.
+                        _inv_written = await _inv_db.update_status(
                             "invocation",
                             invocation_id,
                             new_status=inv_status,
@@ -3206,7 +3211,20 @@ async def _run_flow(
                             source="executor",
                             actor=invocation_id,
                             metadata=inv_meta,
+                            expected_statuses={"running"},
                             extra_fields={"ended_at": _ended_at},
+                        )
+                    if not _inv_written:
+                        # The guarded write was refused: the row left running
+                        # between the read above and here, so another writer owns
+                        # its outcome and already fired that entity's terminal
+                        # callbacks. Report the refusal rather than pretend this
+                        # run's own terminal status was recorded.
+                        logger.info(
+                            "Refused terminal write for invocation %s: the row is no longer "
+                            "running, so it keeps its stored outcome; requested %s.",
+                            invocation_id,
+                            inv_status,
                         )
                 except Exception:
                     import logging as _logging
