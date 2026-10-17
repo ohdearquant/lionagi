@@ -717,9 +717,10 @@ def _stale_lock_beside(
     exhausted budget is ``truncated``, which a caller must read as "did not
     finish looking" rather than "found nothing".
     """
-    for index, candidate in enumerate(candidates, start=1):
-        if budget is not None and index % _BUDGET_CHECK_INTERVAL == 0 and budget.expired():
-            return _ScanResult(None, True)
+    # At most two candidates, so the budget is read once rather than at the walk's interval.
+    if candidates and budget is not None and budget.expired():
+        return _ScanResult(None, True)
+    for candidate in candidates:
         try:
             if candidate.stat().st_mtime < cutoff:
                 return _ScanResult(candidate, False)

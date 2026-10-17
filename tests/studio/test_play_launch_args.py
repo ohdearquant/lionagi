@@ -109,6 +109,22 @@ class TestBuildArgvPlay:
         )
         assert argv == ["li", "play", "audit", "--depth", "2"]
 
+    def test_args_of_the_wrong_shape_are_refused_rather_than_dropped(self):
+        """A stored args value that is not an object is refused at launch; it is
+        never read as no args, which would run the play with its defaults."""
+        with pytest.raises(ValueError):
+            build_argv(_play_schedule(action_playbook_args=["mode"]), {}, executable_prefix=["li"])
+        with pytest.raises(ValueError):
+            build_argv(
+                _play_schedule(
+                    resolved_target={
+                        "target": {"kind": "playbook", "name": "audit", "args": ["mode"]}
+                    }
+                ),
+                {},
+                executable_prefix=["li"],
+            )
+
     def test_a_scheduled_row_with_no_declared_args_still_builds_a_bare_play(self):
         argv, _ = build_argv(
             _play_schedule(resolved_target={"target": {"kind": "playbook", "name": "audit"}}),

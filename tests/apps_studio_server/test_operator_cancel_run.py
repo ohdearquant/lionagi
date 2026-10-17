@@ -859,6 +859,10 @@ async def test_cancel_run_resolver_refuses_an_unscoped_turn_with_a_typed_error(
 
     with pytest.raises(MissingOwnerContextError):
         await _resolve_reference(store, request_id, run_id)
+    # Nothing is selected on this turn, so 'current' would read as not-found if it
+    # were resolved before the refusal.
+    with pytest.raises(MissingOwnerContextError):
+        await _resolve_reference(store, request_id, "current")
     assert await store.list_proposals_for_request(request_id) == []
 
 

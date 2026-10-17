@@ -1356,3 +1356,27 @@ def test_a_job_lock_under_the_job_directory_reaches_the_classifier(tmp_path, mon
         admin_svc._classify_phantom(stale_row, now=now, stale_seconds=3600, ps_snapshot="")
         == "stale_lock"
     )
+
+
+def test_a_spent_budget_reads_as_unfinished_before_the_locks_beside_the_root(tmp_path):
+    """The locks beside an artifact root are part of the budgeted scan: once the
+    budget is spent the scan reports that it did not finish, rather than reading
+    those locks and answering as if it had looked everywhere."""
+    import lionagi.studio.services.admin as admin_svc
+
+    run_dir = tmp_path / "run-1"
+    artifacts_dir = run_dir / "artifacts"
+    artifacts_dir.mkdir(parents=True)
+    _aged(run_dir / "finalize.lock", 7200)
+    cutoff = time.time() - 3600
+
+    spent = admin_svc._find_stale_lock(
+        artifacts_dir, cutoff=cutoff, budget=admin_svc._ScanBudget(seconds=-1.0)
+    )
+    assert spent == admin_svc._ScanResult(None, True)
+    # The same layout with budget left finds the lock, so the refusal above is
+    # the budget's doing.
+    found = admin_svc._find_stale_lock(
+        artifacts_dir, cutoff=cutoff, budget=admin_svc._ScanBudget(seconds=60.0)
+    )
+    assert found == admin_svc._ScanResult(run_dir / "finalize.lock", False)

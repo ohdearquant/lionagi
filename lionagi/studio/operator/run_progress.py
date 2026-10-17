@@ -255,9 +255,15 @@ async def resolve_run(ref: str, *, allow_unscoped_exact_id: bool = True) -> dict
     if not normalized:
         return {"found": False, "reason": "empty run reference"}
 
+    if not allow_unscoped_exact_id:
+        # A caller that acts on the run proves the turn's project before reading anything,
+        # the human's view selection included, so an unscoped turn gets the one refusal
+        # whatever it names.
+        await _allowed_project()
+
     from_current_view = False
     if normalized.lower() == "current":
-        # Resolved before the project fence: this only reads the human's own
+        # A read resolves this before the project fence: it only reads the human's own
         # view selection, it enumerates nothing. Whatever id it yields still
         # goes through the same fence-or-exact-id logic as a typed reference.
         session_id = await _resolve_current()

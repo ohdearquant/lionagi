@@ -1276,6 +1276,11 @@ async def test_resolve_run_denies_the_unscoped_exact_id_arm_when_a_write_asks(db
         await resolve_run(sid, allow_unscoped_exact_id=False)
     with pytest.raises(MissingOwnerContextError):
         await resolve_run(sid[:8], allow_unscoped_exact_id=False)
+    # With nothing selected, 'current' is refused the same way before the empty
+    # selection is read; the read default reports the empty selection.
+    with pytest.raises(MissingOwnerContextError):
+        await resolve_run("current", allow_unscoped_exact_id=False)
+    assert (await resolve_run("current"))["found"] is False
 
 
 def test_terminal_safe_health_drops_only_the_vacuous_healthy():

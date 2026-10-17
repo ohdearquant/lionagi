@@ -933,7 +933,7 @@ schedules:
       kind: playbook
       name: health-audit
       args:
-        project: lionagi
+        scope: lionagi
     execution:
       cwd: {tmp_path}
 """
@@ -942,7 +942,7 @@ schedules:
     assert resolved["audit"].resolved["target"] == {
         "kind": "playbook",
         "name": "health-audit",
-        "args": {"project": "lionagi"},
+        "args": {"scope": "lionagi"},
     }
 
 
@@ -973,6 +973,22 @@ async def test_a_declared_playbook_target_passes_its_args_to_the_launch(
     argv, tmp = build_argv(row, {}, executable_prefix=["li"])
     assert argv == ["li", "play", "health-audit", "--depth", "2"]
     assert tmp is None
+
+
+def test_a_playbook_target_arg_the_launch_would_refuse_is_refused_at_declaration(agent_profile):
+    """A playbook target's args are held to the launch's rules when the set is
+    resolved, so validate and apply report a bad arg instead of the row failing
+    each time it fires."""
+    target = (
+        "    target:\n      kind: playbook\n      name: health-audit\n      args:\n"
+        '        mode: "-deep"\n'
+    )
+    doc = parse_schedule_set(_manifest_with_target("nightly", cwd=agent_profile, target=target))
+    with pytest.raises(ScheduleSetError) as excinfo:
+        resolve_schedule_set(doc, agent_profile)
+    ((name, message),) = excinfo.value.errors
+    assert name == "demo/nightly"
+    assert "starts with '-'" in message
 
 
 # cwd / project resolution

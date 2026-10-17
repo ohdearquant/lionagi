@@ -511,9 +511,12 @@ def _resolve_flow_target(target: FlowTarget, manifest_dir: Path) -> dict[str, An
 
 
 def _resolve_playbook_target(target: PlaybookTarget) -> dict[str, Any]:
-    from lionagi.studio.scheduler.subprocess import _validate_identifier
+    from lionagi.studio.scheduler.subprocess import _validate_identifier, _validate_playbook_args
 
     _validate_identifier(target.name, "target.playbook.name")
+    # The launch passes these args, so they are held to its rules here, where
+    # validate and apply report them, rather than first failing when the row fires.
+    _validate_playbook_args(target.args)
     return {"kind": "playbook", "name": target.name, "args": target.args}
 
 

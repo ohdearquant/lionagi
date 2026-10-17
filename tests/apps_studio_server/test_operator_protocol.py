@@ -1339,6 +1339,8 @@ async def test_cancel_run_full_id_of_a_foreign_run_is_refused_with_no_project(
         "reason": "missing_owner_context",
         "run_untouched": True,
     }
+    # 'current' with nothing selected gets the same refusal, never a not-found.
+    assert await asyncio.wait_for(cancel_run({"run": "current"}), timeout=2) == result
     assert await store.list_proposals_for_request(request_id) == []
     async with StateDB() as db:
         row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (foreign_run,))
@@ -1368,6 +1370,9 @@ async def test_rename_session_full_id_of_a_foreign_run_is_refused_with_no_projec
     )
 
     assert result == {"renamed": False, "reason": "missing_owner_context"}
+    # 'current' with nothing selected gets the same refusal, never a not-found.
+    current = await asyncio.wait_for(rename_session({"run": "current", "name": "x"}), timeout=2)
+    assert current == result
     assert await store.list_proposals_for_request(request_id) == []
     async with StateDB() as db:
         row = await db.fetch_one("SELECT name FROM sessions WHERE id = ?", (foreign_run,))
@@ -1399,6 +1404,11 @@ async def test_resume_run_full_id_of_a_foreign_run_is_refused_with_no_project(
     )
 
     assert result == {"resumed": False, "reason": "missing_owner_context"}
+    # 'current' with nothing selected gets the same refusal, never a not-found.
+    current = await asyncio.wait_for(
+        resume_run({"run": "current", "instruction": "keep going"}), timeout=2
+    )
+    assert current == result
     assert await store.list_proposals_for_request(request_id) == []
 
 
@@ -3999,6 +4009,7 @@ async def test_a_finished_turn_keeps_the_result_it_committed(tmp_path, monkeypat
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
     store, cid, request_id, proposal = await _start_proposal_turn(path)
+    written = _record_post_commit_appends(monkeypatch, store)
     await store.decide_proposal(
         cid,
         proposal["id"],
@@ -4009,6 +4020,9 @@ async def test_a_finished_turn_keeps_the_result_it_committed(tmp_path, monkeypat
     )
     result = {"href": "/runs/child", "run_id": "child"}
     await store.complete_proposal(proposal["id"], status="succeeded", result=result)
+    # The confirmation and the result were written with the status changes, so
+    # nothing went through the post-commit path the poller can beat.
+    assert written == []
     # The turn finishes here, in the gap a permission poller would use.
     await store.finish_turn(request_id, outcome="completed")
 
@@ -4044,6 +4058,7 @@ async def test_a_finished_turn_keeps_the_failure_it_committed(tmp_path, monkeypa
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
     store, cid, request_id, proposal = await _start_proposal_turn(path)
+    written = _record_post_commit_appends(monkeypatch, store)
     await store.decide_proposal(
         cid,
         proposal["id"],
@@ -4059,6 +4074,7 @@ async def test_a_finished_turn_keeps_the_failure_it_committed(tmp_path, monkeypa
         error_code="service_failure",
         result={"message": "Application command failed", "details": detail},
     )
+    assert written == []
     await store.finish_turn(request_id, outcome="completed")
 
     stored = await store.list_frames(cid)
@@ -4155,6 +4171,7 @@ async def test_a_finished_turn_keeps_the_native_tool_confirmation_it_committed(
         command={"toolName": "Write", "input": {"file_path": "a.txt"}, "toolUseId": "t1"},
         risk="mutate",
     )
+    written = _record_post_commit_appends(monkeypatch, store)
     await store.decide_proposal(
         cid,
         proposal["id"],
@@ -4164,6 +4181,7 @@ async def test_a_finished_turn_keeps_the_native_tool_confirmation_it_committed(
     )
     completed = await store.complete_provider_permission(request_id, "t1", ok=True)
     assert completed is not None and completed["status"] == "succeeded"
+    assert written == []
     await store.finish_turn(request_id, outcome="completed")
 
     stored = await store.list_frames(cid)

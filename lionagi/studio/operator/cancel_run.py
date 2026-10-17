@@ -247,13 +247,13 @@ async def _resolve_reference(store: OperatorStore, request_id: str, ref: str) ->
     """
     from lionagi.state.db import StateDB
 
+    project = await _allowed_project(store, request_id)
+
     if ref == "current":
         run_id = await _current_run_id(store, request_id)
         if run_id is None:
             return {"found": False}
         ref = run_id
-
-    project = await _allowed_project(store, request_id)
 
     async with StateDB() as db:
         try:
