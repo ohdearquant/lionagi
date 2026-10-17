@@ -1057,6 +1057,7 @@ async def test_imodel_stream_propagates_cancellation():
     m.executor = types.SimpleNamespace(
         append=AsyncMock(),
         pile=types.SimpleNamespace(pop=lambda *a, **kw: None),
+        pending=types.SimpleNamespace(exclude=lambda *a, **kw: None),
         processor=types.SimpleNamespace(
             _concurrency_sem=None,
             is_stopped=lambda: False,

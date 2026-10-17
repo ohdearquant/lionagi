@@ -8,8 +8,9 @@ import json
 import logging
 import time
 import warnings
-from copy import deepcopy
 from typing import Any
+
+from lionagi import ln
 
 logger = logging.getLogger("lionagi.hooks.builtins")
 
@@ -241,7 +242,7 @@ async def persist_message(
 
     await retry_queue.submit(
         PendingMessageEvent(
-            message=deepcopy(message),
+            message=ln.copy(message),
             session_id=session_id,
             branch_progression_id=effective_branch_prog,
             session_progression_id=session_progression_id,

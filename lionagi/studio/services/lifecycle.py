@@ -280,7 +280,13 @@ async def reap_null_status_sessions(*, stale_hours: float | None = None) -> int:
                         actor="studio_lifecycle_reaper",
                         metadata={"detector": "null_status_dead_process"},
                         expected_statuses={None},
-                        extra_fields={"ended_at": now} if row["ended_at"] is None else None,
+                        # A dead process's row is terminal, so it must not keep
+                        # a live phase; the clear rides the status write.
+                        extra_fields=(
+                            {"current_phase": None}
+                            if row["ended_at"] is not None
+                            else {"ended_at": now, "current_phase": None}
+                        ),
                     )
                 if transitioned:
                     reaped += 1
@@ -353,7 +359,9 @@ async def reap_phantom_sessions_detailed(
                 # ended_at rides in extra_fields on both branches below so it
                 # lands in the same atomic UPDATE as the status transition;
                 # see reap_stale_invocations for why a follow-up write is unsafe.
-                _extra = {"ended_at": now} if current.get("ended_at") is None else None
+                _extra: dict = {"current_phase": None}
+                if current.get("ended_at") is None:
+                    _extra["ended_at"] = now
                 if current.get("agent_name") == "claude-code":
                     # A mirrored external session has no lionagi process, so the
                     # phantom model misfires: an idle transcript is a normal
