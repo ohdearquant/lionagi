@@ -3,6 +3,8 @@ import dagre from "dagre";
 import type { Edge, Node } from "reactflow";
 import {
   estimateNodeHeight,
+  FOLD_MAX_ROW_WIDTH,
+  FOLD_ROW_GAP,
   getLayoutedElements,
   NODE_HEIGHT,
   NODE_WIDTH,
@@ -66,19 +68,210 @@ function assertNoOverlap(nodes: Node[]) {
   }
 }
 
-// One entry per folded row: the width its cards actually occupy. Rows are
-// separated on y by the fold, so a rounded y identifies a row.
-function rowWidths(nodes: Node[]) {
-  const rows = new Map<number, Node[]>();
-  for (const entry of nodes) {
-    const key = Math.round(entry.position.y);
-    rows.set(key, [...(rows.get(key) ?? []), entry]);
+// The fold separates rows by FOLD_ROW_GAP on y, but dagre gives two nodes
+// inside one row slightly different y (a chord's dummy offsets), so a rounded y
+// is not a row. Group by the gap the fold itself leaves: one entry per row,
+// left to right within the row.
+function foldRows(nodes: Node[]): Node[][] {
+  const sorted = [...nodes].sort((a, b) => a.position.y - b.position.y);
+  const rows: Node[][] = [];
+  let current: Node[] = [];
+  let previousBottom = -Infinity;
+  for (const entry of sorted) {
+    if (current.length > 0 && entry.position.y - previousBottom >= FOLD_ROW_GAP) {
+      rows.push(current);
+      current = [];
+    }
+    current.push(entry);
+    previousBottom = Math.max(previousBottom, entry.position.y + estimateNodeHeight(entry));
   }
-  return [...rows.values()].map((row) => {
+  if (current.length > 0) rows.push(current);
+  return rows.map((row) => [...row].sort((a, b) => a.position.x - b.position.x));
+}
+
+// One entry per folded row: the width its cards actually occupy.
+function rowWidths(nodes: Node[]) {
+  return foldRows(nodes).map((row) => {
     const left = Math.min(...row.map((entry) => entry.position.x));
     const right = Math.max(...row.map((entry) => entry.position.x + NODE_WIDTH));
     return right - left;
   });
+}
+
+// The node ids in each folded row, in reading order (left to right), so a
+// case can name every row it produces — including a row the rule leaves whole.
+function foldRowIds(nodes: Node[]): string[][] {
+  return foldRows(nodes).map((row) => row.map((entry) => entry.id));
+}
+
+// Assert the fold's promises on a laid-out graph:
+//  - an edge marked as a continuation is the single chain link the fold turned
+//    around at a taken row break: one out-edge and one in-edge over the drawn
+//    edge set, exactly the degree test foldWideGraph uses. A chord is never
+//    marked, whatever it does on the canvas;
+//  - no unmarked edge runs backwards across a fold: if its target lands in a
+//    later row and left of its source, it must be a marked chain link. This is
+//    the rule the fold exists to keep — a real dependency is never drawn as a
+//    row boundary — checked from the final geometry rather than the fold's own
+//    bookkeeping.
+// It returns the row widths, so a case can assert which rows fit the bound and
+// which were left whole.
+function assertFoldInvariants(nodes: Node[], edges: Edge[]) {
+  const rowOf = new Map<string, number>();
+  foldRows(nodes).forEach((row, index) => row.forEach((entry) => rowOf.set(entry.id, index)));
+  const xOf = new Map(nodes.map((entry) => [entry.id, Math.round(entry.position.x)]));
+  const outDeg = new Map<string, number>();
+  const inDeg = new Map<string, number>();
+  for (const entry of edges) {
+    outDeg.set(entry.source, (outDeg.get(entry.source) ?? 0) + 1);
+    inDeg.set(entry.target, (inDeg.get(entry.target) ?? 0) + 1);
+  }
+  for (const entry of edges.filter((edgeEntry) => edgeEntry.data?.continuation)) {
+    expect(outDeg.get(entry.source), `${entry.id} marked but not a single-out link`).toBe(1);
+    expect(inDeg.get(entry.target), `${entry.id} marked but not a single-in link`).toBe(1);
+  }
+  for (const entry of edges) {
+    const sourceRow = rowOf.get(entry.source);
+    const targetRow = rowOf.get(entry.target);
+    if (sourceRow === undefined || targetRow === undefined) continue;
+    if (targetRow <= sourceRow) continue;
+    if (xOf.get(entry.target)! >= xOf.get(entry.source)!) continue;
+    // Runs backwards across a row: it must be the marked chain link the fold
+    // turned around, never an unmarked dependency.
+    expect(entry.data?.continuation, `${entry.id} runs backwards across a fold unmarked`).toBe(
+      true,
+    );
+  }
+  return rowWidths(nodes);
+}
+
+// Re-derive the rule's own row plan over the columns the layout produced and
+// return the rows that exceed FOLD_MAX_ROW_WIDTH while still holding an
+// admissible chain-link break within the fit width. The plan is the fold's:
+// starting at each column, break at the last admissible boundary inside the
+// width bound, else at the first admissible one past it, else run whole to the
+// end. An empty result means the fold is exactly this plan, and therefore every
+// row wider than the bound is a row the rule left whole or had to reach past the
+// bound for — no admissible break was available inside it. A non-empty result
+// would mean a row should have broken earlier than it did.
+//
+// Columns are recovered from the folded output: each row's leftmost card sits at
+// the shared left margin, a row's internal spacing is its original spacing, and
+// the original pitch is the first positive gap any row shows.
+function rowsWithAdmissibleBreakInside(nodes: Node[], edges: Edge[]): number[] {
+  const rows = foldRows(nodes);
+  const columnOf = new Map<string, number>();
+  const rowOf = new Map<string, number>();
+  const rowLocalColumn: number[][] = [];
+  let offset = 0;
+  rows.forEach((row, i) => {
+    const xs = [...new Set(row.map((entry) => Math.round(entry.position.x)))].sort((a, b) => a - b);
+    rowLocalColumn.push(xs.map((x) => x - row[0]!.position.x));
+    row.forEach((entry) => {
+      rowOf.set(entry.id, i);
+      columnOf.set(entry.id, offset + xs.indexOf(Math.round(entry.position.x)));
+    });
+    offset += xs.length;
+  });
+  const columns = offset;
+  let pitch = 0;
+  for (const row of rows) {
+    for (let j = 1; j < row.length; j++) {
+      const gap = Math.round(row[j]!.position.x) - Math.round(row[j - 1]!.position.x);
+      if (gap > 0) {
+        pitch = gap;
+        break;
+      }
+    }
+    if (pitch > 0) break;
+  }
+  const left = Math.min(...nodes.map((entry) => entry.position.x));
+  const columnX = (index: number) => left + index * pitch;
+  // Column -> the single node id on it, or several.
+  const atColumn = new Map<number, string[]>();
+  for (const entry of nodes) {
+    const column = columnOf.get(entry.id)!;
+    atColumn.set(column, [...(atColumn.get(column) ?? []), entry.id]);
+  }
+  const outDeg = new Map<string, number>();
+  const inDeg = new Map<string, number>();
+  for (const entry of edges) {
+    outDeg.set(entry.source, (outDeg.get(entry.source) ?? 0) + 1);
+    inDeg.set(entry.target, (inDeg.get(entry.target) ?? 0) + 1);
+  }
+  const edgeSet = new Set(edges.map((entry) => `${entry.source}>${entry.target}`));
+  const isChainLink = (cut: number) => {
+    const before = atColumn.get(cut);
+    const after = atColumn.get(cut + 1);
+    if (!before || !after || before.length !== 1 || after.length !== 1) return false;
+    return (
+      (outDeg.get(before[0]!) ?? 0) === 1 &&
+      (inDeg.get(after[0]!) ?? 0) === 1 &&
+      edgeSet.has(`${before[0]}>${after[0]}`)
+    );
+  };
+  const nextRowStart = new Array<number>(columns + 1).fill(columns);
+  const rowStartIn = (root: number, column: number): number => {
+    let start = root;
+    while (nextRowStart[start]! <= column) start = nextRowStart[start]!;
+    return start;
+  };
+  const admissible = (cut: number, rowStart: number): boolean => {
+    if (!isChainLink(cut)) return false;
+    for (const entry of edges) {
+      const source = columnOf.get(entry.source);
+      const target = columnOf.get(entry.target);
+      if (source === undefined || target === undefined) continue;
+      if (source < rowStart || source > cut) continue;
+      if (target <= cut) continue;
+      if (source === cut && target === cut + 1) continue;
+      if (source - rowStart > target - rowStartIn(cut + 1, target)) return false;
+    }
+    return true;
+  };
+  for (let rowStart = columns - 1; rowStart >= 0; rowStart--) {
+    let end = rowStart;
+    for (let i = rowStart + 1; i < columns; i++) {
+      if (columnX(i) - columnX(rowStart) + NODE_WIDTH > FOLD_MAX_ROW_WIDTH) break;
+      end = i;
+    }
+    if (end === columns - 1) {
+      nextRowStart[rowStart] = columns;
+      continue;
+    }
+    let handover = -1;
+    for (let cut = end; cut >= rowStart; cut--) {
+      if (admissible(cut, rowStart)) {
+        handover = cut + 1;
+        break;
+      }
+    }
+    if (handover < 0) {
+      for (let cut = end + 1; cut < columns - 1; cut++) {
+        if (admissible(cut, rowStart)) {
+          handover = cut + 1;
+          break;
+        }
+      }
+    }
+    nextRowStart[rowStart] = handover < 0 ? columns : handover;
+  }
+  const offenders: number[] = [];
+  for (let rowStart = 0; rowStart < columns; ) {
+    const next = nextRowStart[rowStart]!;
+    const width = columnX(next - 1) - columnX(rowStart) + NODE_WIDTH;
+    const rowIndex = rowOf.get([...atColumn.get(rowStart)!][0]!)!;
+    if (width > FOLD_MAX_ROW_WIDTH) {
+      let inside = -1;
+      for (let cut = rowStart; cut < next - 1; cut++) {
+        if (columnX(cut) - columnX(rowStart) + NODE_WIDTH > FOLD_MAX_ROW_WIDTH) break;
+        if (admissible(cut, rowStart)) inside = cut;
+      }
+      if (inside >= 0) offenders.push(rowIndex);
+    }
+    rowStart = next;
+  }
+  return offenders;
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -250,11 +443,12 @@ describe("bounded graph layout", () => {
 
   it("marks only a genuine fold boundary on a cyclic fallback", () => {
     // A 40-node chain with back edges from c39 to c0..c6. The edges make a
-    // cycle, so this takes the fallback, and the tail from c7 onward is spanned
-    // by none of them, so the chain still has boundaries the fold can break at.
-    // Back edges covering the rows below instead would leave a row with no
-    // breakable boundary, it would stay whole, and the two loops below would
-    // run zero times.
+    // cycle, so this takes the fallback and the back edges pile onto the first
+    // few columns. Row breaks later in the chain are chain links that no edge
+    // would carry backwards once folded, so they are admissible and the fold
+    // still breaks. Back edges crossing each in-row chain link instead would
+    // leave a row with no admissible break: it would stay whole, no continuation
+    // would be marked, and the checks below would run zero times.
     const layout = vi.spyOn(dagre, "layout");
     const nodes = Array.from({ length: 40 }, (_, index) => node(`c${index}`));
     const edges = [
@@ -293,11 +487,11 @@ describe("bounded graph layout", () => {
 
   it("folds a long chain that one chord spans end to end, without marking the chord", () => {
     // A 39-node chain plus one edge from the first node to the last. That chord
-    // crosses every column boundary, so no boundary is a safe break; the row
-    // would run on without limit and the graph would stay a single strip far
-    // wider than the fold bound. The fallback breaks at the row's last chain
-    // link instead, leaving the chord an ordinary forward edge rather than a
-    // row boundary.
+    // crosses every column boundary, but after folding its target lands far to
+    // the right of its source, so it leaves each boundary pointing forward and
+    // every chain link inside the width bound is admissible. The row breaks at
+    // its width bound and the chord stays an ordinary forward edge, never a row
+    // boundary.
     const ids = Array.from({ length: 39 }, (_, index) => `c${index}`);
     const nodes = ids.map(node);
     const edges = ids.slice(1).map((id, index) => edge(ids[index], id));
@@ -310,31 +504,34 @@ describe("bounded graph layout", () => {
     expect(chord.data?.continuation).toBeUndefined();
   });
 
-  it("breaks before a chord at the last safe boundary inside the width bound", () => {
+  it("breaks at the last admissible boundary inside the width bound", () => {
     // A ten-node chain with a chord from c3 to c9. The boundary the row first
-    // overflows at (c4|c5) is crossed by the chord, but the safe boundary before
-    // the chord (c2|c3) still lies inside the width bound, so the fill goes back
-    // to it rather than running the row past the bound.
+    // overflows at (c4|c5) is a chain link, and the chord leaves it pointing
+    // forward once folded (c3 sits four columns into the next row, c9 five), so
+    // that boundary is admissible and is the last one inside the width bound.
+    // The fill takes it rather than an earlier boundary, and the chord is left
+    // an ordinary forward edge.
     const ids = Array.from({ length: 10 }, (_, index) => `c${index}`);
     const nodes = ids.map(node);
     const edges = ids.slice(1).map((id, index) => edge(ids[index], id));
     edges.push(edge("c3", "c9"));
     const result = getLayoutedElements(nodes, edges, "LR");
-    const y = new Map(result.nodes.map((entry) => [entry.id, entry.position.y]));
-    expect(y.get("c2")).not.toBe(y.get("c3"));
-    const firstRow = result.nodes
-      .filter((entry) => entry.position.y === y.get("c0"))
-      .map((entry) => entry.id)
-      .sort();
-    expect(firstRow).toEqual(["c0", "c1", "c2"]);
+    expect(foldRowIds(result.nodes)).toEqual([
+      ["c0", "c1", "c2", "c3", "c4"],
+      ["c5", "c6", "c7", "c8", "c9"],
+    ]);
+    expect(result.edges.filter((entry) => entry.data?.continuation).map((entry) => entry.id)).toEqual(
+      ["c4-c5"],
+    );
     const chord = result.edges.find((entry) => entry.id === "c3-c9")!;
     expect(chord.data?.continuation).toBeUndefined();
   });
 
   it("folds a chained graph with a short chord without any row crossing the bound", () => {
-    // c3->c6 crosses the boundaries around the middle of the row, so the first
-    // row reaches its bound at a boundary the chord spans. The fill falls back
-    // to the last safe break before the chord; every resulting row must fit.
+    // c3->c6 crosses the boundaries around the middle of the row. The boundary
+    // the row reaches its bound at is still admissible because the chord lands
+    // at or right of its source once folded, so the fill breaks there; every
+    // resulting row fits the bound.
     const ids = Array.from({ length: 10 }, (_, index) => `c${index}`);
     const nodes = ids.map(node);
     const edges = ids.slice(1).map((id, index) => edge(ids[index], id));
@@ -423,5 +620,238 @@ describe("bounded graph layout", () => {
     expect(result.edges.some((e) => e.data?.continuation)).toBe(true);
     expect(result.width).toBeLessThanOrEqual(1556);
     assertNoOverlap(result.nodes);
+  });
+});
+
+describe("fold breaks only where the rule admits one", () => {
+  // Every input the fold rule must hold on: a chain, plus the chords, parallel
+  // edges and self-loops that used to fold a real dependency backwards (A) and
+  // the staggered chords, self-loops and back-edge runs that used to leave a
+  // row unfolded (B). Each case names the rows it produces, the only edges the
+  // fold may mark (the chain link at each break actually taken), and which rows
+  // exceed FOLD_MAX_ROW_WIDTH. An over-width row is one the rule leaves whole:
+  // it holds no admissible break, so no boundary inside it could be taken
+  // without folding one of its own crossing edges backwards.
+  const chainIds = (length: number) => Array.from({ length }, (_, index) => `c${index}`);
+  const caseEdges = (ids: string[], chords: [string, string][] = [], parallel: [string, string][] = []) => [
+    ...ids.slice(1).map((id, index) => edge(ids[index], id)),
+    ...chords.map(([source, target]) => edge(source, target)),
+    ...parallel.map(([source, target]) => ({ ...edge(source, target), id: `${source}-${target}#2` })),
+  ];
+  // A backwardChain: a plain chain plus `backEdges` edges from the last node
+  // back to the first `backEdges` nodes, the cyclic fallback the fold runs on.
+  const backwardChainEdges = (length: number, backEdges: number) => {
+    const ids = chainIds(length);
+    const edges = ids.slice(1).map((id, index) => edge(ids[index], id));
+    for (let index = 0; index < backEdges; index++) edges.push(edge(`c${length - 1}`, `c${index}`));
+    return { ids, edges };
+  };
+
+  const chainCases: {
+    name: string;
+    ids: string[];
+    chords?: [string, string][];
+    parallel?: [string, string][];
+    rows: string[][];
+    marked: string[];
+    over: number[];
+  }[] = [
+    {
+      name: "nested chords",
+      ids: chainIds(10),
+      chords: [["c0", "c9"], ["c3", "c6"]],
+      rows: [["c0", "c1", "c2"], ["c3", "c4", "c5", "c6", "c7"], ["c8", "c9"]],
+      marked: ["c2-c3", "c7-c8"],
+      over: [],
+    },
+    {
+      name: "interleaved chords",
+      ids: chainIds(10),
+      chords: [["c0", "c6"], ["c3", "c7"]],
+      rows: [["c0", "c1", "c2"], ["c3", "c4", "c5", "c6", "c7"], ["c8", "c9"]],
+      marked: ["c2-c3", "c7-c8"],
+      over: [],
+    },
+    {
+      name: "adjacent chords",
+      ids: chainIds(10),
+      chords: [["c0", "c2"], ["c2", "c6"]],
+      rows: [["c0", "c1", "c2", "c3"], ["c4", "c5", "c6", "c7", "c8"], ["c9"]],
+      marked: ["c3-c4", "c8-c9"],
+      over: [],
+    },
+    {
+      name: "adjacent chords that only break past the bound",
+      ids: chainIds(10),
+      chords: [["c0", "c2"], ["c2", "c5"]],
+      rows: [["c0", "c1", "c2", "c3", "c4", "c5"], ["c6", "c7", "c8", "c9"]],
+      marked: ["c5-c6"],
+      // Row 0 holds no admissible break inside the bound: every chain link up
+      // to c4|c5 is crossed by the c2->c5 chord, which would fold backwards
+      // there. The row reaches its first admissible break past the bound.
+      over: [0],
+    },
+    {
+      name: "self-loop and chord",
+      ids: chainIds(10),
+      chords: [["c1", "c1"], ["c2", "c6"]],
+      rows: [["c0", "c1", "c2", "c3"], ["c4", "c5", "c6", "c7", "c8"], ["c9"]],
+      marked: ["c3-c4", "c8-c9"],
+      over: [],
+    },
+    {
+      name: "staggered chords",
+      ids: chainIds(10),
+      chords: [["c0", "c2"], ["c2", "c4"], ["c4", "c6"], ["c6", "c8"]],
+      rows: [["c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8"], ["c9"]],
+      marked: ["c8-c9"],
+      // The whole span is crossed by the staggered chords, so no boundary
+      // inside it is admissible: the row stays whole to its last column.
+      over: [0],
+    },
+    {
+      name: "parallel edges",
+      ids: chainIds(10),
+      parallel: [["c3", "c4"]],
+      rows: [["c0", "c1", "c2", "c3", "c4"], ["c5", "c6", "c7", "c8", "c9"]],
+      marked: ["c4-c5"],
+      over: [],
+    },
+    {
+      name: "self-loops",
+      ids: chainIds(10),
+      chords: [["c1", "c1"], ["c3", "c3"], ["c5", "c5"]],
+      rows: [["c0", "c1", "c2", "c3", "c4", "c5", "c6"], ["c7", "c8", "c9"]],
+      marked: ["c6-c7"],
+      over: [0],
+    },
+    {
+      name: "three trailing chords",
+      ids: chainIds(13),
+      chords: [["c6", "c8"], ["c8", "c10"], ["c10", "c12"]],
+      rows: [["c0", "c1", "c2", "c3", "c4", "c5"], ["c6", "c7", "c8", "c9", "c10", "c11", "c12"]],
+      marked: ["c5-c6"],
+      // Row 0 folds at its bound; the tail from c6 is crossed by all three
+      // chords, so it holds no admissible break and stays whole.
+      over: [1],
+    },
+    {
+      name: "sibling branch",
+      ids: [...chainIds(10), "side"],
+      chords: [["c2", "side"], ["side", "c6"], ["c0", "c9"]],
+      // `side` follows c9 on the chain, so c2 branches out and rejoins at c6
+      // while c0->c9 spans the row. Every chain link inside is crossed by a
+      // chord, so no boundary is admissible and the row stays whole.
+      rows: [["c0", "c1", "c7", "c2", "c8", "c3", "c9", "c4", "side", "c5", "c6"]],
+      marked: [],
+      over: [0],
+    },
+    {
+      name: "one spanning chord",
+      ids: chainIds(39),
+      chords: [["c0", "c38"]],
+      rows: [
+        ["c0", "c1", "c2", "c3", "c4", "c5"],
+        ["c6", "c7", "c8", "c9", "c10", "c11"],
+        ["c12", "c13", "c14", "c15", "c16", "c17"],
+        ["c18", "c19", "c20", "c21", "c22", "c23"],
+        ["c24", "c25", "c26", "c27", "c28", "c29"],
+        ["c30", "c31", "c32", "c33", "c34", "c35"],
+        ["c36", "c37", "c38"],
+      ],
+      marked: ["c5-c6", "c11-c12", "c17-c18", "c23-c24", "c29-c30", "c35-c36"],
+      over: [],
+    },
+  ];
+
+  it.each(chainCases)(
+    "keeps every fold forward and marks only taken chain links: $name",
+    ({ ids, chords, parallel, rows, marked, over }) => {
+      const result = getLayoutedElements(
+        ids.map(node),
+        caseEdges(ids, chords, parallel),
+        "LR",
+      );
+      const widths = assertFoldInvariants(result.nodes, result.edges);
+      expect(foldRowIds(result.nodes)).toEqual(rows);
+      expect(
+        result.edges.filter((entry) => entry.data?.continuation).map((entry) => entry.id).sort(),
+      ).toEqual([...marked].sort());
+      expect(widths.map((width, index) => (width > FOLD_MAX_ROW_WIDTH ? index : -1)).filter((i) => i >= 0)).toEqual(
+        over,
+      );
+      // Every row that exceeds the bound holds no admissible break within it;
+      // a row that fits was broken at its last admissible break inside the bound.
+      expect(rowsWithAdmissibleBreakInside(result.nodes, result.edges)).toEqual([]);
+      assertNoOverlap(result.nodes);
+    },
+  );
+
+  it.each([
+    {
+      name: "40-node chain with 37 back edges",
+      length: 40,
+      backEdges: 37,
+      // The back edges pile onto the first columns, so the head of the chain
+      // is crossed by all of them: no boundary there is admissible and the head
+      // stays whole. The tail has admissible chain links, so it folds into a
+      // second row and exactly one link is marked.
+      rows: [chainIds(37).slice(1), ["c37", "c38", "c39", "c0"]],
+      whole: [0],
+      marked: ["c36-c37"],
+    },
+    {
+      name: "46-node chain with 28 back edges",
+      length: 46,
+      backEdges: 28,
+      rows: [
+        chainIds(28).slice(1),
+        chainIds(34).slice(28),
+        chainIds(40).slice(34),
+        chainIds(45).slice(40),
+        ["c45", "c0"],
+      ],
+      whole: [0],
+      marked: ["c27-c28", "c33-c34", "c39-c40", "c44-c45"],
+    },
+  ])(
+    "folds a cyclic fallback and marks one chain link per break: $name",
+    ({ length, backEdges, rows, whole, marked }) => {
+      const { ids, edges } = backwardChainEdges(length, backEdges);
+      const result = getLayoutedElements(ids.map(node), edges, "LR");
+      expect(foldRowIds(result.nodes)).toEqual(rows);
+      const continuations = result.edges.filter((entry) => entry.data?.continuation);
+      expect(continuations.map((entry) => entry.id).sort()).toEqual([...marked].sort());
+      // One chain link per break taken, and every marked edge is the single
+      // link the fold turned around (assertFoldInvariants repeats the degree
+      // check over the drawn edge records).
+      const widths = assertFoldInvariants(result.nodes, result.edges);
+      expect(widths.map((width, index) => (width > FOLD_MAX_ROW_WIDTH ? index : -1)).filter((i) => i >= 0)).toEqual(
+        whole,
+      );
+      expect(rowsWithAdmissibleBreakInside(result.nodes, result.edges)).toEqual([]);
+      for (const entry of continuations) {
+        expect(result.ranks.get(entry.target)!).toBeGreaterThan(result.ranks.get(entry.source)!);
+      }
+      assertNoOverlap(result.nodes);
+    },
+  );
+
+  it("leaves a row with no admissible break whole rather than folding a chord backwards", () => {
+    // Staggered chords c0->c2, c2->c4, c4->c6, c6->c8 cross every boundary in
+    // the span, so no boundary is admissible: folding at any of them would draw
+    // one of the chords as a row boundary running backwards. The row stays
+    // whole to its last column instead, and only the final chain link c8|c9 —
+    // which no chord crosses — is marked.
+    const ids = chainIds(10);
+    const edges = caseEdges(ids, [["c0", "c2"], ["c2", "c4"], ["c4", "c6"], ["c6", "c8"]]);
+    const result = getLayoutedElements(ids.map(node), edges, "LR");
+    expect(foldRowIds(result.nodes)).toEqual([["c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8"], ["c9"]]);
+    expect(result.edges.filter((entry) => entry.data?.continuation).map((entry) => entry.id)).toEqual([
+      "c8-c9",
+    ]);
+    const widths = assertFoldInvariants(result.nodes, result.edges);
+    expect(widths[0]!).toBeGreaterThan(FOLD_MAX_ROW_WIDTH);
+    expect(widths[1]!).toBeLessThanOrEqual(FOLD_MAX_ROW_WIDTH);
   });
 });

@@ -1123,6 +1123,22 @@ describe("markContinuationEdges — the fold's return sweep is not a dependency"
     expect(marked[0].data?.continuation).toBeUndefined();
   });
 
+  it("does not mark a backwards chord that is not a single chain link", () => {
+    // The fold only ever turns around a chain link, so that is the only edge a
+    // continuation may describe. A chord that runs backwards and advances in
+    // rank is a real dependency — a fan-out source with two successors here —
+    // and must stay unmarked even though it would otherwise pass the geometry
+    // and rank tests.
+    const marked = markContinuationEdges(
+      [at("a", 1400), at("b", 0), at("c", 1400)],
+      [link("a", "b"), link("a", "c")],
+      "LR",
+      ranksOf(["a", 0], ["b", 1], ["c", 2]),
+    );
+    expect(marked[0].data?.continuation).toBeUndefined();
+    expect(marked[1].data?.continuation).toBeUndefined();
+  });
+
   it("returns the very same array when nothing is marked", () => {
     // Identity, not just equality: the canvas re-lays out on every run tick and
     // a fresh array each time would invalidate memoized edges for no reason.

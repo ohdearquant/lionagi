@@ -123,12 +123,21 @@ The 1500 px fold row admits six 210 px cards at the deep-rank minimum 48 px gap:
 on a 1280 px panel the existing 15% fit padding gives zoom 0.715, above the
 0.65 readability floor. Seven such cards need 1758 px before margins and would
 fall below that floor. With the shallow 90 px gap, five cards occupy 1410 px;
-the sixth crosses 1500 and starts another safe chain row. Final correctness
-tests retain the seven/eight sibling and five/six chain boundaries, along with
-folding on the fallback path. Branch/join boundaries and tall graphs still
-prevent folding. The two visual thresholds do not decide Dagre admission, and
-this work leaves them as they were: they were re-checked for geometry, not
-re-derived from measured layout time.
+the sixth crosses 1500 and starts another row. A row breaks only where the
+boundary is a chain link — a single predecessor/successor link — and no other
+edge crossing it would run backwards once folded: for every edge from a column
+in the row to a column after the break, the target must land at or right of its
+source's position in the row it lands in. A break no other edge crosses is
+admissible by that rule. A row with no admissible break inside 1500 px runs on
+to its first admissible break past the bound, and a row with no admissible
+break at all stays whole and is left unfolded, because breaking it would draw a
+real dependency as the row boundary. Only the chain link at each break actually
+taken is marked as a continuation; a chord is never marked, whatever it does on
+the canvas. Final correctness tests retain the seven/eight sibling and five/six
+chain boundaries, along with folding on the fallback path. Branch/join
+boundaries and tall graphs still prevent folding. The two visual thresholds do
+not decide Dagre admission, and this work leaves them as they were: they were
+re-checked for geometry, not re-derived from measured layout time.
 
 There is no hysteresis or position cache across graph changes. Crossing an
 admission boundary can move many existing nodes, and Dagre can also reposition

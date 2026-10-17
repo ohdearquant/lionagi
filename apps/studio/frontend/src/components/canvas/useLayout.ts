@@ -151,7 +151,7 @@ export function wrapWideRanks(nodes: Node[]): Node[] {
 // pixels, so everything beyond it is a strip you can only pan across. Folding
 // trades one unbroken left-to-right line for several rows that each read
 // left-to-right, which is the trade a paragraph of text already makes.
-const FOLD_MAX_ROW_WIDTH = 1500;
+export const FOLD_MAX_ROW_WIDTH = 1500;
 // ...and fold only a graph that is FLAT, meaning it has no vertical structure
 // of its own to lose. Folding invents rows, and a downstream node placed on
 // the next row sits to the LEFT of its source — the one thing a left-to-right
@@ -166,17 +166,17 @@ const FOLD_MAX_ROW_WIDTH = 1500;
 // cannot silently widen what counts as flat. At 56px per row that is 148px,
 // where a literal 240 would have quietly started folding three-row graphs.
 const FOLD_MAX_FLAT_HEIGHT = 2 * NODE_HEIGHT + NODE_SEP;
-const FOLD_ROW_GAP = 56;
+export const FOLD_ROW_GAP = 56;
 
-// A row may only break between two adjacent columns when exactly one edge
-// crosses that boundary and it is a plain 1-predecessor/1-successor link —
-// the same "maximal chain segment" a purely sequential run is made of. A
-// branch (a node with more than one successor) or a join (a node with more
-// than one predecessor) anchors a segment boundary instead: breaking a row
-// there would put a real dependency behind the fold's continuation styling,
-// the exact thing the fold must never do. Degree is computed over the WHOLE
-// edge set (not just edges between adjacent columns), so a long-range edge
-// that skips columns also correctly blocks a break at either of its ends.
+// One half of the fold's admissibility rule: a row may only break between two
+// adjacent columns when the boundary is a plain 1-predecessor/1-successor link
+// — the same "maximal chain segment" a purely sequential run is made of. A
+// branch (a node with more than one successor) or a join (a node with more than
+// one predecessor) anchors a segment boundary instead, so breaking a row there
+// would cut between two columns that are not the single link the fold turns
+// around. Degree is computed over the WHOLE edge set (not just edges between
+// adjacent columns), so a long-range edge that skips columns also correctly
+// keeps a break from being a chain link at either of its ends.
 function computeDegrees(
   nodes: Node[],
   edges: Edge[],
@@ -196,8 +196,9 @@ function computeDegrees(
 // left-to-right. Within a row the geometry is dagre's own, translated as a
 // block, so rank spacing and sibling order survive untouched. The cost is the
 // edge that leaves the end of one row and re-enters at the start of the next:
-// it sweeps back across the canvas the way a wrapped line of text does — but
-// only at a safe (single predecessor/successor) boundary; see computeDegrees.
+// it sweeps back across the canvas the way a wrapped line of text does — and it
+// is the only edge allowed to, because the break is admissible only where that
+// sweep leaves every OTHER crossing edge pointing forward; see isAdmissibleBreak.
 export function foldWideGraph(nodes: Node[], edges: Edge[] = []): Node[] {
   if (nodes.length === 0) return nodes;
 
@@ -223,7 +224,7 @@ export function foldWideGraph(nodes: Node[], edges: Edge[] = []): Node[] {
   const xs = [...byX.keys()].sort((a, b) => a - b);
 
   // No edges given means no dependency to misrepresent — every column
-  // boundary is safe, matching the pre-edge-aware behavior exactly.
+  // boundary is admissible, matching the pre-edge-aware behavior exactly.
   const edgeAware = edges.length > 0;
   const { outDeg, inDeg } = computeDegrees(nodes, edges);
   // Which column each node sits in, as an index into `xs`, so an edge can be
@@ -232,10 +233,10 @@ export function foldWideGraph(nodes: Node[], edges: Edge[] = []): Node[] {
   for (const [index, x] of xs.entries()) {
     for (const node of byX.get(x) ?? []) columnById.set(node.id, index);
   }
-  // The first half of a safe break, on its own: the boundary is a chain link,
-  // a single-node column whose one out-edge goes to the next single-node
+  // The first half of an admissible break, on its own: the boundary is a chain
+  // link, a single-node column whose one out-edge goes to the next single-node
   // column, and that is that node's only in-edge. This says nothing about
-  // chords; isSafeBreak below adds that.
+  // chords; isAdmissibleBreak below adds that.
   const isChainLink = (beforeX: number, afterX: number): boolean => {
     const beforeNodes = byX.get(beforeX) ?? [];
     const afterNodes = byX.get(afterX) ?? [];
@@ -246,78 +247,109 @@ export function foldWideGraph(nodes: Node[], edges: Edge[] = []): Node[] {
     const bIn = inDeg.get(b.id) ?? [];
     return aOut.length === 1 && aOut[0] === b.id && bIn.length === 1 && bIn[0] === a.id;
   };
-  // A row may only break between two adjacent columns when exactly one edge
-  // crosses that boundary (a chain link) and no other edge crosses it. Both
-  // boundary columns hold one node, so the only way left for an edge to cross
-  // without touching them is to start left of the break and end right of it: a
-  // chord. Breaking there would fold that chord onto the next row and draw a
-  // real dependency as a row boundary, so a chord refuses the break.
+  // `nextRowStart[i]` is the column a row begun at column `i` hands over to:
+  // `cut + 1` when it breaks at `cut`, and `xs.length` when it runs to the end.
+  // Filled right to left, because judging a break needs the row its far
+  // endpoints land in, which only depends on the columns after the break.
+  const nextRowStart = new Array<number>(xs.length + 1).fill(xs.length);
+  // Which row a column lands in once a row begins at `root`: the row starts the
+  // chain of `nextRowStart` positions from `root` walks through.
+  const rowStartIn = (root: number, column: number): number => {
+    let start = root;
+    while (nextRowStart[start]! <= column) start = nextRowStart[start]!;
+    return start;
+  };
+
+  // The one admissibility rule for a row break. A break at `cut` — the row runs
+  // `rowStart..cut` and the next row begins at `cut + 1` — is admissible when
+  // the boundary is a chain link AND every other edge crossing it still reads
+  // forward once folded.
   //
-  // The chord test is what can leave a row with no safe break at all: one edge
-  // spanning the row crosses every boundary inside it, so the row runs past
-  // FOLD_MAX_ROW_WIDTH and the graph stays a strip below the interactive zoom
-  // floor — the exact thing the fold exists to remove. The fill loop below
-  // therefore treats a missing safe break as something to work around, not the
-  // end of the matter: it remembers the last safe break inside the width bound
-  // so one blocked boundary does not block the whole row, and when the row has
-  // no safe break at all it falls back to the row's last chain link. A chord
-  // crossing that chain link is then drawn as an ordinary forward edge, not as
-  // a row boundary; only the chain link itself is marked. A row with no chain
-  // link either cannot be broken and so does not fold.
-  const isSafeBreak = (beforeX: number, afterX: number): boolean => {
-    if (!isChainLink(beforeX, afterX)) return false;
-    const cut = columnById.get((byX.get(beforeX) ?? [])[0]!.id)!;
+  // After folding, a column `c` sits at `c - rowStart(c)` places from its own
+  // row's left edge. An edge running backwards is one whose target lands left
+  // of its source, so for every edge with its source `s` in this row and its
+  // target `t` after the break, require
+  // `s - rowStart <= t - rowStart(t)` — the target lands at or right of the
+  // source's horizontal position in whatever row it lands in, whether that is
+  // the next row or one below it.
+  //
+  // The chain link at `cut` itself is the one edge this exempts. It is the
+  // fold's own return sweep, the edge the canvas marks as a continuation
+  // (markContinuationEdges below), and it lands at the next row's left edge by
+  // construction. No other edge may cross backwards, so no chord is ever folded
+  // backwards and no chord is ever marked. A break that no other edge crosses
+  // is admissible by this rule.
+  //
+  // This replaces the earlier "no other edge may cross at all" test, which a
+  // single chord spanning the row defeated outright: with no admissible break
+  // the row was left to run past FOLD_MAX_ROW_WIDTH and the graph stayed a
+  // strip below the interactive zoom floor — the exact thing the fold exists to
+  // remove. A row with no admissible break inside the width bound now reaches
+  // the next admissible break past it instead, so it may run wider than the
+  // bound, and when it holds no admissible break at all it runs whole to the
+  // end. Either way folding continues from the row after it rather than
+  // discarding the folds already made.
+  const isAdmissibleBreak = (cut: number, rowStart: number): boolean => {
+    if (!edgeAware) return true;
+    if (!isChainLink(xs[cut]!, xs[cut + 1]!)) return false;
     for (const edge of edges) {
       const sourceColumn = columnById.get(edge.source);
       const targetColumn = columnById.get(edge.target);
       if (sourceColumn === undefined || targetColumn === undefined) continue;
+      if (sourceColumn < rowStart || sourceColumn > cut) continue;
+      if (targetColumn <= cut) continue;
       if (sourceColumn === cut && targetColumn === cut + 1) continue;
-      const left = Math.min(sourceColumn, targetColumn);
-      const right = Math.max(sourceColumn, targetColumn);
-      if (left <= cut && right >= cut + 1) return false;
+      if (sourceColumn - rowStart > targetColumn - rowStartIn(cut + 1, targetColumn)) {
+        return false;
+      }
     }
     return true;
   };
 
-  const rows: number[][] = [];
-  // `rowStart` and every break index below are indices into `xs`; a break "at"
-  // a column means the row ends after it and the next row begins there.
-  let rowStart = 0;
-  while (rowStart < xs.length) {
-    // Furthest column this row can hold, and the last safe break inside it.
+  for (let rowStart = xs.length - 1; rowStart >= 0; rowStart--) {
+    // Furthest column a row begun here can hold inside the width bound.
     let end = rowStart;
-    let lastSafeBreak = -1;
     for (let i = rowStart + 1; i < xs.length; i++) {
       if (xs[i]! - xs[rowStart]! + NODE_WIDTH > FOLD_MAX_ROW_WIDTH) break;
       end = i;
-      if (!edgeAware || isSafeBreak(xs[i - 1]!, xs[i]!)) lastSafeBreak = i - 1;
     }
-    // The row already reaches the end of the graph, or it can break where it
-    // naturally stops: take that.
-    if (end === xs.length - 1 || !edgeAware || isSafeBreak(xs[end]!, xs[end + 1]!)) {
-      rows.push(xs.slice(rowStart, end + 1));
-      rowStart = end + 1;
+    // The row reaches the last column: there is nothing to break before, so it
+    // is taken whole whatever its boundaries look like.
+    if (end === xs.length - 1) {
+      nextRowStart[rowStart] = xs.length;
       continue;
     }
-    // The natural break is not safe, but an earlier safe break is still inside
-    // the width bound: break there and re-test the remaining columns.
-    if (lastSafeBreak >= rowStart) {
-      rows.push(xs.slice(rowStart, lastSafeBreak + 1));
-      rowStart = lastSafeBreak + 1;
-      continue;
+    // Break at the last admissible boundary inside the width bound, so the row
+    // takes as many columns as it can without stranding a dependency behind it.
+    // With none admissible inside the bound, take the first one past it: a row
+    // that stopped at the bound but could not legally break there would fold a
+    // crossing edge backwards, and that edge would then be a row boundary the
+    // canvas cannot mark as a chain link. Only a row with no admissible break
+    // anywhere to its right runs whole to the end; either way folding continues
+    // from the row after it rather than discarding the folds already made.
+    let handover = -1;
+    for (let cut = end; cut >= rowStart; cut--) {
+      if (isAdmissibleBreak(cut, rowStart)) {
+        handover = cut + 1;
+        break;
+      }
     }
-    // No safe break anywhere in the row: fall back to its last chain link, even
-    // though a chord crosses it. The boundary the row naturally stops at is
-    // included, because a chord crossing exactly there is the case this exists
-    // for. Only that chain link becomes a row boundary.
-    let chainLink = -1;
-    for (let j = rowStart; j <= end; j++) {
-      if (isChainLink(xs[j]!, xs[j + 1]!)) chainLink = j;
+    if (handover < 0) {
+      for (let cut = end + 1; cut < xs.length - 1; cut++) {
+        if (isAdmissibleBreak(cut, rowStart)) {
+          handover = cut + 1;
+          break;
+        }
+      }
     }
-    // No chain link either: the row cannot be broken, so nothing folds.
-    if (chainLink === -1) return nodes;
-    rows.push(xs.slice(rowStart, chainLink + 1));
-    rowStart = chainLink + 1;
+    nextRowStart[rowStart] = handover < 0 ? xs.length : handover;
+  }
+
+  const rows: number[][] = [];
+  for (let rowStart = 0; rowStart < xs.length; ) {
+    const next = nextRowStart[rowStart]!;
+    rows.push(xs.slice(rowStart, next));
+    rowStart = next;
   }
   if (rows.length <= 1) return nodes;
 
@@ -448,13 +480,14 @@ export function enforceMinRankGap(nodes: Node[], minGap = 6): Node[] {
 
 // A folded LR graph re-enters each row at its left edge, so the edge that leaves
 // the end of a row for the start of the next runs backwards on the canvas: it is
-// the edge the fold's own row boundary turned around. A break is taken only
-// where the chain link is the one edge crossing it (see isSafeBreak), so no
-// other edge is ever folded across a row boundary. That edge is still a real
-// dependency in the graph, but on screen it is doing what the wrap at the end of
-// a line of text does, and drawing it like the others makes the reader look for
-// a dependency behind them. Detected from the final geometry rather than from
-// the fold's own bookkeeping, so it describes what the edge actually does on the
+// the edge the fold's own row boundary turned around. A break is taken only at
+// an admissible chain link (see isAdmissibleBreak), and such a break never folds
+// any other edge backwards, so the return sweep is exactly a chain link — a
+// single-predecessor/single-successor link. That edge is still a real dependency
+// in the graph, but on screen it is doing what the wrap at the end of a line of
+// text does, and drawing it like the others makes the reader look for a
+// dependency behind them. Detected from the final geometry rather than from the
+// fold's own bookkeeping, so it describes what the edge actually does on the
 // canvas whichever pass moved the nodes.
 //
 // Geometry alone is not enough to tell that edge apart from a dependency that
@@ -478,6 +511,19 @@ export function markContinuationEdges(
 
   const xById = new Map<string, number>();
   for (const node of nodes) xById.set(node.id, node.position.x);
+  // Chain-link degree over the drawn edge set: the fold's return sweep is the
+  // one edge the fold turned around, and that edge is a single-out,
+  // single-in link. A chord that happens to land backwards on the canvas is
+  // not, so the degree test is what keeps a real dependency from being styled
+  // as a row boundary. Counted over the edge records given, matching the
+  // fold's own isChainLink for the graph it was handed.
+  const outDeg = new Map<string, number>();
+  const inDeg = new Map<string, number>();
+  for (const edge of edges) {
+    if (!xById.has(edge.source) || !xById.has(edge.target)) continue;
+    outDeg.set(edge.source, (outDeg.get(edge.source) ?? 0) + 1);
+    inDeg.set(edge.target, (inDeg.get(edge.target) ?? 0) + 1);
+  }
 
   let changed = false;
   const out = edges.map((edge) => {
@@ -491,6 +537,11 @@ export function markContinuationEdges(
     if (sourceRank !== undefined && targetRank !== undefined && targetRank <= sourceRank) {
       return edge;
     }
+    // Only the chain link the fold turned around is a row boundary. A chord
+    // that still runs backwards across the fold is a real dependency, and the
+    // fold no longer produces one (see isAdmissibleBreak), but leaving it
+    // unmarked is what keeps a backward-pointing dependency honest.
+    if ((outDeg.get(edge.source) ?? 0) !== 1 || (inDeg.get(edge.target) ?? 0) !== 1) return edge;
     changed = true;
     return { ...edge, data: { ...(edge.data ?? {}), continuation: true } };
   });
