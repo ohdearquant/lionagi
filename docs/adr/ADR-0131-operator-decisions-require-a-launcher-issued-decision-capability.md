@@ -19,11 +19,11 @@ daemon's own OS user can open, and that no HTTP request can obtain.
 ## Context
 
 **P1 — the decision routes check no principal.** `confirm_operator_proposal` and
-`decide_operator_proposal` (`lionagi/studio/services/operator.py:308-341`) call the coordinator's
+`decide_operator_proposal` (`lionagi/studio/services/operator.py:308-358`) call the coordinator's
 `decide()` (`lionagi/studio/operator/coordinator.py:1018`), which claims the proposal in the store
 (`lionagi/studio/operator/store.py:1932`). The proposal's hash and version bind what is decided, not
 who decides. With no token configured, the middleware admits a request that carries no `Origin` and
-no `Sec-Fetch-Site` (`lionagi/studio/app.py:56`, `:99`), so a command-line client, a script and a
+no `Sec-Fetch-Site` (`lionagi/studio/app.py:67`, `:113`), so a command-line client, a script and a
 tool's HTTP request are all admitted.
 
 **P2 — a code that pairs a page can be minted by any such request.** `POST
@@ -31,7 +31,7 @@ tool's HTTP request are all admitted.
 (`lionagi/studio/launch_access.py:33`, `:49`) for a request without browser provenance, and `POST
 /api/studio/pair` (`pairing.py:48`) redeems it for the daemon's one process-wide bearer
 (`launch_access.py:43`, `:63`). A test pins that the command line can mint and that the minted code
-redeems (`tests/studio/test_hosted_hardening.py:966`). The CLI uses that route to pair a page with a
+redeems (`tests/studio/test_hosted_hardening.py:967`). The CLI uses that route to pair a page with a
 daemon that is already running (`lionagi/studio/cli.py:261`). So pairing is not a boundary: a tool
 that can send HTTP can mint, redeem with a forged `Origin`, and decide.
 
@@ -63,7 +63,8 @@ A later `li studio` against a daemon that is already running obtains its code ov
 channel**, so a closed tab never leaves a pending proposal undecidable: the daemon listens on a unix
 socket in its state directory, created with mode 0600 inside a 0700 directory before it serves and
 removed at exit (a socket file left by a daemon that no longer runs is replaced at start). On each
-connection the daemon reads the peer's user id from the socket (`SO_PEERCRED`, `getpeereid`) and
+connection the daemon reads the peer's user id from the socket (`SO_PEERCRED` on Linux,
+`LOCAL_PEERCRED` on macOS, each read with `getsockopt` from the standard `socket` module) and
 refuses any id other than its own; for its own user it mints one code in process, under every code
 rule above, and returns it on the socket, which carries nothing else. The CLI opens a page with that
 code as a launch does, and never stops a running daemon itself. The channel is not an HTTP route and
@@ -95,13 +96,14 @@ accepts yet (container output and the container's environment are readable by wh
 it), so a Docker daemon serves with decisions disabled until an adapter is specified in its own
 record; its refusals say so.
 
-**D6 — what B stops and what it does not.** Stopped: a tool, script or other local account that can
-only make HTTP requests, and a page that was not paired, can neither allow nor deny a proposal, with
-known ids and hashes, a forged `Origin` or `Sec-Fetch-Site`, or the admission token. Not stopped: a
-stolen capability; script running in a paired page (an extension, a compromised dependency); code
-running as the same OS user that reads a browser profile or process memory or writes the store
-directly; and any other daemon route, whose admission is unchanged. B does not prove that a human
-clicked; it proves that the launcher's page did. Egress containment of tools is not required for the
+**D6 — what this design stops and what it does not.** Stopped: a tool, script or other local account
+that can only make HTTP requests, and a page that was not paired, can neither allow nor deny a
+proposal, with known ids and hashes, a forged `Origin` or `Sec-Fetch-Site`, or the admission token.
+Not stopped: a stolen capability; script running in a paired page (an extension, a compromised
+dependency); code running as the same OS user that opens the reconnect socket, reads a browser
+profile or process memory, or writes the store directly; and any other daemon route, whose admission
+is unchanged. A decision does not prove that a human clicked; it proves that a paired page, or a
+client running as the daemon's own OS user, sent it. Egress containment of tools is not required for the
 HTTP-only guarantee and is required for anything broader.
 
 **D7 — the contract is versioned and fails closed.** `/health` and an OpenAPI extension publish
@@ -112,14 +114,18 @@ rule and the token's narrower meaning.
 
 ## Landing order
 
-1. D7's marker and D1's capability store, with the decision routes still accepting today's requests.
+1. D1's capability store, with the decision routes still accepting today's requests. The contract
+   stays version 1.
 2. D2: issuance at launch and the 410 mint route; D3: redemption returns the capability; the frontend
-   stores and sends it.
+   stores and sends it, and still decides under version 1.
 
    2b. D2's reconnect channel, with the CLI's reconnect moved from the HTTP mint to it. It ships in
-   the same release as step 2's 410, so no released daemon is without a reconnect, and before step 3.
-3. D4: the principal check in `decide()` and the refusals. From this step the contract is version 2.
-4. D5's adapters, one launch path per change.
+   the same release as step 2's 410, so no released daemon is without a reconnect, and before step 4.
+3. D5's adapters, one launch path per change, so that every launch path except Docker delivers a code
+   before any decision requires one. Today only the hosted launch delivers one.
+4. D4: the principal check in `decide()` and the refusals, Docker's decisions-disabled refusal, and
+   D7's version-2 marker with the page's version gate, in one release. From this step the contract
+   is version 2.
 
 ## Tests that prove it
 
@@ -129,7 +135,7 @@ rule and the token's narrower meaning.
   stays pending, the bridge never sees `allow`, and nothing executes. A paired page's decision is the
   positive control. Repeated for an application proposal and for an already-decided one.
 - Mint: 410 for every header combination and for the admission token; the test that pins the
-  command-line mint today (`tests/studio/test_hosted_hardening.py:966`) is replaced by this one.
+  command-line mint today (`tests/studio/test_hosted_hardening.py:967`) is replaced by this one.
 - Codes: unknown, expired, wrong origin, replayed and from a previous daemon start are refused; two
   concurrent redemptions of one code yield one capability; a refused wrong-origin attempt does not
   consume a valid code.
