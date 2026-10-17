@@ -163,16 +163,17 @@ _TOOL_CALL_MARKUP_PATTERNS: tuple[re.Pattern[str], ...] = (
 # check. Text at the parser's nesting limit is not read: the limit is 20 levels,
 # and a list and its item count as one each, so text inside 20 nested quotes or
 # 10 nested lists is dropped. And a message longer than
-# `_MARKUP_CHECK_MAX_CHARS` is not read at all, which bounds the parse: on text
-# built to be slow for it (a run of unclosed brackets) the parser takes about
-# half a second at that length and grows faster than the length past it.
+# `_MARKUP_CHECK_MAX_CHARS` is not read at all, which bounds the parse: the
+# slowest text found for the parser is a paragraph of unclosed inline HTML
+# openers (`<?`, `<!--`, `<![CDATA[`), whose time grows with the square of its
+# length, and at that length it takes about half a second.
 #
 # The parser decodes character references in prose itself. In a raw HTML block
 # one is decoded only where it ends with a semicolon and names an entry of the
 # HTML entity table (or is numeric); a bare `&lt` is literal text to a reader,
 # so it names no tag.
 _ENTITY_RE = re.compile(r"&(?:#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[a-zA-Z][a-zA-Z0-9]{0,30});")
-_MARKUP_CHECK_MAX_CHARS = 64_000
+_MARKUP_CHECK_MAX_CHARS = 16_000
 
 # Completed items that are a call the CLI ran, or a call's result. One of these
 # after a message means the turn went on past that message, so the message is
@@ -2702,8 +2703,8 @@ async def stream_codex_cli(
                 # The event's own text is read like a message: markup there
                 # becomes the turn's pending text, which the stream end reads.
                 # Clean text does not replace pending markup.
-                if _has_tool_call_markup(_event_result):
-                    _last_agent_text = _event_result
+                if _event_result and _has_tool_call_markup(_raw_event_result):
+                    _last_agent_text = _raw_event_result
                 session.is_error = session.is_error or bool(
                     obj.get("is_error", obj.get("error") is not None)
                 )

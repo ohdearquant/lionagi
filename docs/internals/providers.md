@@ -348,11 +348,13 @@ raw HTML is read as prose, the text of a `<pre>` or `<code>` element included.
 Two err the other way, toward completing the turn as it completed before this
 check existed. Text at the parser's nesting limit is not read: the limit is
 20 levels, and a list and its item count as one each, so text inside 20 nested
-quotes or 10 nested lists is dropped. And a message longer than 64,000
+quotes or 10 nested lists is dropped. And a message longer than 16,000
 characters (`_MARKUP_CHECK_MAX_CHARS`) is not read at all. That bounds the
-parse: on text built to be slow for the parser, such as a long run of unclosed
-brackets, it takes about half a second at that length, and its time grows
-faster than the length past it.
+parse: the slowest text found for the parser is a paragraph of unclosed inline
+HTML openers (`<?`, `<!--`, `<![CDATA[`), whose time grows with the square of
+its length, and at that length it takes about half a second. A legacy
+`result` event's text is read as written, before any whitespace is trimmed,
+as a message's text is.
 
 ## Codex turn-completed usage delta
 

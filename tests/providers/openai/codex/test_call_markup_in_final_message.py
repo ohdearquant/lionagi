@@ -989,6 +989,25 @@ async def test_a_legacy_result_event_failure_without_markup_is_reported():
     assert session.result == "boom", f"the failure text was lost: {session.result!r}"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("text", "fails"),
+    [
+        (f'    <{BAR}DSML{BAR}invoke name="x">', False),
+        (f'    ```\n<{BAR}DSML{BAR}invoke name="x">', True),
+    ],
+    ids=["indented-code", "indented-fence-then-prose"],
+)
+async def test_a_legacy_result_event_text_is_read_before_it_is_trimmed(text, fails):
+    """Four leading spaces make an indented code line, as they do in a message: the
+    markup after them is code, and a fence after them is code that ends at the next
+    line, which is prose."""
+    chunks, session = await _parse([{"type": "result", "result": text, "is_error": False}])
+
+    assert session.is_error is fails, f"the legacy result text was misread: {text!r}"
+    assert len(_markup_errors(chunks)) == int(fails)
+
+
 # --- a legacy block list reads output_text blocks too ---
 
 
@@ -1445,8 +1464,30 @@ def test_a_message_past_the_length_limit_is_not_read(padding, fails):
 
 @pytest.mark.parametrize(
     "unit",
-    ["[", "[a ", "*a _b ", "`a ``b ", "<a ", "```a\n", ">" * 1000 + " x\n"],
-    ids=["brackets", "bracket-words", "emphasis", "backticks", "lt", "fences", "quotes"],
+    [
+        "[",
+        "[a ",
+        "*a _b ",
+        "`a ``b ",
+        "<a ",
+        "```a\n",
+        ">" * 1000 + " x\n",
+        "x <?",
+        "x <!--",
+        "x <![CDATA[",
+    ],
+    ids=[
+        "brackets",
+        "bracket-words",
+        "emphasis",
+        "backticks",
+        "lt",
+        "fences",
+        "quotes",
+        "open-instructions",
+        "open-comments",
+        "open-cdata",
+    ],
 )
 def test_a_message_at_the_length_limit_is_read_in_bounded_time(unit):
     from lionagi.providers.openai.codex import _MARKUP_CHECK_MAX_CHARS, _has_tool_call_markup
