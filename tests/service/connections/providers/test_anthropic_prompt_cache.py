@@ -52,7 +52,7 @@ def _marks(payload):
     for message in payload["messages"]:
         if isinstance(message["content"], list):
             blocks.extend(message["content"])
-    return [block["cache_control"] for block in blocks if "cache_control" in block]
+    return [block["cache_control"] for block in blocks if block.get("cache_control") is not None]
 
 
 # --- option off: the request is the one this endpoint built before the option existed ---
@@ -238,6 +238,141 @@ def test_the_callers_request_is_left_as_handed_in(prompt_caching):
 
     assert request == before
     assert json.dumps(first) == json.dumps(second)
+
+
+@pytest.mark.parametrize("prompt_caching", [True, False], ids=["on", "off"])
+def test_a_marked_request_is_left_as_handed_in_on_the_unfiltered_path(prompt_caching):
+    request = _request(cache_control=True)
+    request["messages"][-1]["content"] = [{"type": "text", "text": "a block"}]
+    before = copy.deepcopy(request)
+    endpoint = _unfiltered(prompt_caching=prompt_caching)
+
+    first, _ = endpoint.create_payload(request)
+    second, _ = endpoint.create_payload(request)
+
+    assert request == before
+    assert json.dumps(first) == json.dumps(second)
+    assert _marks(first)[-1] == FIVE_MINUTES
+
+
+def test_a_blank_system_message_leaves_the_native_system_field_as_the_stable_text():
+    request = _request(system="native system text", system_blocks=["more stable text"])
+    request["messages"][0]["content"] = "   "
+
+    payload, _ = _filtered(prompt_caching=True).create_payload(request)
+
+    assert payload["system"] == [
+        {"type": "text", "text": "native system text"},
+        {"type": "text", "text": "more stable text", "cache_control": ONE_HOUR},
+    ]
+
+
+def test_a_blank_native_system_field_is_not_sent():
+    request = _request(system="   ")
+    request["messages"] = request["messages"][1:]
+
+    payload, _ = _filtered(prompt_caching=True).create_payload(request)
+
+    assert "system" not in payload
+    assert _marks(payload) == [FIVE_MINUTES]
+
+
+def test_a_blank_last_message_takes_no_turn_mark():
+    request = _request()
+    request["messages"][-1]["content"] = "   "
+
+    payload, _ = _filtered(prompt_caching=True).create_payload(request)
+
+    assert payload["messages"][-1]["content"] == "   "
+    assert _marks(payload) == [ONE_HOUR]
+
+
+def test_the_turn_mark_skips_a_blank_text_block():
+    request = _request()
+    request["messages"][-1]["content"] = [
+        {"type": "text", "text": "visible"},
+        {"type": "text", "text": "   "},
+    ]
+
+    payload, _ = _unfiltered(prompt_caching=True).create_payload(request)
+
+    assert payload["messages"][-1]["content"] == [
+        {"type": "text", "text": "visible", "cache_control": FIVE_MINUTES},
+        {"type": "text", "text": "   "},
+    ]
+
+
+def test_no_one_hour_mark_follows_a_five_minute_mark_in_the_tools():
+    tool = {"name": "lookup", "input_schema": {"type": "object"}, "cache_control": FIVE_MINUTES}
+
+    payload, _ = _unfiltered(prompt_caching=True).create_payload(_request(tools=[tool]))
+
+    assert "cache_control" not in payload["system"][-1]
+    assert _marks(payload) == [FIVE_MINUTES]
+    assert payload["tools"] == [tool]
+
+
+def test_no_one_hour_mark_follows_a_five_minute_mark_in_the_stable_blocks():
+    request = _request()
+    request["messages"][0]["content"] = [
+        {"type": "text", "text": "part one", "cache_control": FIVE_MINUTES},
+        {"type": "text", "text": "part two"},
+    ]
+
+    payload, _ = _unfiltered(prompt_caching=True).create_payload(request)
+
+    assert payload["system"] == [
+        {"type": "text", "text": "part one", "cache_control": FIVE_MINUTES},
+        {"type": "text", "text": "part two"},
+    ]
+
+
+def test_an_empty_cache_control_field_is_not_a_mark():
+    request = _request()
+    request["messages"] = [request["messages"][0]] + [
+        {
+            "role": "user" if i % 2 == 0 else "assistant",
+            "content": [{"type": "text", "text": f"turn {i}", "cache_control": None}],
+        }
+        for i in range(5)
+    ]
+
+    payload, _ = _unfiltered(prompt_caching=True).create_payload(request)
+
+    assert _marks(payload) == [ONE_HOUR, FIVE_MINUTES]
+
+
+def test_marks_inside_a_tool_result_count_toward_the_four():
+    request = _request()
+    request["messages"][-1]["content"] = [
+        {
+            "type": "tool_result",
+            "tool_use_id": "toolu_1",
+            "content": [
+                {"type": "text", "text": f"result {i}", "cache_control": FIVE_MINUTES}
+                for i in range(3)
+            ],
+        },
+        {"type": "text", "text": "and a question"},
+    ]
+
+    payload, _ = _unfiltered(prompt_caching=True).create_payload(request)
+
+    marks = [b for b in _blocks_with_nested_content(payload) if b.get("cache_control") is not None]
+    assert len(marks) == 4
+    assert payload["system"][-1]["cache_control"] == ONE_HOUR
+    assert "cache_control" not in payload["messages"][-1]["content"][-1]
+
+
+def _blocks_with_nested_content(payload):
+    blocks = list(payload.get("system") or [])
+    for message in payload["messages"]:
+        if isinstance(message["content"], list):
+            for block in message["content"]:
+                blocks.append(block)
+                if isinstance(block.get("content"), list):
+                    blocks.extend(block["content"])
+    return blocks
 
 
 def test_system_blocks_passed_beside_the_request_are_stable_blocks():

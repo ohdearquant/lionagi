@@ -353,38 +353,59 @@ def _system_blocks(content: Any) -> list[dict]:
         block = {"type": "text", "text": item} if isinstance(item, str) else item
         if not isinstance(block, dict):
             continue
-        if block.get("type") == "text" and not (
-            isinstance(block.get("text"), str) and block["text"].strip()
-        ):
+        if _is_blank_text(block):
             continue
         blocks.append(dict(block))
     return blocks
 
 
-def _cache_mark_count(payload: dict) -> int:
+def _is_marked(block: Any) -> bool:
+    return isinstance(block, dict) and block.get("cache_control") is not None
+
+
+def _is_blank_text(block: dict) -> bool:
+    return block.get("type") == "text" and not (
+        isinstance(block.get("text"), str) and block["text"].strip()
+    )
+
+
+def _blocks_in_prompt_order(payload: dict) -> list:
+    """Every block that can carry a cache mark, in the order the API reads the prompt: the tools,
+    the system blocks, then each message's blocks with a tool result's own blocks after it."""
     blocks = [*(payload.get("tools") or ()), *(payload.get("system") or ())]
     for message in payload.get("messages") or ():
         content = message.get("content") if isinstance(message, dict) else None
-        if isinstance(content, list):
-            blocks.extend(content)
-    return sum(1 for block in blocks if isinstance(block, dict) and "cache_control" in block)
+        for block in content if isinstance(content, list) else ():
+            blocks.append(block)
+            inner = block.get("content") if isinstance(block, dict) else None
+            if isinstance(inner, list):
+                blocks.extend(inner)
+    return blocks
 
 
 def _place_prompt_cache(payload: dict, stable_blocks: list[dict]) -> None:
     """Write the stable blocks as the native system field and mark the segment ends (ADR-0127 D5).
 
     One one-hour mark ends the stable segment, on its last block; one five-minute mark goes on the
-    last block of the last message that can carry one, the end of the turn segment. A mark that
-    would take the request past the API's four is not placed; a block that already carries a mark
-    has it replaced. The last message is copied before it is marked, so the caller's message list
-    is left as it was handed in.
+    last block of the last message that can carry one, the end of the turn segment. The API reads
+    a one-hour mark only before every five-minute mark and takes at most four marks, so a one-hour
+    mark that would follow a five-minute mark already in the tools or the stable blocks is not
+    placed, and neither is a mark that would take the request past four. A block that already
+    carries a mark has it replaced. The last message is copied before it is marked, so the
+    caller's message list is left as it was handed in.
     """
     if stable_blocks:
         payload["system"] = stable_blocks
-    marks = _cache_mark_count(payload)
-    if stable_blocks and ("cache_control" in stable_blocks[-1] or marks < _MAX_CACHE_MARKS):
-        marks += "cache_control" not in stable_blocks[-1]
-        stable_blocks[-1]["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
+    marks = sum(1 for block in _blocks_in_prompt_order(payload) if _is_marked(block))
+    if stable_blocks:
+        last = stable_blocks[-1]
+        earlier = [*(payload.get("tools") or ()), *stable_blocks[:-1]]
+        follows_a_short_mark = any(
+            _is_marked(block) and block["cache_control"].get("ttl") != "1h" for block in earlier
+        )
+        if not follows_a_short_mark and (_is_marked(last) or marks < _MAX_CACHE_MARKS):
+            marks += not _is_marked(last)
+            last["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
     messages = payload.get("messages")
     if not messages or not isinstance(messages[-1], dict):
         return
@@ -399,10 +420,11 @@ def _place_prompt_cache(payload: dict, stable_blocks: list[dict]) -> None:
             for i in range(len(content) - 1, -1, -1)
             if isinstance(content[i], dict)
             and content[i].get("type") not in _UNMARKABLE_BLOCK_TYPES
+            and not _is_blank_text(content[i])
         ),
         None,
     )
-    if index is None or ("cache_control" not in content[index] and marks >= _MAX_CACHE_MARKS):
+    if index is None or (not _is_marked(content[index]) and marks >= _MAX_CACHE_MARKS):
         return
     marked = {**content[index], "cache_control": {"type": "ephemeral"}}
     content = [*content[:index], marked, *content[index + 1 :]]
@@ -1161,9 +1183,12 @@ class AnthropicMessagesEndpoint(Endpoint):
             # ADR-0127 D5: this placement replaces the last-message mark `cache_control` would add.
             # The flag keeps its other meaning, the response memo in Endpoint.call.
             payload.pop("cache_control", None)
-            # As below, a system message takes the place of a native `system` field.
-            stable = _system_blocks(system if system else payload.get("system"))
+            # As below, a system message takes the place of a native `system` field; one with no
+            # visible text does not, and a native field with none is not sent.
+            stable = _system_blocks(system) or _system_blocks(payload.get("system"))
             stable += _system_blocks(system_blocks)
+            if not stable:
+                payload.pop("system", None)
             _place_prompt_cache(payload, stable)
             return (payload, headers)
 
@@ -1171,6 +1196,8 @@ class AnthropicMessagesEndpoint(Endpoint):
             cache_control = payload.pop("cache_control")
             if cache_control:
                 cache_control = {"type": "ephemeral"}
+                # The last message and its last block are copied before the mark is written, so
+                # the caller's messages are left as they were handed in.
                 last_message = payload["messages"][-1]["content"]
                 if isinstance(last_message, str):
                     last_message = {
@@ -1179,10 +1206,19 @@ class AnthropicMessagesEndpoint(Endpoint):
                         "cache_control": cache_control,
                     }
                 elif isinstance(last_message, list) and isinstance(last_message[-1], dict):
-                    last_message[-1]["cache_control"] = cache_control
-                payload["messages"][-1]["content"] = (
-                    [last_message] if not isinstance(last_message, list) else last_message
-                )
+                    last_message = [
+                        *last_message[:-1],
+                        {**last_message[-1], "cache_control": cache_control},
+                    ]
+                payload["messages"] = [
+                    *payload["messages"][:-1],
+                    {
+                        **payload["messages"][-1],
+                        "content": (
+                            [last_message] if not isinstance(last_message, list) else last_message
+                        ),
+                    },
+                ]
 
         if system:
             system = [{"type": "text", "text": system}]
