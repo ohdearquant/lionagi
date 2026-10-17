@@ -1994,10 +1994,22 @@ _SCAN_REFUSAL_CASES = [
 ]
 
 
+_TYPE_STATEMENT_CASES = {"C22", "C23"}
+
+
 @pytest.mark.parametrize(
     "snippet",
-    [case[1] for case in _SCAN_REFUSAL_CASES],
-    ids=[case[0] for case in _SCAN_REFUSAL_CASES],
+    [
+        pytest.param(
+            snippet,
+            marks=pytest.mark.skipif(
+                case_id in _TYPE_STATEMENT_CASES and sys.version_info < (3, 12),
+                reason="type statements are 3.12 syntax",
+            ),
+            id=case_id,
+        )
+        for case_id, snippet in _SCAN_REFUSAL_CASES
+    ],
 )
 def test_a_shape_the_scan_cannot_read_is_refused_or_allowlisted(snippet):
     """Every shape the scan cannot resolve is refused, naming the file and line, unless it
