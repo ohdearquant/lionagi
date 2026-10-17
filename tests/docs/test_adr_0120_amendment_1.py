@@ -64,12 +64,12 @@ def test_in_process_spawn_paths_are_present_where_named() -> None:
 
 def test_flow_bus_spawn_and_escalation_paths_are_present() -> None:
     assert "observe(self.spawn_type, self._on_bus_spawn)" in _line(
-        "lionagi/operations/flow.py", 1165
+        "lionagi/operations/flow.py", 1163
     )
     assert "observe(EscalationRequest, self._on_bus_escalation)" in _line(
-        "lionagi/operations/flow.py", 1166
+        "lionagi/operations/flow.py", 1164
     )
-    assert "def _inject_request" in _line("lionagi/operations/flow.py", 1458)
+    assert "def _inject_request" in _line("lionagi/operations/flow.py", 1456)
 
 
 def test_observer_gate_still_applies_before_routes_and_subscribers() -> None:
@@ -101,13 +101,13 @@ def test_team_round_batches_pending_targets_per_completion() -> None:
         _line("lionagi/cli/orchestrate/_orchestration.py", 1378)
     )
     assert "def build_round_operations" in _line("lionagi/cli/orchestrate/_orchestration.py", 1414)
-    assert "def _on_team_op_complete" in _line("lionagi/cli/orchestrate/flow.py", 1987)
+    assert "def _on_team_op_complete" in _line("lionagi/cli/orchestrate/flow.py", 1986)
 
 
 def test_signal_rows_and_schedule_cursor_citations_point_at_their_code() -> None:
-    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 4957)
-    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 6770)
-    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 6795)
+    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 4958)
+    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 6771)
+    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 6796)
 
 
 # -- what the amendment now says ---------------------------------------------
@@ -127,8 +127,8 @@ def test_durable_subscriber_source_is_a_confirmed_session_signals_row() -> None:
     assert "never the in-memory emit" in flat
     assert "reaches `best_effort` subscribers only" in flat
     assert "lionagi/state/schema.sql:797-801" in flat
-    assert "lionagi/state/db.py:6770-6778" in flat
-    assert "lionagi/state/db.py:6795-6810" in flat
+    assert "lionagi/state/db.py:6771-6779" in flat
+    assert "lionagi/state/db.py:6796-6811" in flat
     assert "the cursor is a position in that sequence, read forward with `after_seq`" in flat
     assert "is not a committed row and is no durable subscriber's source" in flat
     assert "whose forward read defaults to 500 rows" in flat
@@ -144,7 +144,7 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     assert "Settlement is the exit of the invocation owning this subscription" in flat
     assert "A nested operation's `RunEnd` or `RunFailed` does not settle its parent" in flat
     assert "lionagi/session/branch.py:441-469" in flat
-    assert "lionagi/operations/run/run.py:816-827" in flat
+    assert "lionagi/operations/run/run.py:817-828" in flat
     assert "`unbind_db_persistence`" in flat
     assert "lionagi/session/observer.py:581-598" in flat
     assert "observer unbinding is cleanup, not settlement" in flat
@@ -250,11 +250,11 @@ def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are
     flat = _flat()
     assert "lionagi/cli/orchestrate/_orchestration.py:1378" in flat
     assert "lionagi/state/schema.sql:463" in flat
-    assert "lionagi/state/db.py:4957-4959" in flat
+    assert "lionagi/state/db.py:4958-4960" in flat
     assert "the store advances it only forward, so a stale write cannot move it back" in flat
     assert "ADR-0070, Accepted" in flat
     assert "per-completion batch of targets, not a per-subscriber position" in flat
-    assert "lionagi/cli/orchestrate/flow.py:1987-2032" in flat
+    assert "lionagi/cli/orchestrate/flow.py:1986-2031" in flat
     assert "It is one position per schedule, not per observing subscriber" in flat
 
 
