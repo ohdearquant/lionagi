@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslations } from "use-intl";
 import {
   getWorkflowDef,
@@ -18,16 +18,30 @@ import Button from "@/components/ui/Button";
 interface WorkflowDetailProps {
   id: string;
   onBack?: () => void;
+  /** Runs after the workflow is deleted; the list drops its row and selection. */
+  onDeleted?: () => void;
 }
 
-export function WorkflowDetail({ id, onBack }: WorkflowDetailProps) {
+export function WorkflowDetail({ id, onBack, onDeleted }: WorkflowDetailProps) {
   const t = useTranslations("workflow");
   const [def, setDef] = useState<WorkflowDef | null>(null);
   const [engineDefs, setEngineDefs] = useState<EngineDef[]>([]);
+  // The editor's engine picker reads its own catalog, which is a separate
+  // source from the workflow: a failure or a pending response there must leave
+  // the editor usable, and a retry must re-request that catalog alone.
+  const [engineCatalog, setEngineCatalog] = useState<"loading" | "loaded" | "failed">("loading");
+  const [engineAttempt, setEngineAttempt] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [armedDelete, setArmedDelete] = useState(false);
+  // A save can outlive the workflow it started on: the detail is keyed by
+  // `id`, so a response for an earlier workflow must not be written into
+  // whichever workflow the pane now shows while it is still saving.
+  const currentId = useRef(id);
+  useEffect(() => {
+    currentId.current = id;
+  }, [id]);
 
   useEffect(() => {
     let alive = true;
@@ -38,11 +52,9 @@ export function WorkflowDetail({ id, onBack }: WorkflowDetailProps) {
     setArmedDelete(false);
     /* eslint-enable react-hooks/set-state-in-effect */
 
-    Promise.all([getWorkflowDef(id), listEngineDefs()])
-      .then(([d, eds]) => {
-        if (!alive) return;
-        setDef(d);
-        setEngineDefs(eds);
+    getWorkflowDef(id)
+      .then((d) => {
+        if (alive) setDef(d);
       })
       .catch((e) => {
         if (alive) setError(e instanceof Error ? e.message : t("loadError"));
@@ -56,14 +68,40 @@ export function WorkflowDetail({ id, onBack }: WorkflowDetailProps) {
     };
   }, [id, t]);
 
+  useEffect(() => {
+    let alive = true;
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setEngineCatalog("loading");
+    setEngineDefs([]);
+    /* eslint-enable react-hooks/set-state-in-effect */
+
+    listEngineDefs().then(
+      (defs) => {
+        if (!alive) return;
+        setEngineDefs(defs);
+        setEngineCatalog("loaded");
+      },
+      () => {
+        if (!alive) return;
+        setEngineDefs([]);
+        setEngineCatalog("failed");
+      },
+    );
+
+    return () => {
+      alive = false;
+    };
+  }, [id, engineAttempt]);
+
   const handleSave = useCallback(
     async (spec: WorkflowSpec) => {
       if (!def) return;
+      const savedId = def.id;
       setSaving(true);
       try {
         await updateWorkflowDef(def.id, { spec_json: spec });
         const updated = await getWorkflowDef(def.id);
-        setDef(updated);
+        if (currentId.current === savedId) setDef(updated);
       } finally {
         setSaving(false);
       }
@@ -79,11 +117,12 @@ export function WorkflowDetail({ id, onBack }: WorkflowDetailProps) {
     }
     try {
       await deleteWorkflowDef(def.id);
-      onBack?.();
+      if (onDeleted) onDeleted();
+      else onBack?.();
     } catch {
       setArmedDelete(false);
     }
-  }, [def, armedDelete, onBack]);
+  }, [def, armedDelete, onBack, onDeleted]);
 
   if (loading) {
     return (
@@ -124,6 +163,8 @@ export function WorkflowDetail({ id, onBack }: WorkflowDetailProps) {
         <WorkflowEditor
           initialSpec={spec}
           engineDefs={engineDefs}
+          engineCatalog={engineCatalog}
+          onRetryEngineCatalog={() => setEngineAttempt((attempt) => attempt + 1)}
           onSave={handleSave}
           saving={saving}
         />

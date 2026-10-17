@@ -54,6 +54,7 @@ async def _make_session(db: StateDB) -> str:
             "status": "running",
             "invocation_kind": "flow",
             "started_at": time.time(),
+            "node_metadata": {"flow_control_poller": "active"},
         }
     )
     return sid

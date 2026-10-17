@@ -69,6 +69,7 @@ class EndpointMeta:
     def create_config(self, **overrides: Any):
         from .endpoint_config import EndpointConfig
 
+        api_key_explicit = "api_key" in overrides
         is_agentic = self.endpoint_type == EndpointType.AGENTIC
         api_key: Any = "internal" if is_agentic else None
         if not is_agentic and self.api_key_env and "api_key" not in overrides:
@@ -91,7 +92,9 @@ class EndpointMeta:
             method="POST",
         )
         defaults.update(overrides)
-        return EndpointConfig(**defaults)
+        config = EndpointConfig(**defaults)
+        config._api_key_explicit = api_key_explicit
+        return config
 
 
 class _RegistryEntry:
@@ -638,6 +641,9 @@ def _import_all_providers():
         "lionagi.providers.ollama.chat",
         "lionagi.providers.ollama.embed",
         "lionagi.providers.ollama.generate",
+        # Lattice
+        "lionagi.providers.lattice.chat",
+        "lionagi.providers.lattice.embed",
         # Search & scraping
         "lionagi.providers.tavily.search",
         "lionagi.providers.exa.search",

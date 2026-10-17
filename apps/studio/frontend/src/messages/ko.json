@@ -303,12 +303,12 @@
       "engineMaxDepth": "최대 깊이",
       "engineMaxAgents": "최대 에이전트",
       "loadFailed": "(버전 로드 실패)",
-      "invocations": "호출",
-      "successRate": "성공률",
-      "lastUsed": "마지막 사용",
-      "never": "사용 이력 없음",
-      "recentInvocations": "최근 호출",
-      "noInvocations": "아직 기록된 호출이 없습니다.",
+      "invocations": "기록된 호출",
+      "successRate": "기록된 성공률",
+      "lastUsed": "마지막으로 추적된 사용",
+      "never": "기록 없음",
+      "recentInvocations": "최근 업데이트된 기록",
+      "noInvocations": "기록된 호출이 없습니다.",
       "skillValidationFailed": "검증에 실패했습니다. 저장하기 전에 아래 오류를 수정하세요.",
       "pluginOwnedSkillHint": "플러그인에 포함되어 있습니다 — 변경하려면 플러그인 파일을 직접 편집하세요.",
       "readOnly": "읽기 전용",
@@ -320,7 +320,10 @@
       "pluginHooksSection": "훅 설정",
       "pluginReadmeSection": "README",
       "yes": "예",
-      "no": "아니오"
+      "no": "아니오",
+      "usageCoverage": "이 스킬 또는 플러그인의 추적 범위는 알 수 없으며 기록된 호출만 표시합니다. 성공률은 종료된 기록 중 성공적으로 완료된 비율입니다. 최근 기록의 시간은 업데이트 이후 경과 시간입니다.",
+      "usageUnavailable": "기록된 사용 데이터를 불러올 수 없습니다.",
+      "usageUnknown": "알 수 없음"
     },
     "template": {
       "badge": "내장",
@@ -666,6 +669,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "최근 실행을 불러올 수 없음",
     "title": "일정",
     "subtitle": "cron, interval 및 GitHub 트리거의 상시 자동화",
     "calendar": "캘린더",
@@ -1250,6 +1254,12 @@
       "body": "Something answered at {base}, but it isn't a lionagi daemon.",
       "fix": "Stop that program, or point the daemon at a different port:",
       "command": "li studio --port 8766"
+    },
+    "accessRequired": {
+      "title": "이 데몬에는 액세스 토큰이 필요합니다",
+      "body": "{base}의 lionagi 데몬이 응답했지만 이 페이지를 거부했습니다. 데몬은 다른 출처의 페이지를 액세스 토큰이 있을 때만 받아들이며, li studio 명령이 이 페이지를 열 때 토큰을 전달합니다. 페이지를 새로 고치면 토큰이 사라집니다.",
+      "fix": "데몬이 실행 중인 곳에서 이 명령을 실행해 액세스 권한으로 Studio를 여세요:",
+      "command": "li studio"
     },
     "retry": "Retry",
     "dismiss": "Dismiss"

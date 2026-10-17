@@ -1,10 +1,142 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Any, ClassVar
+import json
+import os
+import re
+from decimal import Decimal
+from pathlib import Path
+from typing import Annotated, Any, ClassVar
 
-from pydantic import BaseModel, Field, SecretStr
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, SecretStr, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+_ACCOUNT_NAME_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}")
+# The secret lookup's variable-name rule, bounded.
+_ACCOUNT_REFERENCE_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+# Positive decimal dollars, at most nine fractional digits: a whole number of nanodollars.
+_BUDGET_USD_RE = re.compile(r"(?:0|[1-9][0-9]*)(?:\.[0-9]{1,9})?")
+_ACCOUNT_FIELDS = frozenset({"name", "key_env", "budget_usd"})
+_INT64_MAX = 2**63 - 1
+
+
+class AccountConfigError(Exception):
+    """An invalid routed-account declaration.
+
+    Deliberately not a ValueError: pydantic would wrap one and repeat the raw
+    input, which here may be a pasted credential. The message names the field
+    and the rule only.
+    """
+
+    def __init__(self, field: str, rule: str) -> None:
+        self.field = field
+        self.rule = rule
+        super().__init__(f"{field}: {rule}")
+
+
+def _looks_like_a_key(text: str) -> bool:
+    return "sk-ant" in text.lower()
+
+
+class ProviderAccount(BaseModel):
+    """One routed account: a stable name, the name of its key's reference, a monthly budget.
+
+    Holds no credential. ``key_env`` names the variable, dotenv key or lookup
+    item the key is read from.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str
+    key_env: str
+    budget_usd: Decimal
+
+    @classmethod
+    def from_declaration(cls, item: Any) -> "ProviderAccount":
+        if not isinstance(item, dict):
+            raise AccountConfigError("", "must be an object")
+        if set(item) != _ACCOUNT_FIELDS:
+            raise AccountConfigError(
+                "", "must have exactly the fields name, key_env and budget_usd"
+            )
+        name, key_env, budget = item["name"], item["key_env"], item["budget_usd"]
+        if (
+            not isinstance(name, str)
+            or not _ACCOUNT_NAME_RE.fullmatch(name)
+            or _looks_like_a_key(name)
+        ):
+            raise AccountConfigError("name", "must match [a-z][a-z0-9_-]{0,31} and not be a key")
+        if (
+            not isinstance(key_env, str)
+            or not _ACCOUNT_REFERENCE_RE.fullmatch(key_env)
+            or _looks_like_a_key(key_env)
+        ):
+            raise AccountConfigError(
+                "key_env", "must match [A-Za-z_][A-Za-z0-9_]{0,63} and not be a key"
+            )
+        # A string only: a JSON number has already been through binary floating point.
+        if not isinstance(budget, str) or not _BUDGET_USD_RE.fullmatch(budget):
+            raise AccountConfigError(
+                "budget_usd", "must be a decimal string with at most nine fractional digits"
+            )
+        budget_usd = Decimal(budget)
+        if budget_usd <= 0 or budget_usd.scaleb(9) > _INT64_MAX:
+            raise AccountConfigError("budget_usd", "must be positive and fit 64-bit nanodollars")
+        return cls.model_construct(name=name, key_env=key_env, budget_usd=budget_usd)
+
+    @property
+    def budget_nusd(self) -> int:
+        return int(self.budget_usd.scaleb(9))
+
+
+def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result = dict(pairs)
+    if len(result) != len(pairs):
+        raise AccountConfigError("ANTHROPIC_ACCOUNTS", "an object repeats a field")
+    return result
+
+
+def _reject_constant(_: str) -> Any:
+    raise AccountConfigError("ANTHROPIC_ACCOUNTS", "must not contain non-finite numbers")
+
+
+def _parse_accounts(value: Any) -> tuple[ProviderAccount, ...]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(
+                value, object_pairs_hook=_no_duplicate_keys, parse_constant=_reject_constant
+            )
+        except ValueError:
+            malformed = True
+        else:
+            malformed = False
+        if malformed:
+            # Raised outside the handler, so the error carries no context: the decoder's
+            # error holds the document.
+            raise AccountConfigError(
+                "ANTHROPIC_ACCOUNTS", "must be a JSON array of account objects"
+            )
+    if not isinstance(value, list | tuple):
+        raise AccountConfigError("ANTHROPIC_ACCOUNTS", "must be an array of account objects")
+    accounts: list[ProviderAccount] = []
+    for index, item in enumerate(value):
+        if isinstance(item, ProviderAccount):
+            item = {"name": item.name, "key_env": item.key_env, "budget_usd": str(item.budget_usd)}
+        try:
+            account = ProviderAccount.from_declaration(item)
+        except AccountConfigError as exc:
+            field, rule = exc.field, exc.rule
+        else:
+            accounts.append(account)
+            continue
+        # Raised outside the handler, so the error chains nothing.
+        path = f"ANTHROPIC_ACCOUNTS[{index}]" + (f".{field}" if field else "")
+        raise AccountConfigError(path, rule)
+    if len({a.name for a in accounts}) != len(accounts):
+        raise AccountConfigError("ANTHROPIC_ACCOUNTS", "account names must be unique")
+    if len({a.key_env for a in accounts}) != len(accounts):
+        raise AccountConfigError("ANTHROPIC_ACCOUNTS", "each account needs its own key_env")
+    return tuple(accounts)
 
 
 class CacheConfig(BaseModel):
@@ -56,6 +188,10 @@ class AppSettings(BaseSettings, frozen=True):
     NVIDIA_NIM_API_KEY: SecretStr | None = None
     GEMINI_API_KEY: SecretStr | None = None
     DEEPSEEK_API_KEY: SecretStr | None = None
+
+    # Routed Anthropic accounts with monthly budgets, as a JSON array. Empty means
+    # calls use ANTHROPIC_API_KEY exactly as before.
+    ANTHROPIC_ACCOUNTS: Annotated[tuple[ProviderAccount, ...], NoDecode] = ()
 
     OPENAI_DEFAULT_MODEL: str = "gpt-4.1-mini"
 
@@ -110,6 +246,23 @@ class AppSettings(BaseSettings, frozen=True):
     LOG_REDACT_BINARY_THRESHOLD: int = 1024
 
     _instance: ClassVar[Any] = None
+    # The dotenv files this instance was built from, as absolute paths, so a later
+    # chdir cannot change which file a credential is read from.
+    _dotenv_files: tuple[Path, ...] = PrivateAttr(default=())
+
+    def __init__(self, **values: Any) -> None:
+        super().__init__(**values)
+        files = values["_env_file"] if "_env_file" in values else self.model_config.get("env_file")
+        if files is None:
+            files = ()
+        elif isinstance(files, str | os.PathLike):
+            files = (files,)
+        self._dotenv_files = tuple(Path(f).expanduser().absolute() for f in files)
+
+    @field_validator("ANTHROPIC_ACCOUNTS", mode="before")
+    @classmethod
+    def _parse_anthropic_accounts(cls, value: Any) -> tuple[ProviderAccount, ...]:
+        return _parse_accounts(value)
 
     def get_secret(self, key_name: str) -> str:
         if not hasattr(self, key_name):
