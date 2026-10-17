@@ -33,8 +33,9 @@ Decision:
 - The branch records the tool set and bound under `metadata["api_launch"]` and is written to the
   run's branches directory after every turn. A resume runs the loop again from that record, with
   the read set bound again to the resume's working directory and the bound the resuming profile
-  names; a resume under a profile without `api_tools`, or with `--image`, is refused before a
-  run exists. A non-CLI branch without the record keeps the earlier path. Queued operator
+  names; a resume under a profile without `api_tools`, or with `--image`, or of a record naming a
+  tool set or a bound this version does not run, is refused before a run exists. A non-CLI
+  branch without the record keeps the earlier path. Queued operator
   messages drain at turn end as further turns of the loop.
 - An API model is built from its model spec alone; the CLI display options (`-v`, `--theme`)
   are not put on its request, on a new leg or a resume.
@@ -42,7 +43,9 @@ Decision:
 `search` is held to what `reader` may read: it resolves its path inside the working directory,
 passes the pattern to grep after `-e` so a pattern is never read as an option, and leaves out
 the matches of every file whose path holds a name `reader` refuses (`.env`, private keys),
-which a recursive search would otherwise reach.
+which a recursive search would otherwise reach. Each match is read from the NUL grep writes
+after its file name, so a name holding a newline is read whole, and binary files are skipped
+(`-I`), so no notice names a matching file.
 
 Limits: the loop's action protocol is lionagi's JSON action request, not a provider's native
 tool calling.

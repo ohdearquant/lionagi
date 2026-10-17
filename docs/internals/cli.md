@@ -1137,7 +1137,9 @@ before plus a pointer to the opt-in:
 - `api_tools: read` — the only tool set: `reader`, `search` and `context`, bound through
   `create_agent` with `AgentSpec.coding_tools` and the path guard on `reader` scoped to `cwd`
   (`search` resolves its path inside the workspace itself, and leaves out the matches of any
-  file whose path holds a name the reader refuses, such as `.env`). Tools that write files or run
+  file whose path holds a name the reader refuses, such as `.env`; it reads each match from the
+  NUL grep writes after the file name, so a name holding a newline is read whole, and skips
+  binary files, so no notice names a matching file). Tools that write files or run
   commands are not offered: they would run with this process's own permissions, and this path
   has no operating-system sandbox. Any other value is refused before a run exists.
 - `max_extensions` — rounds after the first, a whole number from 1 to 100 (default 10).
@@ -1155,8 +1157,8 @@ finds it and runs the loop again from that record. A stored branch keeps its mes
 tools, so the resume binds the read set again, guarded to its own working directory; a profile's
 current `max_extensions` replaces the recorded bound, and a resume without `-a` runs on the
 recorded one. A resume under a profile that no longer declares `api_tools`, or with `--image`,
-is refused before a run exists, and the display options stay off the resumed model's request
-too. A non-CLI branch without the record runs the earlier
+or of a record naming a tool set or a bound this version does not run, is refused before a run
+exists, and the display options stay off the resumed model's request too. A non-CLI branch without the record runs the earlier
 `branch.operate` path unchanged. Queued operator messages drain as further turns of the loop
 (`_drain_pending_steers(run_turn=...)`), on the budget the deadline leaves. Messages persist
 through the same branch-level hooks as a CLI leg; there is no stream dir, since nothing streams
