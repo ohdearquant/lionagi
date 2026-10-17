@@ -101,7 +101,7 @@ def test_team_round_batches_pending_targets_per_completion() -> None:
         _line("lionagi/cli/orchestrate/_orchestration.py", 1378)
     )
     assert "def build_round_operations" in _line("lionagi/cli/orchestrate/_orchestration.py", 1414)
-    assert "def _on_team_op_complete" in _line("lionagi/cli/orchestrate/flow.py", 1865)
+    assert "def _on_team_op_complete" in _line("lionagi/cli/orchestrate/flow.py", 1988)
 
 
 # -- what the amendment now says ---------------------------------------------
@@ -121,8 +121,8 @@ def test_durable_subscriber_source_is_a_confirmed_session_signals_row() -> None:
     assert "never the in-memory emit" in flat
     assert "reaches `best_effort` subscribers only" in flat
     assert "lionagi/state/schema.sql:797-801" in flat
-    assert "lionagi/state/db.py:6215-6223" in flat
-    assert "lionagi/state/db.py:6238-6253" in flat
+    assert "lionagi/state/db.py:6345-6353" in flat
+    assert "lionagi/state/db.py:6368-6383" in flat
     assert "the cursor is a position in that sequence, read forward with `after_seq`" in flat
     assert "is not a committed row and is no durable subscriber's source" in flat
     assert "whose forward read defaults to 500 rows" in flat
@@ -244,11 +244,11 @@ def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are
     flat = _flat()
     assert "lionagi/cli/orchestrate/_orchestration.py:1378" in flat
     assert "lionagi/state/schema.sql:463" in flat
-    assert "lionagi/state/db.py:4481-4483" in flat
+    assert "lionagi/state/db.py:4611-4613" in flat
     assert "the store advances it only forward, so a stale write cannot move it back" in flat
     assert "ADR-0070, Accepted" in flat
     assert "per-completion batch of targets, not a per-subscriber position" in flat
-    assert "lionagi/cli/orchestrate/flow.py:1865-1910" in flat
+    assert "lionagi/cli/orchestrate/flow.py:1988-2033" in flat
     assert "It is one position per schedule, not per observing subscriber" in flat
 
 

@@ -711,8 +711,8 @@ the record says what is lost and when. For a durable subscriber the source fact 
 `session_signals` row the persistence sink has
 confirmed, never the in-memory emit: the log is append-only with a monotonic per-session sequence
 (`lionagi/state/schema.sql:797-801`), the sink writes it with the sequence the store assigns
-(`lionagi/state/db.py:6215-6223`), and the cursor is a position in that sequence, read forward with
-`after_seq` (`lionagi/state/db.py:6238-6253`), whose forward read defaults to 500 rows
+(`lionagi/state/db.py:6345-6353`), and the cursor is a position in that sequence, read forward with
+`after_seq` (`lionagi/state/db.py:6368-6383`), whose forward read defaults to 500 rows
 (`:6243`). Registration requires a bound usable sink and replayable filters, and persists source
 invocation and signal identity, `emitter_role`, versioned payload type and filter-required data
 without destructive truncation; every page is read through a frozen closure cutoff. A fact the
@@ -814,15 +814,15 @@ everything since; facts past the range belong to the next wake.
   per-subscriber wake cursor. The team round batches the pending targets it discovers on each node
   completion, one re-invocation per target, so its position is a per-completion batch of targets,
   not a per-subscriber position (`lionagi/cli/orchestrate/_orchestration.py:1378`, `:1414-1419`;
-  `lionagi/cli/orchestrate/flow.py:1865-1910`). A schedule holds `github_cursor`, a monotonic
+  `lionagi/cli/orchestrate/flow.py:1988-2033`). A schedule holds `github_cursor`, a monotonic
   reader position that remembers how far a poll has read so a refused event is re-offered rather
   than skipped, and the store advances it only forward, so a stale write cannot move it back
-  (`lionagi/state/schema.sql:463`, `:527-535`; `lionagi/state/db.py:4481-4483`; ADR-0070,
+  (`lionagi/state/schema.sql:463`, `:527-535`; `lionagi/state/db.py:4611-4613`; ADR-0070,
   Accepted). It is one position per schedule, not per observing subscriber. The nearest durable
   per-session log, and the domain of this record's cursor, is `session_signals`: append-only, with
   the per-session `seq` its store assigns at insert, read forward with `after_seq`
-  (`lionagi/state/schema.sql:797-801`; writer `lionagi/state/db.py:6215-6223`; forward reader
-  `lionagi/state/db.py:6238-6253`).
+  (`lionagi/state/schema.sql:797-801`; writer `lionagi/state/db.py:6345-6353`; forward reader
+  `lionagi/state/db.py:6368-6383`).
 - The one existing dropped-and-counted precedent is the persistence sink's own drop accounting,
   and it counts a drop on the writer, not on a wake (`lionagi/session/observer.py:263-270`).
 - `verdict` and `budget` each lack a session lifecycle Signal. `verdict` names the `Verdict` cast
