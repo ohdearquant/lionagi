@@ -643,3 +643,52 @@ class TestWithRetryDecorator:
         assert result == "success"
         # backoff_factor=10.0 with base_delay=2.0: attempt 1 → 2.0*10^0=2.0, attempt 2 → 2.0*10^1=5.0 (capped at max_delay=5.0)
         assert sleep_calls == [2.0, 5.0]
+
+
+class TestTheReraiseKeepsACauseChainThatEnds:
+    """A non-retryable error re-raised through the retry layers must not become its own cause.
+
+    Raising the unwrapped original ``from`` the wrapper's ``__cause__`` — the original
+    itself — makes it its own cause. A caller that walks ``__cause__`` from it, the
+    engine judge among them, then never reaches an end.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_excluded_error_is_raised_with_its_own_cause_not_itself(self):
+        original = ConnectionError("the provider refused the key")
+        cause = LookupError("the response the provider sent")
+
+        async def attempt():
+            raise original from cause
+
+        with pytest.raises(ConnectionError) as info:
+            await retry_with_backoff(
+                attempt,
+                exclude_exceptions=(ConnectionError,),
+                max_retries=2,
+                base_delay=0.01,
+            )
+
+        assert info.value is original
+        assert info.value.__cause__ is cause
+        assert info.value.__cause__ is not info.value
+
+    @pytest.mark.asyncio
+    async def test_the_walk_from_the_reraised_error_ends(self):
+        async def attempt():
+            raise ValueError("a refused request")
+
+        with pytest.raises(ValueError) as info:
+            await retry_with_backoff(
+                attempt,
+                exclude_exceptions=(ValueError,),
+                max_retries=1,
+                base_delay=0.01,
+            )
+
+        seen, cause = set(), info.value
+        while cause is not None and id(cause) not in seen:
+            seen.add(id(cause))
+            assert cause.__cause__ is not cause
+            cause = cause.__cause__
+        assert len(seen) <= 8

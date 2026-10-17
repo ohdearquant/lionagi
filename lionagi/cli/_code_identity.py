@@ -47,9 +47,10 @@ from __future__ import annotations
 import hashlib
 import subprocess
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from lionagi.ln import now_utc
 
 __all__ = (
     "code_identity",
@@ -97,7 +98,7 @@ _REF_CAVEATS = {
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return now_utc().isoformat()
 
 
 class _Budget:

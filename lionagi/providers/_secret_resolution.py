@@ -26,10 +26,12 @@ from lionagi.ln import (
 from lionagi.ln.concurrency import CancelScope, get_cancelled_exc_class
 
 __all__ = (
+    "OneNameLookup",
     "ResolvedSecretLookup",
     "SecretLookupResolution",
     "fill_declared_secrets",
     "fill_declared_secrets_and_names",
+    "lookup_one_name",
     "resolve_secret_lookup_config",
 )
 
@@ -198,6 +200,16 @@ def resolve_secret_lookup_config(
     return SecretLookupResolution(lookup=ResolvedSecretLookup(argv=tuple(argv), names=tuple(names)))
 
 
+async def _terminate(proc: asyncio.subprocess.Process, leader_created: float | None) -> None:
+    group_witnesses = (
+        capture_group_witnesses(proc, expected_leader_created=leader_created)
+        if leader_created is not None
+        else ()
+    )
+    await aterminate_process_group(proc, grace=None, group_witnesses=group_witnesses)
+    await proc.wait()
+
+
 async def _run_lookup(lookup: ResolvedSecretLookup, name: str) -> str | None:
     """Run the lookup for one variable, returning its value or None.
 
@@ -228,40 +240,14 @@ async def _run_lookup(lookup: ResolvedSecretLookup, name: str) -> str | None:
         )
     except asyncio.TimeoutError:
         if proc is not None:
-            group_witnesses = (
-                capture_group_witnesses(
-                    proc,
-                    expected_leader_created=leader_created,
-                )
-                if leader_created is not None
-                else ()
-            )
-            await aterminate_process_group(
-                proc,
-                grace=None,
-                group_witnesses=group_witnesses,
-            )
-            await proc.wait()
+            await _terminate(proc, leader_created)
         logger.warning("secret lookup %s for %s timed out", program, name)
         return None
     except get_cancelled_exc_class():
         # The child must still be reaped, and the scope is already cancelled.
         if proc is not None:
             with CancelScope(shield=True):
-                group_witnesses = (
-                    capture_group_witnesses(
-                        proc,
-                        expected_leader_created=leader_created,
-                    )
-                    if leader_created is not None
-                    else ()
-                )
-                await aterminate_process_group(
-                    proc,
-                    grace=None,
-                    group_witnesses=group_witnesses,
-                )
-                await proc.wait()
+                await _terminate(proc, leader_created)
         raise
     except Exception as exc:  # noqa: BLE001 -- a lookup failure must never block a spawn
         # Only the exception type: a message can carry the argv, and the argv
@@ -274,6 +260,104 @@ async def _run_lookup(lookup: ResolvedSecretLookup, name: str) -> str | None:
     if proc.returncode != 0:
         logger.warning("secret lookup %s for %s exited %s", program, name, proc.returncode)
         return None
+    return _cli_value(program, name, stdout_bytes)
+
+
+async def _terminate_draining(
+    proc: asyncio.subprocess.Process, leader_created: float | None
+) -> None:
+    # Output left unread at the bound fills the pipe and pauses the reader, and an
+    # asyncio exit wait also waits for the pipe to close; so read to EOF while the
+    # group is stopped, or the wait never returns.
+    async def drain() -> None:
+        while await proc.stdout.read(65536):
+            pass
+
+    await asyncio.gather(drain(), _terminate(proc, leader_created))
+
+
+@dataclass(frozen=True)
+class OneNameLookup:
+    """One strict lookup's raw output, or why there is none.
+
+    ``failure`` is one of ``timeout``, ``failed_to_run``, ``exit_nonzero`` or
+    ``too_long``; ``value`` is the untouched stdout otherwise.
+    """
+
+    value: bytes | None = None
+    failure: str | None = None
+
+
+async def lookup_one_name(
+    lookup: ResolvedSecretLookup,
+    name: str,
+    *,
+    env: Mapping[str, str],
+    max_bytes: int,
+) -> OneNameLookup:
+    """Run the lookup for exactly one declared name, reading at most ``max_bytes``.
+
+    The child gets ``env`` (the caller removes what it must not see) and the same
+    timeout, process-group cleanup and cancellation handling as the CLI fill.
+    Unlike that path the output is returned unstripped and undecoded, and
+    nothing about the command, its output or its exceptions is logged.
+    """
+    if name not in lookup.names:
+        raise ValueError("name is not declared for lookup")
+    argv = tuple(arg.replace(_NAME_PLACEHOLDER, name) for arg in lookup.argv)
+    proc = None
+    leader_created = None
+    child_env, group_marker = prepare_process_group_env(env)
+
+    async def read_bounded(proc: asyncio.subprocess.Process) -> bytes | None:
+        out = bytearray()
+        while len(out) <= max_bytes:
+            chunk = await proc.stdout.read(max_bytes + 1 - len(out))
+            if not chunk:
+                break
+            out += chunk
+        if len(out) > max_bytes:
+            return None
+        await proc.wait()
+        return bytes(out)
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+            env=child_env,
+        )
+        leader_created = observe_process_group_leader(
+            getattr(proc, "pid", None),
+            expected_marker=group_marker,
+        )
+        out = await asyncio.wait_for(read_bounded(proc), timeout=_LOOKUP_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        if proc is not None:
+            await _terminate_draining(proc, leader_created)
+        return OneNameLookup(failure="timeout")
+    except get_cancelled_exc_class():
+        if proc is not None:
+            with CancelScope(shield=True):
+                await _terminate_draining(proc, leader_created)
+        raise
+    except Exception:  # noqa: BLE001 -- the exception can carry argv; only the outcome leaves
+        if proc is not None and proc.returncode is None:
+            with CancelScope(shield=True):
+                await _terminate_draining(proc, leader_created)
+        return OneNameLookup(failure="failed_to_run")
+    if out is None:
+        await _terminate_draining(proc, leader_created)
+        return OneNameLookup(failure="too_long")
+    if proc.returncode != 0:
+        return OneNameLookup(failure="exit_nonzero")
+    return OneNameLookup(value=out)
+
+
+def _cli_value(program: str, name: str, stdout_bytes: bytes) -> str | None:
     value = stdout_bytes.decode(errors="replace").strip()
     if not value:
         # Told apart from a failed run on purpose: the command worked and the

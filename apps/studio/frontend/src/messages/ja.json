@@ -666,6 +666,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "最近の実行を取得できません",
     "title": "スケジュール",
     "subtitle": "cron、インターバル、GitHubトリガーの常設オートメーション",
     "calendar": "カレンダー",
@@ -1250,6 +1251,12 @@
       "body": "Something answered at {base}, but it isn't a lionagi daemon.",
       "fix": "Stop that program, or point the daemon at a different port:",
       "command": "li studio --port 8766"
+    },
+    "accessRequired": {
+      "title": "このデーモンにはアクセストークンが必要です",
+      "body": "{base} の lionagi デーモンは応答しましたが、このページを拒否しました。デーモンは、別のオリジンのページをアクセストークンがある場合にのみ受け付けます。li studio コマンドは、このページを開くときにトークンを渡します。ページを再読み込みするとトークンは失われます。",
+      "fix": "デーモンが動いている場所でこれを実行し、アクセス付きで Studio を開きます：",
+      "command": "li studio"
     },
     "retry": "Retry",
     "dismiss": "Dismiss"

@@ -1,10 +1,61 @@
 # ADR-0034: Domain-engine coordination and autonomy safeguards
 
-- **Status**: Accepted
+- **Status**: Accepted, amended 2026-10-15 (see Amendment 1)
 - **Kind**: Retrospective
 - **Area**: orchestration
 - **Date**: 2026-07-09
 - **Relations**: supersedes v0-0075, v0-0077; extends ADR-0033
+
+## Amendment 1 (2026-10-15) — a judge that did not run as configured is raised
+
+D3 has every judge exception other than budget exhaustion emit `judge_error` and
+return `True`. That is right when the judge ran and its provider or its parse
+failed. It is wrong when the engine's own settings kept the judge from running as
+configured: then no judge ran, and `True` reads a missing verdict as a pass, which
+turns the gate off for the whole run. Three cases are now raised instead:
+
+- The judge agent cannot be built with the engine's settings: today the
+  engine's `agent_env` on a judge model that takes no environment (an API
+  model), and an MCP server allowlist that cannot be enforced where an engine's
+  `make_agent` is handed one (`Engine.judge` passes none itself). The build's
+  error is raised as it is, with no `judge_error`. Any other error building the
+  judge, an `agent_mcp_config_path` that does not parse among them, is not one
+  of these: without containment it fails open as before, and under containment
+  the third case raises it.
+- A `ContainmentRefusedError` is found on the error's chain. The model layer
+  wraps a provider's refusal in its own error, and a wrapper that raises without
+  `from` (or `from None`) leaves it as the context, so each link's cause and
+  context are both followed, whatever object the link is, each link once,
+  nearest first, and at most 100 links in all; the refusal is raised.
+- With `contain_account_integrations` set, any other error. `judge_error` is
+  emitted first, then the error is raised. Under containment the refusal can
+  arrive as an error of any type (a working directory the process cannot enter, a
+  codex profile the request model rejects), and no error can show that a
+  contained judge ran.
+
+Budget exhaustion still returns `False`, and an engine without containment keeps
+D3's fail-open rule for every other error. The cost is the one D3's rejected
+alternative named: under containment a judge provider failure stops what the
+judge gates instead of letting it expand. Where an engine runs its stages under
+a guard that records a stage's error and carries on (the hypothesis engine),
+that is the item being judged, and the run goes on with its other items; a
+stage whose own failure releases its item onward runs the judge before that
+release, so a judge that raises ends the item. The item is recorded as that
+stage's error and the run returns what its other items produced: a stage failure
+makes the hypothesis engine raise only when nothing past its seeds was produced (a
+dedup verdict the engine acted on, a question, evidence or a conclusion), and
+every item its judge sees comes after the run has produced a question, so a judge
+that raises does not bring a run to that point. Nor can a dedup verdict carry a
+finding past its judge: the hypothesis engine treats a dedup verdict that names an
+agent-sourced finding (one of generation 1 or more) whose judge has not passed as
+one naming no finding, whichever agent emitted it. Nothing acts on it, it does not
+answer that finding's search, and the filing queue leaves it out. Three gaps
+remain, recorded in issue #3569: which agent emitted a verdict is not checked, so
+a judge or dedup verdict naming another item can still decide it; a finding an
+agent posts with no parent is taken as a seed (generation 0), so it skips the
+judge; and a judge reply that carries no verdict passes unless its text contains
+"reject". An engine that needs the judge to be optional leaves `judge_model`
+unset.
 
 ## Context
 
@@ -293,7 +344,8 @@ async def Engine.judge(
   passes.
 - Judge `EngineBudgetError` returns `False`: no budget means no expansion.
 - Other judge exceptions emit `judge_error` and return `True`: infrastructure
-  failure is fail-open while D2 remains authoritative.
+  failure is fail-open while D2 remains authoritative. Amendment 1 raises three
+  cases instead.
 
 **Why this way**: payload-oriented queries keep engines independent of observer
 transport. Bounded repair addresses common serialization failure without turning a
@@ -531,7 +583,7 @@ indirectly. Enforceable agent creation and monotonic deadline checks are require
 This would prevent expansion whenever quality cannot be proven. It lost because a
 judge provider or parse failure would become a global availability dependency.
 Budget exhaustion still fails closed; other judge errors fail open under the hard
-bounds.
+bounds. Amendment 1 raises every other judge error under `contain_account_integrations`.
 
 ### Fabricate a minimal event after repair exhaustion
 

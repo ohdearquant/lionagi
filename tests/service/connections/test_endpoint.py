@@ -1452,3 +1452,96 @@ class TestIdempotencyKeyOnRetriedPosts:
         assert attempt == 2
         assert len(sent_headers) == 2
         assert sent_headers[0]["Idempotency-Key"] == sent_headers[1]["Idempotency-Key"]
+
+
+def _mock_session_returning(*responses):
+    mock_session = AsyncMock(spec=aiohttp.ClientSession)
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    calls = iter(responses)
+
+    async def _request(*args, **kwargs):
+        return next(calls)
+
+    mock_session.request = _request
+    return mock_session
+
+
+def _response_with_status(status: int):
+    response = AsyncMock(spec=aiohttp.ClientResponse)
+    response.status = status
+    response.closed = False
+    response.release = MagicMock()
+    response.request_info = MagicMock()
+    response.history = []
+    response.headers = {}
+    response.json = AsyncMock(return_value={"error": f"status {status}"})
+    return response
+
+
+class TestThe4xxSentinelUnwrapLeavesAnAcyclicCause:
+    """A 4xx answer is wrapped in a sentinel the retry layer excludes, then unwrapped.
+
+    The unwrap must not re-raise the original from the sentinel's ``__cause__`` —
+    which is that original — because the resulting self-cause makes a walk of
+    ``__cause__``, the engine judge's among them, never reach an end.
+    """
+
+    def _make_endpoint(self, retry_config=None) -> Endpoint:
+        config = EndpointConfig(
+            name="test",
+            provider="test",
+            endpoint="v1/chat",
+            base_url="https://api.test.com",
+            auth_type="bearer",
+            api_key="test-key",
+            max_retries=3,
+        )
+        return Endpoint(config=config, retry_config=retry_config)
+
+    @pytest.mark.asyncio
+    async def test_the_native_path_reraise_is_not_its_own_cause(self):
+        endpoint = self._make_endpoint()
+        session = _mock_session_returning(_response_with_status(401))
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch.object(endpoint, "_create_http_session", return_value=session):
+                with pytest.raises(aiohttp.ClientResponseError) as info:
+                    await endpoint._call(payload={"model": "m", "messages": []}, headers={})
+
+        assert info.value.status == 401
+        assert info.value.__cause__ is not info.value
+        assert info.value.__cause__ is None
+
+    @pytest.mark.asyncio
+    async def test_the_retry_config_path_reraise_is_not_its_own_cause(self):
+        from lionagi.service.resilience import RetryConfig
+
+        endpoint = self._make_endpoint(RetryConfig(max_retries=3, base_delay=0.01))
+        session = _mock_session_returning(_response_with_status(400))
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch.object(endpoint, "_create_http_session", return_value=session):
+                with patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock()):
+                    with pytest.raises(aiohttp.ClientResponseError) as info:
+                        await endpoint.call({"messages": []})
+
+        assert info.value.status == 400
+        assert info.value.__cause__ is not info.value
+
+    @pytest.mark.asyncio
+    async def test_the_walk_from_the_unwrapped_error_ends(self):
+        endpoint = self._make_endpoint()
+        session = _mock_session_returning(_response_with_status(403))
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch.object(endpoint, "_create_http_session", return_value=session):
+                with pytest.raises(aiohttp.ClientResponseError) as info:
+                    await endpoint._call(payload={"model": "m", "messages": []}, headers={})
+
+        seen, cause = set(), info.value
+        while cause is not None and id(cause) not in seen:
+            seen.add(id(cause))
+            assert cause.__cause__ is not cause
+            cause = cause.__cause__
+        assert len(seen) <= 8
