@@ -795,6 +795,52 @@ def make_engine(url: str, **overrides):
     return create_async_engine(url, **kwargs)
 
 
+def make_compatibility_engine(url: str, guard, **overrides):
+    """AsyncEngine for a compatibility-mode open (ADR-0128) of an existing SQLite store.
+
+    Each new connection gets connection-local settings only, reads the store's journal mode
+    instead of setting it, and carries *guard*'s authorizer; a connection that cannot be set up
+    that way is closed and the refusal raised. The driver's statement cache is off, so the
+    authorizer decides on every prepare rather than once per cached statement.
+    """
+    from sqlalchemy.event import listen
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    dialect = dialect_of(url)
+    if dialect != "sqlite":
+        raise ValueError(f"make_compatibility_engine() only supports sqlite, got {dialect!r}")
+    _warn_if_wal_reset_unfixed()
+    announce_busy_timeout()
+    kwargs: dict = {
+        "echo": False,
+        "json_serializer": _dumps_with_uuid,
+        "connect_args": {"cached_statements": 0},
+    }
+    kwargs.update(overrides)
+    engine = create_async_engine(url, **kwargs)
+
+    def _configure(dbapi_conn, connection_record):
+        try:
+            _stop_aiosqlite_once(connection_record.driver_connection)
+            dbapi_conn.isolation_level = None  # driver autocommit; the guard emits BEGIN IMMEDIATE
+            cursor = dbapi_conn.cursor()
+            cursor.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+            cursor.close()
+            guard.configure(dbapi_conn, connection_record)
+        except BaseException:
+            # SQLAlchemy does not close a connection whose connect listener raised, and its
+            # driver thread would outlive the refusal.
+            try:
+                dbapi_conn.close()
+            except Exception:  # noqa: S110 -- the refusal below is the error to report
+                pass
+            raise
+
+    listen(engine.sync_engine, "connect", _configure)
+    guard.install(engine.sync_engine)
+    return engine
+
+
 _SQLITE_ASYNC_PREFIX = "sqlite+aiosqlite:///"
 
 
