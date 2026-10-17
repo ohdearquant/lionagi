@@ -194,15 +194,15 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    # Every job in this workflow has a timeout. A test can hang where
-    # pytest-timeout's per-test limit does not end it, and the worker running
-    # it then holds the whole run. Unbounded, that leg runs to the six-hour job
-    # limit, and because runs on a pushed branch share one concurrency group and
-    # are never cancelled, every push in the meantime queues behind it and all
-    # but the newest are cancelled without running. A leg takes 11 to 29
-    # minutes. The test steps stop at 45, before the job's 60, so a stopped leg
-    # still runs the failure telemetry and the peak-RSS report, which names the
-    # test each worker was still running.
+    # Every job in this workflow has a timeout. After a worker crash the
+    # pytest-xdist controller can block with no test running, where no per-test
+    # timeout reaches it (the max-worker-restart note in pyproject.toml).
+    # Unbounded, that leg runs to the six-hour job limit, and because runs on a
+    # pushed branch share one concurrency group and are never cancelled, every
+    # push in the meantime queues behind it and all but the newest are cancelled
+    # without running. A leg takes 11 to 29 minutes. The test steps stop at 45,
+    # before the job's 60, so a stopped leg still runs the failure telemetry and
+    # the peak-RSS report, which names the test a crashed worker was running.
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -378,6 +378,7 @@ jobs:
       run: scripts/ci.sh test-python-quarantine
       env:
         MAXFAIL: 0
+        PYTEST_RSS_LOG: ${{ github.workspace }}/.pytest-rss
     - name: Collect quarantine failure telemetry
       if: failure()
       run: |
@@ -395,6 +396,14 @@ jobs:
         path: .pytest-results/failures.jsonl
         if-no-files-found: error
         retention-days: 30
+    - name: Worker peak-RSS report
+      if: always()
+      run: |
+        if ls .pytest-rss/rss-*.jsonl >/dev/null 2>&1; then
+          python3 scripts/rss_report.py .pytest-rss
+        else
+          echo "no RSS log produced"
+        fi
 
   frontend:
     runs-on: ubuntu-latest

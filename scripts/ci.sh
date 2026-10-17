@@ -89,9 +89,9 @@ test-python() {
   # tests left unrun; at 4 xdist may retry crashed workers, but the run can
   # still stop with tests missing after its restart limit is exhausted.
   # The risk it buys is the one this was 0 for -- a replacement that is never
-  # scheduled leaves the controller blocked with no test name -- seen only on
-  # small target sets, never on the full suite; MAX_WORKER_RESTART=0 is the way
-  # back for a job that hits it. The coverage check below is what makes an
+  # scheduled leaves the controller blocked with no test name -- seen on small
+  # target sets and on the full suite, where the job's timeout in ci.yml ends
+  # it; MAX_WORKER_RESTART=0 is the way back for a job that hits it. The coverage check below is what makes an
   # early end loud either way by checking distinct test IDs.
   local markexpr="${PYTEST_MARKEXPR:-not performance and not flaky_quarantine}"
   local targets=("$@")
