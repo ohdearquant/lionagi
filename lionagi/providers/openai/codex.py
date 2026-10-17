@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
+import html.entities
 import json
 import logging
 import os
@@ -16,7 +18,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mappin
 from dataclasses import dataclass
 from pathlib import Path
 from textwrap import shorten
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import toml
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
@@ -58,6 +60,10 @@ from ._codex_profile import (
     project_codex_profile,
 )
 from ._config import CodexConfigs
+
+if TYPE_CHECKING:
+    from markdown_it import MarkdownIt
+    from markdown_it.token import Token
 
 try:
     import tomllib as _tomllib
@@ -124,6 +130,175 @@ _TOML_BARE_KEY_RE = re.compile(r"[A-Za-z0-9_-]+")
 # trailing "(" is load-bearing: it excludes terminal messages that merely
 # begin with the retry prefix, e.g. "Reconnecting... 5/5 failed".
 _RECONNECT_NOTICE_RE = re.compile(r"^\s*Reconnecting\.\.\.\s*\d+/\d+\s*\(")
+
+# Models served through the CLI can write a tool call into their reply as text
+# in their own call markup instead of emitting a real call. The CLI takes that
+# text as the turn's final message and ends the turn normally; the session is
+# marked failed (``is_error``, with a result naming the cause) and an error
+# chunk is emitted, read when a turn completes or the stream ends, over the
+# turn's last non-empty agent text outside code. Each entry matches markup tags
+# only — never the word DSML or a bare "|" in prose — so a new model's markup
+# can be supported by adding one compiled pattern here.
+_TOOL_CALL_MARKUP_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"</?\s*[\uff5c|]+\s*DSML\s*[\uff5c|]+\s*"
+        r"(?:function_calls|parameter|invoke|calls)(?:\s[^<>\0]*)?/?>"
+    ),
+)
+
+# The markup check reads the text as a Markdown reader sees it. The text is
+# parsed as CommonMark (markdown-it-py), and the markup is looked for only in
+# what a reader sees as prose: code spans, fenced code blocks (a fence nothing
+# closes included, which runs to the end of its container) and indented code
+# blocks are left out, wherever quotes and lists put them, so markup quoted as
+# code never fails a turn. Link destinations and titles and link reference
+# definitions are not shown as text, so they are not read either. Each block is
+# read on its own, and a code span stands between the text on either side of it,
+# so no tag is pieced together across a block or a span.
+#
+# One choice goes past CommonMark and errs toward failing a turn that was fine:
+# raw HTML is read as prose, the text of a `<pre>` or `<code>` element included.
+#
+# Two err the other way, toward completing the turn as it completed before this
+# check. Text at the parser's nesting limit is not read: the limit is 20 levels,
+# and a list and its item count as one each, so text inside 20 nested quotes or
+# 10 nested lists is dropped. And a message longer than
+# `_MARKUP_CHECK_MAX_CHARS` is not read at all, which bounds the parse: the
+# slowest text found for the parser is a paragraph of unclosed inline HTML
+# openers (`<?`, `<!--`, `<![CDATA[`), whose time grows with the square of its
+# length, and at that length it takes about half a second.
+#
+# The parser decodes character references in prose itself. In a raw HTML block
+# one is decoded only where it ends with a semicolon and names an entry of the
+# HTML entity table (or is numeric); a bare `&lt` is literal text to a reader,
+# so it names no tag.
+_ENTITY_RE = re.compile(r"&(?:#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[a-zA-Z][a-zA-Z0-9]{0,30});")
+_MARKUP_CHECK_MAX_CHARS = 16_000
+
+# Completed items that are a call the CLI ran, or a call's result. One of these
+# after a message means the turn went on past that message, so the message is
+# no longer the turn's last text. Any other item (a plan update, a notice, a
+# type not named here) leaves the turn's last text as it was.
+_CALL_ITEM_TYPES = frozenset(
+    {
+        "command_execution",
+        "file_change",
+        "mcp_tool_call",
+        "web_search",
+        "function_call",
+        "tool_call",
+        "function_call_output",
+    }
+)
+
+# The failure recorded when the turn's last text carries call markup.
+_TOOL_CALL_MARKUP_FAILURE = (
+    "The model wrote a tool call as text in its final message "
+    "instead of making the call; the run stopped before the call ran."
+)
+
+
+def _decode_references(text: str) -> str:
+    """Decode the HTML character references a reader sees as a character.
+
+    Only a reference that ends with a semicolon and names an entry of the HTML
+    entity table (or a numeric reference) is decoded; a bare ``&lt`` stays
+    literal text.
+    """
+    if "&" not in text:
+        return text
+
+    def _replace(match: re.Match[str]) -> str:
+        body = match.group(0)[1:-1]
+        if body[:1] == "#":
+            try:
+                code = int(body[2:], 16) if body[1] in "xX" else int(body[1:])
+            except ValueError:
+                return match.group(0)
+            if 0 < code <= 0x10FFFF and not 0xD800 <= code <= 0xDFFF:
+                return chr(code)
+            return match.group(0)
+        value = html.entities.html5.get(body + ";")
+        return match.group(0) if value is None else value
+
+    return _ENTITY_RE.sub(_replace, text)
+
+
+def _inline_text(children: Sequence[Token], parts: list[str]) -> None:
+    """Append the text a reader sees in ``children``.
+
+    A code span becomes a NUL, which no markup pattern matches across, so a tag
+    is never pieced together from the prose on either side of one.
+    """
+    for child in children:
+        if child.type == "code_inline":
+            parts.append("\0")
+        elif child.type in ("softbreak", "hardbreak"):
+            parts.append("\n")
+        elif child.type == "image":
+            _inline_text(child.children or (), parts)
+        else:
+            parts.append(child.content)
+
+
+@functools.cache
+def _markdown_parser() -> MarkdownIt:
+    from markdown_it import MarkdownIt
+
+    return MarkdownIt("commonmark")
+
+
+def _visible_blocks(text: str) -> list[str]:
+    """The prose of ``text`` a Markdown reader sees, one string per block.
+
+    Each block is read on its own, so a tag is never pieced together from the
+    end of one block and the start of the next.
+    """
+    blocks: list[str] = []
+    for token in _markdown_parser().parse(text):
+        if token.type == "inline":
+            parts: list[str] = []
+            _inline_text(token.children or (), parts)
+            blocks.append("".join(parts))
+        elif token.type == "html_block":
+            blocks.append(_decode_references(token.content))
+    return blocks
+
+
+def _has_tool_call_markup(text: object) -> bool:
+    """True when ``text`` carries a tool-call markup tag written as plain text.
+
+    The visible text is read as its reader sees it, so an HTML entity that
+    spells a tag (`&lt;...&gt;`) names one too.
+    """
+    if not isinstance(text, str) or not text or len(text) > _MARKUP_CHECK_MAX_CHARS:
+        return False
+    return any(
+        p.search(block) for block in _visible_blocks(text) for p in _TOOL_CALL_MARKUP_PATTERNS
+    )
+
+
+def _call_markup_error_chunk(session: CLISession, event: Mapping[str, Any]) -> StreamChunk:
+    """Mark ``session`` failed for call markup written as text and build its chunk.
+
+    The session is marked failed the way any failed turn marks it -- ``is_error``
+    and a result naming the cause -- and the returned chunk says the same thing
+    in its content, carries ``call_markup_in_text``, and is a real error chunk.
+    A failure already recorded keeps its result; the chunk still names the
+    markup.
+    """
+    if not session.is_error:
+        session.result = _TOOL_CALL_MARKUP_FAILURE
+    session.is_error = True
+    sc = StreamChunk(
+        type="error",
+        content=_TOOL_CALL_MARKUP_FAILURE,
+        is_error=True,
+        metadata={"call_markup_in_text": True, **event},
+    )
+    session.chunks.append(sc)
+    return sc
+
 
 #: The longest turn input the Codex CLI takes, in characters, as its own refusal states it
 #: (``turn/start`` answers ``input_too_large`` with ``max_chars``). Past it the CLI refuses only
@@ -2119,6 +2294,10 @@ async def stream_codex_cli(
     _prev_output_tokens = 0
     _prev_cost: float = 0.0
     _seen_cost = False
+    # Text of the turn's last non-empty agent text since the last turn end; the
+    # call-markup check reads only the last one, when a turn completes or the
+    # stream ends. Code regions of that text are removed before matching.
+    _last_agent_text: str | None = None
 
     stream = stream_codex_cli_events(request)
     try:
@@ -2143,9 +2322,19 @@ async def stream_codex_cli(
                 item = obj.get("item", {})
                 item_type = item.get("type", "")
 
+                # A completed call (or its result) after a message means the
+                # turn went on past it, so a markup message is superseded and
+                # must not fail the turn. Other items leave the text as it was.
+                if item_type in _CALL_ITEM_TYPES:
+                    _last_agent_text = None
+
                 if item_type == "agent_message":
                     text = item.get("text", "")
                     session.messages.append(item)
+                    # A message with no visible text does not become the turn's
+                    # last text; it does not replace a message that carried one.
+                    if isinstance(text, str) and text.strip():
+                        _last_agent_text = text
                     if on_text:
                         await maybe_await(on_text(text))
                     if request.verbose_output:
@@ -2336,6 +2525,14 @@ async def stream_codex_cli(
                 session.chunks.append(rsc)
                 yield rsc
 
+                # The turn end reads the turn's pending text: markup in it
+                # means the model wrote a call as text, no call ran, and the
+                # turn still completed. Markup in an earlier message was
+                # already superseded by a later one.
+                if _has_tool_call_markup(_last_agent_text or ""):
+                    yield _call_markup_error_chunk(session, obj)
+                _last_agent_text = None
+
             # -- turn.failed / error --
             elif typ in ("turn.failed", "error"):
                 err = obj.get("error", {})
@@ -2380,28 +2577,48 @@ async def stream_codex_cli(
                     yield sc
                     continue
 
-                session.is_error = True
-                session.result = _err_message
                 # Benign-EOS sentinel on resumed sessions — see docs/internals/runtime.md
-                # for the exact 3-condition classification.
+                # for the exact 3-condition classification. It stands in for
+                # turn.completed on a stream that ends there, so it closes the
+                # turn: it reads and clears the pending text the way a turn end
+                # does, then emits its own non-error chunk. A consumer that
+                # stops at that chunk never reaches the check after the loop.
                 _is_benign_eos = (
                     typ == "error"
                     and "error" in obj  # a bare {"type": "error"} is malformed, not EOF
                     and _raw_err == {}  # null normalised to {} must NOT qualify
                     and not any(k in obj for k in ("code", "message", "status"))
                 )
-                chunk_meta = dict(obj)
                 if _is_benign_eos:
-                    chunk_meta["benign_eos"] = True
-                    session.is_error = False  # retract: not a real error
-                else:
-                    if request.verbose_output:
-                        log.error("Codex error: %s", session.result)
+                    # The sentinel ends a turn, so it reads the pending text as
+                    # the turn end does. A consumer that stops at the sentinel
+                    # never reaches the stream-end check below.
+                    if _has_tool_call_markup(_last_agent_text or ""):
+                        yield _call_markup_error_chunk(session, obj)
+                    _last_agent_text = None
+                    sc = StreamChunk(
+                        type="error",
+                        content=_err_message,
+                        is_error=False,
+                        metadata={**obj, "benign_eos": True},
+                    )
+                    session.chunks.append(sc)
+                    yield sc
+                    continue
+
+                session.is_error = True
+                session.result = _err_message
+                # The turn is over: a real failure replaces the turn's pending
+                # text, as turn.completed does, so a later turn's end does not
+                # read a message this failing turn left behind.
+                _last_agent_text = None
+                if request.verbose_output:
+                    log.error("Codex error: %s", session.result)
                 sc = StreamChunk(
                     type="error",
                     content=session.result,
-                    is_error=not _is_benign_eos,
-                    metadata=chunk_meta,
+                    is_error=True,
+                    metadata=dict(obj),
                 )
                 session.chunks.append(sc)
                 yield sc
@@ -2413,6 +2630,8 @@ async def stream_codex_cli(
 
                 content = msg.get("content", "")
                 if isinstance(content, str):
+                    if content and content.strip():
+                        _last_agent_text = content
                     if on_text:
                         await maybe_await(on_text(content))
                     if request.verbose_output:
@@ -2425,8 +2644,10 @@ async def stream_codex_cli(
                         if not isinstance(blk, dict):
                             continue
                         btype = blk.get("type")
-                        if btype == "text":
+                        if btype in ("text", "output_text"):
                             text = blk.get("text", "")
+                            if isinstance(text, str) and text.strip():
+                                _last_agent_text = text
                             if on_text:
                                 await maybe_await(on_text(text))
                             if request.verbose_output:
@@ -2435,6 +2656,9 @@ async def stream_codex_cli(
                             session.chunks.append(sc)
                             yield sc
                         elif btype in ("tool_use", "function_call"):
+                            # A written block is a real call block, so any
+                            # message seen before it is not the turn's last text.
+                            _last_agent_text = None
                             tu = {
                                 "id": blk.get("id", ""),
                                 "name": blk.get("name", blk.get("function", {}).get("name", "")),
@@ -2458,15 +2682,32 @@ async def stream_codex_cli(
                             yield sc
 
             elif typ in ("result", "response", "session.end"):
-                session.result = obj.get(
+                # The event's text is read only when it is a string, exactly as
+                # a message's text is: a non-string value is not read.
+                _raw_event_result = obj.get(
                     "result",
                     obj.get("response", obj.get("text", "")),
-                ).strip()
+                )
+                _event_result = (
+                    _raw_event_result.strip() if isinstance(_raw_event_result, str) else ""
+                )
                 session.usage = obj.get("usage", obj.get("stats", {}))
                 session.total_cost_usd = obj.get("total_cost_usd", obj.get("cost"))
                 session.num_turns = obj.get("num_turns", obj.get("turns"))
                 session.duration_ms = obj.get("duration_ms", obj.get("duration"))
-                session.is_error = obj.get("is_error", obj.get("error") is not None)
+                # The event's text is its own outcome, so it does not replace
+                # the result of a failure already recorded; the event's own
+                # failure, or its success, cannot retract one either.
+                if not session.is_error and _event_result:
+                    session.result = _event_result
+                # The event's own text is read like a message: markup there
+                # becomes the turn's pending text, which the stream end reads.
+                # Clean text does not replace pending markup.
+                if _event_result and _has_tool_call_markup(_raw_event_result):
+                    _last_agent_text = _raw_event_result
+                session.is_error = session.is_error or bool(
+                    obj.get("is_error", obj.get("error") is not None)
+                )
 
                 # Legacy terminal event (older CLI versions) -- same seam as
                 # turn.completed above.
@@ -2488,6 +2729,14 @@ async def stream_codex_cli(
                 break
     finally:
         await stream.aclose()
+
+    # A stream that is exhausted mid-turn leaves the turn's pending text
+    # unread. turn.completed and the sentinel read and clear it, and a real
+    # failure clears it, so this reads what is left: a stream that ended
+    # without a turn end. A consumer that stops reading early never gets here.
+    if _has_tool_call_markup(_last_agent_text or ""):
+        yield _call_markup_error_chunk(session, {})
+        _last_agent_text = None
 
     if not session.result:
         parts = [c.content for c in session.chunks if c.type == "text" and c.content]
@@ -2566,7 +2815,12 @@ class CodexCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
                 if isinstance(item, CLISession):
                     # Turns the session's terminal verdict into a chunk — see
                     # docs/internals/providers.md#a-session-terminal-error-must-be-turned-back-into-a-stream-chunk.
-                    if item.is_error and not any(c.type == "error" for c in item.chunks):
+                    # Only a failing error chunk already stands for the verdict;
+                    # a non-error one (the end-of-stream sentinel) does not
+                    # carry it, so the fallback still fires beside it.
+                    if item.is_error and not any(
+                        c.type == "error" and c.is_error for c in item.chunks
+                    ):
                         yield StreamChunk(
                             type="error",
                             content=item.result or "Codex session failed",
