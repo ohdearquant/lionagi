@@ -173,6 +173,12 @@ project those rows ran under. To keep the project, name it in those members.
   including failure and cancellation paths. Branch-status and segment metadata writes created
   during synthesis receive the same cleanup as writes from the execution phase (#3211).
 
+### Security
+
+- Raised the `mcp` floor in the `mcp` extra to 1.30.0 (GHSA-84m7-p3x7-pcfv: sessions accumulate
+  without bound in the StreamableHTTP server transport). `li mcp` serves over stdio, so its own
+  server was not exposed; the floor keeps installs off the affected releases.
+
 ### Docs
 
 - The Studio trust texts now say what a daemon without `LIONAGI_STUDIO_AUTH_TOKEN` can actually
