@@ -228,7 +228,12 @@ its full lifecycle, and they're worth reading as one sequence:
 1. **`insert_session_control`** admits a new control row only if the target
    session is still `running` (see the admission-condition pattern above),
    and returns the new control's id, or `None` if the session had already
-   terminalized.
+   terminalized. Its operator callers also ask it to re-check the flow/play
+   delivery marker in the same statement: a run's teardown publishes
+   `flow_control_poller='stopped'` before it stops applying controls, so a
+   marker read moments earlier can already be stale by the time this write
+   runs. Without the re-check the control commits against a consumer that is
+   gone; with it the insert refuses the same way the terminal case does.
 2. **`mark_session_control_applying`** is how a consumer claims a pending row
    before attempting it: a compare-and-set that moves `result` from `NULL` to
    `applying[:<owner>]`, returning the exact claim string it wrote, or `None`

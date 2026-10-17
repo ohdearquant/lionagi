@@ -117,13 +117,12 @@ Choose a launch mode for your setup:
 `--no-open` applies to hosted-client mode. In a noninteractive terminal, the
 default also leaves opening the browser to you.
 
-`--host` sets the daemon's bind address and defaults to `127.0.0.1`; it applies
-to the default, `--no-frontend`, and `--dev` modes. A non-loopback value such
-as `--host 0.0.0.0` exposes the API to other machines; with no token set, the
-daemon warns at startup when it binds `0.0.0.0`. Docker mode takes no host
-address and ignores `--host`: `li studio --docker` publishes the port on all
-interfaces by default, and the container's own warning cannot fire because the
-image binds `0.0.0.0` without setting the bind host, as described below.
+`--host` sets the address the daemon is reached on and defaults to `127.0.0.1`.
+In the default, `--no-frontend`, and `--dev` modes it is the daemon's bind
+address; in Docker mode it is the address the container's port is published
+on, as described below. A non-loopback value such as `--host 0.0.0.0` exposes
+the API to other machines; with no token set, the daemon warns at startup
+whenever that address is one other machines can reach.
 
 Docker mode pulls `ghcr.io/ohdearquant/lion-studio:latest` and serves the bundled
 UI and API on port 8765 by default. It bind-mounts `~/.lionagi` read-write at
@@ -137,20 +136,52 @@ the file, so every sibling file in it becomes readable in the container too; a
 target file that sits directly in the home directory would mount all of the
 home directory.
 
-The launcher currently uses `-p 8765:8765`, without a host address, and the
-container listens on `0.0.0.0:8765`. With Docker's default port-binding
-configuration, this publishes on all host interfaces. Docker network/daemon
-settings and host firewalls can narrow actual reachability. The local-only
-default for this launch mode is tracked in
-[the Docker port-binding issue](https://github.com/ohdearquant/lionagi/issues/3561).
-Until that changes, use a custom Docker invocation with an explicit loopback
-mapping such as `-p 127.0.0.1:8765:8765` when access should stay local.
+`li studio --docker` publishes the container's port on the address `--host`
+names, which defaults to `127.0.0.1`, so only this machine reaches the
+container. `--host` takes an address, not an address and port: the port comes
+from `--port`, and a value carrying one (`[::1]:8765`) is refused before docker
+runs. On `--docker` that address also has to be an IP address literal
+(`127.0.0.1`, `0.0.0.0`, `192.168.1.5`, `::1`); a hostname is refused too,
+because docker does not resolve one in the host half of a port mapping. A bare
+IPv6 address is read whole, so `::1:8765` is the eight-group address
+`::1:8765`, not `::1` at port `8765`.
+To publish on another interface, either pass `--host` that address, or run the
+image with your own `docker run -p`:
 
-For bearer-token enforcement, `LIONAGI_STUDIO_AUTH_TOKEN` must be set
-**inside the container**. `li studio --docker` does not forward that variable: exporting
-it on the host alone does not configure container authentication. Supply the
-container environment explicitly in a custom Docker invocation before allowing
-remote access. A Host-header check is not a substitute for authentication.
+```bash
+li studio --docker --host 192.168.1.5   # reachable at 192.168.1.5:8765
+docker run --rm -p 192.168.1.5:8765:8765 \
+  -e LIONAGI_STUDIO_HOST=192.168.1.5 \
+  -v ~/.lionagi:/root/.lionagi \
+  ghcr.io/ohdearquant/lion-studio:latest
+```
+
+On a docker release older than 28.0.0 a port published to a loopback address is
+also reachable from hosts on the same L2 segment (the same switch); 28.0.0 and
+later keep it to this machine.
+
+Publishing anywhere other than loopback exposes the daemon to everyone who can
+reach that address, and with `LIONAGI_STUDIO_AUTH_TOKEN` unset nothing else
+stands between them and the API. Set the token before publishing on another
+interface, as described in
+[Hosting the Studio frontend](https://github.com/ohdearquant/lionagi/blob/main/apps/studio/frontend/HOSTING.md). The CLI
+passes it to the container as `-e LIONAGI_STUDIO_AUTH_TOKEN` — the name only,
+so docker reads the value from your environment and it never appears in the
+command line.
+
+The daemon checks a request's `Host` header against the addresses it expects.
+This is a guard against DNS rebinding, not access control: it reads the header,
+never the source address, so any client that can reach the port and sends an
+admitted `Host` gets through — the bearer token is the access control.
+`li studio --docker` publishes on a concrete address (`127.0.0.1`,
+`192.168.1.5`, `::1`) and tells the container that address, so a client that
+reaches it there and sends that address as `Host` is admitted. `0.0.0.0` and
+`::` name no single address a client connects to, so a client elsewhere on the
+network reaches the daemon by one of the machine's real addresses and must send
+that address as `Host`: set `LIONAGI_STUDIO_HOST` on the container to it, or the
+daemon admits only the loopback names `localhost`, `127.0.0.1` and `::1`. The
+wildcard itself is never an admitted `Host`: it is refused like any other name
+no page is opened at, so `Host: [::]:8765` answers 400.
 
 If Docker is missing, the command exits with an installation message. Install
 and start Docker, or use the default hosted-client mode. If the image pull

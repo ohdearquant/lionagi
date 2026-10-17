@@ -4,7 +4,28 @@
 #   docker build -f apps/studio/Dockerfile -t lion-studio .
 #
 # Run:
-#   docker run -p 8765:8765 -v ~/.lionagi:/root/.lionagi -v "$PWD:/workspace" lion-studio
+#   docker run -p 127.0.0.1:8765:8765 -v ~/.lionagi:/root/.lionagi \
+#     -v "$PWD:/workspace" lion-studio
+#
+# The host half of -p decides who can reach the port: the image's uvicorn
+# binds 0.0.0.0 so the published port works at all, and 127.0.0.1 keeps
+# that reach to this machine. On a docker release older than 28.0.0 a port
+# published to a loopback address is also reachable from hosts on the same
+# L2 segment; 28.0.0 and later keep it to this machine.
+#
+# Publish on another address only with LIONAGI_STUDIO_AUTH_TOKEN set, passed
+# by name so docker reads the value from your environment:
+#   -e LIONAGI_STUDIO_AUTH_TOKEN
+# The daemon checks a request's Host header against the addresses it expects
+# -- a DNS-rebinding guard, not access control: it reads the header, never the
+# source address, so the bearer token is the access control. A publish on a
+# concrete address also needs
+#   -e LIONAGI_STUDIO_HOST=<that address>
+# 0.0.0.0 and :: name no single address a client connects to; a client
+# elsewhere on the network reaches the daemon by one of the machine's real
+# addresses, so LIONAGI_STUDIO_HOST must name that address or the daemon
+# admits only the loopback names. The wildcard is never an admitted Host, so a
+# request that names it answers 400.
 
 # ── Stage 1: Build frontend ──────────────────────────────────────────────────
 # Pinned to BUILDPLATFORM on purpose. This stage emits /build/dist, a static

@@ -977,7 +977,7 @@
                 "nargs": null,
                 "default": null,
                 "choices": null,
-                "help": "Running flow to pause, by session, invocation, play, or run id (full, or an unambiguous prefix). The pause lands at the next op boundary, not mid-op."
+                "help": "Running flow to pause, by session, invocation, play, or run id (full, an unambiguous 8-character hex prefix, or an unambiguous run-id prefix through the T after its date). In-flight operations are not interrupted."
               }
             ],
             "subparsers": {}
@@ -1004,7 +1004,7 @@
                 "nargs": null,
                 "default": null,
                 "choices": null,
-                "help": "Paused flow to release, by session, invocation, play, or run id (full, or an unambiguous prefix)."
+                "help": "Paused flow to release, by session, invocation, play, or run id (full, an unambiguous 8-character hex prefix, or an unambiguous run-id prefix through the T after its date)."
               }
             ],
             "subparsers": {}
@@ -1031,7 +1031,7 @@
                 "nargs": null,
                 "default": null,
                 "choices": null,
-                "help": "Running flow, playbook run, or agent leg to message, by session, invocation, play, or run id (full, or an unambiguous prefix)."
+                "help": "Running flow, playbook run, or agent leg to message, by session, invocation, play, or run id (exact, an unambiguous 8-character hex prefix, or an unambiguous run-id prefix through the T after its date)."
               },
               {
                 "option_strings": [],
@@ -3586,7 +3586,7 @@
               "nargs": null,
               "default": "127.0.0.1",
               "choices": null,
-              "help": "Host to bind (default: 127.0.0.1)"
+              "help": "Host to bind (default: 127.0.0.1). --docker also publishes the container port on this host, so anything else there exposes the daemon to that interface. This is an IP address, not an address with a port: the port is --port, and a value carrying a port is refused."
             },
             {
               "option_strings": [
@@ -3641,7 +3641,7 @@
               "nargs": 0,
               "default": false,
               "choices": null,
-              "help": "Run the bundled frontend + backend via Docker"
+              "help": "Run the bundled frontend + backend via Docker. The port is published on --host (loopback by default)"
             },
             {
               "option_strings": [
@@ -3713,7 +3713,7 @@
                   "nargs": null,
                   "default": "==SUPPRESS==",
                   "choices": null,
-                  "help": "Host to bind (default: 127.0.0.1)"
+                  "help": "Host to bind (default: 127.0.0.1). --docker also publishes the container port on this host, so anything else there exposes the daemon to that interface. This is an IP address, not an address with a port: the port is --port, and a value carrying a port is refused."
                 },
                 {
                   "option_strings": [
@@ -3768,7 +3768,7 @@
                   "nargs": 0,
                   "default": "==SUPPRESS==",
                   "choices": null,
-                  "help": "Run the bundled frontend + backend via Docker"
+                  "help": "Run the bundled frontend + backend via Docker. The port is published on --host (loopback by default)"
                 },
                 {
                   "option_strings": [
@@ -7887,7 +7887,7 @@
                 "session",
                 "show"
               ],
-              "help": "Narrow the table to one kind of entity: session, invocation, show or play. `command` narrows to invocations launched as a command action."
+              "help": "Narrow the table to one kind of entity: session, invocation, show or play. `command` narrows to invocations launched as a command action. Use `session` for flow runs, or `invocation` for registered invocation records."
             },
             {
               "option_strings": [
@@ -8033,7 +8033,7 @@
                 "session",
                 "show"
               ],
-              "help": "Narrow the table to one kind of entity: session, invocation, show or play. `command` narrows to invocations launched as a command action."
+              "help": "Narrow the table to one kind of entity: session, invocation, show or play. `command` narrows to invocations launched as a command action. Use `session` for flow runs, or `invocation` for registered invocation records."
             },
             {
               "option_strings": [

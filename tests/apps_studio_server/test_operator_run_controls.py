@@ -51,7 +51,8 @@ async def _seed_run(db: Any, *, kind: str, status: str = "running") -> str:
             "started_at": time.time(),
             "invocation_kind": kind,
             "run_id": session_id if kind == "agent" else None,
-            "node_metadata": {"drains_controls": True},
+            "node_metadata": ({"flow_control_poller": "active"} if kind in {"flow", "play"} else {})
+            | {"drains_controls": True},
             "project": PROJECT,
         }
     )
@@ -281,7 +282,8 @@ async def _seed_foreign_run(db: Any, *, project: str, kind: str = "flow") -> str
             "started_at": time.time(),
             "invocation_kind": kind,
             "run_id": session_id if kind == "agent" else None,
-            "node_metadata": {"drains_controls": True},
+            "node_metadata": ({"flow_control_poller": "active"} if kind in {"flow", "play"} else {})
+            | {"drains_controls": True},
             "project": project,
         }
     )
@@ -635,21 +637,39 @@ async def test_an_agent_session_reports_whether_a_control_would_reach_anyone(
 
 
 @pytest.mark.asyncio
-async def test_a_flow_run_never_has_to_declare_a_drain_to_be_controllable(
-    tmp_path: Path, monkeypatch
+@pytest.mark.parametrize(
+    ("marker", "expected"),
+    [
+        # A live poller is the flow's consumer; the drain declaration is an
+        # agent concern and is neither required nor harmful here.
+        ("pending", True),
+        ("active", True),
+        ("stopped", False),
+        # No declaration predates control-delivery tracking, so nothing is
+        # confirmed to deliver a newly queued control.
+        (None, False),
+    ],
+)
+async def test_a_flow_run_needs_a_live_delivery_marker_not_a_drain_declaration(
+    tmp_path: Path, monkeypatch, marker: str | None, expected: bool
 ):
-    """Only agent sessions can fail the consumer check.
+    """A flow session's consumer is its DAG poller, read from the marker.
 
-    Without this arm the predicate could be returning False for everything and
-    the negative cases above would still pass.
+    This is the same question the CLI asks, so the Studio surface a client
+    offers controls from cannot offer one the server would refuse. Without the
+    passing arms the predicate could return False for everything.
     """
     from lionagi.state.db import StateDB
-    from lionagi.studio.operator.run_control import session_has_control_consumer
+    from lionagi.studio.operator.run_control import (
+        _admission_refusal,
+        session_has_control_consumer,
+    )
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
     session_id = str(uuid.uuid4())
     progression_id = str(uuid.uuid4())
+    metadata = {} if marker is None else {"flow_control_poller": marker}
     async with StateDB() as db:
         await db.create_progression(progression_id)
         await db.create_session(
@@ -660,13 +680,104 @@ async def test_a_flow_run_never_has_to_declare_a_drain_to_be_controllable(
                 "started_at": time.time(),
                 "invocation_kind": "flow",
                 "run_id": None,
-                "node_metadata": {},
+                "node_metadata": metadata,
                 "project": PROJECT,
             }
         )
         session = dict(await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (session_id,)))
 
-    assert session_has_control_consumer(session) is True
+    assert session_has_control_consumer(session) is expected
+    # Admission agrees with the read, which is what makes the projected field
+    # safe to offer a control on.
+    assert (_admission_refusal(session, "pause") != "no_consumer") is expected
+
+
+@pytest.mark.asyncio
+async def test_the_proposal_path_refuses_a_flow_whose_poller_has_stopped(
+    tmp_path: Path, monkeypatch
+):
+    """A stopped DAG poller is refused before a proposal exists, like the CLI.
+
+    The Studio route reads the same delivery marker the CLI does, so a flow
+    that has stopped delivering gets no proposal to confirm rather than one
+    that queues a control nobody will apply.
+    """
+    from lionagi.state.db import StateDB
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        session_id = await _seed_run(db, kind="flow")
+        await db.merge_session_node_metadata(session_id, {"flow_control_poller": "stopped"})
+
+    store = OperatorStore(path)
+    await store.ensure_schema()
+    _conversation_id, request_id = await _running_turn(store, monkeypatch, path)
+    result = await pause_run({"run": session_id})
+
+    assert result == {
+        "queued": False,
+        "reason": "no_consumer",
+        "id": session_id,
+        "kind": "flow",
+    }
+    assert await store.list_proposals_for_request(request_id) == []
+
+
+@pytest.mark.asyncio
+async def test_a_poller_that_stops_before_the_insert_queues_nothing(tmp_path: Path, monkeypatch):
+    """The delivery marker is re-checked inside the insert, not only read before it.
+
+    The run's own teardown publishes the stop and then never applies another
+    control, so a marker that was live at the admission read can already be
+    stale when the write runs. Here the marker flips in exactly that window;
+    the insert's own condition is what must refuse.
+    """
+    from lionagi.state.db import StateDB
+    from lionagi.studio.operator import run_control as run_control_mod
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        session_id = await _seed_run(db, kind="flow")
+
+    admitted: list[str] = []
+    real_admission = run_control_mod._admission_refusal
+
+    def _record_admission(session: dict[str, Any], verb: str) -> str | None:
+        refusal = real_admission(session, verb)
+        if refusal is None:
+            admitted.append(session["id"])
+        return refusal
+
+    stopped: list[str] = []
+    real_insert = StateDB.insert_session_control
+
+    async def _stop_then_insert(self, **kwargs):
+        if not stopped:
+            stopped.append(kwargs["session_id"])
+            async with StateDB() as other:
+                await other.merge_session_node_metadata(
+                    kwargs["session_id"],
+                    {"flow_control_poller": "stopped"},
+                )
+        return await real_insert(self, **kwargs)
+
+    monkeypatch.setattr(run_control_mod, "_admission_refusal", _record_admission)
+    monkeypatch.setattr(StateDB, "insert_session_control", _stop_then_insert)
+
+    # The run is still running; what it lost is its poller, and the refusal says so.
+    with pytest.raises(ValueError, match=r"cannot consume this control \(no_consumer\)"):
+        await execute_run_control_command(
+            {"session_id": session_id, "verb": "pause", "payload": None, "project": PROJECT}
+        )
+
+    # Both halves of the window actually happened: the command was admitted,
+    # and the poller stopped before the insert ran.
+    assert admitted == [session_id]
+    assert stopped == [session_id]
+    async with StateDB() as db:
+        assert await db.list_pending_session_controls(session_id) == []
 
 
 @pytest.mark.asyncio
@@ -732,3 +843,21 @@ async def test_the_wait_for_a_decision_backs_off_instead_of_polling_at_one_rate(
     assert max(intervals) <= run_control_mod._MAX_PROPOSAL_POLL_SECONDS
     # A whole proposal lifetime costs dozens of reads, not thousands.
     assert sum(intervals) > 8 * run_control_mod._MIN_PROPOSAL_POLL_SECONDS
+
+
+@pytest.mark.parametrize("kind", ["engine", None])
+def test_a_session_kind_no_verb_consumes_offers_no_control(kind):
+    """The read projection and admission agree for kinds no runner drains."""
+    from lionagi.studio.operator.run_control import (
+        _admission_refusal,
+        session_has_control_consumer,
+    )
+
+    session = {
+        "status": "running",
+        "invocation_kind": kind,
+        "run_id": "20260801T010101-abc123",
+        "node_metadata": {"drains_controls": True},
+    }
+    assert session_has_control_consumer(session) is False
+    assert _admission_refusal(session, "message") == "unsupported_kind"
