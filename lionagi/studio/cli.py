@@ -1568,7 +1568,10 @@ def _cmd_validate_set(args: argparse.Namespace) -> int:
             )
         else:
             for name, message in exc.errors:
-                print(f"INVALID  {doc.metadata.project}/{name}  {message}", file=sys.stderr)
+                # Plan errors carry the qualified name; resolution errors the member name.
+                prefix = "global" if doc.metadata.scope == "global" else doc.metadata.project
+                label = name if name.startswith(f"{prefix}/") else f"{prefix}/{name}"
+                warn(f"INVALID  {label}  {message}")
         return 1
 
     if args.as_json:
@@ -1600,7 +1603,15 @@ def _fmt_plan_line(entry, set_ref: str) -> str:
         extra = f"  model={model}" if model else ""
         return f"CREATE     {e.qualified_name}{extra}  cwd={cwd}"
     if e.action == "UPDATE":
+        if e.model_change is not None:
+            stored, declared = e.model_change
+            return f"UPDATE     {e.qualified_name}  model={stored} -> {declared}"
         return f"UPDATE     {e.qualified_name}"
+    if e.action == "ADOPT":
+        origin = (
+            f"  adopts existing row {e.adopted_from}" if e.adopted_from else "  adopts existing row"
+        )
+        return f"ADOPT      {e.qualified_name}{origin}"
     if e.action == "UNCHANGED":
         return f"UNCHANGED  {e.qualified_name}"
     if e.action == "DISABLE":
@@ -1642,7 +1653,10 @@ def _cmd_apply_set(args: argparse.Namespace) -> int:
             )
         else:
             for name, message in exc.errors:
-                print(f"INVALID  {doc.metadata.project}/{name}  {message}", file=sys.stderr)
+                # Plan errors carry the qualified name; resolution errors the member name.
+                prefix = "global" if doc.metadata.scope == "global" else doc.metadata.project
+                label = name if name.startswith(f"{prefix}/") else f"{prefix}/{name}"
+                warn(f"INVALID  {label}  {message}")
         return 1
 
     has_errors = any(e.action == "ERROR" for e in plan)
@@ -1653,7 +1667,22 @@ def _cmd_apply_set(args: argparse.Namespace) -> int:
                     "dry_run": bool(args.dry_run),
                     "set": set_ref,
                     "plan": [
-                        {"name": e.qualified_name, "action": e.action, "detail": e.detail}
+                        {
+                            "name": e.qualified_name,
+                            "action": e.action,
+                            "detail": e.detail,
+                            **({"adopted_from": e.adopted_from} if e.adopted_from else {}),
+                            **(
+                                {
+                                    "model_change": {
+                                        "from": e.model_change[0],
+                                        "to": e.model_change[1],
+                                    }
+                                }
+                                if e.model_change is not None
+                                else {}
+                            ),
+                        }
                         for e in plan
                     ],
                 },
@@ -1663,19 +1692,29 @@ def _cmd_apply_set(args: argparse.Namespace) -> int:
         )
     else:
         for entry in plan:
-            stream = sys.stderr if entry.action == "ERROR" else sys.stdout
-            print(_fmt_plan_line(entry, set_ref), file=stream)
+            # A refused entry goes through the CLI's warning channel, as every
+            # other refusal here does; the rest of the plan is ordinary output.
+            if entry.action == "ERROR":
+                warn(_fmt_plan_line(entry, set_ref))
+            else:
+                print(_fmt_plan_line(entry, set_ref))
         created = sum(1 for e in plan if e.action == "CREATE")
+        adopted = sum(1 for e in plan if e.action == "ADOPT")
         updated = sum(1 for e in plan if e.action == "UPDATE")
         unchanged = sum(1 for e in plan if e.action == "UNCHANGED")
         disabled = sum(1 for e in plan if e.action == "DISABLE")
+        # The adopt count appears only when there is one, so output without
+        # --adopt reads as it did before adoption existed.
         if args.dry_run:
+            adopt_part = f"{adopted} adopt, " if adopted else ""
             print(
-                f"Plan: {created} create, {updated} update, {unchanged} unchanged, {disabled} disable"
+                f"Plan: {created} create, {adopt_part}{updated} update, "
+                f"{unchanged} unchanged, {disabled} disable"
             )
         elif not has_errors:
+            adopt_part = f"{adopted} adopted, " if adopted else ""
             print(
-                f"Applied atomically: {created} created, {updated} updated, "
+                f"Applied atomically: {created} created, {adopt_part}{updated} updated, "
                 f"{unchanged} unchanged, {disabled} disabled"
             )
     return 1 if has_errors else 0
@@ -2435,7 +2474,11 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
     apply_p.add_argument(
         "--adopt",
         action="store_true",
-        help="Migrate a same-named row owned by another set/quick-create into this set. Not yet supported.",
+        help=(
+            "Take an existing unowned row into this set in place, keeping its id and history. "
+            "Refuses unless the member declares the row's behavior, compared by how the "
+            "scheduler acts on each column, enablement included."
+        ),
     )
     apply_p.add_argument("--json", dest="as_json", action="store_true", help="Emit JSON.")
 
