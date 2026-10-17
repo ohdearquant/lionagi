@@ -123,28 +123,42 @@ def test_durable_subscriber_source_is_a_confirmed_session_signals_row() -> None:
     assert "lionagi/state/schema.sql:797-801" in flat
     assert "lionagi/state/db.py:5569-5577" in flat
     assert "lionagi/state/db.py:5592-5607" in flat
-    assert "lionagi/session/observer.py:270" in flat
     assert "the cursor is a position in that sequence, read forward with `after_seq`" in flat
     assert "is not a committed row and is no durable subscriber's source" in flat
+    assert "whose forward read defaults to 500 rows" in flat
+    assert "`emitter_role`, versioned payload type" in flat
+    assert "without destructive truncation" in flat
+    assert "read through a frozen closure cutoff" in flat
+    assert "`persist_dropped` is therefore binding-local dropped-plus-in-flight" in flat
+    assert "zero does not prove" in flat
 
 
 def test_closing_batch_triggers_and_bound_are_stated() -> None:
     flat = _flat()
-    assert "the first of two triggers" in flat
-    assert "`RunEnd` or `RunFailed`" in flat
+    assert "Settlement is the exit of the invocation owning this subscription" in flat
+    assert "A nested operation's `RunEnd` or `RunFailed` does not settle its parent" in flat
     assert "lionagi/session/branch.py:441-469" in flat
     assert "lionagi/operations/run/run.py:777-788" in flat
     assert "`unbind_db_persistence`" in flat
     assert "lionagi/session/observer.py:542-559" in flat
-    assert "today flushes no pending wake state" in flat
-    assert "the amendment adds that flush" in flat
+    assert "observer unbinding is cleanup, not settlement" in flat
     assert "keeps its tail pending for the life of the session" in flat
     assert "no timeout and no new setting" in flat
     assert "no execution attempt object" in flat
     assert "one admitted run, the unit ADR-0123 D1 names" in flat
     assert "lionagi/session/signal.py:163" in flat
-    assert "lionagi/cli/_runs.py:1269" in flat
-    assert "lionagi/studio/services/workflow_run.py:105" in flat
+    # H1: no flow- or invocation-terminal signal exists today, and the closure path
+    # is named as a prerequisite rather than described as present.
+    assert "No flow- or" in flat
+    assert "invocation-terminal session Signal exists today" in flat
+    assert "the bus carries `RunEnd` per operation" in flat
+    assert "lionagi/state/lifecycle/callbacks.py:84" in flat
+    assert "lionagi/engines/flow_signals.py:148-154" in flat
+    assert "so the owner-scoped finalizer that records closure is" in flat
+    assert "a prerequisite delta below" in flat
+    assert "the writes it tracked are known to have finished" in flat
+    assert "lionagi/cli/_runs.py:1284" in flat
+    assert "lionagi/studio/services/workflow_run.py:110" in flat
 
 
 def test_settlement_is_an_implicit_wake_outside_the_cap() -> None:
@@ -181,10 +195,10 @@ def test_cursor_advances_in_the_state_transaction_and_borrows_only_dedup_practic
     assert "consumed-cursor shape of ADR-0125" not in flat
     assert "ADR-0125 (Accepted) D2 step 7" in flat
     assert "is cited only for the idempotent identity per delivered input" in flat
-    assert (
-        "the cursor advances in the same state transaction that records the woken run's terminal"
-        in flat
-    )
+    assert "a guarded transaction records the batch's success or" in flat
+    assert "durable dead-letter and advances the cursor in the same state transaction" in flat
+    assert "A failure retains the" in flat
+    assert "batch and the cursor, and a dead-lettered batch stays re-queueable" in flat
     assert "joins the durable delivery contract ADR-0059 owns" not in text
     assert "reuses only ADR-0059's `dedup_key` practice" in flat
 
@@ -197,7 +211,12 @@ def test_batch_growth_is_bounded_by_attempt_length_not_declaration() -> None:
 
 def test_delivery_default_matches_the_outbox_tier_it_cites() -> None:
     flat = _flat()
-    assert "the row completes at transport success" in flat
+    # H2: retryable is the default; ADR-0059's transport-success completion is the
+    # contrast, not the model.
+    assert "`retryable` is the default for" in flat
+    assert "`ObservancePolicy`: it persists batches and retries failed consumer executions" in flat
+    assert "completes at transport success without consumer acknowledgement" in flat
+    assert "`best_effort` is an explicit volatile option with no durable cursor" in flat
     assert "docs/adr/ADR-0059-durable-dispatch-outbox.md:391`, `:609" in flat
     assert "`enqueue_dispatch` inserts a row unconditionally" in flat
     assert "acknowledgement is the opt-in (`:178`)" in flat
@@ -215,6 +234,7 @@ def test_d1_gains_a_durable_observing_subscriber_row() -> None:
 def test_d3_body_carries_the_delivery_clause_the_amendment_points_at() -> None:
     flat = _flat()
     assert "**D3 gains a delivery clause.**" in flat
+    assert "whose durable cursor and batch belong to its `retryable` class only" in flat
     d3 = " ".join(_text()[_text().index("### D3 —") : _text().index("### D4 —")].split())
     assert "is a delivery, not a handler call" in d3
     assert "its failure changes delivery state rather than the observed outcome" in d3
@@ -241,13 +261,16 @@ def test_overflow_rule_and_row_three_fixture() -> None:
         in flat
     )
     assert "A held wake counts toward `max_wakes_per_attempt` only once it is" in flat
-    assert (
-        "The closing batch waits for a queue slot like any held wake and is never dropped for depth"
-        in flat
-    )
+    # M1: a retryable held or closing wake coalesces; a best_effort wake on a full
+    # queue is dropped and counted.
+    assert "a held or closing `retryable` wake is coalesced into the pending batch" in flat
+    assert "A full queue drops a `best_effort`" in flat
+    assert "wake and counts it, which is that class's declared loss" in flat
+    assert "`best_effort` drops and counts queue overflow" in flat
     row_three = next(line for line in text.splitlines() if line.startswith("| 3 |"))
     assert "at most four runs" in row_three
-    assert "every fact delivered exactly once across the batches" in row_three
+    assert "each admitted stored fact belongs to exactly one logical batch" in row_three
+    assert "delivery allowed to repeat" in row_three
 
 
 def test_consequences_stay_true_to_the_emit_sites_and_the_batch_growth() -> None:
@@ -291,13 +314,113 @@ def test_external_records_are_cited_for_what_they_own_and_marked_proposed() -> N
     assert "ADR-0114 (Proposed) D3" in amendment
 
 
-def test_amendment_uses_the_records_own_word_and_defaults_to_best_effort() -> None:
+def test_amendment_uses_the_records_own_word_and_defaults_to_retryable() -> None:
     text = _text()
     flat = _amendment_flat()
     assert "falsifier" not in text
     assert "third gate arm" in flat
-    assert "delivery: ObservanceDelivery = ObservanceDelivery.BEST_EFFORT" in text
-    assert "`best_effort` is the default" in flat
-    assert "`retryable` is the subscriber's opt-in" in flat
+    assert "delivery: ObservanceDelivery = ObservanceDelivery.RETRYABLE" in text
+    assert "`best_effort` is the default" not in flat
+    assert "`retryable` is the subscriber's opt-in" not in flat
     assert "max_attempts: int = 3" in text
     assert "over D3's `SignalFilter` subscription conditions" in flat
+    assert "Omitted, `delivery` selects `retryable`" in flat
+    assert "fails explicitly rather than being silently downgraded" in flat
+
+
+def test_d1_row_scopes_durability_to_the_retryable_class() -> None:
+    text = _text()
+    row = next(line for line in text.splitlines() if line.startswith("| `ObservingSubscriber` |"))
+    assert "process subscriber behind a declared wake policy" in row
+    assert "only its `retryable` delivery class has a durable cursor" in row
+    assert row.rstrip().endswith("| retryable only |")
+
+
+def test_failure_advances_the_cursor_only_on_success_or_a_durable_dead_letter() -> None:
+    text = _text()
+    flat = _flat()
+    assert "A failed execution is not terminal delivery" in flat
+    assert "`max_attempts` counts total automatic execution attempts, including the first" in flat
+    assert "Failure retains the batch and cursor until retry succeeds" in flat
+    assert "a dead-letter row is re-queueable regardless of cursor position" in flat
+    assert "lionagi/dispatch/outbox.py:47`, `:518-535`, `:591-621" in flat
+    row_four = next(line for line in text.splitlines() if line.startswith("| 4 |"))
+    assert "advanced only on a batch's success or its durable dead-letter" in row_four
+    assert "re-queueable irrespective of cursor position" in row_four
+    consequences = text[text.index("### Consequences of this amendment") :]
+    assert "A failure retains the" in consequences
+    # the exactly-once claim and the unconditional first-run identity promise are gone
+    assert "every fact delivered exactly once" not in text
+    assert "answers with the first run's identity rather than executing twice" not in text
+    assert "each admitted stored fact belongs to exactly one logical batch" in flat
+    assert "belongs to one logical batch; delivery may repeat" in flat
+    assert "exactly-once external effects require destination support" in flat
+
+
+def test_source_capture_and_replay_is_a_prerequisite_delta_row() -> None:
+    text = _text()
+    flat = _flat()
+    assert (
+        "Durable delivery covers committed `session_signals` rows, not every emitted fact" in flat
+    )
+    assert "Registration requires a bound usable sink and replayable filters" in flat
+    row_nine = next(line for line in text.splitlines() if line.startswith("| 9 |"))
+    assert "capture and replay every fact a durable subscriber's filter can need" in row_nine
+    assert "`emitter_role`, a versioned payload type" in row_nine
+    assert "read every page through a frozen closure cutoff" in row_nine
+    # the sanitizer's losses are stated rather than hidden behind the drop count
+    assert "The sanitizer drops `emitter_role`" in flat
+    assert "losing payload type" in flat
+    assert "skips writes for the window" in flat
+    assert "not a durable gap ledger" in flat
+
+
+def test_d9_introduces_durable_delivery_as_proposed_and_splits_the_amendment() -> None:
+    text = _text()
+    d9 = text[text.index("### D9 —") : text.index("### What the code does today")]
+    assert "This record decides the wake" in " ".join(d9.split())
+    assert "durable delivery stays proposed behind the prerequisite delta rows" in " ".join(
+        d9.split()
+    )
+    flat = _flat()
+    assert "No second fact bus is introduced; durable batch records belong to `state/`" in flat
+    assert "Wake caps bound logical batches; execution attempts have a separate bound" in flat
+    assert "policy adds no second bus and no second record of its own" not in flat
+
+
+def test_amendment_citations_match_the_head_line_ranges() -> None:
+    flat = _flat()
+    assert "idempotency/acknowledgement identity (`:493-498`)" in flat
+    assert "terminal delivery (`:563`)" in flat
+    assert "already-committed source fact (`:493-498`)" in flat
+    assert "durable delivery state (`:493-498`)" in flat
+    assert "ADR-0125:495-499" in flat
+    assert "lionagi/session/branch.py:441-469`, `:1063-1116" in flat
+    assert ":487-494" not in flat
+    assert "(`:559`)" not in flat
+    assert "`:1102-1115" not in flat
+
+
+def test_closing_waits_for_a_slot_without_moving_the_previous_wording() -> None:
+    text = _text()
+    assert "The closing batch waits for a queue slot like any held wake" not in text
+    amendment = _amendment()
+    assert "observer unbinding is cleanup, not" in " ".join(amendment.split())
+
+
+def test_dispatch_happens_inside_emit_and_row_one_scopes_durability() -> None:
+    flat = _flat()
+    assert "handler runs inside `emit`, once per fact it matches" in flat
+    assert "dispatch per matched fact inside `emit`" in flat
+    assert "handler runs inline, once per fact it matches" not in flat
+    assert "dispatch per matched fact, inline, with" not in flat
+    row_one = next(line for line in _text().splitlines() if line.startswith("| 1 |"))
+    assert "Only the `retryable` delivery class has a durable cursor and batch" in row_one
+    assert "the `best_effort` subscriber woken with neither" in row_one
+
+
+def test_owner_scoped_finalizer_is_a_prerequisite_delta_row() -> None:
+    row_eight = next(line for line in _text().splitlines() if line.startswith("| 8 |"))
+    assert "Prerequisite: add the owner-scoped finalizer and durable closure marker" in row_eight
+    assert "a nested operation's `RunEnd` does not settle its parent" in row_eight
+    assert "a restart recovers durable closure work" in row_eight

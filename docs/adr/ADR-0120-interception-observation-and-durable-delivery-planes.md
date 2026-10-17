@@ -104,7 +104,7 @@ The vocabulary is:
 | `Interceptor` | ordered control around an authoritative operation | yes, through a typed decision | no |
 | `Signal` / `DomainEvent` | immutable fact that occurred or was observed | no | no; a sink may persist it |
 | `Subscriber` / `EventSink` | in-process consumer of a Signal | no | no |
-| `ObservingSubscriber` | durable subscriber behind a cursor, with a declared wake policy and delivery class; its cursor and frozen batch live in `state/` | no | yes |
+| `ObservingSubscriber` | process subscriber behind a declared wake policy and delivery class; only its `retryable` delivery class has a durable cursor and frozen batch in `state/` | no | retryable only |
 | `CommitParticipant` | stages required evidence/outbox intent inside the owner transaction | may make commit fail before it occurs | yes, with the owner commit |
 | `Message` | addressed payload with sender/recipient/delivery semantics | not by observation | transport-specific |
 | `Delivery` | post-commit attempt to convey a durable fact | never changes the committed fact | yes |
@@ -612,7 +612,7 @@ uses it as migration evidence.
 ## Amendment 1 (2026-10-16) — an observing subscriber is woken at a boundary, not per row
 
 D3 makes `SessionObserver` an observation façade and leaves subscription delivery as it stands: a
-handler runs inline, once per fact it matches (`lionagi/session/observer.py:333-370`). This record
+handler runs inside `emit`, once per fact it matches (`lionagi/session/observer.py:333-370`). This record
 did not decide how often a subscriber that is a process rather than an in-process callable should
 run, and the cheapest reading of D3's dispatch, one run per matching fact, is the one to refuse.
 One attempt of `ReactiveExecutor` emits a different fact per node transition, from `NodeQueued`
@@ -628,9 +628,9 @@ outbound dispatch counter that already carries an `attempt` field
 
 **Decision.** A subscriber that is not an in-process callable is woken once per boundary it
 observes. The wake vocabulary is closed: `candidate` (a node's terminal fact, `NodeCompleted`,
-`NodeFailed`, `NodeSkipped` or `NodeCancelled`), `settled` (any settlement, including the run's
-`RunEnd` or `RunFailed`), `verdict`, `escalation` (`NodeEscalated`), `budget` (a threshold
-crossing or exhaustion), and `failure` (`RunFailed`, `NodeFailed`). Every fact a subscription
+`NodeFailed`, `NodeSkipped` or `NodeCancelled`), `settled` (the settlement of the invocation
+owning this subscription, defined below), `verdict`, `escalation` (`NodeEscalated`), `budget` (a
+threshold crossing or exhaustion), and `failure` (`RunFailed`, `NodeFailed`). Every fact a subscription
 admits between two wakes is delivered with the wake as one batch, and the batch, not the row, is
 the unit of delivery. `max_wakes_per_attempt` bounds the work one source attempt can cause, so a
 long attempt cannot mint unbounded runs: once an attempt has fired `max_wakes_per_attempt - 1`
@@ -638,68 +638,102 @@ wakes for a subscriber, later boundaries mint no run, and their admitted facts j
 batch delivered at the attempt's settlement.
 
 Two delivery classes are declared with the subscription, and they differ in what happens to a wake
-the runtime cannot serve or a batch no consumer collects. `best_effort` is the default: it counts
-the dropped wake or batch and reports it beside the next delivery. That is the tier ADR-0059
-(Accepted) gives a dispatch row by default, where the row completes at transport success and the
-consumer acknowledgement tier stays opt-in because many notifications need only best-effort
-transport acceptance (`docs/adr/ADR-0059-durable-dispatch-outbox.md:391`, `:609`). `retryable` is
-the subscriber's opt-in, and its cost is one sentence: a state cursor, a frozen batch, idempotency
-identities, and a hold on later batches until the woken run is terminal. Its proposals carry the
-idempotency identity `(attempt, boundary, subject, subscriber, fact range)`, so a redelivered wake
-that spawns again answers with the first run's identity rather than executing twice. That is the
-practice `enqueue_dispatch` already uses for its `dedup_key`, extended from one dispatch to one
-wake (`lionagi/dispatch/outbox.py:171-217`). The outbox row's persistence is not what `retryable`
-copies: `enqueue_dispatch` inserts a row unconditionally (`lionagi/dispatch/outbox.py:219`),
-acknowledgement is the opt-in (`:178`), and the only per-call bound is `max_attempts` (`:179`).
-The woken run's terminal is either outcome: success and failure both end it, a failed woken run is
-retried up to `ObservancePolicy.max_attempts`, and when that bound is spent the batch is
-dead-lettered with its error and the cursor advances, the shape the outbox already uses for an
-exhausted row (`lionagi/dispatch/outbox.py:47`, `:518-535`).
+the runtime cannot serve or a batch no consumer collects. `retryable` is the default for
+`ObservancePolicy`: it persists batches and retries failed consumer executions. This deliberately
+exceeds ADR-0059's default completion guarantee: that outbox persists and retries transport
+attempts, then completes at transport success without consumer acknowledgement, so it never waits
+for the consumer to finish (`docs/adr/ADR-0059-durable-dispatch-outbox.md:391`, `:609`).
+`best_effort` is an explicit volatile option with no durable cursor, no retry and possible
+uncounted crash loss. `retryable`'s cost is a state cursor, a frozen batch, idempotency identities,
+and a hold on later batches until the batch's delivery is terminal. Its proposals carry the
+idempotency identity `(attempt, boundary, subject, subscriber, fact range)`: replaying one
+execution attempt reuses its run identity, and retrying a known failed execution creates the next
+attempt under the same wake identity, so deduplication spans the attempts even though delivery may
+repeat. That is the practice `enqueue_dispatch` already uses for its `dedup_key`, extended from one
+dispatch to one wake (`lionagi/dispatch/outbox.py:171-217`). The outbox row's persistence is not what
+`retryable` copies: `enqueue_dispatch` inserts a row unconditionally
+(`lionagi/dispatch/outbox.py:219`), acknowledgement is the opt-in (`:178`), and the only per-call
+bound is `max_attempts` (`:179`).
 
-Queue depth per observing subscriber is declared and bounded. A full queue drops for
-`best_effort` and says so; for `retryable` it holds the wake instead, so the next batch grows and
-the run count does not. A held wake counts toward `max_wakes_per_attempt` only once it is
-delivered, never while it waits.
+A failed execution is not terminal delivery. `state/` owns subscription/source scope, cursor,
+frozen batch membership and payload, filter version, execution attempts, claim lease, next retry,
+error and dead-letter state. `max_attempts` counts total automatic execution attempts, including
+the first. Failure retains the batch and cursor until retry succeeds or the bound is exhausted. A
+guarded transaction records success or durable dead-letter and advances the cursor. Each batch is
+persisted on its own, and a dead-letter row is re-queueable regardless of cursor position: the
+shape the outbox already uses for an exhausted row, retained and re-queued by an operator override
+(`lionagi/dispatch/outbox.py:47`, `:518-535`, `:591-621`). Recovery scans unfinished batch rows as
+well as the source log.
+
+Queue depth per observing subscriber is declared and bounded. A full queue drops a `best_effort`
+wake and counts it, which is that class's declared loss; a `retryable` wake over a full queue is
+never dropped, and a held or closing `retryable` wake is coalesced into the pending batch, so the
+next batch grows and the run count does not. A held wake counts toward `max_wakes_per_attempt`
+only once it is delivered, never while it waits.
 
 The closing batch is unconditional for a subscriber with undelivered admitted facts, because a
 fan-out of boundaries that stopped at the wake cap must still hand over what it admitted. It is
-delivered at the attempt's settlement, and settlement is an implicit wake for every observing
+delivered at the invocation's settlement, and settlement is an implicit wake for every observing
 subscriber holding admitted facts, so a subscription that did not declare `settled` is still woken
-to receive it; the implicit wake does not count toward `max_wakes_per_attempt`. Handing over
-happens at the first of two triggers: the attempt's terminal signal, `RunEnd` or `RunFailed`,
-which an observer-bound run emits and an unobserved run does not
-(`lionagi/session/branch.py:441-469`, `:1102-1115`; `lionagi/operations/run/run.py:777-788`), or
-the observer's teardown, `unbind_db_persistence`
-(`lionagi/session/observer.py:542-559`), which the CLI and the
-Studio workflow runner call at the end of a run (`lionagi/cli/_runs.py:1269`,
-`lionagi/studio/services/workflow_run.py:105`) and which today flushes no pending wake state, so
-the amendment adds that flush. The closing batch waits for a queue slot like any held wake and is
-never dropped for depth.
+to receive it; the implicit wake does not count toward `max_wakes_per_attempt`. Settlement is the
+exit of the invocation owning this subscription, including failure or cancellation after child
+cleanup. A nested operation's `RunEnd` or `RunFailed` does not settle its parent:
+`ReactiveExecutor` invokes each node's operation through `Operation.invoke`
+(`lionagi/operations/node.py:84-95`) and `Branch` emits its `RunEnd` or `RunFailed` per operation
+(`lionagi/session/branch.py:441-469`, `:1063-1116`; `lionagi/operations/run/run.py:777-788`), all
+before the enclosing flow returns (`lionagi/operations/flow.py:1644`). No flow- or
+invocation-terminal session Signal exists today: the bus carries `RunEnd` per operation
+(`lionagi/session/signal.py:61`) and nothing terminal beyond it, the flow's own drain of node
+emissions emits no terminal (`lionagi/engines/flow_signals.py:148-154`), and the invocation
+terminal that does exist is a process-local registry envelope rather than a session Signal
+(`lionagi/state/lifecycle/callbacks.py:84`, `:170`), so the owner-scoped finalizer that records
+closure is a prerequisite delta below. At most `max_wakes_per_attempt - 1` interim batches and one closing
+batch are minted; closure wakes only for remaining admitted facts. Closure drains admitted
+emissions and persistence before recording its cutoff; observer unbinding is cleanup, not
+settlement, and `unbind_db_persistence` is synchronous and detaches the sink handler before the
+writes it tracked are known to have finished (`lionagi/session/observer.py:542-559`), ahead of the
+CLI and Studio closing the store (`lionagi/cli/_runs.py:1284`,
+`lionagi/studio/services/workflow_run.py:110`). `retryable` closing work waits durably;
+`best_effort` drops and counts queue overflow. A hung invocation remains pending; restart recovers
+durable work without inventing a successful settlement.
 
-An attempt that reaches neither trigger keeps its tail pending for the life of the session. There
-is no timeout and no new setting that ends it: an attempt that hangs holds its tail until the
-session ends, a process crash loses a `best_effort` subscriber's pending tail with no drop counted,
-and a `retryable` subscriber recovers the same facts after restart from `session_signals` past its
+An invocation that never exits keeps its tail pending for the life of the session. There is no
+timeout and no new setting that ends it: a hung invocation holds its tail until the session ends, a
+process crash loses a `best_effort` subscriber's pending tail with no drop counted, and a
+`retryable` subscriber recovers the same facts after restart from `session_signals` past its
 cursor.
 
 This is the plane D5 already carries: delivery is a durable fact handed to a sink with its own
 identity, retry policy and state. The wake policy supplies the clause between the durable fact and
-the run that consumes it, the boundary at which the consumer runs, the cursor the consumer reads
-from, and it adds no second bus and no second record. For a durable subscriber the source fact is
-a `session_signals` row the persistence sink has confirmed, never the in-memory emit: the log is
-append-only with a monotonic per-session sequence (`lionagi/state/schema.sql:797-801`), the sink
-writes it with the sequence the store assigns (`lionagi/state/db.py:5569-5577`), and the cursor is
-a position in that sequence, read forward with `after_seq` (`lionagi/state/db.py:5592-5607`). A
-fact the sink did not confirm is not a committed row and is no durable subscriber's source: it
-reaches `best_effort` subscribers only, and the sink's unconfirmed count is the record of it
-(`lionagi/session/observer.py:270`).
+the run that consumes it, the boundary at which the consumer runs, and the cursor the consumer
+reads from. Durable delivery covers committed `session_signals` rows, not every emitted fact, and
+the record says what is lost and when. For a durable subscriber the source fact is a
+`session_signals` row the persistence sink has
+confirmed, never the in-memory emit: the log is append-only with a monotonic per-session sequence
+(`lionagi/state/schema.sql:797-801`), the sink writes it with the sequence the store assigns
+(`lionagi/state/db.py:5569-5577`), and the cursor is a position in that sequence, read forward with
+`after_seq` (`lionagi/state/db.py:5592-5607`), whose forward read defaults to 500 rows
+(`:5597`). Registration requires a bound usable sink and replayable filters, and persists source
+invocation and signal identity, `emitter_role`, versioned payload type and filter-required data
+without destructive truncation; every page is read through a frozen closure cutoff. A fact the
+sink did not confirm is not a committed row and is no durable subscriber's source: it reaches
+`best_effort` subscribers only. The sanitizer drops `emitter_role`, so a role filter cannot be
+replayed from the row (`lionagi/session/observer.py:55-57`, `:69`), truncates an oversized payload
+behind a marker (`:112-142`), and wraps a non-Signal emit as `Signal(data=event)`
+(`:335-336`), losing payload type; the writer lock refusal skips writes for the window
+(`:40`, `:510`), and a sink bound without a store or read while unbound counts nothing
+(`:267-268`, `:493-495`). `persist_dropped` is therefore binding-local dropped-plus-in-flight
+accounting, not a durable gap ledger: it equals `dropped + in_flight`, and zero does not prove
+completeness (`lionagi/session/observer.py:202-205`, `:270`). Known capture degradation is recorded
+when storage recovers; unbound, absent-store and crash intervals may remain unknown.
 
 ### What this changes in this record
 
 - **D3 gains a delivery clause.** The observation façade's subscriber side distinguishes three
-  shapes rather than one: an in-process callable (unchanged), a durable subscriber behind a cursor
-  with a declared wake policy, and a query reader that registers nothing. Only a durable
-  subscriber's failure is a delivery failure rather than an isolated handler error.
+  shapes rather than one: an in-process callable (unchanged), a process subscriber behind a
+  declared wake policy whose durable cursor and batch belong to its `retryable` class only, and a
+  query reader that registers nothing. Only the process subscriber's failure is a delivery failure
+  rather than an isolated handler error.
 - **This record carries no current-vs-ideal delta section**, so the wake policy cannot be settled
   by closing a row that already exists. The rows below are added with the decision, and every one
   of them stays open: nothing in the tree coalesces a subscription's admitted facts per boundary,
@@ -708,11 +742,11 @@ reaches `best_effort` subscribers only, and the sink's unconfirmed count is the 
   batches the pending targets it discovers on each node completion, over the subscription-admitted
   Signals it sees, and keeps no per-subscriber position (`see "What the code does today"`).
 - **D1 gains one row.** The existing `Subscriber` row stays in-process and non-durable. The
-  durable observing subscriber is a distinct plane, named by its own row: it sits behind a cursor,
-  with a declared wake policy and delivery class. Its cursor and the batch frozen at mint live in
-  `state/`, which is where D5 keeps durable delivery state and its
-  idempotency/acknowledgement identity (`:487-494`), and which D7's placement keeps for
-  `state/adapters/` signal persistence, message writes and terminal delivery (`:559`).
+  observing subscriber is a distinct plane, named by its own row: it is a process subscriber, with
+  a declared wake policy and delivery class. Only its `retryable` delivery class has a durable
+  cursor and batch: those live in `state/`, which is where D5 keeps durable delivery state and its
+  idempotency/acknowledgement identity (`:493-498`), and which D7's placement keeps for
+  `state/adapters/` signal persistence, message writes and terminal delivery (`:563`).
 - **Phase 2 gains a clause.** Phase 2's target is to make `SessionObservation` signal-only; today
   the observer's gate is still applied inside `emit`, before routes and before subscribers
   (`lionagi/session/observer.py:339-348`). The phase now also owes the durable-subscriber shape: a
@@ -723,7 +757,9 @@ reaches `best_effort` subscribers only, and the sink's unconfirmed count is the 
 ### D9 — Wake policy and the observance delivery contract
 
 An observing subscriber declares a wake policy, a delivery class and a queue bound, over D3's
-`SignalFilter` subscription conditions, as one ADR-0119 declaration:
+`SignalFilter` subscription conditions, as one ADR-0119 declaration. This record decides the wake
+and coalescing policy now; durable delivery stays proposed behind the prerequisite delta rows
+below:
 
 ```python
 class WakeBoundary(str, Enum):
@@ -741,7 +777,7 @@ class ObservanceDelivery(str, Enum):
 @dataclass(frozen=True, slots=True, init=False, eq=False)
 class ObservancePolicy(Params):
     wake: tuple[WakeBoundary, ...]
-    delivery: ObservanceDelivery = ObservanceDelivery.BEST_EFFORT
+    delivery: ObservanceDelivery = ObservanceDelivery.RETRYABLE
     queue_depth: int = 32
     max_wakes_per_attempt: int = 4
     max_attempts: int = 3
@@ -750,18 +786,21 @@ class ObservancePolicy(Params):
 Each bound is required to resolve to a positive integer before registration compiles. An unbounded
 queue is not a fourth state to be read out of an absent integer: this record does not grant one,
 and a subscriber that needs more room raises `queue_depth` rather than giving the wake path a
-bound it cannot enforce. `max_attempts` is the bound on a failed woken run's retries: the same
-kind of per-row attempt bound the dispatch outbox declares for its own row
-(`lionagi/dispatch/outbox.py:47`, whose default is 8), enforced the same way the outbox enforces
-its bound, by dead-lettering the row once it is spent (`:518-535`).
+bound it cannot enforce. Omitted, `delivery` selects `retryable`, and registration against a store
+it cannot use fails explicitly rather than being silently downgraded to `best_effort`.
+`max_attempts` is the bound on the total automatic execution attempts of a failed woken run,
+including the first: the same kind of per-row attempt bound the dispatch outbox declares for its
+own row (`lionagi/dispatch/outbox.py:47`, whose default is 8), enforced the same way the outbox
+enforces its bound, by dead-lettering the row once it is spent and retaining it for an operator
+re-queue (`:518-535`, `:591-621`).
 A wake carries its own identity, `(attempt, boundary, subject, subscriber, fact
 range)`, so the delivery a retry repeats is the delivery that was minted and not a fresh read of
 everything since; facts past the range belong to the next wake.
 
 ### What the code does today
 
-- `SessionObserver.observe` and `emit` subscribe and dispatch per matched fact, inline, with no
-  boundary notion, no batching and no per-subscriber cursor
+- `SessionObserver.observe` and `emit` subscribe and dispatch per matched fact inside `emit`, with
+  no boundary notion, no batching and no per-subscriber cursor
   (`lionagi/session/observer.py:272-296`, `:333-370`).
 - No durable wake path exists. Runs are spawned in-process today: the hypothesis, review and
   research operations call `run.spawn` for follow-up work inside their own run
@@ -800,13 +839,21 @@ everything since; facts past the range belong to the next wake.
 
 | # | Delta | Size | Issue |
 |---|-------|------|-------|
-| 1 | Give the observation façade the three subscriber shapes of the amended D3: an in-process callable, a durable subscriber behind a cursor with a declared wake policy, and a query reader that registers nothing. Acceptance: a fixture registering one of each shows the callable dispatched per fact, the durable subscriber woken once per declared boundary, and the reader materializing no dispatch. | M | (filled at issue-open time) |
+| 1 | Give the observation façade the three subscriber shapes of the amended D3: an in-process callable, a process subscriber with a declared wake policy and delivery class, and a query reader that registers nothing. Only the `retryable` delivery class has a durable cursor and batch. Acceptance: a fixture registering one of each shows the callable dispatched per fact, the `retryable` subscriber woken once per declared boundary with a durable cursor and batch, the `best_effort` subscriber woken with neither, and the reader materializing no dispatch. | M | (filled at issue-open time) |
 | 2 | Implement the closed wake vocabulary and the `ObservancePolicy` declaration of D9 as an ADR-0119 declaration, refusing an unknown boundary at registration rather than guessing one. Acceptance: a subscription citing an unknown boundary is refused at compile time; each of the six boundaries has a fixture proving which facts wake it and which do not. | M | (filled at issue-open time) |
-| 3 | Coalesce the facts a subscription admits between two wakes into one batch and deliver the batch as the unit, with `max_wakes_per_attempt` bounding the runs one attempt can cause. Acceptance: a fixture with forty facts across one attempt with several nodes and one `candidate` subscriber at the default cap produces at most four runs, every fact delivered exactly once across the batches. | M | (filled at issue-open time) |
-| 4 | Implement the `retryable` cursor: a per-subscriber position advanced only when the woken run reaches its terminal, re-delivered from the cursor after a restart, with the batch frozen at mint so a retry repeats exactly that delivery. Acceptance: the cursor survives a restart and re-delivers exactly the batch after it, once. | M | (filled at issue-open time) |
-| 5 | Give a woken run's proposals the idempotency identity `(attempt, boundary, subject, subscriber, fact range)`, reusing the outbox `dedup_key` practice rather than adding a second scheme. Acceptance: a `retryable` wake whose spawn is retried after a crash answers with the first run's identity and executes its irreversible proposal once. | M | (filled at issue-open time) |
+| 3 | Coalesce the facts a subscription admits between two wakes into one batch and deliver the batch as the unit, with `max_wakes_per_attempt` bounding the runs one attempt can cause. Acceptance: a fixture with forty facts across one attempt with several nodes and one `candidate` subscriber at the default cap produces at most four runs, and each admitted stored fact belongs to exactly one logical batch with delivery allowed to repeat. | M | (filled at issue-open time) |
+| 4 | Implement the `retryable` cursor: a per-subscriber position advanced only on a batch's success or its durable dead-letter, from a guarded transaction that records the disposition, with the batch persisted on its own so a restart recovers unfinished batch rows as well as the source log. Acceptance: a failure at attempt 1 retains the batch and the cursor and a retry repeats exactly that delivery; a restart re-delivers an unfinished batch; a dead-lettered batch is re-queueable irrespective of cursor position. | M | (filled at issue-open time) |
+| 5 | Give a woken run's proposals the idempotency identity `(attempt, boundary, subject, subscriber, fact range)`, reusing the outbox `dedup_key` practice rather than adding a second scheme. Acceptance: replaying one execution attempt reuses its run identity, retrying a known failed execution creates the next attempt under the same wake identity, and a `retryable` wake whose spawn is retried after a crash does not depend on the destination for exactly-once external effects. | M | (filled at issue-open time) |
 | 6 | Implement `best_effort` drop accounting and reporting: a wake the runtime cannot serve or a batch dropped under queue pressure is counted, and the next batch states how many were dropped. Acceptance: a `best_effort` drop is counted and reported on the next batch, and a `retryable` wake over a full queue grows its batch instead of dropping. | S | (filled at issue-open time) |
 | 7 | Give a `Verdict` cast outside the review operation's `run.emit` path and a `budget` crossing their own emitting facts, so every boundary in D9's closed vocabulary is one the session already produces. Acceptance: a verdict and a budget crossing each wake a subscriber bound to that boundary, and a subscription bound to a boundary with no emit site is refused rather than registered and never woken. | M | (filled at issue-open time) |
+| 8 | Prerequisite: add the owner-scoped finalizer and durable closure marker. Settle a subscription when the invocation owning it exits, on normal, exceptional, cancelled, streaming-close, nested and reactive paths; drain admitted emissions and persistence before recording the closure cutoff; and record closure durably so a restart recovers it. Acceptance: a nested operation's `RunEnd` does not settle its parent, an invocation that hangs stays pending, delayed writes land before the store closes, and a restart recovers durable closure work without inventing a successful settlement. | L | (filled at issue-open time) |
+| 9 | Prerequisite: capture and replay every fact a durable subscriber's filter can need. Persist source invocation and signal identity, `emitter_role`, a versioned payload type and the filter-required data without destructive truncation; read every page through a frozen closure cutoff; and record known capture degradation when storage recovers. Acceptance: role and verdict replay from the row, an oversized payload and a 501-row log replay intact, a refused writer lock and an absent store are recorded rather than counted as confirmed, and registration without a bound usable sink fails explicitly. | L | (filled at issue-open time) |
+
+Each admitted stored fact belongs to one logical batch; delivery may repeat. Replaying one
+execution attempt reuses its run identity; retrying a known failed execution creates the next
+attempt under the same wake identity. Proposal deduplication spans these attempts; exactly-once
+external effects require destination support. The default caps allow four logical batches and
+twelve automatic execution attempts; explicit operator re-queue starts a new retry budget.
 
 ### Alternatives considered
 
@@ -829,17 +876,19 @@ everything since; facts past the range belong to the next wake.
   the same reason the suppression alternative above is refused — a subscriber that can hold a row
   can hide the row that explains its own refusal.
 - **A second in-memory bus beside the durable record.** Rejected: it duplicates D5's durable
-  record, whose semantics begin from an already-committed source fact (`:487-494`), and the wake
-  policy adds no second bus and no second record of its own.
+  record, whose semantics begin from an already-committed source fact (`:493-498`). No second fact
+  bus is introduced; durable batch records belong to `state/`.
 
 ### Consequences of this amendment
 
-- An observing subscriber costs one bounded run per boundary per attempt, never one per row.
+- Wake caps bound logical batches; execution attempts have a separate bound.
 - A `retryable` subscriber's cursor and the batch frozen at mint live in `state/` as D5 requires
-  for durable delivery state (`:487-494`), and the cursor advances in the same state transaction
-  that records the woken run's terminal outcome, or its dead-letter. ADR-0125 (Accepted) D2 step 7
-  is cited only for the idempotent identity per delivered input (`:495-499`); the wake's identity
-  reuses only ADR-0059's `dedup_key` practice rather than adding a second scheme.
+  for durable delivery state (`:493-498`), and a guarded transaction records the batch's success or
+  durable dead-letter and advances the cursor in the same state transaction. A failure retains the
+  batch and the cursor, and a dead-lettered batch stays re-queueable irrespective of cursor
+  position. ADR-0125 (Accepted) D2 step 7 is cited only for the idempotent identity per delivered
+  input (`ADR-0125:495-499`); the wake's identity reuses only ADR-0059's `dedup_key` practice
+  rather than adding a second scheme.
 - The coalesced batch is larger than a single fact, so a subscriber's prompt grows with the
   boundary's facts. The batch grows with attempt length; only the number of woken runs is bounded.
 - `best_effort` is lossy by design and says so; a consumer that cannot lose a wake declares
