@@ -11,6 +11,8 @@ from typing import Any, Literal
 
 from fastapi import HTTPException, Query, Request
 
+from lionagi.ln.concurrency import current_time
+
 from ..operator.coordinator import get_operator_coordinator
 from ..operator.store import (
     OperatorConflictError,
@@ -275,7 +277,7 @@ async def stream_operator_conversation(
 
     async def events():
         cursor = after_sequence
-        heartbeat_at = asyncio.get_running_loop().time() + 5
+        heartbeat_at = current_time() + 5
         while True:
             if await request.is_disconnected():
                 return
@@ -289,9 +291,9 @@ async def stream_operator_conversation(
                     yield (
                         "data:" + json.dumps(frame, sort_keys=True, separators=(",", ":")) + "\n\n"
                     )
-                heartbeat_at = asyncio.get_running_loop().time() + 5
+                heartbeat_at = current_time() + 5
                 continue
-            now = asyncio.get_running_loop().time()
+            now = current_time()
             if now >= heartbeat_at:
                 yield ": heartbeat\n\n"
                 heartbeat_at = now + 5

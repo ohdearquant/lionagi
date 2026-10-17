@@ -1,7 +1,13 @@
+# Copyright (c) 2025 - 2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
 import contextlib
 import copy as _copy
 import importlib
 import importlib.util
+import math
 import types
 import uuid
 import warnings
@@ -42,7 +48,9 @@ __all__ = (
     "is_union_type",
     "load_type_from_string",
     "now_utc",
+    "parse_duration",
     "register_type_prefix",
+    "short_id",
     "synchronized",
     "to_uuid",
     "union_members",
@@ -51,6 +59,52 @@ __all__ = (
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def short_id(n: int = 12) -> str:
+    """Return the first ``n`` hex digits of a random UUID4, for ``1 <= n <= 32``."""
+    if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= 32:
+        raise ValueError("short_id length must be an integer from 1 to 32")
+    return uuid.uuid4().hex[:n]
+
+
+def parse_duration(
+    spec: str,
+    *,
+    allow_bare_seconds: bool = False,
+    allow_float: bool = False,
+    max_seconds: float | None = None,
+) -> float:
+    """Parse a positive, finite duration with lowercase ``s``, ``m``, ``h`` or ``d``.
+
+    Numeric values use integer syntax unless ``allow_float`` is enabled. Bare
+    seconds require ``allow_bare_seconds``. Surrounding whitespace is ignored;
+    the optional positive, finite maximum is inclusive. Invalid input raises
+    ``ValueError``.
+    """
+    if not isinstance(spec, str) or not (value := spec.strip()):
+        raise ValueError("duration must be a non-empty string")
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    if value[-1] in units:
+        multiplier = units[value[-1]]
+        value = value[:-1]
+    elif allow_bare_seconds:
+        multiplier = 1
+    else:
+        raise ValueError("duration requires a lowercase unit: s, m, h or d")
+    try:
+        number = float(value) if allow_float else int(value)
+        seconds = float(number * multiplier)
+    except (ValueError, OverflowError) as exc:
+        raise ValueError(f"invalid duration {spec!r}") from exc
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError("duration must be positive and finite")
+    if max_seconds is not None:
+        if not math.isfinite(max_seconds) or max_seconds <= 0:
+            raise ValueError("max_seconds must be positive and finite")
+        if seconds > max_seconds:
+            raise ValueError(f"duration exceeds maximum of {max_seconds} seconds")
+    return seconds
 
 
 class _SafePath(NamedTuple):
@@ -362,6 +416,8 @@ def to_uuid(value: Any) -> UUID:
 
 def coerce_created_at(v: Any) -> datetime:
     """Coerce value to UTC-aware datetime (datetime, timestamp, or ISO string)."""
+    if isinstance(v, bool):
+        raise ValueError("Expected datetime/timestamp/string, got bool")
     if isinstance(v, datetime):
         return v.replace(tzinfo=timezone.utc) if v.tzinfo is None else v
 
@@ -372,7 +428,8 @@ def coerce_created_at(v: Any) -> datetime:
         with contextlib.suppress(ValueError):
             return datetime.fromtimestamp(float(v), tz=timezone.utc)
         with contextlib.suppress(ValueError):
-            return datetime.fromisoformat(v)
+            parsed = datetime.fromisoformat(v[:-1] + "+00:00" if v.endswith("Z") else v)
+            return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
         raise ValueError(f"String '{v}' is neither timestamp nor ISO format")
 
     raise ValueError(f"Expected datetime/timestamp/string, got {type(v).__name__}")

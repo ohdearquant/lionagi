@@ -919,11 +919,11 @@ that path cannot block the lookup.
 
 ## `stats.py` — aggregate run stats
 
-**`_reject_non_positive_since`** — `li stats --since` positivity tightening vs `li monitor`.
-Monitor's shared `_since_timestamp()` accepts `0d`/`-1d` without complaint (fine for its own
-semantics), but for an aggregate report that would silently produce a false-empty or
-nonsensical result instead of failing loudly — this only tightens `li stats runs`. Malformed
-values (bad unit, non-numeric) are still left to `_since_timestamp` to reject.
+**`_since_timestamp`** — `li stats runs` and `li monitor` share positive integer
+window validation through `ln.parse_duration`. Windows require a lowercase
+`s`, `m`, `h` or `d` unit. The parser rejects invalid or empty windows; stats
+reports these as clear `--since` input errors and needs no separate positivity
+check.
 
 **`_query_run_stats`** — `group_by` validate-before-SQL-interpolation contract. `group_by`
 entries are validated against `GROUP_BY_COLUMNS` before this is ever called, so interpolating

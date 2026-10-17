@@ -15,6 +15,10 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Added
 
+- `lionagi.ln.short_id(n=12)` returns a UUID4 hexadecimal prefix with an explicit
+  integer length from 1 to 32; boolean and out-of-range lengths raise `ValueError`.
+- `lionagi.ln.parse_duration` parses positive finite durations in lowercase `s`, `m`,
+  `h` and `d`, with optional fractional values, bare seconds and an inclusive maximum.
 - `lionagi.ln.concurrency.temporary_signal_handlers(handler, signals=(SIGINT, SIGTERM))`, a
   context manager that installs one handler for the length of a block and restores each prior
   handler on exit. Like `run_async`, it installs nothing off the main thread and leaves alone a
@@ -59,6 +63,20 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Changed
 
+- Mirror and monitor time windows reject zero, negative, non-finite values and
+  uppercase units, trim surrounding whitespace, and accept explicit seconds (`s`)
+  in mirror windows. Invalid stats windows report a clear input error.
+- Run, team and show imports and transcript mirrors interpret naive ISO timestamps
+  as UTC and accept numeric epoch strings. Out-of-range timestamp values keep
+  each importer's existing filesystem-time or missing-value fallback.
+- `lionagi.ln.coerce_created_at` rejects booleans, interprets naive ISO strings as
+  UTC, and accepts a trailing `Z` on Python 3.10. Numeric strings still parse as
+  epoch seconds before ISO dates, including compact strings such as `"20250101"`.
+- `assert_eventually` uses a monotonic clock for its timeout, so wall-clock changes
+  no longer shorten or extend the polling deadline.
+- CLI stream result parsers measure elapsed time with the active async backend's
+  clock, so the Gemini, Codex and Pi parsers can finish under Trio. Operator
+  heartbeat deadlines and scheduler recovery deadlines use the same clock helper.
 - `li studio --docker` publishes the daemon's port on the address `--host` names, loopback
   (`127.0.0.1`) by default, where it published on every host interface, so with
   `LIONAGI_STUDIO_AUTH_TOKEN` unset other machines on the network could reach the API. The
