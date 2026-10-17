@@ -1,10 +1,58 @@
 # ADR-0041: Agent specification and Branch construction boundary
 
-- **Status**: Accepted
+- **Status**: Accepted, amended 2026-10-17 (see Amendment 1)
 - **Kind**: Retrospective
 - **Area**: agent-roles
 - **Date**: 2026-07-09
 - **Relations**: supersedes v0-0078, v0-0100
+
+## Amendment 1 (2026-10-17) — an API-model `li agent` leg binds the read tools only
+
+`li agent` refused every model that is not a CLI provider. A CLI provider runs its own tool loop,
+so the whole leg is one `operate` call; an API model has no loop of its own, and one call would
+be one model turn. The coding tools `create_agent` registers run inside this process with its
+permissions. `guard_paths` and `guard_destructive` are pre-hooks on a tool call; they are not an
+operating-system boundary, and nothing on this path stands where a CLI provider's own sandbox
+stands.
+
+Decision:
+
+- `AgentSpec` gains `coding_tools: tuple[str, ...] | None = None`, the coding tools step 6 of D2
+  binds when `tools` names `"coding"`. `None` binds the default set, as before.
+  `context_management=False` still removes `context` from either set.
+- `li agent` builds an API-model leg through `create_agent` only when its agent profile declares
+  `api_tools: read`. The spec binds `coding_tools=("reader", "search", "context")`, the secure
+  guards scoped to the leg's working directory, the profile's `role:` (default `reviewer`), and
+  no MCP server. A profile's `khive_injection` keeps its recall on the leg with writeback off,
+  whatever the profile sets, so no read output is stored in khive. The leg runs `Branch.ReAct(tools=True, max_extensions=N)`, with `N` from the
+  profile's `max_extensions` (a whole number from 1 to 100, default 10), under the leg's
+  `--timeout`.
+- `read` is the only tool set. Any other `api_tools` value, `--preset coding` and `--image` are
+  refused before a run exists, and a profile without the key is refused as before. Tools that
+  write files or run commands are offered to an API model only by a later decision that runs
+  them inside an operating-system sandbox.
+- The branch records the tool set and bound under `metadata["api_launch"]` and is written to the
+  run's branches directory after every turn. A resume runs the loop again from that record, with
+  the read set bound again to the resume's working directory and the bound the resuming profile
+  names; a resume under a profile without `api_tools`, or with `--image`, or of a record naming a
+  tool set or a bound this version does not run, is refused before a run exists. A non-CLI
+  branch without the record keeps the earlier path. Queued operator
+  messages drain at turn end as further turns of the loop.
+- An API model is built from its model spec alone; the CLI display options (`-v`, `--theme`)
+  are not put on its request, on a new leg or a resume.
+
+`search` is held to what `reader` may read: it resolves its path inside the working directory,
+passes the pattern to grep after `-e` so a pattern is never read as an option, and leaves out
+the matches of every file whose path holds a name `reader` refuses (the basenames `.env`,
+`.netrc`, `id_rsa`, `id_ed25519`, `id_ecdsa` and `.htpasswd`, in any case), which a recursive
+search would otherwise reach. Other secret-bearing names, such as `.env.local` or a `.pem` file,
+are not refused by either tool. Each match is read from the NUL grep writes after its file name,
+so a name holding a newline is read whole, and binary files are skipped (`-I`), so no notice
+names a matching file. A grep that runs past its 30-second bound fails the call; the rows it
+read before then are not returned.
+
+Limits: the loop's action protocol is lionagi's JSON action request, not a provider's native
+tool calling.
 
 ## Context
 
@@ -116,6 +164,7 @@ class AgentSpec(HooksMixin):
     mcp_servers: list[str] | None = None
     mcp_config_path: str | None = None
     context_management: bool = True
+    coding_tools: tuple[str, ...] | None = None  # Amendment 1
 
     @classmethod
     def compose(
@@ -208,7 +257,8 @@ The materialization sequence is normative as-built behavior:
 3. allocate Branch
 4. compose and install the system message
 5. append PermissionPolicy as "security_pre:*" on the passed spec
-6. register requested built-in/coding tools and attach their hooks
+6. register requested built-in/coding tools (`coding_tools` selects the coding set, Amendment 1)
+   and attach their hooks
 7. discover and register MCP tools
 8. grant the resolved emission Operable, when non-empty
 9. return Branch
@@ -245,10 +295,17 @@ one-item list. Python import paths without `:` and trusted modules/functions tha
 imported resolve to no handler. A command must be an argv list of strings; shell strings raise
 `ValueError`.
 
-Pre-command hooks send the argument mapping as JSON on stdin. Non-zero exit, subprocess creation
-failure, and the 10-second deadline raise `PermissionError`, preventing the Tool. Post-command
-hooks send the result mapping and log/swallow subprocess or timeout failure. Both timeout paths
-terminate the process group, then wait up to 2 seconds for exit. Ten and two seconds are inherited
+Pre-command hooks send the argument mapping as JSON on stdin, serialized before the subprocess
+starts. A mapping that cannot be serialized, non-zero exit, subprocess creation failure, and the
+10-second deadline raise `PermissionError`, preventing the Tool. Post-command hooks send the result
+mapping and log/swallow serialization, subprocess or timeout failure; a result that cannot be
+serialized starts no subprocess. On a timeout, a failed exchange with the subprocess, or
+cancellation, both hooks terminate the process group, then wait up to 2 seconds for exit;
+cancellation is re-raised after the wait, and a cancellation that arrives during the wait is
+raised in place of the hook's own error. The group is terminated even when the hook process has
+already exited while a process it started holds its pipes: members carrying the marker set at
+spawn identify the group. A cancellation that arrives while the subprocess is being created
+terminates its group once creation completes. Ten and two seconds are inherited
 implementation values; no recorded rationale establishes those exact thresholds. An `on_error`
 command currently builds the post-shaped callable and is appended to `error:<tool>`, but the
 shipped Tool execution path never invokes error handlers (ADR-0044 records the target repair).
