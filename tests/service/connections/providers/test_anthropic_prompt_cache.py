@@ -104,6 +104,29 @@ def test_option_off_is_the_default():
     assert _filtered().places_prompt_cache is False
 
 
+def test_option_off_leaves_the_stored_model_as_before():
+    """A model is stored with every branch that records it; with the option off its dump
+    carries no key the option added."""
+    with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-anthropic-key"}):
+        model = iModel(provider="anthropic", model=MODEL)
+    assert "prompt_caching" not in model.endpoint.config.model_dump()
+    assert "prompt_caching" not in json.loads(model.endpoint.config.model_dump_json())
+    assert "prompt_caching" not in model.to_dict()["endpoint"]["config"]
+
+
+def test_option_on_survives_the_stored_model_round_trip():
+    with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-anthropic-key"}):
+        model = iModel(provider="anthropic", model=MODEL, prompt_caching=True)
+        stored = json.loads(json.dumps(model.to_dict()))
+        restored = iModel.from_dict(stored)
+    assert stored["endpoint"]["config"]["prompt_caching"] is True
+    assert restored.endpoint.config.prompt_caching is True
+    assert restored.endpoint.places_prompt_cache is True
+    with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-anthropic-key"}):
+        off = iModel.from_dict(iModel(provider="anthropic", model=MODEL).to_dict())
+    assert off.endpoint.config.prompt_caching is False
+
+
 # --- option on, declaration present ---
 
 

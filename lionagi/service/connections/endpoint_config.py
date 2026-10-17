@@ -12,8 +12,10 @@ from pydantic import (
     Field,
     PrivateAttr,
     SecretStr,
+    SerializerFunctionWrapHandler,
     field_serializer,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -175,6 +177,16 @@ class EndpointConfig(BaseModel):
         See docs/internals/service-layer.md#runtime-state-across-serialization-channels.
         """
         return {k: val for k, val in v.items() if k not in _UNWRITTEN_KWARG_NAMES}
+
+    @model_serializer(mode="wrap")
+    def _omit_prompt_caching_when_off(self, handler: SerializerFunctionWrapHandler):
+        # A config dump is stored with every model a branch records, so a dump with the option
+        # off stays the one written before the option existed; a stored config without the key
+        # loads with the default, and a dump with the option on keeps it for the reload.
+        data = handler(self)
+        if isinstance(data, dict) and not self.prompt_caching:
+            data.pop("prompt_caching", None)
+        return data
 
     def __iter__(self):
         """Applies the same exclusion on the ``dict(config)``/
