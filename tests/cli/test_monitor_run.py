@@ -1807,6 +1807,7 @@ async def test_effective_session_status_reconcile_populates_duration_ms(
                 "started_at": profile_started_at,
             }
         )
+        await _set_fields(db, "sessions", profile_id, current_phase="executing")
 
         row = await db.get_session(profile_id)
         result = await _effective_session_status(db, row)
@@ -1817,6 +1818,9 @@ async def test_effective_session_status_reconcile_populates_duration_ms(
         assert persisted["duration_ms"] == pytest.approx(
             (persisted["ended_at"] - profile_started_at) * 1000
         )
+        # The reconciled row is terminal, so the live phase it carried before
+        # the engine session ended clears with that same write.
+        assert persisted["current_phase"] is None
 
 
 async def test_effective_session_status_cas_mismatch_reports_persisted_status(

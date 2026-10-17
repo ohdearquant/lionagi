@@ -669,6 +669,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "عمليات التشغيل الأخيرة غير متاحة",
     "title": "الجداول",
     "subtitle": "أتمتات دائمة عبر cron أو الفواصل الزمنية أو مشغّلات GitHub",
     "calendar": "التقويم",

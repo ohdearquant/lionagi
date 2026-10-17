@@ -214,6 +214,10 @@ class Executor(Observer):
     async def forward(self) -> None:
         while len(self.pending) > 0:
             id_ = self.pending.popleft()
+            # An id can stay pending after its event has left the pile. It is skipped, so one
+            # caller's stale id never fails another caller's forward.
+            if id_ not in self.pile:
+                continue
             event = self.pile[id_]
             await self.processor.enqueue(event)
 

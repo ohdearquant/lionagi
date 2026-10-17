@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslations } from "use-intl";
-import { getStats, resolveApiBase, type StudioStats } from "@/lib/api";
+import { API_BASE, getStats, type StudioStats } from "@/lib/api";
 
 const HEALTH_POLL_MS = 30_000;
 const STATS_POLL_MS = 5 * 60_000;
@@ -20,7 +20,7 @@ export default function StatusFooter() {
   const t = useTranslations("shell");
   const [stats, setStats] = useState<StudioStats | null>(null);
   const [healthy, setHealthy] = useState<boolean | null>(null);
-  const apiBase = resolveApiBase();
+  const apiBase = API_BASE;
 
   useEffect(() => {
     let active = true;
@@ -108,7 +108,7 @@ export default function StatusFooter() {
           }}
         />
         <span className="truncate tabular-nums text-[length:var(--t-xs)]">
-          {apiBase || "localhost"}
+          {apiBase || window.location.origin}
         </span>
       </span>
 

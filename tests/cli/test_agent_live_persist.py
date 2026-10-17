@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -324,6 +325,315 @@ async def test_close_shared_db_rejects_stale_waiter(temp_db_path: Path):
             break
         await asyncio.sleep(0.05)
     assert _aiosqlite_thread_count() == before, "stale-waiter open leaked an aiosqlite worker"
+
+
+# A close from another event loop
+
+
+def _run_loop(body) -> threading.Thread:
+    """Run *body()* on a fresh event loop in a worker thread and return the thread."""
+    worker = threading.Thread(target=lambda: asyncio.run(body()), daemon=True)
+    worker.start()
+    return worker
+
+
+def _join(worker: threading.Thread) -> None:
+    worker.join(60)
+    assert not worker.is_alive(), "the other event loop did not finish"
+
+
+async def test_close_shared_db_reports_a_handle_open_on_another_loop(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A sweep meets a handle whose open is in progress on another event loop, which refuses the
+    close. Every other handle is still closed and the refusal is raised once the sweep is done:
+    swallowed, the sweep reads as complete while that handle keeps its engine."""
+    import lionagi.state.db as db_mod
+    from lionagi.state.db import close_shared_db, register_shared_db
+
+    monkeypatch.setattr(db_mod, "_SHARED", {})
+    monkeypatch.setattr(db_mod, "_SHARED_OPEN_LOCK", None)
+    blocked_url = StateDB(temp_db_path).url
+    entered = threading.Event()
+    registered = threading.Event()
+    release = threading.Event()
+    real_apply = StateDB._apply_schema
+
+    async def slow_schema(self):
+        if self.url == blocked_url:
+            entered.set()
+            await asyncio.get_running_loop().run_in_executor(None, release.wait)
+        await real_apply(self)
+
+    monkeypatch.setattr(StateDB, "_apply_schema", slow_schema)
+    closed = threading.Event()
+    # Built here and opened on the other loop: only its async work is bound to a loop.
+    handle = StateDB(temp_db_path)
+
+    async def on_the_other_loop():
+        opening = asyncio.ensure_future(handle.open())
+        await asyncio.get_running_loop().run_in_executor(None, entered.wait)
+        await register_shared_db(handle)
+        registered.set()
+        await opening
+        # Closed on its own loop, the only one its engine may be disposed on.
+        await asyncio.get_running_loop().run_in_executor(None, closed.wait)
+        await handle.close()
+
+    worker = _run_loop(on_the_other_loop)
+    loop = asyncio.get_running_loop()
+    try:
+        assert await loop.run_in_executor(None, registered.wait, 30), "the open never started"
+        other = StateDB(temp_db_path.parent / "other.db")
+        await other.open()
+        await register_shared_db(other)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            await close_shared_db()
+
+        assert temp_db_path.name in str(excinfo.value), (
+            "the refusal must name the handle that would not close"
+        )
+        assert "another event loop" in str(excinfo.value)
+        assert other._engine is None, "the sweep left another handle open"
+        assert handle._engine is not None, "the refused close disposed an open that was in flight"
+    finally:
+        release.set()
+        closed.set()
+        _join(worker)
+
+    assert handle._engine is None
+
+
+async def test_close_shared_db_from_another_loop_during_a_shared_open_is_refused(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """get_shared_db() holds the registry lock across its open. A close from another loop would
+    wait on a wake only the other loop's release can send and time out with the handle kept, so it
+    is refused at once, naming the other loop, and the shared open finishes on its own loop."""
+    import lionagi.state.db as db_mod
+    from lionagi.state.db import close_shared_db, get_shared_db
+
+    monkeypatch.setattr(db_mod, "_SHARED", {})
+    monkeypatch.setattr(db_mod, "_SHARED_OPEN_LOCK", None)
+    entered = threading.Event()
+    release = threading.Event()
+    real_apply = StateDB._apply_schema
+
+    async def slow_schema(self):
+        entered.set()
+        await asyncio.get_running_loop().run_in_executor(None, release.wait)
+        await real_apply(self)
+
+    monkeypatch.setattr(StateDB, "_apply_schema", slow_schema)
+    handles: list[StateDB] = []
+
+    async def on_the_other_loop():
+        handles.append(await get_shared_db(temp_db_path))
+
+    worker = _run_loop(on_the_other_loop)
+    loop = asyncio.get_running_loop()
+    try:
+        assert await loop.run_in_executor(None, entered.wait, 30), "the shared open never started"
+        started = time.monotonic()
+        with pytest.raises(RuntimeError) as excinfo:
+            await asyncio.wait_for(close_shared_db(), timeout=5)
+        elapsed = time.monotonic() - started
+        assert "another event loop" in str(excinfo.value), str(excinfo.value)
+        assert elapsed < 1, f"the close waited {elapsed:.2f}s instead of refusing at once"
+    finally:
+        release.set()
+        _join(worker)
+
+    assert handles[0]._engine is not None
+    assert db_mod._SHARED.get(handles[0].url) is handles[0]
+    await close_shared_db()
+    assert handles[0]._engine is None
+
+
+async def test_a_sweep_keeps_the_handle_a_cross_loop_close_refused(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A handle whose close another event loop refuses stays registered with its engine open.
+    Emptied for it, the registry would hand out a second handle on the same store, and not even a
+    later sweep would reach the one still open."""
+    import lionagi.state.db as db_mod
+    from lionagi.state.db import close_shared_db, get_shared_db, register_shared_db
+
+    monkeypatch.setattr(db_mod, "_SHARED", {})
+    monkeypatch.setattr(db_mod, "_SHARED_OPEN_LOCK", None)
+    blocked_url = StateDB(temp_db_path).url
+    entered = threading.Event()
+    registered = threading.Event()
+    opened = threading.Event()
+    release = threading.Event()
+    closed = threading.Event()
+    real_apply = StateDB._apply_schema
+
+    async def slow_schema(self):
+        if self.url == blocked_url:
+            entered.set()
+            await asyncio.get_running_loop().run_in_executor(None, release.wait)
+        await real_apply(self)
+
+    monkeypatch.setattr(StateDB, "_apply_schema", slow_schema)
+    handle = StateDB(temp_db_path)
+
+    async def on_the_other_loop():
+        opening = asyncio.ensure_future(handle.open())
+        await asyncio.get_running_loop().run_in_executor(None, entered.wait)
+        await register_shared_db(handle)
+        registered.set()
+        await opening
+        opened.set()
+        await asyncio.get_running_loop().run_in_executor(None, closed.wait)
+        await handle.close()
+
+    worker = _run_loop(on_the_other_loop)
+    loop = asyncio.get_running_loop()
+    try:
+        assert await loop.run_in_executor(None, registered.wait, 30), "the open never started"
+        other = StateDB(temp_db_path.parent / "other.db")
+        await other.open()
+        await register_shared_db(other)
+
+        with pytest.raises(RuntimeError, match="another event loop"):
+            await close_shared_db()
+
+        assert other._engine is None, "the sweep left another handle open"
+        assert handle._engine is not None, "the refused close disposed an open that was in flight"
+        assert db_mod._SHARED.get(blocked_url) is handle, (
+            "the refused handle left the registry while its engine stays open"
+        )
+
+        release.set()
+        assert await loop.run_in_executor(None, opened.wait, 30), "the blocked open never finished"
+        assert await get_shared_db(temp_db_path) is handle, (
+            "the registry opened a second handle beside the one still open"
+        )
+    finally:
+        release.set()
+        closed.set()
+        _join(worker)
+
+    assert handle._engine is None, "the other loop closed its handle"
+    await close_shared_db()
+    assert not db_mod._SHARED, "a later sweep reaches the handle it could not close before"
+
+
+async def test_registering_over_a_handle_a_cross_loop_close_refuses_keeps_the_entry(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Re-registering a store displaces the handle filed for it by closing that handle. A close
+    this loop cannot make is refused before the entry is replaced: replaced silently, the old
+    handle keeps its engine with nothing in the registry left to reach or close it."""
+    import lionagi.state.db as db_mod
+    from lionagi.state.db import close_shared_db, register_shared_db
+
+    monkeypatch.setattr(db_mod, "_SHARED", {})
+    monkeypatch.setattr(db_mod, "_SHARED_OPEN_LOCK", None)
+    blocked_url = StateDB(temp_db_path).url
+    entered = threading.Event()
+    registered = threading.Event()
+    release = threading.Event()
+    closed = threading.Event()
+    real_apply = StateDB._apply_schema
+
+    async def slow_schema(self):
+        if self.url == blocked_url:
+            entered.set()
+            await asyncio.get_running_loop().run_in_executor(None, release.wait)
+        await real_apply(self)
+
+    monkeypatch.setattr(StateDB, "_apply_schema", slow_schema)
+    displaced = StateDB(temp_db_path)
+
+    async def on_the_other_loop():
+        opening = asyncio.ensure_future(displaced.open())
+        await asyncio.get_running_loop().run_in_executor(None, entered.wait)
+        await register_shared_db(displaced)
+        registered.set()
+        await opening
+        await asyncio.get_running_loop().run_in_executor(None, closed.wait)
+        await displaced.close()
+
+    worker = _run_loop(on_the_other_loop)
+    loop = asyncio.get_running_loop()
+    try:
+        assert await loop.run_in_executor(None, registered.wait, 30), "the open never started"
+        with pytest.raises(RuntimeError, match="another event loop"):
+            await register_shared_db(StateDB(temp_db_path))
+        assert db_mod._SHARED.get(blocked_url) is displaced, (
+            "the displaced handle left the registry while its engine stays open"
+        )
+    finally:
+        release.set()
+        closed.set()
+        _join(worker)
+
+    assert displaced._engine is None
+    await close_shared_db()
+
+
+async def test_close_shared_db_reports_a_close_error_that_is_no_refusal(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The sweep raises one error naming every handle it could not close, whatever the error was:
+    a close that failed for another reason once returned as if the sweep had closed it."""
+    import lionagi.state.db as db_mod
+    from lionagi.state.db import close_shared_db, register_shared_db
+
+    monkeypatch.setattr(db_mod, "_SHARED", {})
+    monkeypatch.setattr(db_mod, "_SHARED_OPEN_LOCK", None)
+    handle = StateDB(temp_db_path)
+    await handle.open()
+    await register_shared_db(handle)
+
+    async def failed_close():
+        raise OSError("dispose failed")
+
+    with mock.patch.object(handle, "close", failed_close):
+        with pytest.raises(RuntimeError, match="could not be closed") as excinfo:
+            await close_shared_db()
+
+    assert "dispose failed" in str(excinfo.value)
+    assert temp_db_path.name in str(excinfo.value), (
+        "the refusal names the handle it could not close"
+    )
+    await handle.close()
+
+
+async def test_a_cancelled_sweep_leaves_the_rest_registered(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A close that is cancelled must not take the other handles' registry entries with it: they
+    are still open, and a get_shared_db() that found the registry empty would open a second."""
+    import lionagi.state.db as db_mod
+    from lionagi.state.db import close_shared_db, register_shared_db
+
+    monkeypatch.setattr(db_mod, "_SHARED", {})
+    monkeypatch.setattr(db_mod, "_SHARED_OPEN_LOCK", None)
+    first = StateDB(temp_db_path.parent / "first.db")
+    await first.open()
+    await register_shared_db(first)
+    second = StateDB(temp_db_path.parent / "second.db")
+    await second.open()
+    await register_shared_db(second)
+
+    async def cancelled_close():
+        raise asyncio.CancelledError
+
+    try:
+        with mock.patch.object(first, "close", cancelled_close):
+            with pytest.raises(asyncio.CancelledError):
+                await close_shared_db()
+        assert db_mod._SHARED.get(second.url) is second, (
+            "a cancelled sweep left the second handle open and out of the registry"
+        )
+        assert second._engine is not None
+    finally:
+        await second.close()
+        await first.close()
 
 
 # Resume path

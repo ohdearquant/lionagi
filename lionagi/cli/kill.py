@@ -491,7 +491,18 @@ async def _persist_cancel(
             # Guard even a competing cancellation: a same-status write must
             # not replace the first recorded end time or its reason.
             expected_statuses={"running"} if entity_type == "invocation" else None,
-            extra_fields={"ended_at": time.time()} if entity_type == "invocation" else None,
+            # A session's live phase ends with its terminal status, in this one
+            # statement: a kill can land on a row a SIGKILLed flow left at its
+            # last phase, and a separate clear would be a second write that can
+            # be skipped. Invocations have no phase column; they record their
+            # end time instead.
+            extra_fields=(
+                {"ended_at": time.time()}
+                if entity_type == "invocation"
+                else {"current_phase": None}
+                if entity_type == "session"
+                else None
+            ),
         )
     except TransitionRejectedError:
         # The entity went terminal between the pre-check and this write —

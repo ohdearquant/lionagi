@@ -669,6 +669,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "Ejecuciones recientes no disponibles",
     "title": "Programaciones",
     "subtitle": "Automatizaciones permanentes con disparadores cron, de intervalo y de GitHub",
     "calendar": "Calendario",

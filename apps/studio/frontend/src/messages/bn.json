@@ -669,6 +669,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "সাম্প্রতিক রান উপলভ্য নয়",
     "title": "শিডিউল",
     "subtitle": "cron, interval ও GitHub ট্রিগারে স্থায়ী অটোমেশন",
     "calendar": "ক্যালেন্ডার",

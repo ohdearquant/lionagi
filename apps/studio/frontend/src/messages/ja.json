@@ -669,6 +669,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "最近の実行を取得できません",
     "title": "スケジュール",
     "subtitle": "cron、インターバル、GitHubトリガーの常設オートメーション",
     "calendar": "カレンダー",

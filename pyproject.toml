@@ -27,7 +27,7 @@ dependencies = [
     "tomli>=2.0.1; python_version < '3.11'",
     "python-dotenv>=1.2.2",
     "tiktoken>=0.10.0",
-    "aiosqlite>=0.21.0",
+    "aiosqlite>=0.22.0",
     "sqlalchemy[asyncio]>=2.0.0",
     "orjson>=3.11.8",
     "psutil>=5.9.0",
@@ -143,7 +143,7 @@ postgres = [
 sqlite = [
     # aiosqlite is now a core dependency; this extra is kept for backwards
     # compatibility with existing `pip install lionagi[sqlite]` invocations.
-    "aiosqlite>=0.21.0",
+    "aiosqlite>=0.22.0",
 ]
 
 graph = [

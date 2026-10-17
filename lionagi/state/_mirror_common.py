@@ -9,14 +9,15 @@ This module also owns the bounded-preview + source-pointer codec: mirror rows
 store a bounded display preview in ``messages.content`` plus a versioned byte
 pointer into the source transcript in ``messages.node_metadata.mirror_source``,
 so the pointer allows deterministic recovery of the full content without
-duplicating it in sqlite. See ``mirror_spec.md`` for the normative contract.
+duplicating it in sqlite. See ``docs/internals/state-transcript-mirrors.md`` for the
+normative contract.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
@@ -37,6 +38,9 @@ __all__ = (
     "content_sha256",
     "bound_mirror_content",
     "resolve_mirrored_content",
+    "MIRROR_WRITE_CHUNK",
+    "write_mirrored_messages",
+    "name_answered_results",
 )
 
 MirrorKind = Literal["claude_jsonl", "codex_jsonl"]
@@ -48,6 +52,10 @@ _RETRYABLE_PROVIDER_ERROR_KINDS = frozenset({"rate_limit", "server_error"})
 
 # Function-name preview never exceeds this even when the char budget is larger.
 _FUNCTION_PREVIEW_CAP = 128
+
+# Messages per transaction when a mirror pass writes a batch: bounds how long one batch holds the
+# writer while keeping a string-id progression's rewrite to once per chunk.
+MIRROR_WRITE_CHUNK = 500
 
 
 class MirrorSourcePointer(TypedDict):
@@ -99,7 +107,7 @@ def _truncate(text: str, limit: int) -> tuple[str, bool]:
 
 
 def _bound_content(content: dict[str, object], max_chars: int) -> tuple[dict[str, object], bool]:
-    """Apply the per-message-class preview rule from mirror_spec.md §3.
+    """Apply the per-message-class preview rule the mirrors doc describes.
 
     Message classes are discriminated by which fields are present rather than
     an exact key-set match: ``RoledMessage.to_dict(mode="db")`` includes a
@@ -159,7 +167,7 @@ def bound_mirror_content(
     """Bound one message's full content to a display preview and build its pointer.
 
     Preview slicing counts Unicode code points; the pointer's offset/byte-count
-    are the exact bytes of the source JSONL record (see mirror_spec.md §4).
+    are the exact bytes of the source JSONL record.
     """
     if max_preview_chars < 0:
         raise ValueError(f"max_preview_chars must be >= 0, got {max_preview_chars}")
@@ -186,7 +194,7 @@ def resolve_mirrored_content(
     reconstruct: Callable[[dict[str, object], str, str], dict[str, object] | None] | None = None,
 ) -> ResolvedContent:
     """Recover a mirrored row's full content from its source pointer, verifying
-    every step (mirror_spec.md §5). Never raises; degrades to the stored
+    every step. Never raises; degrades to the stored
     preview with a stable ``reason`` on any mismatch -- a stale/moved/rotated
     source must never silently return content from a different file.
 
@@ -387,3 +395,98 @@ async def link_lineage(
         lineage.update(extra)
     meta["lineage"] = lineage
     await db.set_session_provenance(child_sid, node_metadata=meta)
+
+
+async def name_answered_results(db: StateDB, rows: Sequence[dict[str, Any]]) -> None:
+    """Give each tool result row with no function name the name of the tool use it answers.
+
+    A mirror's tool-name map holds the uses still waiting for a result, so a second result for a
+    use already answered finds no name there, and its row, sharing the first result's id, would
+    replace that row with an empty name. (A map loaded from an earlier release's key also holds
+    answered uses, which stay until a repeat of their result consumes them.) The name comes from
+    the use's own row instead: one in this batch, else the stored one. A result whose use is in
+    neither keeps the empty name, and so does one whose stored row with that id is not a use. The
+    batch's stored lookups are read together, one query per 500 ids, not one read per result."""
+    # A stored row lends its name only when it is a use row, and the row is judged two ways. Both
+    # mirrors write their rows through ``to_dict(mode="db")``, which records the class in
+    # ``node_metadata.lion_class``; ``insert_messages`` resolves that to a ``message_types`` row
+    # and the readers return it as ``lion_class_str``, so a mirrored use row reads back as
+    # ``lionagi.protocols.messages.action_request.ActionRequest`` and a result row as
+    # ``...action_response.ActionResponse``. A recorded class that is not ActionRequest is refused
+    # outright: an ActionResponse whose ``output`` is None keeps its default ``arguments: {}``
+    # once the omitted field is dropped, so it would pass a field-shape test. Rows with no
+    # recorded class (an older or non-mirror writer; StateDB reads one back as its placeholder
+    # type, ``__unknown__``) fall back to the field shape, as
+    # ``_bound_content`` tells the classes apart: a use carries function and arguments without
+    # output, a result carries output. The field test is kept for the unclassed row alone; a
+    # recorded class always wins over it.
+    use_class = "lionagi.protocols.messages.action_request.ActionRequest"
+    unclassed = (None, "", "__unknown__")
+    # Rows are told apart by their fields, as _bound_content does: a result carries both
+    # function and output, a use function and arguments without output.
+    requested: dict[str, Any] = {}
+    for row in rows:
+        content = row.get("content")
+        if (
+            isinstance(content, dict)
+            and "function" in content
+            and "arguments" in content
+            and "output" not in content
+        ):
+            requested[row["id"]] = content["function"]
+    unresolved: list[str] = []
+    for row in rows:
+        content = row.get("content")
+        if not isinstance(content, dict) or "output" not in content or content.get("function"):
+            continue
+        link = content.get("action_request_id")
+        if not isinstance(link, str) or not link:
+            continue
+        if requested.get(link) is None:
+            unresolved.append(link)
+    stored = await db.get_messages(list(dict.fromkeys(unresolved))) if unresolved else {}
+    for row in rows:
+        content = row.get("content")
+        if not isinstance(content, dict) or "output" not in content or content.get("function"):
+            continue
+        link = content.get("action_request_id")
+        if not isinstance(link, str) or not link:
+            continue
+        name = requested.get(link)
+        if name is None:
+            stored_row = stored.get(link)
+            stored_content = stored_row.get("content") if stored_row is not None else None
+            recorded_class = stored_row.get("lion_class_str") if stored_row is not None else None
+            if (
+                isinstance(stored_content, dict)
+                and (recorded_class in unclassed or recorded_class == use_class)
+                and "arguments" in stored_content
+                and "output" not in stored_content
+            ):
+                name = stored_content.get("function")
+        if isinstance(name, str) and name:
+            content["function"] = name
+
+
+async def write_mirrored_messages(
+    db: StateDB,
+    rows: Sequence[dict[str, Any]],
+    *,
+    progression_ids: Sequence[str],
+    session_id: str,
+    activity_at: float | None,
+) -> None:
+    """Persist one mirrored batch, rewriting a string-id progression once per chunk rather than
+    once per message. The session's activity clock moves once, with the last chunk, as the
+    per-message loop moved it once after its last message. Naming a repeated result
+    (``name_answered_results``) is the mirror's job and runs before this, ahead of the
+    source pointer's content hash."""
+    for start in range(0, len(rows), MIRROR_WRITE_CHUNK):
+        chunk = rows[start : start + MIRROR_WRITE_CHUNK]
+        last = start + MIRROR_WRITE_CHUNK >= len(rows)
+        await db.insert_messages(
+            chunk,
+            progression_ids=progression_ids,
+            session_id=session_id if last else None,
+            activity_at=activity_at if last else None,
+        )

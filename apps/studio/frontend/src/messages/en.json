@@ -669,6 +669,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "Recent runs unavailable",
     "title": "Schedules",
     "subtitle": "Standing automations on cron, interval, and GitHub triggers",
     "calendar": "Calendar",

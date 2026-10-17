@@ -669,6 +669,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "Letzte Ausführungen nicht verfügbar",
     "title": "Zeitpläne",
     "subtitle": "Dauerhafte Automatisierungen über cron-, Intervall- und GitHub-Auslöser",
     "calendar": "Kalender",
