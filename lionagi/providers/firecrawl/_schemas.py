@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from lionagi.ln.types import Enum
 
 
 class OutputFormat(str, Enum):

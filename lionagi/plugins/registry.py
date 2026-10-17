@@ -12,10 +12,10 @@ import sys
 import threading
 import types
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 from typing import Any, ClassVar
 
+from lionagi.ln.types import Enum
 from lionagi.version import __version__ as _lionagi_version
 
 from ._user_settings import read_user_settings

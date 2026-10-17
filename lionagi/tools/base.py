@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from abc import ABC, abstractmethod
-from enum import Enum
 
 from pydantic import BaseModel, Field, JsonValue, field_serializer, field_validator
 
+from lionagi.ln.types import Enum
 from lionagi.protocols.action.tool import Tool
 from lionagi.protocols.graph.node import Node
 

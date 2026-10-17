@@ -8,12 +8,12 @@ import logging
 import warnings
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
-from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from pydantic import Field
 
 from lionagi.ln.concurrency import maybe_await
+from lionagi.ln.types import Enum
 from lionagi.session.signal import Signal
 
 if TYPE_CHECKING:

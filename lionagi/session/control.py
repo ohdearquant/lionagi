@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+
+from lionagi.ln.types import Enum
 
 __all__ = ("LoopDirective", "LoopControl", "LoopBreak", "ToolInvocation")
 

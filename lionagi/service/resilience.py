@@ -7,11 +7,11 @@ import functools
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from enum import Enum
 from typing import Any, NoReturn, TypeVar
 
 from lionagi.ln.concurrency import Lock
 from lionagi.ln.concurrency import retry as _canonical_retry
+from lionagi.ln.types import Enum
 
 T = TypeVar("T")
 logger = logging.getLogger(__name__)
