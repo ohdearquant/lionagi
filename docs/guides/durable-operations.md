@@ -120,5 +120,5 @@ the new attempt derives its own rather than inheriting the superseded run's.
 Expected durable evidence is a state-database row plus a run directory. A flow
 adds a checkpoint; `--save` adds reviewable output at the chosen path.
 
-Next, use [Studio and schedules](studio.md) when durable work needs a visual
-operating surface or a trigger.
+Next, use [Studio](studio-getting-started.md) for a visual operating surface,
+or [schedules](studio-schedules.md) to trigger durable work automatically.

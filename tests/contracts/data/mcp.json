@@ -811,7 +811,7 @@
           },
           "metadata": {
             "type": "string",
-            "description": "JSON merged key-by-key into the invocation's existing metadata, so anything written during the run survives unless this overwrites that key.",
+            "description": "JSON merged key-by-key into the invocation's existing metadata as an RFC 7396 merge patch, so anything written during the run survives unless this overwrites that key. A nested object merges into the stored object rather than replacing it, and a key set to null is removed. A close naming a different status than the stored one records neither the status nor this payload.",
             "x-flag": "--metadata"
           }
         },
@@ -2564,7 +2564,7 @@
           },
           "host": {
             "type": "string",
-            "description": "Host to bind (default: 127.0.0.1)",
+            "description": "Host to bind (default: 127.0.0.1). `docker` also publishes the container port on this host, so anything else there exposes the daemon to that interface. This is an IP address, not an address with a port: the port is `port`, and a value carrying a port is refused.",
             "x-flag": "--host"
           },
           "frontend_port": {
@@ -2589,7 +2589,7 @@
           },
           "docker": {
             "type": "boolean",
-            "description": "Run the bundled frontend + backend via Docker",
+            "description": "Run the bundled frontend + backend via Docker. The port is published on `host` (loopback by default)",
             "x-flag": "--docker"
           },
           "no_frontend": {
