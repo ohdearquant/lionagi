@@ -56,12 +56,15 @@ _REMOTE_ORIGIN_REFUSAL = (
 def _origin_accepted_without_token(origins: list[str], raw_host: str) -> bool:
     """Whether a request may use the API when no token is configured, by its Origin.
 
-    No Origin header (a command-line or scripted client) is accepted. A browser origin is
-    accepted when its host is loopback (``localhost``, 127.0.0.0/8 or ``::1``) on any port,
-    or when it is the daemon's own origin: its authority equals the request's Host, as for
-    the SPA a daemon bound to another address serves itself. Any other origin, ``null``
-    included, is refused. CORS only decides which pages may read a response; a page on an
-    allowed origin can still act, so it cannot stand in for this check.
+    A request with no Origin header is accepted here and then judged by its
+    ``Sec-Fetch-Site`` header (``_fetch_site_accepted_without_origin``), because a
+    browser sends no Origin on some cross-site GET requests. A browser origin is accepted
+    when its host is loopback (``localhost``, 127.0.0.0/8 or ``::1``) on any port, or
+    when it is the daemon's own
+    origin: its authority equals the request's Host, as for the SPA a daemon bound to
+    another address serves itself. A request that carries an Origin from another site,
+    ``null`` included, is refused. CORS only decides which pages may read a response; a
+    page on an allowed origin can still act, so it cannot stand in for this check.
     """
     if not origins:
         return True
@@ -171,16 +174,22 @@ def _emit_startup_warnings() -> None:
         if _host_reaches_other_machines(bind_host):
             where = bind_host or "every interface"
             _log.warning(
-                f"Studio running WITHOUT authentication on host {where} — a page "
-                "on any machine that can reach that address is accepted, so other "
-                "machines can reach this Studio. This is unsafe in containers or cloud "
-                "deployments. Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token."
+                f"Studio running WITHOUT authentication on host {where} — API "
+                "requests with neither Origin nor Sec-Fetch-Site are accepted from "
+                "other machines that can reach that address. This is unsafe in "
+                "containers or cloud deployments. Set LIONAGI_STUDIO_AUTH_TOKEN to "
+                "require a bearer token."
             )
         else:
             _log.warning(
-                "Studio running WITHOUT authentication — API requests from the command "
-                "line and from pages on this machine are accepted; a page on any other "
-                "origin is refused. Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token."
+                "Studio running WITHOUT authentication on loopback (reachable on this "
+                "machine only) — requests with neither Origin nor "
+                "Sec-Fetch-Site are accepted (CLI, scripts, indistinguishable browsers); "
+                "without Origin, Sec-Fetch-Site none/same-origin pass, "
+                "same-site/cross-site/other/repeated values need the paired bearer; "
+                "Origin outside loopback/the daemon needs the paired bearer. "
+                "Header admission does not prove locality. "
+                "Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token."
             )
 
     if "*" in CORS_ORIGINS:
