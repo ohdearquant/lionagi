@@ -78,12 +78,15 @@ def _source_span(relative: str, start: int, end: int) -> str:
 
 
 def _in_span(relative: str, start: int, end: int, *needles: str) -> None:
-    # The range pinned here has to be the one the amendment cites, so a test cannot
-    # keep passing on a range the record no longer names.
+    # The range pinned here has to be one the amendment cites for this file: the
+    # file's path, then the range, with no other source path between them, so a bare
+    # ``:N`` continuation counts for the file named before it and for no other.
     cite = f":{start}" if start == end else f":{start}-{end}"
-    assert re.search(rf"(?<![0-9]){re.escape(cite)}(?![0-9-])", _amendment_body()), (
-        f"the amendment does not cite {relative}{cite}"
+    pattern = (
+        rf"{re.escape(relative)}(?:(?!lionagi/[A-Za-z0-9_/.]+\.py)[\s\S])*?"
+        rf"(?<![0-9]){re.escape(cite)}(?![0-9-])"
     )
+    assert re.search(pattern, _amendment_body()), f"the amendment does not cite {relative}{cite}"
     span = _source_span(relative, start, end)
     for needle in needles:
         assert needle in span, f"{needle!r} not found in {relative}:{start}-{end}"
@@ -424,7 +427,28 @@ def test_react_removal_is_a_stated_step_not_a_left_out() -> None:
     # the order is one line: history bound, then the step, then render, then the
     # other bounds.
     assert "This step runs after the history bound, in the order §6 fixes" in d2
-    assert "The history bound runs on the view §1 resolved, before §2's ReAct step" in d2
+    assert "The history bound runs on the view §1 resolved, before §2 projects it" in d2
+    assert "It keeps or drops whole turns" in d2
+    assert (
+        "A turn is one historical instruction, the assistant responses that answer it, and the "
+        "action responses between it and the previous instruction" in d2
+    )
+    assert (
+        "so the records it keeps still pass §3, and no action response outlives the "
+        "instruction it belongs to" in d2
+    )
+    assert (
+        "is a `left_out` entry of the history section with reason `truncated`, and its "
+        "`tool_results` entry is never built" in d2
+    )
+    assert (
+        "§2's projection and its ReAct step run over the turns the history bound kept and "
+        "the current instruction" in d2
+    )
+    assert (
+        "§3 to §5 validate, fold and render what remains; §5's omission of a falsy rendered "
+        "value applies to an instruction the step left empty" in d2
+    )
     assert "the history bound measures each instruction with the caller's ReAct context" in d2
     assert "so the instruction bound measures the current instruction after the ReAct step" in d2
     assert "keeps under its bound (§6)" not in d2
@@ -458,7 +482,8 @@ def test_the_decisions_carry_no_delta_table_or_gap_list() -> None:
 
 
 def test_the_removed_false_claims_are_gone() -> None:
-    text = _adr()
+    # Normalized, so a removed sentence that comes back wrapped across lines is caught.
+    text = _normalized(_adr())
     for removed in (
         "no constructor admits a section without a bound record",
         "refusal exists for exactly one case",

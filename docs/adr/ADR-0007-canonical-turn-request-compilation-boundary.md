@@ -352,11 +352,19 @@ error. Bounds measure rendered text and never mutate history.
 
 The bounds and §2's ReAct step run in one order, so no step reads the result of a later one:
 
-1. The history bound runs on the view §1 resolved, before §2's ReAct step. It keeps or drops whole
-   turns, an instruction together with the assistant responses that answer it, so the records it
-   keeps still pass §3. It measures each turn in its full rendered form: the history bound
-   measures each instruction with the caller's ReAct context items in.
-2. §2's ReAct step runs over the instructions the history bound kept and the current instruction.
+1. The history bound runs on the view §1 resolved, before §2 projects it. It keeps or drops whole
+   turns. A turn is one historical instruction, the assistant responses that answer it, and the
+   action responses between it and the previous instruction (or the start of the view), which §2
+   projects into that
+   instruction's `tool_results` entry; so the records it keeps still pass §3, and no action
+   response outlives the instruction it belongs to. It measures each turn's instruction and
+   assistant responses in their full rendered form: the history bound measures each instruction
+   with the caller's ReAct context items in. A kept turn's `tool_results` entry is measured by the
+   tool_results bound in step 4. Every record of a dropped turn, its action responses included, is
+   a `left_out` entry of the history section with reason `truncated`, and its `tool_results` entry
+   is never built.
+2. §2's projection and its ReAct step run over the turns the history bound kept and the current
+   instruction.
 3. §3 to §5 validate, fold and render what remains; §5's omission of a falsy rendered value
    applies to an instruction the step left empty.
 4. The system, instruction, context and tool_results bounds then measure their rendered sections,
