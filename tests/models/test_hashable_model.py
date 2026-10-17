@@ -128,10 +128,8 @@ class TestDefaultSerializer:
         s = o.to_json()
         assert '"v":5' in s.replace(" ", "")
 
-    def test_serializer_caches_on_subsequent_calls(self):
+    def test_serializer_is_the_element_serializer(self):
         from lionagi.models import hashable_model as hm
+        from lionagi.protocols.generic.element import DEFAULT_ELEMENT_SERIALIZER
 
-        hm._DEFAULT_HASHABLE_SERIALIZER = None
-        a = hm._get_default_hashable_serializer()
-        b = hm._get_default_hashable_serializer()
-        assert a is b
+        assert hm._get_default_hashable_serializer() is DEFAULT_ELEMENT_SERIALIZER
