@@ -1681,7 +1681,7 @@ async def get_session_route(
     return session
 
 
-@studio_route("/sessions/{session_id}", method="PATCH", area="sessions", name="label_session")
+@studio_route("/sessions/{session_id}", method="PUT", area="sessions", name="label_session")
 async def label_session_route(session_id: str, body: SessionLabelBody) -> dict[str, Any]:
     """Set or clear the display label without changing the session's activity."""
     # Check before opening a writable store: a missing id must not create a

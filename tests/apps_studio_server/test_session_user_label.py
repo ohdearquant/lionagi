@@ -87,7 +87,7 @@ async def test_http_label_wins_on_reads_without_changing_activity_or_order(label
     listed_before = (await client.get("/api/sessions/")).json()["sessions"]
     assert [row["id"] for row in listed_before] == ["newer", "labelled"]
 
-    written = await client.patch("/api/sessions/labelled", json={"user_label": "  My label  "})
+    written = await client.put("/api/sessions/labelled", json={"user_label": "  My label  "})
     assert written.status_code == 200
     assert written.json()["name"] == "My label"
     assert written.json()["user_label"] == "My label"
@@ -109,15 +109,15 @@ async def test_http_clear_restores_next_tier_and_omission_preserves_label(label_
     path, client = label_client
     await _seed_session(path)
     before = _stored_row(path)
-    written = await client.patch("/api/sessions/labelled", json={"user_label": "Chosen"})
+    written = await client.put("/api/sessions/labelled", json={"user_label": "Chosen"})
     assert written.status_code == 200
 
-    omitted = await client.patch("/api/sessions/labelled", json={})
+    omitted = await client.put("/api/sessions/labelled", json={})
     assert omitted.status_code == 200
     assert omitted.json()["name"] == "Chosen"
     assert _stored_row(path)["user_label"] == "Chosen"
 
-    cleared = await client.patch("/api/sessions/labelled", json={"user_label": clear})
+    cleared = await client.put("/api/sessions/labelled", json={"user_label": clear})
     assert cleared.status_code == 200
     assert cleared.json()["name"] == "Authored play"
     assert cleared.json()["user_label"] is None
@@ -142,7 +142,7 @@ async def test_http_label_strips_before_length_check_and_accepts_printable_text(
 ):
     path, client = label_client
     await _seed_session(path)
-    response = await client.patch("/api/sessions/labelled", json={"user_label": label})
+    response = await client.put("/api/sessions/labelled", json={"user_label": label})
     assert response.status_code == 200
     assert response.json()["name"] == expected
     assert _stored_row(path)["user_label"] == expected
@@ -156,7 +156,7 @@ async def test_http_invalid_label_is_rejected_without_changing_the_row(label_cli
     path, client = label_client
     await _seed_session(path)
     before = _stored_row(path)
-    response = await client.patch("/api/sessions/labelled", json={"user_label": label})
+    response = await client.put("/api/sessions/labelled", json={"user_label": label})
     assert response.status_code == 422
     assert _stored_row(path) == before
 
@@ -165,7 +165,7 @@ async def test_http_missing_session_matches_get_and_does_not_create_store(label_
     path, client = label_client
     assert not path.exists()
     read = await client.get("/api/sessions/missing")
-    written = await client.patch("/api/sessions/missing", json={"user_label": "No row"})
+    written = await client.put("/api/sessions/missing", json={"user_label": "No row"})
     assert written.status_code == read.status_code == 404
     assert written.json() == read.json()
     assert not path.exists()
@@ -177,7 +177,7 @@ async def test_http_missing_session_does_not_migrate_an_existing_store(label_cli
     _remove_label_column(path)
     before = _stored_row(path)
     read = await client.get("/api/sessions/missing")
-    written = await client.patch("/api/sessions/missing", json={"user_label": "No row"})
+    written = await client.put("/api/sessions/missing", json={"user_label": "No row"})
     assert written.status_code == read.status_code == 404
     assert written.json() == read.json()
     assert _stored_row(path) == before
@@ -201,7 +201,7 @@ async def test_legacy_store_reads_without_migration_then_accepts_a_label_write(l
     assert rows[0]["name"] == "Authored play"
     assert _stored_row(path) == before
 
-    written = await client.patch("/api/sessions/labelled", json={"user_label": "Migrated"})
+    written = await client.put("/api/sessions/labelled", json={"user_label": "Migrated"})
     assert written.status_code == 200
     assert written.json()["name"] == "Migrated"
     assert _stored_row(path)["user_label"] == "Migrated"
@@ -288,7 +288,7 @@ async def test_persisted_label_reaches_cli_and_admin_display_names(label_client,
     monkeypatch.setattr(admin, "_code_identity_report", no_code_identity)
     path, client = label_client
     await _seed_session(path)
-    response = await client.patch("/api/sessions/labelled", json={"user_label": "Visible here"})
+    response = await client.put("/api/sessions/labelled", json={"user_label": "Visible here"})
     assert response.status_code == 200
 
     async with StateDB(path, readonly=True) as db:
@@ -299,3 +299,12 @@ async def test_persisted_label_reaches_cli_and_admin_display_names(label_client,
     unhealthy = health.json()["sessions"]["unhealthy"]
     assert unhealthy[0]["session_id"] == "labelled"
     assert unhealthy[0]["name"] == "Visible here"
+
+
+async def test_http_patch_is_not_registered(label_client):
+    path, client = label_client
+    await _seed_session(path)
+    before = _stored_row(path)
+    response = await client.patch("/api/sessions/labelled", json={"user_label": "Unchanged"})
+    assert response.status_code == 405
+    assert _stored_row(path) == before

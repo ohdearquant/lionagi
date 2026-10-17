@@ -22,7 +22,7 @@ project those rows ran under. To keep the project, name it in those members.
   list, and forks preserve the source description independently. The store adds
   nullable `studio_operator_conversations.description`.
 - Studio sessions can set or clear an explicit display label through
-  `PATCH /api/sessions/{session_id}`. Labels take precedence in session list and
+  `PUT /api/sessions/{session_id}`. Labels take precedence in session list and
   detail names without changing activity timestamps; clearing a label restores
   the existing fallback name. The store adds nullable `sessions.user_label`.
 - `lionagi.ln.concurrency.temporary_signal_handlers(handler, signals=(SIGINT, SIGTERM))`, a
