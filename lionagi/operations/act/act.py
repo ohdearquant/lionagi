@@ -211,9 +211,18 @@ async def _act(
     if action_request not in branch.messages:
         await branch.msgs.a_add_message(action_request=action_request)
 
+    # Build the response explicitly and hand it to the manager as a response: a
+    # successful call whose output is None must still leave a linked ActionResponse,
+    # and an explicit response object says "the output is None" where a bare
+    # action_output=None would read as an omitted keyword.
+    action_response = branch.msgs.create_action_response(
+        action_request=action_request,
+        action_output=func_call.response,
+    )
     await branch.msgs.a_add_message(
         action_request=action_request,
         action_output=func_call.response,
+        action_response=action_response,
     )
 
     return ActionResponseModel(
