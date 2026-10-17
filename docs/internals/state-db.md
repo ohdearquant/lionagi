@@ -294,11 +294,15 @@ a fresh claim on the same reapable status, for instance).
 
 On top of that sits an integrity floor: once an entity's status is terminal
 (per `TERMINAL_STATUSES_BY_ENTITY_TYPE`), any write that would *change* it is
-rejected and recorded in `admin_events` — a terminal record must never
+rejected, and a rejection that the transition vocabulary or the terminal floor
+produces is recorded in `admin_events` — a terminal record must never
 silently move back to running or oscillate to a different terminal value. A
-same-status write is not treated as a transition and passes through
-untouched, since callers rely on it to refresh a reason code on an
-already-terminal row. The one deliberate escape hatch is
+guarded write refused earlier by its `expected_statuses` membership, before
+that vocabulary is consulted, returns the conflict without writing a
+rejection row: the caller named the states it could move from, and the row
+was not one of them. A same-status write is not treated as a transition and
+passes through untouched, since callers rely on it to refresh a reason code
+on an already-terminal row. The one deliberate escape hatch is
 `override=True` with both `override_actor` and `override_justification`
 required — an operational repair that does change a terminal value, recorded
 in `admin_events` distinctly from an ordinary transition so the two are never
@@ -321,19 +325,17 @@ by an `update_*(node_metadata=...)` write, which let two concurrent callers
 each read the same row and overwrite each other's patch. Both now run as a
 single dialect-specific `UPDATE`, so the merge is serialized by the database
 itself (SQLite's write lock; PostgreSQL's ordinary row-level MVCC locking)
-instead of racing in Python. A patch value that is itself a nested dict is
-rejected before any SQL runs, because SQLite's `json_patch` merges nested
-objects recursively while PostgreSQL's `jsonb ||` replaces them shallowly —
-allowing either silently would make the two backends persist different state
-from the same call.
+instead of racing in Python. Both backends merge the patch under RFC 7396:
+a nested object patch merges into the stored object rather than replacing it,
+and a key the patch sets to `null` is removed. SQLite's `json_patch` already
+implements RFC 7396; PostgreSQL's `jsonb ||` merges top-level keys only, so
+its branch reproduces the same semantics with one `jsonb_set` per patch node,
+containers ahead of their contents, and `#-` for a key the patch takes out.
 
-On PostgreSQL the merge SQL also has to reproduce RFC 7396's "null in the
-patch deletes the key" semantics by hand, because `jsonb ||` keeps an
-explicit null instead of deleting it (unlike SQLite's `json_patch`, which
-already implements RFC 7396). Rather than stripping *all* nulls from the
-merged document — which would also strip nulls that pre-date this patch and
-have nothing to do with it — the statement subtracts exactly the set of keys
-the incoming patch itself set to null.
+The PostgreSQL branch's `#-` removal takes out exactly the keys the incoming
+patch itself set to null, rather than stripping *all* nulls from the merged
+document — which would also strip nulls that pre-date this patch and have
+nothing to do with it, such as the `ended_at: None` a flow segment carries.
 
 Two shapes the merge deliberately does not destroy. A malformed or non-object
 existing value, meaning an array, a scalar, or on SQLite even non-JSON text, is
@@ -503,7 +505,13 @@ The predicate is a lower bound only, so a row timestamped in the future is
 included rather than held back until its time arrives. Three of its members do
 not fit even that shape. `p95_latency_ms` needs a sorted
 sample, which SQLite has no percentile function for, so it fetches raw
-invocation durations and computes the percentile in Python.
+invocation durations and computes the percentile in Python. It excludes rows
+whose `ended_at` is an observation of a run being ended from outside: a cancelled
+row, whose end records when cleanup noticed it, and a row the lifecycle reaper
+ended. The reaper tags its rows with `{"kind": "invocation"}` in
+`status_evidence_refs` and no run-side terminal writer adds that entry, so the
+query both drops `cancelled` and reads that column to drop reaped rows; a run
+that recorded its own timeout stays in the sample.
 `github_poll_healthy_age_minutes` is a point-in-time gauge rather than a
 windowed aggregate, so it accepts `window_start` for signature parity and
 ignores it, reading "now" fresh inside the method.

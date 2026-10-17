@@ -237,6 +237,28 @@ class _BlockingEngine:
         return self._stream(turn)
 
 
+class _HeldWriteEngine:
+    """Replies once and arms the store stand-in for that reply's frame write.
+
+    The stream starts, then yields its one text event; the coordinator's next
+    store write is the frame for that event, which the stand-in holds inside its
+    transaction so a stop lands while the write is in flight.
+    """
+
+    armed: dict | None = None
+
+    async def _stream(self, _turn):
+        if self.armed is not None:
+            self.armed["on"] = True
+        yield OperatorEngineEvent(
+            "text", {"content": "first event", "format": "plain", "role": "assistant"}
+        )
+        await asyncio.Event().wait()
+
+    def stream(self, turn):
+        return self._stream(turn)
+
+
 class _ExplodingEngine:
     """Fails the turn after its run exists, on the generic exception path."""
 
@@ -382,6 +404,103 @@ async def test_a_native_cancelled_turn_records_cancelled_before_teardown(tmp_pat
     assert run_status == "cancelled"
     assert order[0] == ("finish_turn", "cancelled")
     assert order.index(("finish_turn", "cancelled")) < order.index(("teardown", "cancelled"))
+
+
+@pytest.mark.asyncio
+async def test_a_stop_cancelling_the_first_frame_write_releases_the_store(tmp_path, monkeypatch):
+    """A stop that lands while the first event's frame write is inside its transaction still
+    records the turn ``cancelled``, and does it without waiting out the store's busy timeout.
+
+    The write runs ``BEGIN IMMEDIATE`` and then leaves a ``SELECT`` on its connection
+    unfinalized, as a frame write cancelled mid-transaction does. SQLite keeps the store's
+    write lock until that transaction ends, and it defers the close of a connection whose
+    statements are still open, so a store that only closes the connection leaves the lock
+    held: the stop's own write then waits out the whole busy timeout and the turn stays
+    ``running``. The store's connection block ends the transaction as it exits, so the lock
+    is free the moment the cancelled write unwinds.
+    """
+    import contextlib
+    import time
+
+    import lionagi.studio.operator.store as store_mod
+
+    runs_root = tmp_path / "runs"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", runs_root)
+
+    async def setup(*args, **kwargs):
+        return {"session_id": "s1", "db": SimpleNamespace(compatibility=None)}
+
+    async def teardown(ctx, *, status="completed", exception=None):
+        return status
+
+    monkeypatch.setattr(runs_mod, "setup_agent_persist", setup)
+    monkeypatch.setattr(runs_mod, "teardown_agent_persist", teardown)
+
+    # Patch at the narrowest point: wrap ``open_db`` as the store module resolves it, so
+    # the connection whose transaction is held open is the store's own. The cursor a
+    # cancelled coroutine leaves behind is the one this wrapper creates.
+    armed = {"on": False}
+    held: list = []
+    inside = asyncio.Event()
+    release = asyncio.Event()
+    real_open_db = store_mod.open_db
+
+    @contextlib.asynccontextmanager
+    async def holding_open_db(path):
+        async with real_open_db(path) as db:
+            original_execute = db.execute
+
+            async def execute(sql, *args, **kwargs):
+                cursor = await original_execute(sql, *args, **kwargs)
+                if armed["on"] and sql.strip().upper() == "BEGIN IMMEDIATE":
+                    armed["on"] = False
+                    # Kept referenced, so the statement stays unfinalized and the
+                    # connection's close stays deferred, as the cancelled frame does.
+                    held.append(await original_execute("SELECT 1 FROM studio_operator_frames"))
+                    inside.set()
+                    await release.wait()
+                return cursor
+
+            db.execute = execute
+            yield db
+
+    monkeypatch.setattr(store_mod, "open_db", holding_open_db)
+    monkeypatch.setattr(_HeldWriteEngine, "armed", armed)
+
+    coordinator = OperatorCoordinator(
+        store=OperatorStore(tmp_path / "state.db"), engine_factory=_HeldWriteEngine
+    )
+    await coordinator.startup()
+    try:
+        cid = (await coordinator.create_conversation())["conversation"]["id"]
+        accepted = await coordinator.submit(
+            cid,
+            instruction="hello",
+            context={"space": "mission", "route": "/", "filters": {}},
+            expected_last_sequence=0,
+        )
+        request_id = accepted["requestId"]
+        await asyncio.wait_for(inside.wait(), 5)
+
+        started = time.monotonic()
+        stopping = asyncio.ensure_future(coordinator.cancel(cid, request_id))
+        # The stop cancels the in-flight turn here as well. The coordinator's own cancel
+        # reaches the turn the same way, but only after its own write to the store, which
+        # waits on the lock the held write owns; issuing the turn's cancel directly is what
+        # unwinds that write, and the stop completes only once the lock is free.
+        coordinator._tasks[request_id].cancel()
+        result = await asyncio.wait_for(stopping, 8)
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        await coordinator.shutdown()
+
+    turn = await coordinator.store.get_turn(request_id)
+    assert result["requestId"] == request_id
+    assert turn["status"] == "cancelled"
+    # Well inside the store's 5 s busy timeout: the lock was free when the stop wrote.
+    assert elapsed < 2.0, f"the stop took {elapsed:.2f}s, so it waited on the store's lock"
 
 
 async def _turn_error(tmp_path) -> dict:

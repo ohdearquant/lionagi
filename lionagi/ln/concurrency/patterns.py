@@ -132,7 +132,18 @@ async def bounded_map(
 
 
 class CompletionStream:
-    """Async context manager that yields (index, result) pairs in first-finished order."""
+    """Async context manager that yields (index, result) pairs in first-finished order.
+
+    Leaving the iteration early, such as a ``break`` after the first result, does
+    not cancel the remaining awaitables: it only stops the consumer from taking
+    further results. Exiting the ``async with`` block still waits for every
+    remaining awaitable. They run to completion unless one of them raises while
+    ``return_exceptions`` is false: that error cancels the others and is raised
+    when the block exits. To stop the remaining awaitables when the consumer
+    leaves, call ``cancel()`` on an enclosing cancel scope before the block exits,
+    for example the scope ``lionagi.ln.move_on_after`` yields. A deadline alone,
+    such as ``lionagi.ln.fail_after``, stops them only when it expires.
+    """
 
     def __init__(
         self,
@@ -173,8 +184,15 @@ class CompletionStream:
                     assert self._send is not None
                     await self._send.send((i, res))  # type: ignore[arg-type]
                 except anyio.ClosedResourceError:
-                    # Consumer closed the receive end early (e.g. break after first
-                    # result) — discard silently, this is expected early-exit behavior.
+                    # Guard for a send after the send end itself was closed. No
+                    # runner reaches this in normal use: the buffer is sized to
+                    # the awaitable count, so a send never blocks on a consumer,
+                    # and __aexit__ closes the ends only after the task group has
+                    # returned. A consumer that stops iterating early closes
+                    # neither end, so it does not trigger this; a closed receive
+                    # end raises BrokenResourceError instead, which is not
+                    # caught here. The branch is kept so a send racing a close
+                    # by other means is discarded rather than surfacing.
                     pass
             finally:
                 if limiter:

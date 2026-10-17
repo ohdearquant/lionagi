@@ -15,7 +15,7 @@ async function createConversation(page: Page): Promise<string> {
   return title;
 }
 
-async function selectFreshConversation(page: Page): Promise<void> {
+async function selectFreshConversation(page: Page, wait?: { timeout: number }): Promise<void> {
   // The conversation switcher is a disclosure button ("Conversations") that
   // reveals a list of conversation rows, each a labeled button rather than a
   // <select>/<option> pair. The fixture conversation is created with a unique
@@ -30,9 +30,9 @@ async function selectFreshConversation(page: Page): Promise<void> {
   const toggle = page.getByRole("button", { name: /^Conversations/ });
   await toggle.click();
   const row = page.getByRole("button", { name: title, exact: true });
-  await expect(row).toHaveCount(1);
+  await expect(row).toHaveCount(1, wait);
   await row.click();
-  await expect(page.getByLabel("Instruction")).toBeEnabled();
+  await expect(page.getByLabel("Instruction")).toBeEnabled(wait);
 }
 
 test.beforeEach(async ({ page }) => {
@@ -135,7 +135,30 @@ test("Operator streams, persists, stops, records a run, and resumes it", async (
 });
 
 test("Operator Deny and Allow decisions traverse the real permission route", async ({ page }) => {
-  test.setTimeout(45_000);
+  test.setTimeout(90_000);
+  // 17 waits in this test take streamTimeout: two select the fresh conversation
+  // after selectFreshConversation reloads the page, four assert a permission
+  // proposal or its command is on screen, six confirm the two decisions (three
+  // each), and five re-assert durable history after the reload. Each wait
+  // tolerates up to 30s of delay, so a slow render passes silently. The 90s is a
+  // chosen cap on the whole case, not a sum of those waits: a delayed run can
+  // reach the cap before any single wait times out. The other waits carry no
+  // explicit timeout. This config sets no actionTimeout or navigationTimeout, so
+  // the three response waits, the clicks and the navigations have no limit of
+  // their own and only the case cap bounds them.
+  // The 30s is sized against the stream's stall-and-replay path, whose timings
+  // come from src/lib/api.ts: OPERATOR_STREAM_LIVENESS_TIMEOUT_MS (15_000) plus
+  // the reconnect backoff, which starts at 750ms, multiplies by 1.8 per failed
+  // attempt, and caps at 10,000ms. Measured from the start of the silence, one
+  // silent stream recovers at 15_000 + 750 = 15,750ms, so that path stays inside
+  // the wait only when the silence starts before the wait does or within about
+  // 14.25s of it. Three failed reconnects behind the stall land at
+  // 15_000 + 750 + 1,350 + 2,430 + 4,374 = 23,904ms only when each reconnect
+  // is refused at once, before its stream opens (an opened stream resets the
+  // backoff); a failed reconnect that itself takes f ms adds f
+  // to that, so three 2,500ms failures add 7,500ms and land at 31,404ms, past
+  // the wait. A hung reconnect or a second silent stream can exceed 30s.
+  const streamTimeout = { timeout: 30_000 };
   // Decisions go over the real permission route with no credential of any kind:
   // Studio is a loopback-local tool and carries no browser-held token.
   const discovery = page.waitForResponse(
@@ -146,7 +169,7 @@ test("Operator Deny and Allow decisions traverse the real permission route", asy
   await page.goto("/");
   expect((await discovery).status()).toBe(200);
 
-  await selectFreshConversation(page);
+  await selectFreshConversation(page, streamTimeout);
   const instruction = page.getByLabel("Instruction");
 
   await instruction.fill("Request a gated demo action and wait for me to deny it.");
@@ -156,11 +179,13 @@ test("Operator Deny and Allow decisions traverse the real permission route", asy
     name: "Action requiring permission",
     exact: true,
   });
-  await expect(deniedProposal).toBeVisible({ timeout: 15_000 });
+  await expect(deniedProposal).toBeVisible(streamTimeout);
   // No click to reveal: the command must be on screen before Allow/Deny are reachable,
   // so asserting it directly is the contract. Re-adding a click here would collapse the
   // disclosure and assert the opposite of what this test is for.
-  await expect(deniedProposal.getByText('"operation": "record_permission_decision"')).toBeVisible();
+  await expect(deniedProposal.getByText('"operation": "record_permission_decision"')).toBeVisible(
+    streamTimeout,
+  );
 
   const deniedResponsePromise = page.waitForResponse(
     (response) =>
@@ -172,12 +197,12 @@ test("Operator Deny and Allow decisions traverse the real permission route", asy
   expect(deniedResponse.status()).toBe(200);
   expect(deniedResponse.request().postDataJSON()).toMatchObject({ decision: "deny" });
   await expect(deniedResponse.json()).resolves.toMatchObject({ status: "failed" });
-  await expect(page.getByText("Action cancelled", { exact: true })).toBeVisible();
+  await expect(page.getByText("Action cancelled", { exact: true })).toBeVisible(streamTimeout);
   await expect(
     page.getByText("Demo action denied. Nothing was changed.", { exact: true }),
-  ).toBeVisible();
+  ).toBeVisible(streamTimeout);
   const completedTurns = page.getByText("Turn completed", { exact: true });
-  await expect(completedTurns).toBeVisible();
+  await expect(completedTurns).toBeVisible(streamTimeout);
   const completedBeforeAllow = await completedTurns.count();
 
   await instruction.fill("Request a gated demo action and wait for me to allow it.");
@@ -187,11 +212,11 @@ test("Operator Deny and Allow decisions traverse the real permission route", asy
     name: "Action requiring permission",
     exact: true,
   });
-  await expect(proposals).toHaveCount(2, { timeout: 15_000 });
+  await expect(proposals).toHaveCount(2, streamTimeout);
   const allowedProposal = proposals.filter({
     has: page.getByRole("button", { name: "Allow", exact: true }),
   });
-  await expect(allowedProposal).toHaveCount(1);
+  await expect(allowedProposal).toHaveCount(1, streamTimeout);
 
   const allowedResponsePromise = page.waitForResponse(
     (response) =>
@@ -209,25 +234,38 @@ test("Operator Deny and Allow decisions traverse the real permission route", asy
     status: "succeeded",
     result: { executed: true },
   });
-  await expect(page.getByText("Approved action completed", { exact: true })).toBeVisible();
+  // The decision response can arrive before the stream delivers the confirmation.
+  await expect(page.getByText("Approved action completed", { exact: true })).toBeVisible(
+    streamTimeout,
+  );
   await expect(
     page.getByText("Demo action allowed and completed safely.", { exact: true }),
-  ).toBeVisible();
-  await expect(completedTurns).toHaveCount(completedBeforeAllow + 1);
+  ).toBeVisible(streamTimeout);
+  await expect(completedTurns).toHaveCount(completedBeforeAllow + 1, streamTimeout);
 
   // Both decisions and outcomes are durable daemon history, not client-only UI.
+  // The reload drops the stream subscription and re-hydrates the conversation
+  // from the HTTP snapshot, which already carries these frames, so the waits
+  // below are gated by that snapshot request rather than by stream recovery.
+  // They share the 30s for consistency; no reconnect budget is needed here.
   await page.reload();
   await expect(
     page.getByText("Demo action denied. Nothing was changed.", { exact: true }),
-  ).toBeVisible();
+  ).toBeVisible(streamTimeout);
   await expect(
     page.getByText("Demo action allowed and completed safely.", { exact: true }),
-  ).toBeVisible();
+  ).toBeVisible(streamTimeout);
   await expect(
     page.getByRole("region", { name: "Action requiring permission", exact: true }),
-  ).toHaveCount(2);
-  await expect(page.getByRole("button", { name: "Allow", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Deny", exact: true })).toHaveCount(0);
+  ).toHaveCount(2, streamTimeout);
+  await expect(page.getByRole("button", { name: "Allow", exact: true })).toHaveCount(
+    0,
+    streamTimeout,
+  );
+  await expect(page.getByRole("button", { name: "Deny", exact: true })).toHaveCount(
+    0,
+    streamTimeout,
+  );
 });
 
 test("a conversation can be renamed using only the keyboard", async ({ page }) => {
