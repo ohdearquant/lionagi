@@ -599,6 +599,10 @@ class CodingToolkit(LionTool):
                 if include:
                     cmd.insert(3, f"--include={include}")
                 raw = await run_sync(_subprocess_sync, cmd, False, 30.0, None)
+                # Checked before parsing: the rows read before a timeout are a partial
+                # answer, and with none the result would read as "no matches".
+                if raw.get("timed_out"):
+                    return {"success": False, "error": "grep timed out"}
                 if raw.get("returncode") == 2:
                     return {"success": False, "error": raw["stderr"].strip()}
                 lines = _visible_grep_lines(raw["stdout"])

@@ -352,6 +352,31 @@ async def test_search_asks_grep_to_skip_binary_files(tmp_path, monkeypatch):
     assert any(f.startswith("-") and not f.startswith("--") and "I" in f for f in flags)
 
 
+@pytest.mark.parametrize(
+    "partial",
+    ["", "a.py\x001:TOKEN\n"],
+    ids=["nothing-read", "some-rows-read"],
+)
+async def test_search_reports_a_timed_out_grep_as_a_failure(tmp_path, monkeypatch, partial):
+    import lionagi.tools.coding as coding_mod
+
+    def run(cmd, *args, **kwargs):
+        # The shape _subprocess_sync returns on a timeout.
+        return {
+            "stdout": partial + "\n\n[... output truncated at 100000 bytes ...]\n",
+            "stderr": "Command timed out after 30.0s",
+            "returncode": -1,
+            "timed_out": True,
+        }
+
+    monkeypatch.setattr(coding_mod, "_subprocess_sync", run)
+    _, _, tools = _make_toolkit(tmp_path)
+
+    result = await _tool_fn(tools, "search")(action="grep", pattern="TOKEN", path=".")
+
+    assert result == {"success": False, "error": "grep timed out"}
+
+
 async def test_coding_toolkit_reader_rejects_workspace_escape(tmp_path):
     """ReaderTool rejects paths that escape the workspace root."""
     secret = tmp_path.parent / "secret.txt"
