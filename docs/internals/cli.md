@@ -1285,10 +1285,36 @@ conversation opens a fresh transcript whose first message points — via `parent
 last message of the session it continues. `_Lineage` indexes each file's current leaf uuid and,
 when a file's root parent resolves to a different session's leaf, records a provenance link.
 
-**`_load_states`** — `offsets.json` persisted-state contract. Persists `tool_names` +
+**`_load_states`** — `offsets.json` persisted-state contract. Persists the tool-name map +
 `leaf_uuid` alongside the byte offset so a restart resumes mid-conversation without dropping a
 later tool_result's function name or losing cross-session lineage — both live only in process
 memory otherwise. Legacy `{path: int}` caches (offset only) load as bare cursors, then upgrade.
+A tool result consumes its use's entry, so a file's map holds the uses still waiting for a
+result; it is saved as `pending_tool_names` and loaded whole, so a use that never gets a result
+stays in it for as long as the file's state is kept. The same map is also saved as `tool_names`,
+the key earlier releases read. A map saved by an earlier release has only `tool_names` and held
+every use ever seen (answered ones included); a load keeps the newest `_LEGACY_TOOL_NAMES_KEEP`
+(64) entries of such a map, so an answered use among those stays in the map until a repeat of its
+result consumes it, and a pending use with 64 or more later uses in the map is dropped. A second
+result for a use already answered finds no entry; a pass names it from the use's own row, in the
+batch or already stored, before it writes the row, so it replaces the row the first result wrote
+without blanking the name. The map, and for a Codex rollout the current turn, move with the
+cursor: a pass hands
+`mirror_session` copies and adopts them only after the batch is durable, so a re-read batch finds
+the names it consumed and the turn it started in. `_save_states`
+reads `offsets.json` and skips the write when the file already holds the content, so an idle
+pass writes nothing and a file removed from outside is written again on the next pass.
+
+**`write_mirrored_messages`** (`state/_mirror_common.py`) — one transaction per chunk of
+`MIRROR_WRITE_CHUNK` (500) messages through `StateDB.insert_messages`. Each progression is read
+once per chunk and, when it holds an array of string ids and the batch gives string ids,
+rewritten at most once per chunk; any other stored value or id takes the per-message statement.
+Appending message by message rewrote both of a session's progression arrays once per message, so
+a pass of k messages rewrote each array k times; now a string-id progression is rewritten once per
+chunk. Each rewrite still writes the whole array, so the cost of a pass still grows with the
+session's length until progression storage changes (ADR-0117). The mirror names a repeated
+result from the row of the use it answers, in the batch or the store, before handing the batch
+to this writer, so a repeated result keeps the name the first one wrote.
 
 **`_read_new_events`** — cursor-advance-after-durable-write contract. The cursor is NOT
 advanced inside this function — the caller sets `state.offset` to the returned offset only
