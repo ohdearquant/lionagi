@@ -538,9 +538,9 @@ describe("bounded graph layout", () => {
       ["c0", "c1", "c2", "c3", "c4"],
       ["c5", "c6", "c7", "c8", "c9"],
     ]);
-    expect(result.edges.filter((entry) => entry.data?.continuation).map((entry) => entry.id)).toEqual(
-      ["c4-c5"],
-    );
+    expect(
+      result.edges.filter((entry) => entry.data?.continuation).map((entry) => entry.id),
+    ).toEqual(["c4-c5"]);
     const chord = result.edges.find((entry) => entry.id === "c3-c9")!;
     expect(chord.data?.continuation).toBeUndefined();
   });
@@ -663,10 +663,17 @@ describe("fold breaks only where the rule admits one", () => {
   // it holds no admissible break, so no boundary inside it could be taken
   // without folding one of its own crossing edges backwards.
   const chainIds = (length: number) => Array.from({ length }, (_, index) => `c${index}`);
-  const caseEdges = (ids: string[], chords: [string, string][] = [], parallel: [string, string][] = []) => [
+  const caseEdges = (
+    ids: string[],
+    chords: [string, string][] = [],
+    parallel: [string, string][] = [],
+  ) => [
     ...ids.slice(1).map((id, index) => edge(ids[index], id)),
     ...chords.map(([source, target]) => edge(source, target)),
-    ...parallel.map(([source, target]) => ({ ...edge(source, target), id: `${source}-${target}#2` })),
+    ...parallel.map(([source, target]) => ({
+      ...edge(source, target),
+      id: `${source}-${target}#2`,
+    })),
   ];
   // A backwardChain: a plain chain plus `backEdges` edges from the last node
   // back to the first `backEdges` nodes, the cyclic fallback the fold runs on.
@@ -689,23 +696,40 @@ describe("fold breaks only where the rule admits one", () => {
     {
       name: "nested chords",
       ids: chainIds(10),
-      chords: [["c0", "c9"], ["c3", "c6"]],
-      rows: [["c0", "c1", "c2"], ["c3", "c4", "c5", "c6", "c7"], ["c8", "c9"]],
+      chords: [
+        ["c0", "c9"],
+        ["c3", "c6"],
+      ],
+      rows: [
+        ["c0", "c1", "c2"],
+        ["c3", "c4", "c5", "c6", "c7"],
+        ["c8", "c9"],
+      ],
       marked: ["c2-c3", "c7-c8"],
       over: [],
     },
     {
       name: "interleaved chords",
       ids: chainIds(10),
-      chords: [["c0", "c6"], ["c3", "c7"]],
-      rows: [["c0", "c1", "c2"], ["c3", "c4", "c5", "c6", "c7"], ["c8", "c9"]],
+      chords: [
+        ["c0", "c6"],
+        ["c3", "c7"],
+      ],
+      rows: [
+        ["c0", "c1", "c2"],
+        ["c3", "c4", "c5", "c6", "c7"],
+        ["c8", "c9"],
+      ],
       marked: ["c2-c3", "c7-c8"],
       over: [],
     },
     {
       name: "adjacent chords",
       ids: chainIds(10),
-      chords: [["c0", "c2"], ["c2", "c6"]],
+      chords: [
+        ["c0", "c2"],
+        ["c2", "c6"],
+      ],
       rows: [["c0", "c1", "c2", "c3"], ["c4", "c5", "c6", "c7", "c8"], ["c9"]],
       marked: ["c3-c4", "c8-c9"],
       over: [],
@@ -713,8 +737,14 @@ describe("fold breaks only where the rule admits one", () => {
     {
       name: "adjacent chords that only break past the bound",
       ids: chainIds(10),
-      chords: [["c0", "c2"], ["c2", "c5"]],
-      rows: [["c0", "c1", "c2", "c3", "c4", "c5"], ["c6", "c7", "c8", "c9"]],
+      chords: [
+        ["c0", "c2"],
+        ["c2", "c5"],
+      ],
+      rows: [
+        ["c0", "c1", "c2", "c3", "c4", "c5"],
+        ["c6", "c7", "c8", "c9"],
+      ],
       marked: ["c5-c6"],
       // Row 0 holds no admissible break inside the bound: every chain link up
       // to c4|c5 is crossed by the c2->c5 chord, which would fold backwards
@@ -724,7 +754,10 @@ describe("fold breaks only where the rule admits one", () => {
     {
       name: "self-loop and chord",
       ids: chainIds(10),
-      chords: [["c1", "c1"], ["c2", "c6"]],
+      chords: [
+        ["c1", "c1"],
+        ["c2", "c6"],
+      ],
       rows: [["c0", "c1", "c2", "c3"], ["c4", "c5", "c6", "c7", "c8"], ["c9"]],
       marked: ["c3-c4", "c8-c9"],
       over: [],
@@ -732,7 +765,12 @@ describe("fold breaks only where the rule admits one", () => {
     {
       name: "staggered chords",
       ids: chainIds(10),
-      chords: [["c0", "c2"], ["c2", "c4"], ["c4", "c6"], ["c6", "c8"]],
+      chords: [
+        ["c0", "c2"],
+        ["c2", "c4"],
+        ["c4", "c6"],
+        ["c6", "c8"],
+      ],
       rows: [["c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8"], ["c9"]],
       marked: ["c8-c9"],
       // The whole span is crossed by the staggered chords, so no boundary
@@ -743,23 +781,40 @@ describe("fold breaks only where the rule admits one", () => {
       name: "parallel edges",
       ids: chainIds(10),
       parallel: [["c3", "c4"]],
-      rows: [["c0", "c1", "c2", "c3", "c4"], ["c5", "c6", "c7", "c8", "c9"]],
+      rows: [
+        ["c0", "c1", "c2", "c3", "c4"],
+        ["c5", "c6", "c7", "c8", "c9"],
+      ],
       marked: ["c4-c5"],
       over: [],
     },
     {
       name: "self-loops",
       ids: chainIds(10),
-      chords: [["c1", "c1"], ["c3", "c3"], ["c5", "c5"]],
-      rows: [["c0", "c1", "c2", "c3", "c4", "c5", "c6"], ["c7", "c8", "c9"]],
+      chords: [
+        ["c1", "c1"],
+        ["c3", "c3"],
+        ["c5", "c5"],
+      ],
+      rows: [
+        ["c0", "c1", "c2", "c3", "c4", "c5", "c6"],
+        ["c7", "c8", "c9"],
+      ],
       marked: ["c6-c7"],
       over: [0],
     },
     {
       name: "three trailing chords",
       ids: chainIds(13),
-      chords: [["c6", "c8"], ["c8", "c10"], ["c10", "c12"]],
-      rows: [["c0", "c1", "c2", "c3", "c4", "c5"], ["c6", "c7", "c8", "c9", "c10", "c11", "c12"]],
+      chords: [
+        ["c6", "c8"],
+        ["c8", "c10"],
+        ["c10", "c12"],
+      ],
+      rows: [
+        ["c0", "c1", "c2", "c3", "c4", "c5"],
+        ["c6", "c7", "c8", "c9", "c10", "c11", "c12"],
+      ],
       marked: ["c5-c6"],
       // Row 0 folds at its bound; the tail from c6 is crossed by all three
       // chords, so it holds no admissible break and stays whole.
@@ -768,7 +823,11 @@ describe("fold breaks only where the rule admits one", () => {
     {
       name: "sibling branch",
       ids: [...chainIds(10), "side"],
-      chords: [["c2", "side"], ["side", "c6"], ["c0", "c9"]],
+      chords: [
+        ["c2", "side"],
+        ["side", "c6"],
+        ["c0", "c9"],
+      ],
       // `side` follows c9 on the chain, so c2 branches out and rejoins at c6
       // while c0->c9 spans the row. Every chain link inside is crossed by a
       // chord, so no boundary is admissible and the row stays whole.
@@ -779,7 +838,11 @@ describe("fold breaks only where the rule admits one", () => {
     {
       name: "break at the row's first column",
       ids: chainIds(10),
-      chords: [["c1", "c3"], ["c3", "c5"], ["c5", "c7"]],
+      chords: [
+        ["c1", "c3"],
+        ["c3", "c5"],
+        ["c5", "c7"],
+      ],
       // The head of the chain is cut off on its own: c0|c1 is a chain link and
       // no chord crosses it, so it is admissible and is the last admissible
       // boundary inside the bound. That break is at the row's first column, so
@@ -831,19 +894,20 @@ describe("fold breaks only where the rule admits one", () => {
   it.each(chainCases)(
     "keeps every fold forward and marks only taken chain links: $name",
     ({ ids, chords, parallel, rows, marked, over }) => {
-      const result = getLayoutedElements(
-        ids.map(node),
-        caseEdges(ids, chords, parallel),
-        "LR",
-      );
+      const result = getLayoutedElements(ids.map(node), caseEdges(ids, chords, parallel), "LR");
       const widths = assertFoldInvariants(result.nodes, result.edges);
       expect(foldRowIds(result.nodes)).toEqual(rows);
       expect(
-        result.edges.filter((entry) => entry.data?.continuation).map((entry) => entry.id).sort(),
+        result.edges
+          .filter((entry) => entry.data?.continuation)
+          .map((entry) => entry.id)
+          .sort(),
       ).toEqual([...marked].sort());
-      expect(widths.map((width, index) => (width > FOLD_MAX_ROW_WIDTH ? index : -1)).filter((i) => i >= 0)).toEqual(
-        over,
-      );
+      expect(
+        widths
+          .map((width, index) => (width > FOLD_MAX_ROW_WIDTH ? index : -1))
+          .filter((i) => i >= 0),
+      ).toEqual(over);
       // Every row that exceeds the bound holds no admissible break within it;
       // a row that fits was broken at its last admissible break inside the bound.
       expect(rowsWithAdmissibleBreakInside(result.nodes, result.edges)).toEqual([]);
@@ -890,9 +954,11 @@ describe("fold breaks only where the rule admits one", () => {
       // link the fold turned around (assertFoldInvariants repeats the degree
       // check over the drawn edge records).
       const widths = assertFoldInvariants(result.nodes, result.edges);
-      expect(widths.map((width, index) => (width > FOLD_MAX_ROW_WIDTH ? index : -1)).filter((i) => i >= 0)).toEqual(
-        whole,
-      );
+      expect(
+        widths
+          .map((width, index) => (width > FOLD_MAX_ROW_WIDTH ? index : -1))
+          .filter((i) => i >= 0),
+      ).toEqual(whole);
       expect(rowsWithAdmissibleBreakInside(result.nodes, result.edges)).toEqual([]);
       for (const entry of continuations) {
         expect(result.ranks.get(entry.target)!).toBeGreaterThan(result.ranks.get(entry.source)!);
@@ -908,12 +974,20 @@ describe("fold breaks only where the rule admits one", () => {
     // whole to its last column instead, and only the final chain link c8|c9 —
     // which no chord crosses — is marked.
     const ids = chainIds(10);
-    const edges = caseEdges(ids, [["c0", "c2"], ["c2", "c4"], ["c4", "c6"], ["c6", "c8"]]);
-    const result = getLayoutedElements(ids.map(node), edges, "LR");
-    expect(foldRowIds(result.nodes)).toEqual([["c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8"], ["c9"]]);
-    expect(result.edges.filter((entry) => entry.data?.continuation).map((entry) => entry.id)).toEqual([
-      "c8-c9",
+    const edges = caseEdges(ids, [
+      ["c0", "c2"],
+      ["c2", "c4"],
+      ["c4", "c6"],
+      ["c6", "c8"],
     ]);
+    const result = getLayoutedElements(ids.map(node), edges, "LR");
+    expect(foldRowIds(result.nodes)).toEqual([
+      ["c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8"],
+      ["c9"],
+    ]);
+    expect(
+      result.edges.filter((entry) => entry.data?.continuation).map((entry) => entry.id),
+    ).toEqual(["c8-c9"]);
     const widths = assertFoldInvariants(result.nodes, result.edges);
     expect(widths[0]!).toBeGreaterThan(FOLD_MAX_ROW_WIDTH);
     expect(widths[1]!).toBeLessThanOrEqual(FOLD_MAX_ROW_WIDTH);
