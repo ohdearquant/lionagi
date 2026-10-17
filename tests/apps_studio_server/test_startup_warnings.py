@@ -238,7 +238,173 @@ class TestEscalatedWarningOnWildcardBind:
         )
 
 
+class TestEscalatedWarningNamesEveryNonLoopbackBind:
+    @pytest.mark.parametrize("bind_host", ["0.0.0.0", "::", "192.168.1.5"])
+    def test_a_non_loopback_bind_warns_that_other_machines_can_reach_it(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bind_host: str
+    ) -> None:
+        """A bind on anything but loopback reaches other machines, so the warning
+        names the address it bound and says those machines can reach its pages.
+        An IPv6 wildcard is one of them, not a quieter case."""
+        monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+        monkeypatch.setenv("LIONAGI_STUDIO_HOST", bind_host)
+
+        with _spy_logger(_STUDIO_APP_LOGGER) as records:
+            with _lifespan_client(monkeypatch, tmp_path):
+                pass
+
+        warnings = records.warnings()
+        named = [m for m in warnings if bind_host in m]
+        assert named, f"no warning names the bind address {bind_host!r}; got {warnings!r}"
+        assert any("other machines" in m for m in named), (
+            f"the warning for {bind_host!r} does not say other machines can reach it: {named!r}"
+        )
+
+    @pytest.mark.parametrize("bind_host", ["127.0.0.1", "::1", "localhost"])
+    def test_a_loopback_bind_keeps_the_local_only_warning(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bind_host: str
+    ) -> None:
+        """A loopback bind is reachable from this machine only, and the warning
+        still says so -- loopback is not a mildly-wider interface."""
+        monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+        monkeypatch.setenv("LIONAGI_STUDIO_HOST", bind_host)
+
+        with _spy_logger(_STUDIO_APP_LOGGER) as records:
+            with _lifespan_client(monkeypatch, tmp_path):
+                pass
+
+        warnings = records.warnings()
+        assert any("on this machine" in m for m in warnings), (
+            f"no local-only warning for the loopback bind {bind_host!r}; got {warnings!r}"
+        )
+        assert not any("other machines" in m for m in warnings), (
+            f"a loopback bind {bind_host!r} warned that other machines can reach it: {warnings!r}"
+        )
+
+
 # CORS method set is bounded (not '*')
+
+
+class TestTheWarningNamesTheCanonicalBindValue:
+    def test_a_loopback_name_in_any_case_warns_local_only(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """`LOCALHOST` is the loopback name; the classification and the message
+        both read the value in canonical form. Read as written it was a name the
+        daemon could not classify, so it warned that other machines could reach a
+        daemon bound to loopback."""
+        monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+        monkeypatch.setenv("LIONAGI_STUDIO_HOST", "LOCALHOST")
+
+        with _spy_logger(_STUDIO_APP_LOGGER) as records:
+            with _lifespan_client(monkeypatch, tmp_path):
+                pass
+
+        warnings = records.warnings()
+        assert any("on this machine" in m for m in warnings), (
+            f"no local-only warning for LOCALHOST; got {warnings!r}"
+        )
+        assert not any("other machines" in m for m in warnings), (
+            f"LOCALHOST warned that other machines can reach it: {warnings!r}"
+        )
+
+    @pytest.mark.parametrize("bind_host", ["", "   ", "[]", "[ ]"])
+    def test_a_blank_bind_warns_that_every_interface_is_bound(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bind_host: str
+    ) -> None:
+        """A blank value binds every interface, so the warning says so rather than
+        naming a host that is not there: `on host []` named the brackets, and a
+        bracketed blank was not read as blank at all."""
+        monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+        monkeypatch.setenv("LIONAGI_STUDIO_HOST", bind_host)
+
+        with _spy_logger(_STUDIO_APP_LOGGER) as records:
+            with _lifespan_client(monkeypatch, tmp_path):
+                pass
+
+        warnings = records.warnings()
+        assert any("on host every interface" in m for m in warnings), (
+            f"no every-interface warning for {bind_host!r}; got {warnings!r}"
+        )
+
+    @pytest.mark.parametrize(
+        ("bind_host", "reaches_other"),
+        [
+            ("localhost", False),
+            ("LOCALHOST", False),
+            ("[localhost]", False),
+            ("sub.localhost", False),
+            ("127.0.0.1", False),
+            ("127.0.0.2", False),
+            ("[::1]", False),
+            ("::ffff:127.0.0.1", False),
+            ("0.0.0.0", True),
+            ("[::]", True),
+            ("[2001:db8::1]", True),
+            (" 192.168.1.5 ", True),
+            ("::ffff:192.168.1.5", True),
+            ("[]", True),
+            ("", True),
+        ],
+    )
+    def test_the_classifier_reads_the_value_in_canonical_form(self, bind_host, reaches_other):
+        """`_host_reaches_other_machines` says whether a bind is reachable from
+        another machine. Read as written, `LOCALHOST` was a name it could not
+        classify -- and an unclassifiable bind must not read as safe -- while a
+        bracketed wildcard it could strip. Read through the normalizer, the case
+        does not decide the answer and the address decides it in any spelling.
+        """
+        from lionagi.studio.app import _host_reaches_other_machines
+
+        assert _host_reaches_other_machines(bind_host) is reaches_other
+
+    @pytest.mark.parametrize(
+        ("bind_host", "named"),
+        [
+            ("[2001:db8::1]", "2001:db8::1"),
+            ("2001:0DB8::1", "2001:db8::1"),
+            (" 192.168.1.5 ", "192.168.1.5"),
+            ("::ffff:192.168.1.5", "192.168.1.5"),
+        ],
+    )
+    def test_a_non_loopback_bind_is_named_in_canonical_form(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bind_host: str, named: str
+    ) -> None:
+        """The warning names the address the bind reaches, not the spelling it was
+        written in, and it is a non-loopback one however it was written."""
+        monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+        monkeypatch.setenv("LIONAGI_STUDIO_HOST", bind_host)
+
+        with _spy_logger(_STUDIO_APP_LOGGER) as records:
+            with _lifespan_client(monkeypatch, tmp_path):
+                pass
+
+        warnings = records.warnings()
+        assert any(f"on host {named} " in m for m in warnings), (
+            f"no warning names {named!r} for a bind written {bind_host!r}; got {warnings!r}"
+        )
+        assert any("other machines" in m for m in warnings), (
+            f"the warning for {bind_host!r} does not say other machines can reach it"
+        )
+
+    @pytest.mark.parametrize("bind_host", ["[::1]", "127.0.0.1", "::ffff:127.0.0.1", "[localhost]"])
+    def test_a_loopback_bind_in_any_spelling_warns_local_only(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bind_host: str
+    ) -> None:
+        monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+        monkeypatch.setenv("LIONAGI_STUDIO_HOST", bind_host)
+
+        with _spy_logger(_STUDIO_APP_LOGGER) as records:
+            with _lifespan_client(monkeypatch, tmp_path):
+                pass
+
+        warnings = records.warnings()
+        assert any("on this machine" in m for m in warnings), (
+            f"no local-only warning for the loopback bind {bind_host!r}; got {warnings!r}"
+        )
+        assert not any("other machines" in m for m in warnings), (
+            f"a loopback bind {bind_host!r} warned that other machines can reach it"
+        )
 
 
 @pytest.mark.integration

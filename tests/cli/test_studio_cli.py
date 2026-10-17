@@ -44,6 +44,19 @@ def _stop(proc):
         proc.wait()
 
 
+@pytest.fixture(autouse=True)
+def daemon_probe(monkeypatch):
+    """Find no running daemon, so no test pairs with a real Studio on the developer's port.
+
+    The fixture's value is the real probe, for the tests that aim it at a server of their own.
+    """
+    import lionagi.studio.cli as studio_cli
+
+    real = studio_cli._code_from_running_daemon
+    monkeypatch.setattr(studio_cli, "_code_from_running_daemon", lambda port: None)
+    return real
+
+
 @contextlib.contextmanager
 def _stubbed_serve():
     """Stub uvicorn.run and _ensure_frontend_built; restores env vars that the real CLI mutates (xdist isolation)."""
@@ -167,7 +180,8 @@ def test_studio_web_opens_browser_when_interactive(monkeypatch):
         result = main(["studio", "--web"])
 
     assert result == 0
-    mock_open.assert_called_once_with("https://lion-studio.khive.ai")
+    mock_open.assert_called_once()
+    assert mock_open.call_args.args[0].startswith("https://lion-studio.khive.ai/#pair=")
 
 
 def test_studio_web_no_open_flag_suppresses_browser(monkeypatch):
@@ -1114,3 +1128,187 @@ def test_backend_starts_from_a_pip_install_without_apps_tree(monkeypatch, capsys
     mock_run.assert_called_once()
     captured = capsys.readouterr()
     assert "studio backend not found" not in captured.err
+
+
+# pairing: `li studio` opens the hosted page with a one-time code, never the bearer
+
+
+@pytest.fixture()
+def fresh_launch(monkeypatch):
+    import lionagi.studio.launch_access as launch_access
+
+    monkeypatch.setattr(launch_access, "_bearer", None)
+    monkeypatch.setattr(launch_access, "_codes", {})
+    return launch_access
+
+
+def _interactive(monkeypatch):
+    import lionagi.studio.cli as studio_cli
+
+    monkeypatch.setattr(studio_cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(studio_cli.sys.stdout, "isatty", lambda: True)
+
+
+def test_studio_opens_the_hosted_page_with_a_code_this_daemon_redeems(monkeypatch, fresh_launch):
+    _interactive(monkeypatch)
+    with _stubbed_serve() as mock_run, patch("webbrowser.open", return_value=True) as mock_open:
+        from lionagi.cli.main import main
+
+        assert main(["studio"]) == 0
+
+    mock_run.assert_called_once()
+    (url,) = mock_open.call_args.args
+    code = url.split("#pair=", 1)[1]
+    bearer = fresh_launch.redeem_pairing_code(code)
+    assert bearer is not None
+    assert bearer not in url
+    assert bearer not in os.environ.values()
+    assert "LIONAGI_STUDIO_AUTH_TOKEN" not in os.environ
+
+
+def test_studio_names_the_daemon_port_when_it_is_not_the_default(monkeypatch, fresh_launch):
+    _interactive(monkeypatch)
+    with _stubbed_serve(), patch("webbrowser.open", return_value=True) as mock_open:
+        from lionagi.cli.main import main
+
+        assert main(["studio", "--port", "8766"]) == 0
+
+    (url,) = mock_open.call_args.args
+    assert url.startswith("https://lion-studio.khive.ai/?api=http://127.0.0.1:8766#pair=")
+
+
+def test_studio_prints_the_paired_link_when_it_opens_no_browser(capsys, fresh_launch):
+    with _stubbed_serve(), patch("webbrowser.open") as mock_open:
+        from lionagi.cli.main import main
+
+        assert main(["studio", "--no-open"]) == 0
+
+    mock_open.assert_not_called()
+    line = next(text for text in capsys.readouterr().out.splitlines() if "#pair=" in text)
+    assert "it works once" in line
+    assert fresh_launch.redeem_pairing_code(line.split("#pair=", 1)[1]) is not None
+
+
+def test_studio_pairs_with_a_daemon_already_running_instead_of_starting_one(monkeypatch, capsys):
+    import lionagi.studio.cli as studio_cli
+
+    _interactive(monkeypatch)
+    monkeypatch.setattr(studio_cli, "_code_from_running_daemon", lambda port: "code-from-daemon")
+    with _stubbed_serve() as mock_run, patch("webbrowser.open", return_value=True) as mock_open:
+        from lionagi.cli.main import main
+
+        assert main(["studio"]) == 0
+
+    mock_run.assert_not_called()
+    mock_open.assert_called_once_with("https://lion-studio.khive.ai/#pair=code-from-daemon")
+    assert "already running" in capsys.readouterr().out
+
+
+def test_studio_stops_when_a_running_daemon_will_not_pair(monkeypatch, capsys):
+    import lionagi.studio.cli as studio_cli
+
+    def _refuse(port):
+        raise studio_cli._PairingRefusedError("HTTP 404")
+
+    monkeypatch.setattr(studio_cli, "_code_from_running_daemon", _refuse)
+    with _stubbed_serve() as mock_run, patch("webbrowser.open") as mock_open:
+        from lionagi.cli.main import main
+
+        assert main(["studio"]) == 1
+
+    mock_run.assert_not_called()
+    mock_open.assert_not_called()
+    assert "HTTP 404" in capsys.readouterr().err
+
+
+@contextlib.contextmanager
+def _loopback_server(routes):
+    """A real HTTP server on 127.0.0.1 answering ``routes[(method, path)] -> (status, body)``."""
+    import http.server
+    import json
+    import threading
+
+    seen = []
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def _answer(self, method):
+            length = int(self.headers.get("Content-Length") or 0)
+            if length:
+                self.rfile.read(length)
+            seen.append((method, self.path, dict(self.headers)))
+            status, body = routes.get((method, self.path), (404, {"detail": "Not Found"}))
+            payload = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def do_GET(self):
+            self._answer("GET")
+
+        def do_POST(self):
+            self._answer("POST")
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_address[1], seen
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_a_running_lionagi_daemon_issues_a_code(daemon_probe, monkeypatch):
+    monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+    routes = {
+        ("GET", "/health"): (200, {"status": "ok"}),
+        ("POST", "/api/studio/pairing-codes"): (201, {"code": "abc", "expires_in": 120}),
+    }
+    with _loopback_server(routes) as (port, seen):
+        assert daemon_probe(port) == "abc"
+
+    post = next(headers for method, _, headers in seen if method == "POST")
+    assert "Origin" not in post
+    assert "Authorization" not in post
+
+
+def test_a_running_daemon_in_token_mode_is_asked_with_the_token(daemon_probe, monkeypatch):
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "studio-test-token")
+    routes = {
+        ("GET", "/health"): (200, {"status": "ok"}),
+        ("POST", "/api/studio/pairing-codes"): (201, {"code": "abc"}),
+    }
+    with _loopback_server(routes) as (port, seen):
+        assert daemon_probe(port) == "abc"
+
+    post = next(headers for method, _, headers in seen if method == "POST")
+    assert post.get("Authorization") == "Bearer studio-test-token"
+
+
+def test_another_program_on_the_port_is_not_a_daemon(daemon_probe):
+    with _loopback_server({("GET", "/health"): (200, {"hello": "world"})}) as (port, seen):
+        assert daemon_probe(port) is None
+    assert all(method == "GET" for method, _, _ in seen)
+
+
+def test_nothing_listening_is_not_a_daemon(daemon_probe):
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    assert daemon_probe(port) is None
+
+
+def test_an_older_daemon_without_pairing_refuses(daemon_probe):
+    import lionagi.studio.cli as studio_cli
+
+    with _loopback_server({("GET", "/health"): (200, {"status": "ok"})}) as (port, _):
+        with pytest.raises(studio_cli._PairingRefusedError, match="404"):
+            daemon_probe(port)

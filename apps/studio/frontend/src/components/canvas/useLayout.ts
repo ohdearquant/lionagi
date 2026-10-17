@@ -151,7 +151,7 @@ export function wrapWideRanks(nodes: Node[]): Node[] {
 // pixels, so everything beyond it is a strip you can only pan across. Folding
 // trades one unbroken left-to-right line for several rows that each read
 // left-to-right, which is the trade a paragraph of text already makes.
-const FOLD_MAX_ROW_WIDTH = 1500;
+export const FOLD_MAX_ROW_WIDTH = 1500;
 // ...and fold only a graph that is FLAT, meaning it has no vertical structure
 // of its own to lose. Folding invents rows, and a downstream node placed on
 // the next row sits to the LEFT of its source — the one thing a left-to-right
@@ -166,17 +166,17 @@ const FOLD_MAX_ROW_WIDTH = 1500;
 // cannot silently widen what counts as flat. At 56px per row that is 148px,
 // where a literal 240 would have quietly started folding three-row graphs.
 const FOLD_MAX_FLAT_HEIGHT = 2 * NODE_HEIGHT + NODE_SEP;
-const FOLD_ROW_GAP = 56;
+export const FOLD_ROW_GAP = 56;
 
-// A row may only break between two adjacent columns when exactly one edge
-// crosses that boundary and it is a plain 1-predecessor/1-successor link —
-// the same "maximal chain segment" a purely sequential run is made of. A
-// branch (a node with more than one successor) or a join (a node with more
-// than one predecessor) anchors a segment boundary instead: breaking a row
-// there would put a real dependency behind the fold's continuation styling,
-// the exact thing the fold must never do. Degree is computed over the WHOLE
-// edge set (not just edges between adjacent columns), so a long-range edge
-// that skips columns also correctly blocks a break at either of its ends.
+// One half of the fold's admissibility rule: a row may only break between two
+// adjacent columns when the boundary is a plain 1-predecessor/1-successor link
+// — the same "maximal chain segment" a purely sequential run is made of. A
+// branch (a node with more than one successor) or a join (a node with more than
+// one predecessor) anchors a segment boundary instead, so breaking a row there
+// would cut between two columns that are not the single link the fold turns
+// around. Degree is computed over the WHOLE edge set (not just edges between
+// adjacent columns), so a long-range edge that skips columns also correctly
+// keeps a break from being a chain link at either of its ends.
 function computeDegrees(
   nodes: Node[],
   edges: Edge[],
@@ -196,8 +196,9 @@ function computeDegrees(
 // left-to-right. Within a row the geometry is dagre's own, translated as a
 // block, so rank spacing and sibling order survive untouched. The cost is the
 // edge that leaves the end of one row and re-enters at the start of the next:
-// it sweeps back across the canvas the way a wrapped line of text does — but
-// only at a safe (single predecessor/successor) boundary; see computeDegrees.
+// it sweeps back across the canvas the way a wrapped line of text does — and it
+// is the only edge allowed to, because the break is admissible only where that
+// sweep leaves every OTHER crossing edge pointing forward; see isAdmissibleBreak.
 export function foldWideGraph(nodes: Node[], edges: Edge[] = []): Node[] {
   if (nodes.length === 0) return nodes;
 
@@ -223,10 +224,20 @@ export function foldWideGraph(nodes: Node[], edges: Edge[] = []): Node[] {
   const xs = [...byX.keys()].sort((a, b) => a - b);
 
   // No edges given means no dependency to misrepresent — every column
-  // boundary is safe, matching the pre-edge-aware behavior exactly.
+  // boundary is admissible, matching the pre-edge-aware behavior exactly.
   const edgeAware = edges.length > 0;
   const { outDeg, inDeg } = computeDegrees(nodes, edges);
-  const isSafeBreak = (beforeX: number, afterX: number): boolean => {
+  // Which column each node sits in, as an index into `xs`, so an edge can be
+  // tested against a boundary without comparing pixel positions.
+  const columnById = new Map<string, number>();
+  for (const [index, x] of xs.entries()) {
+    for (const node of byX.get(x) ?? []) columnById.set(node.id, index);
+  }
+  // The first half of an admissible break, on its own: the boundary is a chain
+  // link, a single-node column whose one out-edge goes to the next single-node
+  // column, and that is that node's only in-edge. This says nothing about
+  // chords; isAdmissibleBreak below adds that.
+  const isChainLink = (beforeX: number, afterX: number): boolean => {
     const beforeNodes = byX.get(beforeX) ?? [];
     const afterNodes = byX.get(afterX) ?? [];
     if (beforeNodes.length !== 1 || afterNodes.length !== 1) return false;
@@ -236,29 +247,114 @@ export function foldWideGraph(nodes: Node[], edges: Edge[] = []): Node[] {
     const bIn = inDeg.get(b.id) ?? [];
     return aOut.length === 1 && aOut[0] === b.id && bIn.length === 1 && bIn[0] === a.id;
   };
+  // `nextRowStart[i]` is the column a row begun at column `i` hands over to:
+  // `cut + 1` when it breaks at `cut`, and `xs.length` when it runs to the end.
+  // Filled right to left, because judging a break needs the row its far
+  // endpoints land in, which only depends on the columns after the break.
+  const nextRowStart = new Array<number>(xs.length + 1).fill(xs.length);
+  // Which row a column lands in once a row begins at `root`: the row starts the
+  // chain of `nextRowStart` positions from `root` walks through.
+  const rowStartIn = (root: number, column: number): number => {
+    let start = root;
+    while (nextRowStart[start]! <= column) start = nextRowStart[start]!;
+    return start;
+  };
 
-  const rows: number[][] = [];
-  let current: number[] = [];
-  let rowStartX = 0;
-  let prevX: number | null = null;
-  for (const x of xs) {
-    if (current.length === 0) {
-      current = [x];
-      rowStartX = x;
-      prevX = x;
+  // The one admissibility rule for a row break. A break at `cut` — the row runs
+  // `rowStart..cut` and the next row begins at `cut + 1` — is admissible when
+  // the boundary is a chain link AND every other edge crossing it still reads
+  // forward once folded.
+  //
+  // After folding, a column `c` sits at `c - rowStart(c)` places from its own
+  // row's left edge. An edge running backwards is one whose target lands left
+  // of its source, so for every edge with its source `s` in this row and its
+  // target `t` after the break, require
+  // `s - rowStart <= t - rowStart(t)` — the target lands at or right of the
+  // source's horizontal position in whatever row it lands in, whether that is
+  // the next row or one below it.
+  //
+  // The chain link at `cut` itself is the one edge this exempts. When the break
+  // is not at the row's own first column, that link is the fold's return sweep:
+  // it leaves the row's last column and re-enters at the next row's left edge,
+  // so its target lands left of its source and the canvas marks it as a
+  // continuation (markContinuationEdges below). A break at the row's first
+  // column (`cut === rowStart`) puts both ends of the link in the same column,
+  // so the link runs straight down and is not marked — correctly, since nothing
+  // turned it around. No other edge may cross backwards, so no chord is ever
+  // folded backwards and no chord is ever marked. A break that no other edge
+  // crosses is admissible by this rule.
+  //
+  // This replaces the earlier "no other edge may cross at all" test, which a
+  // single chord spanning the row defeated outright: with no admissible break
+  // the row was left to run past FOLD_MAX_ROW_WIDTH and the graph stayed a
+  // strip below the interactive zoom floor — the exact thing the fold exists to
+  // remove. A row with no admissible break inside the width bound now reaches
+  // the next admissible break past it instead, so it may run wider than the
+  // bound, and when it holds no admissible break at all it runs whole to the
+  // end. Either way folding continues from the row after it rather than
+  // discarding the folds already made.
+  const isAdmissibleBreak = (cut: number, rowStart: number): boolean => {
+    if (!edgeAware) return true;
+    if (!isChainLink(xs[cut]!, xs[cut + 1]!)) return false;
+    for (const edge of edges) {
+      const sourceColumn = columnById.get(edge.source);
+      const targetColumn = columnById.get(edge.target);
+      if (sourceColumn === undefined || targetColumn === undefined) continue;
+      if (sourceColumn < rowStart || sourceColumn > cut) continue;
+      if (targetColumn <= cut) continue;
+      if (sourceColumn === cut && targetColumn === cut + 1) continue;
+      if (sourceColumn - rowStart > targetColumn - rowStartIn(cut + 1, targetColumn)) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  for (let rowStart = xs.length - 1; rowStart >= 0; rowStart--) {
+    // Furthest column a row begun here can hold inside the width bound.
+    let end = rowStart;
+    for (let i = rowStart + 1; i < xs.length; i++) {
+      if (xs[i]! - xs[rowStart]! + NODE_WIDTH > FOLD_MAX_ROW_WIDTH) break;
+      end = i;
+    }
+    // The row reaches the last column: there is nothing to break before, so it
+    // is taken whole whatever its boundaries look like.
+    if (end === xs.length - 1) {
+      nextRowStart[rowStart] = xs.length;
       continue;
     }
-    const overWidth = x - rowStartX + NODE_WIDTH > FOLD_MAX_ROW_WIDTH;
-    if (overWidth && (!edgeAware || isSafeBreak(prevX!, x))) {
-      rows.push(current);
-      current = [x];
-      rowStartX = x;
-    } else {
-      current.push(x);
+    // Break at the last admissible boundary inside the width bound, so the row
+    // takes as many columns as it can without stranding a dependency behind it.
+    // With none admissible inside the bound, take the first one past it: a row
+    // that stopped at the bound but could not legally break there would fold a
+    // crossing edge backwards, and that edge would then be a row boundary the
+    // canvas cannot mark as a chain link. Only a row with no admissible break
+    // anywhere to its right runs whole to the end; either way folding continues
+    // from the row after it rather than discarding the folds already made.
+    let handover = -1;
+    for (let cut = end; cut >= rowStart; cut--) {
+      if (isAdmissibleBreak(cut, rowStart)) {
+        handover = cut + 1;
+        break;
+      }
     }
-    prevX = x;
+    if (handover < 0) {
+      for (let cut = end + 1; cut < xs.length - 1; cut++) {
+        if (isAdmissibleBreak(cut, rowStart)) {
+          handover = cut + 1;
+          break;
+        }
+      }
+    }
+    nextRowStart[rowStart] = handover < 0 ? xs.length : handover;
   }
-  if (current.length > 0) rows.push(current);
+
+  const rows: number[][] = [];
+  for (let rowStart = 0; rowStart < xs.length; ) {
+    const next = nextRowStart[rowStart]!;
+    rows.push(xs.slice(rowStart, next));
+    rowStart = next;
+  }
   if (rows.length <= 1) return nodes;
 
   const out: Node[] = [];
@@ -312,8 +408,9 @@ export function rankSepForDepth(maxDepth: number, ranksep = 90, minRanksep = 48)
 // long-range routing (ConditionEdge's rankDistance) and the input to
 // rankSepForDepth. A cycle should not happen in a depends_on graph, but a
 // defensive on-stack guard keeps a malformed input from recursing forever —
-// it simply stops deepening along the cyclic edge rather than erroring, the
-// same policy operationGraph's reducer uses for cycles.
+// it stops deepening along the cyclic edge rather than erroring. Canonical
+// node/predecessor order makes that defensive result independent of input order;
+// cyclic ranks are a placement convention, not a valid dependency ordering.
 export function computeNodeDepths(nodes: Node[], edges: Edge[]): Map<string, number> {
   const known = new Set(nodes.map((n) => n.id));
   const preds = new Map<string, string[]>();
@@ -323,6 +420,7 @@ export function computeNodeDepths(nodes: Node[], edges: Edge[]): Map<string, num
     if (list) list.push(e.source);
     else preds.set(e.target, [e.source]);
   }
+  for (const list of preds.values()) list.sort();
 
   const depth = new Map<string, number>();
   const onStack = new Set<string>();
@@ -342,7 +440,7 @@ export function computeNodeDepths(nodes: Node[], edges: Edge[]): Map<string, num
     depth.set(id, d);
     return d;
   };
-  for (const n of nodes) depthOf(n.id);
+  for (const id of [...known].sort()) depthOf(id);
   return depth;
 }
 
@@ -384,17 +482,52 @@ export function enforceMinRankGap(nodes: Node[], minGap = 6): Node[] {
   return out;
 }
 
-// An LR layout puts every target to the right of its source, so an edge that
-// runs backwards can only be one the fold created: it leaves the end of a row
-// and re-enters at the start of the next. That edge is still a real dependency
+// A folded LR graph re-enters each row at its left edge, so the edge that leaves
+// the end of a row for the start of the next runs backwards on the canvas: it is
+// the edge the fold's own row boundary turned around. A break is taken only at
+// an admissible chain link (see isAdmissibleBreak), and such a break never folds
+// any other edge backwards, so the return sweep is exactly a chain link — a
+// single-predecessor/single-successor link. That edge is still a real dependency
 // in the graph, but on screen it is doing what the wrap at the end of a line of
 // text does, and drawing it like the others makes the reader look for a
 // dependency behind them. Detected from the final geometry rather than from the
 // fold's own bookkeeping, so it describes what the edge actually does on the
 // canvas whichever pass moved the nodes.
-export function markContinuationEdges(nodes: Node[], edges: Edge[]): Edge[] {
+//
+// Geometry alone is not enough to tell that edge apart from a dependency that
+// points backwards on its own. A malformed graph — a cycle, or a back edge
+// within a rank — reaches the fallback, whose ranks are a placement convention
+// rather than a dependency order, and there the edge really is drawn backwards.
+// Such an edge must not read as a row boundary, so it is excluded by rank below:
+// a marked edge both runs backwards and advances in rank, which a row boundary
+// does and a dependency that points backwards does not.
+//
+// Only LR folds, so only LR has a return sweep to mark. A TB layout stacks
+// ranks along the cross axis, where a backwards edge is an ordering choice
+// within a rank, not a row boundary.
+export function markContinuationEdges(
+  nodes: Node[],
+  edges: Edge[],
+  direction: "LR" | "TB" = "LR",
+  ranks: Map<string, number>,
+): Edge[] {
+  if (direction !== "LR") return edges;
+
   const xById = new Map<string, number>();
   for (const node of nodes) xById.set(node.id, node.position.x);
+  // Chain-link degree over the drawn edge set: the fold's return sweep is the
+  // one edge the fold turned around, and that edge is a single-out,
+  // single-in link. A chord that happens to land backwards on the canvas is
+  // not, so the degree test is what keeps a real dependency from being styled
+  // as a row boundary. Counted over the edge records given, matching the
+  // fold's own isChainLink for the graph it was handed.
+  const outDeg = new Map<string, number>();
+  const inDeg = new Map<string, number>();
+  for (const edge of edges) {
+    if (!xById.has(edge.source) || !xById.has(edge.target)) continue;
+    outDeg.set(edge.source, (outDeg.get(edge.source) ?? 0) + 1);
+    inDeg.set(edge.target, (inDeg.get(edge.target) ?? 0) + 1);
+  }
 
   let changed = false;
   const out = edges.map((edge) => {
@@ -403,6 +536,16 @@ export function markContinuationEdges(nodes: Node[], edges: Edge[]): Edge[] {
     // An endpoint the layout never placed says nothing about direction.
     if (sourceX === undefined || targetX === undefined) return edge;
     if (targetX >= sourceX) return edge;
+    const sourceRank = ranks.get(edge.source);
+    const targetRank = ranks.get(edge.target);
+    if (sourceRank !== undefined && targetRank !== undefined && targetRank <= sourceRank) {
+      return edge;
+    }
+    // Only the chain link the fold turned around is a row boundary. A chord
+    // that still runs backwards across the fold is a real dependency, and the
+    // fold no longer produces one (see isAdmissibleBreak), but leaving it
+    // unmarked is what keeps a backward-pointing dependency honest.
+    if ((outDeg.get(edge.source) ?? 0) !== 1 || (inDeg.get(edge.target) ?? 0) !== 1) return edge;
     changed = true;
     return { ...edge, data: { ...(edge.data ?? {}), continuation: true } };
   });
@@ -414,8 +557,8 @@ export interface LayoutedGraph {
   nodes: Node[];
   edges: Edge[];
   height: number;
-  /** node id -> longest-path depth (rank index), for edge rank-distance
-   * styling (ConditionEdge's long-range smooth-step routing). */
+  /** node id -> longest-path depth for acyclic input, or a defensive cyclic
+   * rank, for edge rank-distance styling. */
   ranks: Map<string, number>;
   /** UNSCALED bounding-box width, for computeReservedHeight callers. */
   width: number;
@@ -462,88 +605,184 @@ export function computeReservedHeight(
   return bboxHeight * zoom;
 }
 
+// Bound dagre's normalized rank work before it allocates edge dummy nodes.
+// Its edge-label pass doubles minlen, so count real nodes plus those spans
+// over distinct directed pairs, matching graphlib's non-multigraph edges.
+// A cycle can reverse edges before ranking and invalidate the span estimate;
+// reject it when a non-self edge fails to advance the computed rank.
+// These are structural admission limits, not a wall-clock deadline.
+const DAGRE_WORK_LIMIT = 192;
+const DAGRE_NODE_LIMIT = 128;
+
+function fitsDagreBudget(nodes: Node[], edges: Edge[], ranks: Map<string, number>): boolean {
+  if (nodes.length > DAGRE_NODE_LIMIT) return false;
+  let work = nodes.length;
+  const seen = new Map<string, Set<string>>();
+  for (const edge of edges) {
+    const source = ranks.get(edge.source);
+    const target = ranks.get(edge.target);
+    if (source === undefined || target === undefined) continue;
+    if (edge.source !== edge.target && target <= source) return false;
+    const targets = seen.get(edge.source) ?? new Set<string>();
+    if (targets.has(edge.target)) continue;
+    targets.add(edge.target);
+    seen.set(edge.source, targets);
+    work += 2 * Math.max(1, target - source);
+    if (work > DAGRE_WORK_LIMIT) return false;
+  }
+  return true;
+}
+
+// Graphs that bypass dagre retain the computed ranks and stable sibling order.
+// Acyclic ranks are exact ASAP depths; cyclic ranks are a defensive convention.
+// Final edge routes use these endpoints, not dagre's polylines.
+function placeAsapRanks(
+  nodes: Node[],
+  ranks: Map<string, number>,
+  direction: "LR" | "TB",
+  ranksep: number,
+): Node[] {
+  const byRank = new Map<number, Node[]>();
+  for (const node of nodes) {
+    const rank = ranks.get(node.id)!;
+    const group = byRank.get(rank);
+    if (group) group.push(node);
+    else byRank.set(rank, [node]);
+  }
+  const horizontal = direction === "LR";
+  const groups = [...byRank.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([, members]) => {
+      members.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      const crossSize =
+        members.reduce(
+          (sum, node) => sum + (horizontal ? estimateNodeHeight(node) : NODE_WIDTH),
+          0,
+        ) +
+        NODE_SEP * (members.length - 1);
+      const depthSize = horizontal ? NODE_WIDTH : Math.max(...members.map(estimateNodeHeight));
+      return { members, crossSize, depthSize };
+    });
+  const maxCrossSize = Math.max(0, ...groups.map((group) => group.crossSize));
+  const positions = new Map<string, { x: number; y: number }>();
+  let depthOffset = horizontal ? 28 : 24;
+  for (const { members, crossSize, depthSize } of groups) {
+    let crossOffset = (horizontal ? 24 : 28) + (maxCrossSize - crossSize) / 2;
+    for (const node of members) {
+      positions.set(
+        node.id,
+        horizontal ? { x: depthOffset, y: crossOffset } : { x: crossOffset, y: depthOffset },
+      );
+      crossOffset += (horizontal ? estimateNodeHeight(node) : NODE_WIDTH) + NODE_SEP;
+    }
+    depthOffset += depthSize + ranksep;
+  }
+  return nodes.map((node) => ({ ...node, position: positions.get(node.id)! }));
+}
+
+// The canvas can hand the layout two records for one id. Every pass below keys
+// by id - the rank map, graphlib's node map, the wrap, the gap sweep - so the
+// second record would take a slot of its own, and the gap sweep would then push
+// it into a neighbouring column on top of another card. Keep the first record
+// per id, the one the caller listed first, and lay out one slot per id.
+function dedupeById(nodes: Node[]): Node[] {
+  const seen = new Set<string>();
+  const out: Node[] = [];
+  for (const node of nodes) {
+    if (seen.has(node.id)) continue;
+    seen.add(node.id);
+    out.push(node);
+  }
+  return out.length === nodes.length ? nodes : out;
+}
+
 export function getLayoutedElements(
   nodes: Node[],
   edges: Edge[],
   direction: "LR" | "TB" = "LR",
 ): LayoutedGraph {
-  const ranks = computeNodeDepths(nodes, edges);
+  const uniqueNodes = dedupeById(nodes);
+  const ranks = computeNodeDepths(uniqueNodes, edges);
   const maxDepth = ranks.size ? Math.max(...ranks.values()) : 0;
 
-  const g = new dagre.graphlib.Graph();
-  g.setDefaultEdgeLabel(() => ({}));
-  g.setGraph({
-    rankdir: direction,
-    nodesep: NODE_SEP,
-    ranksep: rankSepForDepth(maxDepth),
-    marginx: 28,
-    marginy: 24,
-  });
+  let layoutedNodes: Node[];
+  if (!fitsDagreBudget(uniqueNodes, edges, ranks)) {
+    layoutedNodes = placeAsapRanks(uniqueNodes, ranks, direction, rankSepForDepth(maxDepth));
+  } else {
+    const g = new dagre.graphlib.Graph();
+    g.setDefaultEdgeLabel(() => ({}));
+    g.setGraph({
+      rankdir: direction,
+      nodesep: NODE_SEP,
+      ranksep: rankSepForDepth(maxDepth),
+      marginx: 28,
+      marginy: 24,
+    });
 
-  for (const node of nodes) {
-    g.setNode(node.id, { width: NODE_WIDTH, height: estimateNodeHeight(node) });
-  }
-  // Rank assignment is ours (ADR-0113 D2), not dagre's: `ranks` above already
-  // computed each node's ASAP depth. dagre's own rankers — network-simplex
-  // included, which is the untouched default here — minimize total edge
-  // length instead, which is a different objective and disagrees with ASAP
-  // whenever a node's result is consumed much later than it is produced (the
-  // P2 case). Rather than fight that objective with a `ranker` option (the
-  // ADR is explicit that no ranker choice changes the outcome), pin every
-  // edge's minlen to the exact ASAP rank gap between its endpoints. ASAP then
-  // satisfies every constraint with equality, so its total edge span equals
-  // the sum of the minlens, which is the lower bound any feasible assignment
-  // can reach — and reaching it requires every edge to be tight, which only
-  // ASAP is. dagre still does the ordering and routing, just not the ranking.
-  //
-  // Note what that argument rests on: ASAP is the unique MINIMUM-COST
-  // assignment here, not the unique feasible one. Slack-free constraints do
-  // not by themselves pin a solution — on the graph the decision was measured
-  // on, {b:1, h:4} with the rest unchanged satisfies all nine constraints at a
-  // total span of 15 against ASAP's 13. It loses on cost, not on legality. So
-  // this depends on the ranker minimizing total edge length, which every dagre
-  // ranker does. A future ranker with a different objective would need this
-  // revisited rather than trusted.
-  for (const edge of edges) {
-    const sourceRank = ranks.get(edge.source);
-    const targetRank = ranks.get(edge.target);
-    if (sourceRank !== undefined && targetRank !== undefined) {
-      g.setEdge(edge.source, edge.target, { minlen: Math.max(1, targetRank - sourceRank) });
-      continue;
+    for (const node of uniqueNodes) {
+      g.setNode(node.id, { width: NODE_WIDTH, height: estimateNodeHeight(node) });
     }
-    // An endpoint is missing from `ranks`, which happens exactly when the edge
-    // names a node that never arrived: computeNodeDepths ranks every node it
-    // was given and skips edges pointing outside that set. Skip the edge here
-    // too, so the layout and the rank map describe the same graph.
+    // Rank assignment is ours: `ranks` above already
+    // computed each node's ASAP depth. dagre's own rankers — network-simplex
+    // included, which is the untouched default here — minimize total edge
+    // length instead, which is a different objective and disagrees with ASAP
+    // whenever a node's result is consumed much later than it is produced.
+    // Rather than changing the `ranker` option, pin every
+    // edge's minlen to the exact ASAP rank gap between its endpoints. ASAP then
+    // satisfies every constraint with equality, so its total edge span equals
+    // the sum of the minlens, which is the lower bound any feasible assignment
+    // can reach — and reaching it requires every edge to be tight, which only
+    // ASAP is. dagre still does the ordering and routing, just not the ranking.
     //
-    // Handing it to dagre instead is worse than useless. graphlib's setEdge
-    // CREATES an endpoint it has not seen, so the absent node gets a rank and
-    // a slot of its own, and dagre pushes the real node that depends on it out
-    // of the rank this function just computed — positions contradicting the
-    // `ranks` map returned beside them, on behalf of a node nothing draws. It
-    // also costs real time at scale, since dagre lays out every phantom.
-    //
-    // If a future change does need one of these to reach dagre, call setEdge
-    // with no label rather than passing `undefined` for one: graphlib stores an
-    // explicit `undefined` AS the label, and dagre dereferences it while
-    // routing — "Cannot set properties of undefined (setting 'points')", which
-    // takes the whole layout down.
+    // Note what that argument rests on: ASAP is the unique MINIMUM-COST
+    // assignment here, not the unique feasible one. Slack-free constraints do
+    // not by themselves pin a solution — on the graph the decision was measured
+    // on, {b:1, h:4} with the rest unchanged satisfies all nine constraints at a
+    // total span of 15 against ASAP's 13. It loses on cost, not on legality. So
+    // this depends on the ranker minimizing total edge length, which every dagre
+    // ranker does. A future ranker with a different objective would need this
+    // revisited rather than trusted.
+    for (const edge of edges) {
+      const sourceRank = ranks.get(edge.source);
+      const targetRank = ranks.get(edge.target);
+      if (sourceRank !== undefined && targetRank !== undefined) {
+        g.setEdge(edge.source, edge.target, { minlen: Math.max(1, targetRank - sourceRank) });
+        continue;
+      }
+      // An endpoint is missing from `ranks`, which happens exactly when the edge
+      // names a node that never arrived: computeNodeDepths ranks every node it
+      // was given and skips edges pointing outside that set. Skip the edge here
+      // too, so the layout and the rank map describe the same graph.
+      //
+      // Handing it to dagre instead is worse than useless. graphlib's setEdge
+      // CREATES an endpoint it has not seen, so the absent node gets a rank and
+      // a slot of its own, and dagre pushes the real node that depends on it out
+      // of the rank this function just computed — positions contradicting the
+      // `ranks` map returned beside them, on behalf of a node nothing draws. It
+      // also costs real time at scale, since dagre lays out every phantom.
+      //
+      // If a future change does need one of these to reach dagre, call setEdge
+      // with no label rather than passing `undefined` for one: graphlib stores an
+      // explicit `undefined` AS the label, and dagre dereferences it while
+      // routing — "Cannot set properties of undefined (setting 'points')", which
+      // takes the whole layout down.
+    }
+
+    dagre.layout(g);
+
+    layoutedNodes = uniqueNodes.map((node) => {
+      const pos = g.node(node.id);
+      // dagre reports a centre, so each node is offset by its OWN height. Using a
+      // shared constant here would re-introduce the overlap from the other side.
+      return {
+        ...node,
+        position: {
+          x: pos.x - NODE_WIDTH / 2,
+          y: pos.y - estimateNodeHeight(node) / 2,
+        },
+      };
+    });
   }
-
-  dagre.layout(g);
-
-  const layoutedNodes = nodes.map((node) => {
-    const pos = g.node(node.id);
-    // dagre reports a centre, so each node is offset by its OWN height. Using a
-    // shared constant here would re-introduce the overlap from the other side.
-    return {
-      ...node,
-      position: {
-        x: pos.x - NODE_WIDTH / 2,
-        y: pos.y - estimateNodeHeight(node) / 2,
-      },
-    };
-  });
 
   // The wrap keys ranks by their shared x, which holds only for LR (constant
   // node width). TB ranks share y instead; no caller lays out TB today.
@@ -572,7 +811,7 @@ export function getLayoutedElements(
 
   return {
     nodes: finalNodes,
-    edges: markContinuationEdges(finalNodes, edges),
+    edges: markContinuationEdges(finalNodes, edges, direction, ranks),
     height,
     width,
     ranks,

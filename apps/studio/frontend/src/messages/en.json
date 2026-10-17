@@ -305,12 +305,12 @@
       "engineMaxDepth": "Max depth",
       "engineMaxAgents": "Max agents",
       "loadFailed": "(failed to load version)",
-      "invocations": "Invocations",
-      "successRate": "Success rate",
-      "lastUsed": "Last used",
-      "never": "never",
-      "recentInvocations": "Recent invocations",
-      "noInvocations": "No invocations recorded yet.",
+      "invocations": "Recorded invocations",
+      "successRate": "Recorded success rate",
+      "lastUsed": "Last tracked use",
+      "never": "Not recorded",
+      "recentInvocations": "Recently updated records",
+      "noInvocations": "No recorded invocations.",
       "skillValidationFailed": "Validation failed. Fix the errors below before saving.",
       "pluginOwnedSkillHint": "Bundled with a plugin — edit the plugin's files directly to change it.",
       "readOnly": "Read-only",
@@ -322,7 +322,10 @@
       "pluginHooksSection": "Hooks Configuration",
       "pluginReadmeSection": "README",
       "yes": "Yes",
-      "no": "No"
+      "no": "No",
+      "usageCoverage": "Tracking coverage for this skill or plugin is unknown; only recorded invocations are shown. Success counts completed runs among finished records. Recent ages show updates.",
+      "usageUnavailable": "Recorded usage is unavailable.",
+      "usageUnknown": "Unknown"
     },
     "template": {
       "badge": "Built-in",
@@ -666,6 +669,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "Recent runs unavailable",
     "title": "Schedules",
     "subtitle": "Standing automations on cron, interval, and GitHub triggers",
     "calendar": "Calendar",
@@ -1250,6 +1254,12 @@
       "body": "Something answered at {base}, but it isn't a lionagi daemon.",
       "fix": "Stop that program, or point the daemon at a different port:",
       "command": "li studio --port 8766"
+    },
+    "accessRequired": {
+      "title": "This daemon needs an access token",
+      "body": "A lionagi daemon answered at {base}, but it refused this page. A daemon accepts a page on another origin only with an access token, and the li studio command gives this page one when it opens it. Reloading the page drops the token.",
+      "fix": "Run this where the daemon runs to open Studio with access:",
+      "command": "li studio"
     },
     "retry": "Retry",
     "dismiss": "Dismiss"

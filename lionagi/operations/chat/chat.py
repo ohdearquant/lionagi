@@ -72,7 +72,10 @@ async def chat(
 
     await emit_api_pre_call(branch, imodel)
     try:
-        api_call = await imodel.invoke(**kw)
+        from lionagi.service.imodel import _branch_routing_context
+
+        with _branch_routing_context(branch.id, imodel):
+            api_call = await imodel.invoke(**kw)
     except BaseException as exc:
         # BaseException (asyncio.CancelledError included): cancellation mid-invoke
         # must still pair with a post emission, or a hook-bus observer sees an open span.

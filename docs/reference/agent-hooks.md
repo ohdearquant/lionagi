@@ -55,6 +55,19 @@ prompt submission. Before a blocking exception is re-raised, the bus records a
 denial `HookSignal` whose payload includes `denied: true` and an exception
 summary.
 
+A store refusal is never suppressed by `suppress_errors`. A
+`StateCompatibilityRefused` raised by a tool call's own path, or by a
+`TOOL_POST` handler `_act()` fires under its default `suppress_errors=True`, is
+re-raised as itself: a refused write never becomes a swallowed tool error
+result, so a run cannot report a success the store refused to persist. A signal
+whose own persistence is refused is the one exception: the session signal sink
+counts it as a dropped signal and lets the session go on, so the refused signal
+is missing from the stored history while the run's other records still stop.
+The default handlers look the store up by its URL. When the process holds that
+store through a registered compatibility handle they write through it, so their
+writes meet the profile, and a refusal one of them meets is raised by the emit
+as any handler's refusal is.
+
 `USER_PROMPT_SUBMIT` fires at most once per genuine user-originated turn,
 regardless of how many internal calls that turn drives underneath it — see
 `lionagi/operations/_turn_origin.py` for the tri-state disposition

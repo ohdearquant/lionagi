@@ -569,7 +569,7 @@ def test_session_to_row_current_phase_wins():
     }
     assert _session_to_row(sess)["phase"] == "executing"
 
-    # Before a flow leaves planning, current_phase is NULL → fall back.
+    # A non-terminal row without a live phase still uses the static label.
     sess["current_phase"] = None
     assert _session_to_row(sess)["phase"] == "orchestrator"
 

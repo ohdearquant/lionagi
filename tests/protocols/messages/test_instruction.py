@@ -299,19 +299,6 @@ def test_from_dict_with_explicit_response_format():
     assert content.response_format == rf
 
 
-def test_from_dict_response_format_overrides_auto_derive():
-    """Explicit response_format prevents auto-derivation from Pydantic model"""
-    rf = {"custom": "format"}
-    data = {
-        "instruction": "Test",
-        "response_format": SampleRequestModel,
-        "response_format": rf,
-    }
-    content = InstructionContent.from_dict(data)
-
-    assert content.response_format == rf  # Should use explicit, not auto-derived
-
-
 def test_from_dict_invalid_response_format_type():
     """from_dict silently ignores invalid response_format type (fuzzy handling)"""
     data = {"instruction": "Test", "response_format": "invalid"}

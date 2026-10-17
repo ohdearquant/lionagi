@@ -199,6 +199,11 @@ Exact construction semantics:
 This decision removes the need for serialization to be the mechanism that distinguishes durable
 from transient state. Serialization remains a compatibility safeguard, not the lifetime boundary.
 
+**Amended by ADR-0127:** for providers that accept a native system block and cache by prompt
+prefix and only while the prompt-caching option is on: the tool definitions leave the per-call
+transient set for a stable segment held for the conversation, and the response sections render in the
+turn segment. With the option off nothing here changes.
+
 ### D2 — One deterministic compiler owns selection, folding, and rendering
 
 `compile_chat_request()` is a pure compilation step with respect to branch history: it reads the
@@ -301,6 +306,11 @@ The algorithm has no retry, timeout, token cap, or provider call. It is determin
 branch snapshot and `TurnRequest` supplied. Callers that require a stable snapshot must avoid
 concurrent history mutation while compiling; cross-task branch locking is outside this ADR.
 
+**Amended by ADR-0127:** for providers that accept a native system block and cache by prompt
+prefix and only while the prompt-caching option is on: the tool definitions render once in a stable
+segment rather than per instruction, and the response sections render in the turn segment. With the option
+off nothing here changes.
+
 ### D3 — Context blocks use a canonical source-attributed JSON section
 
 `ContextBlock` is data, not preformatted policy text. The compiler renders all blocks as one
@@ -363,6 +373,10 @@ An adapter error occurs before model invocation and leaves history unchanged. Re
 only after compilation succeeds and follows each operation's existing behavior: direct `chat()`
 does not automatically record, `communicate()` records its instruction/response, and `run()`
 records streamed messages.
+
+**Amended by ADR-0127:** for providers that accept a native system block and cache by prompt
+prefix and only while the prompt-caching option is on: the adapter builds the provider's native
+system field from an ordered list of blocks. With the option off nothing here changes.
 
 ### D5 — Chat and run share compilation and diverge only for execution
 

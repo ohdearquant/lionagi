@@ -8,7 +8,9 @@ hook failure can never affect the run's own returned output/status."""
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import shlex
 import sys
 import time
@@ -24,6 +26,7 @@ from lionagi import Branch, Session
 from lionagi.cli.orchestrate._orchestration import OrchestrationEnv
 from lionagi.cli.orchestrate.flow import _run_flow
 from lionagi.state.db import StateDB
+from lionagi.state.reasons import RunReasons
 
 # Fixtures
 
@@ -685,3 +688,76 @@ async def test_run_flow_fires_hook_without_invocation_id(temp_db_path: Path, tmp
     assert payload["invocation_id"] is None
     assert payload["status"] == "completed"
     assert payload["kind"] == "flow"
+
+
+async def test_flow_finalize_after_kill_keeps_the_kill_outcome(
+    temp_db_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+):
+    """A kill records the invocation's outcome first; the flow's later
+    finalize must not replace that reason or its end time.
+
+    Both writes land on ``cancelled``, so the flow's is a same-status write:
+    with the guard removed it takes that write, appending a second cancelled
+    ``status_transitions`` row and reporting nothing. The guard refuses it
+    before the write, so the history keeps the kill's one row and the refusal
+    is logged. The stored reason and end time stand either way.
+    """
+    monkeypatch.setattr(
+        "lionagi.cli.kill.current_pid_markers",
+        lambda: {"pid": 1234, "process_identity_mode": "local"},
+    )
+    env = _make_env(tmp_path)
+    invocation_id = str(uuid4())
+    await _make_invocation(temp_db_path, invocation_id)
+
+    db = StateDB(str(temp_db_path))
+    await db.open()
+    try:
+        await db.update_status(
+            "invocation",
+            invocation_id,
+            new_status="cancelled",
+            reason_code=RunReasons.CANCELLED_MANUAL_KILL,
+            reason_summary="Manually cancelled via `li kill`.",
+            source="admin",
+            actor="user",
+            expected_statuses={"running"},
+            extra_fields={"ended_at": 200.0},
+        )
+    finally:
+        await db.close()
+
+    async def cancelled(*_a, **_k):
+        raise asyncio.CancelledError
+
+    with (
+        patch(
+            "lionagi.cli.orchestrate.flow.setup_orchestration",
+            AsyncMock(return_value=env),
+        ),
+        patch("lionagi.cli.orchestrate.flow._run_flow_inner", cancelled),
+        caplog.at_level(logging.INFO, logger="lionagi.cli.orchestrate.flow"),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await _run_flow("claude", "do the thing", invocation_id=invocation_id)
+
+    db = StateDB(str(temp_db_path))
+    await db.open()
+    try:
+        row = await db.get_invocation(invocation_id)
+        transitions = await db.fetch_all(
+            "SELECT status FROM status_transitions WHERE entity_id = ? "
+            "AND previous_status IS NOT NULL",
+            (invocation_id,),
+        )
+    finally:
+        await db.close()
+    assert row["status"] == "cancelled"
+    assert row["status_reason_code"] == RunReasons.CANCELLED_MANUAL_KILL
+    assert row["status_reason_summary"] == "Manually cancelled via `li kill`."
+    assert row["ended_at"] == 200.0
+    # The refused write is reported, not silently dropped.
+    assert f"Refused terminal write for invocation {invocation_id}" in caplog.text
+    # Only the kill's own transition exists: the flow's refused write appended
+    # nothing, so the history has one cancelled row and not two.
+    assert transitions == [{"status": "cancelled"}]

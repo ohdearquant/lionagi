@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Callable
+from contextlib import nullcontext
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -15,6 +16,7 @@ from lionagi.protocols.generic import ID, Event, EventStatus, Log
 from lionagi.providers._agentic_handlers import RUNTIME_STATE_NAMES
 
 from .connections import AgenticEndpoint, APICalling, Endpoint, match_endpoint
+from .connections.endpoint import _event_reports_call_failure
 from .hooks import (
     HookedEvent,
     HookEvent,
@@ -24,6 +26,20 @@ from .hooks import (
 )
 from .rate_limited_processor import RateLimitedAPIExecutor
 from .types import StreamChunk
+
+
+def _branch_routing_context(branch_id: UUID, imodel: iModel):
+    if not _endpoint_routing_enabled(imodel.endpoint):
+        return nullcontext()
+    from .accounts._scope import routing_scope
+    from .accounts._types import Scope
+
+    return routing_scope(Scope("branch", branch_id, "anthropic"))
+
+
+def _endpoint_routing_enabled(endpoint) -> bool:
+    check = getattr(endpoint, "_account_routing_enabled", None)
+    return bool(check and check())
 
 
 def _terminal_stream_error(api_call: APICalling) -> BaseException | None:
@@ -41,14 +57,6 @@ def _terminal_stream_error(api_call: APICalling) -> BaseException | None:
     if isinstance(err, BaseException):
         return err
     return RuntimeError(str(err) if err is not None else "stream failed without a recorded cause")
-
-
-# The event types that say the call itself failed: the Responses API's
-# ``response.failed`` and Codex's ``turn.failed``. A bare ``failed`` is read the same
-# way, although no provider in this package sends one. Any other type ending in
-# ``.failed``, such as ``response.mcp_call.failed``, is read as about an item inside the
-# call; a type that ends in ``failed`` without the dot is read like any other event.
-_CALL_FAILED_EVENT_TYPES = frozenset({"response.failed", "turn.failed", "failed"})
 
 
 class iModel:  # noqa: N801
@@ -277,7 +285,7 @@ class iModel:  # noqa: N801
         payload, headers = self.endpoint.create_payload(request=kwargs)
         cache_control = kwargs.pop("cache_control", False)
 
-        return APICalling(
+        api_call = APICalling(
             payload=payload,
             headers=headers,
             endpoint=self.endpoint,
@@ -285,6 +293,36 @@ class iModel:  # noqa: N801
             cache_control=cache_control,
             include_token_usage_to_model=include_token_usage_to_model,
         )
+        self._capture_routing_scope(api_call)
+        return api_call
+
+    def _expected_routing_scope(self):
+        from .accounts._scope import current_scope
+        from .accounts._types import Scope
+
+        return current_scope() or Scope("imodel", self.id, "anthropic")
+
+    def _capture_routing_scope(self, api_call: APICalling) -> None:
+        if not _endpoint_routing_enabled(self.endpoint):
+            return
+        from .accounts._types import AccountRoutingError, RouterErrorCode
+
+        expected = self._expected_routing_scope()
+        captured = api_call._routing_scope
+        if captured is None:
+            api_call._routing_scope = expected
+        elif captured != expected:
+            # The call belongs to the scope that built it. Refusing changes nothing on it: it
+            # stays where its owner put it, and whoever sends it later (the owner's invoke, or
+            # any caller's forward while it is pending) sends it under the owner's scope.
+            raise AccountRoutingError(RouterErrorCode.ACCOUNT_CONFIG_CONFLICT) from None
+
+    def _is_routing_error(self, error: BaseException) -> bool:
+        if not _endpoint_routing_enabled(self.endpoint):
+            return False
+        from .accounts._types import AccountRoutingError
+
+        return isinstance(error, AccountRoutingError)
 
     async def process_chunk(self, chunk) -> Any:
         """Process a streaming data chunk. Override for custom handling."""
@@ -325,33 +363,10 @@ class iModel:  # noqa: N801
     def _event_failed(event: Any) -> bool:
         """Whether a provider event or response says the call failed.
 
-        The event counts as failed when its type is one that says the call itself
-        failed (``_CALL_FAILED_EVENT_TYPES``). Any other type ending in ``.failed``,
-        such as ``response.mcp_call.failed``, is read as about an item inside the call
-        and does not count, whatever else the event carries. Otherwise it counts when
-        the event itself, its ``message`` or its ``response`` has an ``error`` or
-        ``is_error`` that is set, a ``status`` of ``failed``, or a choice whose
-        ``finish_reason`` is ``error``.
+        The rule is the endpoint's (``_event_reports_call_failure``), so the chunk the
+        endpoint marks ``call_failed`` and the event read here agree.
         """
-        if not isinstance(event, dict):
-            return False
-        event_type = str(event.get("type", ""))
-        if event_type in _CALL_FAILED_EVENT_TYPES:
-            return True
-        if event_type.endswith(".failed"):
-            return False
-        for holder in (event, event.get("message"), event.get("response")):
-            if not isinstance(holder, dict):
-                continue
-            if holder.get("error") or holder.get("is_error") or holder.get("status") == "failed":
-                return True
-            choices = holder.get("choices")
-            if isinstance(choices, list) and any(
-                isinstance(choice, dict) and choice.get("finish_reason") == "error"
-                for choice in choices
-            ):
-                return True
-        return False
+        return _event_reports_call_failure(event)
 
     @staticmethod
     def _reports_failure(value: Any) -> bool:
@@ -385,8 +400,12 @@ class iModel:  # noqa: N801
         stream chunk keeps the provider event under ``metadata["raw"]``, where
         the model sits at the top level (chat completion chunks), under
         ``message`` (Anthropic ``message_start``) or under ``response``
-        (Responses events). Result chunks are never read: a CLI result chunk is
-        the run record, which may name the requested model. A chunk or response
+        (Responses events). Result chunks are not read: a CLI result chunk is
+        the run record, which may name the requested model. The one result chunk
+        read is the Responses API's own ``response.completed`` event, kept under
+        ``metadata["raw"]`` by the HTTP converter: it is the provider's terminal
+        event, and for a stream that named its model nowhere earlier it is the only
+        report. A chunk or response
         that says the call failed (see ``_reports_failure``) is never read
         either. A call cut short rather than refused is read, because the model
         it names is the one that ran: an incomplete response (a content filter
@@ -396,10 +415,15 @@ class iModel:  # noqa: N801
         if iModel._reports_failure(value):
             return None
         if isinstance(value, StreamChunk):
-            if value.type not in ("system", "text"):
-                return None
             metadata = value.metadata if isinstance(value.metadata, dict) else {}
             raw = metadata.get("raw")
+            provider_terminal = (
+                value.type == "result"
+                and isinstance(raw, dict)
+                and raw.get("type") == "response.completed"
+            )
+            if value.type not in ("system", "text") and not provider_terminal:
+                return None
             if isinstance(raw, dict):
                 holders = [raw, raw.get("message"), raw.get("response")]
             elif value.type == "system":
@@ -460,19 +484,54 @@ class iModel:  # noqa: N801
         if api_call is None:
             kw["stream"] = True
             api_call = await self.create_event(**kw)
-            await self.executor.append(api_call)
+        self._capture_routing_scope(api_call)
+        # A call stream() creates is consumed by this generator, never by the
+        # executor's queue: it goes into the pile with no pending entry, because
+        # forward() sends every pending id the pile still holds and would send
+        # this call a second time while the stream is consuming it. A caller
+        # that appended the call before passing it in did put it in the queue at
+        # that append, so the entry is dropped here; a forward() between the two
+        # can still have sent it.
+        self.executor.pending.exclude(api_call.id)
         api_call.metadata.pop("served_model", None)
 
-        if self.executor.processor is None or self.executor.processor.is_stopped():
-            await self.executor.start()
+        stream_error = None
+        failed = False
+        try:
+            await self.executor.pile.ainclude(api_call)
+            if self.executor.processor is None or self.executor.processor.is_stopped():
+                await self.executor.start()
 
-        if self.executor.processor._concurrency_sem:
-            async with self.executor.processor._concurrency_sem:
-                stream_error = None
+            if self.executor.processor._concurrency_sem:
+                async with self.executor.processor._concurrency_sem:
+                    try:
+                        async for i in api_call.stream():
+                            if failed or self._reports_failure(i):
+                                # A failure voids any model read before it, and no chunk after
+                                # it names one: the call failed whatever came next.
+                                failed = True
+                                served_model = None
+                            else:
+                                reported_model = self._reported_served_model(i)
+                                if reported_model is not None:
+                                    served_model = reported_model
+                            result = await self.process_chunk(i)
+                            yield result if result is not None else i
+                        # api_call.stream() captures a transport/provider failure as
+                        # FAILED instead of raising (so the shared processor can fire
+                        # events concurrently without one failure cancelling the batch).
+                        # This public boundary must not report that as a clean end —
+                        # surface it after iteration so the caller sees the error.
+                        stream_error = _terminal_stream_error(api_call)
+                    except Exception as e:
+                        if self._is_routing_error(e):
+                            raise
+                        raise ValueError(f"Failed to stream API call: {e}") from e
+            else:
                 try:
                     async for i in api_call.stream():
-                        if self._reports_failure(i):
-                            # A failure voids any model read before it.
+                        if failed or self._reports_failure(i):
+                            failed = True
                             served_model = None
                         else:
                             reported_model = self._reported_served_model(i)
@@ -480,54 +539,43 @@ class iModel:  # noqa: N801
                                 served_model = reported_model
                         result = await self.process_chunk(i)
                         yield result if result is not None else i
-                    # api_call.stream() captures a transport/provider failure as
-                    # FAILED instead of raising (so the shared processor can fire
-                    # events concurrently without one failure cancelling the batch).
-                    # This public boundary must not report that as a clean end —
-                    # surface it after iteration so the caller sees the error.
                     stream_error = _terminal_stream_error(api_call)
                 except Exception as e:
+                    if self._is_routing_error(e):
+                        raise
                     raise ValueError(f"Failed to stream API call: {e}") from e
-                finally:
-                    self._store_served_model(api_call, served_model)
-                    # Pop without yielding — yield-in-finally would swallow CancelledError
-                    # during generator cleanup, breaking anyio.fail_after timeout enforcement.
-                    self.executor.pile.pop(api_call.id, None)
-                if stream_error is not None:
-                    raise ValueError(f"Failed to stream API call: {stream_error}") from stream_error
-        else:
-            stream_error = None
-            try:
-                async for i in api_call.stream():
-                    if self._reports_failure(i):
-                        served_model = None
-                    else:
-                        reported_model = self._reported_served_model(i)
-                        if reported_model is not None:
-                            served_model = reported_model
-                    result = await self.process_chunk(i)
-                    yield result if result is not None else i
-                stream_error = _terminal_stream_error(api_call)
-            except Exception as e:
-                raise ValueError(f"Failed to stream API call: {e}") from e
-            finally:
-                self._store_served_model(api_call, served_model)
-                self.executor.pile.pop(api_call.id, None)
-            if stream_error is not None:
-                raise ValueError(f"Failed to stream API call: {stream_error}") from stream_error
+        finally:
+            # Runs on every exit from the point this generator owns the call: a
+            # clean end, a consumer that stops early, cancellation (including
+            # while waiting for the concurrency slot), an endpoint failure, and
+            # a processor start that raises.
+            self._store_served_model(api_call, served_model)
+            # Pop without yielding — yield-in-finally would swallow CancelledError
+            # during generator cleanup, breaking anyio.fail_after timeout enforcement.
+            self.executor.pile.pop(api_call.id, None)
+        if stream_error is not None:
+            if self._is_routing_error(stream_error):
+                raise stream_error from None
+            raise ValueError(f"Failed to stream API call: {stream_error}") from stream_error
 
     async def invoke(self, api_call: APICalling = None, **kw) -> APICalling:
         try:
             if api_call is None:
                 kw.pop("stream", None)
                 api_call = await self.create_event(**kw)
+            self._capture_routing_scope(api_call)
             api_call.metadata.pop("served_model", None)
 
             if self.executor.processor is None or self.executor.processor.is_stopped():
                 await self.executor.start()
 
-            await self.executor.append(api_call)
-            await self.executor.forward()
+            # Only this call: forward() would also send every call another caller appended
+            # and has not forwarded yet. Taking it out of pending keeps a later forward()
+            # from queueing it a second time.
+            await self.executor.pile.ainclude(api_call)
+            self.executor.pending.exclude(api_call.id)
+            await self.executor.processor.enqueue(api_call)
+            await self.executor.processor.process()
 
             if api_call.status in (
                 EventStatus.PROCESSING,
@@ -562,6 +610,8 @@ class iModel:  # noqa: N801
 
             return completed_call
         except Exception as e:
+            if self._is_routing_error(e):
+                raise
             if api_call is not None:
                 self._store_served_model(api_call, None)
             raise ValueError(f"Failed to invoke API call: {e}") from e
