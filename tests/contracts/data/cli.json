@@ -977,7 +977,7 @@
                 "nargs": null,
                 "default": null,
                 "choices": null,
-                "help": "Running flow to pause, by session, invocation, play, or run id (full, or an unambiguous prefix). The pause lands at the next op boundary, not mid-op."
+                "help": "Running flow to pause, by session, invocation, play, or run id (full, an unambiguous 8-character hex prefix, or an unambiguous run-id prefix through the T after its date). In-flight operations are not interrupted."
               }
             ],
             "subparsers": {}
@@ -1004,7 +1004,7 @@
                 "nargs": null,
                 "default": null,
                 "choices": null,
-                "help": "Paused flow to release, by session, invocation, play, or run id (full, or an unambiguous prefix)."
+                "help": "Paused flow to release, by session, invocation, play, or run id (full, an unambiguous 8-character hex prefix, or an unambiguous run-id prefix through the T after its date)."
               }
             ],
             "subparsers": {}
@@ -1031,7 +1031,7 @@
                 "nargs": null,
                 "default": null,
                 "choices": null,
-                "help": "Running flow, playbook run, or agent leg to message, by session, invocation, play, or run id (full, or an unambiguous prefix)."
+                "help": "Running flow, playbook run, or agent leg to message, by session, invocation, play, or run id (exact, an unambiguous 8-character hex prefix, or an unambiguous run-id prefix through the T after its date)."
               },
               {
                 "option_strings": [],
@@ -7887,7 +7887,7 @@
                 "session",
                 "show"
               ],
-              "help": "Narrow the table to one kind of entity: session, invocation, show or play. `command` narrows to invocations launched as a command action."
+              "help": "Narrow the table to one kind of entity: session, invocation, show or play. `command` narrows to invocations launched as a command action. Use `session` for flow runs, or `invocation` for registered invocation records."
             },
             {
               "option_strings": [
@@ -8033,7 +8033,7 @@
                 "session",
                 "show"
               ],
-              "help": "Narrow the table to one kind of entity: session, invocation, show or play. `command` narrows to invocations launched as a command action."
+              "help": "Narrow the table to one kind of entity: session, invocation, show or play. `command` narrows to invocations launched as a command action. Use `session` for flow runs, or `invocation` for registered invocation records."
             },
             {
               "option_strings": [

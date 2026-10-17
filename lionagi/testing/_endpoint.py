@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import json
 import logging
 import uuid
@@ -17,6 +16,7 @@ import aiohttp
 from multidict import CIMultiDict, CIMultiDictProxy
 from yarl import URL
 
+from lionagi import ln
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.registry import EndpointType, register_endpoint
@@ -224,7 +224,7 @@ class ScriptedEndpoint(AgenticEndpoint):
         deep-copied for an independent cursor; see docs/internals/runtime.md."""
         super().copy_runtime_state_to(other)
         if isinstance(other, ScriptedEndpoint):
-            other._script = copy.deepcopy(self._script)
+            other._script = ln.copy(self._script)
             other._script.reset()
             other.calls = list(self.calls)
 

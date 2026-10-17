@@ -91,8 +91,8 @@ The signed `.app` bundle lands at `src-tauri/target/release/bundle/macos/`.
 The main window is created with `WebviewWindowBuilder::initialization_script()`
 (Tauri 2.5+ API). This script runs synchronously in every new document, before
 any page scripts. It reads the port from the URL hash fragment (`#port=N`) and
-sets `window.__STUDIO_API_BASE__`. The SPA's `lib/api.ts::resolveApiBase()` reads
-this global at module-evaluation time.
+sets `window.__STUDIO_API_BASE__`. The SPA's `lib/api.ts` reads this global when
+the module is evaluated.
 
 Navigation sequence:
 1. Window opens on `index.html` with `visible: false`

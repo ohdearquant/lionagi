@@ -1230,7 +1230,7 @@ async def transition_sessions(
                 result = await conn.execute(
                     text(
                         "UPDATE sessions SET status=:status, ended_at=:now, updated_at=:now, "
-                        "  duration_ms=:duration_ms, "
+                        "  duration_ms=:duration_ms, current_phase=NULL, "
                         "  status_reason_code=:rcode, status_reason_summary=:rsummary, "
                         "  status_evidence_refs=:erefs "
                         "WHERE id=:sid AND status='running'"

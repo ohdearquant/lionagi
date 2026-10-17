@@ -9,11 +9,21 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 from lionagi.cli.orchestrate import fanout as fanout_module
+from lionagi.state.db import StateDB
 
 from .test_fanout_artifacts import _fanout_env
 
 
 async def test_notify_scope_is_session_even_with_invocation_id(tmp_path, monkeypatch):
+    # `--invocation` is validated against the recorded invocations before setup,
+    # so the id has to name a real row for the run to be reached at all.
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(
+        "lionagi.state.db.settings", type("S", (), {"LIONAGI_STATE_DB_URL": None})()
+    )
+    async with StateDB(db_path) as db:
+        await db.create_invocation({"id": "parent-inv-456", "skill": "fanout", "started_at": 1.0})
     env, _run, _session = _fanout_env(tmp_path)
 
     monkeypatch.setattr(fanout_module, "setup_orchestration", AsyncMock(return_value=env))

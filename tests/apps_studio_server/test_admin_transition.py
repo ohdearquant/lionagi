@@ -173,6 +173,49 @@ def test_transition_sessions_populates_duration_ms(tmp_path, monkeypatch):
     assert row["duration_ms"] == pytest.approx((row["ended_at"] - old_ts) * 1000)
 
 
+def test_transition_sessions_clears_the_live_phase(tmp_path, monkeypatch):
+    """The admin CAS ends a session like every other terminal writer: the live
+    phase goes in the same statement as the terminal status."""
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.admin as adm
+    from lionagi.state.db import StateDB
+
+    db_path = tmp_path / "state.db"
+    sid = str(uuid.uuid4())
+    old_ts = time.time() - 7 * 3600
+    _run(_seed_stale_session(db_path, sid, last_message_at=old_ts, updated_at=old_ts))
+
+    async def _set_phase():
+        async with StateDB(db_path) as db:
+            await db.execute("UPDATE sessions SET current_phase=? WHERE id=?", ("executing", sid))
+            await db.execute(
+                "UPDATE sessions SET last_message_at=?, updated_at=? WHERE id=?",
+                (old_ts, old_ts, sid),
+            )
+
+    _run(_set_phase())
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+
+    result = _run(
+        adm.transition_sessions(
+            session_ids=[sid],
+            target_status="aborted",
+            reason_code="run.failed.exception",
+            reason_summary="test phase clear",
+            actor="test",
+        )
+    )
+    assert sid in result["transitioned"]
+
+    async def _get():
+        async with StateDB(db_path) as db:
+            return await db.get_session(sid)
+
+    row = _run(_get())
+    assert row["status"] == "aborted"
+    assert row["current_phase"] is None
+
+
 # Test: an already-terminal session is never touched by the reconcile CAS
 
 

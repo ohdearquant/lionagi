@@ -29,8 +29,12 @@ import enMessages from "@/messages/en.json";
 import { reportAccessRefused, reportConnectivityFailure } from "@/lib/connectivity";
 import { pairedBearer, resetPairingForTests, takePairingCodeFromLocation } from "@/lib/pairing";
 
+const apiConfig = vi.hoisted(() => ({ base: "http://127.0.0.1:8765" }));
+
 vi.mock("@/lib/api", () => ({
-  resolveApiBase: () => "http://127.0.0.1:8765",
+  get API_BASE() {
+    return apiConfig.base;
+  },
 }));
 
 function jsonResponse(body: unknown, ok = true, status = ok ? 200 : 404): Response {
@@ -48,6 +52,7 @@ describe("NoDaemonGate", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    apiConfig.base = "http://127.0.0.1:8765";
     container = document.createElement("div");
     document.body.appendChild(container);
     unmounted = false;
@@ -108,6 +113,16 @@ describe("NoDaemonGate", () => {
     expect(recovery?.textContent).toContain("Studio needs a local lionagi daemon");
     expect(recovery?.textContent).toContain('pip install "lionagi[studio]"');
     expect(recovery?.textContent).toContain("li studio");
+  });
+
+  it("shows the page origin when health requests use the same-origin base", async () => {
+    apiConfig.base = "";
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+    await mount();
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/health");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      window.location.origin,
+    );
   });
 
   it("shows a distinct wrong-app recovery state when the health shape is invalid", async () => {

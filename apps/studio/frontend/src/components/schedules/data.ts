@@ -1,10 +1,12 @@
 /**
  * Schedules space data layer — fetch + polling + time math. One row per
- * schedule; run history lives on the schedule detail page, not here.
+ * schedule, carrying its newest-25 run slice, read from the list response when
+ * the daemon serves one and from that schedule's own history endpoint when it
+ * does not; the full paginated history stays on the schedule detail page.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listScheduleRuns, listSchedules } from "@/lib/api";
-import type { ScheduleRunSliceRow, ScheduleSummary } from "@/lib/types";
+import type { ScheduleRecentRunsSummary, ScheduleRunSliceRow, ScheduleSummary } from "@/lib/types";
 
 // Statuses with a history.status translation; unknown values fall back to
 // StatusPill's built-in humanization.
@@ -75,11 +77,93 @@ export interface SchedulesData {
 }
 
 const POLL_MS = 30_000;
-const RUNS_PER_SCHEDULE = 25;
+const RECENT_RUNS = 25;
+
+function unavailableSummary(): ScheduleRecentRunsSummary {
+  return { version: 1, limit: 25, status: "unavailable", has_next: null, runs: [] };
+}
+
+function recentSummary(schedule: ScheduleSummary): ScheduleRecentRunsSummary {
+  const summary = schedule.recent_runs_summary;
+  if (
+    summary?.version === 1 &&
+    summary.limit === 25 &&
+    summary.status === "available" &&
+    typeof summary.has_next === "boolean" &&
+    Array.isArray(summary.runs) &&
+    summary.runs.length <= RECENT_RUNS &&
+    (!summary.has_next || summary.runs.length === RECENT_RUNS) &&
+    summary.runs.every((run) => run && run.schedule_id === schedule.id)
+  ) {
+    return summary;
+  }
+  return unavailableSummary();
+}
+
+export function recentRunsUnavailable(schedule: ScheduleSummary): boolean {
+  return recentSummary(schedule).status === "unavailable";
+}
 
 /**
- * Fetches all schedules plus each schedule's recent runs (the API exposes
- * runs per schedule only), and re-polls every 30s so the Running lane is live.
+ * The fields the list contract's recent-run slice carries for one occurrence.
+ * Kept here so a fallback row is projected onto exactly the shape a
+ * field-bearing row has rather than keeping the wider run view's extras.
+ */
+const SLICE_FIELDS = [
+  "id",
+  "schedule_id",
+  "invocation_id",
+  "action_kind",
+  "status",
+  "exit_code",
+  "chain_depth",
+  "fired_at",
+  "ended_at",
+  "error_class",
+] as const satisfies readonly (keyof ScheduleRunSliceRow)[];
+
+/**
+ * Read one schedule's history the way a daemon that predates the summary field
+ * serves it, and present it as the same slice. That endpoint serves the wider
+ * run view -- duration, artifact paths, session ids, and the reconciled outcome
+ * on top of the occurrence -- so each row is projected onto the slice fields,
+ * which leaves a fallback row and a field-path row the same shape. The
+ * acceptance rules, the displayed count and `has_next` are the slice's. One
+ * extra row is requested so a history of exactly the displayed count is not
+ * reported as having more. A read that fails or answers with a body the rules
+ * reject stays unavailable, so a short history is never reported as empty.
+ */
+async function historySummary(schedule: ScheduleSummary): Promise<ScheduleRecentRunsSummary> {
+  try {
+    const { runs } = await listScheduleRuns(schedule.id, { limit: RECENT_RUNS + 1 });
+    if (!Array.isArray(runs)) return unavailableSummary();
+    const slice = runs.slice(0, RECENT_RUNS).map((run) => {
+      const row: Record<string, unknown> = {};
+      for (const field of SLICE_FIELDS) row[field] = run[field];
+      return row as unknown as ScheduleRunSliceRow;
+    });
+    // The candidate goes back through recentSummary, so a fallback slice is
+    // held to exactly the rules a field-bearing one is.
+    return recentSummary({
+      ...schedule,
+      recent_runs_summary: {
+        version: 1,
+        limit: 25,
+        status: "available",
+        has_next: runs.length > RECENT_RUNS,
+        runs: slice,
+      },
+    });
+  } catch {
+    return unavailableSummary();
+  }
+}
+
+/**
+ * One list request includes recent run slices from a daemon that serves them;
+ * a daemon that predates the field costs one history request per schedule more.
+ * Overlapping polls and explicit refreshes share the in-flight request and queue
+ * at most one trailing refresh.
  */
 export function useSchedulesData(): SchedulesData {
   const [schedules, setSchedules] = useState<ScheduleSummary[]>([]);
@@ -87,52 +171,69 @@ export function useSchedulesData(): SchedulesData {
   const [nowMs, setNowMs] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  const aliveRef = useRef(true);
+  const refreshRef = useRef<() => void>(() => {});
+  const refresh = useCallback(() => refreshRef.current(), []);
 
-  const load = useCallback(async () => {
-    try {
-      const res = await listSchedules();
-      if (!aliveRef.current) return;
-      const list = res.schedules;
-      const settled = await Promise.allSettled(
-        list.map((s) => listScheduleRuns(s.id, { limit: RUNS_PER_SCHEDULE })),
-      );
-      if (!aliveRef.current) return;
-      const nameById = new Map(list.map((s) => [s.id, s.name]));
-      const allRuns: RunRow[] = [];
-      for (const r of settled) {
-        if (r.status === "fulfilled") {
-          for (const run of r.value.runs) {
-            allRuns.push({
+  useEffect(() => {
+    let active = true;
+    let inFlight = false;
+    let pending = false;
+    const load = async () => {
+      if (!active) return;
+      if (inFlight) {
+        pending = true;
+        return;
+      }
+      inFlight = true;
+      try {
+        const res = await listSchedules({ include_recent_runs: true });
+        if (!active) return;
+        // A daemon that predates the summary field omits it; that row is read
+        // through its own history endpoint rather than shown unavailable.
+        const list = await Promise.all(
+          res.schedules.map(async (schedule) => ({
+            ...schedule,
+            recent_runs_summary:
+              schedule.recent_runs_summary === undefined
+                ? await historySummary(schedule)
+                : recentSummary(schedule),
+          })),
+        );
+        if (!active) return;
+        setSchedules(list);
+        setRuns(
+          list.flatMap((schedule) =>
+            schedule.recent_runs_summary.runs.map((run) => ({
               ...run,
-              scheduleName: nameById.get(run.schedule_id) ?? run.schedule_id,
-            });
+              scheduleName: schedule.name,
+            })),
+          ),
+        );
+        setNowMs(Date.now());
+        setError(false);
+      } catch {
+        if (active) setError(true);
+      } finally {
+        inFlight = false;
+        if (active) {
+          setLoading(false);
+          if (pending) {
+            pending = false;
+            void load();
           }
         }
       }
-      setSchedules(list);
-      setRuns(allRuns);
-      setNowMs(Date.now());
-      setError(false);
-    } catch {
-      if (aliveRef.current) setError(true);
-    } finally {
-      if (aliveRef.current) setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    aliveRef.current = true;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- load() calls setState, but this is a data-fetch pattern matching the rest of the codebase
+    };
+    refreshRef.current = () => void load();
     void load();
     const id = setInterval(() => void load(), POLL_MS);
     return () => {
-      aliveRef.current = false;
+      active = false;
       clearInterval(id);
     };
-  }, [load]);
+  }, []);
 
-  return { schedules, runs, nowMs, loading, error, refresh: () => void load() };
+  return { schedules, runs, nowMs, loading, error, refresh };
 }
 
 // ─── Next-fire derivation ─────────────────────────────────────────────────────

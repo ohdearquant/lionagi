@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { useTranslations } from "use-intl";
 import Button from "@/components/ui/Button";
 import { IconPort, IconTerminal } from "@/components/ui/icons";
-import { resolveApiBase } from "@/lib/api";
+import { API_BASE } from "@/lib/api";
 import { onAccessRefused, onConnectivityFailure } from "@/lib/connectivity";
 import { hasPendingPairingCode, redeemPairingCode } from "@/lib/pairing";
 
@@ -63,7 +63,7 @@ async function connect(apiBase: string): Promise<ConnectivityStatus> {
  */
 export default function NoDaemonGate({ children }: { children: ReactNode }) {
   const t = useTranslations("daemon");
-  const apiBase = resolveApiBase();
+  const apiBase = API_BASE;
   const [status, setStatus] = useState<ConnectivityStatus>("checking");
   const activeRef = useRef(true);
   const lastReprobeRef = useRef(0);
@@ -114,7 +114,7 @@ export default function NoDaemonGate({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const displayBase = apiBase || "http://127.0.0.1:8765";
+  const displayBase = apiBase || window.location.origin;
 
   if (status === "connected") return <>{children}</>;
 
