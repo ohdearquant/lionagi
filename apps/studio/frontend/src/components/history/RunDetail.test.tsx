@@ -51,10 +51,7 @@ const resumeRunProps = vi.hoisted(() => ({
 }));
 
 vi.mock("@/components/history/ResumeRun", () => ({
-  default: (props: {
-    runId: string;
-    onResumed: (result: unknown) => void | Promise<void>;
-  }) => {
+  default: (props: { runId: string; onResumed: (result: unknown) => void | Promise<void> }) => {
     resumeRunProps.current = props;
     return null;
   },
