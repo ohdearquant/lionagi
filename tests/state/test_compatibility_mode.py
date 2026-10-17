@@ -23,6 +23,7 @@ from lionagi.state.compat import (
     CompatibilityProfile,
     StateCompatibilityRefused,
     TableWrites,
+    _ConnectionState,
     _operation,
     _sql_tokens,
     _statement_kind,
@@ -33,6 +34,7 @@ from lionagi.state.compat import (
 from lionagi.state.db import StateDB
 
 # A store another application manages: lionagi's operations write runs and events, never other.
+# Its manager names itself in the schema_meta lineage row when it creates the store (ADR-0128 D7).
 _SCHEMA = """
 CREATE TABLE runs (
     id TEXT PRIMARY KEY,
@@ -50,8 +52,15 @@ CREATE TABLE events (
 CREATE TABLE other (id TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 INSERT INTO schema_meta VALUES ('version', '14');
+INSERT INTO schema_meta VALUES ('lineage', 'manager');
 INSERT INTO other VALUES ('keep', 'untouched');
 """
+
+# The schema_meta row a managing application writes, for the tests that build their own tables.
+_NAMED_BY_ITS_MANAGER = (
+    "CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);\n"
+    "INSERT INTO schema_meta VALUES ('lineage', 'manager');\n"
+)
 
 _WRITES = {
     "runs": TableWrites(
@@ -678,7 +687,7 @@ _PAST_ASCII = (
     "CREATE TABLE tail€ (id TEXT PRIMARY KEY, value TEXT);\n"
     "CREATE TRIGGER mirror AFTER INSERT ON runs€ BEGIN "
     "INSERT OR REPLACE INTO tail€ (id, value) VALUES (NEW.id, 'mirrored'); END;\n"
-)
+) + _NAMED_BY_ITS_MANAGER
 
 
 async def test_tables_named_past_ascii_are_read_as_sqlite_reads_them(tmp_path):
@@ -729,6 +738,42 @@ def test_compatibility_needs_sqlite_and_is_not_readonly(reference):
         StateDB(reference, readonly=True, compatibility=profile)
     with pytest.raises(TypeError, match="CompatibilityProfile"):
         StateDB(reference, compatibility="synthetic")
+
+
+@pytest.mark.parametrize(
+    "lineage",
+    [
+        "DROP TABLE schema_meta",
+        "DELETE FROM schema_meta WHERE key = 'lineage'",
+        "UPDATE schema_meta SET value = 'lionagi' WHERE key = 'lineage'",
+        "UPDATE schema_meta SET value = '' WHERE key = 'lineage'",
+        "UPDATE schema_meta SET value = '  ' WHERE key = 'lineage'",
+        "UPDATE schema_meta SET value = X'' WHERE key = 'lineage'",
+        "UPDATE schema_meta SET value = X'6d616e61676572' WHERE key = 'lineage'",
+    ],
+    ids=[
+        "no-schema-meta",
+        "no-lineage-row",
+        "names-this-package",
+        "empty",
+        "blank",
+        "empty-blob",
+        "name-as-blob",
+    ],
+)
+async def test_a_store_that_names_no_other_manager_is_not_admitted(tmp_path, reference, lineage):
+    """A native open in another process refuses a store only by a lineage row naming another
+    application, so compatibility mode writes to no store without one (ADR-0128 D7)."""
+    store = _store(tmp_path / "managed.db")
+    with closing(sqlite3.connect(store)) as conn:
+        conn.execute(lineage)
+        conn.commit()
+    before = _digest(store)
+    db = _RunsDB(store, compatibility=_profile(reference))
+    with pytest.raises(StateCompatibilityRefused, match="managing application names itself"):
+        await db.open()
+    assert db._engine is None
+    assert _digest(store) == before
 
 
 async def test_a_store_version_narrows_but_never_admits(store, reference, tmp_path):
@@ -1032,6 +1077,62 @@ async def test_the_authorizer_denies_what_reaches_sqlite_past_the_engine(
     assert _rows(store, "PRAGMA journal_mode") == [("wal",)]
 
 
+async def test_a_table_valued_function_is_read_on_a_new_connection(store, reference):
+    """A new connection connects json_each the first time a statement names it. SQLite
+    3.40.1 asks the authorizer about an update of sqlite_master while it does, and denying
+    that fails the read with "vtable constructor failed"."""
+    db = await _open(store, _profile(reference))
+    try:
+        await db._engine.dispose()
+        assert await _raw(db, "SELECT value FROM json_each('[1, 2]')") == [(1,), (2,)]
+    finally:
+        await db.close()
+
+
+class _OutsideATransaction:
+    in_transaction = False
+
+
+async def test_the_authorizer_allows_only_the_schema_table_update_sqlite_asks_about(
+    store, reference
+):
+    """Pinned on every SQLite version, since only some versions ask."""
+    db = await _open(store, _profile(reference))
+    try:
+        state = _ConnectionState()
+        authorize = db._compat._authorizer(state, _OutsideATransaction())
+        for column in ("type", "name", "tbl_name", "rootpage", "sql"):
+            allowed = authorize(sqlite3.SQLITE_UPDATE, "sqlite_master", column, "main", None)
+            assert allowed == sqlite3.SQLITE_OK
+        assert not state.denied
+        assert (
+            authorize(sqlite3.SQLITE_UPDATE, "sqlite_master", "sql", "temp", None)
+            == sqlite3.SQLITE_DENY
+        )
+        assert authorize(sqlite3.SQLITE_UPDATE, "runs", "status", "main", None) == (
+            sqlite3.SQLITE_DENY
+        )
+    finally:
+        await db.close()
+
+
+async def test_an_update_of_the_schema_table_is_refused(store, reference):
+    """The authorizer lets an update of sqlite_master through, so SQLite's own rule refuses
+    it: the schema table is read-only unless writable_schema is on, and that PRAGMA is
+    denied, read or set."""
+    schema = _rows(store, "SELECT type, name, sql FROM sqlite_master ORDER BY name")
+    db = await _open(store, _profile(reference))
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="may not be modified"):
+            await _raw(db, "UPDATE sqlite_master SET sql = sql")
+        for statement in ("PRAGMA writable_schema", "PRAGMA writable_schema = ON"):
+            with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+                await _raw(db, statement)
+    finally:
+        await db.close()
+    assert _rows(store, "SELECT type, name, sql FROM sqlite_master ORDER BY name") == schema
+
+
 async def test_every_new_connection_carries_the_authorizer(store, reference):
     db = await _open(store, _profile(reference))
     try:
@@ -1134,6 +1235,26 @@ async def test_a_compatibility_handle_is_never_the_shared_native_handle(store, r
         await db_mod.close_shared_db()
 
 
+async def test_the_shared_lookup_returns_the_compatibility_handle_and_opens_no_native_one(
+    store, reference, monkeypatch
+):
+    """A lookup that names only the store, as the default hook handlers' does, gets the handle
+    this process holds it with in compatibility mode; a native open would meet the managed
+    store's later schema, or apply this package's to it (ADR-0128 D1, Appendix A.2)."""
+    from lionagi.hooks import builtins
+
+    monkeypatch.setattr(db_mod, "DEFAULT_DB_PATH", store)
+    compat = _RunsDB(store, compatibility=_profile(reference))
+    try:
+        await db_mod.register_shared_db(compat)
+        assert await db_mod.get_shared_db() is compat
+        assert await db_mod.get_shared_db(store) is compat
+        assert await builtins._db() is compat
+        assert db_mod._SHARED.get(compat.url) is None
+    finally:
+        await db_mod.close_shared_db()
+
+
 async def test_a_read_only_handle_is_shared_by_its_url_as_before(store):
     readonly = StateDB(store, readonly=True)
     try:
@@ -1142,6 +1263,140 @@ async def test_a_read_only_handle_is_shared_by_its_url_as_before(store):
         assert await db_mod.get_shared_db(store) is readonly
     finally:
         await db_mod.close_shared_db()
+
+
+async def test_a_cancel_in_a_compatibility_disposal_leaves_the_next_open_the_compatibility_path(
+    store, reference, monkeypatch
+):
+    """A second native cancel delivered while ``_open_compatibility()``'s shielded disposal is in
+    progress escapes it, so the compatibility engine stays set and the handle is untracked. The
+    interrupted close is recorded, so the next ``open()`` disposes that engine (once more) and
+    takes the compatibility path, never running the native schema over a store another application
+    manages."""
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy.ext.asyncio import AsyncEngine
+
+    dispose_calls = {"n": 0}
+    stalled = asyncio.Event()
+    real_dispose = AsyncEngine.dispose
+
+    async def counted_dispose(self, *args, **kwargs):
+        dispose_calls["n"] += 1
+        if dispose_calls["n"] == 1:
+            stalled.set()
+            await asyncio.sleep(10)
+        await real_dispose(self, *args, **kwargs)
+
+    entered = asyncio.Event()
+    first_admission = True
+    real_snapshot = StateDB.read_snapshot
+
+    @asynccontextmanager
+    async def stalling_snapshot(self):
+        nonlocal first_admission
+        if first_admission:
+            first_admission = False
+            entered.set()
+            await asyncio.sleep(60)
+        async with real_snapshot(self) as conn:
+            yield conn
+
+    schema_calls = {"n": 0}
+    real_schema = StateDB._apply_schema
+
+    async def counting_schema(self):
+        schema_calls["n"] += 1
+        await real_schema(self)
+
+    monkeypatch.setattr(AsyncEngine, "dispose", counted_dispose)
+    monkeypatch.setattr(StateDB, "read_snapshot", stalling_snapshot)
+    monkeypatch.setattr(StateDB, "_apply_schema", counting_schema)
+
+    handle = _RunsDB(store, compatibility=_profile(reference))
+    handle.entered = []
+    opening = asyncio.ensure_future(handle.open())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        opening.cancel()
+        await asyncio.wait_for(stalled.wait(), timeout=10)
+        opening.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(opening, timeout=10)
+
+        assert handle._engine is not None
+        assert dispose_calls["n"] == 1, "the cancel did not interrupt the disposal"
+
+        await handle.open()
+        assert dispose_calls["n"] == 2, (
+            "the next open did not dispose the engine the interruption left set"
+        )
+        assert schema_calls["n"] == 0, (
+            "the native schema ran over a store another application manages"
+        )
+        assert handle.mode == "compatibility"
+        await handle.start_run("r1")
+        assert _rows(store, "SELECT id FROM runs") == [("r1",)]
+    finally:
+        if handle._engine is not None:
+            await handle.close()
+
+
+async def test_a_refused_retry_on_a_kept_engine_leaves_the_handle_ready_for_compatibility(
+    tmp_path, monkeypatch
+):
+    """A plain native open that fails after its connection read the store keeps its engine. When the
+    store is then marked as another application's and a retry refuses on that engine's own
+    connection, the refusal disposes the kept engine and drops it from the open-native registry, so
+    a compatibility open of the same store in this process still succeeds."""
+    from lionagi.state import db as db_mod
+    from lionagi.state.db import ForeignLineageError
+
+    store = _store(tmp_path / "later-managed.db")
+    with closing(sqlite3.connect(store)) as conn:
+        conn.execute("DELETE FROM schema_meta WHERE key = 'lineage'")
+        conn.commit()
+
+    real_schema = StateDB._apply_schema
+    calls = {"n": 0}
+
+    async def read_then_fail(self):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            await self.fetch_all("SELECT 1")
+            raise RuntimeError("transient failure after the connection read the store")
+        await real_schema(self)
+
+    monkeypatch.setattr(StateDB, "_apply_schema", read_then_fail)
+    handle = StateDB(store)
+    profile = None
+    try:
+        with pytest.raises(RuntimeError, match="transient failure"):
+            await handle.open()
+        assert handle._engine is not None, "a plain open keeps the engine it built"
+        assert handle in db_mod._OPEN_NATIVE
+
+        with closing(sqlite3.connect(store)) as conn:
+            conn.execute(
+                "INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager') "
+                "ON CONFLICT (key) DO UPDATE SET value = excluded.value"
+            )
+            conn.commit()
+
+        with pytest.raises(ForeignLineageError, match="'manager' as the application"):
+            await handle.open()
+        assert handle._engine is None, "a refused retry left the kept engine set"
+        assert handle not in db_mod._OPEN_NATIVE, (
+            "a refused retry left the handle registered as an open native one"
+        )
+
+        profile = _profile(store)
+        compat = _RunsDB(store, compatibility=profile)
+        await compat.open()
+        await compat.close()
+    finally:
+        if handle._engine is not None:
+            await handle.close()
 
 
 # Profiles
@@ -1319,7 +1574,8 @@ async def test_a_name_that_differs_past_ascii_in_case_is_another_table(tmp_path,
     store = _store(
         tmp_path / "managed.db",
         f'CREATE TABLE "{named}" (id TEXT PRIMARY KEY, label TEXT);\n'
-        f'CREATE TABLE "{twin}" (id TEXT PRIMARY KEY, label TEXT, extra TEXT);\n',
+        f'CREATE TABLE "{twin}" (id TEXT PRIMARY KEY, label TEXT, extra TEXT);\n'
+        + _NAMED_BY_ITS_MANAGER,
     )
     with closing(sqlite3.connect(store)) as conn:
         closure = read_closure(conn, [named])
