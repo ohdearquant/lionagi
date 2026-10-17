@@ -136,8 +136,24 @@ whose schema another application manages, and never migrates, stamps or reconfig
   `load_extension`. Everything else is `SQLITE_DENY`, never `SQLITE_IGNORE`.
 - **A denial poisons its transaction.** Any refusal or denial inside a write transaction makes
   its COMMIT fail, even when the caller caught the error; the transaction then rolls back.
+- **A run's rows.** With an `OwnerRule`, a run writes only rows it creates: an insert refuses an
+  id that exists and writes the configured owner; a row an operation links to or updates must be
+  one this handle created in a transaction that committed (a session's invocation link is checked
+  by owner alone, as `create_session` checks it), an update first checks inside its
+  transaction that the row still carries the owner, and the UPDATE itself carries the owner
+  predicate. `update_session` merges `node_metadata` by top-level key inside its transaction
+  instead of writing it whole, with or without a status change in the same call, so a key the
+  payload omits keeps its stored value and a nested object under a key the payload sends replaces
+  the stored object there; a stored or given `node_metadata` that is not a JSON object is refused.
+  `merge_session_node_metadata` instead keeps a stored value that is not a JSON object under
+  `_discarded_node_metadata` rather than losing it. `update_status` moves only the run's session, never
+  by override, and writes the owner on the transition and on any admin event it records.
 - **Refusals** raise `StateCompatibilityRefused(operation, profile, reason, committed)`;
-  `committed` names the operation's transactions that had already committed. `vacuum()`,
+  `committed` names the operation's transactions that had already committed. A signal write the
+  store refuses is not counted among the sink's dropped signals: teardown fails the run with that
+  refusal, and its reason names the operations the same teardown already committed. A refusal
+  the lifecycle emits record while they run fails the run the same way, because teardown writes
+  the terminal status only after those emits. `vacuum()`,
   `checkpoint()` and the migration path refuse before any statement runs.
 - Native and read-only handles are shared by url, as before; a compatibility handle is keyed by
   `(url, mode, profile, owner)`, so a native and a compatibility handle on one file, and two
@@ -145,8 +161,8 @@ whose schema another application manages, and never migrates, stamps or reconfig
 - While this process holds a store open in compatibility mode, a native open of that store
   refuses (a read-only open is left alone), and so does registering a native handle for it as
   the shared one. `get_shared_db()` returns the registered compatibility handle, ahead of any
-  native handle registered for the same store, so a caller naming only the store (the default
-  hook handlers) writes through the profile. It refuses when more than one compatibility handle
+  native handle registered for the same store, so a caller naming only the store (a default
+  hook handler reached by an emit that carries no handle) writes through the profile. It refuses when more than one compatibility handle
   is registered for the store, and when the compatibility handle is open but not registered.
   Another process is not covered: its native open applies this package's schema unless the
   store is at a later one (ADR-0128 Appendix A.0).
@@ -930,15 +946,17 @@ nothing in the module assumes a dedicated action_kind.
 
 ### `hooks/builtins.py`
 
-`persist_session_end()` — in the normal CLI flow, `teardown_persist()` always stamps the
-terminal status via `_teardown_common()`'s `update_status()` call before emitting
-`SESSION_END`, so the session row is already terminal by the time this handler runs. In that
-case only pure usage fields are written (input/output tokens, cost, turns, duration) — the
-status/reason_code/ended_at transition is skipped (avoids a duplicate `status_transitions` row
-and a double-fire clobbering an already-recorded status), and `node_metadata` is left
-untouched since `_teardown_common()` already owns it for a terminal row and `update_session()`
-does a plain column SET, not a merge (writing `{"error": ...}` here would clobber richer
-existing data). Related: `persist_session_start`'s explicit `reason_code` on the "running"
+`persist_session_end()` — in the normal CLI flow, `teardown_persist()` writes the terminal
+status itself through `_teardown_common()`'s decision, but only after it has emitted
+`BRANCH_END` and `SESSION_END`; the emits hand this handler the run's own handle, so it knows
+the teardown owns the terminal write and records only pure usage fields (input/output tokens,
+cost, turns, duration), leaving the status, its reason and the end time to that single write.
+This keeps a refusal the emits record from landing after a status the run had already written,
+and avoids a duplicate `status_transitions` row (a double-fire clobbering an
+already-recorded status); `node_metadata` is left untouched since `_teardown_common()` already
+owns it and `update_session()` does a plain column SET, not a merge (writing `{"error": ...}`
+here would clobber richer existing data). An emit that carries no handle (a direct bus emit)
+stamps the status itself, as before. Related: `persist_session_start`'s explicit `reason_code` on the "running"
 transition avoids tripping a deprecation shim that would otherwise raise and get swallowed by
 the bus, silently dropping all the provenance fields passed alongside it.
 

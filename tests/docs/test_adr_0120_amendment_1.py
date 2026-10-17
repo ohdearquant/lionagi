@@ -73,7 +73,7 @@ def test_flow_bus_spawn_and_escalation_paths_are_present() -> None:
 
 
 def test_observer_gate_still_applies_before_routes_and_subscribers() -> None:
-    body = _span("lionagi/session/observer.py", 339, 348)
+    body = _span("lionagi/session/observer.py", 363, 372)
     assert "allowed = True" in body
     assert "except Exception" in body
     assert "allowed = False" in body
@@ -105,9 +105,9 @@ def test_team_round_batches_pending_targets_per_completion() -> None:
 
 
 def test_signal_rows_and_schedule_cursor_citations_point_at_their_code() -> None:
-    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 4720)
-    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 6499)
-    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 6522)
+    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 4950)
+    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 6763)
+    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 6788)
 
 
 # -- what the amendment now says ---------------------------------------------
@@ -127,8 +127,8 @@ def test_durable_subscriber_source_is_a_confirmed_session_signals_row() -> None:
     assert "never the in-memory emit" in flat
     assert "reaches `best_effort` subscribers only" in flat
     assert "lionagi/state/schema.sql:797-801" in flat
-    assert "lionagi/state/db.py:6499-6507" in flat
-    assert "lionagi/state/db.py:6522-6537" in flat
+    assert "lionagi/state/db.py:6763-6771" in flat
+    assert "lionagi/state/db.py:6788-6803" in flat
     assert "the cursor is a position in that sequence, read forward with `after_seq`" in flat
     assert "is not a committed row and is no durable subscriber's source" in flat
     assert "whose forward read defaults to 500 rows" in flat
@@ -146,7 +146,7 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     assert "lionagi/session/branch.py:441-469" in flat
     assert "lionagi/operations/run/run.py:817-828" in flat
     assert "`unbind_db_persistence`" in flat
-    assert "lionagi/session/observer.py:542-559" in flat
+    assert "lionagi/session/observer.py:581-598" in flat
     assert "observer unbinding is cleanup, not settlement" in flat
     assert "keeps its tail pending for the life of the session" in flat
     assert "no timeout and no new setting" in flat
@@ -163,7 +163,7 @@ def test_closing_batch_triggers_and_bound_are_stated() -> None:
     assert "so the owner-scoped finalizer that records closure is" in flat
     assert "a prerequisite delta below" in flat
     assert "the writes it tracked are known to have finished" in flat
-    assert "lionagi/cli/_runs.py:1295" in flat
+    assert "lionagi/cli/_runs.py:1476" in flat
     assert "lionagi/studio/services/workflow_run.py:110" in flat
 
 
@@ -190,8 +190,8 @@ def test_phase_two_is_a_target_and_the_gate_is_cited_where_it_still_runs() -> No
     flat = _flat()
     assert "Phase 2 already makes" not in text
     assert "Phase 2's target is to make `SessionObservation` signal-only" in flat
-    assert "lionagi/session/observer.py:339-348" in flat
-    assert "lionagi/session/observer.py:343-344`) and then returns at `:348" in flat
+    assert "lionagi/session/observer.py:363-372" in flat
+    assert "lionagi/session/observer.py:367-368`) and then returns at `:372" in flat
     assert "lionagi/session/observer.py:235-236" not in flat
 
 
@@ -250,7 +250,7 @@ def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are
     flat = _flat()
     assert "lionagi/cli/orchestrate/_orchestration.py:1378" in flat
     assert "lionagi/state/schema.sql:463" in flat
-    assert "lionagi/state/db.py:4720-4722" in flat
+    assert "lionagi/state/db.py:4950-4952" in flat
     assert "the store advances it only forward, so a stale write cannot move it back" in flat
     assert "ADR-0070, Accepted" in flat
     assert "per-completion batch of targets, not a per-subscriber position" in flat

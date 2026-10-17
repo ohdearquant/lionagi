@@ -612,7 +612,7 @@ uses it as migration evidence.
 ## Amendment 1 (2026-10-16) — an observing subscriber is woken at a boundary, not per row
 
 D3 makes `SessionObserver` an observation façade and leaves subscription delivery as it stands: a
-handler runs inside `emit`, once per fact it matches (`lionagi/session/observer.py:333-370`). This record
+handler runs inside `emit`, once per fact it matches (`lionagi/session/observer.py:357-394`). This record
 did not decide how often a subscriber that is a process rather than an in-process callable should
 run, and the cheapest reading of D3's dispatch, one run per matching fact, is the one to refuse.
 One attempt of `ReactiveExecutor` emits a different fact per node transition, from `NodeQueued`
@@ -691,8 +691,8 @@ closure is a prerequisite delta below. At most `max_wakes_per_attempt - 1` inter
 batch are minted; closure wakes only for remaining admitted facts. Closure drains admitted
 emissions and persistence before recording its cutoff; observer unbinding is cleanup, not
 settlement, and `unbind_db_persistence` is synchronous and detaches the sink handler before the
-writes it tracked are known to have finished (`lionagi/session/observer.py:542-559`), ahead of the
-CLI and Studio closing the store (`lionagi/cli/_runs.py:1295`,
+writes it tracked are known to have finished (`lionagi/session/observer.py:581-598`), ahead of the
+CLI and Studio closing the store (`lionagi/cli/_runs.py:1476`,
 `lionagi/studio/services/workflow_run.py:110`). `retryable` closing work waits durably;
 `best_effort` drops and counts queue overflow. A hung invocation remains pending; restart recovers
 durable work without inventing a successful settlement.
@@ -711,9 +711,9 @@ the record says what is lost and when. For a durable subscriber the source fact 
 `session_signals` row the persistence sink has
 confirmed, never the in-memory emit: the log is append-only with a monotonic per-session sequence
 (`lionagi/state/schema.sql:797-801`), the sink writes it with the sequence the store assigns
-(`lionagi/state/db.py:6499-6507`), and the cursor is a position in that sequence, read forward with
-`after_seq` (`lionagi/state/db.py:6522-6537`), whose forward read defaults to 500 rows
-(`:6527`). Registration requires a bound usable sink and replayable filters, and persists source
+(`lionagi/state/db.py:6763-6771`), and the cursor is a position in that sequence, read forward with
+`after_seq` (`lionagi/state/db.py:6788-6803`), whose forward read defaults to 500 rows
+(`:6793`). Registration requires a bound usable sink and replayable filters, and persists source
 invocation and signal identity, `emitter_role`, versioned payload type and filter-required data
 without destructive truncation; every page is read through a frozen closure cutoff. A fact the
 sink did not confirm is not a committed row and is no durable subscriber's source: it reaches
@@ -721,10 +721,10 @@ sink did not confirm is not a committed row and is no durable subscriber's sourc
 replayed from the row (`lionagi/session/observer.py:55-57`, `:69`), truncates an oversized payload
 behind a marker (`:112-142`), and wraps a non-Signal emit as `Signal(data=event)`
 (`:335-336`), losing payload type; the writer lock refusal skips writes for the window
-(`:40`, `:510`), and a sink bound without a store or read while unbound counts nothing
+(`:40`, `:549`), and a sink bound without a store or read while unbound counts nothing
 (`:267-268`, `:493-495`). `persist_dropped` is therefore binding-local dropped-plus-in-flight
 accounting, not a durable gap ledger: it equals `dropped + in_flight`, and zero does not prove
-completeness (`lionagi/session/observer.py:202-205`, `:270`). Known capture degradation is recorded
+completeness (`lionagi/session/observer.py:217-220`, `:294`). Known capture degradation is recorded
 when storage recovers; unbound, absent-store and crash intervals may remain unknown.
 
 ### What this changes in this record
@@ -749,7 +749,7 @@ when storage recovers; unbound, absent-store and crash intervals may remain unkn
   `state/adapters/` signal persistence, message writes and terminal delivery (`:563`).
 - **Phase 2 gains a clause.** Phase 2's target is to make `SessionObservation` signal-only; today
   the observer's gate is still applied inside `emit`, before routes and before subscribers
-  (`lionagi/session/observer.py:339-348`). The phase now also owes the durable-subscriber shape: a
+  (`lionagi/session/observer.py:363-372`). The phase now also owes the durable-subscriber shape: a
   subscriber that runs a process must be told which boundary wakes it, and a `best_effort` drop is
   not an ordinary isolated handler failure. Phase 2's third gate arm (a gate that raises still
   persists the audit record) is unaffected; this clause is additive.
@@ -801,7 +801,7 @@ everything since; facts past the range belong to the next wake.
 
 - `SessionObserver.observe` and `emit` subscribe and dispatch per matched fact inside `emit`, with
   no boundary notion, no batching and no per-subscriber cursor
-  (`lionagi/session/observer.py:272-296`, `:333-370`).
+  (`lionagi/session/observer.py:296-320`, `:333-370`).
 - No durable wake path exists. Runs are spawned in-process today: the hypothesis, review and
   research operations call `run.spawn` for follow-up work inside their own run
   (`lionagi/engines/hypothesis.py:890-961`, `lionagi/engines/review.py:615`,
@@ -817,14 +817,14 @@ everything since; facts past the range belong to the next wake.
   `lionagi/cli/orchestrate/flow.py:1988-2033`). A schedule holds `github_cursor`, a monotonic
   reader position that remembers how far a poll has read so a refused event is re-offered rather
   than skipped, and the store advances it only forward, so a stale write cannot move it back
-  (`lionagi/state/schema.sql:463`, `:527-535`; `lionagi/state/db.py:4720-4722`; ADR-0070,
+  (`lionagi/state/schema.sql:463`, `:527-535`; `lionagi/state/db.py:4950-4952`; ADR-0070,
   Accepted). It is one position per schedule, not per observing subscriber. The nearest durable
   per-session log, and the domain of this record's cursor, is `session_signals`: append-only, with
   the per-session `seq` its store assigns at insert, read forward with `after_seq`
-  (`lionagi/state/schema.sql:797-801`; writer `lionagi/state/db.py:6499-6507`; forward reader
-  `lionagi/state/db.py:6522-6537`).
+  (`lionagi/state/schema.sql:797-801`; writer `lionagi/state/db.py:6763-6771`; forward reader
+  `lionagi/state/db.py:6788-6803`).
 - The one existing dropped-and-counted precedent is the persistence sink's own drop accounting,
-  and it counts a drop on the writer, not on a wake (`lionagi/session/observer.py:263-270`).
+  and it counts a drop on the writer, not on a wake (`lionagi/session/observer.py:287-294`).
 - `verdict` and `budget` each lack a session lifecycle Signal. `verdict` names the `Verdict` cast
   (`lionagi/casts/emission.py:152`); the review operation emits a `ReviewVerdict` into the session
   observer (`lionagi/engines/review.py:280`, `:841`), which is one emit site, but a `Verdict` cast
@@ -965,8 +965,8 @@ The gate for this phase has three arms, and the third is the one current code fa
 3. **a gate that raises still persists the audit record.**
 
 Arm 3 is separate because `SessionObserver.emit` wraps the gate call in
-`except Exception: allowed = False` (`lionagi/session/observer.py:343-344`) and then returns at
-`:348`, before routes and before subscribers. `bind_db_persistence()` registers the durable write
+`except Exception: allowed = False` (`lionagi/session/observer.py:367-368`) and then returns at
+`:372`, before routes and before subscribers. `bind_db_persistence()` registers the durable write
 as a subscriber, so a gate that merely throws suppresses the audit trail with no signal at all.
 Fail-closed is correct for authorization and wrong for audit, and a test that only exercises
 explicit denial passes while a buggy gate silently empties the record.

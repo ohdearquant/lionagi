@@ -15,7 +15,15 @@ from lionagi import ln
 logger = logging.getLogger("lionagi.hooks.builtins")
 
 
-async def _db():
+async def _db(db: Any = None):
+    """The store a default handler writes through.
+
+    A run hands its own open handle to these handlers on the event, so each writes through the
+    run's handle and meets whatever the store requires of that run. A caller that carries no
+    handle reaches the process-wide store the way it always has, looked up by url.
+    """
+    if db is not None:
+        return db
     from lionagi.state.db import get_shared_db
 
     return await get_shared_db()
@@ -42,13 +50,20 @@ async def persist_session_start(
     agent_name: str | None = None,
     agent_hash: str | None = None,
     invocation_id: str | None = None,
+    db: Any = None,
     **_unused: Any,
 ) -> None:
-    """Write the session provenance set + open the lifecycle window."""
+    """Write the session provenance set + open the lifecycle window.
+
+    A run that hands its own handle to this handler on the event has written the session row
+    with every one of these fields when it created it, so the handler writes nothing. Emitted
+    without a handle (a direct bus emit), it writes them as before."""
     from lionagi.state.db import SESSION_TERMINAL_STATUSES
     from lionagi.state.reasons import RunReasons
 
-    db = await _db()
+    if db is not None:
+        return
+    db = await _db(db)
     row = await db.get_session(session_id)
     if row is None:
         return
@@ -95,14 +110,20 @@ async def persist_session_end(
     total_cost_usd: float | None = None,
     num_turns: int | None = None,
     duration_ms: float | None = None,
+    db: Any = None,
     **_unused: Any,
 ) -> None:
-    """Stamp ended_at/status + usage on the session row; usually only usage
-    fields are written since teardown_persist already stamped status."""
+    """Stamp ended_at/status + usage on the session row.
+
+    A run hands its own handle to this handler on the event and owns the terminal status write
+    itself, made once the emit returns; this handler then writes only the usage fields the event
+    carries, leaving the status, its reason and the end time to that write. Emitted without a
+    handle (a direct bus emit), it stamps the status itself as before."""
     from lionagi.state.db import SESSION_TERMINAL_STATUSES
     from lionagi.state.reasons import RunReasons
 
-    db = await _db()
+    teardown_owns_status = db is not None
+    db = await _db(db)
     row = await db.get_session(session_id)
     if row is None:
         return
@@ -110,7 +131,7 @@ async def persist_session_end(
     already_terminal = row.get("status") in SESSION_TERMINAL_STATUSES
 
     fields: dict[str, Any] = {}
-    if not already_terminal:
+    if not already_terminal and not teardown_owns_status:
         fields["ended_at"] = time.time()
         if error is not None:
             # Pre-serialize (raw SQL param, no JSON bindparam) and merge
@@ -133,7 +154,7 @@ async def persist_session_end(
     if not fields:
         return
 
-    if already_terminal:
+    if already_terminal or teardown_owns_status:
         await db.update_session(session_id, **fields)
         return
 
@@ -158,10 +179,16 @@ async def persist_branch_provenance(
     model: str | None = None,
     provider: str | None = None,
     agent_name: str | None = None,
+    db: Any = None,
     **_unused: Any,
 ) -> None:
-    """Persist per-branch model / provider / agent_name provenance."""
-    db = await _db()
+    """Persist per-branch model / provider / agent_name provenance.
+
+    A run that hands its own handle to this handler on the event created the branch row with
+    these fields, so the handler writes nothing; emitted without a handle, it writes them."""
+    if db is not None:
+        return
+    db = await _db(db)
     await db.update_branch(
         branch_id,
         model=model,
@@ -175,6 +202,7 @@ async def persist_branch_end(
     branch_id: str,
     status: str = "completed",
     ended_at: float | None = None,
+    db: Any = None,
     **_unused: Any,
 ) -> None:
     """Stamp the branch row's terminal status/ended_at — the BRANCH_END
@@ -184,9 +212,11 @@ async def persist_branch_end(
     non-terminal status, on a branch already at any terminal status (so a
     more specific outcome recorded elsewhere, e.g. the DAG runner's own
     NodeCompleted/NodeFailed updates, is never clobbered), and on a branch
-    row that doesn't exist yet.
+    row that doesn't exist yet. In compatibility mode it also refuses a branch row this run
+    did not create, or that no longer carries the run's owner, so a store opened in compatibility
+    mode never reaches another run's branch through this handler.
     """
-    db = await _db()
+    db = await _db(db)
     await db.finalize_branch(branch_id, status=status, ended_at=ended_at or time.time())
 
 

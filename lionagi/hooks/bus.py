@@ -113,7 +113,11 @@ class HookBus:
         if self._observer is None:
             return
         try:
-            await self._observer.emit(HookSignal(point=point, kwargs=dict(kwargs)))
+            # A store handle handed to a handler on an event reaches that handler, not the
+            # transport record: left in, it would be retained on the observer's flow after the
+            # run closes the handle, and serialized into a stored signal's payload.
+            recorded = {name: value for name, value in kwargs.items() if name != "db"}
+            await self._observer.emit(HookSignal(point=point, kwargs=recorded))
         except Exception:  # noqa: BLE001 — transport recording is best-effort
             logger.exception("HookSignal record failed: %s", point.value)
 
