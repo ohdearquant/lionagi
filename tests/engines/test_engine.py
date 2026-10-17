@@ -405,7 +405,13 @@ def _mcp_file(tmp_path, name):
 
 
 async def _planning_workers(
-    monkeypatch, engine, *, on_branch_created=None, spawn_base=None, template_setup=None
+    monkeypatch,
+    engine,
+    *,
+    on_branch_created=None,
+    spawn_base=None,
+    template_setup=None,
+    defer_spawn=None,
 ):
     """Construct real worker templates and DAG clones without executing a provider."""
     from lionagi.casts.emission import TaskAssignment
@@ -443,6 +449,17 @@ async def _planning_workers(
 
     async def execute(graph, **kwargs):
         workers.extend(run.session.branches[node.branch_id] for node in graph.internal_nodes)
+        if defer_spawn is not None:
+            # The live order: a dependent child is cloned after the emitter's
+            # turn has completed and left its response on the emitter branch.
+            # Return what a caller needs to build the child itself, after it
+            # has run the emitter.
+            defer_spawn.update(
+                node_builder=kwargs["node_builder"],
+                on_branch_created=kwargs["on_branch_created"],
+                emitter=next(iter(graph.internal_nodes)),
+                graph=graph,
+            )
         if spawn_base is not None:
             from lionagi.casts.emission import SpawnRequest
             from lionagi.operations.flow import ReactiveExecutor
@@ -669,7 +686,18 @@ async def test_planning_role_templates_stay_within_a_tight_agent_budget(
     "spawn_base", [None, "role", "worker"], ids=["planned", "role-child", "worker-child"]
 )
 async def test_planning_dag_clones_keep_injection(monkeypatch, tmp_path, spawn_base):
+    """A clone that starts from a role template recalls on its first turn.
+
+    A planned worker and a role-targeted spawn both start from a role template,
+    which carries no conversation, so khive's first-turn cadence injects one
+    block for each. A dependent spawn with no assignee runs on a clone of its
+    emitter's branch and continues the emitter's conversation, so it is not a
+    first turn and the cadence adds no block of its own. The child is cloned
+    only after the emitter has answered, as it is in a live run.
+    """
+    from lionagi.casts.emission import SpawnRequest
     from lionagi.engines import PlanningEngine
+    from lionagi.operations.flow import ReactiveExecutor
     from lionagi.testing import scripted_imodel
     from lionagi.tools.khive_injection import KhiveInjectionProvider
 
@@ -692,26 +720,66 @@ async def test_planning_dag_clones_keep_injection(monkeypatch, tmp_path, spawn_b
         khive_injection=True,
         agent_mcp_config_path=_mcp_file(tmp_path, "workers.mcp.json"),
     )
+    deferred: dict = {}
     run, _, workers = await _planning_workers(
         monkeypatch,
         engine,
-        spawn_base=spawn_base,
         template_setup=give_templates_a_distinct_budget,
+        defer_spawn=deferred if spawn_base is not None else None,
     )
-    for worker in workers:
+    planned = list(workers)
+
+    async def run_turn(worker):
         # Swap only the model transport: real agent construction, cloning,
         # provider registration and operate's pre-turn fold still run.
         model = scripted_imodel([{"type": "text", "content": "done"}])
         worker.chat_model = worker.parse_model = model
         await worker.operate(instruction="Verify the worker evidence")
-        messages = model.endpoint.calls[0].payload["messages"]
+        return model.endpoint.calls[0].payload["messages"]
+
+    for worker in planned:
+        messages = await run_turn(worker)
         assert "WORKER-ONLY-REFERENCE" in messages[0]["content"]
         assert "WORKER-ONLY-REFERENCE" not in str(worker.msgs.messages)
         source = worker.metadata["clone_from"]
         assert worker.providers is not source.providers
         assert worker.providers.budget == source.providers.budget == template_budget
         assert worker.providers.stats["blocks_injected"] == 1
-    assert namespaces == [f"planningengine:{run.run_id}"] * len(workers)
+
+    expected_recalls = len(planned)
+    if spawn_base is not None:
+        # Live order: the emitter (the first planned clone) has answered above,
+        # so its clone now carries a response. Build the child only now.
+        emitter = deferred["emitter"]
+        request = SpawnRequest(
+            instruction="Follow up",
+            assignee="researcher" if spawn_base == "role" else None,
+        )
+        child = deferred["node_builder"](request, emitter)
+        executor = ReactiveExecutor(
+            run.session, deferred["graph"], on_branch_created=deferred["on_branch_created"]
+        )
+        executor.operation_branches[emitter.id] = planned[0]
+        executor._assign_injected_branch(child, emitter.id, independent=False)
+        spawned = run.session.branches[child.branch_id]
+        assert spawned.providers.budget == template_budget
+        messages = await run_turn(spawned)
+        assert "WORKER-ONLY-REFERENCE" not in str(spawned.msgs.messages)
+        if spawn_base == "role":
+            # The role-targeted spawn starts from the role template: a first turn.
+            assert spawned.metadata["clone_from"] is planned[0].metadata["clone_from"]
+            assert "WORKER-ONLY-REFERENCE" in messages[0]["content"]
+            assert spawned.providers.stats["blocks_injected"] == 1
+            expected_recalls += 1
+        else:
+            # The dependent unassigned spawn continues the emitter's
+            # conversation, so the first-turn cadence adds no block.
+            assert "WORKER-ONLY-REFERENCE" not in messages[0]["content"]
+            assert spawned.providers.stats["blocks_injected"] == 0
+            assert spawned.msgs.last_response is not None
+            assert spawned.metadata["clone_from"] is planned[0]
+
+    assert namespaces == [f"planningengine:{run.run_id}"] * expected_recalls
 
 
 def _fenced_spawn(assignee, *, independent=False):
@@ -874,15 +942,18 @@ async def test_planning_clones_keep_the_worker_role_for_injection(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("assignee", [None, ""], ids=["none", "empty"])
 async def test_planning_independent_unassigned_spawn_keeps_the_engine_settings(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, assignee
 ):
     """An independent, unassigned spawn runs on a branch carrying engine settings.
 
     With no assignee to route to, the executor falls back to the bare default
     branch: the new node loses every engine agent setting, and it must not
     inherit the emitter's conversation either, which is why the base is the
-    role template and not the emitter's clone.
+    role template and not the emitter's clone. An empty assignee is unassigned
+    too: the role router treats it the same way, so it must not skip the
+    template.
     """
     from lionagi.casts.emission import SpawnRequest, TaskAssignment
     from lionagi.engines import PlanningEngine
@@ -914,7 +985,7 @@ async def test_planning_independent_unassigned_spawn_keeps_the_engine_settings(
     )
 
     builder = _role_template_node_builder(roles, run.session)
-    request = SpawnRequest(instruction="independent follow-up", assignee=None, independent=True)
+    request = SpawnRequest(instruction="independent follow-up", assignee=assignee, independent=True)
     child = builder(request, emitter)
 
     executor = ReactiveExecutor(run.session, graph, on_branch_created=_inherit_worker_providers)

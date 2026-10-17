@@ -116,7 +116,10 @@ def _role_template_node_builder(roles: dict[str, Branch], session: Any) -> Any:
         # role template as the node's own branch source instead. Only for
         # independent requests: a dependent unassigned spawn stays on the
         # emitter's branch, whose conversation is its context.
-        if node.branch_id is None and getattr(req, "assignee", None) is None:
+        # The assignee is read for falsiness, like the role router: an empty
+        # assignee is unassigned, so it takes the template branch below rather
+        # than the bare default branch.
+        if node.branch_id is None and not getattr(req, "assignee", None):
             if getattr(req, "independent", False):
                 template = _emitter_role_template(roles, session, emitter)
                 if template is not None:

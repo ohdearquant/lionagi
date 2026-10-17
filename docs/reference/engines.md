@@ -107,17 +107,21 @@ Worker roles use the shared engine agent builder, so `model`, `effort`, `yolo`,
 `agent_cwd`, `agent_extra_prompt`, `agent_mcp_config_path`, and `khive_injection`
 apply to workers as well as the planning and synthesis stages. Engine settings
 override role-profile defaults; injection receives the run's namespace unless
-the caller pins one. Planned and reactively spawned worker clones retain their
-template's context providers, with separate registry budgets and statistics,
-along with their role name and `SpawnRequest` grant, so a clone still records
-recalls and writebacks under its role and still grows the live DAG.
+the caller pins one. Planned and reactively spawned worker clones retain context
+providers, with separate registry budgets and statistics, along with their role
+name and `SpawnRequest` grant, so a clone still records recalls and writebacks
+under its role and still grows the live DAG. A clone that starts from a role
+template still recalls on its first turn: planned workers, role-targeted spawns,
+and an independent spawn with no assignee all take that path. A dependent spawn
+with no assignee instead continues its emitter's conversation, so under the
+default `first_turn` cadence it adds no recall of its own.
 
 Each distinct worker role template triggers `on_branch_created`; task clones do
 not. Role templates are exempt from `max_agents`, like synthesis: they are the
 scaffolding the plan already fixed, so a budget at or below the assignee count
-still runs every planned task. A reactively spawned node with no assignee runs
-on a clone of its emitter's role template, so it carries the engine's worker
-settings without inheriting the emitter's conversation. `agent_env` and
+still runs every planned task. An independent spawn with no assignee runs on a
+clone of its emitter's role template, so it carries the engine's worker settings
+without inheriting the emitter's conversation. `agent_env` and
 `contain_account_integrations=True` remain unsupported: managed-DAG worker
 clones do not yet have verified environment/containment provenance.
 
