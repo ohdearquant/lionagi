@@ -21,6 +21,7 @@ from lionagi.cli.monitor import _session_to_row
 from lionagi.cli.orchestrate import flow
 from lionagi.cli.orchestrate._control import _enqueue_control_inner
 from lionagi.cli.status import EXIT_UNKNOWN
+from lionagi.ln.concurrency import move_on_after
 from lionagi.state import engine as state_engine
 from lionagi.state.db import StateDB
 from tests.cli.orchestrate.test_control_poller import _FakeExecutor, _make_session, _queue_control
@@ -661,9 +662,11 @@ async def _write_lock_wait(db, *, window: float) -> float | None:
     """
     start = time.monotonic()
     while True:
-        try:
-            await asyncio.wait_for(db._write_lock.acquire(), 0.02)
-        except asyncio.TimeoutError:
+        # The timed acquire runs in this task: before Python 3.12 asyncio.wait_for runs its
+        # awaitable in a task of its own, which would then hold the lock this task releases.
+        with move_on_after(0.02) as scope:
+            await db._write_lock.acquire()
+        if scope.cancelled_caught:
             if time.monotonic() - start >= window:
                 return None
             await asyncio.sleep(0.01)
