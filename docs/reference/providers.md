@@ -80,8 +80,8 @@ none of `frequency_penalty`, `presence_penalty`, `logit_bias` and `user`.
 A reply's leading `<think>...</think>` block is moved from `content` to `reasoning_content`, so structured
 output parses the answer after it; a block with no closing tag, from a reply cut off while it was
 still reasoning, stays in `content`, and streamed replies keep the block where it arrives. A
-generation that fails after its stream has started arrives as a chunk with `is_error` set, which
-`iModel.stream` yields without raising, so a caller reads the flag to see the failure. A model
+generation that fails after its stream has started arrives as a chunk with `is_error` set, and the
+call then fails: `iModel.stream` yields that chunk and raises once the stream ends. A model
 restored with `iModel.from_dict` does not keep its request model, as for every provider today, so
 it forwards its payload unvalidated.
 Embeddings need `lattice serve` started on a vision-language checkpoint; a checkpoint without one

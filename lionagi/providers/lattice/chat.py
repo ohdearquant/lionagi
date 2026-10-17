@@ -99,9 +99,9 @@ class LatticeChatEndpoint(LatticeRedirectsRefused, Endpoint):
 
         A generation that fails after the stream has started ends with ``{"error": {...}}``
         and no ``choices`` of its own, then ``[DONE]``. Read as an ordinary event it would
-        look like a normal end, so it is turned into an error chunk instead. ``iModel.stream``
-        yields that chunk with ``is_error`` set and does not raise, so a caller has to read
-        the flag to see the failure.
+        look like a normal end, so it is turned into an error chunk instead. Like any error
+        chunk, it is marked ``call_failed``: ``iModel.stream`` yields it, then raises once the
+        stream ends.
         """
         if isinstance(event.get("error"), dict) and "choices" not in event:
             return StreamChunk(

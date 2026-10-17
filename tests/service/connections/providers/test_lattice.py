@@ -18,6 +18,7 @@ from aiohttp import ClientResponseError, web
 from aiohttp.test_utils import TestServer
 from pydantic import BaseModel, ValidationError
 
+from lionagi._errors import ProviderStreamError
 from lionagi.providers.lattice._config import LATTICE_DEFAULT_BASE_URL
 from lionagi.providers.lattice.chat import (
     LatticeChatCompletionsRequest,
@@ -334,15 +335,22 @@ def _stream_events() -> tuple[list[dict], dict]:
 
 
 @pytest.mark.asyncio
-async def test_a_failure_after_the_stream_starts_arrives_as_an_error_chunk(lattice_server):
+async def test_a_failure_after_the_stream_starts_arrives_as_an_error_chunk_and_fails_the_call(
+    lattice_server,
+):
     """The server ends a failed generation with `{"error": {...}}` and `[DONE]`; read as
-    an ordinary event it would look like a normal end."""
+    an ordinary event it would look like a normal end. The error chunk still reaches the
+    consumer, and the call fails once the stream ends."""
     events, _ = _stream_events()
     base_url, _ = await lattice_server(stream_events=events)
     model = iModel(provider="lattice", model=MODEL, base_url=base_url)
 
-    chunks = [chunk async for chunk in model.stream(messages=[{"role": "user", "content": "hi"}])]
+    chunks = []
+    with pytest.raises(ValueError, match="inference failed") as excinfo:
+        async for chunk in model.stream(messages=[{"role": "user", "content": "hi"}]):
+            chunks.append(chunk)
 
+    assert isinstance(excinfo.value.__cause__, ProviderStreamError)
     errors = [chunk for chunk in chunks if chunk.is_error]
     assert [chunk.content for chunk in chunks if chunk.type == "text"] == ["Here"]
     assert len(errors) == 1
