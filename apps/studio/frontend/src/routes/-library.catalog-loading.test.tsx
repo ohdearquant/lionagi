@@ -319,6 +319,51 @@ describe("Library catalog loading", () => {
     expect(api.listSkills).toHaveBeenCalledOnce();
   });
 
+  it("auto-selects the first row without opening the detail pane", async () => {
+    api.listAgents.mockResolvedValue({
+      agents: [{ name: "first-agent" }, { name: "second-agent" }],
+    });
+    await renderLibrary({ tab: "agent" });
+    expect(router.search.sel).toBe("agent:first-agent");
+    expect(container.querySelector('[data-testid="agent-detail"]')?.textContent).toBe(
+      "first-agent",
+    );
+    expect(
+      container.querySelector('[data-testid="split-pane"]')?.getAttribute("data-detail-active"),
+    ).toBe("false");
+
+    await act(async () => container.querySelectorAll<HTMLTableRowElement>("tbody tr")[1].click());
+    expect(router.search.sel).toBe("agent:second-agent");
+    expect(
+      container.querySelector('[data-testid="split-pane"]')?.getAttribute("data-detail-active"),
+    ).toBe("true");
+  });
+
+  it("opens the detail pane for a selection named by the URL", async () => {
+    api.listAgents.mockResolvedValue({
+      agents: [{ name: "first-agent" }, { name: "second-agent" }],
+    });
+    await renderLibrary({ tab: "agent", sel: "agent:second-agent" });
+    expect(
+      container.querySelector('[data-testid="split-pane"]')?.getAttribute("data-detail-active"),
+    ).toBe("true");
+  });
+
+  it("opens an explicit link even when another tab auto-selected the same item", async () => {
+    api.listAgents.mockResolvedValue({ agents: [{ name: "saved-agent" }] });
+    api.listSkills.mockResolvedValue({ skills: [{ name: "saved-skill" }] });
+    await renderLibrary({ tab: "agent" });
+    expect(router.search).toEqual({ tab: "agent", sel: "agent:saved-agent" });
+    await clickTab("filterSkill");
+    await act(async () =>
+      router.navigate({ search: () => ({ tab: "agent", sel: "agent:saved-agent" }) }),
+    );
+    await flush();
+    expect(
+      container.querySelector('[data-testid="split-pane"]')?.getAttribute("data-detail-active"),
+    ).toBe("true");
+  });
+
   it("revisits a tab from its cached rows with no new request or skeleton", async () => {
     api.listAgents.mockResolvedValue({ agents: [{ name: "alpha", model: "alpha-model" }] });
     api.listSkills.mockResolvedValue({ skills: [{ name: "beta-skill" }] });

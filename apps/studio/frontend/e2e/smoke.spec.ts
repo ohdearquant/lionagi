@@ -82,6 +82,8 @@ test.describe("narrow Studio shell", () => {
     expect(scheduleBox!.x + scheduleBox!.width).toBeLessThanOrEqual(390);
 
     await page.goto("/library");
+    await expect(page.getByRole("region", { name: "Library catalog", exact: true })).toBeVisible();
+    await page.getByRole("row", { name: /e2e-smoke-reviewer/ }).click();
     await expect(
       page
         .getByRole("region", { name: "Item detail", exact: true })

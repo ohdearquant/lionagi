@@ -523,6 +523,13 @@ function LibraryPage() {
   const [showCreate, setShowCreate] = useState(false);
   // Collapsed split-pane: show detail when a selection exists or create is open.
   const [detailActive, setDetailActive] = useState(false);
+  // A row the catalog selected on its own must not count as the viewer asking
+  // for detail: in a collapsed pane that would replace the catalog with the
+  // first row's detail on arrival. Explicit deep links and row clicks still do.
+  const [implicitSelection, setImplicitSelection] = useState<{
+    tab: LibraryTab;
+    sel: string;
+  } | null>(null);
   // A create form belongs to the tab that opened it, and the detail pane's
   // collapsed state belongs to the selection; switching tabs closes the form
   // and returns to the list rather than leaving the previous tab's pane up.
@@ -531,6 +538,7 @@ function LibraryPage() {
        create form and returns the collapsed layout to the list */
     setShowCreate(false);
     setDetailActive(false);
+    setImplicitSelection(null);
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [kindFilter]);
   const [optimisticWorkflow, setOptimisticWorkflow] = useState<CreatedWorkflowDef | null>(null);
@@ -603,11 +611,15 @@ function LibraryPage() {
     // Otherwise select first row.
     const first = filtered[0];
     if (first) {
+      const selection = encodeSel(first.kind, first.name, first.subKind);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- records which row the catalog chose itself
+      setImplicitSelection({ tab: kindFilter, sel: selection });
       void navigate({
-        search: (prev) => ({ ...prev, sel: encodeSel(first.kind, first.name, first.subKind) }),
+        search: (prev) => ({ ...prev, sel: selection }),
         replace: true,
       });
     } else {
+      setImplicitSelection(null);
       void navigate({
         search: (prev) => {
           const next = { ...prev };
@@ -684,7 +696,10 @@ function LibraryPage() {
         ? t("newAgent")
         : t("newWorkflow");
 
-  const detailPaneActive = detailActive || showCreate || !!parsed;
+  const implicitSelectionHere =
+    implicitSelection?.tab === kindFilter ? implicitSelection.sel : null;
+  const detailPaneActive =
+    detailActive || showCreate || (!!parsed && sel !== implicitSelectionHere);
 
   // ── Master pane ────────────────────────────────────────────────────────────
 
