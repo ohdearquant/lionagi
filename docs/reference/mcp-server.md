@@ -342,20 +342,26 @@ how a run ends when an observation positively established that its process is go
 pid held no process, it disappeared between two probes, or a live process holds
 the number and started at a different time — and no authoritative outcome was
 ever reported for it. Nothing survived to write one, so the run is ended here
-rather than left waiting forever.
+rather than left waiting forever. When the run recorded that its persistence was
+turned off, `reason_detail` carries `persistence_degraded`; the reason code
+itself keeps the value above.
 
 That end is not a failure. The work may have had its intended effect before the
 process died. Consumers must not map it to `failed`, to success, or to
 cancellation, and must not retry it automatically: an unreported external side
 effect may already have committed.
 
-Three fields describe such an end:
+Fields that describe such an end:
 
 | Field | Meaning |
 |-------|---------|
+| `reason_code` | why the run ended, when known. `process_gone_without_outcome` covers a conclusive loss with no recorded status; `process_gone_notice_recorded_undelivered` is the narrower case where the run recorded that its terminal notice was never delivered. |
+| `reason_detail` | finer cause beside an orphan-reaper reason code: `persistence_degraded` or null. Carried by `job.status`, `job.list` and `job.wait`. |
 | `terminal_source` | what wrote the end: `cli_terminal_hook`, `lifecycle_cache`, `spawn_failure`, `mcp_kill`, or `mcp_orphan_reaper`. Null on records written before the field existed. Carried by both `job.status` and `job.list`. |
-| `terminal_evidence` | bounded evidence behind an end nobody reported: the kind, and the named finding. Never argv, environment, logs or payloads. |
+| `terminal_evidence` | bounded evidence behind an inferred end: its kind and classification, and (for `pid_recycled` after two agreeing live reads) the create-time reads compared, the tolerance, who observed it, and the foreign run id read from the marker inherited by the process at that pid. Never argv, environment, logs or payloads. |
 | `liveness_conclusion` | what the observation established: `process_gone`, `alive` or `unknown`. Only `process_gone` can end a run. |
+| `late_report` | null unless a run's actual owner (the CLI hook or the lifecycle store) reported an end *after* an orphan reap had already recorded one. Terminal state is first-writer-wins — the reap's `indeterminate` is never replaced — so a late report is recorded here instead, bounded to `{source: "hook"\|"lifecycle", status, outcome, reason_code, reported_at}`; a second late report is dropped rather than overwriting the first. |
+| `reap_contradicted_by_fresh_probe` / `reap_contradicted_by_owner_report` | true when a reaper-ended record's own latest liveness probe, or a `late_report`, disagrees with the reap's conclusion. Neither ever moves the recorded end; both only name a contradiction a reader would otherwise have to notice by diffing fields itself. |
 
 An `unknown` conclusion — a pid the OS cannot be asked about, an identity probe
 that was denied or unreadable — never ends a run. Those stay non-terminal and

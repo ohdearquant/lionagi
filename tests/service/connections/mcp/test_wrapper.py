@@ -74,6 +74,15 @@ class TestMCPConnectionPoolLoadConfig:
                 with pytest.raises(ValueError, match="mcpServers must be a dictionary"):
                     MCPConnectionPool.load_config(".mcp.json")
 
+    def test_undecodable_config_raises_value_error_naming_the_path(self, tmp_path):
+        config = tmp_path / ".mcp.json"
+        config.write_bytes(b'{"mcpServers": {"caf\xe9": {"command": "x"}}}')
+
+        with pytest.raises(ValueError, match=str(config)) as raised:
+            MCPConnectionPool.load_config(str(config))
+
+        assert not isinstance(raised.value, UnicodeDecodeError)
+
     def test_load_config_success(self):
         MCPConnectionPool._configs = {}  # Reset configs
 
@@ -218,10 +227,14 @@ class TestMCPConnectionPoolCreateClient:
         # Need allow_urls to get past the security gate to the import check
         MCPConnectionPool._security = MCPSecurityConfig(allow_urls=True)
         config = {"url": "https://api.example.com/mcp"}
+        root_cause = ImportError("broken transitive dependency")
 
-        with patch("builtins.__import__", side_effect=ImportError):
-            with pytest.raises((ImportError, Exception)):
+        with patch("builtins.__import__", side_effect=root_cause):
+            with pytest.raises(ImportError, match=r"lionagi\[mcp\]") as exc_info:
                 await MCPConnectionPool._create_client(config)
+
+        assert exc_info.value.__cause__ is root_cause
+        assert "not installed" not in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_create_client_with_url(self):

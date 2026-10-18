@@ -22,6 +22,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 from lionagi.state.db import (
     VALID_STATUSES_BY_ENTITY_TYPE,
@@ -53,7 +54,7 @@ def _wait_clock_past(ts: float) -> None:
 # Fixtures / helpers
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def db(tmp_path):
     state = StateDB(tmp_path / "state.db")
     await state.open()

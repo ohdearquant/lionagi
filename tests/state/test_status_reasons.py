@@ -10,6 +10,7 @@ import time
 import uuid
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import text
 
 from lionagi.state.db import StateDB
@@ -163,7 +164,7 @@ class TestValidators:
 # StateDB.update_status() — schema migration + atomic writes
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def db():
     state = StateDB(":memory:")
     await state.open()
@@ -615,6 +616,29 @@ class TestTeardownReasonResolution:
         assert code == expected_code
         assert code in VALID_REASON_CODES
         assert cls_name in summary
+
+    def test_a_provider_error_wrapped_by_the_model_stream_keeps_its_reason(self):
+        """iModel re-raises every stream failure as a ValueError; the provider's typed error
+        rides as its cause and decides the reason."""
+        from lionagi.cli._runs import resolve_run_reason as _resolve_run_reason
+        from lionagi.providers._provider_errors import ProviderQuotaError
+
+        try:
+            try:
+                raise ProviderQuotaError("Claude Code said: You've hit your session limit")
+            except ProviderQuotaError as quota:
+                raise ValueError(f"Failed to stream API call: {quota}") from quota
+        except ValueError as wrapped:
+            code, summary, _ = _resolve_run_reason(status="failed", exception=wrapped)
+
+        assert code == RunReasons.FAILED_PROVIDER_RETRYABLE
+        assert summary == "ProviderQuotaError: Claude Code said: You've hit your session limit"
+
+        plain = ValueError("Failed to stream API call: boom")
+        plain.__cause__ = RuntimeError("boom")
+        assert (
+            _resolve_run_reason(status="failed", exception=plain)[0] == RunReasons.FAILED_EXCEPTION
+        )
 
 
 # ADR-0057 Phase 2: invocation transition writes reason

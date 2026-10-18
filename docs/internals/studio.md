@@ -4,6 +4,19 @@ Non-obvious invariants, protocol contracts, and design rationale for
 `lionagi/studio/` that don't belong inline as long-form comments. Terse
 reference — not a narrative. Organized by module path.
 
+## lionagi/studio/_host.py
+
+**`normalize_host`** — the one reader of a host value's spelling: whitespace
+and one bracket pair removed, lowercased, and, when `ipaddress` parses what is
+left, printed in its compressed lowercase form with an IPv4-mapped address
+unwrapped to its IPv4 address. Every reader of `LIONAGI_STUDIO_HOST` compares
+values through it, so a bind written in brackets, in a non-canonical IPv6
+spelling or as an IPv4-mapped address names the same admitted `Host` as any
+other spelling of that address. Deliberately imports only `ipaddress`: the CLI
+imports this module and must not pull the web stack in with it. A value that is
+not an address is returned as the stripped lowercase name, and a blank one stays
+blank.
+
 ## lionagi/studio/app.py
 
 **Host-header validation (`_HOST_AUTHORITY_RE`/`validate_host_header`)** —
@@ -16,12 +29,64 @@ against DNS rebinding, where a malicious page points a browser at
 CORS/auth, reaches the daemon as if same-origin — registered outermost
 (added after CORSMiddleware, so it runs first under Starlette's LIFO
 middleware wrapping) so every request, including preflight OPTIONS, has its
-Host checked before CORS can answer.
+Host checked before CORS can answer. The grammar is unchanged by
+`normalize_host`: it still refuses a dotted IPv4 inside brackets and an
+authority carrying two ports, and the normalizer only says which address an
+authority the grammar admits names.
 
 **Middleware order** in `create_app()`: Host validation -> CORS ->
 Content-Type/CSRF check -> bearer-token gate -> route. A real preflight
 never reaches the bearer-token/Content-Type middlewares because CORS
 answers it first.
+
+**Origin rule with no token (`_origin_accepted_without_token`)** — with no
+`LIONAGI_STUDIO_AUTH_TOKEN`, the bearer-token gate still refuses `/api` and
+schema requests (401) from a browser origin that is neither loopback
+(`localhost`, 127.0.0.0/8, `::1`; an IPv4-mapped address is judged as its IPv4
+address) nor the daemon's own origin (Origin authority equal to the request's
+Host, as for the SPA a daemon bound to another address serves itself). `null`,
+a second Origin header, or an origin carrying userinfo, a path, a query or a
+fragment is refused. CORS only decides which pages may read a response, so it
+cannot stand in for this check.
+
+A request without an Origin header is judged by its `Sec-Fetch-Site`
+(`_fetch_site_accepted_without_origin`), because a browser sends no Origin on a
+GET or HEAD made outside CORS (an image, a script, a top-level navigation) from
+any site. With no `Sec-Fetch-Site`, as from the CLI or a script, it passes; so
+do `none` (a typed address or a bookmark) and `same-origin` (the SPA the daemon
+serves). `same-site`, `cross-site`, any other value and a second header are
+refused like a foreign origin. A browser that sends no `Sec-Fetch-Site` is not
+told apart from a script. The SPA shell and its assets stay public, so a link
+from another site still opens Studio.
+
+The Operator decision routes (`services/operator.py`'s
+`confirm_operator_proposal` and `decide_operator_proposal`) call the
+coordinator's `decide()` with no principal check of their own, so in open mode
+this admission is the whole gate in front of them. Without
+`LIONAGI_STUDIO_AUTH_TOKEN`, any process that can reach the daemon's listener,
+including programs run by other local accounts, can allow or deny Operator
+proposals. The permission prompt is a workflow safeguard, not isolation from
+local programs; set a token on a shared machine. Do not auto-allow a tool that
+can make HTTP requests to the daemon: a run holding such a tool can approve its
+own proposals. This is a disclosure of existing behaviour — the routes, the
+admission rule and the schemas are unchanged.
+
+A refused origin, or a request without one refused by its `Sec-Fetch-Site`, is
+admitted only with the launch bearer (`launch_access.py`),
+minted per process and held in memory, never put in the environment or written
+anywhere. A page receives it by pairing. `li studio` mints a one-time code, or
+asks a daemon already running on the port for one over
+`POST /api/studio/pairing-codes` (refused to any request carrying an Origin, and
+behind the bearer gate, so a daemon with a token needs it), then opens the
+hosted page with `#pair=<code>`. A browser never sends the fragment to a server.
+The page reads it once before the router starts, removes it with
+`history.replaceState`, and redeems it at `POST /api/studio/pair`, the one API
+path the gate lets through without a bearer. That route requires an Origin in
+`CORS_ORIGINS` (checked before the code is spent); a code works once and
+expires after 120 seconds. The answer is the configured token when one is set,
+else the launch bearer, and the page keeps it in memory only: a reload loses
+it, and the page then shows the access-required screen with `li studio` as the
+remedy.
 
 **`require_json_content_type`** — rejects every state-changing `/api`
 request that does not declare `application/json`, including bodyless action
@@ -79,6 +144,38 @@ buffer; once the function itself returns (ready URL found, or timed out) that
 thread stops parsing lines and only keeps draining. It's a daemon thread with
 no explicit join, so it exits with the process rather than needing shutdown
 wiring.
+
+## lionagi/studio/config.py
+
+**System timezone fallback** — When the localtime symlink points outside
+`zoneinfo.TZPATH`, a `zoneinfo` component in its path can still supply a
+loadable IANA name. This fallback checks both the spelling and the canonical
+keys reached through configured aliases. Every candidate must match the actual
+localtime file's rules. Configured duplicate keys and canonical aliases must
+agree. Two files are compared by what they read as rather than by how they are
+encoded: the UTC offset, the daylight offset and the name at every transition of
+either file, plus the rule past the last stored transition, must be equal, and
+the POSIX footer text must be identical. The daylight offset is read from the
+loaded rules, so two builds of one release that disagree only there — a
+rearguard and a vanguard build of the same tzdata, say — are not equal. A file
+that leaves a transition to its footer and one that stores that transition
+therefore match, as do files differing in a compatibility block, unused padding
+or trailing bytes. Where one file reads its footer and the other still reads
+stored transitions, the two are also compared once a week between 1900 and 2100,
+so a year one table leaves out is not passed over; a rule lasting under a week
+there is not looked for. Different footer expressions for the same recurring
+rule are not normalized. A loadable file
+outside the bounded reader's supported format requires exact byte identity
+instead.
+Once ambiguity is found, another spelling cannot bypass the refusal. Inaccessible
+search entries are skipped, matching the standard library's filesystem lookup.
+When no configured file supplies a key, the public Python `tzdata` package
+resource may supply the same evidence. Filesystem reads require regular files,
+use nonblocking opens with a second file-type check, and are capped at 1 MiB.
+Package resources have the same size cap. A readable
+localtime file with no accepted, unambiguous name raises
+`SystemTimezoneUnreadableError`; `LIONAGI_SCHEDULER_TZ` can select the desired
+zone explicitly.
 
 ## lionagi/studio/scheduler/engine.py
 
@@ -182,6 +279,76 @@ between `build_argv()` and this function gives a revoked
 
 ## lionagi/studio/services/schedules.py
 
+- **Recent-run list contract v1** — `GET /api/schedules/?include_recent_runs=true` adds optional
+  `recent_runs_summary` to each definition: `{version: 1, limit: 25, status,
+  has_next, runs}`. Available slices contain up to 25 occurrences in
+  `fired_at DESC, id DESC` order, including chain children and every status.
+  `has_next: true` means older history exists; fewer than 25 with
+  `has_next: false` is a complete short slice, and an available empty slice
+  means no run rows were found. A failed slice has `status: "unavailable"`,
+  `has_next: null`, and `runs: []`, and so does a slice whose version the client
+  does not support. A row that omits the field altogether -- a daemon that
+  predates it -- is read through that definition's own history endpoint and
+  marked unavailable only when that read fails; that read asks for one row past
+  the displayed count so it can state `has_next` truthfully, and the client
+  holds the result to the same rules as a field-bearing slice. None of these is
+  evidence of empty history. That read is one request per such definition, so a
+  page whose daemon omits the field costs the list request plus one history
+  request each; only a page the daemon answers with the field costs a single
+  request.
+  The flag defaults to false; Mission, operator MCP, and machine list callers
+  retain their existing response and do not compute these histories.
+  One batched statement selects at most 26 keys per listed definition through
+  a per-group ordered `LIMIT 26`, then loads occurrence payloads and error
+  details only for its displayed 25. The statement's collection functions are
+  dialect-specific: SQLite aggregates and expands the keys with
+  `json_group_array`/`json_each`, PostgreSQL with `jsonb_agg` and
+  `jsonb_array_elements_text ... WITH ORDINALITY`. Each group uses the
+  schedule/time index, and the limit is applied after the ordering: a set of
+  runs that share one `fired_at` at the boundary is read in full to be
+  ordered by id, so a tie group is not a constant-cost read however many rows
+  it holds.
+  Invocation and session evidence is joined in two additional set queries.
+  All linked sessions participate in the existing outcome reducer; session
+  count is not capped because an omitted active child could change its verdict.
+  Public rows retain occurrence status, timestamps, exit code, and chain depth;
+  error classification uses the same reconciled outcome as detail history.
+  Occurrence status is not a combined child-session status. An unreported child
+  failure need not produce an error class when the occurrence has no error text;
+  the detail view retains the separate reconciled outcome.
+  On the field path, raw error text, prompts, event payloads, and artifact
+  paths stay withheld. A row read through the older daemon's history endpoint
+  arrives as the wider run view that endpoint serves, so the client projects
+  each row onto the fields the list contract's slice carries -- dropping
+  duration, artifact paths, session ids, and the reconciled outcome -- which
+  leaves a field-path row and a fallback row the same shape. The raw error text
+  stays withheld there too.
+  A shared batch read failure is followed by one liveness read that does not
+  touch the failing statement. When that read fails too the failure is treated
+  as store-wide, and every slice is left unavailable without a read each, so an
+  outage costs two reads rather than one per listed definition. When the store
+  answers, the batch failure is attributed by retrying each definition on its
+  own: a definition whose own rows fail is marked unavailable without hiding
+  the other summaries on the page. A retry that fails for a reason outside the
+  definition's rows (an intermittent store error) marks that definition
+  unavailable too, so an intermittent failure can mark healthy definitions
+  unavailable for that poll. A statement that fails for every definition while
+  the store answers therefore costs N + 2 reads for N listed definitions -- the
+  batch, the liveness read, and one retry each -- and its failing ids are named
+  on one line per page rather than a traceback each; the retries' own errors are
+  not logged. Only the store-wide case is two reads. A store-wide read failure
+  leaves every slice unavailable, never an
+  available empty slice. Projection failures are isolated to one schedule.
+  Existing health/count queries, budget rollups, schedule-list limits, and
+  filters are unchanged.
+  Cards and table mark an unavailable schedule's own row; the shared banner
+  names every unavailable schedule for all views, including the calendar.
+  A failed list load with no schedules suppresses the empty-state claim, which
+  would otherwise read as a successful load that found none.
+  Refreshes are single-flight with at most one queued refresh. Explicit
+  detail history keeps its separate pagination and does not use this slice; its
+  ordering gains the same id tie-break (`fired_at DESC, id DESC`, where it was
+  `fired_at DESC`), so it orders an exact tie the same way.
 - **`_svc_validate_action_command`** — Delegates to the subprocess validators
   so charset/allow-list rules live in one place. `build_argv` re-checks the
   allow-list again at spawn time since `LIONAGI_SCHEDULER_COMMAND_ALLOWLIST`
@@ -240,6 +407,14 @@ between `build_argv()` and this function gives a revoked
   at some point, and the honest verdict is `no-evidence`, not `never-fired`.
 
 ## lionagi/studio/services/runs.py
+
+**Run identity projection** — list and detail rows keep `id` equal to the
+backing Session ID, which is the value accepted by every v1 Studio run and
+Session route. `run_id` carries the raw nullable `sessions.run_id` correlation
+to a CLI run. It is provenance only: multiple Sessions can share it, and an
+unlinked Session reports JSON `null` rather than fabricating a second copy of
+its Session ID. This is intentionally narrower than ADR-0123's future
+canonical Run model.
 
 **`_open_regular_file_no_follow`** — `resolve_workspace_path` only validates
 at check time; nothing stops the target being replaced with a symlink before
@@ -309,6 +484,45 @@ message ids) must not fall through to `0 or fallback`.
   its own budget so a daemon never stalls on its own health check.
 
 ## lionagi/studio/services/invocations.py
+
+**`list_invocations_route`** — The usage aggregates are opt-in through the
+non-schema `include_usage` query flag, which the library usage panel passes and the
+Fleet and Mission Control polls leave off. Without it the route returns only the
+plain `total` and `completed_total` counts a row-rendering poll reads, and both
+`finished_total` and `latest_started_at` are null — so a 3-second poll over the
+unfiltered invocation list runs the two `COUNT(*)` reads it renders and not the
+`MAX(started_at)` aggregate or the terminal-status `CASE` count that would scan
+the same matching rows for numbers no poll displays. Both paths count every
+matching row; the flag drops the aggregate work, not the scan. With it the route
+additionally returns `latest_started_at`, a nullable
+Unix-second timestamp for the maximum recorded start across every row matching
+`skill`, `plugin`, and `status`; it is computed with `total` in a combined
+`COUNT(*)`/`MAX(started_at)` aggregate SELECT within the existing page/count read
+snapshot, so limit, offset, update order, and cleanup end times cannot change it.
+No matches return null. `completed_total` keeps its status-independent count of
+`completed` records. The additive `finished_total` counts the canonical invocation
+terminal statuses (`completed`, `completed_empty`, `failed`, `timed_out`,
+`aborted`, and `cancelled`) with the same skill/plugin scope, ignoring the page's
+status filter. Both completion counts share one SELECT in that snapshot, without
+increasing query count. Recorded success rate is `completed_total /
+finished_total`; empty completions and cancellations are finished but not
+successes. Older clients can ignore the new fields; newer clients show unknown
+last use or an unavailable rate when their respective aggregate is omitted,
+rather than estimating from a bounded page. Cancellation end times record
+observation of cancellation, including delayed cleanup; cancelled invocations are
+excluded from the scheduler `p95_latency_ms` metric so cleanup delay does not
+become execution latency, and so are the rows the lifecycle reaper ends: its
+`timed_out` write carries a `{"kind": "invocation"}` entry in
+`status_evidence_refs`, which a run's own deadline write does not, so the metric
+excludes a reaper-observed end time by that entry while a run that recorded its
+own timeout still counts. A scheduled fire writes its trigger type into `plugin`
+(`lionagi/studio/scheduler/engine.py`), so the stored-identity filters match a
+same-named plugin to those rows; correcting producer identity and historical rows
+is separate work. Last tracked use counts every matching recorded start, including
+a scheduled fire that lost its claim and never launched: its row keeps its start
+time, and what it does carry — a reason code shared with cancellations that did
+launch, and the scheduler's own `status_evidence_refs` kind — is not a
+dialect-neutral key this aggregate filters on.
 
 **`get_invocation`** — One invocation with its child sessions, artifacts
 and derived health. `readonly` opens the store read-only for callers whose
@@ -528,6 +742,26 @@ flow by hand. Declaration/cli re-export (`managed_by IN ('cli',
 'declaration')`) simply re-validates each row's already-typed
 `authored_spec` back into a `ScheduleMember`.
 
+`resolve_member` reads an `execution.project` written as YAML null (`null`,
+`~` or a blank value) as no project; an omitted project or an empty string
+inherits `metadata.project` (none under `scope: global`). The managed export
+writes each member's project from the row's stored `action_project` (`null` when
+it has none) rather than as authored: the export's document is project-scoped
+even for a global set, so an omitted or empty project written back would
+re-apply under the export's project. Reading the null as "inherit" did the same
+for a row stored without a project. Either way the re-applied row changed its
+project, which is the fallback execution root it uses only when its own stored
+`action_cwd` is unusable and, for the `agent` and `flow_yaml` targets a
+declaration produces, the `--project` its command receives. A row that a
+null-spelled member had given the document's project loses both on its next
+apply: with no project and an `action_cwd` that is set and is not an existing
+absolute directory, the scheduler refuses the fire
+(`SchedulerCwdInheritRefusedError`) where it would have run in the project's
+registered path, if that path was usable; with no usable path the fire was refused
+before as well. A row whose `action_cwd` is an existing absolute directory still
+runs there, and its `agent` or `flow_yaml` command, now without `--project`, takes
+the project detected in that directory.
+
 Round-trip identity across export/re-apply rests on three helpers.
 `_effective_project` picks the project namespace a row is grouped under:
 the stored project column when set, else the qualified name's own prefix —
@@ -545,7 +779,15 @@ document falls back to the full original name (still unique) so two
 members are never silently merged. `convert_legacy_rows` reports
 `on_success`/`on_fail`, an unsupported action_kind, a legacy-only field
 with no v1 equivalent, or a malformed trigger as `BLOCKED` and omits them,
-never half-emitted.
+never half-emitted. A row that stores no project is written with
+`execution.project: null`, which apply reads as no project. Applying a
+`--legacy` export back as its own set (with `--adopt`, since the row has no
+owner) then adopts a row that stores its working directory and model without
+changing any column it ran with: adoption writes only the owner and the
+declaration it adopted (`owner_key`, `managed_by`, `spec_version`,
+`resolved_digest`, `authored_spec`, `resolved_target`, and `resolved_timezone`,
+the zone the row was recorded firing in, confirmed only when the scheduler runs
+in that zone), and the next plan reports `UNCHANGED`.
 
 ## lionagi/studio/services/playbooks.py
 
@@ -738,8 +980,9 @@ telemetry exactly once, riding the invocation's own terminal write
 (`engine.py` calls this only after its own terminal-status guard returns
 `True`). Pops the scheduler signal bus's accumulated counters for the run
 and merges them with the invocation's files-read overlap under a
-`"coordination"` key in `invocations.node_metadata` (read-modify-write,
-since `update_invocation` replaces `node_metadata` wholesale). Returns
+`"coordination"` key in `invocations.node_metadata`, through the store's own
+`merge_invocation_node_metadata` UPDATE, so a key another writer added
+meanwhile (a closer's `result`) survives. Returns
 `None` — leaving `node_metadata` untouched — when there is nothing to
 report (no signal emitted, no file overlap), matching the measure-only
 surfacing rule. Best-effort: it rides an already-committed terminal write,
@@ -778,6 +1021,18 @@ because `_write_private` saves via `os.replace`, so a reader always sees one
 whole file or the other. The lock is never held across a network probe — a
 connection attempt can run for seconds, and blocking every save behind it
 would trade a lost write for a frozen UI.
+
+**Unreadable registry** — A missing registry, one holding `null` or `{}`, or
+one whose only entry is `servers`, written once and holding `null`, reads as no
+servers: it has nothing to lose. Any other registry that cannot be read, is not
+UTF-8, does not parse, writes a key twice in one object (a parse keeps the last
+value alone), is not a JSON object, holds an entry other than `servers` (a save
+writes `servers` alone), holds a `servers` entry that is not an object, or
+holds a server entry that is not an object with an object `config` raises
+`McpRegistryUnreadableError` from every read and every change that reaches the
+registry, and the routes answer 503 naming the file. Reading it as empty would
+list no servers, and the next registration would save one entry over all of
+them.
 
 **Secrets** — `_write_private` writes atomically via `mkstemp` (always
 `0600` regardless of umask) + `os.replace`, then an explicit `chmod 0600` to
@@ -1219,34 +1474,44 @@ many runs across its life.
 `run_progress.py::resolve_run` (reused by `run_findings.py`,
 `resume_run.py`, and `rename_session.py`) and `cancel_run.py`'s own
 `_resolve_run` both accept the same reference vocabulary: an exact run/session
-id, an 8+ hex id prefix, a name or playbook substring (minimum 3
+id, an id prefix, a name or playbook substring (minimum 3
 characters), or the literal `"current"`. Id/prefix resolution reuses
 `lionagi.cli._util.fetch_unique_row`, the same primitive `li kill` uses, so
 a reference this tool accepts resolves identically to one typed at the CLI.
-Every arm is scoped to the calling turn's own project — read from the
-turn's stored context, never accepted as an argument — and a foreign
-project's run is reported exactly like a nonexistent one (`{"found": False}`)
-rather than surfaced as an ambiguity candidate or a resolved id, either of
-which would itself disclose that the id exists. A turn with no owner
-mapping at all raises `MissingOwnerContextError` rather than falling back
-to matching every project's runs (both modules keep their own small copy
-of this check and error rather than sharing one, so each stays
-self-contained). Nothing is ever guessed: an ambiguous prefix or substring
-match returns candidates instead of picking one, capped at `MAX_CANDIDATES`
-(10) with a `truncated` flag when more existed.
+When the turn names a project, each arm checks that project from the stored
+turn context rather than accepting it as a tool argument, and prefix resolution
+carries that project into the query itself, so its bounded id-ordered window is
+filled from that project's rows alone. Foreign rows are excluded from resolved
+ids and ambiguity candidates, and cannot push an in-scope match out of the
+window or hide one behind them. The resolver's failure
+reasons can differ for a foreign id and a nonexistent reference; identical
+not-found responses are not guaranteed. A turn with an owner but no declared
+project never gets that far: it resolves an exact full-UUID reference (or
+`"current"`) only through the read path, and prefix and substring lookup
+require project context on every path. A read tool that reuses the resolver
+keeps that allowance. The write tools that mutate the run they name —
+`cancel_run`, `rename_session`, `resume_run` — pass
+`allow_unscoped_exact_id=False`, so on such a turn they refuse with
+`missing_owner_context` before resolving anything, for a full id and
+`"current"` included: the same position `run_control` takes, and for the
+same reason, that a mutation must prove it owns the run it names rather
+than rely on an id being un-enumerable. An ambiguous match
+returns candidates rather than choosing one: substring results are capped at
+`MAX_CANDIDATES` (10), and id-prefix candidates — for both the shared resolver
+and cancellation's own resolver — at the CLI helper's own listing size (5),
+with `truncated` true only when more rows matched than are returned.
+Truncation for an id prefix is counted over that project's rows, because the
+project predicate is what the prefix query's window counted.
 
-`"current"` resolves against the turn's own frozen context, not a
-later-reported live view — deliberately, because a cancellation or rename
-acting on a view reported *after* the instruction was sent could target a
-run the human was never looking at when they issued it. (Contrast this
-with `get_current_view`, below, which does prefer a later live report — a
-read has no such hazard.) The frontend's selection payload for this key is
-carried under `"s"` for mission/history views (`OperatorPanel.tsx`'s
-`selection` writer) and under `"sel"` for the library space; there is never
-a `runId`/`run_id`/`sessionId` key on the wire for the former, which is why
-`cancel_run._current_run_id` reads `"s"` specifically while
-`run_progress._resolve_current` also tries the longer names for the paths
-that do use them.
+`run_progress.resolve_run("current")` calls `get_current_view`, which can use a
+later observation from the same browser page. Tools that reuse this resolver
+share that selection behavior, including resume, rename, and run control.
+Project authorization still comes from the frozen turn context. Cancellation
+uses a separate resolver: `cancel_run._current_run_id` reads the turn's frozen
+selection and does not follow a later view report. The frontend carries the
+run selection under `"s"` and the Library selection under `"sel"`;
+`run_progress._resolve_current` additionally accepts the longer run/session
+id keys used by other callers.
 
 ### View freshness: observation count, not wall clock
 

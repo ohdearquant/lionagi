@@ -1,7 +1,11 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
 import logging
 import re
+import threading
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, JsonValue, field_validator
@@ -10,13 +14,12 @@ if TYPE_CHECKING:
     from lionagi.models.field_model import FieldModel
 
 from lionagi.ln import extract_json, to_dict, to_list
-from lionagi.ln.types import Unset
+from lionagi.ln._to_list import _dedupe_operation_fields
+from lionagi.ln.types import Spec, Unset
 from lionagi.ln.types._sentinel import _compat_not_sentinel
 from lionagi.models import HashableModel
 
 logger = logging.getLogger(__name__)
-
-_DEFAULT_FIELDS = {}
 
 
 class Instruct(HashableModel):
@@ -298,13 +301,17 @@ def get_default_field(
     nullable: bool = True,
     listable: bool | None = None,
 ):
-    global _DEFAULT_FIELDS
-    key = (kind, str(default), nullable, listable)
-    if key not in _DEFAULT_FIELDS:
-        _DEFAULT_FIELDS[key] = _get_default_fields(
-            kind, default=default, nullable=nullable, listable=listable
-        )
-    return _DEFAULT_FIELDS[key]
+    return _get_default_fields(kind, default=default, nullable=nullable, listable=listable)
+
+
+_DEFAULT_SPECS: dict[str, Spec] = {}
+
+
+def _get_default_spec(kind: str) -> Spec:
+    """Return the immutable Spec used by a standard Operative field."""
+    if kind not in _DEFAULT_SPECS:
+        _DEFAULT_SPECS[kind] = get_default_field(kind).to_spec()
+    return _DEFAULT_SPECS[kind]
 
 
 def _get_default_fields(
@@ -328,14 +335,10 @@ def _get_default_fields(
             fm = FieldModel(Instruct, name="instruct_model")
 
         case "action_required":
-            from lionagi.libs.validate.common_field_validators import (
-                validate_boolean_field,
-            )
-
             fm = FieldModel(
                 bool,
                 name="action_required",
-                validator=lambda cls, v: validate_boolean_field(cls, v, False),
+                validator=_validate_action_required_field,
                 description=(
                     "Whether this step strictly requires performing actions. "
                     "If true, the requests in `action_requests` must be fulfilled, "
@@ -382,9 +385,22 @@ def _get_default_fields(
         fm = fm.with_default(default)
 
     if fm.is_listable:
-        fm = fm.with_validator(lambda cls, x: to_list(x, dropna=True, flatten=True, unique=True))
+        fm = fm.with_validator(_validate_listable_field)
 
     return fm
+
+
+def _validate_listable_field(cls: Any, value: Any) -> list[Any]:
+    """Normalize one listable operation field, through one stable validator identity."""
+    del cls  # Pydantic recognizes the validator class argument by this exact name.
+    return _dedupe_operation_fields(to_list(value, dropna=True, flatten=True))
+
+
+def _validate_action_required_field(cls: Any, value: Any) -> bool | None:
+    """Normalize the action-required flag through one stable validator identity."""
+    from lionagi.libs.validate.common_field_validators import validate_boolean_field
+
+    return validate_boolean_field(cls, value, False)
 
 
 # Lazily-generated field constants
@@ -396,12 +412,16 @@ _FIELD_CONSTANTS = {
     "LIST_INSTRUCT_FIELD_MODEL": ("instruct", {"listable": True}),
     "REASON_FIELD": ("reason", {}),
 }
+_FIELD_CONSTANTS_LOCK = threading.Lock()
 
 
 def __getattr__(name: str):
     if name in _FIELD_CONSTANTS:
-        field_name, kwargs = _FIELD_CONSTANTS[name]
-        return get_default_field(field_name, **kwargs)
+        with _FIELD_CONSTANTS_LOCK:
+            if name not in globals():
+                field_name, kwargs = _FIELD_CONSTANTS[name]
+                globals()[name] = get_default_field(field_name, **kwargs)
+            return globals()[name]
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 

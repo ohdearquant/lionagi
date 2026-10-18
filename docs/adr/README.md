@@ -90,6 +90,8 @@ its area block.
 - [ADR-0004](ADR-0004-directed-graph-structural-invariants.md) — Directed graph structural
   invariants
 - 0005 — unused (intentional gap)
+- [ADR-0129](ADR-0129-ordering-multiplicity-and-holder-coordination.md) — Ordering multiplicity and
+  holder-side coordination for collections (sequential number; see Numbering)
 
 ### messages-context (0006-0010)
 
@@ -100,6 +102,10 @@ its area block.
 - [ADR-0008](ADR-0008-pre-turn-context-provider-execution-and-attribution.md) — Pre-turn context-
   provider execution and attribution
 - 0009-0010 — unused (intentional gaps)
+- [ADR-0127](ADR-0127-prompt-cache-placement-for-prefix-caching-providers.md) — Prompt-cache
+  placement for prefix-caching providers (sequential number; see Numbering)
+- [ADR-0130](ADR-0130-per-request-input-ceiling-and-context-management-past-it.md) — Per-request
+  input ceiling and context management past it (sequential number; see Numbering)
 
 ### actions-tools (0011-0015)
 
@@ -133,6 +139,8 @@ its area block.
   operation-graph execution kernel
 - [ADR-0024](ADR-0024-lndl-operate-integration-adapter.md) — LNDL operate integration adapter
 - 0025-0026 — unused (intentional gaps)
+- [ADR-0132](ADR-0132-batched-lndl-rounds-for-api-model-legs.md) — Batched LNDL rounds for
+  API-model legs (sequential number; see Numbering)
 
 ### service-providers (0027-0032)
 
@@ -143,6 +151,8 @@ its area block.
   request admission, deadline, and resilience policy
 - [ADR-0030](ADR-0030-agentic-provider-adapter-boundary.md) — Agentic provider-adapter boundary
 - 0031-0032 — unused (intentional gaps)
+- [ADR-0126](ADR-0126-provider-credential-routing-and-monthly-account-budgets.md) — Provider
+  credential routing and monthly account budgets (sequential number; see Numbering)
 
 ### orchestration (0033-0040)
 
@@ -206,7 +216,7 @@ its area block.
 - [ADR-0057](ADR-0057-operational-lifecycle-and-transition-audit.md) — Operational lifecycle and
   transition audit
 - [ADR-0058](ADR-0058-unified-lifecycle-transition-service.md) — Unified lifecycle transition
-  service
+  service; proposed scoped Schedule definition amendment
 - [ADR-0059](ADR-0059-durable-dispatch-outbox.md) — Durable dispatch outbox
 - [ADR-0060](ADR-0060-run-supervision-terminal-callback-and-orphan-detection.md) — Run
   supervision: generic terminal callback and two-stage orphan detection (superseded by ADR-0095)
@@ -219,6 +229,8 @@ its area block.
   progression membership and online cutover (sequential number; see Numbering)
 - [ADR-0118](ADR-0118-declared-entity-schema-as-single-authority.md) — Declared entity schema as
   the single authority for state and studio persistence (sequential number; see Numbering)
+- [ADR-0128](ADR-0128-writing-run-state-into-a-store-another-schema-lineage-manages.md) — Writing
+  run state into a store another schema lineage manages (sequential number; see Numbering)
 
 ### cli-surface (0062-0067)
 
@@ -275,6 +287,9 @@ its area block.
   primary run canvas (sequential number; see Numbering)
 - [ADR-0116](ADR-0116-editor-client-capability-expansion.md) — Editor client capability
   expansion; revises ADR-0082 D2 (sequential number; see Numbering)
+- [ADR-0131](ADR-0131-operator-decisions-require-a-launcher-issued-decision-capability.md) —
+  Operator decisions require a launcher-issued decision capability (sequential number; see
+  Numbering)
 
 ### governance (0086-0089)
 

@@ -159,6 +159,11 @@
     "effect": {
       "requested": "Requested interface action: {kind}"
     },
+    "truncation": {
+      "title": "Sebagian giliran ini tidak disimpan",
+      "summary": "{frames} bingkai tidak disimpan · {size}",
+      "limit": " · batas: {limit}"
+    },
     "outcome": {
       "completed": "Turn completed",
       "failed": "Turn failed",
@@ -241,8 +246,8 @@
       "allHint": "Buat agen atau alur kerja pertama Anda untuk memulai.",
       "filtered": "Tidak ada item yang cocok dengan filter Anda.",
       "filteredHint": "Coba jenis lain atau bersihkan pencarian.",
+      "clearFilters": "Hapus filter",
       "createFirst": "Buat yang pertama",
-      "createWorkflow": "Alur kerja baru",
       "createAgent": "Agen baru",
       "allSkill": "Tidak ada skill ditemukan.",
       "allSkillHint": "Tambahkan SKILL.md di ~/.lionagi/skills/NAME/ agar muncul di sini.",
@@ -303,12 +308,12 @@
       "engineMaxDepth": "Kedalaman maks",
       "engineMaxAgents": "Agen maks",
       "loadFailed": "(gagal memuat versi)",
-      "invocations": "Invokasi",
-      "successRate": "Tingkat keberhasilan",
-      "lastUsed": "Terakhir digunakan",
-      "never": "tidak pernah",
-      "recentInvocations": "Invokasi terbaru",
-      "noInvocations": "Belum ada invokasi yang tercatat.",
+      "invocations": "Pemanggilan tercatat",
+      "successRate": "Tingkat keberhasilan tercatat",
+      "lastUsed": "Penggunaan terlacak terakhir",
+      "never": "Tidak tercatat",
+      "recentInvocations": "Catatan yang baru diperbarui",
+      "noInvocations": "Tidak ada pemanggilan tercatat.",
       "skillValidationFailed": "Validasi gagal. Perbaiki kesalahan di bawah sebelum menyimpan.",
       "pluginOwnedSkillHint": "Disertakan dalam plugin — edit file plugin secara langsung untuk mengubahnya.",
       "readOnly": "Hanya baca",
@@ -320,7 +325,10 @@
       "pluginHooksSection": "Konfigurasi Hook",
       "pluginReadmeSection": "README",
       "yes": "Ya",
-      "no": "Tidak"
+      "no": "Tidak",
+      "usageCoverage": "Cakupan pelacakan keterampilan atau plugin ini tidak diketahui; hanya pemanggilan tercatat yang ditampilkan. Keberhasilan menghitung eksekusi yang berhasil di antara catatan yang telah berakhir. Waktu terbaru dihitung sejak pembaruan.",
+      "usageUnavailable": "Data penggunaan tercatat tidak tersedia.",
+      "usageUnknown": "Tidak diketahui"
     },
     "template": {
       "badge": "Bawaan",
@@ -666,6 +674,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "Eksekusi terbaru tidak tersedia",
     "title": "Penjadwalan",
     "subtitle": "Otomasi tetap pada pemicu cron, interval, dan GitHub",
     "calendar": "Kalender",
@@ -1250,6 +1259,12 @@
       "body": "Something answered at {base}, but it isn't a lionagi daemon.",
       "fix": "Stop that program, or point the daemon at a different port:",
       "command": "li studio --port 8766"
+    },
+    "accessRequired": {
+      "title": "Daemon ini memerlukan token akses",
+      "body": "Daemon lionagi menjawab di {base}, tetapi menolak halaman ini. Daemon hanya menerima halaman dari origin lain yang membawa token akses, dan perintah li studio memberikannya ke halaman ini saat membukanya. Memuat ulang halaman akan menghilangkan token tersebut.",
+      "fix": "Jalankan ini di tempat daemon berjalan untuk membuka Studio dengan akses:",
+      "command": "li studio"
     },
     "retry": "Retry",
     "dismiss": "Dismiss"

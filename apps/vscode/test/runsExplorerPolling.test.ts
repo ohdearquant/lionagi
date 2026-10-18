@@ -25,7 +25,7 @@ interface Captured {
 function makeRun(over: Record<string, unknown> = {}) {
   return {
     id: "sess-1",
-    run_id: "sess-1",
+    run_id: "cli-run-1",
     name: "live session",
     status: "running",
     project: "acme/widget",

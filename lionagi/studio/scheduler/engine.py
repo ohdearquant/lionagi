@@ -11,21 +11,23 @@ import os
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from lionagi.ln.concurrency import ExceptionGroup
+from lionagi.ln import coerce_created_at, short_id
+from lionagi.ln.concurrency import ExceptionGroup, current_time
 from lionagi.state.db import (
     NO_CURSOR_CLAIM,
     SESSION_TERMINAL_STATUSES,
     TERMINAL_RUN_STATUSES,
     CursorClaim,
 )
+from lionagi.state.lifecycle import ReasonRecord, ScheduleAuditContext
 from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS, RunTerminalEnvelope
 from lionagi.state.lifecycle.notify_settings import build_handler, resolve_notify_config
-from lionagi.state.reasons import RunReasons, ScheduleReasons
+from lionagi.state.reasons import RunReasons, ScheduleDefinitionReasons, ScheduleReasons
 from lionagi.studio.scheduler import subprocess as _subprocess
 from lionagi.studio.scheduler import threshold as _threshold
 from lionagi.studio.scheduler.admit import validate_rate_limit
@@ -47,11 +49,36 @@ from lionagi.studio.services.scheduler_state import (
 
 _log = logging.getLogger(__name__)
 
+
+def _scheduler_audit_context(actor: str) -> ScheduleAuditContext:
+    """Attribute an automatic definition change to this process, not its execution target."""
+    try:
+        cwd = str(Path.cwd().resolve())
+    except (OSError, RuntimeError):
+        cwd = None
+    return ScheduleAuditContext(
+        actor=actor,
+        submitting_cwd=cwd,
+        origin="scheduler",
+        source="scheduler",
+        assurance="system",
+        actor_status="available",
+        cwd_status="available" if cwd is not None else "unavailable",
+        failure_category=None if cwd is not None else "cwd_unavailable",
+    )
+
+
 _MAX_CHAIN_DEPTH = 10
 _TICK_INTERVAL = 30  # seconds
 # Backoff between tick-loop restarts, holding at the last value. A loop that dies every
 # time must not spin, and one that died once must come back before the next schedule is due.
 _TICK_RESTART_BACKOFF = (1.0, 2.0, 5.0, 15.0, 30.0)
+# How long stop() waits for a cancelled recovery pass to unwind before it closes the state
+# service anyway, so a recovery cleanup that never returns holds the shutdown this long at most.
+_RECOVERY_UNWIND_SECONDS = 10.0
+# Ten intervals allow a slow tick to finish without keeping a scheduler ready
+# indefinitely when it has stopped advancing.
+_TICK_STALL_AFTER = _TICK_INTERVAL * 10  # seconds
 # Throttles deferred-capacity skipped-run records to one per schedule per this
 # many deferrals, so sustained saturation doesn't spam schedule_runs.
 _DEFERRED_RECORD_EVERY = 10
@@ -360,7 +387,18 @@ class SchedulerEngine:
         self._worker_task: asyncio.Task | None = None
         self._running: dict[str, str] = {}  # schedule_id -> run_id
         self._stopping = False
+        # start() and stop() run one at a time. stop() can wait for a cancelled recovery pass
+        # to unwind, and a start() inside that wait would clear _stopping under it: the old
+        # loop would read the stop's cancel as a stray one and run its later passes, and its
+        # exit would schedule a restart beside the new loop. A stop() inside start()'s awaits
+        # would close the store those awaits then reopen.
+        self._lifecycle_lock = asyncio.Lock()
         self._fire_tasks: set[asyncio.Task] = set()
+        # One tracked poll-and-fire task per github_poll schedule. Its fires are awaited inside the
+        # poll loop, which advances the cursor per committed event, so a pass lasts as long as the
+        # slowest action it dispatched; it runs off the tick so later ticks continue meanwhile.
+        self._github_tick_tasks: dict[str, asyncio.Task] = {}
+        self._github_tick_started_at: dict[str, float] = {}
         self._last_reaper_run: float = 0.0
         self._last_checkpoint_run: float = 0.0
         # Starts unresolved rather than at 0.0, which would make a prune due on the first tick. It
@@ -393,21 +431,38 @@ class SchedulerEngine:
         # check cannot.
         self._threshold_pending: set[str] = set()
         # ADR-0071 D4: this daemon process is the one host worker (v1).
-        self._task_worker_id = f"host:{uuid.uuid4().hex[:8]}"
+        self._task_worker_id = f"host:{short_id(8)}"
         # Tick-loop supervision. The loop advancing is the only thing that makes this a
         # scheduler, and the process staying up says nothing about whether it still is.
         self._tick_loop_restarts = 0
         self._last_tick_loop_failure: tuple[float, str] | None = None
+        # Stamped only when a tick completes without raising, because a tick that
+        # raised did not advance anything. Readiness reads this: every other health
+        # signal in the daemon reports whether the store answers, which stays true
+        # while the scheduler fires nothing.
+        self._last_tick_completed_at: float | None = None
+        # When this process first started a scheduler, which bounds how long
+        # "started but nothing has completed yet" is allowed to read as ready.
+        # Set by start() only: a tick loop that dies and respawns must not
+        # refresh it, or a scheduler that never ticks could hold itself in the
+        # startup window forever by restarting.
+        self._started_at: float | None = None
 
     async def start(self) -> None:
-        _log.info("Scheduler engine starting")
-        self._stopping = False
-        self._log_scheduler_timezone()
-        await self._backfill_action_cwd()
-        await self._stamp_effective_timezones()
-        await self._recompute_armed_cron_schedules()
-        self._tick_loop_restarts = 0
-        self._task = self._spawn_tick_loop()
+        async with self._lifecycle_lock:
+            _log.info("Scheduler engine starting")
+            self._started_at = time.time()
+            self._stopping = False
+            self._log_scheduler_timezone()
+            await self._backfill_action_cwd()
+            await self._stamp_effective_timezones()
+            await self._recompute_armed_cron_schedules()
+            # Reset health fields after startup preparation, immediately before
+            # creating the loop, so they describe the run being launched.
+            self._tick_loop_restarts = 0
+            self._last_tick_loop_failure = None
+            self._last_tick_completed_at = None
+            self._task = self._spawn_tick_loop()
 
     def _spawn_tick_loop(self) -> asyncio.Task:
         task = asyncio.create_task(self._tick_loop())
@@ -441,6 +496,117 @@ class SchedulerEngine:
         if self._stopping:
             return
         self._task = self._spawn_tick_loop()
+
+    def health(self) -> dict[str, Any]:
+        """Whether this scheduler is still ADVANCING, which no store probe can answer.
+
+        A read against the store succeeds whenever the store answers reads, and a
+        WAL-backed store answers reads while writes are blocked, so the daemon can
+        report healthy for hours beside a scheduler that has fired nothing. This
+        reports the engine's own last completed tick instead, because the loop
+        advancing is the only thing that makes this a scheduler.
+
+        `ready` is false for a scheduler that was started and is not advancing --
+        whether it went quiet after ticking or never completed a tick at all. A
+        process that never started one is not failing at scheduling, so it reports
+        `status="offline"` with `ready=True`; making the absence of a subsystem
+        block readiness would turn every non-daemon host unready. That exemption is
+        for the never-started case only, and must not be read as covering a
+        scheduler that started and then failed to get anywhere.
+        """
+        last = self._last_tick_completed_at
+        failure_at, failure_reason = self._last_tick_loop_failure or (None, None)
+        report: dict[str, Any] = {
+            "ready": True,
+            "status": "offline",
+            "detail": "scheduler was not started in this process",
+            "last_tick_completed_at": (coerce_created_at(last).isoformat() if last else None),
+            "seconds_since_last_tick": None,
+            "stall_after_seconds": _TICK_STALL_AFTER,
+            "tick_interval_seconds": _TICK_INTERVAL,
+            "tick_loop_restarts": self._tick_loop_restarts,
+            "last_tick_loop_failure": (
+                {
+                    "at": coerce_created_at(failure_at).isoformat(),
+                    "reason": failure_reason,
+                }
+                if failure_at is not None
+                else None
+            ),
+        }
+        if self._task is None:
+            if self._started_at is not None:
+                report["ready"] = False
+                if self._lifecycle_lock.locked() and self._stopping:
+                    report["status"] = "stopping"
+                    report["detail"] = "scheduler is shutting down"
+                elif self._lifecycle_lock.locked():
+                    report["status"] = "starting"
+                    report["detail"] = "scheduler startup is in progress"
+                else:
+                    report["status"] = "stopped"
+                    report["detail"] = "scheduler stopped after starting in this process"
+            return report
+        if self._stopping:
+            report["status"] = "stopping"
+            report["detail"] = "scheduler is shutting down"
+            return report
+        if last is None:
+            # Started but no tick has completed yet. For a while that is not a stall:
+            # the first tick runs startup recovery before it, and calling that unready
+            # would fail readiness for the normal startup window. But the window has to
+            # END. A scheduler whose every tick raises from process start never stamps
+            # the field at all, so it sits here permanently -- and the stall branch
+            # below, which is the whole point of this report, is unreachable for it
+            # because that branch needs a last tick to measure from. Without a deadline
+            # the one failure this exists to catch is the one it cannot see.
+            #
+            # The deadline is the stall threshold measured from start instead of from
+            # the last tick, rather than a second tunable: a scheduler that has not
+            # completed a tick within that window is not advancing by the same standard
+            # whether or not it ever managed one. It stays `starting` -- the status is
+            # accurate, it never finished starting -- and only `ready` changes, because
+            # what readiness answers is whether to send this daemon work.
+            report["status"] = "starting"
+            since_start = (
+                None if self._started_at is None else max(0.0, time.time() - self._started_at)
+            )
+            if since_start is not None and since_start > _TICK_STALL_AFTER:
+                report["ready"] = False
+                report["detail"] = (
+                    f"scheduler started {since_start:.0f}s ago and no tick has completed "
+                    f"(stall threshold {_TICK_STALL_AFTER}s)"
+                )
+            else:
+                report["detail"] = "scheduler started; no tick has completed yet"
+            return report
+        now = time.time()
+        age = max(0.0, now - last)
+        report["seconds_since_last_tick"] = round(age, 1)
+        if age > _TICK_STALL_AFTER:
+            report["ready"] = False
+            report["status"] = "stalled"
+            report["detail"] = (
+                f"no scheduler tick has completed for {age:.0f}s "
+                f"(interval {_TICK_INTERVAL}s, stall threshold {_TICK_STALL_AFTER}s)"
+            )
+            return report
+        for sid, task in self._github_tick_tasks.items():
+            started_at = self._github_tick_started_at.get(sid)
+            if task.done() or started_at is None:
+                continue
+            pass_age = max(0.0, now - started_at)
+            if pass_age > _TICK_STALL_AFTER:
+                report["ready"] = False
+                report["status"] = "stalled"
+                report["detail"] = (
+                    f"github_poll pass for schedule {sid} has run for {pass_age:.0f}s "
+                    f"(stall threshold {_TICK_STALL_AFTER}s)"
+                )
+                return report
+        report["status"] = "healthy"
+        report["detail"] = f"last scheduler tick completed {age:.0f}s ago"
+        return report
 
     def _log_scheduler_timezone(self) -> None:
         """Say the effective cron timezone out loud, once, at startup."""
@@ -580,41 +746,48 @@ class SchedulerEngine:
                 "next_fire_at shifted for schedule %s (%s): %s -> %s (tz=%s)",
                 schedule.get("name"),
                 schedule.get("id"),
-                datetime.fromtimestamp(old, tz=timezone.utc).isoformat(),
-                datetime.fromtimestamp(new, tz=timezone.utc).isoformat(),
+                coerce_created_at(old).isoformat(),
+                coerce_created_at(new).isoformat(),
                 SCHEDULER_TZ,
             )
         return new
 
     async def stop(self) -> None:
-        _log.info("Scheduler engine stopping")
-        self._stopping = True
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
-        if self._worker_task is not None:
-            self._worker_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._worker_task
-            self._worker_task = None
-        if self._retention_task is not None:
-            # Cancelling mid-prune keeps whichever chunks committed and writes no event, so the next
-            # process reads the older prune and is due straight away.
-            self._retention_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._retention_task
-            self._retention_task = None
-        if self._fire_tasks:
-            for ft in list(self._fire_tasks):
-                ft.cancel()
-            await asyncio.gather(*self._fire_tasks, return_exceptions=True)
-            self._fire_tasks.clear()
-        if isinstance(self._svc, _DBSchedulerStateService):
-            await self._svc.close()
+        async with self._lifecycle_lock:
+            _log.info("Scheduler engine stopping")
+            self._stopping = True
+            if self._task:
+                self._task.cancel()
+                try:
+                    await self._task
+                except asyncio.CancelledError:
+                    pass
+                self._task = None
+            if self._worker_task is not None:
+                self._worker_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._worker_task
+                self._worker_task = None
+            if self._retention_task is not None:
+                # Cancelling mid-prune keeps whichever chunks committed and writes no event, so the
+                # next process reads the older prune and is due straight away.
+                self._retention_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._retention_task
+                self._retention_task = None
+            if self._github_tick_tasks:
+                for gt in list(self._github_tick_tasks.values()):
+                    gt.cancel()
+                await asyncio.gather(*self._github_tick_tasks.values(), return_exceptions=True)
+                self._github_tick_tasks.clear()
+                self._github_tick_started_at.clear()
+            if self._fire_tasks:
+                for ft in list(self._fire_tasks):
+                    ft.cancel()
+                await asyncio.gather(*self._fire_tasks, return_exceptions=True)
+                self._fire_tasks.clear()
+            if isinstance(self._svc, _DBSchedulerStateService):
+                await self._svc.close()
 
     def _tracked_fire(self, *args: Any, **kwargs: Any) -> asyncio.Task:
         """Create a tracked _fire task; prevents orphans surviving shutdown."""
@@ -659,7 +832,7 @@ class SchedulerEngine:
                     f"Scheduler at capacity ({MAX_SCHEDULED_CONCURRENT} concurrent "
                     "fires); manual trigger refused. Retry shortly."
                 )
-            run_id = uuid.uuid4().hex[:12]
+            run_id = short_id(12)
             self._tracked_fire(
                 schedule,
                 run_id,
@@ -713,6 +886,11 @@ class SchedulerEngine:
             self._reconcile_dispatched_orphans,
             self._check_missed_fires,
         ):
+            # A stop's cancel reaches only the pass in flight, and that pass's own cleanup can
+            # replace it with another error, which the handler below absorbs. Without this check
+            # the later passes would then start during the stop.
+            if self._stopping:
+                return
             try:
                 await recovery()
             except asyncio.CancelledError:
@@ -744,6 +922,22 @@ class SchedulerEngine:
             except asyncio.CancelledError:
                 if self._stopping:
                     passes.cancel()
+                    # Cancelling only requests termination. Recovery cleanup may still be
+                    # using the scheduler store, so stop() must not close that store until
+                    # the pass has unwound, or until _RECOVERY_UNWIND_SECONDS have passed.
+                    # A cancel that arrives meanwhile is absorbed here, since it would end
+                    # this wait early: stop() is awaiting this task, so a cancel of stop()'s
+                    # own caller reaches it.
+                    deadline = current_time() + _RECOVERY_UNWIND_SECONDS
+                    while not passes.done() and (left := deadline - current_time()) > 0:
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await asyncio.wait({passes}, timeout=left)
+                    if not passes.done():
+                        _log.warning(
+                            "Scheduler startup recovery still unwinding %.0fs after the stop; "
+                            "closing the state service under it",
+                            _RECOVERY_UNWIND_SECONDS,
+                        )
                     raise
                 # Re-shield rather than await the task directly: a bare await is itself
                 # cancellable, so the second cancel would tear the pass in half exactly
@@ -758,6 +952,7 @@ class SchedulerEngine:
         while not self._stopping:
             try:
                 await self._tick()
+                self._last_tick_completed_at = time.time()
             except asyncio.CancelledError:
                 # stop() cancels this task, so a cancel while stopping IS the shutdown. A cancel
                 # at any other time escaped from something the tick awaited, and ending the loop
@@ -857,7 +1052,7 @@ class SchedulerEngine:
                 )
                 continue
 
-            new_run_id = uuid.uuid4().hex[:12]
+            new_run_id = short_id(12)
             _log.info(
                 "Re-firing undispatched schedule_run %s as %s for schedule %s",
                 run_id,
@@ -1036,7 +1231,7 @@ class SchedulerEngine:
                         "chain_from": run_id,
                         "parent_status": run_status,
                     }
-                    chain_run_id = uuid.uuid4().hex[:12]
+                    chain_run_id = short_id(12)
                     self._tracked_fire(
                         chain_schedule,
                         chain_run_id,
@@ -1098,7 +1293,19 @@ class SchedulerEngine:
                 return
             allowed, claim = await self._reserve_max_runs_budget(schedule)
             if not allowed:
-                await self._svc.update_schedule(schedule["id"], enabled=0)
+                await self._svc.update_schedule(
+                    schedule["id"],
+                    enabled=0,
+                    audit_context=_scheduler_audit_context("scheduler:max-runs"),
+                    reason=ReasonRecord(
+                        ScheduleDefinitionReasons.DISABLED_MAX_RUNS,
+                        f"Missed-fire recovery was refused at max_runs={schedule.get('max_runs')}.",
+                        metadata={
+                            "disable_cause": "missed_fire_max_runs",
+                            "max_runs": schedule.get("max_runs"),
+                        },
+                    ),
+                )
                 return
             slot_allowed, slot_claim = await self._reserve_global_slot()
             if not slot_allowed:
@@ -1135,7 +1342,7 @@ class SchedulerEngine:
                     )
                     return
                 claimed = fields.get("next_fire_at", claimed)
-            run_id = uuid.uuid4().hex[:12]
+            run_id = short_id(12)
             _log.info(
                 "Missed fire recovery for schedule %s (%s)",
                 schedule["name"],
@@ -1162,7 +1369,7 @@ class SchedulerEngine:
 
     async def _record_missed_fire_skip(self, schedule: dict, now: float) -> None:
         """Record missed-fire skip and advance next_fire_at."""
-        skipped_run_id = uuid.uuid4().hex[:12]
+        skipped_run_id = short_id(12)
         try:
             await create_skipped_run(
                 self._svc,
@@ -1229,10 +1436,12 @@ class SchedulerEngine:
 
         schedules = await self._svc.list_schedules(enabled=True)
 
+        failed_schedules = 0
+        last_schedule_error: Exception | None = None
         for s in schedules:
             try:
                 if s["trigger_type"] == "github_poll":
-                    await self._tick_github(s, now)
+                    self._start_github_tick(s, now)
                 else:
                     nfa = s.get("next_fire_at")
                     if nfa is not None and nfa <= now:
@@ -1245,8 +1454,48 @@ class SchedulerEngine:
                                 next_fire_at=next_at,
                                 **self._effective_timezone_fields(s),
                             )
-            except Exception:
+            except Exception as exc:
+                failed_schedules += 1
+                last_schedule_error = exc
                 _log.exception("Error evaluating schedule %s", s.get("name"))
+
+        if schedules and failed_schedules == len(schedules):
+            raise RuntimeError("every enabled schedule failed during evaluation") from (
+                last_schedule_error
+            )
+
+    def _start_github_tick(self, schedule: dict, now: float) -> None:
+        """Run this schedule's poll-and-fire pass as a tracked task, one at a time per schedule.
+
+        A pass still in flight from an earlier tick keeps the schedule's turn: the events it has not
+        reached are re-listed by its own next poll, and starting a second pass would race it on the
+        cursor. The tick records only the hand-off, so one long action no longer stalls every other
+        schedule on the box.
+        """
+        sid = schedule["id"]
+        active = self._github_tick_tasks.get(sid)
+        if active is not None and not active.done():
+            _log.debug(
+                "Schedule %s (%s): github poll pass still running; not starting another",
+                schedule.get("name"),
+                sid,
+            )
+            return
+        task = asyncio.create_task(self._tick_github_guarded(schedule, now))
+        self._github_tick_tasks[sid] = task
+        self._github_tick_started_at[sid] = time.time()
+        task.add_done_callback(lambda done, sid=sid: self._discard_github_tick(sid, done))
+
+    def _discard_github_tick(self, sid: str, done: asyncio.Task) -> None:
+        if self._github_tick_tasks.get(sid) is done:
+            del self._github_tick_tasks[sid]
+            self._github_tick_started_at.pop(sid, None)
+
+    async def _tick_github_guarded(self, schedule: dict, now: float) -> None:
+        try:
+            await self._tick_github(schedule, now)
+        except Exception:
+            _log.exception("Error evaluating schedule %s", schedule.get("name"))
 
     async def _deliver_due_dispatches(self, now: float) -> None:
         """Scan due dispatch_outbox rows and attempt delivery; not interval-gated."""
@@ -1310,11 +1559,14 @@ class SchedulerEngine:
             )
             return
 
-        # Reserve one global slot before polling, so a no-slot poll does not fetch, advance the
-        # cursor and discard. This slot goes to whichever event fires first; later ones reserve
-        # their own.
-        slot_allowed, pre_slot_claim = await self._reserve_global_slot()
-        if not slot_allowed:
+        # The poll is a trigger check, not a fire, so it holds no global slot while it fetches: a
+        # slow or rate-limited poll would otherwise keep a slot from every other schedule for its
+        # whole duration. A full cap is read here only to spare a fetch whose events could not
+        # run; the read takes nothing. Each event below reserves its own slot, and one that finds
+        # none stays ahead of the cursor for the next poll.
+        from lionagi.studio.config import MAX_SCHEDULED_CONCURRENT
+
+        if 0 < MAX_SCHEDULED_CONCURRENT <= self._global_inflight:
             if pre_rate_claim is not None:
                 pre_rate_claim.release()
             await self._maybe_record_deferred(schedule, now)
@@ -1323,8 +1575,8 @@ class SchedulerEngine:
         from .github import github_poll
 
         sid = schedule["id"]
-        # Every await between reserving pre_slot_claim and handing it to the first dispatched
-        # _fire() must release it on failure, or a transient error mid-poll leaks the slot
+        # Every await between reserving pre_rate_claim and handing it to the first dispatched
+        # _fire() must release it on failure, or a transient error mid-poll leaks the claim
         # permanently. It is nulled the moment it is handed off or released inline, so this finally
         # only fires for the untouched case.
         try:
@@ -1395,16 +1647,13 @@ class SchedulerEngine:
                             ]
                             break
 
-                    if pre_slot_claim is not None:
-                        slot_claim, pre_slot_claim = pre_slot_claim, None
-                    else:
-                        slot_allowed, slot_claim = await self._reserve_global_slot()
-                        if not slot_allowed:
-                            drop_reason = "global concurrent-fire cap reached"
-                            dropped_prs = [
-                                e.event.get("pr_number") for e in polled[idx:] if e.dispatchable
-                            ]
-                            break
+                    slot_allowed, slot_claim = await self._reserve_global_slot()
+                    if not slot_allowed:
+                        drop_reason = "global concurrent-fire cap reached"
+                        dropped_prs = [
+                            e.event.get("pr_number") for e in polled[idx:] if e.dispatchable
+                        ]
+                        break
 
                     allowed, max_runs_claim = await self._reserve_max_runs_budget(schedule)
                     if not allowed:
@@ -1419,7 +1668,7 @@ class SchedulerEngine:
                         "repo": schedule.get("github_repo"),
                         "fired_at": now,
                     }
-                    run_id = uuid.uuid4().hex[:12]
+                    run_id = short_id(12)
                     admission_handed_off = True
                     fired = await self._fire(
                         schedule,
@@ -1516,8 +1765,6 @@ class SchedulerEngine:
         finally:
             if pre_rate_claim is not None:
                 pre_rate_claim.release()
-            if pre_slot_claim is not None:
-                pre_slot_claim.release()
 
     async def _record_predispatch_refusal(self, schedule: dict, event_cursor: str) -> int:
         """Count one pre-dispatch refusal of the event at *event_cursor*; returns the new total."""
@@ -1658,7 +1905,7 @@ class SchedulerEngine:
         self._deferred_log_counts[sid] = count
         if count % _DEFERRED_RECORD_EVERY != 1:
             return
-        skipped_run_id = uuid.uuid4().hex[:12]
+        skipped_run_id = short_id(12)
         await create_skipped_run(
             self._svc,
             run_id=skipped_run_id,
@@ -1716,7 +1963,7 @@ class SchedulerEngine:
             schedule.get("budget_usd"),
             schedule.get("budget_tokens"),
         )
-        skipped_run_id = uuid.uuid4().hex[:12]
+        skipped_run_id = short_id(12)
         await create_skipped_run(
             self._svc,
             run_id=skipped_run_id,
@@ -1734,7 +1981,23 @@ class SchedulerEngine:
                 "unreported_sessions": spend.get("unreported_sessions"),
             },
         )
-        await self._svc.update_schedule(schedule["id"], enabled=0)
+        await self._svc.update_schedule(
+            schedule["id"],
+            enabled=0,
+            audit_context=_scheduler_audit_context("scheduler:budget"),
+            reason=ReasonRecord(
+                ScheduleDefinitionReasons.DISABLED_BUDGET_EXHAUSTED,
+                "The configured spend budget was exhausted.",
+                metadata={
+                    "disable_cause": "budget_exhausted",
+                    "budget_usd": schedule.get("budget_usd"),
+                    "budget_tokens": schedule.get("budget_tokens"),
+                    "cost_usd": spend.get("cost_usd"),
+                    "tokens": spend.get("tokens"),
+                    "unreported_sessions": spend.get("unreported_sessions"),
+                },
+            ),
+        )
 
     async def _evaluate_threshold_breach(self, schedule: dict, now: float) -> dict[str, Any] | None:
         """Evaluate ``threshold_config`` against live metrics; None when in bounds."""
@@ -1821,7 +2084,7 @@ class SchedulerEngine:
 
             if schedule.get("overlap_policy") == "skip" and schedule["id"] in self._running:
                 _log.debug("Skipping overlapping fire for %s", schedule["name"])
-                skipped_run_id = uuid.uuid4().hex[:12]
+                skipped_run_id = short_id(12)
                 await create_skipped_run(
                     self._svc,
                     run_id=skipped_run_id,
@@ -1861,7 +2124,19 @@ class SchedulerEngine:
                     schedule["id"],
                     schedule.get("max_runs"),
                 )
-                await self._svc.update_schedule(schedule["id"], enabled=0)
+                await self._svc.update_schedule(
+                    schedule["id"],
+                    enabled=0,
+                    audit_context=_scheduler_audit_context("scheduler:max-runs"),
+                    reason=ReasonRecord(
+                        ScheduleDefinitionReasons.DISABLED_MAX_RUNS,
+                        f"Scheduled fire was refused at max_runs={schedule.get('max_runs')}.",
+                        metadata={
+                            "disable_cause": "scheduled_fire_max_runs",
+                            "max_runs": schedule.get("max_runs"),
+                        },
+                    ),
+                )
                 return
 
             slot_allowed, slot_claim = await self._reserve_global_slot()
@@ -1872,7 +2147,7 @@ class SchedulerEngine:
                 # it does not consume a run or abandon the cooldown.
                 return
 
-            run_id = uuid.uuid4().hex[:12]
+            run_id = short_id(12)
             ctx = {
                 "scheduled": True,
                 "fired_at": now,
@@ -1977,7 +2252,20 @@ class SchedulerEngine:
                 max_runs,
                 count,
             )
-            await self._svc.update_schedule(sid, enabled=0)
+            await self._svc.update_schedule(
+                sid,
+                enabled=0,
+                audit_context=_scheduler_audit_context("scheduler:max-runs"),
+                reason=ReasonRecord(
+                    ScheduleDefinitionReasons.DISABLED_MAX_RUNS,
+                    f"Top-level terminal runs ({count}) reached max_runs={max_runs}.",
+                    metadata={
+                        "disable_cause": "terminal_count_max_runs",
+                        "max_runs": max_runs,
+                        "terminal_runs": count,
+                    },
+                ),
+            )
 
     async def _fire(
         self,
@@ -2048,25 +2336,15 @@ class SchedulerEngine:
         """Durably record one occurrence row: the choke point both write sites take."""
         if supersedes_run_id is not None:
             applied = await self._svc.tombstone_and_replace_schedule_run(
-                supersedes_run_id, run, expected_orphan_status="running"
+                supersedes_run_id,
+                run,
+                expected_orphan_status="running",
+                reason_summary=(
+                    "Scheduler crashed after committing this occurrence but "
+                    "before confirming the external process launched."
+                ),
+                evidence_refs=[{"kind": "schedule_run", "id": run["id"]}],
             )
-            if applied:
-                # The atomic write above sets only status and updated_at, so layer the reason code
-                # and history on now, the same pattern create_schedule_run_and_advance()'s callers
-                # follow. A same-status append, not a CAS: the orphan is already durably terminal.
-                await self._svc.update_status(
-                    "schedule_run",
-                    supersedes_run_id,
-                    new_status="failed",
-                    reason_code=RunReasons.FAILED_NEVER_DISPATCHED,
-                    reason_summary=(
-                        "Scheduler crashed after committing this occurrence but "
-                        "before confirming the external process launched."
-                    ),
-                    evidence_refs=[{"kind": "schedule_run", "id": run["id"]}],
-                    source="system",
-                    actor="scheduler_startup_recovery",
-                )
             return applied
         # The cursor this fire was selected on is the claim: if another scheduler already advanced
         # it, that scheduler owns this occurrence and nothing is written here.
@@ -2157,7 +2435,7 @@ class SchedulerEngine:
         occurrence_committed = False  # set once the occurrence transaction commits
         _tmp_path: str | None = None
 
-        inv_id = uuid.uuid4().hex[:12]
+        inv_id = short_id(12)
         # Registered before the invocation can reach a terminal status and unregistered on every
         # exit path below, so a matching registration never outlives this fire.
         notify_scope = _register_schedule_notify(
@@ -2182,6 +2460,12 @@ class SchedulerEngine:
                     ),
                     "started_at": now,
                     "status": "running",
+                    # The invocations table has no action_kind column, so the
+                    # kind rides node_metadata. Without it every fire reads as
+                    # the generic "invocation" in `li monitor`, which is what
+                    # made a command-kind fire look unrecorded: the row was
+                    # always written here, it just carried no kind.
+                    "node_metadata": {"action_kind": schedule.get("action_kind")},
                 }
             )
         except BaseException:
@@ -2522,7 +2806,7 @@ class SchedulerEngine:
                         "parent_exit_code": exit_code,
                         "parent_status": status,
                     }
-                    chain_run_id = uuid.uuid4().hex[:12]
+                    chain_run_id = short_id(12)
                     await self._fire(
                         chain_schedule,
                         chain_run_id,

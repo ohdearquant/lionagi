@@ -105,6 +105,7 @@ const SAMPLE_VALUES = {
   day: "Monday",
   delta: "3m",
   detail: "boom",
+  frames: 3,
   duration: "3h",
   efforts: "low / medium / high",
   end: "11:00",
@@ -115,6 +116,7 @@ const SAMPLE_VALUES = {
   interval: "5m",
   kind: "navigate",
   label: "Tab",
+  limit: "2,000 frames",
   logPages: 10,
   major: 1,
   message: "oops",
@@ -135,6 +137,7 @@ const SAMPLE_VALUES = {
   runs: 4,
   sec: 30,
   sessions: 3,
+  size: "2 KB",
   span: "20m",
   start: "10:00",
   status: "ok",
@@ -246,8 +249,19 @@ describe("messages — leaf-key parity across all 16 locales", () => {
   // discard-changes confirmation and schedules.error.unclassified for a failure
   // the server could not classify. All six additions are natively translated in
   // all 16 locales, so they add nothing to the identity-leak baseline.
-  it("en.json has 1105 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1105);
+  // 1106 = 1105 + the Library's explicit clear-filter action.
+  // 1105 = 1106 - empty.createWorkflow, a Library label no component reads.
+  // 1113 = 1105 + daemon.accessRequired (title, body, fix, command), the screen
+  // shown when a running daemon refuses the page, + three labels that explain
+  // recorded usage, unavailable reads, and unknown start times, + the
+  // unavailable recent-run slice label. The prose leaves are natively
+  // translated in all 16; command is the literal `li studio`, which is
+  // attributed in the identity-leak baseline below.
+  // 1116 = 1113 + operator.truncation (title, summary, limit), the notice shown
+  // when a turn hit its durable retention limit. Natively translated in all 16,
+  // so it adds nothing to the identity-leak baseline.
+  it("en.json has 1116 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1116);
   });
 
   it.each(LOCALES.map((l) => l.code))(
@@ -374,11 +388,16 @@ describe("messages — a locale value byte-identical to English is a missed tran
   // every non-English locale. It joins the controls.* placeholder debt already
   // attributed above rather than adding a new kind of it, and the follow-up
   // that translates that subtree should take this key with it.
+  //
+  // Raised from 3742 to 3757 (+15 = 1 leaf × 15 non-English locales) with
+  // daemon.accessRequired.command, the shell command `li studio`, which is the
+  // same in every language on the merits. Its three sibling leaves are natively
+  // translated in all 16 and add nothing here.
   it("pre-existing identity-leak count across all locales does not grow past its pinned baseline", () => {
     const total = LOCALES.map((l) => l.code)
       .filter((c) => c !== "en")
       .reduce((sum, code) => sum + findIdentityLeaks(code).length, 0);
-    expect(total).toBeLessThanOrEqual(3742);
+    expect(total).toBeLessThanOrEqual(3757);
   });
 });
 

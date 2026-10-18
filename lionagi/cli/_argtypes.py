@@ -17,7 +17,36 @@ import argparse
 import json
 from typing import Any
 
-__all__ = ("JsonArgument",)
+__all__ = ("BoundedInt", "JsonArgument")
+
+
+class BoundedInt:
+    """A whole number in ``[minimum, maximum]``, refused by the parser outside it.
+
+    Declared on the argument so a reader of the parser can describe the range:
+    the MCP projection advertises it as ``minimum``/``maximum``, and the
+    dispatcher refuses an out-of-range value before any job exists.
+    """
+
+    def __init__(self, minimum: int, maximum: int) -> None:
+        self.minimum = minimum
+        self.maximum = maximum
+        # argparse prints `type.__name__` in its own error prose.
+        self.__name__ = "int"
+
+    def __call__(self, raw: str) -> int:
+        try:
+            value = int(raw)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(f"must be a whole number, not {raw!r}") from exc
+        if not self.minimum <= value <= self.maximum:
+            raise argparse.ArgumentTypeError(
+                f"must be from {self.minimum} to {self.maximum}, not {value}"
+            )
+        return value
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostics only
+        return f"BoundedInt({self.minimum}, {self.maximum})"
 
 
 class JsonArgument:

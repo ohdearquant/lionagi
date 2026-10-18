@@ -5,6 +5,7 @@
 Middle: round-outcome classification, the ActionCall -> ActionRequest bridge,
 prompt injection, and repair semantics."""
 
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -80,6 +81,16 @@ class TestClassifyRound:
         assert isinstance(outcome, Continue)
         assert pending == []
         assert assembled is None
+
+    def test_a_round_reads_up_to_its_first_out_and_ignores_what_follows(self):
+        text = (
+            "```lndl\n<lvar a>first</lvar>\nOUT{answer: [a]}\n"
+            '<lact q r>lookup(query="x")</lact>\nOUT{answer: "second"}\n```'
+        )
+        outcome, pending, assembled = _classify_round(text, AnswerModel, {})
+        assert isinstance(outcome, Success)
+        assert pending == []
+        assert assembled == {"answer": "first"}
 
     def test_continue_round_with_lact_returns_pending_call(self):
         text = '```lndl\n<lact q a>lookup(query="x")</lact>\n```'
@@ -558,9 +569,19 @@ class TestPromptInjection:
         assert calls[0].last_user_message.count("Specs:") == base_specs_count
 
 
-class TestChatParamStripping:
+def _has_tools_section(message: str) -> bool:
+    """The instruction's own Tools key, unindented; the guidance's worked examples
+    mention tools too, but only inside its indented block."""
+    return any(line.startswith("Tools:") for line in message.splitlines())
+
+
+class TestRoundToolsAndResponseFormat:
+    """A round replies in free text, so the response format is dropped, but a
+    <lact> names a tool, so every round's instruction lists the tools it may
+    call. Native tool calling is never requested."""
+
     @pytest.mark.asyncio
-    async def test_tool_schemas_and_response_format_stripped_from_round_call(self):
+    async def test_passed_tool_schemas_listed_and_response_format_dropped(self):
         branch = TestBranch.from_text("```lndl\n<lvar a>hi</lvar>\nOUT{answer: [a]}\n```")
         branch.register_tools([lookup])
         chat_param = ChatParam(
@@ -571,6 +592,578 @@ class TestChatParamStripping:
 
         calls = TestBranch.calls(branch)
         assert calls[0].tool_names == []
+        assert _has_tools_section(calls[0].last_user_message)
+        assert "lookup" in calls[0].last_user_message
+        assert "Return a canned lookup result" in calls[0].last_user_message
+        assert "ResponseSchema" not in calls[0].last_user_message
+
+    @pytest.mark.asyncio
+    async def test_registered_tools_listed_when_none_passed(self):
+        branch = TestBranch.from_text("```lndl\n<lvar a>hi</lvar>\nOUT{answer: [a]}\n```")
+        branch.register_tools([lookup])
+        await lndl_middle(branch, "say hi", ChatParam(response_format=AnswerModel))
+
+        assert _has_tools_section(TestBranch.calls(branch)[0].last_user_message)
+        assert "lookup" in TestBranch.calls(branch)[0].last_user_message
+
+    @pytest.mark.asyncio
+    async def test_every_round_lists_the_tools(self):
+        branch = TestBranch.from_text(
+            [
+                '```lndl\n<lact q a>lookup(query="x")</lact>\n```',
+                "```lndl\nOUT{answer: [missing]}\n```",
+                "```lndl\n<lvar b>read it</lvar>\nOUT{answer: [b]}\n```",
+            ]
+        )
+        branch.register_tools([lookup])
+        await lndl_middle(branch, "look it up", ChatParam(response_format=AnswerModel))
+
+        calls = TestBranch.calls(branch)
+        assert len(calls) == 3
+        assert all(_has_tools_section(call.last_user_message) for call in calls)
+        assert all("lookup" in call.last_user_message for call in calls)
+
+    @pytest.mark.asyncio
+    async def test_no_tools_section_without_tools(self):
+        branch = TestBranch.from_text("```lndl\n<lvar a>hi</lvar>\nOUT{answer: [a]}\n```")
+        await lndl_middle(branch, "say hi", ChatParam(response_format=AnswerModel))
+
+        assert not _has_tools_section(TestBranch.calls(branch)[0].last_user_message)
+
+
+class TestMaxActions:
+    @staticmethod
+    def _round(n: int, *, out: bool = False) -> str:
+        lacts = "".join(f'<lact q{i} a{i}>lookup(query="{i}")</lact>\n' for i in range(n))
+        return f"```lndl\n{lacts}{'OUT{answer: [a0]}' + chr(10) if out else ''}```"
+
+    def test_round_at_the_limit_runs_every_call(self):
+        outcome, pending, _ = _classify_round(self._round(3), AnswerModel, {}, max_actions=3)
+        assert isinstance(outcome, Continue)
+        assert len(pending) == 3
+
+    def test_round_over_the_limit_is_a_repair_round_with_nothing_pending(self):
+        outcome, pending, assembled = _classify_round(
+            self._round(4), AnswerModel, {}, max_actions=3
+        )
+        assert isinstance(outcome, Retry)
+        assert "declares 4 <lact> calls" in outcome.error
+        assert "at most 3" in outcome.error
+        assert "none of them ran" in outcome.error
+        assert pending == []
+        assert assembled is None
+
+    def test_round_with_out_over_the_limit_is_refused_too(self):
+        outcome, pending, _ = _classify_round(
+            self._round(4, out=True), AnswerModel, {}, max_actions=3
+        )
+        assert isinstance(outcome, Retry)
+        assert pending == []
+
+    def test_no_limit_by_default(self):
+        outcome, pending, _ = _classify_round(self._round(20), AnswerModel, {})
+        assert isinstance(outcome, Continue)
+        assert len(pending) == 20
+
+    @pytest.mark.parametrize("bad", [0, -1, 1.5, "3", True, False])
+    def test_build_rejects_a_bad_limit(self, bad):
+        with pytest.raises(ValueError, match="max_actions must be a positive integer"):
+            build_lndl_middle(max_actions=bad)
+
+    @pytest.mark.asyncio
+    async def test_over_limit_round_runs_no_call_and_repairs(self):
+        calls_made: list[str] = []
+
+        def counted_lookup(query: str) -> str:
+            """Return a canned lookup result for a query."""
+            calls_made.append(query)
+            return f"result for {query}"
+
+        middle = build_lndl_middle(round_budget=3, max_actions=2)
+        branch = TestBranch.from_text(
+            [
+                "```lndl\n"
+                + "".join(f'<lact q{i} a{i}>counted_lookup(query="{i}")</lact>\n' for i in range(3))
+                + "```",
+                '```lndl\n<lact q a>counted_lookup(query="one")</lact>\n```',
+                "```lndl\n<lvar b>done</lvar>\nOUT{answer: [b]}\n```",
+            ]
+        )
+        branch.register_tools([counted_lookup])
+        result = await middle(branch, "look it up", ChatParam(response_format=AnswerModel))
+
+        assert result.answer == "done"
+        assert calls_made == ["one"]
+        calls = TestBranch.calls(branch)
+        assert "declares 3 <lact> calls" in calls[1].last_user_message
+
+
+class TestSeparateAnswerRounds:
+    _MIXED = (
+        '```lndl\n<lact q a>lookup(query="x")</lact>\n<lvar b>guess</lvar>\nOUT{answer: [b]}\n```'
+    )
+
+    def test_a_call_after_the_answer_is_refused_too(self):
+        text = (
+            "```lndl\n<lvar a>guess</lvar>\nOUT{answer: [a]}\n"
+            '<lact q r>lookup(query="x")</lact>\n```'
+        )
+        outcome, pending, assembled = _classify_round(text, AnswerModel, {}, lacts_with_out=False)
+        assert isinstance(outcome, Retry)
+        assert "declares <lact> calls and also writes OUT{}" in outcome.error
+        assert pending == []
+        assert assembled is None
+
+    def test_a_call_in_a_later_block_is_refused_too(self):
+        text = (
+            "```lndl\n<lvar a>guess</lvar>\nOUT{answer: [a]}\n```\n"
+            '```lndl\n<lact q r>lookup(query="x")</lact>\n```'
+        )
+        outcome, pending, assembled = _classify_round(text, AnswerModel, {}, lacts_with_out=False)
+        assert isinstance(outcome, Retry)
+        assert pending == [] and assembled is None
+
+    def test_calls_after_the_answer_count_against_the_limit(self):
+        calls = "".join(f'<lact q{i} a{i}>lookup(query="{i}")</lact>\n' for i in range(3))
+        text = f"```lndl\n<lvar b>guess</lvar>\nOUT{{answer: [b]}}\n{calls}```"
+        outcome, pending, _ = _classify_round(
+            text, AnswerModel, {}, max_actions=2, lacts_with_out=False
+        )
+        assert isinstance(outcome, Retry)
+        assert "declares 3 <lact> calls" in outcome.error
+        assert pending == []
+
+    def test_a_call_inside_the_answer_text_is_not_a_call(self):
+        text = (
+            '```lndl\n<lvar a>The tag <lact q r>lookup(query="x")</lact> is the syntax.</lvar>\n'
+            "OUT{answer: [a]}\n```"
+        )
+        outcome, _, assembled = _classify_round(
+            text, AnswerModel, {}, max_actions=1, lacts_with_out=False
+        )
+        assert isinstance(outcome, Success)
+        assert assembled == {"answer": 'The tag <lact q r>lookup(query="x")</lact> is the syntax.'}
+
+    def test_a_lvar_after_the_answer_may_quote_a_call(self):
+        text = (
+            "```lndl\n<lvar a>Here is the answer.</lvar>\nOUT{answer: [a]}\n"
+            '<lvar note.draft n>The tag <lact q r>lookup(query="x")</lact> is syntax.</lvar>\n'
+            "```"
+        )
+        outcome, pending, assembled = _classify_round(
+            text, AnswerModel, {}, max_actions=1, lacts_with_out=False
+        )
+        assert isinstance(outcome, Success)
+        assert pending == []
+        assert assembled == {"answer": "Here is the answer."}
+
+    def test_a_call_after_an_unclosed_duplicate_out_is_refused(self):
+        text = (
+            "```lndl\n<lvar a>guess</lvar>\nOUT{answer: [a]}\n"
+            'OUT{answer: "unclosed\n'
+            '<lact r>reader(action="read", path="notes.txt")</lact>\n'
+            "```"
+        )
+        outcome, pending, assembled = _classify_round(
+            text, AnswerModel, {}, max_actions=1, lacts_with_out=False
+        )
+        assert isinstance(outcome, Retry)
+        assert pending == []
+        assert assembled is None
+
+    def test_a_call_after_the_answer_with_lact_text_in_its_argument(self):
+        text = (
+            "```lndl\n<lvar a>guess</lvar>\nOUT{answer: [a]}\n"
+            '<lact q r>lookup(query="<lact")</lact>\n```'
+        )
+        outcome, pending, _ = _classify_round(
+            text, AnswerModel, {}, max_actions=1, lacts_with_out=False
+        )
+        assert isinstance(outcome, Retry)
+        assert "declares <lact> calls and also writes OUT{}" in outcome.error
+        assert pending == []
+
+    def test_a_lact_that_quotes_out_is_refused_before_it_is_counted(self):
+        text = (
+            "```lndl\n<lvar a>guess</lvar>\n"
+            '<lact q r>lookup(query="OUT{answer: [a]}")</lact>\nOUT{answer: [a]}\n```'
+        )
+        outcome, pending, _ = _classify_round(
+            text, AnswerModel, {}, max_actions=1, lacts_with_out=False
+        )
+        # The lexer reads the quoted OUT{ as an opened block, so the round is not read at all.
+        assert isinstance(outcome, Retry)
+        assert "a <lact> holds OUT{" in outcome.error
+        assert pending == []
+
+    def test_a_tilde_block_holding_a_fenced_example_keeps_its_outer_call(self):
+        text = (
+            "~~~lndl\n<lvar a>\nExample:\n```lndl\n<lvar a>inner</lvar>\n"
+            "OUT{answer: [a]}\n```\n</lvar>\nOUT{answer: [a]}\n"
+            '<lact r>lookup(query="x")</lact>\n~~~'
+        )
+        outcome, pending, assembled = _classify_round(
+            text, AnswerModel, {}, max_actions=16, lacts_with_out=False
+        )
+        # The quoted example is not taken for the round's own answer, and the
+        # outer call is counted, so the round is refused for calling and answering.
+        assert isinstance(outcome, Retry)
+        assert "declares <lact> calls and also writes OUT{}" in outcome.error
+        assert pending == []
+        assert assembled is None
+
+    @pytest.mark.parametrize(
+        "out",
+        [
+            "OUT{answer: [a], note: 'unclosed\n",
+            "OUT{answer: [a], [\n",
+            "OUT{answer: [a]\n",
+        ],
+        ids=["string", "list", "block"],
+    )
+    def test_a_call_after_an_unclosed_out_is_refused(self, out):
+        text = (
+            f"```lndl\n<lvar a>guess</lvar>\n{out}"
+            '<lact r>reader(action="read", path="notes.txt")</lact>\n```'
+        )
+        outcome, pending, assembled = _classify_round(
+            text, AnswerModel, {}, max_actions=1, lacts_with_out=False
+        )
+        assert isinstance(outcome, Retry)
+        assert "OUT{} is not closed" in outcome.error
+        assert pending == []
+        assert assembled is None
+
+    def test_calls_in_a_later_block_after_an_unclosed_out_are_refused(self):
+        text = (
+            "```lndl\n<lvar a>guess</lvar>\nOUT{answer: [a]\n```\n"
+            '```lndl\n<lact r1>lookup(query="1")</lact>\n<lact r2>lookup(query="2")</lact>\n```'
+        )
+        outcome, pending, _ = _classify_round(
+            text, AnswerModel, {}, max_actions=1, lacts_with_out=False
+        )
+        assert isinstance(outcome, Retry)
+        assert "OUT{} is not closed before the next <lvar>, <lact> or OUT{" in outcome.error
+        assert pending == []
+
+    def test_a_quoted_out_in_an_lvar_does_not_hide_a_call_beside_the_answer(self):
+        text = (
+            '```lndl\n<lvar a>The token is "OUT{" in LNDL</lvar>\n'
+            '<lact r>lookup(query="}")</lact>\n<lvar b>done</lvar>\nOUT{answer: [a]}\n```'
+        )
+        outcome, pending, assembled = _classify_round(
+            text, AnswerModel, {}, max_actions=1, lacts_with_out=False
+        )
+        assert isinstance(outcome, Retry)
+        assert "a <lvar> holds OUT{" in outcome.error
+        assert pending == []
+        assert assembled is None
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            # A quoted OUT{ after the body, then a call inside a later OUT{} the lexer reads as text.
+            "<lvar a>In LNDL, OUT{ starts a block.</lvar>\n"
+            '"OUT{x: "\nOUT{answer: [a], [\n'
+            "<lact r>reader(action='read', path='notes.txt')</lact>\n]}\"}",
+            # Quoted tags after the body hide one call from the count and run another.
+            "<lvar a>In LNDL, OUT{ starts a block.</lvar>\n"
+            '"<lact r1>lookup(query=\'1\')</lact>"\n"<lvar b>"\n'
+            "<lact r2>lookup(query='2')</lact>\n</lvar>",
+            # A quoted answer is counted while another is assembled.
+            "<lvar a>In LNDL, OUT{ starts a block.</lvar>\n"
+            '"OUT{answer: \'first\'}"\n"<lvar b>"\nOUT{answer: [a]}\n</lvar>',
+            # No quoted tag at all: the parser on the default path cannot read it either.
+            "<lvar a>In LNDL, OUT{ opens the output block, so don't omit it.</lvar>\n"
+            "OUT{answer: [a]}",
+            '<lact r>lookup(query="OUT{")</lact>',
+        ],
+        ids=["call-in-a-later-out", "quoted-tags", "quoted-answer", "plain-answer", "lact-arg"],
+    )
+    def test_a_body_holding_out_is_refused_unread(self, body):
+        outcome, pending, assembled = _classify_round(
+            f"```lndl\n{body}\n```", AnswerModel, {}, max_actions=1, lacts_with_out=False
+        )
+        assert isinstance(outcome, Retry)
+        assert "holds OUT{, which is read as the answer's start" in outcome.error
+        assert pending == []
+        assert assembled is None
+
+    def test_an_out_after_an_unclosed_out_is_refused(self):
+        text = (
+            "```lndl\n<lvar a>first</lvar>\n<lvar b>second</lvar>\n"
+            "OUT{answer: [a]\nOUT{answer: [b]}\n```"
+        )
+        outcome, pending, assembled = _classify_round(
+            text, AnswerModel, {}, max_actions=1, lacts_with_out=False
+        )
+        assert isinstance(outcome, Retry)
+        assert "OUT{} is not closed before the next <lvar>, <lact> or OUT{" in outcome.error
+        assert pending == []
+        assert assembled is None
+
+    def test_two_out_blocks_are_refused(self):
+        text = (
+            "```lndl\n<lvar a>first</lvar>\n<lvar b>second</lvar>\n"
+            "OUT{answer: [a]}\nOUT{answer: [b]}\n```"
+        )
+        outcome, pending, assembled = _classify_round(
+            text, AnswerModel, {}, max_actions=1, lacts_with_out=False
+        )
+        assert isinstance(outcome, Retry)
+        assert "writes 2 OUT{} blocks and a round may write one" in outcome.error
+        assert pending == []
+        assert assembled is None
+
+    def test_an_answer_may_quote_out_in_its_own_text(self):
+        text = '```lndl\nOUT{answer: "write OUT{answer: ...} to answer"}\n```'
+        outcome, pending, assembled = _classify_round(
+            text, AnswerModel, {}, max_actions=1, lacts_with_out=False
+        )
+        assert isinstance(outcome, Success)
+        assert assembled["answer"] == "write OUT{answer: ...} to answer"
+        assert pending == []
+
+    def test_a_round_the_scan_and_the_parser_read_differently_is_refused(self, monkeypatch):
+        # A backstop: no input found reaches it once a body holding OUT{ is refused, so the
+        # scan is made to disagree with the parser here.
+        # The package exports a function under the module's own name, so the module is
+        # reached through the function it defines.
+        module = sys.modules[_classify_round.__module__]
+        monkeypatch.setattr(module, "_scan_round", lambda text: (0, 0, None))
+        text = '```lndl\n<lact r>lookup(query="1")</lact>\n```'
+        outcome, pending, _ = _classify_round(
+            text, AnswerModel, {}, max_actions=1, lacts_with_out=False
+        )
+        assert isinstance(outcome, Retry)
+        assert "could not be read unambiguously" in outcome.error
+        assert pending == []
+
+    def test_calls_after_the_answer_over_the_limit_are_refused_for_their_number(self):
+        # A duplicate alias among them is not what the round is refused for.
+        text = (
+            "```lndl\n<lvar a>guess</lvar>\nOUT{answer: [a]}\n"
+            '<lact a>lookup(query="1")</lact>\n<lact b>lookup(query="2")</lact>\n```'
+        )
+        outcome, pending, _ = _classify_round(
+            text, AnswerModel, {}, max_actions=1, lacts_with_out=False
+        )
+        assert isinstance(outcome, Retry)
+        assert "declares 2 <lact> calls and a round may declare at most 1" in outcome.error
+        assert pending == []
+
+    def test_an_answer_written_in_out_may_quote_a_call(self):
+        text = "```lndl\nOUT{answer: \"Write <lact r>lookup(query='x')</lact> to call it.\"}\n```"
+        outcome, pending, assembled = _classify_round(
+            text, AnswerModel, {}, max_actions=1, lacts_with_out=False
+        )
+        assert isinstance(outcome, Success)
+        assert pending == []
+        assert assembled == {"answer": "Write <lact r>lookup(query='x')</lact> to call it."}
+
+    def test_the_default_still_answer_and_call_as_it_did(self):
+        text = (
+            "```lndl\n<lvar a>guess</lvar>\nOUT{answer: [a]}\n"
+            '<lact q r>lookup(query="x")</lact>\n```'
+        )
+        outcome, _, assembled = _classify_round(text, AnswerModel, {}, max_actions=16)
+        assert isinstance(outcome, Success)
+        assert assembled == {"answer": "guess"}
+
+    def test_a_round_that_calls_and_answers_is_refused_with_nothing_pending(self):
+        outcome, pending, assembled = _classify_round(
+            self._MIXED, AnswerModel, {}, lacts_with_out=False
+        )
+        assert isinstance(outcome, Retry)
+        assert "declares <lact> calls and also writes OUT{}" in outcome.error
+        assert pending == []
+        assert assembled is None
+
+    def test_calls_alone_and_an_answer_alone_still_classify(self):
+        calls = '```lndl\n<lact q a>lookup(query="x")</lact>\n```'
+        outcome, pending, _ = _classify_round(calls, AnswerModel, {}, lacts_with_out=False)
+        assert isinstance(outcome, Continue) and len(pending) == 1
+        answer = "```lndl\nOUT{answer: [a]}\n```"
+        outcome, _, assembled = _classify_round(
+            answer, AnswerModel, {"a": "read"}, lacts_with_out=False
+        )
+        assert isinstance(outcome, Success) and assembled == {"answer": "read"}
+
+    def test_the_default_still_takes_a_round_that_calls_and_answers(self):
+        outcome, _, assembled = _classify_round(self._MIXED, AnswerModel, {})
+        assert isinstance(outcome, Success)
+        assert assembled == {"answer": "guess"}
+
+    # A call written in a provider's own tool-call markup instead of <lact>.
+    _INVOKE = (
+        '<invoke name="reader">\n<parameter name="action">read</parameter>\n'
+        '<parameter name="path">lionagi/work/form.py</parameter>\n</invoke>\n'
+    )
+
+    _NEITHER = [
+        _INVOKE,
+        '<lact q a>lookup(query="x")</lact>',
+        "",
+        "Let me read the file first.",
+        f"```lndl\n{_INVOKE}```",
+        "```lndl\n<lvar a>draft</lvar>\n```",
+        "```lndl\n```",
+        # A block quoted inside another fence is quoted text, not the round's own block.
+        '```markdown\n```lndl\n<lact q a>lookup(query="x")</lact>\n```\n```',
+    ]
+    _NEITHER_IDS = [
+        "invoke-markup",
+        "unfenced-lact",
+        "empty",
+        "prose",
+        "fenced-invoke",
+        "fenced-lvar-only",
+        "fenced-empty",
+        "block-quoted-in-another-fence",
+    ]
+
+    @pytest.mark.parametrize("text", _NEITHER, ids=_NEITHER_IDS)
+    def test_a_round_that_neither_calls_nor_answers_is_refused(self, text):
+        outcome, pending, assembled = _classify_round(text, AnswerModel, {}, lacts_with_out=False)
+        assert isinstance(outcome, Retry)
+        assert outcome.error.startswith("nothing in this round ran: it has no <lact> call")
+        assert "such as an <invoke> tag, is not run" in outcome.error
+        assert "declare calls as <lact> or write the answer as OUT{}" in outcome.error
+        assert pending == [] and assembled is None
+
+    @pytest.mark.parametrize("text", _NEITHER, ids=_NEITHER_IDS)
+    def test_the_default_still_continues_a_round_that_neither_calls_nor_answers(self, text):
+        outcome, pending, assembled = _classify_round(text, AnswerModel, {})
+        assert isinstance(outcome, Continue)
+        assert pending == [] and assembled is None
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            '```lndl\r\n<lact q a>lookup(query="x")</lact>\r\n```',
+            '  ```lndl\n  <lact q a>lookup(query="x")</lact>\n  ```',
+            '````lndl\n<lact q a>lookup(query="x")</lact>\n````',
+            '~~~lndl\n<lact q a>lookup(query="x")</lact>\n~~~',
+        ],
+        ids=["crlf", "indented", "four-backticks", "tildes"],
+    )
+    def test_a_call_in_any_fence_shape_runs(self, text):
+        outcome, pending, assembled = _classify_round(text, AnswerModel, {}, lacts_with_out=False)
+        assert isinstance(outcome, Continue)
+        assert [call.function for call in pending] == ["lookup"]
+        assert assembled is None
+
+    def test_a_crlf_answer_reads_as_lf(self):
+        text = '```lndl\r\nOUT{answer: "line 1\r\nline 2"}\r\n```'
+        outcome, _, assembled = _classify_round(text, AnswerModel, {}, lacts_with_out=False)
+        assert isinstance(outcome, Success)
+        assert assembled == {"answer": "line 1\nline 2"}
+
+    def test_an_answer_may_hold_an_indented_code_fence(self):
+        text = "```lndl\n<lvar a>\n  ```python\n  print(1)\n  ```\n</lvar>\nOUT{answer: [a]}\n```"
+        outcome, _, assembled = _classify_round(text, AnswerModel, {}, lacts_with_out=False)
+        assert isinstance(outcome, Success)
+        assert "```python\n  print(1)\n  ```" in assembled["answer"]
+
+    @pytest.mark.asyncio
+    async def test_the_next_round_is_told_its_unfenced_call_did_not_run(self):
+        calls_made: list[str] = []
+
+        def counted_lookup(query: str) -> str:
+            """Return a canned lookup result for a query."""
+            calls_made.append(query)
+            return f"result for {query}"
+
+        middle = build_lndl_middle(round_budget=3, lacts_with_out=False)
+        branch = TestBranch.from_text(
+            [
+                '<invoke name="counted_lookup">\n<parameter name="query">x</parameter>\n</invoke>',
+                '```lndl\n<lact q a>counted_lookup(query="y")</lact>\n```',
+                "```lndl\n<lvar b>read</lvar>\nOUT{answer: [b]}\n```",
+            ]
+        )
+        branch.register_tools([counted_lookup])
+        result = await middle(branch, "look it up", ChatParam(response_format=AnswerModel))
+
+        assert result.answer == "read"
+        assert calls_made == ["y"]
+        calls = TestBranch.calls(branch)
+        assert "Error from your previous round: nothing in this round ran" in (
+            calls[1].last_user_message
+        )
+        assert "Error from your previous round" not in calls[2].last_user_message
+
+    @pytest.mark.asyncio
+    async def test_a_turn_of_unfenced_calls_fails_naming_the_missing_block(self):
+        middle = build_lndl_middle(round_budget=2, lacts_with_out=False)
+        branch = TestBranch.from_text([self._INVOKE, self._INVOKE])
+        with pytest.raises(LNDLError, match="nothing in this round ran: it has no <lact> call"):
+            await middle(branch, "look it up", ChatParam(response_format=AnswerModel))
+
+    @pytest.mark.asyncio
+    async def test_the_refused_round_runs_no_call(self):
+        calls_made: list[str] = []
+
+        def counted_lookup(query: str) -> str:
+            """Return a canned lookup result for a query."""
+            calls_made.append(query)
+            return f"result for {query}"
+
+        middle = build_lndl_middle(round_budget=3, lacts_with_out=False)
+        branch = TestBranch.from_text(
+            [
+                '```lndl\n<lact q a>counted_lookup(query="x")</lact>\n<lvar b>guess</lvar>\n'
+                "OUT{answer: [b]}\n```",
+                '```lndl\n<lact q a>counted_lookup(query="y")</lact>\n```',
+                "```lndl\n<lvar b>read</lvar>\nOUT{answer: [b]}\n```",
+            ]
+        )
+        branch.register_tools([counted_lookup])
+        result = await middle(branch, "look it up", ChatParam(response_format=AnswerModel))
+
+        assert result.answer == "read"
+        assert calls_made == ["y"]
+
+
+class TestRoundNotices:
+    @pytest.mark.asyncio
+    async def test_the_last_round_says_it_is_the_last(self):
+        middle = build_lndl_middle(round_budget=3)
+        branch = TestBranch.from_text(
+            ["thinking", "thinking", "```lndl\n<lvar a>hi</lvar>\nOUT{answer: [a]}\n```"]
+        )
+        await middle(branch, "say hi", ChatParam(response_format=AnswerModel))
+
+        calls = TestBranch.calls(branch)
+        assert "This is the last round" not in calls[1].last_user_message
+        assert "Round 3 of 3. This is the last round" in calls[2].last_user_message
+
+    @pytest.mark.asyncio
+    async def test_a_repair_error_is_shown_once_and_not_after_a_call_round(self):
+        middle = build_lndl_middle(round_budget=4)
+        branch = TestBranch.from_text(
+            [
+                "```lndl\nOUT{answer: [missing]}\n```",
+                '```lndl\n<lact q a>lookup(query="x")</lact>\n```',
+                "```lndl\n<lvar b>done</lvar>\nOUT{answer: [b]}\n```",
+            ]
+        )
+        branch.register_tools([lookup])
+        await middle(branch, "look it up", ChatParam(response_format=AnswerModel))
+
+        calls = TestBranch.calls(branch)
+        # The first refusal is about an alias nothing declares, so its words can
+        # reach a later request only if that refusal was carried forward.
+        assert "undeclared alias" in calls[1].last_user_message
+        assert "undeclared alias" not in calls[2].last_user_message
+        assert "Error from your previous round" not in calls[2].last_user_message
+
+    @pytest.mark.asyncio
+    async def test_exhaustion_still_reports_the_last_refusal(self):
+        middle = build_lndl_middle(round_budget=2)
+        branch = TestBranch.from_text(["```lndl\nOUT{answer: [missing]}\n```", "thinking"])
+        with pytest.raises(LNDLError, match="undeclared alias"):
+            await middle(branch, "answer", ChatParam(response_format=AnswerModel))
 
 
 class TestRoundBudget:

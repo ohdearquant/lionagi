@@ -9,7 +9,6 @@ of a terminal state, and the per-run locking/outcome contract.
 from __future__ import annotations
 
 import contextlib
-import copy
 import json
 import logging
 import math
@@ -20,13 +19,14 @@ import signal
 import stat
 import subprocess
 import sys
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
-from uuid import uuid4
 
+from lionagi import ln
+from lionagi.ln import coerce_created_at, now_utc, short_id
 from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.ln._proc import (
     CREATE_TIME_TOLERANCE,
@@ -36,8 +36,11 @@ from lionagi.ln._proc import (
     process_marker,
     start_time_matches,
 )
+from lionagi.ln.concurrency import current_time, sleep
 
 from . import config
+from ._child_actor import ChildActorError, SubmittingActorError, mint_child_actor_config
+from ._errors import SubmitInputError
 
 _log = logging.getLogger(__name__)
 
@@ -111,6 +114,14 @@ LOST_REASON = "process_gone_without_outcome"
 # and an absent file is exactly what true silence also looks like.
 LOST_REASON_NOTICE_RECORDED_UNDELIVERED = "process_gone_notice_recorded_undelivered"
 
+# A finer cause beside that reason code, read from the run's own run.json: the
+# run turned its persistence off after its setup failed
+# (``persistence_degraded_reason``), so it had no store to record an outcome in.
+# That is not a recorded status either, so it stays OUTCOME_INDETERMINATE, and it
+# is never assigned from the absence of the field: retention prunes run
+# directories, and an absent field is also what a silent run looks like.
+REASON_DETAIL_PERSISTENCE_DEGRADED = "persistence_degraded"
+
 # Outcome values valid to report back from a job record.
 _OUTCOMES = frozenset({"succeeded", "failed", "cancelled", OUTCOME_INDETERMINATE})
 
@@ -146,8 +157,11 @@ FINISHED_AT_UPPER_BOUND = "upper_bound"
 RECORD_ABSENT = "absent"
 LOCK_UNAVAILABLE = "lock_unavailable"
 
-# Orphan-observer evidence, deliberately bounded to kind + finding — no argv,
-# environment, logs, or secrets belong on a record any caller may read back.
+# Orphan-observer evidence: kind + finding, plus what the conclusion was based
+# on (the create-time reads compared, the tolerance, when it was observed, and
+# which server observed it) — bounded to process-identity facts, never argv,
+# environment, logs, or secrets, since this is a record any caller may read
+# back. See docs/internals/mcp.md#liveness-findings for the evidence keys.
 EVIDENCE_PROCESS_GONE = "process_identity_conclusively_gone"
 
 # The only findings that positively establish a run's process is gone and admit
@@ -159,6 +173,27 @@ CONCLUSIVE_FINDINGS = frozenset(
     {FINDING_PID_ABSENT, FINDING_DISAPPEARED_DURING_PROBE, FINDING_PID_RECYCLED}
 )
 
+# A single mismatch between a live read and the recorded start time is not
+# enough to call a process gone. Two live reads must agree before the marker
+# check below can establish that another process now holds the pid.
+FINDING_IDENTITY_UNSTABLE = "identity_unstable"
+
+# Two live reads agreeing with each other, both mismatching the recorded start
+# time, prove the two reads agree — not that the single spawn-time read the
+# record carries was the accurate one. Before that is read as `pid_recycled`,
+# the marker inherited from this run's process (`config.JOB_MARKER_ENV_VAR`)
+# is consulted. `identity_confirmed_by_marker`
+# is what a match against this run's own id produces: alive, not reaped, and
+# the record's own `pid_create_time` is the one worth treating as suspect.
+# `identity_unconfirmed` is a marker read that could not rule anything in or
+# out — an unreadable environment, or one with no marker at all, which a
+# platform may hand back for a protected process without that meaning the
+# marker is genuinely absent (see `process_marker`'s own docstring). Neither
+# is in CONCLUSIVE_FINDINGS: only a marker naming a *different* run still
+# reads as `pid_recycled`.
+FINDING_IDENTITY_CONFIRMED_BY_MARKER = "identity_confirmed_by_marker"
+FINDING_IDENTITY_UNCONFIRMED = "identity_unconfirmed"
+
 # Name of the per-run mutation lock, kept beside the record it guards.
 _LOCK_NAME = "job.lock"
 
@@ -169,6 +204,11 @@ LIFECYCLE_TIMEOUT_SECONDS = 20.0
 # The most the lifecycle command may write on its result channel.
 _LIFECYCLE_OUTPUT_LIMIT = 1_000_000
 _PERSISTENCE_DEGRADED_REASON_FIELD = "persistence_degraded_reason"
+
+# The most of a run.json the reaper reads to pick a reason code. An agent run's
+# file is a few kilobytes (its largest field is free-text error), so a larger
+# one is not that file, and the reaper reads it under the job lock on a poll.
+_MAX_RUN_MANIFEST_BYTES = 1_048_576
 
 # Admission resolves an explicit notification sender through khive before a
 # run is reserved. This is a local identity query, so it gets the same bounded
@@ -226,13 +266,13 @@ KILL_GROUP_OWNERSHIP_UNPROVEN = "group_ownership_unproven"
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return now_utc().isoformat()
 
 
 def new_run_id() -> str:
     """Mint a run_id in the CLI's own format: ``YYYYMMDDTHHMMSS-<6hex>``."""
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-    return f"{ts}-{uuid4().hex[:6]}"
+    ts = now_utc().strftime("%Y%m%dT%H%M%S")
+    return f"{ts}-{short_id(6)}"
 
 
 # A run of taken ids this large is the shape of something else being wrong (a
@@ -341,7 +381,7 @@ def _write_job(record: dict[str, Any]) -> None:
     raise_if_non_finite(record)
     d = config.job_dir(record["run_id"])
     d.mkdir(parents=True, exist_ok=True)
-    tmp = d / f".job.json.{os.getpid()}.{uuid4().hex[:8]}.tmp"
+    tmp = d / f".job.json.{os.getpid()}.{short_id(8)}.tmp"
     try:
         tmp.write_text(json.dumps(record, indent=2))
         os.replace(tmp, d / "job.json")
@@ -355,16 +395,24 @@ def _write_job(record: dict[str, Any]) -> None:
         raise
 
 
-def _write_mcp_server_snapshot(path: Path, servers: dict[str, Any], *, source: Path | str) -> None:
+def _write_mcp_server_snapshot(
+    path: Path, servers: dict[str, Any], *, source: Path | str, searched_from: Path | str
+) -> None:
     """Write the ``{"mcpServers": ...}`` file the spawned child is pointed at.
 
     *source* is the config the submission found. Naming it in the snapshot is
     what keeps the child, which reads this file through ``--mcp-config``, from
-    taking a found set for one the caller named.
+    taking a found set for one the caller named. *searched_from* is the directory
+    the submission searched from, which the child records as its provenance in
+    place of its own directory.
     """
-    from lionagi.cli._mcp_resolve import SNAPSHOT_SOURCE_KEY
+    from lionagi.cli._mcp_resolve import SNAPSHOT_SEARCHED_FROM_KEY, SNAPSHOT_SOURCE_KEY
 
-    document = {"mcpServers": servers, SNAPSHOT_SOURCE_KEY: str(source)}
+    document = {
+        "mcpServers": servers,
+        SNAPSHOT_SOURCE_KEY: str(source),
+        SNAPSHOT_SEARCHED_FROM_KEY: str(searched_from),
+    }
     raise_if_non_finite(document)
     path.write_text(json.dumps(document, indent=2))
 
@@ -448,7 +496,7 @@ def _locked_job(run_id: str) -> Iterator[_GuardedJob]:
     try:
         record, state = _read_job_state(run_id)
         guard = _GuardedJob(record, state)
-        before = copy.deepcopy(record)
+        before = ln.copy(record)
         yield guard
         if guard.record is not None and guard.record != before:
             _write_job(guard.record)
@@ -833,7 +881,7 @@ def _reject_oversized_argv(argv: list[str], env: dict[str, str], *, kind: str) -
         for arg in argv:
             n = len(arg.encode())
             if n > per_arg:
-                raise ValueError(
+                raise SubmitInputError(
                     f"cannot submit this {kind} run: one argument is {n} bytes, over the "
                     f"{per_arg}-byte limit this platform places on a single argument "
                     f"regardless of the {limit}-byte total. {advice}"
@@ -849,7 +897,7 @@ def _reject_oversized_argv(argv: list[str], env: dict[str, str], *, kind: str) -
         if kind != "agent"
         else "the command line is too long"
     )
-    raise ValueError(
+    raise SubmitInputError(
         f"cannot submit this {kind} run: {detail}, and it needs {used} bytes of "
         f"argument vector plus environment against an OS limit of {limit}. {advice}"
     )
@@ -879,6 +927,11 @@ class NotifySenderResolutionError(RuntimeError):
     """The submitting directory's actor could not be resolved for admission."""
 
 
+def _status_text(value: Any) -> str:
+    """Keep open status values intact while replacing malformed values safely."""
+    return value if isinstance(value, str) else "unknown"
+
+
 def _outcome_for(status: Any) -> str:
     """How a terminal run came out, from the status the CLI recorded.
 
@@ -886,9 +939,9 @@ def _outcome_for(status: Any) -> str:
     whether it ended. An unrecognized status classifies as failure — a stale
     success list would otherwise read a timeout back as a success.
     """
-    if status in _SUCCEEDED_STATUSES:
+    if isinstance(status, str) and status in _SUCCEEDED_STATUSES:
         return "succeeded"
-    if status in _CANCELLED_STATUSES:
+    if isinstance(status, str) and status in _CANCELLED_STATUSES:
         return "cancelled"
     return "failed"
 
@@ -921,7 +974,7 @@ def _derive(
             "possibly_orphaned": False,
         }
 
-    recorded = job.get("status", "unknown")
+    recorded = _status_text(job.get("status", "unknown"))
     spawn_state = job.get("spawn_state")
 
     if spawn_state == "failed":
@@ -959,7 +1012,7 @@ def _derive(
     # Process gone (or never there), sidecar records no end. The lifecycle
     # store is the only place `li kill` records an end (it writes nothing here).
     if lifecycle is not None and lifecycle.get("terminal"):
-        lifecycle_status = lifecycle.get("status", recorded)
+        lifecycle_status = _status_text(lifecycle.get("status", recorded))
         return {
             "status": lifecycle_status,
             "terminal": True,
@@ -1020,6 +1073,60 @@ def _submit_cwd() -> str | None:
         return None
 
 
+_ACTOR_CONFIG = os.path.join(".khive", "config.toml")
+
+
+def _withdraw_fresh_mint(fresh: tuple[str, os.stat_result, bool] | None) -> None:
+    """Remove a child actor config this submission minted where none existed, on a refusal.
+
+    A submission refused before its record exists leaves the run directory as it
+    found it. Only a config the mint created is removed, and only while the file at
+    that path is still the one the mint wrote; a reused or re-minted config, and a
+    ``.khive`` that held anything else, are left in place.
+    """
+    if fresh is None:
+        return
+    path, written, created_khive = fresh
+    with contextlib.suppress(OSError):
+        if os.path.samestat(os.lstat(path), written):
+            os.unlink(path)
+            if created_khive:
+                os.rmdir(os.path.dirname(path))
+
+
+def _sender_anchor(run_cwd: str | None, submit_cwd: str | None) -> tuple[str | None, bool]:
+    """The directory a declared sender is judged against, and where its notice is signed.
+
+    The default is the submitting directory, as it was before run-directory
+    anchoring existed: served over stdio, one client spawns one server, so the
+    server's own directory is often the caller's too. A deployment that serves
+    several callers from one declared directory does not have that agreement,
+    and there the server's directory answers for nobody. Such a deployment opts
+    into run-directory anchoring by configuring ``LIONAGI_MCP_SENDER_ROOTS``;
+    only then is a submission's own directory the anchor when it names one.
+
+    What keeps this from being attribution by assertion: the same directory
+    becomes the delivery anchor, so a caller cannot claim an actor without also
+    running its job from that actor's directory; the config naming the actor
+    must exist there; and a caller-named anchor must sit under a configured
+    root. The second element says whether run-directory anchoring applied,
+    because only that path requires a config at the chosen directory.
+    """
+    if not run_cwd:
+        return submit_cwd, False
+    try:
+        roots = config.sender_roots()
+    except ValueError as exc:
+        raise NotifySenderResolutionError(
+            f"cannot choose the directory notify_sender is judged against: {exc}; "
+            f"{_NOTIFY_SENDER_FALLBACK}"
+        ) from exc
+    if roots:
+        # the child spawns with this cwd, so resolve it the way the spawn will
+        return os.path.abspath(run_cwd), True
+    return submit_cwd, False
+
+
 def _resolve_submitter_identity(cwd: str) -> str:
     """Resolve the actor that *cwd* can sign as through khive's canonical resolver."""
     binary = shutil.which("kkernel")
@@ -1074,25 +1181,74 @@ def _resolve_submitter_identity(cwd: str) -> str:
     return actor
 
 
-def _validate_notify_sender(sender: str | None, submit_cwd: str | None) -> None:
-    """Refuse an explicit sender that the submitting directory cannot sign as."""
+# Said by both unresolvable paths below, and only by those. A caller who cannot
+# be validated is one step from a submission that works; without this the
+# refusal reads as "spawning is down" when only the attested form is.
+#
+# The mismatch message keeps its own wording: there the caller still has a
+# signed option, so what helps is the actor to use. The clause about notices is
+# conditional because delivery is configuration this refusal cannot see.
+_NOTIFY_SENDER_FALLBACK = (
+    "omit notify_sender to submit without sender attestation; whatever notice this "
+    "run's configuration sends then goes unsigned, or is not sent at all if that "
+    "command interpolates {sender} and LIONAGI_MCP_NOTIFY_SENDER supplies none"
+)
+
+
+def _refuse_anchor_outside_the_configured_roots(sender: str, anchor: str) -> None:
+    """Refuse a caller-named anchor the server was not configured to accept.
+
+    Both sides are symlink-resolved before the comparison: a link under an
+    allowed root pointing out of it would otherwise satisfy a containment test
+    that only reads the path as written.
+    """
+    try:
+        roots = config.sender_roots()
+    except ValueError as exc:
+        raise NotifySenderResolutionError(
+            f"cannot validate notify_sender {sender!r}: {exc}; {_NOTIFY_SENDER_FALLBACK}"
+        ) from exc
+    resolved = Path(os.path.realpath(anchor))
+    if any(resolved == root or resolved.is_relative_to(root) for root in map(Path, roots)):
+        return
+    named = ", ".join(roots) if roots else f"none are configured in {config.SENDER_ROOTS_ENV_VAR}"
+    raise NotifySenderResolutionError(
+        f"cannot validate notify_sender {sender!r}: the run directory {anchor!r} is outside the "
+        f"roots a declared sender may anchor under ({named}); {_NOTIFY_SENDER_FALLBACK}"
+    )
+
+
+def _validate_notify_sender(
+    sender: str | None, anchor: str | None, *, caller_named: bool = False
+) -> None:
+    """Refuse an explicit sender that the anchoring directory cannot sign as."""
     if not sender:
         return
-    if submit_cwd is None:
+    if anchor is None:
         raise NotifySenderResolutionError(
-            f"cannot validate notify_sender {sender!r}: the submitting directory is unavailable"
+            f"cannot validate notify_sender {sender!r}: the submitting directory is "
+            f"unavailable; {_NOTIFY_SENDER_FALLBACK}"
+        )
+    if caller_named:
+        _refuse_anchor_outside_the_configured_roots(sender, anchor)
+    # Without configured roots the anchor is the server's own directory, as on
+    # main: it is judged by resolution alone and does not need to hold a config.
+    if caller_named and not os.path.isfile(os.path.join(anchor, _ACTOR_CONFIG)):
+        raise NotifySenderResolutionError(
+            f"cannot validate notify_sender {sender!r}: {anchor!r} holds no {_ACTOR_CONFIG}, so it "
+            f"signs as the unattributed pool rather than as an actor; {_NOTIFY_SENDER_FALLBACK}"
         )
     try:
-        actual = _resolve_submitter_identity(submit_cwd)
+        actual = _resolve_submitter_identity(anchor)
     except NotifySenderResolutionError as exc:
         raise NotifySenderResolutionError(
-            f"cannot validate notify_sender {sender!r} from submitting directory "
-            f"{submit_cwd!r}: {exc}"
+            f"cannot validate notify_sender {sender!r} from signing directory "
+            f"{anchor!r}: {exc}; {_NOTIFY_SENDER_FALLBACK}"
         ) from exc
     if actual != sender:
         raise NotifySenderMismatchError(
             f"notify_sender {sender!r} does not match actor {actual!r} resolved from "
-            f"submitting directory {submit_cwd!r}; use {actual!r} or omit notify_sender"
+            f"signing directory {anchor!r}; use {actual!r} or omit notify_sender"
         )
 
 
@@ -1108,6 +1264,8 @@ def submit(
     notify_sender: str | None = None,
     mcp_config: str | None = None,
     no_mcp_config: bool = False,
+    exclude_mcp_servers: list[str] | None = None,
+    write_capable: bool = False,
 ) -> dict[str, Any]:
     """Spawn a ``li`` run in the background and return its handle immediately.
 
@@ -1122,17 +1280,74 @@ def submit(
     configured default, the run simply records its status and delivers nothing.
 
     *mcp_config* and *no_mcp_config* are the caller's own answer to where the
-    child's MCP servers come from, passed as values (not re-parsed out of
-    *flags*, which are already rendered in `--flag=value` form) since this
-    function must decide whether to resolve its own server set.
+    child's MCP servers come from. *exclude_mcp_servers* removes named servers
+    from a config this submission resolves before the snapshot is written; it
+    is incompatible with both caller-owned answers. These are passed as values
+    (not re-parsed out of *flags*, which are already rendered in
+    `--flag=value` form) since this function must decide whether to resolve its
+    own server set.
     """
     if kind not in _KIND_ARGV:
         raise ValueError(f"unknown job kind {kind!r}; expected one of {sorted(_KIND_ARGV)}")
 
-    submit_cwd = _submit_cwd()
-    _validate_notify_sender(notify_sender, submit_cwd)
+    exclusions = [] if exclude_mcp_servers is None else exclude_mcp_servers
+    if not isinstance(exclusions, list) or any(
+        not isinstance(name, str) or not name for name in exclusions
+    ):
+        raise SubmitInputError("exclude_mcp_servers must be a list of non-empty server names")
+    if len(exclusions) != len(set(exclusions)):
+        raise SubmitInputError("exclude_mcp_servers contains duplicate server names")
+    excluded_mcp_servers = sorted(exclusions)
+    # null on the record means no exclusion was asked for, as the job surfaces document
+    recorded_exclusions = None if exclude_mcp_servers is None else excluded_mcp_servers
+    if excluded_mcp_servers and mcp_config is not None:
+        raise SubmitInputError(
+            "exclude_mcp_servers cannot be combined with mcp_config because the caller-owned "
+            "config is not inspected or rewritten"
+        )
+    if excluded_mcp_servers and no_mcp_config:
+        raise SubmitInputError(
+            "exclude_mcp_servers cannot be combined with no_mcp_config because no server set "
+            "will be resolved"
+        )
 
-    run_id, d = _reserve_run_dir()
+    submit_cwd = _submit_cwd()
+    minted = None
+    fresh_mint = None
+    child_actor_suffix = config.child_actor_suffix() if write_capable else None
+    if child_actor_suffix:
+        if cwd is None:
+            raise ChildActorError(
+                "a write-capable run needs its own tree: pass cwd; its actor config is minted there"
+            )
+        if submit_cwd is None:
+            raise SubmittingActorError(
+                "the submitting directory is unavailable, so no submitting actor exists to "
+                "derive a child actor from"
+            )
+        target = os.path.join(cwd, _ACTOR_CONFIG)
+        created_khive = not os.path.lexists(os.path.dirname(target))
+        absent = not os.path.lexists(target)
+        # before the sender check, so a declared sender is judged against the
+        # minted child actor
+        minted = mint_child_actor_config(submit_cwd, cwd, child_actor_suffix)
+        if absent and not minted.reused:
+            with contextlib.suppress(OSError):
+                fresh_mint = (minted.config_path, os.lstat(minted.config_path), created_khive)
+    # Captured once and used for the check, the record and the delivery, so
+    # the run cannot be attested against one directory and delivered from
+    # another.
+    sender_cwd, caller_named_anchor = None, False
+    try:
+        if notify_sender:
+            # only a declared sender reads the configured roots, so a misconfigured
+            # root refuses a submission that names a sender and no other
+            sender_cwd, caller_named_anchor = _sender_anchor(cwd, submit_cwd)
+        _validate_notify_sender(notify_sender, sender_cwd, caller_named=caller_named_anchor)
+        run_id, d = _reserve_run_dir()
+    except BaseException:
+        _withdraw_fresh_mint(fresh_mint)
+        raise
     log_path = d / "console.log"
 
     # Any failure before the record exists (below) gives the reservation back
@@ -1165,6 +1380,7 @@ def submit(
         mcp_config_source: str | None = None
         mcp_config_reason: str | None = None
         mcp_servers: dict[str, Any] | None = None
+        mcp_config_searched_from: Path | None = None
         # Server names declared in the config snapshot lionagi controls. `[]`
         # means this layer settled its declaration as empty; `None` means it
         # never inspected a set. Providers may merge their own global config,
@@ -1192,6 +1408,12 @@ def submit(
                         f"{resolution.source} cannot be used "
                         f"({resolution.reason.split(':', 1)[1].strip()})"
                     )
+                if excluded_mcp_servers:
+                    raise SubmitInputError(
+                        "exclude_mcp_servers names servers not declared by the resolved config: "
+                        + ", ".join(excluded_mcp_servers)
+                        + f" (no server set resolves from {launch_dir}: {resolution.reason})"
+                    )
                 mcp_config_reason = (
                     f"{resolution.reason}_at_or_above:{launch_dir}"
                     if resolution.reason == "no_mcp_config_found"
@@ -1205,8 +1427,25 @@ def submit(
                     mcp_config_source = str(resolution.source) if resolution.source else None
             else:
                 mcp_servers = resolution.servers
+                unknown_exclusions = sorted(set(excluded_mcp_servers) - set(mcp_servers))
+                if unknown_exclusions:
+                    raise SubmitInputError(
+                        "exclude_mcp_servers names servers not declared by the resolved config: "
+                        + ", ".join(unknown_exclusions)
+                    )
+                mcp_servers = {
+                    name: server
+                    for name, server in mcp_servers.items()
+                    if name not in excluded_mcp_servers
+                }
                 mcp_config_source = str(resolution.source) if resolution.source else None
-                mcp_config_path = str(d / _MCP_SNAPSHOT_FILENAME)
+                mcp_config_searched_from = resolution.searched_from
+                # Absolute: the child resolves --mcp-config from its own cwd,
+                # which is the submission's directory, not this server's. A
+                # relative jobs root would otherwise name a file the child
+                # cannot open. Symlinks are kept, so an absolute root reports
+                # the path it always did.
+                mcp_config_path = os.path.abspath(d / _MCP_SNAPSHOT_FILENAME)
                 declared_mcp_servers = sorted(
                     mcp_servers
                 )  # readable order; child reads the snapshot file, not this list
@@ -1242,10 +1481,14 @@ def submit(
             prompt_path.write_text(prompt)
         if mcp_servers is not None and mcp_config_path is not None:
             _write_mcp_server_snapshot(
-                Path(mcp_config_path), mcp_servers, source=mcp_config_source or ""
+                Path(mcp_config_path),
+                mcp_servers,
+                source=mcp_config_source or "",
+                searched_from=mcp_config_searched_from or "",
             )
     except BaseException:
         _discard_reservation_and_warn(d, run_id)
+        _withdraw_fresh_mint(fresh_mint)
         raise
 
     # Persist the record BEFORE spawning, so the child's terminal --notify hook
@@ -1272,14 +1515,25 @@ def submit(
         # anchored notifier must sign as the submitter, not the run, so delivery
         # resolves identity from submit_cwd. See docs/internals/mcp.md#deliver-terminal-notice-two-callers.
         "submit_cwd": submit_cwd,
+        # Set only when a sender was attested, and then it is the directory the
+        # attestation was checked against. Delivery prefers it, because the
+        # identity the notice claims and the directory it is signed from have
+        # to be the same one.
+        "sender_cwd": sender_cwd,
         "label": label,
         "notify_command": notify_command,
         "notify_target": notify_target,
         "notify_sender": notify_sender,
+        # The actor a write-capable run signs as, the config minted for it, and
+        # the submitting actor it was derived from. None for every other submit.
+        "child_actor": minted.actor if minted else None,
+        "child_actor_config": minted.config_path if minted else None,
+        "submitting_actor": minted.submitting_actor if minted else None,
         "mcp_config": mcp_config_path,
         "mcp_config_source": mcp_config_source,
         "mcp_config_reason": mcp_config_reason,
         "declared_mcp_servers": declared_mcp_servers,
+        "excluded_mcp_servers": recorded_exclusions,
         # Deprecated response/record alias; keep equal to the truthful name.
         "mcp_config_servers": declared_mcp_servers,
         "submitted_at": _now_iso(),
@@ -1298,6 +1552,7 @@ def submit(
         # back is the right answer: past this line the run exists, and a failure
         # is marked on the record rather than erased along with it.
         _discard_reservation_and_warn(d, run_id)
+        _withdraw_fresh_mint(fresh_mint)
         raise
 
     try:
@@ -1358,8 +1613,12 @@ def submit(
         "mcp_config_source": mcp_config_source,
         "mcp_config_reason": mcp_config_reason,
         "declared_mcp_servers": declared_mcp_servers,
+        "excluded_mcp_servers": recorded_exclusions,
         "mcp_config_servers": declared_mcp_servers,
         "notify_sender": notify_sender,
+        "child_actor": minted.actor if minted else None,
+        "child_actor_config": minted.config_path if minted else None,
+        "submitting_actor": minted.submitting_actor if minted else None,
     }
 
 
@@ -1428,6 +1687,16 @@ def _cache_lifecycle_end(
     between the lifecycle store and the terminal hook wins. A failed write here
     is not an error (it's a cache; the next observation just asks again); the
     in-memory record is returned either way so this call is what classifies.
+
+    The first recorded terminal state remains authoritative, including an
+    orphan reap's `indeterminate` (`terminal_source == mcp_orphan_reaper`): a
+    lifecycle end reported here after a reap has already latched does not
+    replace it — reached by a different race than `mark_terminal`'s own late
+    report, this read started before the reap and lost the lock to it. What
+    it can still do is leave a record of itself beside the latch: the first
+    such late report is kept in `late_report`, bounded to what it reported, so
+    the contradiction is visible without moving anything the reap already
+    wrote.
     """
     if job is None or lifecycle is None or not lifecycle.get("terminal"):
         return job
@@ -1436,13 +1705,15 @@ def _cache_lifecycle_end(
     # that does not leaves the same gap the reaper has, and the same substituted
     # value: now, standing in for a moment nobody recorded.
     observed_end = _iso_from_epoch(ended)
+    status = _status_text(lifecycle.get("status", job.get("status")))
+    reason_code = lifecycle.get("reason_code")
     fields = {
-        "status": lifecycle.get("status", job.get("status")),
+        "status": status,
         "finished_at": observed_end or _now_iso(),
         "finished_at_precision": (
             FINISHED_AT_OBSERVED if observed_end else FINISHED_AT_UPPER_BOUND
         ),
-        "reason_code": lifecycle.get("reason_code"),
+        "reason_code": reason_code,
         "terminal_source": TERMINAL_SOURCE_LIFECYCLE,
     }
     updated = {**job, **fields}
@@ -1455,6 +1726,10 @@ def _cache_lifecycle_end(
             if current is None:
                 return updated
             if current.get("finished_at") is not None:
+                if current.get("terminal_source") == TERMINAL_SOURCE_ORPHAN_REAPER:
+                    _note_late_report(
+                        current, source="lifecycle", status=status, reason_code=reason_code
+                    )
                 return current
             current.update(fields)
             return current
@@ -1462,10 +1737,35 @@ def _cache_lifecycle_end(
         return updated
 
 
+_LATE_REPORT_FIELD = "late_report"
+
+
+def _note_late_report(
+    record: dict[str, Any], *, source: str, status: Any, reason_code: str | None
+) -> None:
+    """Record a report that reached an already reaper-latched record.
+
+    First late report wins, same discipline as the latch itself: a second one
+    is dropped rather than overwriting the first. Bounded to the same shape
+    every time — no payloads, no raw lifecycle/CLI objects — since this sits
+    beside `terminal_evidence` on a record any caller may read back.
+    """
+    if _LATE_REPORT_FIELD in record:
+        return
+    status = _status_text(status)
+    record[_LATE_REPORT_FIELD] = {
+        "source": source,
+        "status": status,
+        "outcome": _outcome_for(status),
+        "reason_code": reason_code,
+        "reported_at": _now_iso(),
+    }
+
+
 def _iso_from_epoch(value: Any) -> str | None:
     """The store keeps epoch seconds; the sidecar keeps ISO-8601 strings."""
     try:
-        return datetime.fromtimestamp(float(value), timezone.utc).isoformat()
+        return coerce_created_at(float(value)).isoformat()
     except (TypeError, ValueError, OSError, OverflowError):
         return None
 
@@ -1493,12 +1793,20 @@ class ProcessLiveness:
     value that may end a run; ``"unknown"`` (an unaskable pid, a denied read)
     can never end one — a case added later is inconclusive until explicitly
     added to `CONCLUSIVE_FINDINGS`, never by exclusion. ``finding`` names which
-    observation produced the conclusion.
+    observation produced the conclusion. ``observed_create_time`` is the live
+    create-time read this conclusion turned on (None where no live read was
+    the deciding fact, e.g. `pid_absent`) — carried so a reap can put it in
+    the terminal evidence without re-probing under the lock. ``marker`` is the
+    foreign run id a `pid_recycled` conclusion read from the marker inherited
+    by the process at this pid (None otherwise) — carried the same way, so the
+    evidence behind a recycled-pid reap names the run the process descends from.
     """
 
     alive: bool
     conclusion: LivenessConclusion
     finding: str
+    observed_create_time: float | None = None
+    marker: str | None = None
 
 
 # Internal finding -> public `pid_identity` value; keeps the two vocabularies
@@ -1509,11 +1817,26 @@ _PID_IDENTITY_BY_FINDING: dict[str, str | None] = {
     FINDING_DISAPPEARED_DURING_PROBE: "gone",
     FINDING_PID_RECYCLED: "recycled",
     "identity_confirmed": "confirmed",
+    FINDING_IDENTITY_CONFIRMED_BY_MARKER: "confirmed",
     "identity_not_recorded": "not_recorded",
     "identity_unusable": "unusable",
     "identity_unreadable": "unreadable",
     "no_record": None,
+    FINDING_IDENTITY_UNSTABLE: "unstable",
+    FINDING_IDENTITY_UNCONFIRMED: "unconfirmed",
 }
+
+
+def _identity_is_confirmed(finding: str) -> bool:
+    """Whether *finding* settled that the live process is this run's.
+
+    Read off `_PID_IDENTITY_BY_FINDING` rather than compared against a literal:
+    two findings confirm identity (a matching start time, and a start time that
+    did not match beside a marker that did), and a caller naming only the first
+    silently drops the second. The marker case is the one that matters most
+    here, since it is reached exactly when the start times disagree.
+    """
+    return _PID_IDENTITY_BY_FINDING.get(finding) == "confirmed"
 
 
 def _run_process_liveness(job: dict[str, Any] | None, pid: int | None) -> ProcessLiveness:
@@ -1555,8 +1878,46 @@ def _run_process_liveness(job: dict[str, Any] | None, pid: int | None) -> Proces
     if state != "found" or live_created is None:
         return ProcessLiveness(True, "unknown", "identity_unreadable")
     if _start_time_matches(live_created, spawned_at):
-        return ProcessLiveness(True, "alive", "identity_confirmed")
-    return ProcessLiveness(False, "process_gone", FINDING_PID_RECYCLED)
+        return ProcessLiveness(True, "alive", "identity_confirmed", live_created)
+
+    # One mismatch is not enough: a single stray read has ended a live run
+    # whose later reads all matched the record exactly. A second fresh read settles
+    # it — if it also says the process is gone, that's the existing
+    # disappeared-during-probe finding; if it disagrees with the first live
+    # read, the probe itself is unreliable right now and settles nothing; only
+    # when both live reads agree with each other, and both still mismatch the
+    # record, does a live process actually hold the pid — and that proves only
+    # that the two live reads agree with each other, not that the single
+    # spawn-time read the record carries was the accurate one. Identity is
+    # settled from a third source, the marker inherited from the run, before anything
+    # is reaped on it.
+    second_state, second_created = _process_create_time(asked)
+    if second_state == "gone":
+        return ProcessLiveness(False, "process_gone", FINDING_DISAPPEARED_DURING_PROBE)
+    if second_state != "found" or second_created is None or second_created != live_created:
+        return ProcessLiveness(True, "unknown", FINDING_IDENTITY_UNSTABLE, live_created)
+
+    marker_state, marker = _process_marker(asked)
+    # Bracket the marker read the same way `kill` brackets its own (see
+    # `_signal_leader_group`): re-read the create time and require it to still
+    # equal the live value, so the marker answer describes the same process
+    # the two prior reads did rather than a process that has since been
+    # replaced at this pid.
+    bracket_state, bracket_created = _process_create_time(asked)
+    if bracket_state != "found" or bracket_created is None or bracket_created != live_created:
+        return ProcessLiveness(True, "unknown", FINDING_IDENTITY_UNSTABLE, live_created)
+
+    run_id = job.get("run_id")
+    if marker_state == "found" and marker is not None and marker == run_id:
+        return ProcessLiveness(True, "alive", FINDING_IDENTITY_CONFIRMED_BY_MARKER, live_created)
+    if marker_state == "found" and marker is not None:
+        return ProcessLiveness(
+            False, "process_gone", FINDING_PID_RECYCLED, live_created, marker=marker
+        )
+    # marker_state == "unknown", or "found" with a None value: neither rules
+    # this run in or out (a None marker read can never assert "not ours" —
+    # see `process_marker`'s own docstring), so nothing is reaped on it.
+    return ProcessLiveness(True, "unknown", FINDING_IDENTITY_UNCONFIRMED, live_created)
 
 
 @dataclass(frozen=True)
@@ -1590,7 +1951,155 @@ def _notice_recorded_undelivered(run_id: str) -> bool:
     return isinstance(outcome, dict) and outcome.get("ok") is False
 
 
-def reap_orphan(run_id: str, *, finding: str, observed_at: str) -> ReapResult:
+def _read_run_json_bounded(run_id: str) -> dict[str, Any] | None:
+    """*run_id*'s run.json as an object, or None when nothing trustworthy is in it.
+
+    Fail-closed: absent, unreadable, larger than ``_MAX_RUN_MANIFEST_BYTES``,
+    not JSON, not an object, or naming another run are one outcome, so a damaged
+    or misplaced file never assigns a code. The read takes at most one byte past
+    the cap, so a file that grows while it is read is refused as well.
+    """
+    try:
+        with config.run_manifest(run_id).open("rb") as handle:
+            raw = handle.read(_MAX_RUN_MANIFEST_BYTES + 1)
+        if len(raw) > _MAX_RUN_MANIFEST_BYTES:
+            return None
+        loaded = json.loads(raw)
+    except Exception:  # noqa: BLE001 — absent, unreadable, oversize and malformed are one outcome
+        return None
+    if not isinstance(loaded, dict) or loaded.get("run_id") != run_id:
+        return None
+    return loaded
+
+
+def _orphan_reason(run_id: str) -> tuple[str, str | None]:
+    """The reason code and finer detail for a conclusively gone run.
+
+    In order: its directory records a terminal notice it never delivered; its
+    run.json records that its persistence was turned off; otherwise silence.
+    Each step reads only what the run wrote, never an absence. The reason code
+    keeps the value main reported for every case; the detail carries the
+    distinction beside it.
+    """
+    if _notice_recorded_undelivered(run_id):
+        return LOST_REASON_NOTICE_RECORDED_UNDELIVERED, None
+    degraded = (_read_run_json_bounded(run_id) or {}).get(_PERSISTENCE_DEGRADED_REASON_FIELD)
+    if isinstance(degraded, str) and degraded:
+        return LOST_REASON, REASON_DETAIL_PERSISTENCE_DEGRADED
+    return LOST_REASON, None
+
+
+# Per-key type check for `evidence=` on `reap_orphan`: this is a record any
+# caller may read back, so an unbounded `dict.update` would let a caller stamp
+# arbitrary keys (including an override of `kind`/`finding` themselves) onto a
+# terminal fact. Each entry names the keys this branch's evidence actually
+# populates and the shape each one is allowed to take; nothing outside this
+# set is accepted, and neither reserved key may be supplied at all.
+_EVIDENCE_VALUE_CHECKS: dict[str, Callable[[Any], bool]] = {
+    "observed_create_time": lambda v: v is None or _is_plain_number(v),
+    "recorded_create_time": lambda v: v is None or _is_plain_number(v),
+    "tolerance": lambda v: v is None or _is_plain_number(v),
+    "observed_at": lambda v: v is None or (isinstance(v, str) and len(v) <= 64),
+    "observer": lambda v: v is None or _is_short_string_map(v),
+    "marker": lambda v: v is None or (isinstance(v, str) and len(v) <= 256),
+}
+
+# Never accepted in *evidence*: these two are `reap_orphan`'s own to set, and
+# admitting either from a caller would let a terminal record misreport what
+# kind of end it was, or which finding produced it.
+_EVIDENCE_RESERVED_KEYS = frozenset({"kind", "finding"})
+
+
+def _is_plain_number(value: Any) -> bool:
+    """A real, finite number — not a bool, and not a NaN or an infinity.
+
+    Finiteness is part of the type check rather than a separate concern because
+    of where these values end up. Evidence is persisted and then read back by
+    `job.status` and `job.list`, and `json.dumps` writes a non-finite float as
+    the bare tokens `NaN` / `Infinity`, which are not JSON. Python's own
+    `json.loads` accepts them, so nothing inside this process notices; a strict
+    reader on the other end of the protocol cannot parse the response at all.
+    One such value therefore poisons every later read of that record, for as
+    long as it is stored.
+
+    A caller can reach this: `json.loads` admits those same tokens on the way
+    in, so `Infinity` arrives as a float and passes an `isinstance` test.
+
+    `math.isfinite` is asked inside a `try` because it converts to float before
+    it answers, and an integer past float range makes that conversion raise
+    rather than return. Python's ints are unbounded and JSON's are too, so a
+    309-digit `pid_create_time` is a valid document that `json.loads` hands back
+    as an `int` — and the sanitizer that exists so a bad persisted value cannot
+    take down a read would have raised out of `job.status` and `job.list` on
+    exactly the value it was written to drop. Answering False is also what the
+    record's own identity check already answers for it (`identity_unusable`,
+    which catches the same `OverflowError` around the same conversion): these
+    fields are POSIX times, and one that cannot act as a float cannot act as one
+    here either.
+    """
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _is_short_string_map(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and len(value) <= 8
+        and all(
+            isinstance(k, str) and isinstance(v, str) and len(v) <= 256 for k, v in value.items()
+        )
+    )
+
+
+def _sanitized_reap_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
+    """*evidence* with every value its own check rejects dropped rather than raised on.
+
+    For evidence this module assembles itself, where the values come from the
+    record on disk and from a process that may not be this run's. Both are
+    outside the caller's control, so neither can be treated as a caller error:
+    a record whose ``pid_create_time`` did not survive as a number, and a
+    stranger's over-long marker, would otherwise raise out of a read and take
+    the whole listing with them, while leaving the run permanently unreapable.
+
+    `_validate_reap_evidence` stays strict for its actual purpose — an external
+    caller stamping arbitrary keys onto a terminal fact. Dropping a key here
+    loses one diagnostic field; raising loses the transition and the read.
+    """
+    kept = {}
+    for key, value in evidence.items():
+        check = _EVIDENCE_VALUE_CHECKS.get(key)
+        if check is not None and check(value):
+            kept[key] = value
+    return kept
+
+
+def _validate_reap_evidence(evidence: dict[str, Any] | None) -> dict[str, Any]:
+    """Reject anything *evidence* isn't allowed to carry, before the lock.
+
+    Unknown keys and any attempt to override ``kind``/``finding`` both raise
+    ``ValueError`` — the whole point of validating ahead of the lock is that a
+    rejected call never touches the record it was aimed at.
+    """
+    if not evidence:
+        return {}
+    for key, value in evidence.items():
+        if key in _EVIDENCE_RESERVED_KEYS:
+            raise ValueError(f"evidence may not set reserved key {key!r}")
+        check = _EVIDENCE_VALUE_CHECKS.get(key)
+        if check is None:
+            raise ValueError(f"evidence has unknown key {key!r}")
+        if not check(value):
+            raise ValueError(f"evidence key {key!r} has an unsupported value")
+    return dict(evidence)
+
+
+def reap_orphan(
+    run_id: str, *, finding: str, observed_at: str, evidence: dict[str, Any] | None = None
+) -> ReapResult:
     """Publish the end of a run whose process is conclusively gone.
 
     Idempotent, safe to call from every observer at once. The whole check runs
@@ -1603,9 +2112,20 @@ def reap_orphan(run_id: str, *, finding: str, observed_at: str) -> ReapResult:
     lock. ``finished_at`` is *observed_at* — when the loss was established, not
     the unknowable moment the process actually exited. Notification runs after
     this returns, outside the lock, and is the winner's to attempt.
+
+    *evidence*, when given, is merged onto ``terminal_evidence`` beside
+    ``kind``/``finding`` — the create-time reads compared, the tolerance, and
+    who observed it, so a later contradiction is diagnosable from the record
+    alone rather than needing the vanished process back. Optional and never
+    required to identify what wrote a value here: a caller with nothing beyond
+    the finding (a test invoking this directly, for instance) still reaps with
+    the bounded two-key evidence this always carried. Validated against
+    `_EVIDENCE_VALUE_CHECKS` before the lock is taken — an invalid *evidence*
+    raises `ValueError` and writes nothing.
     """
     if finding not in CONCLUSIVE_FINDINGS:
         return ReapResult(False, None, "finding_is_not_conclusive")
+    validated_evidence = _validate_reap_evidence(evidence)
 
     with _locked_job(run_id) as guard:
         job = guard.record
@@ -1617,20 +2137,19 @@ def reap_orphan(run_id: str, *, finding: str, observed_at: str) -> ReapResult:
             return ReapResult(False, job, "spawn_state_is_not_started")
         if job.get("finished_at") is not None:
             return ReapResult(False, job, "already_ended")
-        reason_code = (
-            LOST_REASON_NOTICE_RECORDED_UNDELIVERED
-            if _notice_recorded_undelivered(run_id)
-            else LOST_REASON
-        )
+        reason_code, reason_detail = _orphan_reason(run_id)
+        terminal_evidence = {"kind": EVIDENCE_PROCESS_GONE, "finding": finding}
+        terminal_evidence.update(validated_evidence)
         job.update(
             {
                 "status": "exited",
                 "outcome": OUTCOME_INDETERMINATE,
                 "reason_code": reason_code,
+                "reason_detail": reason_detail,
                 "finished_at": observed_at,
                 "finished_at_precision": FINISHED_AT_UPPER_BOUND,
                 "terminal_source": TERMINAL_SOURCE_ORPHAN_REAPER,
-                "terminal_evidence": {"kind": EVIDENCE_PROCESS_GONE, "finding": finding},
+                "terminal_evidence": terminal_evidence,
                 "notify_delivery": {"attempted": False},
             }
         )
@@ -1684,6 +2203,8 @@ def _deliver_reap_notice(run_id: str, record: dict[str, Any]) -> dict[str, Any] 
             target=record.get("notify_target"),
             command=record.get("notify_command"),
             sender=record.get("notify_sender"),
+            reason_code=record.get("reason_code"),
+            reason_detail=record.get("reason_detail"),
         )
     except Exception:  # noqa: BLE001 — the end is published; delivery may not undo it
         return started.record
@@ -1701,8 +2222,26 @@ def _reap_if_conclusively_gone(
     """
     if not _admits_orphan_reap(job, liveness):
         return job
+    observed_at = _now_iso()
+    # Sanitized, not validated: two of these come from outside this call's
+    # control — the recorded start time is whatever survived in the record on
+    # disk, and the marker is read from a process that by this point is
+    # probably not this run's. A value either of them cannot supply well-formed
+    # is a missing diagnostic field, never a reason to abandon the transition.
+    evidence = _sanitized_reap_evidence(
+        {
+            "observed_create_time": liveness.observed_create_time,
+            "recorded_create_time": (job or {}).get("pid_create_time"),
+            "tolerance": _CREATE_TIME_TOLERANCE,
+            "observed_at": observed_at,
+            "observer": _server_identity(),
+            "marker": liveness.marker,
+        }
+    )
     try:
-        result = reap_orphan(run_id, finding=liveness.finding, observed_at=_now_iso())
+        result = reap_orphan(
+            run_id, finding=liveness.finding, observed_at=observed_at, evidence=evidence
+        )
     except OSError:
         return job  # transition unpublishable; next observation retries
     if result.record is None:
@@ -1736,6 +2275,25 @@ def status(run_id: str) -> dict[str, Any]:
     job = _reap_if_conclusively_gone(run_id, job, liveness)
 
     derived = _derive(job, alive, lifecycle)
+    # The reap above only fires on a record not yet terminal; a record already
+    # reaper-terminal from an earlier call keeps that end no matter what this
+    # call's own fresh probe finds (see #status-response-contract) — but a
+    # probe that now confirms the process's identity is a fact worth a caller
+    # knowing about, not one to leave buried in two fields that happen to
+    # disagree.
+    reap_contradicted_by_fresh_probe = (
+        job is not None
+        and job.get("terminal_source") == TERMINAL_SOURCE_ORPHAN_REAPER
+        and _identity_is_confirmed(liveness.finding)
+    )
+    # The same contradiction, reached the other way: not this call's own
+    # probe, but a late report from the run's actual owner (the hook or the
+    # lifecycle store) that arrived after the reap had already latched.
+    reap_contradicted_by_owner_report = (
+        job is not None
+        and job.get("terminal_source") == TERMINAL_SOURCE_ORPHAN_REAPER
+        and job.get(_LATE_REPORT_FIELD) is not None
+    )
     notify_delivery = (job or {}).get("notify_delivery")
     if notify_delivery is None and derived["terminal"]:
         notify_delivery = {"attempted": False}
@@ -1759,10 +2317,14 @@ def status(run_id: str) -> dict[str, Any]:
         "terminal": derived["terminal"],
         "outcome": derived["outcome"],
         "reason_code": derived["reason_code"],
+        "reason_detail": (job or {}).get("reason_detail"),
         "spawn_state": derived["spawn_state"],
         "possibly_orphaned": derived["possibly_orphaned"],
         "terminal_source": (job or {}).get("terminal_source"),
         "terminal_evidence": (job or {}).get("terminal_evidence"),
+        "reap_contradicted_by_fresh_probe": reap_contradicted_by_fresh_probe,
+        "reap_contradicted_by_owner_report": reap_contradicted_by_owner_report,
+        "late_report": (job or {}).get(_LATE_REPORT_FIELD),
         "alive": alive,
         "pid_identity": _PID_IDENTITY_BY_FINDING.get(liveness.finding),
         "liveness_conclusion": liveness.conclusion,
@@ -1773,11 +2335,15 @@ def status(run_id: str) -> dict[str, Any]:
         # written before the field existed, which is not the same as "observed".
         "finished_at_precision": (job or {}).get("finished_at_precision"),
         "notify_delivery": notify_delivery,
+        "child_actor": (job or {}).get("child_actor"),
+        "child_actor_config": (job or {}).get("child_actor_config"),
+        "submitting_actor": (job or {}).get("submitting_actor"),
         "mcp_config": (job or {}).get("mcp_config"),
         "mcp_config_source": (job or {}).get("mcp_config_source"),
         "mcp_config_reason": (job or {}).get("mcp_config_reason"),
         "declared_mcp_servers": declared_mcp_servers,
         "mcp_config_servers": declared_mcp_servers,
+        "excluded_mcp_servers": (job or {}).get("excluded_mcp_servers"),
         _PERSISTENCE_DEGRADED_REASON_FIELD: persistence_degraded_reason,
         "run": manifest,
         "log_tail": _tail((job or {}).get("log")),
@@ -2301,6 +2867,7 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
                 "terminal": st["terminal"],
                 "outcome": st["outcome"],
                 "reason_code": st["reason_code"],
+                "reason_detail": st["reason_detail"],
                 "spawn_state": st["spawn_state"],
                 "submitted_at": st["submitted_at"],
                 "finished_at": st["finished_at"],
@@ -2329,7 +2896,7 @@ def _unresolved_spawn_age(submitted_at: Any) -> float | None:
         return None
     if stamped.tzinfo is None:
         stamped = stamped.replace(tzinfo=timezone.utc)  # this writer's own UTC
-    return (datetime.now(timezone.utc) - stamped).total_seconds()
+    return (now_utc() - stamped).total_seconds()
 
 
 def _wait_entry(run_id: Any) -> dict[str, Any]:
@@ -2350,6 +2917,7 @@ def _wait_entry(run_id: Any) -> dict[str, Any]:
         "terminal": False,
         "outcome": None,
         "reason_code": None,
+        "reason_detail": None,
         "possibly_orphaned": False,
         "spawn_state": None,
         "submitted_at": None,
@@ -2378,6 +2946,7 @@ def _wait_entry(run_id: Any) -> dict[str, Any]:
             "terminal": st["terminal"],
             "outcome": st["outcome"],
             "reason_code": st["reason_code"],
+            "reason_detail": st["reason_detail"],
             "possibly_orphaned": st["possibly_orphaned"],
             "spawn_state": st["spawn_state"],
             "submitted_at": st["submitted_at"],
@@ -2416,12 +2985,10 @@ async def wait(
     cancels or disconnects, leaves the durable record untouched (cancelling
     an observation is not cancelling the work).
     """
-    import anyio  # deferred: the CLI's terminal hook also imports this module and stays import-light
-
     ordered = list(run_ids)
     eff_max = _clamp(max_wait, 0.0, WAIT_MAX_SECONDS)
     eff_poll = _clamp(poll_interval, WAIT_MIN_POLL_SECONDS, WAIT_MAX_POLL_SECONDS)
-    deadline = anyio.current_time() + eff_max
+    deadline = current_time() + eff_max
 
     entries: list[dict[str, Any]] = []
     pending: list[str] = []
@@ -2452,14 +3019,14 @@ async def wait(
             and not e["possibly_orphaned"]
             and e["run_id"] not in unresolved_ids
         ]
-        remaining = deadline - anyio.current_time()
+        remaining = deadline - current_time()
         if remaining <= 0:
             break
         # The stopped_without_end/unresolved_spawn back-off floor (see docs).
         if not pending and (waited or not (stopped or unresolved)):
             break
         waited = True
-        await anyio.sleep(min(eff_poll, remaining))
+        await sleep(min(eff_poll, remaining))
 
     errored = any(e["error"] is not None for e in entries)
     return {
@@ -2483,17 +3050,31 @@ def mark_terminal(run_id: str, cli_status: str, *, reason_code: str | None = Non
     The CLI's terminal status is trusted and recorded verbatim, never matched
     against a local set (an earlier version's fallback-to-`"completed"` on any
     miss silently turned `timed_out`/`cancelled`/`aborted`/`completed_empty`
-    into a false success). First-writer-wins: a record that already carries an
-    end (a kill, a lifecycle-cached end, an orphan transition published while
-    this hook was starting) keeps it — this call reports what's there rather
-    than replacing it, though its own delivery attempt still goes ahead.
+    into a false success). First-writer-wins for every other end: a record
+    that already carries one (a kill, a lifecycle-cached end, another hook
+    call) keeps it — this call reports what's there rather than replacing it,
+    though its own delivery attempt still goes ahead.
+
+    The one apparent exception is an end this server inferred rather than one
+    anybody reported (`terminal_source == mcp_orphan_reaper`, from a liveness
+    probe that read the process as conclusively gone). This call is the run's
+    own process saying it did not end when the reaper concluded that — but the
+    first recorded end remains in place regardless of who wrote it, including the
+    reaper's own `indeterminate`, so this does not replace the reap the way it
+    once did. What it does instead is leave a record of itself beside the
+    latch: the first such late report is kept in `late_report`, so the
+    contradiction is visible without moving anything the reap already wrote.
+    A second late report is dropped, same as the latch itself.
     """
+    cli_status = _status_text(cli_status)
     with _locked_job(run_id) as guard:
         job = guard.record
         if job is None:
             return WriteResult(job, guard.state)
         job.setdefault("notify_delivery", {"attempted": False})
         if job.get("finished_at") is not None:
+            if job.get("terminal_source") == TERMINAL_SOURCE_ORPHAN_REAPER:
+                _note_late_report(job, source="hook", status=cli_status, reason_code=reason_code)
             return WriteResult(job, guard.state)
         job["status"] = cli_status
         job["cli_status"] = cli_status

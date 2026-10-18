@@ -159,6 +159,11 @@
     "effect": {
       "requested": "Requested interface action: {kind}"
     },
+    "truncation": {
+      "title": "Ein Teil dieses Durchlaufs wurde nicht aufbewahrt",
+      "summary": "{frames} Frames nicht aufbewahrt · {size}",
+      "limit": " · Grenze: {limit}"
+    },
     "outcome": {
       "completed": "Turn completed",
       "failed": "Turn failed",
@@ -241,8 +246,8 @@
       "allHint": "Erstelle deinen ersten Agenten oder Workflow, um loszulegen.",
       "filtered": "Keine Elemente entsprechen deinem Filter.",
       "filteredHint": "Versuche einen anderen Typ oder setze die Suche zurück.",
+      "clearFilters": "Filter zurücksetzen",
       "createFirst": "Ersten erstellen",
-      "createWorkflow": "Neuer Workflow",
       "createAgent": "Neuer Agent",
       "allSkill": "Keine Skills gefunden.",
       "allSkillHint": "Füge eine SKILL.md unter ~/.lionagi/skills/NAME/ hinzu, um sie hier zu sehen.",
@@ -303,12 +308,12 @@
       "engineMaxDepth": "Max. Tiefe",
       "engineMaxAgents": "Max. Agenten",
       "loadFailed": "(Version konnte nicht geladen werden)",
-      "invocations": "Aufrufe",
-      "successRate": "Erfolgsrate",
-      "lastUsed": "Zuletzt verwendet",
-      "never": "nie",
-      "recentInvocations": "Letzte Aufrufe",
-      "noInvocations": "Noch keine Aufrufe aufgezeichnet.",
+      "invocations": "Erfasste Aufrufe",
+      "successRate": "Erfasste Erfolgsquote",
+      "lastUsed": "Letzte erfasste Nutzung",
+      "never": "Nicht erfasst",
+      "recentInvocations": "Kürzlich aktualisierte Einträge",
+      "noInvocations": "Keine erfassten Aufrufe.",
       "skillValidationFailed": "Validierung fehlgeschlagen. Behebe die Fehler unten, bevor du speicherst.",
       "pluginOwnedSkillHint": "Teil eines Plugins — bearbeite die Dateien des Plugins direkt, um es zu ändern.",
       "readOnly": "Schreibgeschützt",
@@ -320,7 +325,10 @@
       "pluginHooksSection": "Hooks-Konfiguration",
       "pluginReadmeSection": "README",
       "yes": "Ja",
-      "no": "Nein"
+      "no": "Nein",
+      "usageCoverage": "Der Erfassungsumfang für diese Fähigkeit oder dieses Plugin ist unbekannt; nur erfasste Aufrufe werden angezeigt. Die Erfolgsquote zählt erfolgreiche Abschlüsse unter den beendeten Datensätzen. Die Zeitangaben beziehen sich auf Aktualisierungen.",
+      "usageUnavailable": "Erfasste Nutzungsdaten sind nicht verfügbar.",
+      "usageUnknown": "Unbekannt"
     },
     "template": {
       "badge": "Integriert",
@@ -666,6 +674,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "Letzte Ausführungen nicht verfügbar",
     "title": "Zeitpläne",
     "subtitle": "Dauerhafte Automatisierungen über cron-, Intervall- und GitHub-Auslöser",
     "calendar": "Kalender",
@@ -1250,6 +1259,12 @@
       "body": "Something answered at {base}, but it isn't a lionagi daemon.",
       "fix": "Stop that program, or point the daemon at a different port:",
       "command": "li studio --port 8766"
+    },
+    "accessRequired": {
+      "title": "Dieser Daemon braucht ein Zugriffstoken",
+      "body": "Ein lionagi-Daemon hat unter {base} geantwortet, diese Seite aber abgelehnt. Ein Daemon akzeptiert eine Seite von einem anderen Origin nur mit einem Zugriffstoken, und der Befehl li studio gibt dieser Seite eines, wenn er sie öffnet. Beim Neuladen der Seite geht das Token verloren.",
+      "fix": "Führe dies dort aus, wo der Daemon läuft, um Studio mit Zugriff zu öffnen:",
+      "command": "li studio"
     },
     "retry": "Retry",
     "dismiss": "Dismiss"

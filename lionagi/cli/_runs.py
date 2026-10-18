@@ -10,9 +10,8 @@ import logging
 import os
 import tempfile
 import time
-import uuid
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -20,13 +19,17 @@ from uuid import uuid4
 from lionagi._paths import RUNS_ROOT, ensure_lionagi_dir
 from lionagi.cli._util import AmbiguousIdError, mark_run_allocated
 from lionagi.libs.path_safety import validate_path_component
+from lionagi.ln import short_id
 from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.ln._utils import now_utc
 from lionagi.providers._provider_errors import ProviderError
 from lionagi.utils import LIONAGI_HOME
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from lionagi import Branch
+    from lionagi.cli._mcp_resolve import McpResolution
     from lionagi.state.db import StateDB
 
 __all__ = (
@@ -55,7 +58,7 @@ PERSISTENCE_DEGRADED_REASON_FIELD = "persistence_degraded_reason"
 
 def _new_run_id() -> str:
     ts = now_utc().strftime("%Y%m%dT%H%M%S")
-    return f"{ts}-{uuid4().hex[:6]}"
+    return f"{ts}-{short_id(6)}"
 
 
 def current_run_id() -> str | None:
@@ -103,6 +106,47 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
         raise
 
 
+@contextlib.contextmanager
+def _run_manifest_lock(state_root: Path, *, required: bool = True) -> Iterator[None]:
+    """Hold the lock every write of the run.json in *state_root* takes.
+
+    Invocations that share a run id (`LIONAGI_RUN_ID`) share its run.json. A writer that reads it
+    to decide what to write holds this lock across the read and the write, so no other writer's
+    record lands between them (ADR-0104 Amendment 2). It is POSIX advisory locking on a file beside
+    run.json; where `fcntl` does not exist (Windows) nothing is held, and writers resolve
+    last-writer-wins.
+
+    A lock that cannot be taken (a filesystem without `flock`, a lock file that cannot be opened)
+    raises the OSError when *required*; otherwise the body runs without it, with a warning, so a
+    run's own writes go on as they did before the lock existed.
+    """
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - Windows fallback
+        yield
+        return
+
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd: int | None = None
+    try:
+        fd = os.open(state_root / ".run.json.lock", flags, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError as exc:
+        if fd is not None:
+            os.close(fd)
+        if required:
+            raise
+        _log.warning("run.json in %s written without its lock: %r", state_root, exc)
+        fd = None
+    if fd is None:
+        yield
+        return
+    try:
+        yield
+    finally:
+        os.close(fd)  # closing the descriptor releases the lock
+
+
 @dataclass(frozen=True, slots=True)
 class RunDir:
     """Resolved state and artifact paths for one CLI run."""
@@ -110,6 +154,11 @@ class RunDir:
     run_id: str
     state_root: Path
     artifact_root: Path
+    cwd: Path | None = None
+    mcp_config_source: Path | None = None
+    mcp_config_searched_from: Path | None = None
+    mcp_config_explicit: bool | None = None
+    mcp_config_reason: str | None = None
 
     # ── Path helpers ────────────────────────────────────────────────
 
@@ -172,22 +221,109 @@ class RunDir:
         directory, then os.replace), so a concurrent reader observes either
         the previous manifest or the new one, never a truncated file. It is
         a whole-file replacement, not a merge: the caller owns the full
-        manifest contents, and two writers racing on one run still resolve
-        last-writer-wins.
+        lifecycle contents, and two writers racing on one run still resolve
+        last-writer-wins. Each write takes the run's manifest lock
+        (`_run_manifest_lock`), so a writer holding it across a read and its
+        write sees no other write land between them. A run reconstructed from
+        its path preserves any execution provenance already stored in the
+        manifest, read under that lock; any error reading it other than a
+        missing file or a ``JSONDecodeError`` (an ``OSError``, a
+        ``UnicodeDecodeError``, or a ``ValueError`` the JSON parser raises for
+        JSON it will not read, such as an integer over its digit limit) stops
+        the write with that error.
         """
         ensure_lionagi_dir(self.state_root)
+        with _run_manifest_lock(self.state_root, required=False):
+            self._write_manifest_holding_lock(data)
+
+    def _write_manifest_holding_lock(self, data: dict) -> None:
+        """:meth:`write_manifest` for a caller already holding the manifest lock,
+        which is not reentrant."""
         payload = {
             "run_id": self.run_id,
             "state_root": str(self.state_root),
             "artifact_root": str(self.artifact_root),
             **data,
         }
+        if self.cwd is not None:
+            # Execution context is allocation-owned provenance. Whole-file
+            # writers replace lifecycle data throughout a live run, but must
+            # not erase or redefine the directory and MCP discovery facts that
+            # determined the run's tool surface.
+            payload.update(
+                {
+                    "cwd": str(self.cwd),
+                    "mcp_config_source": (
+                        str(self.mcp_config_source) if self.mcp_config_source else None
+                    ),
+                    "mcp_config_searched_from": (
+                        str(self.mcp_config_searched_from)
+                        if self.mcp_config_searched_from
+                        else None
+                    ),
+                    "mcp_config_explicit": self.mcp_config_explicit,
+                    "mcp_config_reason": self.mcp_config_reason,
+                }
+            )
+        else:
+            # A manifest that is gone, or that is malformed JSON (JSONDecodeError), holds
+            # nothing this code can read back, and one that is JSON but not an object holds
+            # no provenance; any other error reading it leaves a file that may hold
+            # provenance, so that error stops the write.
+            try:
+                existing = self.read_manifest()
+            except (FileNotFoundError, json.JSONDecodeError):
+                existing = {}
+            if isinstance(existing, dict):
+                for key in (
+                    "cwd",
+                    "mcp_config_source",
+                    "mcp_config_searched_from",
+                    "mcp_config_explicit",
+                    "mcp_config_reason",
+                ):
+                    if key in existing:
+                        payload[key] = existing[key]
         _atomic_write_json(self.manifest_path, payload)
 
     def read_manifest(self) -> dict:
         if not self.manifest_path.exists():
             return {}
         return json.loads(self.manifest_path.read_text())
+
+    def with_execution_provenance(
+        self,
+        *,
+        cwd: str | os.PathLike,
+        mcp_resolution: McpResolution,
+        mcp_disabled: bool = False,
+    ) -> RunDir:
+        """Return this run with resolved execution context bound to future writes.
+
+        ``allocate_run`` writes the running placeholder immediately. CLI call
+        sites then bind the submit-time MCP result before their first live
+        persistence write; rewrite that placeholder too so even an early
+        failure leaves the same provenance as later lifecycle snapshots.
+        """
+        resolved_cwd = Path(cwd).expanduser().resolve()
+        source = mcp_resolution.source
+        updated = replace(
+            self,
+            cwd=resolved_cwd,
+            mcp_config_source=source.expanduser().resolve() if source else None,
+            mcp_config_searched_from=mcp_resolution.searched_from.expanduser().resolve(),
+            mcp_config_explicit=mcp_resolution.explicit,
+            mcp_config_reason=("mcp_disabled_by_caller" if mcp_disabled else mcp_resolution.reason),
+        )
+        if not self.manifest_path.exists():
+            return updated
+        # Read and rewrite under one hold of the lock, so a write by another
+        # invocation sharing this run id cannot land between them and be undone.
+        with _run_manifest_lock(self.state_root, required=False):
+            manifest = self.read_manifest()
+            if manifest:
+                updated._write_manifest_holding_lock(manifest)
+        return updated
 
     # ── Notify-outcome I/O (separate from the manifest; see notify_settings.py) ──
 
@@ -251,13 +387,14 @@ def _record_persistence_degraded(
         _log.warning("could not record persistence degradation: no active run id")
         return reason
     try:
-        manifest = json.loads(manifest_path.read_text())
-        if not isinstance(manifest, dict):
-            raise TypeError("run manifest is not a JSON object")
-        if run_manifest is not None:
-            manifest.update(run_manifest)
-        manifest[PERSISTENCE_DEGRADED_REASON_FIELD] = reason
-        _atomic_write_json(manifest_path, manifest)
+        with _run_manifest_lock(manifest_path.parent, required=False):
+            manifest = json.loads(manifest_path.read_text())
+            if not isinstance(manifest, dict):
+                raise TypeError("run manifest is not a JSON object")
+            if run_manifest is not None:
+                manifest.update(run_manifest)
+            manifest[PERSISTENCE_DEGRADED_REASON_FIELD] = reason
+            _atomic_write_json(manifest_path, manifest)
     except Exception as record_exc:  # noqa: BLE001 — degradation must not become a run failure
         _log.warning(
             "could not record persistence degradation for run %s: %r",
@@ -272,7 +409,8 @@ def allocate_run(
     save_dir: str | os.PathLike | None = None,
     run_id: str | None = None,
 ) -> RunDir:
-    """Allocate a run dir, consuming an inherited run id as a one-hop handoff."""
+    """Allocate a run dir whose provenance is a placeholder (the current directory,
+    MCP reason ``not_resolved``) until :meth:`RunDir.with_execution_provenance` binds it."""
     global _ALLOCATED_RUN_ID
 
     inherited_run_id = current_run_id()
@@ -287,7 +425,13 @@ def allocate_run(
     else:
         artifact_root = state_root / "artifacts"
 
-    run = RunDir(run_id=rid, state_root=state_root, artifact_root=artifact_root)
+    run = RunDir(
+        run_id=rid,
+        state_root=state_root,
+        artifact_root=artifact_root,
+        cwd=Path.cwd().resolve(),
+        mcp_config_reason="not_resolved",
+    )
     run.ensure_state_dirs()
     run.ensure_artifact_root()
     # From here on there is durable state on disk under this run id, so a later
@@ -413,15 +557,41 @@ def list_runs(limit: int | None = None) -> list[RunDir]:
     for d in dirs:
         manifest_path = d / "run.json"
         artifact_root = d / "artifacts"
+        manifest: dict[str, Any] = {}
         if manifest_path.exists():
             try:
-                m = json.loads(manifest_path.read_text())
-                art = m.get("artifact_root")
+                loaded = json.loads(manifest_path.read_text())
+                manifest = loaded if isinstance(loaded, dict) else {}
+                art = manifest.get("artifact_root")
                 if art:
                     artifact_root = Path(art)
             except (OSError, json.JSONDecodeError):
                 pass
-        out.append(RunDir(run_id=d.name, state_root=d, artifact_root=artifact_root))
+        cwd = manifest.get("cwd")
+        mcp_source = manifest.get("mcp_config_source")
+        mcp_searched_from = manifest.get("mcp_config_searched_from")
+        out.append(
+            RunDir(
+                run_id=d.name,
+                state_root=d,
+                artifact_root=artifact_root,
+                cwd=Path(cwd) if isinstance(cwd, str) else None,
+                mcp_config_source=Path(mcp_source) if isinstance(mcp_source, str) else None,
+                mcp_config_searched_from=(
+                    Path(mcp_searched_from) if isinstance(mcp_searched_from, str) else None
+                ),
+                mcp_config_explicit=(
+                    manifest.get("mcp_config_explicit")
+                    if isinstance(manifest.get("mcp_config_explicit"), bool)
+                    else None
+                ),
+                mcp_config_reason=(
+                    manifest.get("mcp_config_reason")
+                    if isinstance(manifest.get("mcp_config_reason"), str)
+                    else None
+                ),
+            )
+        )
     return out
 
 
@@ -472,13 +642,19 @@ def resolve_run_reason(
             None,
         )
     if exception is not None:
-        if isinstance(exception, ProviderError):
+        # iModel re-raises every stream failure as a ValueError, so a provider's typed
+        # error (a CLI's quota refusal, say) reaches here as that error's cause.
+        cause, seen = exception, set()
+        while cause is not None and not isinstance(cause, ProviderError) and id(cause) not in seen:
+            seen.add(id(cause))
+            cause = cause.__cause__
+        if isinstance(cause, ProviderError):
             code = (
                 RunReasons.FAILED_PROVIDER_RETRYABLE
-                if exception.retryable
+                if cause.retryable
                 else RunReasons.FAILED_PROVIDER_NONRETRYABLE
             )
-            return code, f"{type(exception).__name__}: {exception}", None
+            return code, f"{type(cause).__name__}: {cause}", None
         return RunReasons.FAILED_EXCEPTION, f"{type(exception).__name__}: {exception}", None
     return RunReasons.FAILED_EXCEPTION, "Run failed.", None
 
@@ -512,6 +688,80 @@ async def _linked_engine_session(
     return None
 
 
+async def _teardown_write(committed: list[str] | None, name: str, call: Any) -> Any:
+    """Run one of teardown's own store writes, recording *name* once it returns.
+
+    Each store operation opens its own transaction, so a refusal raised by a later write names
+    only that write and reads as if nothing had committed. The names collected here are the ones
+    the run's reason carries instead (ADR-0128 D6).
+    """
+    result = await call
+    if committed is not None:
+        committed.append(name)
+    return result
+
+
+@dataclass(frozen=True)
+class _TerminalStatus:
+    """The terminal session status a teardown decided, written once the lifecycle emits have run."""
+
+    status: str
+    reason_code: str
+    reason_summary: str
+    evidence_refs: list[dict] | None
+    metadata: dict | None
+    ended_at: float
+    duration_ms: float | None
+
+
+def _run_may_clear_current_phase(db: StateDB) -> bool:
+    """Whether this run may clear the stored ``current_phase`` in a terminal status write.
+
+    Natively a run owns the column and always clears it with the status. In compatibility mode
+    every write this run made was authorized against the same profile, so a profile that does not
+    admit ``sessions.current_phase`` means the run never wrote a phase: there is nothing of its own
+    to clear, and naming the column would make the profile refuse the status write itself
+    (ADR-0128 D5, D6).
+    """
+    if db.mode != "compatibility":
+        return True
+    profile = getattr(db, "compatibility", None)
+    writes = getattr(profile, "writes", None)
+    if writes is None:
+        return False
+    sessions = writes.get("sessions")
+    return sessions is not None and "current_phase" in sessions.update
+
+
+def _branch_end_is_this_runs(db: StateDB, branch_id: str) -> bool:
+    """Whether a BRANCH_END write for *branch_id* is this run's to make.
+
+    Orchestration registers each worker lazily, so a registered worker that produced no message
+    has no branch row. Natively every branch is the run's, as before; in compatibility mode a
+    branch row another run created is not written, and emitting for a row this run did not create
+    would refuse the whole teardown (ADR-0128 D5).
+    """
+    if db.mode != "compatibility":
+        return True
+    return branch_id in getattr(db, "_compat_created", {}).get("branches", ())
+
+
+def _terminal_status_extra_fields(
+    db: StateDB, *, ended_at: float, duration_ms: float | None
+) -> dict[str, Any]:
+    """The same-row columns this run's terminal status write may set.
+
+    ``current_phase`` is included only where :func:`_run_may_clear_current_phase` admits it, so a
+    profile without that column grant still takes the status write.
+    """
+    fields: dict[str, Any] = {"ended_at": ended_at}
+    if duration_ms is not None:
+        fields["duration_ms"] = duration_ms
+    if _run_may_clear_current_phase(db):
+        fields["current_phase"] = None
+    return fields
+
+
 async def _teardown_common(
     db: StateDB,
     *,
@@ -532,7 +782,17 @@ async def _teardown_common(
     cwd: str | None = None,
     engine_session_uid: str | None = None,
     defer_terminal: bool = False,
+    reason_out: dict | None = None,
+    committed: list[str] | None = None,
+    terminal_out: list[_TerminalStatus] | None = None,
 ) -> str:
+    """Run the teardown's store writes and decide the run's terminal status.
+
+    By default this writes the terminal session status itself and returns it. When
+    *terminal_out* is given, the decision is appended there instead and no status write is made:
+    the caller writes it, once the lifecycle emits have run, so a refusal those emits record is
+    the run's reason rather than landing after a status already written (ADR-0128 D6).
+    """
     from lionagi.state.artifact_verifier import (
         missing_artifact_evidence,
         missing_artifact_summary,
@@ -587,19 +847,26 @@ async def _teardown_common(
         # kill.py closes; closing it safely needs a schema decision (flatten
         # khive_injection to scalar keys, or a merge-helper variant that
         # tolerates one level of nested object).
-        existing_metadata = session_before_teardown.get("node_metadata") or {}
-        if isinstance(existing_metadata, str):
-            try:
-                existing_metadata = json.loads(existing_metadata)
-            except (TypeError, ValueError):
-                existing_metadata = {}
-        if not isinstance(existing_metadata, dict):
-            existing_metadata = {}
         markers = identity_markers or {}
-        update_kwargs["node_metadata"] = json.dumps({**existing_metadata, **extras, **markers})
+        if db.mode == "compatibility":
+            # A compatibility-mode store merges node_metadata by key inside its write, so it is
+            # handed only this run's keys and keeps any other writer added since the read above.
+            update_kwargs["node_metadata"] = {**extras, **markers}
+        else:
+            existing_metadata = session_before_teardown.get("node_metadata") or {}
+            if isinstance(existing_metadata, str):
+                try:
+                    existing_metadata = json.loads(existing_metadata)
+                except (TypeError, ValueError):
+                    existing_metadata = {}
+            if not isinstance(existing_metadata, dict):
+                existing_metadata = {}
+            update_kwargs["node_metadata"] = json.dumps({**existing_metadata, **extras, **markers})
 
     if update_kwargs:
-        await db.update_session(session_id, **update_kwargs)
+        await _teardown_write(
+            committed, "update_session", db.update_session(session_id, **update_kwargs)
+        )
 
     reason_code, reason_summary, evidence_refs = resolve_run_reason(
         status=status, exception=exception
@@ -612,7 +879,11 @@ async def _teardown_common(
     contract = artifact_contract or session_row.get("artifact_contract_json")
     artifacts_root = artifacts_path or session_row.get("artifacts_path")
     verification = verify_artifact_contract(contract, artifacts_root=artifacts_root)
-    await db.update_artifact_verification(session_id, verification)
+    await _teardown_write(
+        committed,
+        "update_artifact_verification",
+        db.update_artifact_verification(session_id, verification),
+    )
 
     final_status = status
     final_reason_code = reason_code
@@ -638,7 +909,11 @@ async def _teardown_common(
         # whole-column update_session() write below.
         metadata = dict(metadata or {})
         metadata["linked_engine_session_id"] = linked_id
-        await db.merge_session_node_metadata(session_id, {"linked_engine_session_id": linked_id})
+        await _teardown_write(
+            committed,
+            "merge_session_node_metadata",
+            db.merge_session_node_metadata(session_id, {"linked_engine_session_id": linked_id}),
+        )
 
         if linked is not None and linked["status"] in SESSION_TERMINAL_STATUSES:
             reason_by_status = {
@@ -856,71 +1131,114 @@ async def _teardown_common(
                 }
             ]
 
+    if reason_out is not None:
+        # The outcome this teardown decided for its own run, whether or not the write it
+        # makes below lands: a row already terminal, or a write that loses its compare-and-set,
+        # keeps the status and reason another run left on it (a resume reuses the session row).
+        reason_out["terminal_reason"] = (final_status, final_reason_summary)
+
+    decision = _TerminalStatus(
+        status=final_status,
+        reason_code=final_reason_code,
+        reason_summary=final_reason_summary,
+        evidence_refs=final_evidence_refs,
+        metadata=metadata,
+        ended_at=ended_at,
+        duration_ms=duration_ms,
+    )
+    if terminal_out is not None:
+        # The caller writes the status itself, after the lifecycle emits.
+        terminal_out.append(decision)
+        return final_status
+    # Snapshot of the status observed at the start of this teardown; used only as the CAS guard
+    # (not updated_at, which this function may itself have touched).
+    return await _write_terminal_session_status(
+        db, session_id, decision, session_row.get("status"), committed=committed
+    )
+
+
+async def _write_terminal_session_status(
+    db: StateDB,
+    session_id: str,
+    terminal: _TerminalStatus,
+    observed_status: Any,
+    *,
+    committed: list[str] | None = None,
+) -> str:
+    """Write the session's terminal status, once the lifecycle emits have run.
+
+    The status write is the run's last store write: a refusal a lifecycle handler records while it
+    runs -- the BRANCH_END and SESSION_END default handlers among them -- then fails the run with
+    that refusal instead of landing after a status the run already wrote (ADR-0128 D6).
+    *observed_status* is the status read just before this write, so the write's compare-and-set
+    reflects what is stored at the moment it runs rather than a read taken before the emits.
+    """
     from lionagi.state.db import SESSION_TERMINAL_STATUSES, TransitionRejectedError
 
-    # Snapshot of status observed at the start of this teardown; used only as the
-    # CAS guard below (not updated_at, which this function may itself have touched).
-    pre_write_status = session_row.get("status")
-
-    if pre_write_status in SESSION_TERMINAL_STATUSES:
-        # Already terminal before this teardown attempted anything (e.g. reattached
-        # to a session an earlier run already finalized) -- skip the redundant write
-        # and report this invocation's own outcome (ADR-0035 protects the earlier record).
-        if pre_write_status != final_status:
+    if observed_status in SESSION_TERMINAL_STATUSES:
+        # Already terminal (a concurrent writer finalized the row, or an earlier run did)
+        # before this write -- skip it and report the outcome this teardown decided
+        # (ADR-0035 protects the earlier record).
+        if observed_status != terminal.status:
             _log.warning(
                 "session %s already terminal at %r; this invocation's %r "
                 "outcome was not persisted (ADR-0094 protects the earlier "
                 "terminal record)",
                 session_id,
-                pre_write_status,
-                final_status,
+                observed_status,
+                terminal.status,
             )
         else:
             _log.debug(
                 "session %s already terminal at %r; skipping duplicate status write",
                 session_id,
-                pre_write_status,
+                observed_status,
             )
-    else:
-        try:
-            written = await db.update_status(
+        return terminal.status
+
+    try:
+        written = await _teardown_write(
+            committed,
+            "update_status",
+            db.update_status(
                 "session",
                 session_id,
-                new_status=final_status,
-                reason_code=final_reason_code,
-                reason_summary=final_reason_summary,
-                evidence_refs=final_evidence_refs,
+                new_status=terminal.status,
+                reason_code=terminal.reason_code,
+                reason_summary=terminal.reason_summary,
+                evidence_refs=terminal.evidence_refs,
                 source="executor",
                 actor=session_id,
-                metadata=metadata,
-                expected_statuses={pre_write_status},
-                extra_fields=(
-                    {"ended_at": ended_at}
-                    if duration_ms is None
-                    else {"ended_at": ended_at, "duration_ms": duration_ms}
+                metadata=terminal.metadata,
+                expected_statuses={observed_status},
+                extra_fields=_terminal_status_extra_fields(
+                    db, ended_at=terminal.ended_at, duration_ms=terminal.duration_ms
                 ),
-            )
-            if not written:
-                # CAS miss: a concurrent teardown of the same session won the race.
-                # Read back the persisted status rather than raising past callers.
-                persisted = await db.get_session(session_id) or {}
-                final_status = persisted.get("status", final_status)
-                _log.debug(
-                    "session %s status changed under this teardown; using persisted status %s",
-                    session_id,
-                    final_status,
-                )
-        except TransitionRejectedError:
-            # Defensive fallback: the row became terminal between this
-            # teardown's snapshot and the write despite the CAS guard above.
+            ),
+        )
+        if not written:
+            # CAS miss: a concurrent teardown of the same session won the race.
+            # Read back the persisted status rather than raising past callers.
             persisted = await db.get_session(session_id) or {}
-            final_status = persisted.get("status", final_status)
+            status = persisted.get("status", terminal.status)
             _log.debug(
-                "session %s already terminal (%s); skipped duplicate status write",
+                "session %s status changed under this teardown; using persisted status %s",
                 session_id,
-                final_status,
+                status,
             )
-    return final_status
+            return status
+    except TransitionRejectedError:
+        # Defensive fallback: the row became terminal between this teardown's
+        # read and the write despite the CAS guard above.
+        persisted = await db.get_session(session_id) or {}
+        status = persisted.get("status", terminal.status)
+        _log.debug(
+            "session %s already terminal (%s); skipped duplicate status write",
+            session_id,
+            status,
+        )
+        return status
+    return terminal.status
 
 
 async def _has_assistant_output_evidence(db: StateDB, message_ids: list[str]) -> bool:
@@ -974,8 +1292,16 @@ async def teardown_persist(
         return status
 
     db = ctx["db"]
+    committed: list[str] = []
     try:
         await _flush_pending_message_events(ctx)
+        # A signal write the store refused is not a dropped one to read past: the store declined
+        # it for good, so this teardown fails with that refusal rather than writing a status that
+        # would read as a run which succeeded without its signals (ADR-0128 D6).
+        signal_refusal = _signal_persist_refusal(ctx)
+        if signal_refusal is not None:
+            raise signal_refusal
+        decision: list[_TerminalStatus] = []
         final_status = await _teardown_common(
             db,
             session_id=ctx["session_id"],
@@ -995,16 +1321,22 @@ async def teardown_persist(
             cwd=cwd,
             engine_session_uid=engine_session_uid,
             defer_terminal=defer_terminal,
+            reason_out=ctx,
+            committed=committed,
+            terminal_out=decision,
         )
 
-        from lionagi.hooks import unroute_message_persistence
+        # A signal emitted while this teardown ran is refused the same way as one emitted before
+        # it: the store declined the write, so the run does not read as one that succeeded
+        # without it (ADR-0128 D6). Checked before the terminal status write and again after the
+        # emits below, so a refusal either side of them fails the run.
+        signal_refusal = _signal_persist_refusal(ctx)
+        if signal_refusal is not None:
+            raise signal_refusal
+
         from lionagi.hooks.bus import HookPoint
 
-        hook = ctx.get("hook")
-        if hook is not None:
-            unroute_message_persistence(ctx["branch"], hook)
-        for branch, h in ctx.get("hooks", []):
-            unroute_message_persistence(branch, h)
+        _unroute_message_hooks(ctx)
 
         session_obj = ctx.get("session")
         # Skip SESSION_END here when deferred: the resumed leg's own (non-deferred)
@@ -1038,11 +1370,14 @@ async def teardown_persist(
             if final_status in SESSION_TERMINAL_STATUSES:
                 _end_at = time.time()
                 for _b in [_branch] if _branch is not None else _hook_branches:
+                    if not _branch_end_is_this_runs(db, str(_b.id)):
+                        continue
                     await session_obj.hooks.emit(
                         HookPoint.BRANCH_END,
                         branch_id=str(_b.id),
                         status=final_status,
                         ended_at=_end_at,
+                        db=db,
                     )
 
             await session_obj.hooks.emit(
@@ -1050,19 +1385,52 @@ async def teardown_persist(
                 session_id=ctx["session_id"],
                 status=final_status,
                 error=err_str,
+                db=db,
                 **_usage,
             )
 
-        # Detach signal persistence so the observer handler cannot fire after
-        # teardown (the db handle is about to be closed in the finally block).
-        if session_obj is not None:
-            try:
-                session_obj.observer.unbind_db_persistence()
-            except Exception as _exc:  # noqa: BLE001
-                _log.debug("signal persist unbind failed: %s", _exc)
+        # A signal write the emits above declined -- the signal sink keeps such a refusal rather
+        # than raising it -- is not a dropped signal to read past: it fails the run here, before
+        # the terminal status write, exactly as one recorded before the emits does (ADR-0128 D6).
+        signal_refusal = _signal_persist_refusal(ctx)
+        if signal_refusal is not None:
+            raise signal_refusal
+
+        # The terminal status write is the run's last store write, after the BRANCH_END and
+        # SESSION_END emits. A refusal either emit records then leaves the run failed with that
+        # refusal instead of standing beside a status the run had already written (ADR-0128 D6),
+        # and the row is read here so the write's compare-and-set reflects the status stored once
+        # the emits have run, rather than the one read before them.
+        if decision and not defer_terminal:
+            observed = (await db.get_session(ctx["session_id"]) or {}).get("status")
+            final_status = await _write_terminal_session_status(
+                db, ctx["session_id"], decision[0], observed, committed=committed
+            )
 
         return final_status
     except Exception as exc:
+        from lionagi.state.compat import refusal_in
+
+        # Teardown writes run inside task groups, so the refusal can arrive wrapped beside
+        # another failure; it is still the reason this run fails.
+        refusal = refusal_in(exc)
+        if refusal is not None:
+            # The store refused a write in compatibility mode, so the run fails with that
+            # refusal as its reason instead of reading back a status it could not write
+            # (ADR-0128 D6). Nothing more is written and the message hooks are detached: the
+            # refusal rose either from one of the teardown's own writes, before SESSION_END
+            # was reached, or from a SESSION_END handler, after the emit below had run.
+            _log.error("live persist teardown refused: %s", refusal)
+            _unroute_message_hooks(ctx)
+            reason = f"The store refused a write: {refusal}"
+            if committed:
+                # Each store operation commits on its own, so the refusal above reads as if the
+                # teardown had committed nothing. Name what it did commit, so the run's record
+                # does not send a reader looking for state that is already durable.
+                reason += f"; already committed in this teardown: {', '.join(committed)}"
+            ctx["terminal_reason"] = ("failed", reason)
+            ctx["store_refusal"] = refusal
+            return "failed"
         _log.warning("live persist teardown failed: %s", exc, exc_info=True)
         # A failure anywhere in the block above (any of _teardown_common's
         # separate write transactions, or the bookkeeping around them) must
@@ -1083,9 +1451,19 @@ async def teardown_persist(
         # explicit unknown outcome instead of a guess.
         return "unknown"
     finally:
+        _session_obj = ctx.get("session")
+        # Detach signal persistence on every path, so the observer handler cannot
+        # fire after the db handle closes below, and hand back how many signals it
+        # could not confirm it wrote, writes still in flight included (run.json reads
+        # it from ctx).
+        if _session_obj is not None:
+            try:
+                _session_obj.observer.unbind_db_persistence()
+                ctx["signal_persist_dropped"] = _session_obj.observer.persist_dropped
+            except Exception as _exc:  # noqa: BLE001
+                _log.debug("signal persist unbind failed: %s", _exc)
         # Release branch ownership even when the bookkeeping above failed -- a
         # stranded owner marker would make the long-lived branch unresumable.
-        _session_obj = ctx.get("session")
         if _session_obj is not None:
             for _b in [ctx.get("branch"), *(b for b, _h in ctx.get("hooks", []))]:
                 if _b is None:
@@ -1103,7 +1481,35 @@ async def teardown_persist(
             # callers opt out so teardown cannot close unrelated shared state.
             from lionagi.state.db import close_shared_db
 
-            await close_shared_db()
+            # The sweep raises for a handle it could not close (one another
+            # event loop is opening). Teardown reports the run's outcome and
+            # must not raise, so the refusal is logged like db.close() above.
+            try:
+                await close_shared_db()
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("live persist shared db sweep failed: %s", exc, exc_info=True)
+
+
+def _signal_persist_refusal(ctx: dict) -> BaseException | None:
+    """The first signal write this run's observer saw the store refuse, if any.
+
+    A refusal is not a drop: the signal was not persisted and will not be retried, so teardown
+    fails the run with it instead of reading back a status the store could not have accepted
+    with the signal (ADR-0128 D6).
+    """
+    session_obj = ctx.get("session")
+    observer = getattr(session_obj, "observer", None)
+    return getattr(observer, "persist_refusal", None)
+
+
+def _unroute_message_hooks(ctx: dict) -> None:
+    from lionagi.hooks import unroute_message_persistence
+
+    hook = ctx.get("hook")
+    if hook is not None:
+        unroute_message_persistence(ctx["branch"], hook)
+    for branch, h in ctx.get("hooks", []):
+        unroute_message_persistence(branch, h)
 
 
 # Keep old names as aliases so callers don't break.
@@ -1159,6 +1565,7 @@ def _make_message_handler(
     from copy import deepcopy
 
     from lionagi.hooks._message_retry import MessagePersistRetryQueue, PendingMessageEvent
+    from lionagi.state.compat import StateCompatibilityRefused
 
     retry_queue = MessagePersistRetryQueue(
         db,
@@ -1193,6 +1600,9 @@ def _make_message_handler(
                     on_persisted=on_persisted,
                 )
             )
+        except StateCompatibilityRefused:
+            # A write the store refused in compatibility mode stops the run (ADR-0128 D6).
+            raise
         except Exception as exc:
             _log.warning(
                 "live persist write failed for branch %s: %s",
@@ -1209,12 +1619,26 @@ async def _flush_pending_message_events(ctx: dict) -> bool:
 
     Returns whether every queue emptied. What follows this reads the run's
     completion evidence, so a queue that gave up here means that evidence is
-    being read against a transcript missing messages the run produced.
+    being read against a transcript missing messages the run produced. A queue
+    the store refuses in compatibility mode raises that refusal, once every
+    queue has been flushed.
     """
+    from lionagi.state.compat import StateCompatibilityRefused
+
     flushed = True
+    refusal = None
     for retry_queue in ctx.get("message_retry_queues", []):
-        if not await retry_queue.flush_final():
-            flushed = False
+        try:
+            if not await retry_queue.flush_final():
+                flushed = False
+        except StateCompatibilityRefused as exc:
+            if refusal is None:
+                refusal = exc
+            else:
+                # The first refusal is raised; each later one is logged, so none goes unreported.
+                _log.error("live persist flush refused another queue: %s", exc)
+    if refusal is not None:
+        raise refusal
     return flushed
 
 
@@ -1380,12 +1804,12 @@ async def setup_agent_persist(
             branch_prog_id = existing_branch["progression_id"]
 
             if session_prog_id is None:
-                candidate = str(uuid.uuid4())
+                candidate = str(uuid4())
                 await db.create_progression(candidate)
                 effective = await db.repair_session_progression(session_id, candidate)
                 session_prog_id = effective or candidate
             if branch_prog_id is None:
-                candidate = str(uuid.uuid4())
+                candidate = str(uuid4())
                 await db.create_progression(candidate)
                 effective = await db.repair_branch_progression(branch_id, candidate)
                 branch_prog_id = effective or candidate
@@ -1423,8 +1847,8 @@ async def setup_agent_persist(
             # The narrower cost -- a row reading False or undeclared keeps
             # refusing controls it could actually drain -- is the safer one.
         else:
-            session_prog_id = str(uuid.uuid4())
-            branch_prog_id = str(uuid.uuid4())
+            session_prog_id = str(uuid4())
+            branch_prog_id = str(uuid4())
             existing_msg_ids = set()
 
             await db.create_progression(session_prog_id)
@@ -1509,6 +1933,10 @@ async def setup_agent_persist(
 
             from lionagi.hooks.bus import HookPoint
 
+            # The run's own handle goes with both emits, as with the teardown's. The session
+            # and branch rows above already carry every field the default handlers write, so
+            # handed a handle they write nothing: no process-wide store is reached, and no
+            # repeated write needs a grant this setup does not.
             await session.hooks.emit(
                 HookPoint.SESSION_START,
                 session_id=session_id,
@@ -1518,6 +1946,7 @@ async def setup_agent_persist(
                 agent_name=agent_name,
                 agent_hash=_provenance.agent_definition_hash(agent_name),
                 invocation_id=invocation_id,
+                db=db,
             )
             await session.hooks.emit(
                 HookPoint.BRANCH_CREATE,
@@ -1525,6 +1954,7 @@ async def setup_agent_persist(
                 model=model,
                 provider=provider,
                 agent_name=agent_name,
+                db=db,
             )
 
         new_msg_ids: list = []
@@ -1564,12 +1994,19 @@ async def setup_agent_persist(
         ctx["hook"] = route_message_persistence(session, branch, _on_message)
         return ctx
     except Exception as exc:
-        _log.warning(
-            "live persist setup failed (%r) — disabling persistence for this run",
-            exc,
-            exc_info=True,
-        )
-        _record_persistence_degraded(exc, run_id=run_id, run_manifest=run_manifest)
+        from lionagi.state.compat import refusal_in
+
+        # A store that refuses a write in compatibility mode stops the run instead of
+        # letting it go on without persistence (ADR-0128 D6); it is raised as itself, after
+        # cleanup, so a caller's check finds it even when a task group wrapped it.
+        refusal = refusal_in(exc)
+        if refusal is None:
+            _log.warning(
+                "live persist setup failed (%r) — disabling persistence for this run",
+                exc,
+                exc_info=True,
+            )
+            _record_persistence_degraded(exc, run_id=run_id, run_manifest=run_manifest)
         # If the wrapper session already claimed the branch, release it so a
         # later setup (or retry) can wrap the same branch again.
         if session is not None:
@@ -1587,6 +2024,8 @@ async def setup_agent_persist(
                 from lionagi.state.db import unregister_shared_db
 
                 unregister_shared_db(db)
+        if refusal is not None:
+            raise refusal  # noqa: B904 -- raised as found, keeping its own cause
         return None
 
 
@@ -1625,6 +2064,9 @@ async def find_incomplete_session_for_run(run_id: str) -> dict | None:
                 source="executor",
                 actor=row["id"],
                 expected_statuses={status},
+                extra_fields=(
+                    {"current_phase": None} if _run_may_clear_current_phase(db) else None
+                ),
             )
             row = await db.get_session(row["id"]) or row
         return row

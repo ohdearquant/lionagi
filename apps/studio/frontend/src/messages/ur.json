@@ -159,6 +159,11 @@
     "effect": {
       "requested": "Requested interface action: {kind}"
     },
+    "truncation": {
+      "title": "اس ٹرن کا کچھ حصہ محفوظ نہیں رہا",
+      "summary": "{frames} فریم محفوظ نہیں · {size}",
+      "limit": " · حد: {limit}"
+    },
     "outcome": {
       "completed": "Turn completed",
       "failed": "Turn failed",
@@ -241,8 +246,8 @@
       "allHint": "شروع کرنے کے لیے اپنا پہلا ایجنٹ یا ورک فلو بنائیں۔",
       "filtered": "کوئی آئٹم آپ کے فلٹر سے میل نہیں کھاتا۔",
       "filteredHint": "دوسری قسم آزمائیں یا تلاش صاف کریں۔",
+      "clearFilters": "فلٹرز صاف کریں",
       "createFirst": "اپنا پہلا بنائیں",
-      "createWorkflow": "نیا ورک فلو",
       "createAgent": "نیا ایجنٹ",
       "allSkill": "کوئی سکل نہیں ملی۔",
       "allSkillHint": "یہاں دیکھنے کے لیے ~/.lionagi/skills/NAME/ کے تحت ایک SKILL.md شامل کریں۔",
@@ -303,12 +308,12 @@
       "engineMaxDepth": "زیادہ سے زیادہ گہرائی",
       "engineMaxAgents": "زیادہ سے زیادہ ایجنٹس",
       "loadFailed": "(ورژن لوڈ کرنے میں ناکامی)",
-      "invocations": "انووکیشنز",
-      "successRate": "کامیابی کی شرح",
-      "lastUsed": "آخری استعمال",
-      "never": "کبھی نہیں",
-      "recentInvocations": "حالیہ انووکیشنز",
-      "noInvocations": "ابھی تک کوئی انووکیشن ریکارڈ نہیں ہوئی۔",
+      "invocations": "درج شدہ کالز",
+      "successRate": "درج شدہ کامیابی کی شرح",
+      "lastUsed": "آخری ٹریک شدہ استعمال",
+      "never": "درج نہیں",
+      "recentInvocations": "حال ہی میں تازہ کیے گئے ریکارڈ",
+      "noInvocations": "کوئی کال درج نہیں ہے۔",
       "skillValidationFailed": "توثیق ناکام ہو گئی۔ محفوظ کرنے سے پہلے نیچے دی گئی خرابیاں درست کریں۔",
       "pluginOwnedSkillHint": "یہ ایک پلگ ان کے ساتھ شامل ہے — تبدیل کرنے کے لیے پلگ ان کی فائلیں براہ راست ترمیم کریں۔",
       "readOnly": "صرف پڑھنے کے لیے",
@@ -320,7 +325,10 @@
       "pluginHooksSection": "ہک کنفیگریشن",
       "pluginReadmeSection": "README",
       "yes": "ہاں",
-      "no": "نہیں"
+      "no": "نہیں",
+      "usageCoverage": "اس مہارت یا پلگ ان کی نگرانی کا دائرہ نامعلوم ہے؛ صرف درج شدہ کالز دکھائی جاتی ہیں۔ کامیابی کی شرح ختم شدہ ریکارڈز میں کامیابی سے مکمل ہونے والے رنز شمار کرتی ہے۔ حالیہ اوقات اپ ڈیٹ کے بعد سے شمار ہوتے ہیں۔",
+      "usageUnavailable": "درج شدہ استعمال کا ڈیٹا دستیاب نہیں ہے۔",
+      "usageUnknown": "نامعلوم"
     },
     "template": {
       "badge": "بلٹ اِن",
@@ -666,6 +674,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "حالیہ رنز دستیاب نہیں",
     "title": "شیڈولز",
     "subtitle": "cron، interval، اور GitHub ٹرگرز پر مستقل آٹومیشنز",
     "calendar": "کیلنڈر",
@@ -1250,6 +1259,12 @@
       "body": "Something answered at {base}, but it isn't a lionagi daemon.",
       "fix": "Stop that program, or point the daemon at a different port:",
       "command": "li studio --port 8766"
+    },
+    "accessRequired": {
+      "title": "اس ڈیمن کو رسائی ٹوکن درکار ہے",
+      "body": "{base} پر ایک lionagi ڈیمن نے جواب دیا، لیکن اس صفحے کو مسترد کر دیا۔ ڈیمن کسی دوسرے اوریجن کے صفحے کو صرف رسائی ٹوکن کے ساتھ قبول کرتا ہے، اور li studio کمانڈ اس صفحے کو کھولتے وقت اسے ٹوکن دیتی ہے۔ صفحہ دوبارہ لوڈ کرنے سے ٹوکن ختم ہو جاتا ہے۔",
+      "fix": "رسائی کے ساتھ Studio کھولنے کے لیے اسے وہاں چلائیں جہاں ڈیمن چل رہا ہے:",
+      "command": "li studio"
     },
     "retry": "Retry",
     "dismiss": "Dismiss"

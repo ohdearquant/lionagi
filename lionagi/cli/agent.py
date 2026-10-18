@@ -11,6 +11,8 @@ import sys
 import time
 from pathlib import Path
 
+from pydantic import BaseModel, field_validator
+
 from lionagi import Branch
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi._errors import ConfigurationError
@@ -29,6 +31,7 @@ from lionagi.state import provenance as _provenance
 from lionagi.state.artifact_verifier import resolve_artifact_contract
 
 from ._agent_depth import stamp_agent_depth
+from ._argtypes import BoundedInt
 from ._context_from import (
     DEFAULT_CONTEXT_BUDGET_TOKENS,
     ContextFromError,
@@ -44,11 +47,13 @@ from ._mcp_resolve import (
 from ._providers import (
     _CLAUDE_PROVIDER_NAMES,
     BACKENDS,
+    MAX_TIMEOUT_SECONDS,
     PROVIDER_BYPASS_KWARGS,
     PROVIDER_EFFORT_KWARG,
     PROVIDER_FAST_KWARGS,
     PROVIDER_YOLO_KWARGS,
     PROVIDERS_EFFORT_VIA_MODEL_NAME,
+    _add_codex_account_integration_kwargs,
     _clamp_claude_effort,
     _clamp_codex_effort,
     add_common_cli_args,
@@ -60,6 +65,7 @@ from ._providers import (
     resolve_persisted_effort,
 )
 from ._runs import (
+    RunDir,
     allocate_run,
     find_branch,
     load_last_branch,
@@ -74,6 +80,31 @@ from ._util import EXIT_CODE_BY_STATUS, classify_exception, validate_cwd_exists
 _PRESET_CHOICES = ("coding",)
 # The MCP choice a branch was launched with, replayed by a resume that names none.
 _MCP_LAUNCH_KEY = "mcp_launch"
+# An API model has no tool loop of its own, so lionagi runs one in-process, and
+# only for a profile that names the tool set the leg may use (`api_tools`). The
+# read set is the only one: the tools run with this process's own permissions,
+# and tools that write or run commands wait for an operating-system sandbox.
+_API_TOOL_SETS: dict[str, tuple[str, ...]] = {"read": ("reader", "search", "context")}
+# The tool set and round bound an API branch was launched with, read again on resume.
+_API_LAUNCH_KEY = "api_launch"
+# Rounds of the tool loop after the first; a profile's `max_extensions` replaces it.
+_API_DEFAULT_MAX_EXTENSIONS = 10
+# The tool loops an API leg can run (`api_loop`): ReAct, the default, or batched LNDL
+# rounds (ADR-0132). A launch record written before the key existed runs ReAct.
+_API_LOOPS = ("react", "lndl")
+_API_DEFAULT_LOOP = "react"
+# The <lact> calls one LNDL round may declare; a round that declares more runs none.
+_API_LNDL_MAX_ACTIONS = 16
+# An LNDL leg keeps calls and the answer in separate rounds, so the answer is written after
+# the results are read; this is the guidance that tells the model so.
+_API_LNDL_GUIDANCE = (
+    "A round either declares <lact> calls, with no OUT{}, or writes the answer, with no "
+    "<lact>. Calls declared in a round run when it ends, and you read their results in the "
+    "next round. Write the answer as text in an <lvar> and bind it in OUT{answer: [...]}; a "
+    "tool result is never the answer."
+)
+# The Anthropic messages endpoint refuses a request that names no output limit.
+_ANTHROPIC_DEFAULT_MAX_TOKENS = 8192
 
 _DETACHED_EXECUTION_BOUNDARY = """[DETACHED EXECUTION BOUNDARY]
 This process was launched as a detached MCP job. No interactive harness is attached, so this turn cannot receive a background completion notification. Keep every command in the foreground. If a command tool yields a live execution handle, poll that same handle until it reaches a terminal result. Do not arm a monitor or finish a turn waiting for an external notification. Verify the requested outputs before reporting completion."""
@@ -92,6 +123,7 @@ _KHIVE_INJECTION_COUNTERS = (
     "recall_turns",
     "blocks_injected",
     "failed",
+    "degraded_turns",
     "writeback_records",
     "writeback_failed",
 )
@@ -177,6 +209,219 @@ def _make_coding_preset(
     from lionagi.agent.spec import AgentSpec
 
     return AgentSpec.coding(cwd=cwd, effort=effort, system_prompt=system_prompt, role=role)
+
+
+def _recall_only(configured: object) -> object:
+    """A profile's ``khive_injection`` setting with writeback turned off.
+
+    An API leg runs its tools in this process, so writeback would receive the read
+    set's outputs and store file text in khive. Recall stays as the profile sets it.
+    """
+    if configured is True:
+        return {"writeback": {"enabled": False}}
+    if isinstance(configured, dict):
+        return {**configured, "writeback": {"enabled": False}}
+    return configured
+
+
+def _profile_api_launch(profile) -> dict | None:
+    """The API tool loop a profile declares, or None when it declares none.
+
+    `api_tools` names the tool set; `max_extensions` bounds the rounds after the
+    first (1 to 100); `api_loop` picks the loop, `react` or `lndl`. A value outside
+    any of them, or `api_loop` without `api_tools`, is refused here, before a run exists.
+    """
+    extra = (getattr(profile, "extra", None) or {}) if profile is not None else {}
+    name = getattr(profile, "name", "<unknown>")
+    if "api_tools" not in extra:
+        if "api_loop" in extra:
+            raise ConfigurationError(
+                f"agent profile {name!r} sets api_loop but no api_tools; the loop runs only "
+                "for an API model with the read set ('api_tools: read'), and a CLI "
+                "provider runs its own."
+            )
+        return None
+    tools = extra["api_tools"]
+    if not isinstance(tools, str) or tools not in _API_TOOL_SETS:
+        raise ConfigurationError(
+            f"agent profile {name!r} sets api_tools to {tools!r}; an API model runs only "
+            f"with the read set ('read': {', '.join(_API_TOOL_SETS['read'])}). Tools that "
+            "write files or run commands are not offered to an API model: they would run "
+            "with this process's own permissions, and this path has no sandbox for them."
+        )
+    rounds = extra.get("max_extensions", _API_DEFAULT_MAX_EXTENSIONS)
+    if not _is_round_bound(rounds):
+        raise ConfigurationError(
+            f"agent profile {name!r} sets max_extensions to {rounds!r}; "
+            "it must be a whole number from 1 to 100."
+        )
+    loop = extra.get("api_loop", _API_DEFAULT_LOOP)
+    if not isinstance(loop, str) or loop not in _API_LOOPS:
+        raise ConfigurationError(
+            f"agent profile {name!r} sets api_loop to {loop!r}; an API model runs "
+            f"{' or '.join(repr(choice) for choice in _API_LOOPS)}."
+        )
+    return {"tools": tools, "max_extensions": rounds, "loop": loop}
+
+
+def _is_round_bound(rounds: object) -> bool:
+    return not isinstance(rounds, bool) and isinstance(rounds, int) and 1 <= rounds <= 100
+
+
+def _recorded_api_launch(recorded: object) -> dict:
+    """The tool loop a stored branch was launched with.
+
+    A record naming a tool set or a round bound this version does not run is
+    refused here, before a run exists.
+    """
+    if isinstance(recorded, dict):
+        tools, rounds = recorded.get("tools"), recorded.get("max_extensions")
+        loop = recorded.get("loop", _API_DEFAULT_LOOP)
+        if (
+            isinstance(tools, str)
+            and tools in _API_TOOL_SETS
+            and _is_round_bound(rounds)
+            and isinstance(loop, str)
+            and loop in _API_LOOPS
+        ):
+            return {"tools": tools, "max_extensions": rounds, "loop": loop}
+    raise ConfigurationError(
+        f"this branch was launched on an API model's tool loop, but its stored launch "
+        f"record {recorded!r} names a tool set, a round bound or a loop this version "
+        "does not run; start a new branch."
+    )
+
+
+def _make_api_agent_spec(
+    *,
+    cwd: str | None,
+    effort: str | None,
+    system_prompt: str | None,
+    role: str,
+    tools: str,
+):
+    """The AgentSpec for an API-model leg: the named read tools, path-guarded to cwd."""
+    from lionagi.agent.spec import AgentSpec, _wire_secure_guards
+
+    spec = AgentSpec.compose(
+        role, effort=effort, tools=["coding"], system_prompt=system_prompt, cwd=cwd
+    )
+    spec.coding_tools = _API_TOOL_SETS[tools]
+    _wire_secure_guards(spec, cwd)
+    return spec
+
+
+class _LndlAnswer(BaseModel):
+    """The answer an LNDL leg ends its turn with: text the model wrote.
+
+    A tool's result is a mapping, and a failed call's is nothing or an error
+    mapping; placed in ``OUT{}`` it would hand back a result nobody read, so it is
+    refused and the refusal is the next round's repair message.
+    """
+
+    answer: str
+
+    @field_validator("answer", mode="before")
+    @classmethod
+    def _written_text(cls, value: object) -> object:
+        if not isinstance(value, str):
+            raise ValueError(
+                "the answer must be text you write. A tool result cannot be the answer: "
+                "read the results above and write the answer as text in OUT{answer: ...}."
+            )
+        return value
+
+
+def _calls_sent(branch) -> dict[int, int]:
+    """Calls sent so far by each model this branch uses, keyed by instance."""
+    models = (getattr(branch, "chat_model", None), getattr(branch, "parse_model", None))
+    return {id(m): m.calls_sent for m in models if hasattr(m, "calls_sent")}
+
+
+def _tool_results(branch) -> int:
+    from lionagi.protocols.messages import ActionResponse
+
+    return sum(isinstance(m, ActionResponse) for m in branch.msgs.messages)
+
+
+async def _run_api_turn(
+    branch,
+    instruction: str,
+    *,
+    timeout: float | None,
+    max_extensions: int,
+    snapshot_dir: str,
+    loop: str = _API_DEFAULT_LOOP,
+) -> str:
+    """One turn of an API-model leg: lionagi's tool loop over the branch's tools.
+
+    The loop is ``Branch.ReAct`` or, for ``loop="lndl"``, batched LNDL rounds
+    (ADR-0132); *timeout* bounds the whole turn and raises ``TimeoutError`` past
+    it. However the turn ends, what it spent is added to the launch record's
+    ``spend``, the invocation's total, and printed, and then the branch is written
+    to *snapshot_dir*, so a resume and a reader of the run directory find both.
+    Returns the answer's text.
+    """
+    import contextlib
+
+    import anyio
+
+    from lionagi.operations.run.run import _write_branch_snapshot
+
+    calls_before = _calls_sent(branch)
+    tools_before = _tool_results(branch)
+    started = time.monotonic()
+    deadline = anyio.fail_after(timeout) if timeout is not None else contextlib.nullcontext()
+    try:
+        with deadline:
+            if loop == "lndl":
+                from lionagi.operations.lndl_middle import build_lndl_middle
+
+                schemas = branch.acts.get_tool_schema(tools=True)
+                result = await branch.operate(
+                    instruction=instruction,
+                    guidance=_API_LNDL_GUIDANCE,
+                    response_format=_LndlAnswer,
+                    tool_schemas=schemas.get("tools", []) if isinstance(schemas, dict) else [],
+                    invoke_actions=False,
+                    handle_validation="raise",
+                    middle=build_lndl_middle(
+                        round_budget=1 + max_extensions,
+                        max_actions=_API_LNDL_MAX_ACTIONS,
+                        lacts_with_out=False,
+                    ),
+                )
+            else:
+                result = await branch.ReAct(
+                    instruction=instruction,
+                    tools=True,
+                    max_extensions=max_extensions,
+                )
+    finally:
+        with anyio.CancelScope(shield=True):
+            calls_after = _calls_sent(branch)
+            record = branch.metadata.get(_API_LAUNCH_KEY)
+            # The record totals this invocation's turns: a queued message drained as a
+            # further turn adds to it, and a resume, a new invocation, clears it first.
+            prior = record.get("spend") if isinstance(record, dict) else None
+            prior = prior if isinstance(prior, dict) else {}
+            spend = {
+                "requests": prior.get("requests", 0)
+                + sum(count - calls_before.get(key, 0) for key, count in calls_after.items()),
+                "tool_calls": prior.get("tool_calls", 0) + _tool_results(branch) - tools_before,
+                "wall_seconds": round(
+                    prior.get("wall_seconds", 0.0) + time.monotonic() - started, 3
+                ),
+            }
+            if isinstance(record, dict):
+                record["spend"] = spend
+            hint(
+                f"[api] spend: {spend['requests']} request(s), {spend['tool_calls']} tool "
+                f"call(s), {spend['wall_seconds']:.1f}s"
+            )
+            await _write_branch_snapshot(branch, snapshot_dir)
+    answer = getattr(result, "answer", result)
+    return "" if answer is None else str(answer)
 
 
 # WorkForm loading helpers (for --form).
@@ -367,31 +612,34 @@ def _report_mcp_resolution(
     The whole point of resolving here is that a leg starting without the
     servers its instructions assume should be visible when it is launched
     rather than inferred from its output an hour later. Silence is reserved
-    for the one case where it is accurate: servers resolved and handed over.
+    for the two cases where it is accurate: a caller who asked for no servers
+    at all, and a set that was resolved and handed over (which is reported as
+    a hint, not a warning).
 
     ``forwarded`` is the caller's answer to "does this spawn hand the resolved
     set to the leg?", read off the request that spawn built. This function must
     not re-derive it from the provider name: a second list here is what let the
-    message contradict the spawn.
+    message contradict the spawn. It decides what is said about a set that was
+    resolved; it does not decide whether a resolution that produced no set at
+    all is worth a word, since a search that found nothing has nothing to
+    forward and would otherwise be reported by no caller at all.
     """
     from lionagi.cli._logging import warn
 
-    if not forwarded:
-        if resolution.servers is not None:
-            warn(
-                f"MCP servers resolved from {resolution.source} are not carried to "
-                f"provider {provider!r} on this spawn path. This leg gets whatever "
-                "its own provider resolves for itself."
-            )
-        return
+    if resolution.declared_empty:
+        return  # --no-mcp-config or a named config listing no servers: chosen, not degraded
 
     if resolution.servers is not None:
-        names = ", ".join(sorted(resolution.servers))
-        hint(f"[mcp] {len(resolution.servers)} server(s) from {resolution.source}: {names}")
+        if forwarded:
+            names = ", ".join(sorted(resolution.servers))
+            hint(f"[mcp] {len(resolution.servers)} server(s) from {resolution.source}: {names}")
+            return
+        warn(
+            f"MCP servers resolved from {resolution.source} are not carried to "
+            f"provider {provider!r} on this spawn path. This leg gets whatever "
+            "its own provider resolves for itself."
+        )
         return
-
-    if resolution.reason is None:
-        return  # --no-mcp-config: chosen, not degraded
 
     target = cwd or os.getcwd()
     warn(
@@ -432,6 +680,7 @@ async def _drain_pending_steers(
     operate_kwargs: dict,
     deadline: float | None,
     owner: str | None = None,
+    run_turn=None,
 ) -> object | None:
     """Consume queued `message` session controls as warm continuation turns.
 
@@ -444,6 +693,10 @@ async def _drain_pending_steers(
 
     *owner* names this leg on the rows it claims, so a concurrent leg and the
     teardown can both tell this leg's in-flight work from their own.
+
+    *run_turn*, when given, runs each continuation as ``run_turn(instruction,
+    timeout)`` instead of ``branch.operate``: an API-model leg's turn is its tool
+    loop, not one model call.
 
     Returns the last continuation result, or None if nothing was consumed.
     """
@@ -504,16 +757,18 @@ async def _drain_pending_steers(
             break
         joined = "\n".join(f"- {t}" for t in texts if t.strip())
         hint(f"[steer] applying {len(claimed)} queued operator message(s) as a continuation turn")
-        kwargs = dict(operate_kwargs)
-        if remaining is not None:
-            # What is actually left, never a floor. Flooring the budget would
-            # hand the continuation a fresh second that the caller's deadline
-            # has already spent.
-            kwargs["timeout"] = remaining
-        last_res = await branch.operate(
-            instruction=_AGENT_STEER_TEMPLATE.format(lines=joined),
-            **kwargs,
-        )
+        steer_instruction = _AGENT_STEER_TEMPLATE.format(lines=joined)
+        if run_turn is not None:
+            # The same budget rule as below: what is left, never a floor.
+            last_res = await run_turn(steer_instruction, remaining)
+        else:
+            kwargs = dict(operate_kwargs)
+            if remaining is not None:
+                # What is actually left, never a floor. Flooring the budget would
+                # hand the continuation a fresh second that the caller's deadline
+                # has already spent.
+                kwargs["timeout"] = remaining
+            last_res = await branch.operate(instruction=steer_instruction, **kwargs)
         for row, claim_token in claimed:
             # Unconditional on the clock, deliberately. The deadline gates when
             # new provider work may start, which the recheck above enforces;
@@ -539,8 +794,17 @@ async def _drain_pending_steers(
     return last_res
 
 
-async def _tombstone_pending_steers(live: dict | None) -> None:
+async def _tombstone_pending_steers(
+    live: dict | None,
+    *,
+    result: str = (
+        "rejected: run reached terminal status before the steer could land — use `li agent -r`"
+    ),
+) -> None:
     """Finalize never-claimed session controls as rejected at run teardown.
+
+    *result* is the outcome recorded on each closed row; a flow run's teardown
+    passes its own, since its controls are not steers.
 
     A steer enqueued while the run was live but never drained must not sit
     pending forever. Best-effort: a failure here logs and leaves the row
@@ -588,10 +852,7 @@ async def _tombstone_pending_steers(live: dict | None) -> None:
             # recorded as never delivered.
             await live["db"].finalize_session_control(
                 row["id"],
-                result=(
-                    "rejected: run reached terminal status before "
-                    "the steer could land — use `li agent -r`"
-                ),
+                result=result,
                 only_if_unclaimed=True,
             )
     except Exception as exc:  # noqa: BLE001 — teardown must not raise
@@ -624,6 +885,8 @@ async def _run_agent(
     no_mcp_config: bool = False,
     _auto_resumed: bool = False,
     _injection_totals: dict[str, int] | None = None,
+    # Last, so every parameter before it keeps the position it had
+    idle_timeout: int | None = None,
 ) -> tuple[str, str, str, str, str | None]:
     """Execute one agent turn; returns (result, provider, branch_id, terminal_status, session_id).
 
@@ -644,13 +907,23 @@ async def _run_agent(
     # Read from *this* process's directory, before --cwd is applied to anything.
     # The child's tool surface is meant to be a property of the submission, and
     # this is the only point at which the submitting directory is still known.
+    launch_dir = Path(os.getcwd()).resolve()
     mcp_resolution = resolve_spawn_mcp_servers(
         mcp_config,
-        launch_dir=os.getcwd(),
+        launch_dir=launch_dir,
         disabled=no_mcp_config,
     )
     if resume and continue_last:
         raise ConfigurationError("--resume / -r and --continue-last / -c are mutually exclusive.")
+    if idle_timeout is not None and idle_timeout <= 0:
+        raise ConfigurationError(
+            f"--idle-timeout must be a positive number of seconds, not {idle_timeout}; "
+            "the LIONAGI_WORKER_IDLE_TIMEOUT setting is the switch that turns the watchdog off."
+        )
+    if idle_timeout is not None and idle_timeout > MAX_TIMEOUT_SECONDS:
+        raise ConfigurationError(
+            f"--idle-timeout must be at most {MAX_TIMEOUT_SECONDS} seconds, not {idle_timeout}."
+        )
     if preset and (resume or continue_last):
         raise ConfigurationError(
             "--preset only applies to new branches; cannot combine with --resume / --continue-last."
@@ -696,6 +969,8 @@ async def _run_agent(
             fast = True
         if profile.timeout and timeout is None:
             timeout = profile.timeout
+        if profile.idle_timeout and idle_timeout is None:
+            idle_timeout = profile.idle_timeout
         if profile.resume_on_timeout and not resume_on_timeout:
             resume_on_timeout = True
         if (getattr(profile, "extra", None) or {}).get("hooks"):
@@ -710,6 +985,11 @@ async def _run_agent(
                 "for this run"
             )
 
+    # A codex leg's account integrations follow its role; with no role, or one that sets
+    # neither field, the leg's argv is what it was before these fields existed.
+    account_connectors = tuple(getattr(profile, "account_connectors", None) or ())
+    contain_account_integrations = bool(getattr(profile, "contain_account_integrations", False))
+
     # Validate a declared profile `role:` key up front: a falsy-but-present
     # value must fail loudly here, not silently fall back to "implementer".
     profile_role_extra = (getattr(profile, "extra", None) or {}) if profile else {}
@@ -722,6 +1002,14 @@ async def _run_agent(
             "string; set it to a valid role name, or remove the key to keep "
             "the plain profile path (no role/policy composition)."
         )
+
+    # A profile's loop must name the read set it loops over, whatever the
+    # provider or the branch: a CLI provider runs its own loop and a branch
+    # without a stored record runs as before, so `api_loop` there would be
+    # silently ignored. Without `api_tools` the call below only refuses that, and
+    # it runs before any run is allocated.
+    if "api_tools" not in (getattr(profile, "extra", None) or {}):
+        _profile_api_launch(profile)
 
     stamp_agent_depth(agent_name)
 
@@ -781,7 +1069,7 @@ async def _run_agent(
                     launch_dir=launched["launch_dir"],
                     disabled=disabled,
                 )
-            except (McpConfigError, UnicodeDecodeError) as exc:
+            except McpConfigError as exc:
                 # Only a named file is refused; a search that finds nothing usable
                 # says so in the resolution instead.
                 raise McpConfigError(
@@ -853,14 +1141,39 @@ async def _run_agent(
             bypass,
             mcp_servers=mcp_resolution.servers,
             mcp_exclusive=mcp_resolution.declared_empty,
+            account_connectors=account_connectors,
+            contain_account_integrations=contain_account_integrations,
         )
         effort = resolve_persisted_effort(provider, chat_model, effort)
+        if not isinstance(chat_model, str) and not chat_model.is_cli:
+            # build_chat_model's options are CLI options, and the model it builds
+            # for them carries a placeholder key; an API model is its spec alone.
+            chat_model = f"{provider}/{model}"
+        # A bare spec string is what the branch would turn into a model anyway; it is
+        # turned here so the provider's kind is known before the spawn shape is chosen.
+        if isinstance(chat_model, str):
+            from lionagi.service.imodel import iModel
+
+            chat_model = iModel(model=chat_model)
+        # An API model runs lionagi's own tool loop, only for a profile that declares it.
+        api_launch = None if chat_model.is_cli else _profile_api_launch(profile)
+        if api_launch is not None and preset == "coding":
+            raise ConfigurationError(
+                "--preset coding binds tools that write files and run commands; an API "
+                "model runs only with its profile's read set (api_tools: read)."
+            )
+        if api_launch is not None and images:
+            raise ConfigurationError("--image is not supported for an API model yet.")
+        if api_launch is not None and chat_model.endpoint.config.provider == "anthropic":
+            chat_model.endpoint.config.kwargs.setdefault(
+                "max_tokens", _ANTHROPIC_DEFAULT_MAX_TOKENS
+            )
         # Two spawn shapes hand the set over in two different places, so the
         # message has to read the one that applies. A plain leg gets only what
         # build_chat_model already put on the request, which is knowable here;
         # a create_agent leg is handed the set inside create_agent, so its
         # message waits for the request that call produces (below).
-        takes_create_agent_path = preset == "coding" or has_role_key
+        takes_create_agent_path = preset == "coding" or has_role_key or api_launch is not None
         if not takes_create_agent_path:
             from lionagi.agent.factory import request_kwargs_carry_forwarded_mcp
 
@@ -885,14 +1198,25 @@ async def _run_agent(
             # Use profile.raw_body, not profile.system_prompt, to avoid
             # duplicating LION_SYSTEM_MESSAGE (see docs/internals/cli.md).
             profile_extra = (getattr(profile, "raw_body", None) or "") if profile else ""
-            spec = _make_coding_preset(
-                cwd=cwd,
-                effort=effort or "high",
-                system_prompt=profile_extra or None,
-                role=profile_role if has_role_key else "implementer",
-            )
+            if api_launch is not None:
+                spec = _make_api_agent_spec(
+                    cwd=cwd,
+                    effort=effort or "high",
+                    system_prompt=profile_extra or None,
+                    role=profile_role if has_role_key else "reviewer",
+                    tools=api_launch["tools"],
+                )
+            else:
+                spec = _make_coding_preset(
+                    cwd=cwd,
+                    effort=effort or "high",
+                    system_prompt=profile_extra or None,
+                    role=profile_role if has_role_key else "implementer",
+                )
             if profile is not None:
                 spec.khive_injection = getattr(profile, "khive_injection", None)
+                if api_launch is not None:
+                    spec.khive_injection = _recall_only(spec.khive_injection)
             # AgentSpec.coding()/compose() default lion_system=True regardless
             # of the profile's frontmatter — propagate an explicit opt-out.
             if profile is not None and not profile.lion_system:
@@ -906,19 +1230,30 @@ async def _run_agent(
                 chat_model=chat_model,
                 log_config=DataLoggerConfig(auto_save_on_exit=False),
                 load_settings=False,
+                # An API-model leg is handed no MCP server: its tools are the read set.
                 resolved_mcp_servers=(
-                    {} if mcp_resolution.declared_empty else mcp_resolution.servers
+                    {}
+                    if api_launch is not None or mcp_resolution.declared_empty
+                    else mcp_resolution.servers
                 ),
                 resolved_mcp_explicit=mcp_resolution.explicit,
             )
-            # The hand-over happened inside create_agent, so the request it
-            # produced is the only honest source for what this leg is getting.
-            _report_mcp_resolution(
-                mcp_resolution,
-                provider=provider,
-                cwd=cwd,
-                forwarded=request_carries_forwarded_mcp(branch),
-            )
+            if api_launch is not None:
+                branch.metadata[_API_LAUNCH_KEY] = dict(api_launch)
+                hint(
+                    f"[api] {provider} runs lionagi's {api_launch['loop']} tool loop with the "
+                    f"read set ({', '.join(_API_TOOL_SETS[api_launch['tools']])}), up to "
+                    f"{api_launch['max_extensions']} more round(s); no MCP server is handed to it"
+                )
+            else:
+                # The hand-over happened inside create_agent, so the request it
+                # produced is the only honest source for what this leg is getting.
+                _report_mcp_resolution(
+                    mcp_resolution,
+                    provider=provider,
+                    cwd=cwd,
+                    forwarded=request_carries_forwarded_mcp(branch),
+                )
         else:
             branch = Branch(
                 chat_model=chat_model,
@@ -938,13 +1273,15 @@ async def _run_agent(
         # prefix (e.g. 'gpt-5.3-codex-spark' vs 'codex/gpt-5.3-codex-spark')
         # must not persist a run/session recorded as a failed reliability event.
         # New-branch only — a resume model override never swaps the provider.
-        if not branch.chat_model.is_cli:
+        if not branch.chat_model.is_cli and api_launch is None:
             cli_provider = getattr(branch.chat_model.endpoint.config, "provider", provider)
             raise ConfigurationError(
                 f"run operation only supports CLI endpoints, but got provider={cli_provider!r}. "
                 "Use one of the CLI endpoint prefixes: claude_code, codex, gemini-cli, pi. "
                 "Did you mean 'gemini-cli/<model>' instead of 'gemini/<model>'? "
-                "The 'gemini' prefix routes to the REST API, not the local Gemini CLI."
+                "The 'gemini' prefix routes to the REST API, not the local Gemini CLI. "
+                "An API model runs through an agent profile (-a) that declares "
+                "'api_tools: read'."
             )
     else:
         cfg = branch.chat_model.endpoint.config.kwargs
@@ -955,9 +1292,25 @@ async def _run_agent(
 
                 warn(f"resume model override: {old_model} → {model}")
             cfg["model"] = model
-        if verbose:
+            if model != old_model and effort is None:
+                # The persisted effort was clamped for the OLD model; the new
+                # one has its own ceiling, so re-clamp instead of replaying a
+                # value that model may reject (a sol-derived 'ultra' is a 400
+                # on a spark resume).
+                from lionagi.service.providers import reclamp_effort_for_model
+
+                kwarg = PROVIDER_EFFORT_KWARG.get(provider)
+                if kwarg and cfg.get(kwarg) is not None:
+                    cfg[kwarg] = reclamp_effort_for_model(provider, cfg[kwarg], model)
+        # The display flags are CLI endpoint options; an API model sends its
+        # config's kwargs with each request, so a branch on the tool loop is
+        # handed neither.
+        on_tool_loop = (
+            not getattr(branch.chat_model, "is_cli", False) and _API_LAUNCH_KEY in branch.metadata
+        )
+        if verbose and not on_tool_loop:
             cfg["verbose_output"] = True
-        if theme is not None:
+        if theme is not None and not on_tool_loop:
             cfg["cli_display_theme"] = theme
         if effort is not None:
             kwarg = PROVIDER_EFFORT_KWARG.get(provider)
@@ -983,6 +1336,13 @@ async def _run_agent(
             cfg.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
         if fast:
             cfg.update(PROVIDER_FAST_KWARGS.get(provider, {}))
+        # The stored row never carries a connector grant; its containment value also belongs
+        # to the previous role, so both settings come from the current role.
+        if provider == "codex":
+            cfg.pop("contain_account_integrations", None)
+            _add_codex_account_integration_kwargs(
+                cfg, account_connectors, contain_account_integrations
+            )
         # A resumed leg re-spawns a CLI child, so it needs the server set handed
         # to it just as a new one does; the persisted branch carries the model,
         # not the caller's directory. Which providers can be given a set, and
@@ -1032,6 +1392,41 @@ async def _run_agent(
                 forwarded=forwarded,
             )
 
+    # A branch launched onto the tool loop records the tool set and bound it was
+    # launched with, and a resume runs the loop again from that record. A branch
+    # without the record runs as it did before the loop existed.
+    api_launch = None
+    if not getattr(branch.chat_model, "is_cli", False) and _API_LAUNCH_KEY in branch.metadata:
+        api_launch = _recorded_api_launch(branch.metadata[_API_LAUNCH_KEY])
+        # What an earlier invocation spent is not this one's.
+        branch.metadata[_API_LAUNCH_KEY].pop("spend", None)
+        declared = _profile_api_launch(profile) if is_resumed_branch else None
+        if is_resumed_branch and profile is not None and declared is None:
+            raise ConfigurationError(
+                f"agent profile {getattr(profile, 'name', agent_name)!r} declares no "
+                "api_tools, but this branch was launched on an API model's tool loop; "
+                "resume it with a profile that declares 'api_tools: read', or without -a."
+            )
+        if declared is not None:
+            api_launch["max_extensions"] = declared["max_extensions"]
+        if is_resumed_branch and images:
+            raise ConfigurationError("--image is not supported for an API model yet.")
+        if is_resumed_branch:
+            # A stored branch keeps its messages, not its tools, so the read set
+            # is bound again, guarded to this invocation's working directory.
+            from lionagi.agent.factory import _register_coding_tools
+
+            _register_coding_tools(
+                branch,
+                _make_api_agent_spec(
+                    cwd=cwd,
+                    effort=None,
+                    system_prompt=None,
+                    role="reviewer",
+                    tools=api_launch["tools"],
+                ),
+            )
+
     # Skip the profile system prompt for a branch that carries (or would carry)
     # a create_agent-composed system message — full rationale in
     # docs/internals/cli.md. Brand-new branch: `took_create_agent_path` is
@@ -1044,11 +1439,19 @@ async def _run_agent(
         # The file on the line is what a resume reads again, named or not: a
         # leg submitted through the MCP server is pointed at a snapshot of the
         # config its submission found, and that snapshot is its set.
+        # A snapshot's resolution reports the config it was taken from and the
+        # directory its search began in, both provenance; a resume must read the
+        # snapshot itself, from this process's own directory.
         named_on_the_line = mcp_config is not None and mcp_resolution.source is not None
+        line_file = (
+            explicit_mcp_config_path(mcp_config, launch_dir=launch_dir)
+            if named_on_the_line
+            else None
+        )
         branch.metadata[_MCP_LAUNCH_KEY] = {
-            "mcp_config": str(mcp_resolution.source) if named_on_the_line else None,
+            "mcp_config": str(line_file) if line_file is not None else None,
             "no_mcp_config": no_mcp_config,
-            "launch_dir": str(mcp_resolution.searched_from),
+            "launch_dir": str(launch_dir),
         }
 
     if is_resumed_branch:
@@ -1065,6 +1468,12 @@ async def _run_agent(
         prompt = preamble + prompt
 
     run = allocate_run()
+    if isinstance(run, RunDir):
+        run = run.with_execution_provenance(
+            cwd=cwd or os.getcwd(),
+            mcp_resolution=mcp_resolution,
+            mcp_disabled=no_mcp_config,
+        )
     branch_id = str(branch.id)
     resolved_model_spec = _provenance.resolve_model_spec(provider, model)
     run_manifest = {
@@ -1086,23 +1495,52 @@ async def _run_agent(
         playbook_artifacts=None,
         agent_defaults=profile.artifact_defaults if profile else None,
     )
-    live = await setup_agent_persist(
-        branch,
-        agent_name=agent_name,
-        artifacts_path=str(run.artifact_root),
-        artifact_contract=artifact_contract,
-        invocation_id=invocation_id,
-        model=resolved_model_spec,
-        provider=provider,
-        effort=effort,
-        project=project,
-        run_id=run.run_id,
-        run_manifest=run_manifest,
-        # This runner drains queued operator messages at turn end and
-        # tombstones whatever it did not take, so controls aimed at it have a
-        # consumer.
-        drains_controls=True,
-    )
+    from lionagi.state.compat import StateCompatibilityRefused
+
+    try:
+        live = await setup_agent_persist(
+            branch,
+            agent_name=agent_name,
+            artifacts_path=str(run.artifact_root),
+            artifact_contract=artifact_contract,
+            invocation_id=invocation_id,
+            model=resolved_model_spec,
+            provider=provider,
+            effort=effort,
+            project=project,
+            run_id=run.run_id,
+            run_manifest=run_manifest,
+            # This runner drains queued operator messages at turn end and
+            # tombstones whatever it did not take, so controls aimed at it have a
+            # consumer.
+            drains_controls=True,
+        )
+    except StateCompatibilityRefused as exc:
+        # The run stops before it starts (ADR-0128 D6), and its run.json says so rather than
+        # reading `running` with no process behind it.
+        if _write_run_manifest is not None:
+            run_manifest.update(
+                status="failed",
+                ended_at=time.time(),
+                error=f"The store refused a write: {exc}",
+            )
+            _write_run_manifest(run_manifest)
+        raise
+    if live is None and _write_run_manifest is not None:
+        # Setup returned no session (it may have committed a row before it failed, which `li
+        # monitor` lists under that row's own id; nothing here prints it), so the run id names no
+        # row: the run records its own process on run.json, where `li kill <run id>` reads it, and
+        # says how to stop it (ADR-0104 Amendment 2).
+        from lionagi.cli._logging import warn
+
+        from .kill import current_pid_markers
+
+        run_manifest.update(current_pid_markers())
+        _write_run_manifest(run_manifest)
+        warn(
+            f"run {run.run_id}: persistence setup returned no session; "
+            f"stop it with: li kill {run.run_id}"
+        )
     if seed_injection_totals:
         await _seed_injection_stats(live, _injection_totals)
 
@@ -1252,16 +1690,37 @@ async def _run_agent(
         _heartbeat_task = None
 
     _leg_deadline = (time.monotonic() + timeout) if timeout is not None else None
+    _api_turn = None
+    if api_launch is not None:
+
+        async def _api_turn(instruction: str, turn_timeout: float | None):
+            return await _run_api_turn(
+                branch,
+                instruction,
+                timeout=turn_timeout,
+                max_extensions=api_launch["max_extensions"],
+                snapshot_dir=str(run.branches_dir),
+                loop=api_launch["loop"],
+            )
+
+    # Passed only when set: an absent key is what lets the run fall back to
+    # LIONAGI_WORKER_IDLE_TIMEOUT, and an explicit None would switch the
+    # watchdog off instead.
+    _idle = {"idle_timeout": idle_timeout} if idle_timeout is not None else {}
     try:
-        res = await branch.operate(
-            instruction=prompt,
-            stream_persist=True,
-            persist_dir=str(run.stream_dir),
-            snapshot_dir=str(run.branches_dir),
-            timeout=timeout,
-            **({"images": images} if images else {}),
-            **({"repo": cwd} if cwd else {}),
-        )
+        if _api_turn is not None:
+            res = await _api_turn(prompt, timeout)
+        else:
+            res = await branch.operate(
+                instruction=prompt,
+                stream_persist=True,
+                persist_dir=str(run.stream_dir),
+                snapshot_dir=str(run.branches_dir),
+                timeout=timeout,
+                **_idle,
+                **({"images": images} if images else {}),
+                **({"repo": cwd} if cwd else {}),
+            )
         steer_res = await _drain_pending_steers(
             live,
             branch,
@@ -1270,6 +1729,7 @@ async def _run_agent(
                 "persist_dir": str(run.stream_dir),
                 "snapshot_dir": str(run.branches_dir),
                 "timeout": timeout,
+                **_idle,
                 **({"repo": cwd} if cwd else {}),
             },
             deadline=_leg_deadline,
@@ -1278,6 +1738,7 @@ async def _run_agent(
             # could not tell two legs apart, which is the whole point of naming
             # the claimant.
             owner=run.run_id,
+            run_turn=_api_turn,
         )
         if steer_res is not None:
             res = steer_res
@@ -1375,7 +1836,12 @@ async def _run_agent(
             # boundary, since StateDB re-raises out of __aenter__ and an
             # unguarded `async with` here would turn a completed run into a
             # reported infrastructure exception.
-            if not will_auto_resume and live:
+            # Not on a store in compatibility mode: its control rows are not ones this run
+            # created, the only rows the profile lets it write (ADR-0128 D4), and the sweep's
+            # native open would apply this package's schema to the store.
+            from lionagi.state.compat import is_compatibility_store
+
+            if not will_auto_resume and live and not is_compatibility_store(live.get("db")):
                 from lionagi.state.db import StateDB
 
                 try:
@@ -1390,6 +1856,33 @@ async def _run_agent(
             run_manifest["status"] = _terminal_status
             if _terminal_status in SESSION_TERMINAL_STATUSES:
                 run_manifest["ended_at"] = time.time()
+            if live and "signal_persist_dropped" in live:
+                # Signals this run's persistence could not confirm it wrote, 0 included; the field is
+                # absent when teardown had no session of this run to unbind.
+                run_manifest["signal_persist_dropped"] = live["signal_persist_dropped"]
+            if _terminal_status == "failed":
+                # The reason teardown decided for this run, so a reader of the run directory
+                # alone can tell a provider's refusal from a crash. A failure teardown decides
+                # (a missing required artifact, a failed operation) raises nothing here, and the
+                # session row is not a reliable record of it: a resume reuses the row, and one
+                # whose reopen or terminal write missed still carries an earlier run's reason. The
+                # exception speaks for a run teardown decided nothing for.
+                _decided = (live or {}).get("terminal_reason")
+                _error = _decided[1] if _decided and _decided[0] == _terminal_status else None
+                if _decided and _decided[0] != _terminal_status:
+                    # Teardown writes only the outcome it decided, so a row reading another one
+                    # was ended by another writer: a concurrent run of the session, or the state
+                    # doctor sweeping it as stale. The error names this run's outcome and leaves
+                    # the other writer's reason on the row.
+                    _error = (
+                        f"The session row reads {_terminal_status}, which this run's teardown "
+                        f"did not write; this run's own outcome was {_decided[0]}."
+                    )
+                if _error is None and _terminal_exc is not None:
+                    _, _error, _ = resolve_run_reason(
+                        status=_terminal_status, exception=_terminal_exc
+                    )
+                run_manifest["error"] = _error or "The run failed; no reason was recorded for it."
             if _write_run_manifest is not None:
                 _write_run_manifest(run_manifest)
             # Only when an exception is on its way out, because then this is
@@ -1421,6 +1914,11 @@ async def _run_agent(
         _terminal_status = "failed"
         run_manifest["status"] = _terminal_status
         run_manifest["ended_at"] = time.time()
+        # Failed only now, after teardown wrote run.json, so the reason is written here.
+        run_manifest["error"] = (
+            "Resume produced an empty stream; the session may have expired "
+            f"(resume target: {resume or 'last'})."
+        )
         if _write_run_manifest is not None:
             _write_run_manifest(run_manifest)
 
@@ -1465,6 +1963,7 @@ async def _run_agent(
             project=project,
             bypass=bypass,
             resume_on_timeout=resume_on_timeout,
+            idle_timeout=idle_timeout,
             notify=notify,
             mcp_config=mcp_config,
             no_mcp_config=no_mcp_config,
@@ -1535,7 +2034,7 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
             "then a trusted+enabled plugin's declared profile "
             "('<plugin>/<NAME>', or a bare NAME when only one plugin declares it). "
             "Profile provides system prompt, default model, effort, yolo, "
-            "timeout, resume_on_timeout. CLI flags override profile settings."
+            "timeout, idle_timeout, resume_on_timeout. CLI flags override profile settings."
         ),
     )
     agent.add_argument(
@@ -1639,6 +2138,21 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
             "By default the nearest .mcp.json at or above the directory this "
             "command was run in is used, so the leg's tools come from the "
             "submission rather than from --cwd. The file is read once at spawn."
+        ),
+    )
+    agent.add_argument(
+        "--idle-timeout",
+        dest="idle_timeout",
+        metavar="SECONDS",
+        type=BoundedInt(1, MAX_TIMEOUT_SECONDS),
+        default=None,
+        help=(
+            "Stop the run as stalled when the worker goes this many seconds without "
+            "output after it has started answering. Defaults to the "
+            "LIONAGI_WORKER_IDLE_TIMEOUT setting (600); a profile's 'idle_timeout' "
+            "sets it for a role. Raise it for a model that thinks long between outputs. "
+            "It watches a CLI worker's streamed output; an API-model leg's turn is bounded "
+            "by --timeout instead."
         ),
     )
     agent.add_argument(
@@ -1775,6 +2289,7 @@ def run_agent(args: argparse.Namespace) -> int:
                 bypass=getattr(args, "bypass", False),
                 preset=getattr(args, "preset", None),
                 resume_on_timeout=getattr(args, "resume_on_timeout", False),
+                idle_timeout=getattr(args, "idle_timeout", None),
                 context_from=getattr(args, "context_from", None),
                 context_budget=getattr(args, "context_budget", None),
                 notify=getattr(args, "notify", None),

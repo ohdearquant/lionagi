@@ -118,6 +118,55 @@ async def test_orchestrator_gets_the_same_empty_server_set(tmp_run):
 
 
 @pytest.mark.asyncio
+async def test_setup_persists_execution_provenance(tmp_run, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    import lionagi.casts.catalog as catalog
+    import lionagi.cli._runs as runs_mod
+    from lionagi import Branch
+
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(orch_mod, "allocate_run", runs_mod.allocate_run)
+    monkeypatch.setattr(
+        orch_mod,
+        "build_imodel_from_spec",
+        lambda *a, **kw: SimpleNamespace(
+            endpoint=SimpleNamespace(config=SimpleNamespace(provider="claude_code", kwargs={}))
+        ),
+    )
+    monkeypatch.setattr(orch_mod, "resolve_persisted_effort", lambda *a, **kw: None)
+    monkeypatch.setattr(catalog, "_load_packaged_pack", lambda **_: object())
+    monkeypatch.setattr(
+        orch_mod,
+        "AgentSpec",
+        SimpleNamespace(compose=lambda *a, **kw: object()),
+    )
+
+    async def fake_create_agent(*a, **kw):
+        return Branch(name="orchestrator")
+
+    monkeypatch.setattr(orch_mod, "create_agent", fake_create_agent)
+
+    env = await setup_orchestration(
+        pattern_name="Fanout",
+        model_spec="claude_code/sonnet",
+        agent_name=None,
+        save_dir=None,
+        cwd=str(target_dir),
+        yolo=False,
+        verbose=False,
+        effort=None,
+        theme=None,
+    )
+
+    manifest = env.run.read_manifest()
+    assert manifest["cwd"] == str(target_dir.resolve())
+    assert manifest["mcp_config_reason"] == "no_mcp_config_found"
+
+
+@pytest.mark.asyncio
 async def test_no_config_found_hands_over_nothing_and_says_nothing(tmp_run):
     """The contrast case: no flag and no config to find. The worker is handed
     no set at all and keeps its own discovery, so no MCP argument is emitted."""
@@ -440,16 +489,75 @@ async def test_a_found_run_set_is_the_set_the_synthesis_branch_gets(tmp_run, hom
 
 
 @pytest.mark.asyncio
-async def test_with_no_run_set_a_casts_worker_still_finds_the_home_config(tmp_run, home_mcp_config):
-    """The contrast case: the run found nothing and was told nothing, so the
-    worker keeps the factory's own discovery, home config included."""
+async def test_with_no_run_set_a_casts_worker_starts_with_no_server_set(tmp_run, home_mcp_config):
+    """The run found no config and was told nothing, so its set is no set at
+    all. The worker is handed that: the home-level config is not the run's to
+    hand over, and a worker given a set chosen by a rule the run never applied
+    would start with servers the run's own resolution never saw."""
     env = await _setup(no_mcp_config=False)
     assert env.mcp_servers is None
 
     args = await _casts_worker_args(env)
 
-    assert _mcp_config_arg(args) == {"mcpServers": _HOME_SERVER}
-    assert "critic" in home_mcp_config
+    assert "--mcp-config" not in args
+    assert "--strict-mcp-config" not in args
+    assert home_mcp_config == []
+
+
+@pytest.mark.asyncio
+async def test_with_no_run_set_the_orchestrator_starts_with_no_server_set(tmp_run, home_mcp_config):
+    env = await _setup(no_mcp_config=False)
+    args = await _cli_args(env.orc_branch.chat_model)
+
+    assert "--mcp-config" not in args
+    assert "--strict-mcp-config" not in args
+    assert home_mcp_config == []
+
+
+@pytest.mark.asyncio
+async def test_with_no_run_set_the_synthesis_branch_starts_with_no_server_set(
+    tmp_run, home_mcp_config
+):
+    from lionagi.cli.orchestrate.fanout import _fresh_synthesis_branch
+
+    env = await _setup(no_mcp_config=False)
+    branch = await _fresh_synthesis_branch(env)
+    args = await _cli_args(branch.chat_model)
+
+    assert "--mcp-config" not in args
+    assert "--strict-mcp-config" not in args
+    assert home_mcp_config == []
+
+
+@pytest.mark.asyncio
+async def test_a_home_config_never_reaches_a_worker_of_any_kind(tmp_run, home_mcp_config):
+    """The whole run, one launch: every branch it builds is handed the run's
+    own set — which, here, is none of them. Profile and built-in-role workers
+    included, so the two kinds cannot start with different servers."""
+    env = await _setup(no_mcp_config=False)
+
+    profile_worker, _, profile, _ = await build_worker_branch(
+        env,
+        agent_id="w1",
+        role="implementer",
+        model_override="claude_code/sonnet",
+    )
+    assert profile is not None
+    casts_args = await _cli_args(
+        (
+            await build_worker_branch(
+                env,
+                agent_id="w2",
+                role="critic",
+                model_override="claude_code/sonnet",
+            )
+        )[0].chat_model
+    )
+
+    for args in (await _cli_args(profile_worker.chat_model), casts_args):
+        assert "--mcp-config" not in args
+        assert "--strict-mcp-config" not in args
+    assert home_mcp_config == []
 
 
 _CONTROL_AND_KNOWLEDGE = {
@@ -467,7 +575,9 @@ async def test_job_control_in_a_submitted_runs_snapshot_is_still_withheld(tmp_ru
 
     snapshot = tmp_path / "job" / "mcp.json"
     snapshot.parent.mkdir()
-    _write_mcp_server_snapshot(snapshot, _CONTROL_AND_KNOWLEDGE, source=tmp_run / ".mcp.json")
+    _write_mcp_server_snapshot(
+        snapshot, _CONTROL_AND_KNOWLEDGE, source=tmp_run / ".mcp.json", searched_from=tmp_run
+    )
 
     env = await _setup(no_mcp_config=False, mcp_config=str(snapshot))
     branch, _, _, _ = await build_worker_branch(
@@ -518,6 +628,31 @@ async def test_a_codex_synthesis_branch_drops_the_orchestrators_job_control(tmp_
     assert overrides["mcp_servers.knowledge.command"] == "kkernel"
     assert not [key for key in overrides if key.startswith("mcp_servers.control.")]
     assert orchestrator["mcp_servers.control.command"] == "li"
+
+
+@pytest.mark.asyncio
+async def test_a_codex_synthesis_branch_does_not_inherit_account_connectors(tmp_run, codex_home):
+    from lionagi.cli.orchestrate.fanout import _fresh_synthesis_branch
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    codex_home.write_config({})
+    env = await _setup(no_mcp_config=False, model_spec="codex/gpt-5")
+    orchestrator_kwargs = env.orc_branch.chat_model.endpoint.config.kwargs
+    orchestrator_kwargs["contain_account_integrations"] = True
+    orchestrator_kwargs["account_connectors"] = ["github"]
+
+    branch = await _fresh_synthesis_branch(env)
+    synthesis_kwargs = branch.chat_model.endpoint.config.kwargs
+    event = await branch.chat_model.create_event(prompt="hi")
+    request = event.payload["request"]
+    args = request.as_cmd_args()
+    disabled_features = {args[i + 1] for i in range(len(args) - 1) if args[i] == "--disable"}
+
+    assert "account_connectors" not in synthesis_kwargs
+    assert synthesis_kwargs["contain_account_integrations"] is True
+    assert isinstance(request, CodexCodeRequest)
+    assert {"apps", "plugins"} <= disabled_features
+    assert orchestrator_kwargs["account_connectors"] == ["github"]
 
 
 @pytest.mark.asyncio

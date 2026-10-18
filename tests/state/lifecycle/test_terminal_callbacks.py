@@ -14,6 +14,7 @@ import time
 import uuid
 
 import pytest
+import pytest_asyncio
 
 from lionagi.state.db import StateDB
 from lionagi.state.lifecycle import (
@@ -37,7 +38,7 @@ from lionagi.state.lifecycle.service import SQLAlchemyLifecycleService
 # Fixtures (mirrors tests/state/lifecycle/test_service.py)
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def db():
     state = StateDB(":memory:")
     await state.open()
@@ -698,6 +699,46 @@ async def test_reconcile_unacknowledged_returns_unacked_terminal_events(db: Stat
     ids_after = {row["transition_id"] for row in pending_after}
     assert outcome.transition_id not in ids_after
     assert await is_acknowledged(db, outcome.transition_id, "consumer-x")
+
+
+@pytest.mark.asyncio
+async def test_orphan_replacement_emits_terminal_event_after_commit(db: StateDB):
+    orphan_id = await _make_schedule_run(db, status="running")
+    orphan = await db.get_schedule_run(orphan_id)
+    replacement_id = _uid()
+    replacement = {
+        "id": replacement_id,
+        "schedule_id": orphan["schedule_id"],
+        "trigger_context": {},
+        "action_kind": "agent",
+        "action_args": [],
+        "status": "running",
+        "fired_at": time.time(),
+    }
+
+    registry = TerminalCallbackRegistry()
+    observed_status: list[str] = []
+
+    async def receive(envelope: RunTerminalEnvelope) -> None:
+        row = await db.get_schedule_run(envelope.entity.id)
+        observed_status.append(row["status"])
+
+    registry.register("collector", receive, kinds=["schedule_run"], ids=[orphan_id])
+    db._lifecycle_service()._terminal_callbacks = registry
+
+    assert await db.tombstone_and_replace_schedule_run(orphan_id, replacement)
+
+    history = await db.fetch_all(
+        "SELECT id FROM status_transitions WHERE entity_type = ? AND entity_id = ? "
+        "AND previous_status = ? AND status = ?",
+        ("schedule_run", orphan_id, "running", "failed"),
+    )
+    assert len(history) == 1
+    assert len(observed_status) == 1
+    assert observed_status == ["failed"]
+
+    pending = await reconcile_unacknowledged(db, "consumer-x")
+    assert history[0]["id"] in {row["transition_id"] for row in pending}
 
 
 @pytest.mark.asyncio

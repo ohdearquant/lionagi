@@ -3,10 +3,9 @@
 
 from __future__ import annotations
 
-from enum import Enum
-
 from pydantic import Field
 
+from lionagi.ln.types import Enum
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 
@@ -74,5 +73,4 @@ class ExaSearchEndpoint(Endpoint):
         if config is None:
             kwargs.setdefault("serialize_by_alias", True)
             kwargs.setdefault("timeout", 120)
-            kwargs.setdefault("max_retries", 3)
         super().__init__(config=config, **kwargs)

@@ -7,15 +7,21 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from lionagi.ln import coerce_created_at
 from lionagi.protocols.messages.action_request import ActionRequest
 from lionagi.protocols.messages.action_response import ActionResponse
 from lionagi.protocols.messages.assistant_response import AssistantResponse
 from lionagi.protocols.messages.instruction import Instruction
 
-from ._mirror_common import MIRROR_PROVIDER_ERROR_KEY, SourceLine, bound_mirror_content
+from ._mirror_common import (
+    MIRROR_PROVIDER_ERROR_KEY,
+    SourceLine,
+    bound_mirror_content,
+    name_answered_results,
+    write_mirrored_messages,
+)
 
 if TYPE_CHECKING:
     from lionagi.protocols.messages.message import RoledMessage
@@ -48,8 +54,8 @@ def _ts(iso: str | None) -> float | None:
     if not iso:
         return None
     try:
-        return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
-    except (ValueError, TypeError):
+        return coerce_created_at(iso).timestamp()
+    except (ValueError, TypeError, OverflowError, OSError):
         return None
 
 
@@ -79,7 +85,13 @@ def messages_for_event(
     tool_names: dict[str, str],
 ) -> list[RoledMessage]:
     """Map one Claude JSONL event to ordered lionagi messages. ``tool_names`` is
-    read/written in place so a matching tool_result can label its ActionResponse."""
+    read/written in place so a matching tool_result can label its ActionResponse; the result
+    consumes its entry, so the map holds the tool uses still awaiting a result — except a map
+    loaded from an earlier release's key, which also holds answered uses until a repeat of
+    their result consumes them. A second result for a use already answered finds no entry,
+    so its ActionResponse has an empty function name here; ``mirror_session`` names it from
+    the use's own row before it writes the batch, so it replaces the row of the first
+    result, whose message id it shares, keeping the name."""
     etype = event.get("type")
     if etype not in _MESSAGE_TYPES or event.get("isMeta"):
         return []
@@ -116,7 +128,7 @@ def messages_for_event(
                 err = "error" if b.get("is_error") else None
                 link = _det(session_uid, "toolreq", tuid) if tuid else None
                 mid = _det(session_uid, "toolresp", tuid or euid)
-                fn = tool_names.get(tuid, "")
+                fn = tool_names.pop(tuid, "")
                 specs.append(
                     (
                         mid,
@@ -325,8 +337,16 @@ async def mirror_session(
         }
     )
 
+    entries: list[tuple[dict[str, Any], SourceLine | None]] = []
     for m, src in zip(messages, message_sources, strict=False):
         md = m.to_dict(mode="db")
+        entries.append((md, src))
+    # Name each repeated result before its content is bounded: the source pointer's
+    # content hash must cover the row as stored, name included, or a reader reconstructing
+    # the unnamed ActionResponse would mismatch and fall back to the stored preview.
+    await name_answered_results(db, [md for md, _ in entries])
+    written: list[dict[str, Any]] = []
+    for md, src in entries:
         if max_preview_chars is not None and src is not None:
             preview, pointer = bound_mirror_content(
                 md["content"],
@@ -340,12 +360,12 @@ async def mirror_session(
             nm = dict(md.get("node_metadata") or {})
             nm["mirror_source"] = pointer
             md["node_metadata"] = nm
-        await db.insert_message(md)
-        await db.append_to_progression(bprog, md["id"])
-        await db.append_to_progression(sprog, md["id"])
+        written.append(md)
 
-    if messages:
-        await db.touch_session_activity(sid, at=last_ts)
+    if written:
+        await write_mirrored_messages(
+            db, written, progression_ids=(bprog, sprog), session_id=sid, activity_at=last_ts
+        )
 
     return len(messages)
 
@@ -415,9 +435,8 @@ async def link_engine_child_session(
     if existing is None:
         return False
     await db.update_session(sid, name=name)
-    # Flat scalar on node_metadata, so the atomic merge applies (nested-object
-    # values would trip the merge's dialect-parity guard — see
-    # link_escalation_session below).
+    # A flat scalar merges into node_metadata without touching the other keys
+    # another writer stored; see link_escalation_session below.
     await db.merge_session_node_metadata(sid, {"engine_parent_run_id": parent_run_id})
     return True
 
@@ -462,10 +481,8 @@ async def link_escalation_session(
         fields["project"] = project
         fields["project_source"] = project_source
     await db.update_session(sid, **fields)
-    # escalated_from_session is a flat scalar, so this can go through the
-    # atomic merge (unlike the lineage/import-tally writers elsewhere in the
-    # mirror, which stamp a nested-object value and would trip the merge's
-    # dialect-parity guard) — closing the same read-modify-write clobber the
-    # sweep fix closes, at no cost.
+    # escalated_from_session is a flat scalar, so this merges into
+    # node_metadata rather than rewriting the column — closing the same
+    # read-modify-write clobber the sweep fix closes, at no cost.
     await db.merge_session_node_metadata(sid, {"escalated_from_session": parent_op_id})
     return True

@@ -592,6 +592,7 @@ async def test_auto_resume_real_teardown_no_terminal_guard_rejection(
         "recall_turns": 6,
         "blocks_injected": 8,
         "failed": 1,
+        "degraded_turns": 0,
         "writeback_records": 6,
         "writeback_failed": 1,
     }
@@ -657,6 +658,7 @@ async def test_manual_resume_accumulates_persisted_injection_stats(
         "recall_turns": 9,
         "blocks_injected": 14,
         "failed": 1,
+        "degraded_turns": 0,
         "writeback_records": 18,
         "writeback_failed": 1,
     }

@@ -1,6 +1,6 @@
 """A box in a docker container: any image, `sleep infinity` as its process, one `docker exec` per
-command under the guest's `timeout -s KILL`. On this machine an amd64 image runs under emulation,
-one at a time is what it can bear; `docker(...)` is the CLI call the runner uses for images too."""
+command under the guest's `timeout -s KILL`. An amd64 image runs under emulation, so run one at a time;
+`docker(...)` is the CLI call the runner uses for images too."""
 
 from __future__ import annotations
 

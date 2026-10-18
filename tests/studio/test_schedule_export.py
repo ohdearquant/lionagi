@@ -20,7 +20,12 @@ pytest.importorskip("croniter", reason="studio extra not installed")
 import yaml
 
 from lionagi.state.db import StateDB
-from lionagi.studio.services.schedule_declaration import apply_schedule_set, parse_schedule_set
+from lionagi.studio.services.schedule_declaration import (
+    apply_schedule_set,
+    build_plan,
+    parse_schedule_set,
+    resolve_schedule_set,
+)
 from lionagi.studio.services.schedule_export import (
     build_managed_export_document,
     convert_legacy_rows,
@@ -48,7 +53,7 @@ def agent_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     agents_dir.mkdir(parents=True)
     (agents_dir / "reviewer.md").write_text("---\nmodel: anthropic/claude-sonnet-5\n---\nBody.\n")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(providers_mod, "_find_lionagi_dirs", lambda: [agents_dir.parent])
+    monkeypatch.setattr(providers_mod, "_find_lionagi_dirs", lambda cwd=None: [agents_dir.parent])
     return tmp_path
 
 
@@ -63,6 +68,8 @@ def _legacy_row(schedule_id: str, name: str, *, cwd: Path, **overrides) -> dict:
         "name": name,
         "trigger_type": "cron",
         "cron_expr": "0 2 * * *",
+        # No stored zone: the zone the scheduler recorded the row firing in.
+        "effective_timezone": "America/New_York",
         "action_kind": "agent",
         "action_agent": "reviewer",
         "action_prompt": "check things",
@@ -92,6 +99,44 @@ async def test_legacy_agent_row_converts_ready(temp_db_path, agent_profile):
     assert member.target.kind == "agent"
     assert member.target.profile == "reviewer"
     assert member.target.prompt == "check things"
+
+
+@pytest.mark.asyncio
+async def test_legacy_cron_row_exports_the_zone_the_scheduler_recorded(
+    temp_db_path, agent_profile, monkeypatch
+):
+    """The exporting process's zone is not the scheduler's; a row with no stored
+    zone fires in the zone the scheduler recorded, and only that may be exported."""
+    monkeypatch.setattr("lionagi.studio.config.SCHEDULER_TZ", "America/New_York")
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_row("z1", "demo/berlin", cwd=agent_profile, effective_timezone="Europe/Berlin")
+        )
+        await db.create_schedule(
+            _legacy_row(
+                "z2",
+                "demo/stored",
+                cwd=agent_profile,
+                resolved_timezone="Asia/Tokyo",
+                effective_timezone="Europe/Berlin",
+            )
+        )
+        await db.create_schedule(
+            _legacy_row("z3", "demo/unrecorded", cwd=agent_profile, effective_timezone=None)
+        )
+        rows = await db.list_schedules()
+    docs, lines = convert_legacy_rows(
+        rows, flows_dir=agent_profile / "flows", manifest_dir=agent_profile
+    )
+    status = {line.qualified_name: line for line in lines}
+    assert status["demo/berlin"].status == "READY"
+    assert status["demo/stored"].status == "READY"
+    assert status["demo/unrecorded"].status == "BLOCKED"
+    assert "no scheduler has recorded the zone it fires in" in status["demo/unrecorded"].message
+    zones = {
+        name: member.trigger.cron.timezone for doc in docs for name, member in doc.schedules.items()
+    }
+    assert zones == {"berlin": "Europe/Berlin", "stored": "Asia/Tokyo"}
 
 
 @pytest.mark.asyncio
@@ -294,6 +339,106 @@ async def test_legacy_export_round_trips_to_a_fresh_db(tmp_path, monkeypatch, ag
     assert resolved_target["profile"] == "reviewer"
     assert resolved_target["prompt"] == "check things"
     assert resolved_target["model"] == "anthropic/claude-sonnet-5"
+
+
+@pytest.mark.asyncio
+async def test_legacy_export_apply_adopts_supported_rows_in_place(
+    temp_db_path, tmp_path, monkeypatch, agent_profile
+):
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
+    monkeypatch.setattr("lionagi.studio.config.SCHEDULER_TZ", "America/New_York")
+    config = agent_profile / ".lionagi" / "config.toml"
+    config.write_text('[project]\nname = "demo"\n')
+    rows = [
+        _legacy_row(
+            "adopt-agent",
+            "demo/agent",
+            cwd=agent_profile,
+            action_project=None,
+            action_model=None,
+        ),
+        _legacy_row(
+            "adopt-command",
+            "demo/command",
+            cwd=agent_profile,
+            action_project=None,
+            trigger_type="cron",
+            cron_expr="15 3 * * *",
+            action_kind="command",
+            action_agent=None,
+            action_prompt=None,
+            action_command="refresh-index",
+            action_command_args=["--safe"],
+        ),
+        _legacy_row(
+            "adopt-playbook",
+            "demo/playbook",
+            cwd=agent_profile,
+            action_project="demo",
+            resolved_timezone="Europe/Berlin",
+            action_kind="play",
+            action_agent=None,
+            action_prompt=None,
+            action_playbook="health-audit",
+            action_playbook_args={},
+        ),
+        _legacy_row(
+            "adopt-flow",
+            "demo/flow",
+            cwd=agent_profile,
+            action_project=None,
+            action_model=None,
+            action_kind="flow_yaml",
+            action_agent=None,
+            action_prompt=None,
+            action_flow_yaml="workers: 2\n",
+        ),
+    ]
+
+    async with StateDB() as db:
+        for row in rows:
+            await db.create_schedule(row)
+            await db.create_schedule_run(
+                {
+                    "id": f"run-{row['id']}",
+                    "schedule_id": row["id"],
+                    "trigger_context": {},
+                    "action_kind": row["action_kind"],
+                    "action_args": [],
+                    "status": "completed",
+                    "chain_depth": 0,
+                    "fired_at": 1_800_000_000.0,
+                }
+            )
+        original_runs = {row["id"]: await db.list_schedule_runs(row["id"]) for row in rows}
+        original_ids = {row["name"]: row["id"] for row in rows}
+        legacy_rows = await db.list_schedules()
+        documents, report = convert_legacy_rows(
+            legacy_rows,
+            flows_dir=agent_profile / "exported-flows",
+            manifest_dir=agent_profile,
+        )
+        assert [line.status for line in report] == ["READY"] * len(rows)
+        assert len(documents) == 1
+        document = parse_schedule_set(dump_schedule_set_yaml(documents[0]))
+
+        plan, _ = await build_plan(db, document, agent_profile, adopt=True)
+        assert len(plan) == len(rows)
+        assert {entry.action for entry in plan} == {"ADOPT"}
+        result = await apply_schedule_set(db, document, agent_profile, adopt=True)
+        assert result.adopted == len(rows)
+
+        adopted_rows = await db.list_schedules()
+        assert len(adopted_rows) == len(rows)
+        owner_key = f"{document.metadata.project}/{document.metadata.name}"
+        assert {row["owner_key"] for row in adopted_rows} == {owner_key}
+        assert {row["id"] for row in adopted_rows} == set(original_ids.values())
+        for row in rows:
+            assert await db.list_schedule_runs(row["id"]) == original_runs[row["id"]]
+
+        second_plan, _ = await build_plan(db, document, agent_profile)
+        assert len(second_plan) == len(rows)
+        assert {entry.action for entry in second_plan} == {"UNCHANGED"}
 
 
 # Default export — authored_spec round-trip incl. quoted notify "on"
@@ -579,6 +724,66 @@ async def test_managed_mixed_project_export_round_trips_exact_qualified_names(
     assert doubled is None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scope", "project_line", "expected"),
+    [
+        (None, None, "demo"),
+        (None, "project: null", None),
+        (None, "project: ''", "demo"),
+        ("global", None, None),
+        ("global", "project: null", None),
+        ("global", "project: ''", None),
+    ],
+    ids=["omitted", "null", "empty", "global-omitted", "global-null", "global-empty"],
+)
+async def test_a_managed_row_keeps_its_project_through_export_and_reapply(
+    tmp_path, monkeypatch, agent_profile, scope, project_line, expected
+):
+    """The exported member carries the project the row runs with. The export writes a
+    project-scoped document even for a global set, so an omitted or empty project
+    written back as authored would re-apply under the export's project."""
+    lines = [
+        "apiVersion: lionagi.io/v1alpha1",
+        "kind: ScheduleSet",
+        "metadata:",
+        "  name: automation",
+        "  project: demo",
+        *([f"  scope: {scope}"] if scope else []),
+        "schedules:",
+        "  nightly:",
+        "    trigger:",
+        "      cron:",
+        '        expression: "0 2 * * *"',
+        "        timezone: UTC",
+        "    target:",
+        "      kind: agent",
+        "      profile: reviewer",
+        "      prompt: check things",
+        "    execution:",
+        f"      cwd: {agent_profile}",
+        *([f"      {project_line}"] if project_line else []),
+    ]
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "source.db")
+    async with StateDB() as db:
+        await apply_schedule_set(db, parse_schedule_set("\n".join(lines) + "\n"), agent_profile)
+        rows = await db.list_schedules()
+    (source,) = rows
+    assert source["action_project"] == expected
+
+    docs, report = build_managed_export_document(rows)
+    assert [line.status for line in report] == ["READY"]
+    (doc,) = docs
+    reread = parse_schedule_set(dump_schedule_set_yaml(doc))
+
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "fresh.db")
+    async with StateDB() as db:
+        await apply_schedule_set(db, reread, agent_profile)
+        (fresh,) = await db.list_schedules()
+    assert fresh["action_project"] == expected
+    assert fresh["resolved_digest"] == source["resolved_digest"]
+
+
 # flow_yaml action_model override -- BLOCKED, not silently dropped
 
 
@@ -611,6 +816,31 @@ async def test_legacy_flow_yaml_with_action_model_is_blocked(temp_db_path, agent
 
 
 # action_extra_args -- BLOCKED, not silently dropped
+
+
+@pytest.mark.asyncio
+async def test_legacy_play_row_with_a_prompt_is_blocked(temp_db_path, agent_profile):
+    """The launch passes a play row's prompt to the play; a playbook target cannot carry it."""
+    async with StateDB() as db:
+        await db.create_schedule(
+            _legacy_row(
+                "pp1",
+                "demo/audit",
+                cwd=agent_profile,
+                action_kind="play",
+                action_agent=None,
+                action_prompt="hello",
+                action_playbook="health-audit",
+            )
+        )
+        rows = await db.list_schedules()
+    docs, lines = convert_legacy_rows(
+        rows, flows_dir=agent_profile / "flows", manifest_dir=agent_profile
+    )
+    assert lines[0].status == "BLOCKED"
+    assert "action_prompt" in lines[0].message
+    assert "hello" not in lines[0].message
+    assert "audit" not in docs[0].schedules
 
 
 @pytest.mark.asyncio
@@ -791,7 +1021,8 @@ async def test_legacy_row_without_project_but_qualified_name_round_trips_exactly
     temp_db_path, agent_profile
 ):
     """A row whose project column is empty but whose name is qualified must
-    group under its name's prefix, so re-applying reproduces the name."""
+    group under its name's prefix, so re-applying reproduces the name, and must
+    still have no project once the written document is read back."""
     async with StateDB() as db:
         await db.create_schedule(
             _legacy_row("np1", "demo/nightly", cwd=agent_profile, action_project=None)
@@ -807,6 +1038,12 @@ async def test_legacy_row_without_project_but_qualified_name_round_trips_exactly
     assert "nightly" in doc.schedules
     # doc project + local key reconstructs the original qualified name
     assert f"{doc.metadata.project}/nightly" == "demo/nightly"
+    # The document writes `project: null`; read back, that is no project rather than
+    # the document's, so re-applying leaves the row's project as it was.
+    reread = parse_schedule_set(dump_schedule_set_yaml(doc))
+    resolved = resolve_schedule_set(reread, agent_profile)["nightly"]
+    assert resolved.qualified_name == "demo/nightly"
+    assert resolved.db_fields["action_project"] is None
 
 
 @pytest.mark.asyncio
@@ -852,14 +1089,14 @@ async def test_legacy_row_with_project_not_matching_bare_name_disclosed_in_repor
 
 
 @pytest.mark.asyncio
-async def test_legacy_row_with_project_not_matching_qualified_name_disclosed_in_report(
-    temp_db_path, agent_profile
+async def test_legacy_row_with_conflicting_project_preserves_qualified_name_on_apply(
+    temp_db_path, agent_profile, tmp_path, monkeypatch
 ):
-    """A row whose ``name`` already carries a *different* prefix than its
-    stored ``action_project`` must disclose the resulting double
-    qualification (``"{action_project}/{name}"``), not report READY with no
-    caveat -- the pre-fix code never checked that the name actually started
-    with ``f"{action_project}/"`` before trusting it verbatim."""
+    """A conflicting execution project must not override name namespace.
+
+    The export groups by the stored name's prefix and preserves its identity
+    on apply, while retaining ``action_project`` as the execution project.
+    """
     async with StateDB() as db:
         await db.create_schedule(
             _legacy_row("mp2", "foo/nightly", cwd=agent_profile, action_project="demo")
@@ -869,11 +1106,23 @@ async def test_legacy_row_with_project_not_matching_qualified_name_disclosed_in_
         rows, flows_dir=agent_profile / "flows", manifest_dir=agent_profile
     )
     assert [line.status for line in lines] == ["READY"]
-    assert lines[0].message is not None
-    assert "demo/foo/nightly" in lines[0].message
     doc = docs[0]
-    assert doc.metadata.project == "demo"
-    assert "foo/nightly" in doc.schedules
+    assert doc.metadata.project == "foo"
+    assert "nightly" in doc.schedules
+    assert doc.schedules["nightly"].execution.project == "demo"
+    assert "execution project 'demo' differs from name namespace 'foo'" in (lines[0].message or "")
+    assert "re-applies as" not in (lines[0].message or "")
+
+    fresh_db = tmp_path / "fresh.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", fresh_db)
+    async with StateDB() as db:
+        result = await apply_schedule_set(db, doc, agent_profile)
+        exact = await db.get_schedule_by_name("foo/nightly")
+        guessed = await db.get_schedule_by_name("demo/foo/nightly")
+    assert result.created == 1
+    assert exact is not None
+    assert exact["action_project"] == "demo"
+    assert guessed is None
 
 
 # GitHub cadence fallback and sibling-file collisions
@@ -974,3 +1223,99 @@ def test_cli_export_distinct_sibling_tokens_write_all_files(temp_db_path, agent_
     assert rc == 0
     names = sorted(p.name for p in (tmp_path / "out").glob("*.yaml"))
     assert names == ["schedules.alpha.yaml", "schedules.beta.yaml"]
+
+
+# The columns adopting a legacy row writes: the owner and the declaration it adopted.
+ADOPTION_COLUMNS = {
+    "authored_spec",
+    "managed_by",
+    "owner_key",
+    "resolved_digest",
+    "resolved_target",
+    "resolved_timezone",
+    "spec_version",
+    "updated_at",
+}
+
+
+def test_legacy_export_reapplies_unchanged_as_its_own_set(temp_db_path, agent_profile, monkeypatch):
+    """A row created before schedule sets existed, exported with --legacy, must
+    re-apply to itself without changing: adopted as the set its document names,
+    it keeps every column it ran with and gains only the adoption record, then
+    applies again as that set's own row with no difference and no change."""
+    import asyncio
+
+    from lionagi.studio.cli import _cmd_apply_set, _cmd_export
+
+    # The zone the row was recorded firing in; adoption confirms it only when
+    # the scheduler runs in that zone.
+    monkeypatch.setattr("lionagi.studio.config.SCHEDULER_TZ", "America/New_York")
+
+    async def _seed():
+        async with StateDB() as db:
+            await db.create_schedule(
+                _legacy_row(
+                    "rt1",
+                    "demo/nightly",
+                    cwd=agent_profile,
+                    action_project=None,
+                    # Not the profile's own model, so a dropped model would show.
+                    action_model="openai/gpt-5",
+                )
+            )
+
+    asyncio.run(_seed())
+
+    output_path = agent_profile / "export" / "schedules.yaml"
+    assert _cmd_export(_export_args(legacy=True, output=str(output_path))) == 0
+    doc = parse_schedule_set(output_path.read_text(), source=str(output_path))
+    assert (doc.metadata.project, doc.metadata.name) == ("demo", "legacy-export")
+
+    async def _rows():
+        async with StateDB() as db:
+            return {row["id"]: row for row in await db.list_schedules()}
+
+    async def _plan(adopt: bool):
+        async with StateDB() as db:
+            return (await build_plan(db, doc, output_path.parent, adopt=adopt))[0]
+
+    before = asyncio.run(_rows())
+    plan = asyncio.run(_plan(adopt=True))
+    assert [(entry.qualified_name, entry.action) for entry in plan] == [
+        ("demo/nightly", "ADOPT")
+    ], [entry.detail for entry in plan]
+    assert (
+        _cmd_apply_set(
+            types.SimpleNamespace(file=str(output_path), dry_run=False, adopt=True, as_json=False)
+        )
+        == 0
+    )
+
+    after = asyncio.run(_rows())
+    assert set(after) == set(before)
+    was, stored = before["rt1"], after["rt1"]
+    assert stored["name"] == "demo/nightly"
+    assert stored["action_model"] == "openai/gpt-5"
+    assert stored["action_project"] is None
+    # Adoption writes the ownership and the declaration it adopted, and nothing else.
+    assert stored["owner_key"] == "demo/legacy-export"
+    assert stored["managed_by"] == "declaration"
+    assert stored["spec_version"] == doc.apiVersion
+    assert stored["resolved_digest"]
+    assert stored["authored_spec"]
+    assert stored["resolved_target"]
+    assert stored["resolved_timezone"] == was["effective_timezone"]
+    changed = {key for key in set(was) | set(stored) if was.get(key) != stored.get(key)}
+    assert changed == ADOPTION_COLUMNS, sorted(changed)
+
+    plan = asyncio.run(_plan(adopt=False))
+    assert [(entry.qualified_name, entry.action) for entry in plan] == [
+        ("demo/nightly", "UNCHANGED")
+    ], [entry.detail for entry in plan]
+    assert (
+        _cmd_apply_set(
+            types.SimpleNamespace(file=str(output_path), dry_run=False, adopt=False, as_json=False)
+        )
+        == 0
+    )
+    assert asyncio.run(_rows()) == after

@@ -20,6 +20,16 @@ runs synchronously at the tail of every node's execution — the only
 race-free point for a caller's `inject()` against the task group's
 convergence; `cli/orchestrate/flow.py`'s team-round wakeup logic is wired here.
 
+A `higher_tier` escalation retry is spliced immediately after its emitter:
+the emitter points to the retry, and the retry takes over the emitter's former
+outgoing edges (including their conditions, labels, and properties). Existing
+dependents therefore wait for the retry and assemble context from its result,
+not from the result that requested escalation. A node that escalates again is
+spliced after the retry already standing in for it, so repeated retries form
+one chain (emitter, retry 1, retry 2, former successors) and a dependent always
+gates on the result of the node that precedes it in the graph. Other reactive
+spawns retain their ordinary dependent/independent behavior.
+
 **`flow.py`** gate-reject contract — a playbook-authored node opts into gate
 semantics by setting `operation.metadata["is_gate"] = True` (e.g. via
 `OperationGraphBuilder.add_operation(..., is_gate=True)`). Once that node
@@ -123,7 +133,7 @@ reactive bus (ADR-0033), `schema_version=1`. Payload fields per signal kind
 `NodeCompleted`, `NodeFailed`, `NodeAwaitingApproval`, `NodeEscalated`,
 `NodePaused`, `GateDenied`, `MessageAdded`, `DispatchSignal` (ADR-0059)) are
 enumerated in the module. Version policy: `schema_version` bumps only on
-breaking field removal/rename; adding nullable fields is non-breaking.
+breaking field removal/rename; adding a field (with a default) is non-breaking.
 
 - `RunEnd.total_cost_usd` is `None` (unknown) unless a provider actually
   reports a dollar cost — providers that don't (bare API endpoints) must
@@ -147,11 +157,47 @@ breaking field removal/rename; adding nullable fields is non-breaking.
   `prompt_tokens` *includes* cached reads, split out under
   `prompt_tokens_details.cached_tokens`, so it's subtracted here. `is_valid`
   is False when an OpenAI-style report violates the token-count invariants (a
-  negative prompt total, or `cached_tokens` greater than `prompt_tokens`);
+  negative prompt total, or `cached_tokens` greater than `prompt_tokens`), and
+  when an Anthropic-style `cache_creation_input_tokens` cannot be a token
+  count (a float, an integral one such as `200.0` included, a numeric-looking
+  string, a bool, a negative, None):
+  it then reads as 0 so no split can be certified against it, though the other
+  Anthropic fields keep the plain `int(...)` reading they had;
   the returned numbers are still clamped into a safe, non-negative shape so a
   caller that ignores validity still gets a sane aggregate, but a billing
   consumer that checks `is_valid` can distinguish a genuine full-cache hit
   from a provider sending garbage.
+- **Cache-write lifetimes.** A provider may report its cache writes split by
+  lifetime, under `usage.cache_creation` (`ephemeral_5m_input_tokens` /
+  `ephemeral_1h_input_tokens`), beside the `cache_creation_input_tokens` total
+  those lifetimes split. One predicate reads that split for every consumer:
+  `service/accounts/_pricing.py::cache_write_split`, used by
+  `_pricing.price_usage`, by `session/signal.py`'s `_collect_branch_usage`
+  (and its `_collect_multi_branch_usage`), and by `operations/run/run.py`'s
+  `_accumulate_result_meta`. A split is valid when `cache_creation` is a
+  mapping whose keys are a subset of the two lifetime keys, each present value
+  is a non-negative int (not a bool, not a float -- including an integral one
+  -- not a str, not None), an absent lifetime reads 0, and the two sum exactly
+  to the report's `cache_creation_input_tokens`. No reader raises on a
+  malformed split; every malformed shape is "not a valid split".
+
+  Within one report, a split that is present but not valid is a fault: both
+  lifetimes read 0 and `usage_valid` is False. An empty split map against a
+  non-zero total is such a fault. A report with no `cache_creation` at all,
+  or with `cache_creation: null`, claims no split, is not a fault, and reports
+  both lifetimes as 0. Across result chunks, a chunk whose split is not valid
+  (a `cache_creation` that is not a mapping included) leaves the merged
+  lifetimes uncertifiable, and a counter one chunk reports as a non-count
+  stays as reported, so the merged report is rejected as that chunk would be. Across
+  messages, branches, and the flat-versus-whole-tree comparison, lifetimes
+  that cover only part of the total because some reports did not split are not
+  a fault: they read 0 and `usage_valid` is unchanged from its per-report
+  conjunction. A claude_code flat split is always checked against the flat
+  total it sits beside; its lifetimes are attributed to the whole-tree total
+  only when the flat and `modelUsage` cache-write totals are equal (so no
+  other model wrote); when the map's total is larger the flat split covers
+  part of the tree only, both lifetimes read 0, and the unsplit remainder
+  leaves validity unchanged. `cache_write_tokens` stays the total either way.
 - `_sum_model_usage` sums per-model whole-tree token counts from a
   claude_code CLI `modelUsage` map; unlike the flat top-level `usage` field
   (top-level-loop only), each entry here already includes descendant
@@ -682,6 +728,18 @@ then only builds when `openai_compatible=True` is passed explicitly, or
 same signal a caller already needs to point the fallback at a real custom
 host. Anything else raises `ProviderNotFoundError` naming the requested
 provider and every provider currently registered.
+
+### ActionManager plugin-shadow diagnostics
+
+A registered local tool remains authoritative when a plugin declares the same
+name. `ActionManager` resolves that collision only for its warning and caches
+the answer per registry generation and tool name. The cache also records the
+user-settings revision, so trust and enable/disable writes invalidate it
+immediately even when no `PluginRegistry.reset()` occurs. Other same-generation
+mutations, including bundle edits and cross-process settings rewrites that
+deliberately preserve file metadata, are refreshed on a one-second monotonic
+deadline. That is the complete accepted staleness window for this diagnostic;
+it never affects tool routing or plugin activation.
 
 ### EndpointRegistry plugin revalidation
 

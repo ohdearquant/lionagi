@@ -16,9 +16,12 @@ __all__ = (
     "RelationError",
     "OperationError",
     "ExecutionError",
+    "ProviderStreamError",
     "ConfigurationError",
+    "ContainmentRefusedError",
     "TimeoutError",
     "EmptyOutgoingContentError",
+    "CLIInputRefusedError",
     "ItemNotFoundError",
     "ItemExistsError",
 )
@@ -141,11 +144,29 @@ class ExecutionError(LionError, RuntimeError):
     pass
 
 
+class ProviderStreamError(ExecutionError):
+    """A provider accepted a streamed call and then reported, inside the stream, that the
+    call failed (an ``error`` event, ``response.failed``, a chunk carrying an error)."""
+
+    default_message = "The provider reported a failed call inside its stream"
+    default_status_code = 502
+    __slots__ = ()
+
+
 class ConfigurationError(LionError, ValueError):
     """Exception raised when configuration is invalid."""
 
     default_message = "Invalid configuration"
     default_status_code = 500
+    __slots__ = ()
+
+
+class ContainmentRefusedError(ConfigurationError):
+    """A request under ``contain_account_integrations`` was refused before it ran: its
+    configuration could turn account integrations back on, or could not be read to rule
+    that out."""
+
+    default_message = "Account-integration containment refused the request"
     __slots__ = ()
 
 
@@ -163,6 +184,22 @@ class EmptyOutgoingContentError(LionError, ValueError):
 
     default_message = "Assembled outgoing message content is empty"
     default_status_code = 500
+    __slots__ = ()
+
+
+class CLIInputRefusedError(LionError):
+    """Raised when a request's input cannot be passed to a CLI, refused before any
+    process starts.
+
+    Deliberately not a ValueError: pydantic wraps a ValueError raised inside a model
+    validator in a ValidationError, and that wrapper carries the whole input it was
+    validating, so a refusal that named one part of the input would expose every other
+    part of it. An exception that is not a ValueError passes through the validator
+    unwrapped.
+    """
+
+    default_message = "CLI input cannot be passed"
+    default_status_code = 400
     __slots__ = ()
 
 

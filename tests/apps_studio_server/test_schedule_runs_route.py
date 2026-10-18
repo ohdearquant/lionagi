@@ -620,6 +620,35 @@ def test_the_schedule_list_still_serves_what_the_cli_renders(tmp_path, monkeypat
     assert not missing, f"`li schedule list` reads {missing}"
 
 
+@pytest.mark.parametrize("query, included", [("", False), ("false", False), ("true", True)])
+def test_recent_run_summary_requires_explicit_http_opt_in(tmp_path, monkeypatch, query, included):
+    from lionagi.studio.services import schedules
+
+    schedule_id = _seed_capped_schedule_with_run(monkeypatch, tmp_path / "state.db")
+    original = schedules._recent_run_summaries
+    calls = []
+
+    async def recent(db, ids):
+        calls.append(ids)
+        return await original(db, ids)
+
+    monkeypatch.setattr(schedules, "_recent_run_summaries", recent)
+    params = {"include_recent_runs": query} if query else {}
+    response = _make_client().get("/api/schedules/", params=params)
+    assert response.status_code == 200
+    row = next(row for row in response.json()["schedules"] if row["id"] == schedule_id)
+    assert ("recent_runs_summary" in row) is included
+    assert len(calls) == int(included)
+    if included:
+        assert row["recent_runs_summary"]["status"] == "available"
+        assert len(row["recent_runs_summary"]["runs"]) == 1
+
+
+def test_recent_run_opt_in_rejects_non_boolean_http_values():
+    response = _make_client().get("/api/schedules/", params={"include_recent_runs": "sometimes"})
+    assert response.status_code == 422
+
+
 def test_the_run_list_still_serves_what_the_cli_renders(tmp_path, monkeypatch):
     schedule_id = _seed_capped_schedule_with_run(monkeypatch, tmp_path / "state.db")
 
@@ -761,7 +790,7 @@ def test_no_list_surface_serves_the_record_only_schedule_fields(tmp_path, monkey
     # Named here rather than imported: a watch set taken from the constant under test
     # follows that constant, so moving a field out of it moves the field out of the
     # test at the same time and the check reports clean on the change it exists to catch.
-    watched = ("action_prompt", "on_success", "on_fail", "action_cwd")
+    watched = ("action_prompt", "on_success", "on_fail", "action_cwd", "lifecycle")
     assert set(watched) == set(_SCHEDULE_RECORD_FIELDS), (
         "record-only set changed; decide per field whether a list surface may serve it, "
         "then update this literal"

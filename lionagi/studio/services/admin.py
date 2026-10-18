@@ -589,6 +589,34 @@ def _artifacts_path(row: Any) -> Path | None:
 # unreachable from here by construction.
 _RUNTIME_LOCK_NAMES: frozenset[str] = frozenset({"job.lock", "finalize.lock"})
 
+
+def _locks_beside_artifacts(root: Path) -> list[Path]:
+    """The runtime-lock candidates that are siblings of an artifact root.
+
+    Both locks lionagi writes for a run live *beside* the directory a session
+    records, never inside it, so a walk that descends from that directory
+    cannot reach either:
+
+    * ``{run_dir}/finalize.lock`` -- ``run_dir`` is the artifact root's parent
+      when the root is a run's ``artifacts`` child.
+    * ``{JOBS_DIR}/{run_id}/job.lock`` -- the MCP server keeps its own record
+      tree under ``LIONAGI_HOME/mcp/jobs``, keyed by the run id, which is also
+      the artifact root's parent name.
+
+    Read here explicitly rather than by rooting a wider walk at the run
+    directory: the narrow check keeps the walk's cost and its skip list exactly
+    as they were.
+    """
+    candidates: list[Path] = []
+    if root.name == "artifacts":
+        run_dir = root.parent
+        candidates.append(run_dir / "finalize.lock")
+        from lionagi.mcp import config as mcp_config
+
+        candidates.append(mcp_config.JOBS_DIR / run_dir.name / "job.lock")
+    return candidates
+
+
 # Directory names never on the path to a run directory, and routinely holding
 # more files than everything else in the tree combined.
 #
@@ -680,6 +708,27 @@ class _ScanResult(NamedTuple):
     truncated: bool
 
 
+def _stale_lock_beside(
+    candidates: list[Path], *, cutoff: float, budget: _ScanBudget | None = None
+) -> _ScanResult:
+    """The first stale lock among candidates that are *not* under the walk root.
+
+    Same rule as the walk applies to a lock's mtime, and the same budget: an
+    exhausted budget is ``truncated``, which a caller must read as "did not
+    finish looking" rather than "found nothing".
+    """
+    # At most two candidates, so the budget is read once rather than at the walk's interval.
+    if candidates and budget is not None and budget.expired():
+        return _ScanResult(None, True)
+    for candidate in candidates:
+        try:
+            if candidate.stat().st_mtime < cutoff:
+                return _ScanResult(candidate, False)
+        except OSError:
+            pass
+    return _ScanResult(None, False)
+
+
 def _find_stale_lock(
     root: Path,
     *,
@@ -704,7 +753,11 @@ def _find_stale_lock(
     key = (str(root), cutoff)
     if cache is not None and key in cache:
         return cache[key]
-    found = _walk_for_stale_lock(root, cutoff=cutoff, budget=budget)
+    beside = _stale_lock_beside(_locks_beside_artifacts(root), cutoff=cutoff, budget=budget)
+    if beside.lock is not None or beside.truncated:
+        found = beside
+    else:
+        found = _walk_for_stale_lock(root, cutoff=cutoff, budget=budget)
     if cache is not None:
         cache[key] = found
     return found
@@ -1230,7 +1283,7 @@ async def transition_sessions(
                 result = await conn.execute(
                     text(
                         "UPDATE sessions SET status=:status, ended_at=:now, updated_at=:now, "
-                        "  duration_ms=:duration_ms, "
+                        "  duration_ms=:duration_ms, current_phase=NULL, "
                         "  status_reason_code=:rcode, status_reason_summary=:rsummary, "
                         "  status_evidence_refs=:erefs "
                         "WHERE id=:sid AND status='running'"
@@ -1397,7 +1450,8 @@ async def readiness_route(
         description="How long the probe waits for the store before reporting slow",
     ),
 ) -> dict[str, Any]:
-    """Whether a query against the store will actually return.
+    """Whether a query against the store will actually return, and whether the
+    scheduler is still advancing.
 
     Distinct from ``/health``, which answers only whether the process is up:
     that stays true while every database-backed endpoint is unresponsive, which
@@ -1405,7 +1459,15 @@ async def readiness_route(
     body, so a caller can tell "store unreachable" from "store slow" from
     "healthy" instead of getting one boolean for all three.
     """
-    return await store_probe(timeout_ms=timeout_ms)
+    from lionagi.studio.scheduler.engine import scheduler
+
+    result = await store_probe(timeout_ms=timeout_ms)
+    scheduler_report = scheduler.health()
+    result["scheduler"] = scheduler_report
+    if result["status"] == "healthy" and not scheduler_report["ready"]:
+        result["status"] = "unhealthy"
+        result["detail"] = f"{result['detail']}; scheduler not ready: {scheduler_report['detail']}"
+    return result
 
 
 @studio_route("/admin/transition", method="POST", area="admin", name="transition")

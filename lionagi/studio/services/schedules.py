@@ -4,12 +4,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import re
 import sqlite3
 import time
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
 from lionagi._flow_spec import normalize_flow_spec_keys, validate_flow_spec_fields
+from lionagi.ln import short_id
 from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
 
 from ..registry import studio_route
@@ -465,6 +466,7 @@ async def list_schedules(
     enabled: bool | None = None,
     trigger_type: str | None = None,
     project: str | None = None,
+    include_recent_runs: bool = False,
 ) -> list[dict[str, Any]]:
     if state_db_known_absent():
         return []
@@ -474,8 +476,11 @@ async def list_schedules(
         used_by_id = await db.count_schedule_runs_batch(ids, chain_depth=0)
         streaks_by_id = await db.schedule_run_streaks(ids)
         health_evidence_by_id = await db.schedule_health_evidence(ids)
+        recent_by_id = await _recent_run_summaries(db, ids) if include_recent_runs else None
         now = time.time()
         for row in rows:
+            if recent_by_id is not None:
+                row["recent_runs_summary"] = recent_by_id[row["id"]]
             if row.get("max_runs"):
                 row["remaining_runs"] = max(row["max_runs"] - used_by_id[row["id"]], 0)
             if row.get("budget_usd") or row.get("budget_tokens"):
@@ -558,6 +563,206 @@ def _run_summary(row: dict[str, Any]) -> dict[str, Any]:
     summary = {name: row[name] for name in _RUN_SUMMARY_FIELDS if name in row}
     summary["error_class"] = _error_class_for(row)
     return summary
+
+
+_RECENT_RUN_LIMIT = 25
+
+
+def _recent_run_keys_sql(dialect: str) -> str:
+    """The per-definition key read, in the dialect's own collection vocabulary.
+
+    Both forms select up to ``_RECENT_RUN_LIMIT + 1`` keys per requested
+    definition, newest first by ``fired_at DESC, id DESC``, and leave the row
+    past the limit without an occurrence payload. The extra key detects longer
+    history without reading its error payload or counting every run.
+
+    SQLite aggregates each definition's keys with ``json_group_array`` and
+    expands them with ``json_each``; ``recent.key`` is the 0-based position, so
+    the payload bound is the read's third bound parameter (``recent.key < ?``).
+
+    PostgreSQL has neither function for this shape -- ``json_each`` reads a
+    JSON *object*, not the text array bound here -- so the same structure is
+    built from ``jsonb_agg`` over an ordered, ``LIMIT``-ed subquery and
+    ``jsonb_array_elements_text(...) WITH ORDINALITY``; ``recent.ord`` is the
+    1-based position, so the payload bound is the read's third bound parameter
+    (``recent.ord <= ?``).
+    """
+    if dialect == "sqlite":
+        return (
+            "SELECT recent.value AS id, definition.value AS schedule_id,"
+            " occurrence.invocation_id, occurrence.action_kind, occurrence.status,"
+            " occurrence.exit_code, occurrence.chain_depth, occurrence.fired_at,"
+            " occurrence.ended_at, occurrence.error_detail"
+            " FROM json_each(?) AS definition"
+            " JOIN json_each((SELECT json_group_array(id) FROM ("
+            " SELECT id FROM schedule_runs WHERE schedule_id = definition.value"
+            " ORDER BY fired_at DESC, id DESC LIMIT ?))) AS recent"
+            " LEFT JOIN schedule_runs AS occurrence"
+            " ON occurrence.id = recent.value AND recent.key < ?"
+            " ORDER BY definition.value, recent.key"
+        )
+    return (
+        "SELECT recent.id AS id, definition.value AS schedule_id,"
+        " occurrence.invocation_id, occurrence.action_kind, occurrence.status,"
+        " occurrence.exit_code, occurrence.chain_depth, occurrence.fired_at,"
+        " occurrence.ended_at, occurrence.error_detail"
+        " FROM jsonb_array_elements_text(CAST(? AS jsonb)) AS definition(value)"
+        " JOIN LATERAL ("
+        " SELECT jsonb_agg(ordered.id ORDER BY ordered.fired_at DESC, ordered.id DESC) AS ids"
+        " FROM ( SELECT id, fired_at FROM schedule_runs WHERE schedule_id = definition.value"
+        " ORDER BY fired_at DESC, id DESC LIMIT ?) AS ordered"
+        " ) AS limited ON TRUE"
+        " JOIN LATERAL jsonb_array_elements_text(limited.ids) WITH ORDINALITY"
+        " AS recent(id, ord) ON TRUE"
+        " LEFT JOIN schedule_runs AS occurrence"
+        " ON occurrence.id = recent.id AND recent.ord <= ?"
+        " ORDER BY definition.value, recent.ord"
+    )
+
+
+def _id_set_predicate(dialect: str) -> str:
+    """``IN (<id set>)`` over one bound JSON array of ids, per dialect."""
+    if dialect == "sqlite":
+        return "IN (SELECT value FROM json_each(?))"
+    return "IN (SELECT value FROM jsonb_array_elements_text(CAST(? AS jsonb)))"
+
+
+def _unavailable_run_summary() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "status": "unavailable",
+        "limit": _RECENT_RUN_LIMIT,
+        "has_next": None,
+        "runs": [],
+    }
+
+
+# (occurrences grouped by definition, invocation evidence, session evidence)
+_RunBatch = tuple[
+    dict[str, list[dict[str, Any]]],
+    dict[str, dict[str, Any]],
+    dict[str, list[dict[str, Any]]],
+]
+
+
+async def _read_run_batch(db: StateDB, schedule_ids: list[str]) -> _RunBatch:
+    """Read a set of definitions' occurrence rows and the evidence they project with.
+
+    Up to three set reads, none per run: the bounded key read, then the
+    invocation and session evidence for the displayed rows only. A read failure raises to
+    the caller, which uses it to decide what to attribute the failure to.
+    """
+    rows = await db.fetch_all(
+        _recent_run_keys_sql(db.dialect),
+        (json.dumps(schedule_ids), _RECENT_RUN_LIMIT + 1, _RECENT_RUN_LIMIT),
+    )
+    grouped: dict[str, list[dict[str, Any]]] = {sid: [] for sid in schedule_ids}
+    for row in rows:
+        grouped[row["schedule_id"]].append(row)
+    invocation_ids = list(
+        {
+            row["invocation_id"]
+            for runs in grouped.values()
+            for row in runs[:_RECENT_RUN_LIMIT]
+            if row["invocation_id"]
+        }
+    )
+    if not invocation_ids:
+        return grouped, {}, {}
+    ids = (json.dumps(invocation_ids),)
+    id_set = _id_set_predicate(db.dialect)
+    # The interpolated text is a placeholder clause for the store's dialect,
+    # never a value; the ids themselves are bound.
+    invocation_query = (
+        "SELECT id, status, status_reason_code, status_reason_summary FROM invocations"  # noqa: S608
+        f" WHERE id {id_set}"
+    )
+    invocations = {row["id"]: row for row in await db.fetch_all(invocation_query, ids)}
+    session_query = (
+        "SELECT id, invocation_id, status, status_reason_code, status_reason_summary,"  # noqa: S608
+        " created_at, artifacts_path FROM sessions"
+        f" WHERE invocation_id {id_set}"
+    )
+    sessions: dict[str, list[dict[str, Any]]] = {}
+    for row in await db.fetch_all(session_query, ids):
+        sessions.setdefault(row["invocation_id"], []).append(row)
+    return grouped, invocations, sessions
+
+
+async def _recent_run_summaries(db: StateDB, schedule_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """Select 26 recent keys per definition and load payloads for the displayed 25.
+
+    Each correlated key query uses the schedule/time index and its own LIMIT;
+    tied timestamps may require sorting more keys by id. The extra key detects
+    longer history without reading its error payload or counting all runs. Linked
+    session evidence must include every child: the shared reducer only grades a
+    session outcome when all children are terminal. No per-run reads are performed.
+
+    The definitions are read in one batch. If that shared read fails, a single
+    liveness read decides whether the store is reachable: when it fails too, the
+    failure is store-wide and every slice is left unavailable without a read
+    each, so an outage costs two reads rather than one per listed definition.
+    When the store answers, that read proves only that some connection answers;
+    the retry is what attributes the failure, so each definition is read on its
+    own and a definition whose own rows fail is unavailable without hiding the
+    rest of the page's summaries. A statement that fails for every definition
+    while the store answers costs one retry read per definition, and its failing
+    ids are named on one line rather than a traceback each. Either way a failed
+    read leaves a slice unavailable, never silently empty.
+    """
+    result = {sid: _unavailable_run_summary() for sid in schedule_ids}
+    if not schedule_ids:
+        return result
+    try:
+        grouped, invocations, sessions = await _read_run_batch(db, schedule_ids)
+    except Exception:
+        _log.exception("Recent schedule run summary query failed")
+        grouped, invocations, sessions = {}, {}, {}
+        try:
+            # A read that does not touch the failing statement: if the store
+            # cannot answer even this, the batch failure is the store's, and
+            # every definition is unavailable without a read of its own.
+            await db.fetch_one("SELECT 1")
+        except Exception:
+            _log.exception("Recent schedule run summary store is unavailable")
+        else:
+            failures: list[str] = []
+            for sid in schedule_ids:
+                try:
+                    one_grouped, one_invocations, one_sessions = await _read_run_batch(db, [sid])
+                except Exception:
+                    failures.append(sid)
+                    continue
+                grouped.update(one_grouped)
+                invocations.update(one_invocations)
+                sessions.update(one_sessions)
+            # The batch failure above already carries the cause once. A
+            # statement-level failure fails every retry, so a traceback per
+            # definition would be one per poll; the failing ids are named on a
+            # single line instead, and the ids are the attribution.
+            if failures:
+                _log.error("Recent run summary unavailable for schedules %s", ", ".join(failures))
+
+    for sid, runs in grouped.items():
+        try:
+            summaries = []
+            for run in runs[:_RECENT_RUN_LIMIT]:
+                iid = run["invocation_id"]
+                view = run_view.build_run_view(run, invocations.get(iid), sessions.get(iid, []))
+                summaries.append(_run_summary({**run, **view}))
+            # Isolate a malformed projection before the transport serializes the
+            # whole page. One bad definition must not hide the other definitions.
+            json.dumps(summaries, allow_nan=False)
+            result[sid] = {
+                "version": 1,
+                "status": "available",
+                "limit": _RECENT_RUN_LIMIT,
+                "has_next": len(runs) > _RECENT_RUN_LIMIT,
+                "runs": summaries,
+            }
+        except Exception:
+            _log.exception("Recent run summary unavailable for schedule %s", sid)
+    return result
 
 
 # A run view adds the reconciled outcome and the joined session facts on top of the
@@ -686,6 +891,7 @@ _SCHEDULE_SUMMARY_FIELDS = (
     "health_last_outcome",
     "health_last_outcome_at",
     "health_since",
+    "recent_runs_summary",
     "created_at",
     "updated_at",
 )
@@ -697,7 +903,7 @@ _SCHEDULE_SUMMARY_FIELDS = (
 # --machine` reads it back from this route to report the execution root that was
 # actually persisted, which it resolves from its own environment when the caller
 # named neither a cwd nor a project.
-_SCHEDULE_RECORD_FIELDS = ("action_prompt", "on_success", "on_fail", "action_cwd")
+_SCHEDULE_RECORD_FIELDS = ("action_prompt", "on_success", "on_fail", "action_cwd", "lifecycle")
 
 
 def _schedule_summary(row: dict[str, Any], *, record: bool = False) -> dict[str, Any]:
@@ -727,6 +933,11 @@ async def get_schedule(schedule_id: str) -> dict[str, Any] | None:
         row = await db.get_schedule(schedule_id)
         if not row:
             return None
+        history = await db.get_schedule_history(schedule_id, limit=1)
+        row["lifecycle"] = {
+            "available": history["available"],
+            "latest": history["events"][0] if history["events"] else None,
+        }
         runs = await db.list_schedule_runs(schedule_id, limit=10)
         # Reconciled here, not in the route: the nested slice is served beside the
         # top-level run lists and would otherwise classify the occurrence row while
@@ -830,7 +1041,7 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
         if _is_usable_execution_root(project_path):
             action_cwd = project_path
 
-    schedule_id = uuid.uuid4().hex[:12]
+    schedule_id = short_id(12)
     now = time.time()
     schedule = {
         "id": schedule_id,
@@ -1136,8 +1347,14 @@ async def list_schedules_route(
     enabled: bool | None = Query(default=None),
     trigger_type: str | None = Query(default=None),
     project: str | None = Query(default=None),
+    include_recent_runs: bool = False,
 ) -> dict[str, Any]:
-    rows = await list_schedules(enabled=enabled, trigger_type=trigger_type, project=project)
+    rows = await list_schedules(
+        enabled=enabled,
+        trigger_type=trigger_type,
+        project=project,
+        include_recent_runs=include_recent_runs,
+    )
     return {"schedules": [_schedule_summary(row) for row in rows]}
 
 

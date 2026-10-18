@@ -194,7 +194,7 @@ function buildOrgUnits(
 
     const elapsed = elapsedSec(run.started_at ?? null, nowSec);
     const row: AgentRow = {
-      id: run.run_id,
+      id: run.id,
       name: resolveRunLabel(run),
       status: run.status,
       effectiveHealth: run.effective_health ?? null,
@@ -265,7 +265,7 @@ function mapRunsToRecentRows(runs: RunSummary[]): RecentRow[] {
   return runs
     .filter((r) => !isActive(r))
     .map((r) => ({
-      id: r.run_id,
+      id: r.id,
       name: resolveRunLabel(r),
       status: r.status,
       invocation_id: r.invocation_id ?? null,
@@ -362,8 +362,7 @@ function deriveCounts(units: OrgUnit[], runs: RunSummary[]): FleetCounts {
   const groups = units.filter((u) => u.id !== "__direct__");
   const grouped = new Set(groups.flatMap((u) => u.agents.map((a) => a.id)));
   const ungroupedOrchestrations = runs.filter(
-    (r) =>
-      isActive(r) && ORCHESTRATION_KINDS.has(r.invocation_kind ?? "") && !grouped.has(r.run_id),
+    (r) => isActive(r) && ORCHESTRATION_KINDS.has(r.invocation_kind ?? "") && !grouped.has(r.id),
   ).length;
 
   const orchestrations = groups.length + ungroupedOrchestrations;

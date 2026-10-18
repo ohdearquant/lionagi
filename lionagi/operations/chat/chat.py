@@ -65,6 +65,7 @@ async def chat(
         chat_param,
         ins=provider_ins or ins,
         context_blocks=context_report.blocks if context_report else None,
+        imodel=imodel,
     )
 
     if not chat_param._is_sentinel(chat_param.include_token_usage_to_model):
@@ -72,7 +73,10 @@ async def chat(
 
     await emit_api_pre_call(branch, imodel)
     try:
-        api_call = await imodel.invoke(**kw)
+        from lionagi.service.imodel import _branch_routing_context
+
+        with _branch_routing_context(branch.id, imodel):
+            api_call = await imodel.invoke(**kw)
     except BaseException as exc:
         # BaseException (asyncio.CancelledError included): cancellation mid-invoke
         # must still pair with a post emission, or a hook-bus observer sees an open span.
@@ -84,7 +88,13 @@ async def chat(
 
     # Surface API errors before trying to parse a null response
     if api_call.status == EventStatus.FAILED:
-        raise ExecutionError(f"API call failed: {api_call.execution.error}")
+        cause = api_call.execution.error
+        error = ExecutionError(f"API call failed: {cause}")
+        if isinstance(cause, BaseException):
+            # Preserve the original exception so callers can classify the failure by type.
+            raise error from cause
+        # Recorded only as text: no cause, and an exception the caller is handling stays the context.
+        raise error
 
     if return_ins_res_message:
         return ins, AssistantResponse.from_response(

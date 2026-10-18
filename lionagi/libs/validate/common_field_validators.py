@@ -3,8 +3,7 @@
 
 from pydantic import BaseModel, JsonValue
 
-from lionagi.ln import copy
-from lionagi.utils import UNDEFINED, to_list
+from lionagi.ln import Undefined, copy, is_pydantic_model_class, to_list
 
 from .validate_boolean import validate_boolean
 
@@ -25,7 +24,7 @@ def validate_same_dtype_flat_list(
     dropna: bool = True,
 ) -> list:
     """Flatten value to list and verify all items are dtype; raises ValueError on mixed types."""
-    if value in [None, UNDEFINED, {}]:
+    if value in [None, Undefined, {}]:
         return default if default is not None else []
 
     to_list_kwargs = {}
@@ -65,7 +64,7 @@ def validate_nullable_jsonvalue_field(cls, value) -> JsonValue | None:
 
 def validate_dict_kwargs_params(cls, value) -> dict:
     """Validate validator kwargs."""
-    if value in [None, UNDEFINED, []]:
+    if value in [None, Undefined, []]:
         return {}
     if not isinstance(value, dict):
         raise ValueError("Validator kwargs must be a dictionary")
@@ -73,9 +72,9 @@ def validate_dict_kwargs_params(cls, value) -> dict:
 
 
 def validate_callable(cls, value, undefind_able: bool = True, check_name: bool = False) -> callable:
-    """Return value if callable (or None/UNDEFINED when undefind_able=True); raises ValueError otherwise."""
+    """Return value if callable (or None/Undefined when undefind_able=True); raises ValueError otherwise."""
     if not callable(value):
-        if undefind_able and value in [None, UNDEFINED]:
+        if undefind_able and value in [None, Undefined]:
             pass
         else:
             raise ValueError("Value must be a callable function")
@@ -87,7 +86,7 @@ def validate_callable(cls, value, undefind_able: bool = True, check_name: bool =
 def validate_model_to_type(cls, value):
     if value is None:
         return BaseModel
-    if isinstance(value, type) and issubclass(value, BaseModel):
+    if is_pydantic_model_class(value):
         return value
     if isinstance(value, BaseModel):
         return value.__class__

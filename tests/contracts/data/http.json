@@ -1,5 +1,5 @@
 {
-  "count": 141,
+  "count": 143,
   "routes": [
     {
       "ordinal": 0,
@@ -3935,6 +3935,90 @@
     },
     {
       "ordinal": 87,
+      "path": "/api/studio/pairing-codes",
+      "methods": [
+        "POST"
+      ],
+      "name": "create_pairing_code",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "201": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Response Create Pairing Code Api Studio Pairing Codes Post"
+              }
+            }
+          }
+        }
+      },
+      "status_code": 201,
+      "tags": [],
+      "summary": null,
+      "description": "Mint a one-time code for the command that opens a page; never for a page.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.pairing",
+        "qualname": "create_pairing_code_route"
+      }
+    },
+    {
+      "ordinal": 88,
+      "path": "/api/studio/pair",
+      "methods": [
+        "POST"
+      ],
+      "name": "redeem_pairing_code",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object",
+                "title": "Response Redeem Pairing Code Api Studio Pair Post"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [],
+      "summary": null,
+      "description": "Spend a pairing code for the bearer a page on an allowed origin sends.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.pairing",
+        "qualname": "redeem_pairing_code_route"
+      }
+    },
+    {
+      "ordinal": 89,
       "path": "/api/engine-defs/",
       "methods": [
         "GET"
@@ -3985,7 +4069,7 @@
       }
     },
     {
-      "ordinal": 88,
+      "ordinal": 90,
       "path": "/api/engine-defs/",
       "methods": [
         "POST"
@@ -4033,7 +4117,7 @@
       }
     },
     {
-      "ordinal": 89,
+      "ordinal": 91,
       "path": "/api/engine-defs/{def_id}",
       "methods": [
         "GET"
@@ -4081,7 +4165,7 @@
       }
     },
     {
-      "ordinal": 90,
+      "ordinal": 92,
       "path": "/api/engine-defs/{def_id}",
       "methods": [
         "PUT"
@@ -4129,7 +4213,7 @@
       }
     },
     {
-      "ordinal": 91,
+      "ordinal": 93,
       "path": "/api/engine-defs/{def_id}",
       "methods": [
         "DELETE"
@@ -4177,7 +4261,7 @@
       }
     },
     {
-      "ordinal": 92,
+      "ordinal": 94,
       "path": "/api/workflow-defs/",
       "methods": [
         "GET"
@@ -4228,7 +4312,7 @@
       }
     },
     {
-      "ordinal": 93,
+      "ordinal": 95,
       "path": "/api/workflow-defs/",
       "methods": [
         "POST"
@@ -4276,7 +4360,7 @@
       }
     },
     {
-      "ordinal": 94,
+      "ordinal": 96,
       "path": "/api/workflow-defs/{def_id}",
       "methods": [
         "GET"
@@ -4324,7 +4408,7 @@
       }
     },
     {
-      "ordinal": 95,
+      "ordinal": 97,
       "path": "/api/workflow-defs/{def_id}",
       "methods": [
         "PUT"
@@ -4372,7 +4456,7 @@
       }
     },
     {
-      "ordinal": 96,
+      "ordinal": 98,
       "path": "/api/workflow-defs/{def_id}",
       "methods": [
         "DELETE"
@@ -4420,7 +4504,7 @@
       }
     },
     {
-      "ordinal": 97,
+      "ordinal": 99,
       "path": "/api/workflow-defs/{def_id}/run",
       "methods": [
         "POST"
@@ -4468,7 +4552,7 @@
       }
     },
     {
-      "ordinal": 98,
+      "ordinal": 100,
       "path": "/api/sessions/{session_id}/tags",
       "methods": [
         "POST"
@@ -4516,7 +4600,7 @@
       }
     },
     {
-      "ordinal": 99,
+      "ordinal": 101,
       "path": "/api/sessions/{session_id}/tags/{tag:path}",
       "methods": [
         "DELETE"
@@ -4564,7 +4648,7 @@
       }
     },
     {
-      "ordinal": 100,
+      "ordinal": 102,
       "path": "/api/operator/conversations",
       "methods": [
         "GET"
@@ -4612,7 +4696,7 @@
       }
     },
     {
-      "ordinal": 101,
+      "ordinal": 103,
       "path": "/api/operator/conversations",
       "methods": [
         "POST"
@@ -4660,7 +4744,7 @@
       }
     },
     {
-      "ordinal": 102,
+      "ordinal": 104,
       "path": "/api/operator/conversations/{conversation_id}",
       "methods": [
         "PATCH"
@@ -4708,7 +4792,7 @@
       }
     },
     {
-      "ordinal": 103,
+      "ordinal": 105,
       "path": "/api/operator/conversations/{conversation_id}/fork",
       "methods": [
         "POST"
@@ -4756,7 +4840,7 @@
       }
     },
     {
-      "ordinal": 104,
+      "ordinal": 106,
       "path": "/api/operator/conversations/{conversation_id}",
       "methods": [
         "GET"
@@ -4804,7 +4888,7 @@
       }
     },
     {
-      "ordinal": 105,
+      "ordinal": 107,
       "path": "/api/operator/conversations/{conversation_id}",
       "methods": [
         "DELETE"
@@ -4852,7 +4936,7 @@
       }
     },
     {
-      "ordinal": 106,
+      "ordinal": 108,
       "path": "/api/operator/conversations/{conversation_id}/turns",
       "methods": [
         "POST"
@@ -4900,7 +4984,7 @@
       }
     },
     {
-      "ordinal": 107,
+      "ordinal": 109,
       "path": "/api/operator/models",
       "methods": [
         "GET"
@@ -4938,7 +5022,7 @@
       }
     },
     {
-      "ordinal": 108,
+      "ordinal": 110,
       "path": "/api/operator/conversations/{conversation_id}/view",
       "methods": [
         "POST"
@@ -4986,7 +5070,7 @@
       }
     },
     {
-      "ordinal": 109,
+      "ordinal": 111,
       "path": "/api/operator/conversations/{conversation_id}/requests/{request_id}/cancel",
       "methods": [
         "POST"
@@ -5034,7 +5118,7 @@
       }
     },
     {
-      "ordinal": 110,
+      "ordinal": 112,
       "path": "/api/operator/conversations/{conversation_id}/stream",
       "methods": [
         "GET"
@@ -5078,7 +5162,7 @@
       }
     },
     {
-      "ordinal": 111,
+      "ordinal": 113,
       "path": "/api/operator/conversations/{conversation_id}/proposals/{proposal_id}/confirm",
       "methods": [
         "POST"
@@ -5118,7 +5202,7 @@
         "operator"
       ],
       "summary": null,
-      "description": null,
+      "description": "Allow a pending Operator proposal.\n\nWithout ``LIONAGI_STUDIO_AUTH_TOKEN``, any process that can reach the daemon's\nlistener, including programs run by other local accounts, can allow or deny\nOperator proposals. The permission prompt is a workflow safeguard, not\nisolation from local programs; set a token on a shared machine.",
       "include_in_schema": true,
       "handler_identity": {
         "module": "lionagi.studio.services.operator",
@@ -5126,7 +5210,7 @@
       }
     },
     {
-      "ordinal": 112,
+      "ordinal": 114,
       "path": "/api/operator/conversations/{conversation_id}/proposals/{proposal_id}/decision",
       "methods": [
         "POST"
@@ -5166,7 +5250,7 @@
         "operator"
       ],
       "summary": null,
-      "description": null,
+      "description": "Allow or deny a pending Operator proposal.\n\nWithout ``LIONAGI_STUDIO_AUTH_TOKEN``, any process that can reach the daemon's\nlistener, including programs run by other local accounts, can allow or deny\nOperator proposals. The permission prompt is a workflow safeguard, not\nisolation from local programs; set a token on a shared machine.",
       "include_in_schema": true,
       "handler_identity": {
         "module": "lionagi.studio.services.operator",
@@ -5174,7 +5258,7 @@
       }
     },
     {
-      "ordinal": 113,
+      "ordinal": 115,
       "path": "/api/operator/conversations/{conversation_id}/effects/{effect_id}/ack",
       "methods": [
         "POST"
@@ -5222,7 +5306,7 @@
       }
     },
     {
-      "ordinal": 114,
+      "ordinal": 116,
       "path": "/api/hooks/library",
       "methods": [
         "GET"
@@ -5260,7 +5344,7 @@
       }
     },
     {
-      "ordinal": 115,
+      "ordinal": 117,
       "path": "/api/hooks/library/{name}",
       "methods": [
         "PUT"
@@ -5308,7 +5392,7 @@
       }
     },
     {
-      "ordinal": 116,
+      "ordinal": 118,
       "path": "/api/hooks/library/{name}",
       "methods": [
         "DELETE"
@@ -5356,7 +5440,7 @@
       }
     },
     {
-      "ordinal": 117,
+      "ordinal": 119,
       "path": "/api/operator/hooks",
       "methods": [
         "GET"
@@ -5394,7 +5478,7 @@
       }
     },
     {
-      "ordinal": 118,
+      "ordinal": 120,
       "path": "/api/operator/hooks",
       "methods": [
         "PUT"
@@ -5442,7 +5526,7 @@
       }
     },
     {
-      "ordinal": 119,
+      "ordinal": 121,
       "path": "/api/approvals/",
       "methods": [
         "POST"
@@ -5490,7 +5574,7 @@
       }
     },
     {
-      "ordinal": 120,
+      "ordinal": 122,
       "path": "/api/approvals/evidence/verify",
       "methods": [
         "GET"
@@ -5528,7 +5612,7 @@
       }
     },
     {
-      "ordinal": 121,
+      "ordinal": 123,
       "path": "/api/approvals/{approval_id}",
       "methods": [
         "GET"
@@ -5576,7 +5660,7 @@
       }
     },
     {
-      "ordinal": 122,
+      "ordinal": 124,
       "path": "/api/approvals/{approval_id}/grant",
       "methods": [
         "POST"
@@ -5624,7 +5708,7 @@
       }
     },
     {
-      "ordinal": 123,
+      "ordinal": 125,
       "path": "/api/approvals/{approval_id}/deny",
       "methods": [
         "POST"
@@ -5672,7 +5756,7 @@
       }
     },
     {
-      "ordinal": 124,
+      "ordinal": 126,
       "path": "/api/admin/doctor",
       "methods": [
         "GET"
@@ -5720,7 +5804,7 @@
       }
     },
     {
-      "ordinal": 125,
+      "ordinal": 127,
       "path": "/api/admin/health",
       "methods": [
         "GET"
@@ -5758,7 +5842,7 @@
       }
     },
     {
-      "ordinal": 126,
+      "ordinal": 128,
       "path": "/api/admin/readiness",
       "methods": [
         "GET"
@@ -5798,7 +5882,7 @@
         "admin"
       ],
       "summary": null,
-      "description": "Whether a query against the store will actually return.\n\nDistinct from ``/health``, which answers only whether the process is up:\nthat stays true while every database-backed endpoint is unresponsive, which\nis exactly the failure this reports. Never 5xx -- the verdict is in the\nbody, so a caller can tell \"store unreachable\" from \"store slow\" from\n\"healthy\" instead of getting one boolean for all three.",
+      "description": "Whether a query against the store will actually return, and whether the\nscheduler is still advancing.\n\nDistinct from ``/health``, which answers only whether the process is up:\nthat stays true while every database-backed endpoint is unresponsive, which\nis exactly the failure this reports. Never 5xx -- the verdict is in the\nbody, so a caller can tell \"store unreachable\" from \"store slow\" from\n\"healthy\" instead of getting one boolean for all three.",
       "include_in_schema": true,
       "handler_identity": {
         "module": "lionagi.studio.services.admin",
@@ -5806,7 +5890,7 @@
       }
     },
     {
-      "ordinal": 127,
+      "ordinal": 129,
       "path": "/api/admin/transition",
       "methods": [
         "POST"
@@ -5854,7 +5938,7 @@
       }
     },
     {
-      "ordinal": 128,
+      "ordinal": 130,
       "path": "/api/admin/events",
       "methods": [
         "GET"
@@ -5902,7 +5986,7 @@
       }
     },
     {
-      "ordinal": 129,
+      "ordinal": 131,
       "path": "/api/admin/prune-old-data",
       "methods": [
         "POST"
@@ -5952,7 +6036,7 @@
       }
     },
     {
-      "ordinal": 130,
+      "ordinal": 132,
       "path": "/api/admin/maintenance",
       "methods": [
         "POST"
@@ -6000,7 +6084,7 @@
       }
     },
     {
-      "ordinal": 131,
+      "ordinal": 133,
       "path": "/api/admin/prune",
       "methods": [
         "POST"
@@ -6050,7 +6134,7 @@
       }
     },
     {
-      "ordinal": 132,
+      "ordinal": 134,
       "path": "/api/stats/activity",
       "methods": [
         "GET"
@@ -6096,7 +6180,7 @@
       }
     },
     {
-      "ordinal": 133,
+      "ordinal": 135,
       "path": "/api/stats/spend",
       "methods": [
         "GET"
@@ -6142,7 +6226,7 @@
       }
     },
     {
-      "ordinal": 134,
+      "ordinal": 136,
       "path": "/api/stats/spend/rollup",
       "methods": [
         "GET"
@@ -6188,7 +6272,7 @@
       }
     },
     {
-      "ordinal": 135,
+      "ordinal": 137,
       "path": "/api/stats",
       "methods": [
         "GET"
@@ -6224,7 +6308,7 @@
       }
     },
     {
-      "ordinal": 136,
+      "ordinal": 138,
       "path": "/api/attention/dispositions/",
       "methods": [
         "GET"
@@ -6262,7 +6346,7 @@
       }
     },
     {
-      "ordinal": 137,
+      "ordinal": 139,
       "path": "/api/attention/dispositions/{item_id}",
       "methods": [
         "PUT"
@@ -6310,7 +6394,7 @@
       }
     },
     {
-      "ordinal": 138,
+      "ordinal": 140,
       "path": "/api/attention/dispositions/{item_id}",
       "methods": [
         "DELETE"
@@ -6358,7 +6442,7 @@
       }
     },
     {
-      "ordinal": 139,
+      "ordinal": 141,
       "path": "/api/attention/dispositions/{item_id}/history",
       "methods": [
         "GET"
@@ -6406,7 +6490,7 @@
       }
     },
     {
-      "ordinal": 140,
+      "ordinal": 142,
       "path": "/health",
       "methods": [
         "GET"
@@ -6733,7 +6817,7 @@
             "admin"
           ],
           "summary": "Readiness",
-          "description": "Whether a query against the store will actually return.\n\nDistinct from ``/health``, which answers only whether the process is up:\nthat stays true while every database-backed endpoint is unresponsive, which\nis exactly the failure this reports. Never 5xx -- the verdict is in the\nbody, so a caller can tell \"store unreachable\" from \"store slow\" from\n\"healthy\" instead of getting one boolean for all three.",
+          "description": "Whether a query against the store will actually return, and whether the\nscheduler is still advancing.\n\nDistinct from ``/health``, which answers only whether the process is up:\nthat stays true while every database-backed endpoint is unresponsive, which\nis exactly the failure this reports. Never 5xx -- the verdict is in the\nbody, so a caller can tell \"store unreachable\" from \"store slow\" from\n\"healthy\" instead of getting one boolean for all three.",
           "parameters": [
             {
               "name": "timeout_ms",
@@ -9480,6 +9564,7 @@
             "operator"
           ],
           "summary": "Confirm Operator Proposal",
+          "description": "Allow a pending Operator proposal.\n\nWithout ``LIONAGI_STUDIO_AUTH_TOKEN``, any process that can reach the daemon's\nlistener, including programs run by other local accounts, can allow or deny\nOperator proposals. The permission prompt is a workflow safeguard, not\nisolation from local programs; set a token on a shared machine.",
           "parameters": [
             {
               "name": "conversation_id",
@@ -9542,6 +9627,7 @@
             "operator"
           ],
           "summary": "Decide Operator Proposal",
+          "description": "Allow or deny a pending Operator proposal.\n\nWithout ``LIONAGI_STUDIO_AUTH_TOKEN``, any process that can reach the daemon's\nlistener, including programs run by other local accounts, can allow or deny\nOperator proposals. The permission prompt is a workflow safeguard, not\nisolation from local programs; set a token on a shared machine.",
           "parameters": [
             {
               "name": "conversation_id",
@@ -11198,6 +11284,16 @@
               }
             },
             {
+              "name": "include_recent_runs",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "boolean",
+                "default": false,
+                "title": "Include Recent Runs"
+              }
+            },
+            {
               "name": "project",
               "in": "query",
               "required": false,
@@ -12544,6 +12640,68 @@
           }
         }
       },
+      "/api/studio/pair": {
+        "post": {
+          "summary": "Redeem Pairing Code",
+          "description": "Spend a pairing code for the bearer a page on an allowed origin sends.",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairRequest"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "type": "object",
+                    "title": "Response Redeem Pairing Code Api Studio Pair Post"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/studio/pairing-codes": {
+        "post": {
+          "summary": "Create Pairing Code",
+          "description": "Mint a one-time code for the command that opens a page; never for a page.",
+          "responses": {
+            "201": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": true,
+                    "type": "object",
+                    "title": "Response Create Pairing Code Api Studio Pairing Codes Post"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "/api/teams/": {
         "get": {
           "tags": [
@@ -12953,7 +13111,7 @@
         }
       }
     },
-    "path_count": 108,
+    "path_count": 110,
     "schemas": {
       "AcknowledgeEffectRequest": {
         "properties": {
@@ -14040,6 +14198,21 @@
         "title": "OperatorViewReport",
         "description": "A view the browser reports outside of any turn.\n\nBoth fields are required here, unlike on a turn's snapshot: a report exists\nonly to answer \"where is the human now\", and one that cannot say who saw it\nor where it fell in their sequence cannot be ordered against anything, so\naccepting it would mean storing a view that can only ever be reported with\nthe wrong freshness label."
       },
+      "PairRequest": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Code"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "title": "PairRequest"
+      },
       "PruneBody": {
         "properties": {
           "session_ids": {
@@ -14998,6 +15171,6 @@
         "title": "_DispositionBody"
       }
     },
-    "schema_count": 33
+    "schema_count": 34
   }
 }

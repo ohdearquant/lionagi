@@ -159,6 +159,11 @@
     "effect": {
       "requested": "Requested interface action: {kind}"
     },
+    "truncation": {
+      "title": "এই টার্নের কিছু অংশ সংরক্ষিত হয়নি",
+      "summary": "{frames}টি ফ্রেম সংরক্ষিত হয়নি · {size}",
+      "limit": " · সীমা: {limit}"
+    },
     "outcome": {
       "completed": "Turn completed",
       "failed": "Turn failed",
@@ -241,8 +246,8 @@
       "allHint": "শুরু করতে আপনার প্রথম এজেন্ট বা ওয়ার্কফ্লো তৈরি করুন।",
       "filtered": "আপনার ফিল্টারের সঙ্গে কোনো আইটেম মেলে না।",
       "filteredHint": "অন্য ধরনের চেষ্টা করুন বা সার্চ পরিষ্কার করুন।",
+      "clearFilters": "ফিল্টার পরিষ্কার করুন",
       "createFirst": "প্রথমটি তৈরি করুন",
-      "createWorkflow": "নতুন ওয়ার্কফ্লো",
       "createAgent": "নতুন এজেন্ট",
       "allSkill": "কোনো স্কিল পাওয়া যায়নি।",
       "allSkillHint": "এখানে দেখতে ~/.lionagi/skills/NAME/ এর অধীনে একটি SKILL.md যোগ করুন।",
@@ -303,12 +308,12 @@
       "engineMaxDepth": "সর্বোচ্চ গভীরতা",
       "engineMaxAgents": "সর্বোচ্চ এজেন্ট",
       "loadFailed": "(ভার্সন লোড করতে ব্যর্থ)",
-      "invocations": "ইনভোকেশন",
-      "successRate": "সাফল্যের হার",
-      "lastUsed": "শেষ ব্যবহৃত",
-      "never": "কখনও নয়",
-      "recentInvocations": "সাম্প্রতিক ইনভোকেশন",
-      "noInvocations": "এখনও কোনো ইনভোকেশন রেকর্ড করা হয়নি।",
+      "invocations": "নথিভুক্ত আহ্বান",
+      "successRate": "নথিভুক্ত সাফল্যের হার",
+      "lastUsed": "সর্বশেষ ট্র্যাক করা ব্যবহার",
+      "never": "নথিভুক্ত নয়",
+      "recentInvocations": "সম্প্রতি হালনাগাদ রেকর্ড",
+      "noInvocations": "কোনো নথিভুক্ত আহ্বান নেই।",
       "skillValidationFailed": "যাচাই ব্যর্থ হয়েছে। সংরক্ষণের আগে নিচের ত্রুটিগুলো ঠিক করুন।",
       "pluginOwnedSkillHint": "একটি প্লাগইনের সাথে বান্ডিল করা — পরিবর্তন করতে সরাসরি প্লাগইনের ফাইল সম্পাদনা করুন।",
       "readOnly": "শুধুমাত্র পঠনযোগ্য",
@@ -320,7 +325,10 @@
       "pluginHooksSection": "হুক কনফিগারেশন",
       "pluginReadmeSection": "README",
       "yes": "হ্যাঁ",
-      "no": "না"
+      "no": "না",
+      "usageCoverage": "এই দক্ষতা বা প্লাগইনের ট্র্যাকিংয়ের পরিধি অজানা; শুধু নথিভুক্ত আহ্বান দেখানো হয়। সমাপ্ত রেকর্ডগুলির মধ্যে সফলভাবে সম্পন্ন রান দিয়ে সাফল্যের হার গণনা করা হয়। সাম্প্রতিক সময়গুলি আপডেটের পর থেকে গণনা করা হয়।",
+      "usageUnavailable": "নথিভুক্ত ব্যবহারের তথ্য পাওয়া যাচ্ছে না।",
+      "usageUnknown": "অজানা"
     },
     "template": {
       "badge": "বিল্ট-ইন",
@@ -666,6 +674,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "সাম্প্রতিক রান উপলভ্য নয়",
     "title": "শিডিউল",
     "subtitle": "cron, interval ও GitHub ট্রিগারে স্থায়ী অটোমেশন",
     "calendar": "ক্যালেন্ডার",
@@ -1250,6 +1259,12 @@
       "body": "Something answered at {base}, but it isn't a lionagi daemon.",
       "fix": "Stop that program, or point the daemon at a different port:",
       "command": "li studio --port 8766"
+    },
+    "accessRequired": {
+      "title": "এই ডেমনের একটি অ্যাক্সেস টোকেন প্রয়োজন",
+      "body": "{base}-এ একটি lionagi ডেমন সাড়া দিয়েছে, কিন্তু এই পেজটি প্রত্যাখ্যান করেছে। ডেমন অন্য অরিজিনের পেজ কেবল অ্যাক্সেস টোকেন থাকলেই গ্রহণ করে, আর li studio কমান্ড এই পেজটি খোলার সময় এটিকে একটি টোকেন দেয়। পেজ রিলোড করলে টোকেনটি হারিয়ে যায়।",
+      "fix": "অ্যাক্সেসসহ Studio খুলতে ডেমন যেখানে চলছে সেখানে এটি চালান:",
+      "command": "li studio"
     },
     "retry": "Retry",
     "dismiss": "Dismiss"

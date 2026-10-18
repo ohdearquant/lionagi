@@ -40,6 +40,19 @@ class _RaisingProvider:
         raise RuntimeError("boom")
 
 
+class _DegradingProvider:
+    name = "degrader"
+    degradation_reason = "transport_failure:ConnectionError"
+
+    async def provide(self, branch, instruction):
+        return None
+
+
+class _RefusingProvider(_DegradingProvider):
+    name = "refusing"
+    degradation_reason = "op_refused:memory.recall"
+
+
 class _BadOutput:
     def __bool__(self):
         raise TypeError("provider output cannot be inspected")
@@ -133,6 +146,7 @@ async def test_gather_empty_registry_returns_empty_report():
     assert report.fired == []
     assert report.skipped == []
     assert report.failed == []
+    assert report.degraded == []
 
 
 @pytest.mark.asyncio
@@ -172,6 +186,40 @@ async def test_gather_contains_raising_provider_and_still_renders_others():
     assert report.blocks == ["survivor"]
     assert report.fired[0]["provider_name"] == "survivor"
     assert registry.stats["failed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_gather_records_provider_owned_degradation_separately_from_empty_recall():
+    registry = ContextProviderRegistry()
+    registry.register(_DegradingProvider())
+    registry.register(_NoneProvider())
+
+    report = await registry.gather(branch=None, instruction=None)
+
+    assert report.failed == []
+    assert report.degraded == [
+        {
+            "provider_name": "degrader",
+            "reason": "transport_failure:ConnectionError",
+        }
+    ]
+    assert registry.stats["degraded_turns"] == 1
+
+
+@pytest.mark.asyncio
+async def test_gather_counts_degraded_turn_once_and_logs_each_reason(caplog):
+    registry = ContextProviderRegistry()
+    registry.register(_DegradingProvider(), name="transport")
+    registry.register(_RefusingProvider())
+
+    report = await registry.gather(branch=None, instruction=None)
+
+    assert len(report.degraded) == 2
+    assert registry.stats["degraded_turns"] == 1
+    assert "transport_failure:ConnectionError" in caplog.text
+    assert "op_refused:memory.recall" in caplog.text
+    assert "transport" in caplog.text
+    assert "refusing" in caplog.text
 
 
 @pytest.mark.asyncio

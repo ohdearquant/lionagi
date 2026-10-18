@@ -19,13 +19,12 @@ un-gate of a cancelled run's status.
 from __future__ import annotations
 
 import asyncio
-import re
 import time
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .redact import public_project
+from .redact import MAX_CANDIDATES, public_project
 from .store import OperatorStore
 
 CANCEL_RUN_COMMAND_TYPE = "cancel"
@@ -40,7 +39,7 @@ CANCEL_RUN_DESCRIPTION = (
     "terminal status rather than sending a duplicate signal, and does not "
     "create a proposal for a run there is nothing left to do to. "
     "Does not support mass cancellation -- one run at a time. "
-    "Accepts a run UUID, an 8+ hex id prefix, a name substring (minimum 3 "
+    "Accepts a run UUID, an id prefix, a name substring (minimum 3 "
     "characters), or 'current' for the run open when this instruction was "
     "sent. Ambiguous references return candidates rather than guessing. "
     "Use resume_run to continue a run's conversation with a new instruction "
@@ -59,10 +58,19 @@ class CancelRunInput(_StrictInput):
 
 
 class AmbiguousRunReferenceError(ValueError):
-    """A run reference matched more than one session; never guess."""
+    """A run reference matched more than one session; never guess.
 
-    def __init__(self, candidates: list[str]) -> None:
+    ``candidates`` holds every matched row the arm's bounded read returned,
+    and ``cap`` is the listing size that arm shows: the id-prefix arm
+    mirrors ``fetch_unique_row``'s own bounded window, while the
+    name/playbook arm uses the wider ``MAX_CANDIDATES`` bound. Keeping both
+    means the caller can tell a full window (truncated) from a short one
+    without re-counting a read whose bound it cannot see.
+    """
+
+    def __init__(self, candidates: list[str], *, cap: int) -> None:
         self.candidates = list(candidates)
+        self.cap = cap
         super().__init__(f"ambiguous run reference -- matches {len(candidates)} sessions")
 
 
@@ -94,23 +102,17 @@ def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-# A full canonical UUID (36 characters, 8-4-4-4-12 hex). Mirrors
-# ``run_progress.py``'s own copy, kept separate for the same reason
-# ``_allowed_project`` is: this module's identity/store handling stays
-# self-contained.
-_EXACT_UUID_RE = re.compile(
-    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-)
-
-
 async def _current_run_id(store: OperatorStore, request_id: str) -> str | None:
     """The run the human was looking at when this instruction was sent.
 
     Deliberately reads the turn's OWN frozen context rather than a
     later-reported live view -- acting on a view reported after the
     instruction was sent could target a run the human was never looking at
-    when they said "stop it". See docs/internals/studio.md ("Resolving a
-    run reference") for why this reads the "s" key specifically.
+    when they said "stop it". Reads the "s" key specifically because that is
+    the only key a mission/history view carries its run selection under;
+    there is no runId/run_id/sessionId on the wire for those views, and the
+    longer names other resolvers also accept would only ever be written by a
+    caller that is not this surface.
     """
     turn = await store.get_turn(request_id)
     context = turn.get("context")
@@ -138,8 +140,9 @@ async def _allowed_project(store: OperatorStore, request_id: str) -> str:
     if not isinstance(project, str) or not project:
         raise MissingOwnerContextError(
             "operator turn has no project context -- refusing to resolve or "
-            "cancel a run by prefix or name. Pass the run's full 36-character "
-            "id instead, or cancel the run the human has open ('current')."
+            "cancel a run, including one named by its full 36-character id: "
+            "cancelling changes the run it names, so this turn cannot prove "
+            "it owns that run."
         )
     return project
 
@@ -179,24 +182,31 @@ async def _resolve_run(db: Any, ref: str, *, project: str) -> dict[str, Any] | N
     ``project`` (the calling turn's own; see ``_allowed_project``): a
     foreign exact/prefix match is reported exactly like a nonexistent one
     (``None``), never as e.g. "already terminal", which would itself
-    confirm the id exists. See docs/internals/studio.md ("Resolving a run
-    reference").
+    confirm the id exists. The scope travels into the prefix query, so its
+    bounded window counts only this project's rows: foreign rows cannot fill
+    it and hide a match behind them. See docs/internals/studio.md
+    ("Resolving a run reference").
     """
-    from lionagi.cli._util import AmbiguousIdError, fetch_unique_row
+    from lionagi.cli._util import _CANDIDATES_SHOWN, AmbiguousIdError, fetch_unique_row
 
     ref = ref.strip()
     if not ref:
         return None
 
     try:
-        row = await fetch_unique_row(db, "sessions", ref)
+        row = await fetch_unique_row(db, "sessions", ref, project=project)
     except AmbiguousIdError as exc:
         owned = await _owned_rows(db, exc.candidates, project)
         if not owned:
             return None
         if len(owned) == 1:
             return owned[0]
-        raise AmbiguousRunReferenceError([r["id"] for r in owned]) from exc
+        # The scoped prefix scan reads one row more than the CLI helper shows
+        # (``_CANDIDATES_SHOWN + 1``), so a full read is the honest truncation
+        # signal, and the cap -- the listing size, not the read size -- sets
+        # how many candidates are shown below. That is the same window the
+        # read-only resolver reports.
+        raise AmbiguousRunReferenceError([r["id"] for r in owned], cap=_CANDIDATES_SHOWN) from exc
     if row is not None:
         row_dict = db._row_to_dict(row)
         if not _owns(row_dict.get("project"), project):
@@ -215,15 +225,29 @@ async def _resolve_run(db: Any, ref: str, *, project: str) -> dict[str, Any] | N
     if not rows:
         return None
     if len(rows) > 1:
-        raise AmbiguousRunReferenceError([db._row_to_dict(r)["id"] for r in rows])
+        raise AmbiguousRunReferenceError(
+            [db._row_to_dict(r)["id"] for r in rows], cap=MAX_CANDIDATES
+        )
     return db._row_to_dict(rows[0])
 
 
 async def _resolve_reference(store: OperatorStore, request_id: str, ref: str) -> dict[str, Any]:
     """Resolve *ref* to a tool-facing outcome. Never guesses, never raises
     for an ordinary resolution failure -- ambiguous and not-found are both
-    first-class reported outcomes."""
+    first-class reported outcomes.
+
+    A turn with no declared project raises :class:`MissingOwnerContextError`
+    rather than resolving anything, for every reference form including an
+    exact full UUID -- the same position ``run_control._propose_run_control``
+    takes, and for the same reasons: cancelling mutates the run it names, so
+    "an exact id cannot enumerate" stops being the relevant property, and
+    refusing before resolution keeps the two refusals from becoming an oracle
+    for which run ids exist in projects this turn cannot see. The read-only
+    resolver (``run_progress.resolve_run``) keeps the exact-id exception.
+    """
     from lionagi.state.db import StateDB
+
+    project = await _allowed_project(store, request_id)
 
     if ref == "current":
         run_id = await _current_run_id(store, request_id)
@@ -231,34 +255,20 @@ async def _resolve_reference(store: OperatorStore, request_id: str, ref: str) ->
             return {"found": False}
         ref = run_id
 
-    ref = ref.strip()
-    try:
-        project = await _allowed_project(store, request_id)
-    except MissingOwnerContextError:
-        if _EXACT_UUID_RE.fullmatch(ref) is None:
-            raise
-        # A turn with an owner but no declared project may still resolve one
-        # run by its full id: an exact 36-character UUID identifies at most
-        # one row and cannot enumerate anything, the same position
-        # ``run_detail`` already takes for a bare id. Prefix and
-        # name-substring resolution stay behind the fence, and a turn that
-        # *does* declare a project keeps full ownership scoping on every arm.
-        async with StateDB() as db:
-            row = await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (ref,))
-            if row is None:
-                return {"found": False}
-            return {"found": True, "ambiguous": False, "run": db._row_to_dict(row)}
-
     async with StateDB() as db:
         try:
             row = await _resolve_run(db, ref, project=project)
         except AmbiguousRunReferenceError as exc:
-            candidates = exc.candidates[:10]
+            # Cap and truncation both come from the arm that raised, so a
+            # collision set is reported the same way the read-only resolver
+            # reports it: the listed candidates at that arm's listing size
+            # and truncation true only when more rows matched than are
+            # returned.
             return {
                 "found": True,
                 "ambiguous": True,
-                "candidates": candidates,
-                "truncated": len(exc.candidates) > 10,
+                "candidates": exc.candidates[: exc.cap],
+                "truncated": len(exc.candidates) > exc.cap,
             }
         if row is None:
             return {"found": False}
@@ -336,7 +346,14 @@ async def cancel_run(arguments: dict[str, Any]) -> dict[str, Any]:
     args = CancelRunInput.model_validate(arguments)
     store, conversation_id, request_id = _identity()
 
-    resolution = await _resolve_reference(store, request_id, args.run)
+    # A turn that declares no project gets the refusal as a reported outcome
+    # rather than a raised error -- the same shape ``run_control`` returns, so
+    # a caller sees one refusal vocabulary across the write tools rather than
+    # an exception from one and a reason code from another.
+    try:
+        resolution = await _resolve_reference(store, request_id, args.run)
+    except MissingOwnerContextError:
+        return {"cancelled": False, "reason": "missing_owner_context", "run_untouched": True}
     if not resolution["found"]:
         return {"cancelled": False, "reason": "not_found", "run_untouched": True}
     if resolution["ambiguous"]:
@@ -413,7 +430,7 @@ async def execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
     invocation is reaped exactly the way ``li kill --recursive`` does,
     rather than orphaned when the parent session goes terminal.
     """
-    from lionagi.cli.kill import _kill_one, _list_running_children
+    from lionagi.cli.kill import _NOT_STOPPED_SIGNALS, _kill_one, _list_running_children
     from lionagi.state.db import StateDB
 
     run_id = command.get("session_id")
@@ -460,11 +477,10 @@ async def execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
             row_dict,
             user_reason=user_reason,
         )
-        if outcome["signal"] == "identity_mismatch":
-            # _kill_one() returns without calling _persist_cancel for an
-            # identity mismatch -- nothing was written. Report that directly
-            # rather than re-reading a row that is guaranteed unchanged.
-            return {"status": "identity_mismatch", "id": run_id, "signal": outcome["signal"]}
+        if outcome["signal"] in _NOT_STOPPED_SIGNALS:
+            # _kill_one() leaves the row unchanged when it cannot stop the
+            # process. Preserve that distinction from an already-terminal row.
+            return {"status": "not_stopped", "id": run_id, "signal": outcome["signal"]}
 
         # `_persist_cancel` guards its write on the row still being 'running'
         # at persist time (lionagi/cli/kill.py) -- a race that lets the run

@@ -66,10 +66,15 @@ Each CLI run owns a state directory:
 └── stream/
 ```
 
-`run.json` records the state and artifact roots. `branches/` contains resumable
-branch snapshots. `checkpoint.json` records flow progress. When `--save DIR`
-is present, worker and synthesis artifacts go to that directory; otherwise
-they live below the run's own `artifacts/` directory.
+`run.json` records the state and artifact roots, the resolved execution `cwd`,
+and MCP discovery provenance (`mcp_config_source` is explicitly `null` when no
+source file was selected). A failed run launched with `li agent` also records
+`error`, the reason for that run's failure, so a provider's refusal can be told
+apart from a crash without opening the state store. Operator runs record their
+failure reason on the Operator turn instead. `branches/` contains resumable
+branch snapshots. `checkpoint.json` records flow progress.
+When `--save DIR` is present, worker and synthesis artifacts go to that
+directory; otherwise they live below the run's own `artifacts/` directory.
 
 ## Resume after a process stops
 
@@ -115,5 +120,5 @@ the new attempt derives its own rather than inheriting the superseded run's.
 Expected durable evidence is a state-database row plus a run directory. A flow
 adds a checkpoint; `--save` adds reviewable output at the chosen path.
 
-Next, use [Studio and schedules](studio.md) when durable work needs a visual
-operating surface or a trigger.
+Next, use [Studio](studio-getting-started.md) for a visual operating surface,
+or [schedules](studio-schedules.md) to trigger durable work automatically.

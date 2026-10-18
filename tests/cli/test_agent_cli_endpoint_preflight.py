@@ -14,6 +14,8 @@ Covers the preflight guard wired into `_run_agent` right before
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from lionagi._errors import ConfigurationError
@@ -123,3 +125,49 @@ async def test_run_agent_accepts_cli_provider_and_reaches_allocate_run(monkeypat
 
     assert terminal_status == "completed"
     assert reached["allocate_run"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_agent_persists_execution_provenance(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import lionagi.cli._runs as runs_mod
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.service.manager import iModelManager
+
+    submit_dir = tmp_path / "submit"
+    target_dir = tmp_path / "target"
+    submit_dir.mkdir()
+    target_dir.mkdir()
+    monkeypatch.chdir(submit_dir)
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    monkeypatch.setattr(iModelManager, "shutdown", AsyncMock())
+    monkeypatch.setattr(agent_mod, "build_chat_model", lambda *a, **kw: "codex/model")
+    monkeypatch.setattr(agent_mod, "resolve_persisted_effort", lambda *a, **kw: None)
+    monkeypatch.setattr(agent_mod, "setup_agent_persist", AsyncMock(return_value=None))
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", AsyncMock(return_value="completed"))
+    monkeypatch.setattr(agent_mod, "save_last_branch_pointer", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        agent_mod,
+        "_provenance",
+        SimpleNamespace(
+            resolve_model_spec=lambda p, m: f"{p}/{m}",
+            agent_definition_hash=lambda n: "abc",
+        ),
+    )
+    monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: None)
+
+    async def fake_operate(self, instruction=None, **kw):
+        return "ok"
+
+    monkeypatch.setattr(Branch, "operate", fake_operate)
+
+    await agent_mod._run_agent("codex/model", "do the thing", cwd=str(target_dir))
+
+    manifests = list((tmp_path / "runs").glob("*/run.json"))
+    assert len(manifests) == 1
+    manifest = json.loads(manifests[0].read_text())
+    assert manifest["cwd"] == str(target_dir.resolve())
+    assert manifest["mcp_config_reason"] == "no_mcp_config_found"

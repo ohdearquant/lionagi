@@ -31,10 +31,13 @@ li schedule create agent nightly-review \
 
 # A command every 15 minutes (the executable goes after a trailing --).
 # Command actions are security-gated: the executable name must appear in
-# LIONAGI_SCHEDULER_COMMAND_ALLOWLIST (comma-separated) in the daemon's
-# environment, must be a bare PATH-resolvable name (no path separators),
-# and arguments must be positional — tokens starting with '-' are rejected.
-li schedule create command refresh-index --every 15m -- refresh-index nightly
+# LIONAGI_SCHEDULER_COMMAND_ALLOWLIST (comma-separated), must be a bare
+# PATH-resolvable name (no path separators), and arguments must be positional
+# — tokens starting with '-' are rejected. Two environments read that variable,
+# not one: the daemon's gates the spawn, and YOUR shell's gates the command
+# below, because every path that accepts a command target re-checks it in its
+# own process. Unset in your shell, it allows nothing and this refuses.
+LIONAGI_SCHEDULER_COMMAND_ALLOWLIST=refresh-index li schedule create command refresh-index --every 15m -- refresh-index nightly
 
 # A flow document fired once at an absolute instant
 li schedule create flow release-pipeline \
@@ -98,10 +101,14 @@ schedules:
 Validate without touching the database, preview the reconciliation, then apply:
 
 ```bash
-li schedule validate schedules.yaml
-li schedule apply schedules.yaml --dry-run
-li schedule apply schedules.yaml
+LIONAGI_SCHEDULER_COMMAND_ALLOWLIST=refresh-index li schedule validate schedules.yaml
+LIONAGI_SCHEDULER_COMMAND_ALLOWLIST=refresh-index li schedule apply schedules.yaml --dry-run
+LIONAGI_SCHEDULER_COMMAND_ALLOWLIST=refresh-index li schedule apply schedules.yaml
 ```
+
+The prefix is needed because each of these validates the command allow-list in its
+OWN environment, so a set with a command target needs the variable here and not
+only in the daemon. A set with no command target does not need it at all.
 
 Notes:
 
@@ -113,6 +120,20 @@ Notes:
 - Target kinds: `agent`, `command`, `playbook`, `flow`. A schedule this set created
   that later disappears from the file is disabled on the next apply (not deleted —
   its run history stays queryable).
+- In a project-scoped document a member whose `execution` omits `project`, or
+  sets it to an empty string (`project: ""`), runs under the document's
+  `metadata.project`; in a global document it has no project unless it names one.
+  A project written as YAML null, whether `project: null`, `project: ~` or
+  `project:` with nothing after it, means the schedule has no project: YAML reads
+  those three alike, so quote a project actually named `null` (`project: "null"`)
+  to name that project rather than declare none. A quoted name is used verbatim,
+  but it still has to be a runnable identifier to spawn -- `project: "~"` or
+  `project: "  "` name projects that fail at fire time. `li schedule export`
+  writes every member's stored project explicitly, `null` included, so re-applying
+  an export reproduces it. The difference matters: a declaration always gives its
+  member a working directory of its own, so the project is a fallback directory
+  used only when that one is unusable, and it is passed as `--project` to the
+  `agent` and `flow_yaml` commands a declaration spawns.
 
 ## Event-driven recipe: review every PR change
 

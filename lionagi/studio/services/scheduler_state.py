@@ -10,7 +10,6 @@ SchedulerStateService.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -22,6 +21,7 @@ from lionagi.state.db import (
     CursorClaim,
     StateDB,
 )
+from lionagi.state.lifecycle import ReasonRecord, ScheduleAuditContext
 from lionagi.state.reasons import RunReasons
 from lionagi.studio.scheduler import coordination as _coordination
 
@@ -42,6 +42,8 @@ class SchedulerStateService(Protocol):
         guard_cursor_forward: bool = False,
         expect_next_fire_at: CursorClaim = NO_CURSOR_CLAIM,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        audit_context: ScheduleAuditContext | None = None,
+        reason: ReasonRecord | None = None,
         **fields: Any,
     ) -> bool: ...
 
@@ -70,6 +72,8 @@ class SchedulerStateService(Protocol):
         schedule_fields: dict[str, Any],
         expect_next_fire_at: CursorClaim,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        audit_context: ScheduleAuditContext | None = None,
+        reason: ReasonRecord | None = None,
     ) -> bool: ...
 
     async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool: ...
@@ -84,6 +88,8 @@ class SchedulerStateService(Protocol):
         replacement_run: dict[str, Any],
         *,
         expected_orphan_status: str = "running",
+        reason_summary: str = "undispatched schedule run replaced during recovery",
+        evidence_refs: list[dict[str, Any]] | None = None,
     ) -> bool: ...
 
     async def update_schedule_run(self, run_id: str, **fields: Any) -> None: ...
@@ -91,6 +97,8 @@ class SchedulerStateService(Protocol):
     async def create_invocation(self, invocation: dict[str, Any]) -> None: ...
 
     async def update_invocation(self, inv_id: str, **fields: Any) -> None: ...
+
+    async def merge_invocation_node_metadata(self, inv_id: str, patch: dict[str, Any]) -> None: ...
 
     async def get_invocation(self, invocation_id: str) -> dict[str, Any] | None: ...
 
@@ -185,6 +193,8 @@ class _DBSchedulerStateService:
         guard_cursor_forward: bool = False,
         expect_next_fire_at: CursorClaim = NO_CURSOR_CLAIM,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        audit_context: ScheduleAuditContext | None = None,
+        reason: ReasonRecord | None = None,
         **fields: Any,
     ) -> bool:
         async with self._db_context() as db:
@@ -193,6 +203,8 @@ class _DBSchedulerStateService:
                 guard_cursor_forward=guard_cursor_forward,
                 expect_next_fire_at=expect_next_fire_at,
                 expect_github_cursor=expect_github_cursor,
+                audit_context=audit_context,
+                reason=reason,
                 **fields,
             )
 
@@ -236,6 +248,8 @@ class _DBSchedulerStateService:
         schedule_fields: dict[str, Any],
         expect_next_fire_at: CursorClaim,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        audit_context: ScheduleAuditContext | None = None,
+        reason: ReasonRecord | None = None,
     ) -> bool:
         async with self._db_context() as db:
             return await db.create_schedule_run_and_advance(
@@ -244,6 +258,8 @@ class _DBSchedulerStateService:
                 schedule_fields=schedule_fields,
                 expect_next_fire_at=expect_next_fire_at,
                 expect_github_cursor=expect_github_cursor,
+                audit_context=audit_context,
+                reason=reason,
             )
 
     async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool:
@@ -264,12 +280,16 @@ class _DBSchedulerStateService:
         replacement_run: dict[str, Any],
         *,
         expected_orphan_status: str = "running",
+        reason_summary: str = "undispatched schedule run replaced during recovery",
+        evidence_refs: list[dict[str, Any]] | None = None,
     ) -> bool:
         async with self._db_context() as db:
             return await db.tombstone_and_replace_schedule_run(
                 orphan_id,
                 replacement_run,
                 expected_orphan_status=expected_orphan_status,
+                reason_summary=reason_summary,
+                evidence_refs=evidence_refs,
             )
 
     async def update_schedule_run(self, run_id: str, **fields: Any) -> None:
@@ -283,6 +303,10 @@ class _DBSchedulerStateService:
     async def update_invocation(self, inv_id: str, **fields: Any) -> None:
         async with self._db_context() as db:
             await db.update_invocation(inv_id, **fields)
+
+    async def merge_invocation_node_metadata(self, inv_id: str, patch: dict[str, Any]) -> None:
+        async with self._db_context() as db:
+            await db.merge_invocation_node_metadata(inv_id, patch)
 
     async def get_invocation(self, invocation_id: str) -> dict[str, Any] | None:
         async with self._db_context() as db:
@@ -539,10 +563,10 @@ async def flush_run_telemetry(
     after its own terminal-status guard returns True). Pops the bus's
     accumulated signal counters for *run_id* and merges them with the
     invocation's files-read overlap under a ``"coordination"`` key in
-    ``invocations.node_metadata`` (read-modify-write). Returns `None` (and
-    leaves node_metadata untouched) when there's nothing to report.
-    Best-effort: a failure computing/persisting is logged and swallowed,
-    never propagated or retried; `CancelledError` still propagates."""
+    ``invocations.node_metadata``. Returns `None` (and leaves node_metadata
+    untouched) when there's nothing to report. Best-effort: a failure
+    computing/persisting is logged and swallowed, never propagated or
+    retried; `CancelledError` still propagates."""
     signals = bus.pop_run_counters(run_id)
     try:
         overlap = await svc.compute_files_overlap(invocation_id, top_n=top_n)
@@ -554,17 +578,7 @@ async def flush_run_telemetry(
             "files_overlap": overlap,
         }
 
-        invocation = await svc.get_invocation(invocation_id)
-        node_metadata = (invocation or {}).get("node_metadata")
-        if isinstance(node_metadata, str):
-            try:
-                node_metadata = json.loads(node_metadata)
-            except (ValueError, TypeError):
-                node_metadata = {}
-        if not isinstance(node_metadata, dict):
-            node_metadata = {}
-        node_metadata["coordination"] = telemetry
-        await svc.update_invocation(invocation_id, node_metadata=node_metadata)
+        await svc.merge_invocation_node_metadata(invocation_id, {"coordination": telemetry})
         return telemetry
     except Exception:
         _log.warning(

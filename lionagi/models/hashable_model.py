@@ -1,3 +1,8 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
 from typing import Literal
 
 import orjson
@@ -5,8 +10,6 @@ from pydantic import BaseModel, ConfigDict
 from typing_extensions import Self
 
 from .. import ln
-
-_DEFAULT_HASHABLE_SERIALIZER = None
 
 ConversionMode = Literal["python", "json", "db"]
 
@@ -18,7 +21,15 @@ __all__ = (
 
 
 class HashableModel(BaseModel):
-    """Used as base class for models that need to be hashable."""
+    """Mutable Pydantic model with sentinel-aware serialization.
+
+    The historical name remains for import compatibility. A mutable instance is
+    unhashable; use a stable identifier as a key. A frozen subclass gets
+    pydantic's hash of its field values, so it hashes when every value does: a
+    tuple field hashes, a list or dict field raises ``TypeError``. A tuple is as
+    stable as what it holds: a held value whose hash follows its own mutable
+    content still moves the model's hash when that content changes.
+    """
 
     model_config = ConfigDict(
         populate_by_name=True,
@@ -68,36 +79,25 @@ class HashableModel(BaseModel):
         """Converts this Element to a JSON string."""
 
         dict_ = self._to_dict(**kw)
-        b_ = ln.json_dumpb(
+        return ln.json_dumps(
             dict_,
+            decode=decode,
             sort_keys=True,
             deterministic_sets=True,
             naive_utc=True,
             default=_get_default_hashable_serializer(),
         )
-        if decode:
-            return b_.decode("utf-8")
-        return b_
 
     @classmethod
     def from_json(cls, data: bytes | str, mode: ConversionMode = "json", **kwargs) -> Self:
         """Creates an instance of this class from a JSON string."""
         return cls.from_dict(data, mode=mode, **kwargs)
 
-    def __hash__(self):
-        return ln.hash_dict(self.to_dict())
+    __hash__ = None
 
 
 def _get_default_hashable_serializer():
-    global _DEFAULT_HASHABLE_SERIALIZER
-    if _DEFAULT_HASHABLE_SERIALIZER is None:
-        from lionagi.protocols.ids import Element
+    # Imported here: lionagi.protocols.generic imports this module while it loads.
+    from lionagi.protocols.generic.element import DEFAULT_ELEMENT_SERIALIZER
 
-        _DEFAULT_HASHABLE_SERIALIZER = ln.get_orjson_default(
-            order=[Element, BaseModel],
-            additional={
-                Element: lambda o: o.to_dict(),
-                BaseModel: lambda o: o.model_dump(mode="json"),
-            },
-        )
-    return _DEFAULT_HASHABLE_SERIALIZER
+    return DEFAULT_ELEMENT_SERIALIZER

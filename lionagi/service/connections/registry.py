@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import threading
 import warnings
@@ -12,6 +11,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
+from lionagi.ln import HashAlgorithm, compute_hash, hash_file, is_import_installed
 from lionagi.ln.types import Enum
 
 __all__ = (
@@ -69,6 +69,7 @@ class EndpointMeta:
     def create_config(self, **overrides: Any):
         from .endpoint_config import EndpointConfig
 
+        api_key_explicit = "api_key" in overrides
         is_agentic = self.endpoint_type == EndpointType.AGENTIC
         api_key: Any = "internal" if is_agentic else None
         if not is_agentic and self.api_key_env and "api_key" not in overrides:
@@ -91,7 +92,9 @@ class EndpointMeta:
             method="POST",
         )
         defaults.update(overrides)
-        return EndpointConfig(**defaults)
+        config = EndpointConfig(**defaults)
+        config._api_key_explicit = api_key_explicit
+        return config
 
 
 class _RegistryEntry:
@@ -430,14 +433,14 @@ class EndpointRegistry:
             declared_digests = tuple(
                 (
                     relative_path,
-                    hashlib.blake2b((record.bundle_dir / relative_path).read_bytes()).hexdigest(),
+                    hash_file(record.bundle_dir / relative_path, algorithm=HashAlgorithm.BLAKE2B),
                 )
                 for relative_path in sorted(declared_paths)
             )
         except OSError:
             return None
         return (
-            hashlib.blake2b(manifest_bytes).hexdigest(),
+            compute_hash(manifest_bytes, algorithm=HashAlgorithm.BLAKE2B, max_bytes=None),
             declared_digests,
         )
 
@@ -596,12 +599,9 @@ def _import_provider_module(mod: str) -> None:
     never runs); once dependencies resolve, any ``ImportError`` is
     unconditionally a provider-load failure (warning)."""
     import importlib
-    import importlib.util
 
     missing = [
-        dep
-        for dep in _PROVIDER_OPTIONAL_DEPENDENCIES.get(mod, ())
-        if importlib.util.find_spec(dep) is None
+        dep for dep in _PROVIDER_OPTIONAL_DEPENDENCIES.get(mod, ()) if not is_import_installed(dep)
     ]
     if missing:
         logger.debug(
@@ -638,6 +638,9 @@ def _import_all_providers():
         "lionagi.providers.ollama.chat",
         "lionagi.providers.ollama.embed",
         "lionagi.providers.ollama.generate",
+        # Lattice
+        "lionagi.providers.lattice.chat",
+        "lionagi.providers.lattice.embed",
         # Search & scraping
         "lionagi.providers.tavily.search",
         "lionagi.providers.exa.search",

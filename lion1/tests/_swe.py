@@ -1,4 +1,4 @@
-"""What the bench tests share: `bench/swe` importable by module name, as the scripts import each
+"""What the bench tests share: `lion1/bench/swe` importable by module name, as the scripts import each
 other, and the fake boxes the codex arm and the runner are driven through."""
 
 import json

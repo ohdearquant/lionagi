@@ -15,8 +15,13 @@ _classify_phantom coverage).
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
+
+import pytest
 
 import lionagi.cli._runs as runs_mod
+from lionagi.cli._mcp_resolve import McpResolution
 from lionagi.cli._runs import allocate_run
 
 
@@ -90,6 +95,144 @@ def test_allocate_run_writes_running_placeholder_manifest(tmp_path, monkeypatch)
     assert manifest["status"] == "running"
     assert manifest["started_at"] > 0
     assert manifest["ended_at"] is None
+
+
+def test_allocate_run_records_resolved_cwd_and_mcp_discovery_provenance(tmp_path, monkeypatch):
+    runs_root = tmp_path / "runs"
+    launch_dir = tmp_path / "workspace" / "nested"
+    launch_dir.mkdir(parents=True)
+    config_path = tmp_path / "workspace" / ".mcp.json"
+    config_path.write_text('{"mcpServers": {"tools": {}}}')
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", runs_root)
+    monkeypatch.chdir(tmp_path)
+    resolution = McpResolution(
+        servers={"tools": {}},
+        reason=None,
+        source=config_path,
+        searched_from=launch_dir,
+        explicit=False,
+    )
+
+    run = allocate_run(run_id="provenance-run")
+    run = run.with_execution_provenance(
+        cwd=Path("workspace") / "nested" / "..",
+        mcp_resolution=resolution,
+    )
+
+    manifest = run.read_manifest()
+    assert manifest["cwd"] == str((tmp_path / "workspace").resolve())
+    assert manifest["mcp_config_source"] == str(config_path.resolve())
+    assert manifest["mcp_config_searched_from"] == str(launch_dir.resolve())
+    assert manifest["mcp_config_explicit"] is False
+    assert manifest["mcp_config_reason"] is None
+
+
+def test_path_resolved_run_preserves_execution_provenance(tmp_path, monkeypatch):
+    import lionagi.cli.orchestrate._checkpoint as checkpoint_mod
+
+    runs_root = tmp_path / "runs"
+    launch_dir = tmp_path / "workspace"
+    launch_dir.mkdir()
+    source = launch_dir / ".mcp.json"
+    source.write_text('{"mcpServers": {"tools": {}}}')
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", runs_root)
+    monkeypatch.setattr(checkpoint_mod, "RUNS_ROOT", runs_root)
+    resolution = McpResolution(
+        servers={"tools": {}},
+        reason=None,
+        source=source,
+        searched_from=launch_dir,
+        explicit=False,
+    )
+
+    run = allocate_run(run_id="path-resolved-run")
+    run = run.with_execution_provenance(cwd=launch_dir, mcp_resolution=resolution)
+    reopened = checkpoint_mod._find_run_dir_by_id(run.run_id)
+    assert reopened is not None
+
+    reopened.write_manifest({"status": "completed", "ended_at": 1.0})
+
+    manifest = reopened.read_manifest()
+    assert manifest["cwd"] == str(launch_dir.resolve())
+    assert manifest["mcp_config_source"] == str(source.resolve())
+    assert manifest["mcp_config_searched_from"] == str(launch_dir.resolve())
+    assert manifest["mcp_config_explicit"] is False
+    assert manifest["mcp_config_reason"] is None
+
+
+def test_a_manifest_that_cannot_be_read_stops_the_write_instead_of_dropping_provenance(
+    tmp_path, monkeypatch
+):
+    if os.geteuid() == 0:
+        pytest.skip("root reads a file whose mode denies it, so the case cannot be set up")
+    import lionagi.cli.orchestrate._checkpoint as checkpoint_mod
+
+    runs_root = tmp_path / "runs"
+    launch_dir = tmp_path / "workspace"
+    launch_dir.mkdir()
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", runs_root)
+    monkeypatch.setattr(checkpoint_mod, "RUNS_ROOT", runs_root)
+    resolution = McpResolution(
+        servers=None, reason="no_mcp_config_found", source=None, searched_from=launch_dir
+    )
+    run = allocate_run(run_id="unreadable-run")
+    run = run.with_execution_provenance(cwd=launch_dir, mcp_resolution=resolution)
+    reopened = checkpoint_mod._find_run_dir_by_id(run.run_id)
+    assert reopened is not None and reopened.cwd is None
+    before = run.manifest_path.read_bytes()
+
+    run.manifest_path.chmod(0)
+    try:
+        with pytest.raises(PermissionError):
+            reopened.write_manifest({"status": "completed", "ended_at": 1.0})
+    finally:
+        run.manifest_path.chmod(0o644)
+
+    assert run.manifest_path.read_bytes() == before
+
+
+def test_manifest_provenance_survives_whole_file_live_persist_replacement(tmp_path, monkeypatch):
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    cwd = tmp_path / "workspace"
+    cwd.mkdir()
+    resolution = McpResolution(
+        servers=None,
+        reason="no_mcp_config_found",
+        source=None,
+        searched_from=cwd,
+    )
+    run = allocate_run(run_id="replace-provenance")
+    run = run.with_execution_provenance(cwd=cwd, mcp_resolution=resolution)
+
+    run.write_manifest({"status": "completed", "ended_at": 1.0})
+
+    manifest = run.read_manifest()
+    assert manifest["cwd"] == str(cwd.resolve())
+    assert manifest["mcp_config_source"] is None
+    assert manifest["mcp_config_searched_from"] == str(cwd.resolve())
+    assert manifest["mcp_config_explicit"] is False
+    assert manifest["mcp_config_reason"] == "no_mcp_config_found"
+
+
+def test_allocate_run_records_explicit_mcp_disable_reason(tmp_path, monkeypatch):
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    resolution = McpResolution(
+        servers=None,
+        reason=None,
+        source=None,
+        searched_from=tmp_path,
+    )
+
+    run = allocate_run(run_id="mcp-disabled")
+    run = run.with_execution_provenance(
+        cwd=tmp_path,
+        mcp_resolution=resolution,
+        mcp_disabled=True,
+    )
+
+    manifest = run.read_manifest()
+    assert manifest["mcp_config_source"] is None
+    assert manifest["mcp_config_reason"] == "mcp_disabled_by_caller"
 
 
 def test_write_manifest_replaces_rather_than_merges(tmp_path, monkeypatch):
@@ -185,3 +328,66 @@ def test_write_manifest_is_atomic_no_reader_sees_a_partial_file(tmp_path, monkey
     assert json.loads(run.manifest_path.read_text())["iteration"] == 59
     # The temp file is never left behind.
     assert not list(run.state_root.glob("*.tmp"))
+
+
+def test_binding_provenance_holds_the_manifest_lock_across_its_read_and_rewrite(
+    tmp_path, monkeypatch
+):
+    """Another invocation sharing the run id writes run.json under its lock; a
+    rebind that read outside the lock could overwrite that write with stale data."""
+    fcntl = pytest.importorskip("fcntl")
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", tmp_path / "runs")
+    run = allocate_run(run_id="rebind-under-lock")
+    resolution = McpResolution(
+        servers=None, reason="no_mcp_config_found", source=None, searched_from=tmp_path
+    )
+    held_at_read = []
+    actual_read = runs_mod.RunDir.read_manifest
+
+    def observe_read(self):
+        fd = os.open(self.state_root / ".run.json.lock", os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            held_at_read.append(True)
+        else:
+            held_at_read.append(False)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+        return actual_read(self)
+
+    monkeypatch.setattr(runs_mod.RunDir, "read_manifest", observe_read)
+    rebound = run.with_execution_provenance(cwd=tmp_path, mcp_resolution=resolution)
+
+    assert held_at_read == [True]
+    assert json.loads(rebound.manifest_path.read_text())["mcp_config_reason"] == (
+        "no_mcp_config_found"
+    )
+
+
+def test_a_manifest_that_cannot_be_decoded_stops_the_write_instead_of_dropping_provenance(
+    tmp_path, monkeypatch
+):
+    import lionagi.cli.orchestrate._checkpoint as checkpoint_mod
+
+    runs_root = tmp_path / "runs"
+    launch_dir = tmp_path / "workspace"
+    launch_dir.mkdir()
+    monkeypatch.setattr(runs_mod, "RUNS_ROOT", runs_root)
+    monkeypatch.setattr(checkpoint_mod, "RUNS_ROOT", runs_root)
+    resolution = McpResolution(
+        servers=None, reason="no_mcp_config_found", source=None, searched_from=launch_dir
+    )
+    run = allocate_run(run_id="undecodable-run")
+    run = run.with_execution_provenance(cwd=launch_dir, mcp_resolution=resolution)
+    reopened = checkpoint_mod._find_run_dir_by_id(run.run_id)
+    assert reopened is not None and reopened.cwd is None
+    before = run.manifest_path.read_bytes()
+    run.manifest_path.write_bytes(before + b"\xff")
+    undecodable = run.manifest_path.read_bytes()
+
+    with pytest.raises(UnicodeError):
+        reopened.write_manifest({"status": "completed", "ended_at": 1.0})
+
+    assert run.manifest_path.read_bytes() == undecodable

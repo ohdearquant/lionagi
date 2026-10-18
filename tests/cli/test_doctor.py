@@ -216,11 +216,58 @@ def test_readiness_verdict_missing_status_key_is_unknown() -> None:
     assert result["status"] == "unknown"
 
 
-def test_readiness_verdict_unrecognised_status_is_unknown() -> None:
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"status": "brand-new-state"},
+        # "unhealthy" is explained only by a scheduler that is not ready
+        {"status": "unhealthy", "detail": "d"},
+        {"status": "unhealthy", "detail": "d", "scheduler": {"ready": True}},
+    ],
+)
+def test_readiness_verdict_unrecognised_status_is_unknown(body: dict) -> None:
     """An unknown verdict has established nothing, so it must not read as a pass."""
-    body = json.dumps({"status": "brand-new-state"}).encode()
-    result = _readiness_verdict("http://x/api/admin/readiness", body)
+    result = _readiness_verdict("http://x/api/admin/readiness", json.dumps(body).encode())
     assert result["status"] == "unknown"
+
+
+@pytest.mark.parametrize("state", ["healthy", "unhealthy"])
+def test_readiness_verdict_stalled_scheduler_beside_a_healthy_store_is_warn(state: str) -> None:
+    """A store that answers reads says nothing about whether the scheduler fires.
+
+    A current daemon folds the scheduler into its status as "unhealthy"; an older one
+    reported "healthy" beside the same scheduler field.
+    """
+    body = json.dumps(
+        {
+            "status": state,
+            "detail": "store answered",
+            "scheduler": {
+                "ready": False,
+                "status": "stalled",
+                "detail": "no scheduler tick has completed for 900s",
+            },
+        }
+    ).encode()
+    result = _readiness_verdict("http://x/api/admin/readiness", body)
+    assert result["status"] == "warn"
+    assert "stalled" in result["detail"]
+    assert "900s" in result["detail"]
+
+
+@pytest.mark.parametrize(
+    "scheduler",
+    [
+        {"ready": True, "status": "healthy", "detail": "last scheduler tick completed 3s ago"},
+        {"ready": True, "status": "offline", "detail": "scheduler was not started in this process"},
+    ],
+)
+def test_readiness_verdict_advancing_or_unstarted_scheduler_is_ok(scheduler: dict) -> None:
+    body = json.dumps(
+        {"status": "healthy", "detail": "store answered", "scheduler": scheduler}
+    ).encode()
+    result = _readiness_verdict("http://x/api/admin/readiness", body)
+    assert result["status"] == "ok"
 
 
 # _check_lionagi_home

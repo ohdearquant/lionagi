@@ -13,6 +13,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import pytest_asyncio
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
@@ -54,7 +55,7 @@ def _config(base_url: str, **overrides) -> EndpointConfig:
     return EndpointConfig(**kwargs)
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def run_server():
     servers = []
 

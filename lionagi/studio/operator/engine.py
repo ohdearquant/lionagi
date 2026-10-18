@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
@@ -15,6 +14,8 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from lionagi.ln import compute_hash
 
 from .redact import redact_arguments
 from .types import OperatorEngineEvent, OperatorEngineTurn
@@ -260,7 +261,7 @@ def compile_operator_history(
         for frame in source
         if isinstance(frame.get("sequence"), int)
     ]
-    digest = hashlib.sha256(_canonical_json(compiled_frames).encode("utf-8")).hexdigest()
+    digest = compute_hash(_canonical_json(compiled_frames), max_bytes=None)
     metadata = {
         "version": 1,
         "firstSequence": min(source_sequences) if source_sequences else None,
@@ -394,14 +395,34 @@ class BranchOperatorEngine:
         # environment default. Once a turn can carry its own selection, reading
         # the environment here refuses a valid Codex or Gemini turn because an
         # unselected Claude installation is missing.
+        # resolve_operator_provider_model answers with the coordinator's already
+        # resolved pair when the turn carries one, so this gates on the provider
+        # the branch is actually built for rather than re-reading an environment
+        # that may have moved since.
         provider, _ = resolve_operator_provider_model(turn)
         if provider == "claude_code":
-            from lionagi.providers.anthropic.claude_code import CLAUDE_CLI
+            from lionagi.providers.anthropic.claude_code import (
+                claude_cli_search_locations,
+                resolve_claude_cli,
+            )
 
-            if not CLAUDE_CLI:
+            # Resolved now, not at import: a daemon that started before the CLI
+            # was installed (or before PATH/HOME were corrected) must not
+            # refuse every turn for the rest of its life.
+            if not resolve_claude_cli():
+                # The concrete locations go to the LOG, not to the raised
+                # message. A daemon's PATH is routinely not the operator's shell
+                # PATH -- which is the whole reason this lookup fails -- so
+                # "not on PATH" alone gives them no way to tell the two apart.
+                # The message itself travels to the Studio client in an error
+                # frame, and the server's PATH and home layout are not the
+                # client's to read, so the detail is logged where the person who
+                # can act on it will see it.
+                _log.warning("Claude Code CLI preflight failed: %s", claude_cli_search_locations())
                 raise OperatorProviderUnavailableError(
-                    "Claude Code CLI is unavailable. Install it with "
-                    "`npm install -g @anthropic-ai/claude-code`, then run "
+                    "Claude Code CLI is unavailable: not on PATH and not in the "
+                    "per-user fallback install dirs. Install the Claude Code CLI "
+                    "or start this process with a PATH that reaches it, then run "
                     "`claude auth login`."
                 )
         branch = turn.runtime_branch or build_operator_branch(turn)
@@ -592,12 +613,27 @@ async def resolve_operator_execution_root(
 def resolve_operator_provider_model(turn: OperatorEngineTurn) -> tuple[str, str]:
     """Resolve (provider, model) for a turn.
 
-    The turn's own selection wins; the environment variables remain the
-    default for a turn that specifies neither, so an unmigrated caller (or a
+    A turn that already carries a RESOLVED pair answers with it, and that check
+    comes first. Resolution reads the environment, so calling this twice for one
+    turn is two chances to disagree about what ran: once the coordinator has
+    resolved a pair and built runtime_branch from it, the preflight, the branch
+    build and the terminal manifest must all get that same pair rather than
+    re-reading an environment that may have moved underneath them.
+
+    Otherwise the turn's own selection wins; the environment variables remain
+    the default for a turn that specifies neither, so an unmigrated caller (or a
     conversation that never chose a provider) keeps its old behavior exactly.
     """
-    provider = turn.provider or os.environ.get("LIONAGI_STUDIO_OPERATOR_PROVIDER", "claude_code")
-    model_name = turn.model or os.environ.get("LIONAGI_STUDIO_OPERATOR_MODEL", "sonnet")
+    provider = (
+        turn.resolved_provider
+        or turn.provider
+        or os.environ.get("LIONAGI_STUDIO_OPERATOR_PROVIDER", "claude_code")
+    )
+    model_name = (
+        turn.resolved_model
+        or turn.model
+        or os.environ.get("LIONAGI_STUDIO_OPERATOR_MODEL", "sonnet")
+    )
     return provider, model_name
 
 
@@ -612,14 +648,22 @@ def _apply_operator_effort(
     dependent clamping); the gemini-code CLI has no effort kwarg at all and
     instead folds it into the resolved ``--model`` display name.
     """
-    if not effort:
-        return model_name
     from lionagi.service.providers import (
         PROVIDER_EFFORT_KWARG,
         PROVIDERS_EFFORT_VIA_MODEL_NAME,
         _clamp_claude_effort,
         _clamp_codex_effort,
+        codex_unset_effort_default,
     )
+
+    if not effort:
+        # Unset is not "no opinion": codex would read the global config's
+        # effort, which is tuned for that config's own model and 400s when it
+        # exceeds this one's ceiling. Same seam the CLI builders use.
+        if provider == "codex":
+            effort = codex_unset_effort_default(model_name)
+        if not effort:
+            return model_name
 
     kwarg = PROVIDER_EFFORT_KWARG.get(provider)
     if kwarg is not None:
@@ -691,6 +735,9 @@ def _operator_extra_mcp() -> tuple[dict[str, Any], list[str]]:
     turn. The two request-scoped servers cannot be overridden, and an allowed
     tool must name a server declared in the same file — the allowlist can
     widen only toward servers this config itself attaches.
+
+    In open mode, do not auto-allow a tool that can make HTTP requests to the
+    daemon: a run holding such a tool can approve its own proposals.
     """
     from lionagi._paths import LIONAGI_HOME
 
@@ -803,7 +850,9 @@ def build_operator_branch(
             # directly: reads are bounded, UI effects remain client-ACKed, and
             # launch_playbook performs its own durable human proposal. Extra
             # tools are granted only by the explicit operator_mcp.json config,
-            # and only toward servers that config itself attaches.
+            # and only toward servers that config itself attaches. In open mode,
+            # do not auto-allow a tool that can make HTTP requests to the daemon:
+            # a run holding such a tool can approve its own proposals.
             "allowed_tools": [*_OPERATOR_MCP_TOOLS, *extra_tools],
             "permission_prompt_tool_name": "mcp__studio_permission__request_permission",
             "strict_mcp_config": True,

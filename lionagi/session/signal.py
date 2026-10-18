@@ -11,6 +11,7 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from ..protocols.generic.element import Element
+from ..service.accounts._pricing import _is_count, cache_write_split
 
 __all__ = (
     "Signal",
@@ -59,12 +60,32 @@ class RunStart(Signal):
 
 
 class RunEnd(Signal):
-    """Run lifecycle: completed. total_cost_usd is None (unknown) unless a provider actually reports a dollar cost — never coerced to 0.0 (free). input_tokens is uncached prompt tokens in both provider conventions; cached_tokens/cache_write_tokens carry the billing dimensions that convention otherwise drops or folds in. usage_valid is False when a provider usage report violated a token-count invariant (e.g. cached_tokens > prompt_tokens) — the numeric fields are still a safe clamped shape, but a billing consumer needing to distinguish a real full-cache hit from a provider bug must check this flag."""
+    """Run lifecycle: completed.
+
+    total_cost_usd is None (unknown) unless a provider actually reports a
+    dollar cost — never coerced to 0.0 (free). input_tokens is uncached prompt
+    tokens in both provider conventions; cached_tokens/cache_write_tokens
+    carry the billing dimensions that convention otherwise drops or folds in.
+    cache_write_5m_tokens/cache_write_1h_tokens split cache_write_tokens by the
+    lifetime Anthropic billed each write at (its ``usage.cache_creation``), and
+    are reported only when the lifetimes cover the whole cache_write_tokens
+    total they sit beside; otherwise both read 0. The rule for reading a
+    report's split, and which malformed or partial splits are a fault, is
+    stated once as "Cache-write lifetimes" in docs/internals/core.md
+    (``session/``).
+
+    usage_valid is False when a provider usage report violated a token-count
+    invariant (e.g. cached_tokens > prompt_tokens) — the numeric fields are
+    still a safe clamped shape, but a billing consumer needing to distinguish a
+    real full-cache hit from a provider bug must check this flag.
+    """
 
     input_tokens: int = 0
     output_tokens: int = 0
     cached_tokens: int = 0
     cache_write_tokens: int = 0
+    cache_write_5m_tokens: int = 0
+    cache_write_1h_tokens: int = 0
     total_cost_usd: float | None = None
     num_turns: int = 0
     duration_ms: float = 0.0
@@ -279,6 +300,12 @@ def lane_for(signals: Iterable[Signal | Any]) -> NodeLifecycleState:
     return state
 
 
+def _anthropic_usage_shape(usage: dict[str, Any]) -> bool:
+    """Whether *usage* is the shape ``_extract_usage_dims`` reads as Anthropic:
+    cache activity reported separately from ``input_tokens``."""
+    return "cache_read_input_tokens" in usage or "cache_creation_input_tokens" in usage
+
+
 def _extract_usage_dims(usage: dict[str, Any]) -> tuple[int, int, int, int, bool]:
     """Split a raw provider usage dict into (input, output, cached,
     cache_write, is_valid) tokens, normalizing Anthropic- and OpenAI-style
@@ -287,11 +314,13 @@ def _extract_usage_dims(usage: dict[str, Any]) -> tuple[int, int, int, int, bool
     ``is_valid``.
     """
     output_tokens = int(usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0)
-    if "cache_read_input_tokens" in usage or "cache_creation_input_tokens" in usage:
+    if _anthropic_usage_shape(usage):
         cached = int(usage.get("cache_read_input_tokens", 0) or 0)
-        cache_write = int(usage.get("cache_creation_input_tokens", 0) or 0)
+        raw_write = usage.get("cache_creation_input_tokens", 0)
+        # The same count test pricing applies: an integral float such as 200.0 is not a count.
+        cache_write = raw_write if _is_count(raw_write) else None
         input_tokens = int(usage.get("input_tokens", 0) or 0)
-        return input_tokens, output_tokens, cached, cache_write, True
+        return input_tokens, output_tokens, cached, cache_write or 0, cache_write is not None
 
     prompt_tokens = int(usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0)
     details = usage.get("prompt_tokens_details")
@@ -349,6 +378,8 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
     output_tokens = 0
     cached_tokens = 0
     cache_write_tokens = 0
+    cache_write_5m_tokens = 0
+    cache_write_1h_tokens = 0
     total_cost_usd: float | None = None
     num_turns = 0
     usage_valid = True
@@ -361,6 +392,8 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
             "output_tokens": 0,
             "cached_tokens": 0,
             "cache_write_tokens": 0,
+            "cache_write_5m_tokens": 0,
+            "cache_write_1h_tokens": 0,
             "total_cost_usd": None,
             "num_turns": 0,
             "usage_valid": True,
@@ -383,10 +416,29 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
             m_in, m_out, m_cached, m_cache_write, has_valid_model_usage = _sum_model_usage(
                 model_usage
             )
+        usage = mr.get("usage") if isinstance(mr.get("usage"), dict) else mr
         if not has_valid_model_usage:
-            usage = mr.get("usage") if isinstance(mr.get("usage"), dict) else mr
             m_in, m_out, m_cached, m_cache_write, m_valid = _extract_usage_dims(usage)
             usage_valid = usage_valid and m_valid
+            flat_split = cache_write_split(usage)
+            usage_valid = usage_valid and flat_split is not None
+            if flat_split is not None:
+                cache_write_5m_tokens += flat_split[0]
+                cache_write_1h_tokens += flat_split[1]
+        else:
+            # The map's totals are the whole tree's (it sums non-negative
+            # per-model counts, including descendant subagent spend); the flat
+            # dict describes the top-level loop. The flat split is always
+            # checked against the flat total it sits beside; its lifetimes are
+            # attributed only when the two cache-write totals are equal, so no
+            # other model wrote and the split covers the whole tree.
+            flat_split = cache_write_split(usage)
+            usage_valid = usage_valid and flat_split is not None
+            if flat_split is not None and (
+                _as_nonneg_int(usage.get("cache_creation_input_tokens")) == m_cache_write
+            ):
+                cache_write_5m_tokens += flat_split[0]
+                cache_write_1h_tokens += flat_split[1]
         input_tokens += m_in
         output_tokens += m_out
         cached_tokens += m_cached
@@ -403,11 +455,21 @@ def _collect_branch_usage(branch: Any) -> dict[str, Any]:
             total_cost_usd = (total_cost_usd or 0.0) + float(cost)
         num_turns += int(mr.get("num_turns", 0) or 0)
 
+    if cache_write_5m_tokens + cache_write_1h_tokens != cache_write_tokens:
+        # The lifetimes read so far cover only the messages that split their
+        # writes; a message that reported its writes unsplit leaves them short
+        # of the branch total, so neither is reported. Validity is already the
+        # conjunction of the per-message checks and is not changed here.
+        cache_write_5m_tokens = 0
+        cache_write_1h_tokens = 0
+
     return {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "cached_tokens": cached_tokens,
         "cache_write_tokens": cache_write_tokens,
+        "cache_write_5m_tokens": cache_write_5m_tokens,
+        "cache_write_1h_tokens": cache_write_1h_tokens,
         "total_cost_usd": total_cost_usd,
         "num_turns": num_turns,
         "usage_valid": usage_valid,
@@ -420,6 +482,8 @@ def _collect_multi_branch_usage(branches: Iterable[Any]) -> dict[str, Any]:
     output_tokens = 0
     cached_tokens = 0
     cache_write_tokens = 0
+    cache_write_5m_tokens = 0
+    cache_write_1h_tokens = 0
     total_cost_usd: float | None = None
     num_turns = 0
     usage_valid = True
@@ -430,16 +494,27 @@ def _collect_multi_branch_usage(branches: Iterable[Any]) -> dict[str, Any]:
         output_tokens += usage["output_tokens"]
         cached_tokens += usage["cached_tokens"]
         cache_write_tokens += usage["cache_write_tokens"]
+        cache_write_5m_tokens += usage["cache_write_5m_tokens"]
+        cache_write_1h_tokens += usage["cache_write_1h_tokens"]
         if usage["total_cost_usd"] is not None:
             total_cost_usd = (total_cost_usd or 0.0) + usage["total_cost_usd"]
         num_turns += usage["num_turns"]
         usage_valid = usage_valid and usage["usage_valid"]
+
+    if cache_write_5m_tokens + cache_write_1h_tokens != cache_write_tokens:
+        # Across branches the lifetimes cover the run's total only when every
+        # branch split its writes; otherwise neither is reported. Validity is
+        # already the conjunction of the per-branch checks and is unchanged.
+        cache_write_5m_tokens = 0
+        cache_write_1h_tokens = 0
 
     return {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "cached_tokens": cached_tokens,
         "cache_write_tokens": cache_write_tokens,
+        "cache_write_5m_tokens": cache_write_5m_tokens,
+        "cache_write_1h_tokens": cache_write_1h_tokens,
         "total_cost_usd": total_cost_usd,
         "num_turns": num_turns,
         "usage_valid": usage_valid,

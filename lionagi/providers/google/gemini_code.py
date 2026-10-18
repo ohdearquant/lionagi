@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import logging
 import math
@@ -20,6 +19,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lionagi import ln
 from lionagi.libs.path_safety import check_paths_safe, contain_paths_in_root
+from lionagi.ln.concurrency import current_time
 from lionagi.ln.concurrency.utils import maybe_await
 from lionagi.providers._agentic_handlers import AgenticHandlersMixin
 from lionagi.providers._cli_subprocess import (
@@ -29,7 +29,10 @@ from lionagi.providers._cli_subprocess import (
     resolve_cli_workspace,
     validate_message_prompt,
 )
-from lionagi.providers._provider_errors import ProviderTeardownError
+from lionagi.providers._provider_errors import (
+    ProviderTeardownError,
+    classify_provider_error,
+)
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.providers import _clamp_gemini_effort
@@ -70,6 +73,17 @@ __all__ = (
 
 # agy models expose ~1M-token context (verified against `agy models`).
 CONTEXT_WINDOWS: dict[str, int] = {
+    "gemini-4-argon": 1_048_576,
+    # Matched as substrings, longest row first, and lookup_context_window falls back
+    # across every provider's table, so these give a name containing them this window
+    # on any provider unless a longer row matches it: the `gemini-4` and `argon`
+    # aliases, the "Gemini 4 Argon (...)" display names, but also `gemini-4-flash`, or
+    # `gemini-4.5-flash` on `gemini`; `gemini-2.5-pro-argon` keeps its provider's 2.5 Pro
+    # window.
+    # The windows follow these substrings, not resolve_agy_model's token rules, so
+    # `gemini-4k-flash` reads the `gemini-4` row while it resolves to 3.5 Flash.
+    "gemini-4": 1_048_576,
+    "argon": 1_048_576,
     "gemini-3.8-flash": 1_048_576,
     "gemini-3.6-flash": 1_048_576,
     "gemini-3.5-flash": 1_048_576,
@@ -87,6 +101,9 @@ CONTEXT_WINDOWS: dict[str, int] = {
 # through so agy surfaces a clear error rather than us silently forcing a default.
 _AGY_MODELS: frozenset[str] = frozenset(
     {
+        "Gemini 4 Argon (Medium)",
+        "Gemini 4 Argon (High)",
+        "Gemini 4 Argon (Low)",
         "Gemini 3.8 Flash (Medium)",
         "Gemini 3.8 Flash (High)",
         "Gemini 3.8 Flash (Low)",
@@ -105,6 +122,17 @@ _AGY_MODELS: frozenset[str] = frozenset(
 )
 
 _MODEL_ALIASES: dict[str, str] = {
+    # 4 Argon: a bare id resolves to the strong tier; suffixed forms map to their
+    # exact tier.
+    "gemini-4-argon": "Gemini 4 Argon (High)",
+    "gemini-4-argon-high": "Gemini 4 Argon (High)",
+    "gemini-4-argon-medium": "Gemini 4 Argon (Medium)",
+    "gemini-4-argon-low": "Gemini 4 Argon (Low)",
+    "gemini-4": "Gemini 4 Argon (High)",
+    "argon": "Gemini 4 Argon (High)",
+    "argon-high": "Gemini 4 Argon (High)",
+    "argon-medium": "Gemini 4 Argon (Medium)",
+    "argon-low": "Gemini 4 Argon (Low)",
     # Current default flash family. Google documents Low, Medium, and High
     # thinking levels; the bare id resolves to Medium.
     "gemini-3.8-flash": "Gemini 3.8 Flash (Medium)",
@@ -145,20 +173,59 @@ _MODEL_ALIASES: dict[str, str] = {
 }
 
 
+# A letter in any script, or a numeral that is not a decimal digit ("\u00b2", "\u00bd", "\u216b"):
+# a word character that is neither a decimal digit nor an underscore. A combining mark
+# ("\u0301") is neither: it is not a word character, so it ends a word like a separator.
+_LETTER = r"[^\W\d_]"
+# A number starts here unless a digit, or a digit and a dot, comes right before it:
+# then it is part of a longer number ("13.6", "2.3.6", "2026.3.8"). A dot after
+# anything else separates ("gemini-4-flash.3.5" names 3.5).
+_NUMBER_START = r"(?<!\d)(?<!\d\.)"
 # A delimited 3.6 version token, not a bare substring: matches the "3.6" in
-# "gemini-3.6-flash" but not the "3.6" inside "gemini-13.6-flash" or
-# "gemini-3.60-flash", where a neighbouring digit means it is a different number.
-_GEMINI_36_TOKEN = re.compile(r"(?<!\d)3\.6(?!\d)")
-_GEMINI_38_TOKEN = re.compile(r"(?<!\d)3\.8(?!\d)")
+# "gemini-3.6-flash" but not the "3.6" inside "gemini-13.6-flash", "gemini-3.60-flash"
+# or "gemini-2.3.6-flash", which are different numbers.
+_GEMINI_36_TOKEN = re.compile(_NUMBER_START + r"3\.6(?!\d)")
+_GEMINI_38_TOKEN = re.compile(_NUMBER_START + r"3\.8(?!\d)")
+# A major version 4 that is not part of a longer number and is not followed by a
+# letter or numeral of any script ("gemini-4-argon", "gemini-4-flash", "gemini-v4-flash";
+# not "gemini4\u00b2"). A 4 followed by a dot and a letter or numeral of any script, a
+# decimal digit included ("gemini-4.0-flash", "gemini-4.5-flash", "gemini-4.x-flash",
+# "gemini-4.\u00b2"), names a release this table does not list, while a trailing dot ("gemini-4.") ends
+# it as it ends a dotted version. The 4 in "gemini-14-flash" or "gemini-40-flash" is a
+# different number, and the 4 in "gemini-4k-flash" is a size: neither is the 4 family.
+_GEMINI_4_TOKEN = re.compile(_NUMBER_START + r"4(?!\d|" + _LETTER + r"|\.[^\W_])")
+# A dotted version with a one- or two-digit major and one or more dotted parts ("3.5",
+# "2.5", "4.5", "3.5.1"). A four-digit major ("2026.10") is a date and a three-digit
+# one ("100.5") is not a model version. A trailing dot ("3.5.") ends the version.
+_DOTTED_VERSION = re.compile(_NUMBER_START + r"\d{1,2}(?:\.\d+)+(?!\d|\.\d)")
+# A tier word in a free-form name stands alone: a letter of any script, or a numeral
+# that is not a decimal digit, next to it makes it part of a longer word
+# ("argon-highlights", "argon-allow", "argon-lowé"), which carries no tier.
+_TIER_LOW = re.compile(f"(?<!{_LETTER})low(?!{_LETTER})")
+_TIER_HIGH = re.compile(f"(?<!{_LETTER})(?:x?high|max)(?!{_LETTER})")
 
 
 def _gemini_flash_family(key: str) -> str:
-    """The flash-family display prefix for a free-form model key, without
-    treating a version embedded in a different number as a family match."""
+    """The Gemini family display prefix for a free-form, lowercased model key.
+
+    A name that spells out a dotted version keeps it, whatever else it says: 3.8 and
+    3.6 pick that Flash family, and any other (2.5, 3.1, 3.5, 3.5.1, 4.5) falls back to
+    3.5 Flash. A name with no dotted version is the 4 Argon family when it contains
+    ``argon`` or a major version 4 that is not part of a longer number and is followed
+    by neither a letter nor a numeral of any script, nor by a dot and one of those, and
+    3.5 Flash otherwise. A version inside a longer number or dotted string (13.6, 3.60,
+    2.3.6) is never a family match; a dot after anything but a digit separates, so
+    ``gemini-4-flash.3.5`` names 3.5. ``resolve_agy_model`` checks for Pro before this,
+    so a Pro name is 3.1 Pro whatever else it says.
+    """
     if _GEMINI_38_TOKEN.search(key):
         return "Gemini 3.8 Flash"
     if _GEMINI_36_TOKEN.search(key):
         return "Gemini 3.6 Flash"
+    if _DOTTED_VERSION.search(key):
+        return "Gemini 3.5 Flash"
+    if "argon" in key or _GEMINI_4_TOKEN.search(key):
+        return "Gemini 4 Argon"
     return "Gemini 3.5 Flash"
 
 
@@ -170,10 +237,15 @@ def resolve_agy_model(
 ) -> str:
     """Map a lionagi model spec + effort onto an exact `agy --model` display name (effort folds into
     the Low/Medium/High suffix; see docs/internals/runtime.md for the precedence rules)."""
+    # Matched as a lowercase word. A blank effort, or one that is not a string, is no
+    # effort, so the model's default tier applies.
+    effort = (effort.strip().lower() or None) if isinstance(effort, str) else None
     if not model:
-        model = "gemini-3.8-flash"
+        model = "gemini-4-argon"
     if model in _AGY_MODELS:
         if reapply_effort and effort is not None:
+            if model.startswith("Gemini 4 Argon"):
+                return f"Gemini 4 Argon ({_clamp_gemini_effort(effort, False)})"
             if model.startswith("Gemini 3.8 Flash"):
                 return f"Gemini 3.8 Flash ({_clamp_gemini_effort(effort, False)})"
             if model.startswith("Gemini 3.6 Flash"):
@@ -188,6 +260,8 @@ def resolve_agy_model(
         target = _MODEL_ALIASES[key]
         if effort is None:
             return target
+        if target.startswith("Gemini 4 Argon"):
+            return f"Gemini 4 Argon ({_clamp_gemini_effort(effort, False)})"
         if target.startswith("Gemini 3.8 Flash"):
             return f"Gemini 3.8 Flash ({_clamp_gemini_effort(effort, False)})"
         if target.startswith("Gemini 3.6 Flash"):
@@ -201,21 +275,22 @@ def resolve_agy_model(
     # Effort given but string isn't a known alias: still resolve a gemini family
     # from it so --effort works on forward-compatible model names.
     is_pro = "pro" in key
-    if effort is not None and (is_pro or "flash" in key or "gemini" in key):
+    if effort is not None and (is_pro or "flash" in key or "gemini" in key or "argon" in key):
         family = "Gemini 3.1 Pro" if is_pro else _gemini_flash_family(key)
         return f"{family} ({_clamp_gemini_effort(effort, is_pro)})"
 
     # Heuristic fallback: derive (family, effort) from a free-form string so
-    # e.g. "gemini-3-pro-low" or "flash high" still resolve.
-    if "low" in key:
+    # e.g. "gemini-3-pro-low" or "flash high" still resolve. The tier is a word in
+    # the name: `low`, else `high`, `xhigh` or `max`, else Medium (Low for Pro).
+    if _TIER_LOW.search(key):
         heuristic = "Low"
-    elif "high" in key or "xhigh" in key or "max" in key:
+    elif _TIER_HIGH.search(key):
         heuristic = "High"
     else:
         heuristic = "Low" if is_pro else "Medium"
     if is_pro:
         return f"Gemini 3.1 Pro ({'High' if heuristic == 'Medium' else heuristic})"
-    if "flash" in key or "gemini" in key:
+    if "flash" in key or "gemini" in key or "argon" in key:
         return f"{_gemini_flash_family(key)} ({heuristic})"
 
     # Not recognizable — pass through; agy rejects an invalid name clearly.
@@ -333,10 +408,11 @@ class GeminiCodeRequest(BaseModel):
 
     # -- runtime & safety ----------------------------------------------------
     model: str | None = Field(
-        default="gemini-3.8-flash",
+        default="gemini-4-argon",
         description=(
             "Model spec; mapped onto an `agy --model` name by resolve_agy_model. "
-            "Accepts gemini-3.8-flash (defaults to the Medium tier), "
+            "Accepts gemini-4-argon (defaults to the High tier; -low/-medium/-high suffixes), "
+            "gemini-3.8-flash (defaults to the Medium tier), "
             "gemini-3.6-flash (defaults to the High tier), gemini-3.5-flash, "
             "gemini-3.1-pro, legacy Gemini CLI names (gemini-3-flash-preview, "
             "gemini-3-pro-preview), bare family names (flash/pro), or an exact agy "
@@ -497,7 +573,7 @@ async def stream_gemini_cli(
     if session is None:
         session = CLISession()
     theme = request.cli_display_theme or "light"
-    _start = asyncio.get_running_loop().time()
+    _start = current_time()
 
     saw_object = False
     teardown_error_emitted = False
@@ -512,6 +588,9 @@ async def stream_gemini_cli(
                     "event loop is closed" in str(exc).casefold()
                 ):
                     session.is_error = True
+                    # Failed like a failed turn, so the invoke result names no
+                    # model, as the stream does once this error chunk voids it.
+                    session.model = None
                     error = ProviderTeardownError("agy teardown failed: Event loop is closed")
                     sc = StreamChunk(type="error", content=str(error), is_error=True)
                     session.chunks.append(sc)
@@ -528,7 +607,6 @@ async def stream_gemini_cli(
                 cli_error = str(obj.get("error") or "").strip()
 
                 session.session_id = obj.get("conversation_id") or session.session_id
-                session.model = resolve_agy_model(request.model)
                 session.result = response
                 session.usage = obj.get("usage", {}) or {}
                 session.num_turns = obj.get("num_turns")
@@ -544,9 +622,21 @@ async def stream_gemini_cli(
                 if empty_success:
                     session.is_error = True
 
+                # Only a model agy itself reports for a turn that succeeded is
+                # recorded, so the requested model never reads as the served one. A
+                # failed turn clears it, including a model an earlier turn reported;
+                # an object that succeeds and names no model keeps the last one.
+                reported = obj.get("model")
+                name = reported.strip() if isinstance(reported, str) else ""
+                if session.is_error:
+                    session.model = None
+                elif name:
+                    session.model = name
+
                 # Captured before the error branch: a failed turn can still report
-                # a live conversation id to resume into.
-                if session.session_id:
+                # a live conversation id to resume into. Emitted for a reported
+                # model too, so the stream and the invoke result name the same one.
+                if session.session_id or session.model:
                     sys_sc = StreamChunk(
                         type="system",
                         metadata={"session_id": session.session_id, "model": session.model},
@@ -588,7 +678,9 @@ async def stream_gemini_cli(
                     # Terminal usage/turns/duration — the only channel run.py reads
                     # provider-reported usage from (persisted onto model_response).
                     result_meta: dict[str, Any] = {
-                        "model": session.model,
+                        # The run record keeps the requested model when agy reports
+                        # none; result chunks are never read as the served model.
+                        "model": session.model or resolve_agy_model(request.model),
                         "conversation_id": session.session_id,
                         "status": status or "SUCCESS",
                     }
@@ -613,7 +705,7 @@ async def stream_gemini_cli(
     if session.num_turns is None:
         session.num_turns = 1
     if session.duration_ms is None:
-        session.duration_ms = int((asyncio.get_running_loop().time() - _start) * 1000)
+        session.duration_ms = int((current_time() - _start) * 1000)
 
     if on_final:
         await maybe_await(on_final(session))
@@ -686,6 +778,40 @@ class GeminiCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
                 responses.append(chunk)
 
         log.info("Antigravity session %s finished (%d chunks)", session.session_id, len(responses))
+        if session.is_error:
+            # Classified on every failure agy itself reported, in order, never
+            # the turn's response: each failed object's error text, or for a
+            # success with no content the chunk that says so. A failed status
+            # with no error text counts only when no object named its failure,
+            # and a teardown failure or unparseable output only when agy
+            # reported nothing. A failed turn keeps the provider session it ran
+            # in, as a returned one does.
+            named: list[str] = []
+            statuses: list[str] = []
+            unreported: list[str] = []
+            for c in session.chunks:
+                if c.type != "error" or not c.is_error:
+                    continue
+                obj = c.metadata if isinstance(c.metadata, dict) else {}
+                if not obj:
+                    if c.content:
+                        unreported.append(c.content)
+                    continue
+                status = str(obj.get("status", "")).upper()
+                error = str(obj.get("error") or "").strip()
+                if status in ("SUCCESS", ""):
+                    named.append(c.content)
+                elif error:
+                    named.append(error)
+                else:
+                    statuses.append(f"agy returned status={status}")
+            said = list(dict.fromkeys(named or statuses or unreported))
+            if session.session_id:
+                self.session_id = session.session_id
+            raise classify_provider_error(
+                "\n".join(said) or "Antigravity session failed",
+                status=session.error_status,
+            )
         if not session.result:
             texts = [c.content for c in session.chunks if c.type == "text" and c.content]
             session.result = "\n".join(texts)

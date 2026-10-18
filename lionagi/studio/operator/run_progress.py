@@ -221,7 +221,7 @@ async def _find_sessions_by_text(
     return ordered[:limit]
 
 
-async def resolve_run(ref: str) -> dict[str, Any]:
+async def resolve_run(ref: str, *, allow_unscoped_exact_id: bool = True) -> dict[str, Any]:
     """Resolve a human-named run reference to at most one session.
 
     Returns one of:
@@ -229,27 +229,41 @@ async def resolve_run(ref: str) -> dict[str, Any]:
       - ``{"found": True, "ambiguous": True, "candidates": [...], "truncated": bool}``
       - ``{"found": True, "ambiguous": False, "session_id": "..."}``
 
-    Never guesses: an id prefix matching more than one session, or a
-    name/playbook substring matching 2-``MAX_CANDIDATES`` sessions, comes
-    back as candidates; more than ``MAX_CANDIDATES`` text matches come back
-    as the newest ``MAX_CANDIDATES`` plus ``truncated: True``. Every arm is
-    scoped to the calling turn's project (when it names one). A turn whose
+    Never guesses: an id prefix matching more than one session comes back as
+    candidates, capped at the CLI helper's listing size (``_CANDIDATES_SHOWN``,
+    5) with ``truncated: True`` when more rows matched than are returned; a
+    name/playbook substring matching 2-``MAX_CANDIDATES`` sessions comes back
+    as candidates, and more than ``MAX_CANDIDATES`` text matches as the newest
+    ``MAX_CANDIDATES`` plus ``truncated: True``. Every arm is
+    scoped to the calling turn's project (when it names one), and id-prefix
+    ambiguity is counted over that project's rows alone: the prefix query
+    carries the project predicate, so foreign rows cannot fill its window
+    and hide a match or pad a collision. A turn whose
     identity is present but whose context names no project may still resolve
     an exact full-UUID reference (or 'current') -- a bare id identifies at
     most one row and cannot enumerate, so it is safe where prefix and
-    substring resolution are not -- see docs/internals/studio.md
+    substring resolution are not. That allowance belongs to a read: a caller
+    that pairs this resolver with a mutation passes
+    ``allow_unscoped_exact_id=False`` so the run it would act on is proved
+    within the turn's own project. See docs/internals/studio.md
     ("Resolving a run reference").
     """
-    from lionagi.cli._util import AmbiguousIdError, fetch_unique_row
+    from lionagi.cli._util import _CANDIDATES_SHOWN, AmbiguousIdError, fetch_unique_row
     from lionagi.state.db import StateDB
 
     normalized = ref.strip()
     if not normalized:
         return {"found": False, "reason": "empty run reference"}
 
+    if not allow_unscoped_exact_id:
+        # A caller that acts on the run proves the turn's project before reading anything,
+        # the human's view selection included, so an unscoped turn gets the one refusal
+        # whatever it names.
+        await _allowed_project()
+
     from_current_view = False
     if normalized.lower() == "current":
-        # Resolved before the project fence: this only reads the human's own
+        # A read resolves this before the project fence: it only reads the human's own
         # view selection, it enumerates nothing. Whatever id it yields still
         # goes through the same fence-or-exact-id logic as a typed reference.
         session_id = await _resolve_current()
@@ -264,7 +278,7 @@ async def resolve_run(ref: str) -> dict[str, Any]:
     try:
         project = await _allowed_project()
     except MissingOwnerContextError:
-        if _EXACT_UUID_RE.fullmatch(normalized) is None:
+        if not allow_unscoped_exact_id or _EXACT_UUID_RE.fullmatch(normalized) is None:
             raise
         # A turn with an owner but no declared project may still look up one
         # run by its full id: an exact 36-character UUID identifies at most
@@ -272,7 +286,10 @@ async def resolve_run(ref: str) -> dict[str, Any]:
         # ``run_detail`` already takes for a bare id. Prefix and
         # name-substring resolution stay behind the fence above, and a turn
         # that *does* declare a project keeps full ownership scoping on
-        # every arm, including this one.
+        # every arm, including this one. Write tools that mutate the run
+        # they name turn this arm off (``allow_unscoped_exact_id=False``):
+        # they must prove the run inside their own project, the position
+        # ``run_control._propose_run_control`` takes for the same reason.
         async with StateDB(readonly=True) as db:
             row = await db.fetch_one("SELECT id FROM sessions WHERE id = ?", (normalized,))
         if row is None:
@@ -293,8 +310,13 @@ async def resolve_run(ref: str) -> dict[str, Any]:
 
     async with StateDB(readonly=True) as db:
         try:
-            row = await fetch_unique_row(db, "sessions", normalized)
+            row = await fetch_unique_row(db, "sessions", normalized, project=project)
         except AmbiguousIdError as exc:
+            # The collision set came from a query already narrowed to this
+            # turn's project, so the rows named here are the ones it may see
+            # and the window that produced them counted no foreign row. The
+            # follow-up read is only for display columns; it filters again so
+            # a row that left the project between the two reads is dropped.
             owned = await _fetch_ambiguous_candidates(db, exc.candidates, project=project)
             if not owned:
                 return {
@@ -303,15 +325,15 @@ async def resolve_run(ref: str) -> dict[str, Any]:
                 }
             if len(owned) == 1:
                 return {"found": True, "ambiguous": False, "session_id": owned[0]["id"]}
+            # The scoped prefix scan stops one row past the CLI helper's
+            # listing size (lionagi/cli/_util.py::_CANDIDATES_SHOWN), so a
+            # full window is the only honest truncation signal -- and it now
+            # means more than that many rows THIS turn may see.
             return {
                 "found": True,
                 "ambiguous": True,
-                "candidates": owned,
-                # fetch_unique_row's own prefix scan caps at 6 rows (see
-                # lionagi/cli/_util.py::_CANDIDATES_SHOWN) before this
-                # function ever sees the list, so hitting that cap is the
-                # only honest truncation signal available here.
-                "truncated": len(exc.candidates) > 5,
+                "candidates": owned[:_CANDIDATES_SHOWN],
+                "truncated": len(owned) > _CANDIDATES_SHOWN,
             }
         if row is not None:
             if not _owns(row.get("project"), project):

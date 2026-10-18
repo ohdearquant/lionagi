@@ -682,6 +682,7 @@ async def test_run_agent_preset_and_profile_single_system_message_with_both(monk
         lion_system=True,
         artifact_defaults=None,
         timeout=None,
+        idle_timeout=None,
         bypass=False,
         resume_on_timeout=False,
     )
@@ -745,6 +746,7 @@ async def test_run_agent_profile_without_preset_system_prompt_unchanged(monkeypa
         system_prompt=PROFILE_PROMPT,
         artifact_defaults=None,
         timeout=None,
+        idle_timeout=None,
         bypass=False,
         resume_on_timeout=False,
     )

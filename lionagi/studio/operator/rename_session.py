@@ -29,7 +29,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .redact import public_project
-from .run_progress import resolve_run
+from .run_progress import MissingOwnerContextError, resolve_run
 from .store import OperatorStore
 
 # Cc/Cf: C0/C1 controls (incl. NUL, DEL) and Unicode formatting chars (incl.
@@ -49,7 +49,7 @@ RENAME_SESSION_DESCRIPTION = (
     "conversation's own name, which has a "
     "separate rename path outside this tool. Goes through a human approval "
     "flow; it is never automatic, and a denied proposal leaves the run's "
-    "name untouched. Accepts a run UUID, an 8+ hex id prefix, a name "
+    "name untouched. Accepts a run UUID, an id prefix, a name "
     "substring (minimum 3 characters), or 'current' for the run open when "
     "this instruction was sent. Ambiguous references return candidates "
     "rather than guessing."
@@ -134,7 +134,13 @@ async def rename_session(arguments: dict[str, Any]) -> dict[str, Any]:
     args = RenameSessionInput.model_validate(arguments)
     store, conversation_id, request_id = _identity()
 
-    resolution = await resolve_run(args.run)
+    # A turn that declares no project cannot prove it owns the run it names,
+    # and a rename mutates that run: report the refusal as a reason code
+    # rather than resolving. Mirrors ``run_control``'s refusal shape.
+    try:
+        resolution = await resolve_run(args.run, allow_unscoped_exact_id=False)
+    except MissingOwnerContextError:
+        return {"renamed": False, "reason": "missing_owner_context"}
     if not resolution["found"]:
         return {
             "renamed": False,

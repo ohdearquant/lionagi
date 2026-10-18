@@ -316,7 +316,8 @@ class TestExchangeAsync:
 
         assert count == 0
 
-    @pytest.mark.anyio
+    # asyncio only: schedules exchange.run() as an asyncio task.
+    @pytest.mark.asyncio
     async def test_stop_run_loop(self):
         import asyncio
 
@@ -395,7 +396,8 @@ class TestExchangeEdgeCases:
         assert any(isinstance(e, RuntimeError) and str(e) == "boom" for e in sub_exceptions)
         assert exchange._stop is True
 
-    @pytest.mark.anyio
+    # asyncio only: schedules exchange.run() as an asyncio task.
+    @pytest.mark.asyncio
     async def test_stop_before_first_tick_ensure_future_await_completes(self):
         """Mirrors flow.py's ensure_future + explicit-await shape: exchange.run()
         is scheduled as a task, the DAG raises before it ticks, stop() fires in
@@ -421,7 +423,8 @@ class TestExchangeEdgeCases:
 
         assert exch_task.done()
 
-    @pytest.mark.anyio
+    # asyncio only: schedules exchange.run() as an asyncio task.
+    @pytest.mark.asyncio
     async def test_run_after_stop_raises_instead_of_silent_noop(self):
         """Regression: calling run() again on an Exchange that has already
         completed a run/stop cycle must raise loudly instead of silently

@@ -3479,10 +3479,12 @@ async def test_engine_run_planning_kind_uses_real_planning_engine_and_persists_v
     monkeypatch.setattr(PlanningEngine, "_synthesize", fake_synthesize)
     monkeypatch.setattr(EngineRun, "run_dag", run_dag_spy)
 
-    async def fake_spawn_roles(session, specs, *, spawners=()):
-        return {}
+    async def fake_make_agent(self, role, **kwargs):
+        from lionagi.session.branch import Branch
 
-    monkeypatch.setattr("lionagi.engines.planning.spawn_roles", fake_spawn_roles)
+        return Branch(name=kwargs.get("name") or role)
+
+    monkeypatch.setattr(EngineRun, "make_agent", fake_make_agent)
 
     def fake_build_dag_graph(session, assignments, roles):
         from lionagi.protocols.types import Graph
@@ -3678,6 +3680,8 @@ async def test_orchestration_fanout_submits_built_graph_through_injected_session
 
 @pytest.mark.asyncio
 async def test_planning_engine_run_delegates_to_engine_run_run_dag():
+    from types import SimpleNamespace
+
     from lionagi.casts.emission import TaskAssignment
     from lionagi.engines.engine import EngineRun
     from lionagi.engines.planning import PlanningEngine
@@ -3686,13 +3690,13 @@ async def test_planning_engine_run_delegates_to_engine_run_run_dag():
     run = eng.new_run()
 
     assignments = [TaskAssignment(task="x", assignee="researcher")]
-    sentinel_graph = object()
+    sentinel_graph = SimpleNamespace(internal_nodes=())
 
     async def fake_plan(_run, prompt, max_ops):
         return assignments
 
-    async def fake_spawn_roles(session, specs, *, spawners=()):
-        return {"researcher": object()}
+    async def fake_make_agent(self, role, **kwargs):
+        return object()
 
     def fake_build_dag_graph(session, asg, roles):
         return (sentinel_graph, ["n1"])
@@ -3705,7 +3709,7 @@ async def test_planning_engine_run_delegates_to_engine_run_run_dag():
 
     run_dag_spy = AsyncMock(return_value={"operation_results": {"n1": "ok"}})
     with (
-        mock.patch("lionagi.engines.planning.spawn_roles", fake_spawn_roles),
+        mock.patch.object(EngineRun, "make_agent", fake_make_agent),
         mock.patch("lionagi.engines.planning.build_dag_graph", fake_build_dag_graph),
         mock.patch.object(EngineRun, "run_dag", run_dag_spy),
     ):
@@ -3814,7 +3818,7 @@ async def test_run_fanout_persists_session_via_start_live_persist(tmp_path, monk
     """cli-o-fanout persistence: drives the REAL `_run_fanout` wrapper (only
     `setup_orchestration` and the heavy `_run_fanout_inner` execution are
     stubbed — the wrapper's own `start_live_persist` call at
-    lionagi/cli/orchestrate/fanout.py:93 is NOT) and asserts a real StateDB
+    lionagi/cli/orchestrate/fanout.py:209 is NOT) and asserts a real StateDB
     session row exists afterward. This is the seam the generic
     tests/cli/orchestrate/test_live_persist.py::
     test_start_creates_session_and_registers_hook_on_orc_branch test cannot
@@ -3855,7 +3859,7 @@ async def test_run_flow_persists_session_via_start_live_persist(tmp_path, monkey
     """cli-o-flow-exec/cli-o-flow-synth persistence: drives the REAL
     `_run_flow` wrapper (only `setup_orchestration` and the heavy
     `_run_flow_inner` execution are stubbed — the wrapper's own
-    `start_live_persist` call at lionagi/cli/orchestrate/flow.py:1477 is NOT)
+    `start_live_persist` call at lionagi/cli/orchestrate/flow.py:3036 is NOT)
     and asserts a real StateDB session row exists afterward, closing the
     same gap as test_run_fanout_persists_session_via_start_live_persist for
     the flow CLI. HOME is isolated so the finally block's

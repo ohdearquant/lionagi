@@ -103,6 +103,28 @@ Extends `Engine` with:
 | `synthesis_role` | `"synthesizer"` | Casts role that writes the final deliverable from worker outputs. |
 | `reactive` | `True` | When `True`, every worker is granted `SpawnRequest` so the live DAG self-expands. `False` runs a flat, fully-planned DAG. |
 
+Worker roles use the shared engine agent builder, so `model`, `effort`, `yolo`,
+`agent_cwd`, `agent_extra_prompt`, `agent_mcp_config_path`, and `khive_injection`
+apply to workers as well as the planning and synthesis stages. Engine settings
+override role-profile defaults; injection receives the run's namespace unless
+the caller pins one. Planned and reactively spawned worker clones retain context
+providers, with separate registry budgets and statistics, along with their role
+name and `SpawnRequest` grant, so a clone still records recalls and writebacks
+under its role and still grows the live DAG. A clone that starts from a role
+template still recalls on its first turn: planned workers, role-targeted spawns,
+and an independent spawn with no assignee all take that path. A dependent spawn
+with no assignee instead continues its emitter's conversation, so under the
+default `first_turn` cadence it adds no recall of its own.
+
+Each distinct worker role template triggers `on_branch_created`; task clones do
+not. Role templates are exempt from `max_agents`, like synthesis: they are the
+scaffolding the plan already fixed, so a budget at or below the assignee count
+still runs every planned task. An independent spawn with no assignee runs on a
+clone of its emitter's role template, so it carries the engine's worker settings
+without inheriting the emitter's conversation. `agent_env` and
+`contain_account_integrations=True` remain unsupported: managed-DAG worker
+clones do not yet have verified environment/containment provenance.
+
 Pipeline shape: orchestrate (produce DAG) → execute reactively → synthesize outputs into deliverable.
 
 ---
@@ -145,5 +167,7 @@ Extends `Engine` with:
 Pipeline shape: fan-out (one reviewer per dimension, parallel) → adversarial verify high-severity issues → quiesce → clean-verdict audit if no verification ran → `ReviewVerdict`.
 
 Every dimension emits affirmatively: issues arrive as `IssueFound`, a clean dimension arrives as `DimensionClean` (dimension + one-sentence rationale). A dimension that emits nothing is therefore a transport failure, never an implicit all-clear — the verdict instruction lists affirmed-clean dimensions separately so downstream consumers can distinguish "reviewed, clean" from "reviewer never reported". Verifier arrival keys on a short engine-assigned `ref` token echoed back in the `VerifyResult`, so a paraphrased issue description does not burn repair rounds.
+
+MCP connection failures are isolated only after the originating client gets a bounded liveness probe. This distinguishes the SDK's own closed-session signal from a server that returns the same bare `-32000 / Connection closed` error while its transport remains usable. If every configured dimension fails before producing evidence, synthesis is skipped and no `ReviewVerdict` is emitted.
 
 A clean or minor-only review spawns no issue verifiers, so it would otherwise terminate with zero `VerifyResult` — indistinguishable, by evidence, from a run whose verification never happened. With `verify_clean` on, such runs get one adversarial verifier auditing the clean verdict: it must execute a concrete check against the artifact and name what it executed in its rationale, and it emits a `VerifyResult` carrying the run's clean ref. In the verdict instruction these audits are listed apart from issue verifications because their polarity is inverted: `holds=false` there refutes the review's clean verdict and weighs against approval.

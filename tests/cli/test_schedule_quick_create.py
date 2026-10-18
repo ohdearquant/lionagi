@@ -15,6 +15,7 @@ import pytest
 pytest.importorskip("fastapi", reason="studio extra not installed")
 pytest.importorskip("croniter", reason="studio extra not installed")
 
+from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.state.db import StateDB
 
 
@@ -37,7 +38,7 @@ def agent_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     agents_dir.mkdir(parents=True)
     (agents_dir / "reviewer.md").write_text("---\nmodel: anthropic/claude-sonnet-5\n---\nBody.\n")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(providers_mod, "_find_lionagi_dirs", lambda: [agents_dir.parent])
+    monkeypatch.setattr(providers_mod, "_find_lionagi_dirs", lambda cwd=None: [agents_dir.parent])
     return tmp_path
 
 
@@ -165,7 +166,7 @@ def test_quick_create_playbook_every_trigger(temp_db_path, agent_profile):
             "--playbook",
             "health-audit",
             "--arg",
-            "project=lionagi",
+            "repo=lionagi",
         ],
     )
     assert rc == 0
@@ -174,7 +175,18 @@ def test_quick_create_playbook_every_trigger(temp_db_path, agent_profile):
     assert row["action_playbook"] == "health-audit"
     assert row["trigger_type"] == "interval"
     assert row["interval_sec"] == 6 * 3600
-    assert row["resolved_target"]["target"]["args"] == {"project": "lionagi"}
+    assert row["resolved_target"]["target"]["args"] == {"repo": "lionagi"}
+
+
+def test_quick_create_refuses_a_playbook_arg_that_shadows_a_flow_flag(temp_db_path, agent_profile):
+    """`li play` passes each arg as a flag of `li o flow`, so `project` would set the run's
+    project instead of reaching the playbook; the schedule is refused and not created."""
+    rc = _run(
+        "playbook",
+        ["shadowed", "--every", "6h", "--playbook", "health-audit", "--arg", "project=lionagi"],
+    )
+    assert rc != 0
+    assert asyncio.run(_get_or_none("shadowed")) is None
 
 
 def test_quick_create_command_argv_form(temp_db_path, agent_profile, monkeypatch):
@@ -221,6 +233,48 @@ def test_quick_create_once_and_max_runs_mutually_exclusive(temp_db_path, agent_p
     )
     assert rc == 1
     assert "mutually exclusive" in capsys.readouterr().err
+
+
+# What a scheduled launch refuses is refused here, with zero DB writes
+
+
+@pytest.mark.parametrize(
+    "prompt", ["--", "x" * (MAX_SPEC_PROMPT_CHARS + 1)], ids=["end-of-options", "over-cap"]
+)
+def test_quick_create_refuses_a_prompt_the_launch_refuses(
+    temp_db_path, agent_profile, capsys, prompt
+):
+    prompt_file = agent_profile / "prompt.txt"
+    prompt_file.write_text(prompt)
+    rc = _run(
+        "agent",
+        ["bad-prompt", "--profile", "reviewer", "--prompt-file", str(prompt_file), "--every", "1h"],
+    )
+    assert rc == 1
+    assert "target.prompt cannot be passed to a scheduled launch" in capsys.readouterr().err
+    assert asyncio.run(_get_or_none("bad-prompt")) is None
+
+
+def test_quick_create_refuses_a_pinned_model_the_launch_refuses(
+    temp_db_path, agent_profile, capsys
+):
+    rc = _run(
+        "agent",
+        [
+            "bad-model",
+            "--profile",
+            "reviewer",
+            "--model",
+            "anthropic/claude-sonnet-5[1m]",
+            "--prompt",
+            "hi",
+            "--every",
+            "1h",
+        ],
+    )
+    assert rc == 1
+    assert "(from target.model) cannot be passed to a scheduled launch" in (capsys.readouterr().err)
+    assert asyncio.run(_get_or_none("bad-model")) is None
 
 
 # Trigger validation failure surfaces -- each rejects with zero DB writes

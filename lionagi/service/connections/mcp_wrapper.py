@@ -57,6 +57,34 @@ __all__ = (
 )
 
 
+_MCP_TRANSPORT_PROBE_ATTR = "_lionagi_mcp_transport_probe"
+
+
+def _attach_mcp_transport_probe(exc: BaseException, client: Any) -> None:
+    """Carry the failing client's live ping to a higher error boundary.
+
+    The MCP SDK uses the same ``McpError`` shape for a locally detected
+    disconnect and a server-sent error reply. The client that observed the
+    failure is the only layer that still owns the evidence needed to tell
+    those cases apart, so preserve its ping without wrapping or replacing the
+    original exception.
+    """
+    probe = getattr(client, "ping", None)
+    if not callable(probe):
+        return
+    try:
+        setattr(exc, _MCP_TRANSPORT_PROBE_ATTR, probe)
+    except (AttributeError, TypeError):
+        # Third-party exception types may disallow dynamic attributes. The
+        # caller then retains the historical fail-loud/isolate classification.
+        return
+
+
+def _mcp_transport_probe(exc: BaseException) -> Any:
+    """Return transport liveness evidence attached at the MCP client boundary."""
+    return getattr(exc, _MCP_TRANSPORT_PROBE_ATTR, None)
+
+
 @dataclass(frozen=True)
 class MCPSecurityConfig:
     """Fail-closed security config for MCP connection pool."""
@@ -1637,12 +1665,14 @@ class MCPConnectionPool:
             raise FileNotFoundError(f"MCP config file not found: {path}")
 
         try:
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 data = json.load(f)
         except json.JSONDecodeError as e:
             raise json.JSONDecodeError(
                 f"Invalid JSON in MCP config file: {e.msg}", e.doc, e.pos
             ) from e
+        except UnicodeDecodeError as e:
+            raise ValueError(f"MCP config file {config_path} is not valid UTF-8: {e}") from e
 
         if not isinstance(data, dict):
             raise ValueError("MCP config must be a JSON object")
@@ -1770,8 +1800,12 @@ class MCPConnectionPool:
 
         try:
             from fastmcp import Client as FastMCPClient
-        except ImportError:
-            raise ImportError("FastMCP not installed. Run: pip install fastmcp") from None
+        except ImportError as exc:
+            raise ImportError(
+                "FastMCP could not be imported. Install LionAGI with the `mcp` extra "
+                "(`pip install 'lionagi[mcp]'`) if it is absent; the chained exception "
+                "contains the actual import failure."
+            ) from exc
 
         if "url" in config:
             client = FastMCPClient(config["url"])
@@ -1848,7 +1882,11 @@ def create_mcp_tool(
         # reachable at all without the capability this closure holds.
         client = await MCPConnectionPool._get_reconnect_client(config_for_client, capability)
 
-        result = await client.call_tool(actual_tool_name, kwargs)
+        try:
+            result = await client.call_tool(actual_tool_name, kwargs)
+        except Exception as exc:
+            _attach_mcp_transport_probe(exc, client)
+            raise
 
         if hasattr(result, "content"):
             content = result.content

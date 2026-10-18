@@ -1667,16 +1667,8 @@ def test_shipped_skills_are_outside_the_grammar_and_outside_its_subject() -> Non
     )
 
 
-def test_validator_runs_on_the_interpreter_ci_actually_uses() -> None:
-    """The script is executed the way ci.sh executes it, not the way this suite imports it.
-
-    ci.sh calls ``python3 validate_manifests.py`` on the bare system interpreter with no uv
-    arm, and this suite runs under uv. Those are different interpreters — measured here as
-    3.9.6 against 3.10.15 — so every other test in this file exercises a Python the lint
-    never uses. Anything 3.10-only in that script would pass this whole suite and break the
-    actual lint, which is why the dependency-free constraint has to be checked by running
-    it rather than by remembering it.
-    """
+def test_validator_cli_runs_through_available_python3() -> None:
+    """Run the validator's command-line path through the available python3 executable."""
     import shutil
     import subprocess
 
@@ -1697,6 +1689,37 @@ def test_validator_runs_on_the_interpreter_ci_actually_uses() -> None:
     # A run that printed nothing would satisfy the rc check without having validated
     # anything, so the output is asserted to name what it checked.
     assert "plugin(s)" in completed.stdout, f"validator produced no verdict: {completed.stdout!r}"
+
+
+def test_validator_defers_union_annotations_for_older_python() -> None:
+    import ast
+
+    script = _MARKETPLACE_ROOT / "scripts" / "validate_manifests.py"
+    tree = ast.parse(script.read_text(encoding="utf-8"))
+    annotations = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.arg) and node.annotation is not None:
+            annotations.append(node.annotation)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.returns is not None:
+            annotations.append(node.returns)
+        elif isinstance(node, ast.AnnAssign):
+            annotations.append(node.annotation)
+
+    uses_union_syntax = any(
+        isinstance(part, ast.BinOp) and isinstance(part.op, ast.BitOr)
+        for annotation in annotations
+        for part in ast.walk(annotation)
+    )
+    if uses_union_syntax:
+        has_deferred_annotations = any(
+            isinstance(node, ast.ImportFrom)
+            and node.module == "__future__"
+            and any(alias.name == "annotations" for alias in node.names)
+            for node in tree.body
+        )
+        assert has_deferred_annotations, (
+            "union annotations require deferred evaluation for the standalone validator"
+        )
 
 
 def test_unreadable_file_is_reported_rather_than_raised(tmp_path: Path) -> None:

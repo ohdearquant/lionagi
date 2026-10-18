@@ -7,12 +7,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-import uuid
 from typing import Any
 
 from fastapi import HTTPException
 from pydantic import BaseModel
 
+from lionagi.ln import short_id
 from lionagi.state.db import StateDB
 
 from .. import config
@@ -166,6 +166,19 @@ async def launch(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _with_action_kind(
+    node_metadata: dict[str, Any] | None, action_kind: str | None
+) -> dict[str, Any] | None:
+    """Fold *action_kind* into *node_metadata* without disturbing its other keys.
+
+    The kind was passed to the spawn path and dropped before the row was
+    written, so the stored invocation could not say what it had launched.
+    """
+    if action_kind is None:
+        return node_metadata
+    return {**(node_metadata or {}), "action_kind": action_kind}
+
+
 async def launch_detached_argv(
     argv: list[str],
     *,
@@ -193,7 +206,7 @@ async def launch_detached_argv(
         )
     await sem.acquire()
 
-    inv_id = uuid.uuid4().hex[:12]
+    inv_id = short_id(12)
     now = time.time()
 
     try:
@@ -206,7 +219,7 @@ async def launch_detached_argv(
                     "prompt": prompt,
                     "started_at": now,
                     "status": "running",
-                    "node_metadata": node_metadata,
+                    "node_metadata": _with_action_kind(node_metadata, action_kind),
                 }
             )
 
@@ -296,7 +309,7 @@ async def _spawn_detached(
                 # atomic transition as the status write -- a separate prior
                 # update_invocation() call could persist ended_at on a row
                 # this status write then fails or loses the race to update.
-                await db.update_status(
+                cancelled_written = await db.update_status(
                     "invocation",
                     inv_id,
                     new_status="cancelled",
@@ -306,8 +319,18 @@ async def _spawn_detached(
                     source="executor",
                     actor=inv_id,
                     metadata={},
+                    expected_statuses={"running"},
                     extra_fields={"ended_at": time.time()},
                 )
+                if not cancelled_written:
+                    stored = await db.get_invocation(inv_id)
+                    _log.info(
+                        "Refused cancellation write for launch invocation %s: stored status "
+                        "%s refused %s.",
+                        inv_id,
+                        (stored or {}).get("status"),
+                        "cancelled",
+                    )
         except Exception:
             _log.exception(
                 "Failed to record cancellation for launch invocation %s",
@@ -323,7 +346,7 @@ async def _spawn_detached(
 
     try:
         async with StateDB() as db:
-            await db.update_status(
+            exit_written = await db.update_status(
                 "invocation",
                 inv_id,
                 new_status=status,
@@ -337,8 +360,17 @@ async def _spawn_detached(
                 source="executor",
                 actor=inv_id,
                 metadata={},
+                expected_statuses={"running"},
                 extra_fields={"ended_at": time.time()},
             )
+            if not exit_written:
+                stored = await db.get_invocation(inv_id)
+                _log.info(
+                    "Refused exit write for launch invocation %s: stored status %s refused %s.",
+                    inv_id,
+                    (stored or {}).get("status"),
+                    status,
+                )
     except Exception:
         _log.exception("Failed to update invocation %s after detached launch", inv_id)
 

@@ -9,10 +9,12 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from lionagi.state.engine import (
+    _RollbackOnCloseConnection,
     dialect_of,
     make_engine,
     make_readonly_engine,
@@ -159,6 +161,25 @@ async def test_make_readonly_engine_can_read_existing_file(tmp_path):
         await ro_engine.dispose()
 
 
+@pytest.mark.parametrize("name", ["a#b.db", "p%41.db", "q r.db"])
+async def test_make_readonly_engine_reads_the_file_its_path_names(tmp_path, name):
+    """Written raw into the URI, '#' starts a fragment that also drops mode=ro, and '%' starts an
+    escape, so another file was opened, and created, in place of this one."""
+    db_file = tmp_path / name
+    conn = sqlite3.connect(db_file)
+    conn.execute("CREATE TABLE t (v TEXT)")
+    conn.execute("INSERT INTO t VALUES ('here')")
+    conn.commit()
+    conn.close()
+    ro_engine = make_readonly_engine(f"sqlite+aiosqlite:///{db_file}")
+    try:
+        async with ro_engine.connect() as conn:
+            assert (await conn.execute(sa.text("SELECT v FROM t"))).scalar() == "here"
+    finally:
+        await ro_engine.dispose()
+    assert sorted(path.name for path in tmp_path.iterdir()) == [name]
+
+
 async def test_make_readonly_engine_rejects_writes(tmp_path):
     db_file = tmp_path / "ro_write_test.db"
     write_engine = create_async_engine(f"sqlite+aiosqlite:///{db_file}", echo=False)
@@ -173,6 +194,84 @@ async def test_make_readonly_engine_rejects_writes(tmp_path):
                 await conn.execute(sa.text("INSERT INTO t (v) VALUES ('nope')"))
     finally:
         await ro_engine.dispose()
+
+
+# SQLite close lifecycle and connection options
+
+
+@pytest.mark.parametrize("committed", [False, True], ids=["uncommitted", "committed"])
+def test_native_close_preserves_rows_with_an_unfinished_cursor(tmp_path, committed):
+    path = tmp_path / "retained-cursor.db"
+    connection = sqlite3.connect(path, isolation_level=None, factory=_RollbackOnCloseConnection)
+    connection.execute("CREATE TABLE probe (x INTEGER)")
+    connection.execute("BEGIN IMMEDIATE")
+    connection.execute("INSERT INTO probe VALUES (1)")
+    if committed:
+        connection.execute("COMMIT")
+    cursor = connection.execute("SELECT x FROM probe")
+    try:
+        connection.close()
+        connection.close()  # native close remains idempotent
+        external = sqlite3.connect(path, timeout=0, isolation_level=None)
+        try:
+            external.execute("BEGIN IMMEDIATE")
+            assert external.execute("SELECT x FROM probe").fetchall() == (
+                [(1,)] if committed else []
+            )
+            external.execute("ROLLBACK")
+        finally:
+            external.close()
+        assert cursor is not None  # retained until after the external writer succeeds
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("error_type", [sqlite3.OperationalError, RuntimeError])
+def test_native_close_logs_a_rollback_error_and_still_closes(caplog, error_type):
+    class BrokenRollback(_RollbackOnCloseConnection):
+        def rollback(self):
+            raise error_type("controlled rollback failure")
+
+    connection = sqlite3.connect(":memory:", isolation_level=None, factory=BrokenRollback)
+    connection.execute("BEGIN")
+    connection.close()
+    assert "Could not roll back SQLite transaction before closing" in caplog.text
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        connection.execute("SELECT 1")
+    connection.close()
+
+
+@pytest.mark.parametrize("readonly", [False, True], ids=["writable", "readonly"])
+@pytest.mark.parametrize("custom_factory", [False, True], ids=["default-factory", "custom-factory"])
+async def test_sqlite_engine_default_factory_preserves_connection_options(
+    tmp_path, readonly, custom_factory
+):
+    path = tmp_path / "options.db"
+    sqlite3.connect(path).close()
+    supplied = {"timeout": 0.25}
+    seen = []
+
+    def factory(*args, **kwargs):
+        seen.append(kwargs.copy())
+        return sqlite3.Connection(*args, **kwargs)
+
+    if custom_factory:
+        supplied["factory"] = factory
+    original = supplied.copy()
+    maker = make_readonly_engine if readonly else make_engine
+    engine = maker(f"sqlite+aiosqlite:///{path}", connect_args=supplied)
+    try:
+        async with engine.connect() as connection:
+            raw = await connection.get_raw_connection()
+            native = raw.driver_connection._conn
+            if custom_factory:
+                assert type(native) is sqlite3.Connection
+                assert seen[0]["timeout"] == 0.25
+            else:
+                assert isinstance(native, _RollbackOnCloseConnection)
+        assert supplied == original
+    finally:
+        await engine.dispose()
 
 
 # Schema-parity: MetaData vs schema.sql (SQLite leg, always runs)
@@ -213,7 +312,7 @@ ALL_TABLES = {
 }
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def sqlite_meta_engine(tmp_path):
     """AsyncEngine pointing at a fresh SQLite file for MetaData.create_all."""
     db_file = tmp_path / "meta_test.db"

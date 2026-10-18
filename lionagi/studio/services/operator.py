@@ -11,6 +11,8 @@ from typing import Any, Literal
 
 from fastapi import HTTPException, Query, Request
 
+from lionagi.ln.concurrency import current_time
+
 from ..operator.coordinator import get_operator_coordinator
 from ..operator.store import (
     OperatorConflictError,
@@ -275,7 +277,7 @@ async def stream_operator_conversation(
 
     async def events():
         cursor = after_sequence
-        heartbeat_at = asyncio.get_running_loop().time() + 5
+        heartbeat_at = current_time() + 5
         while True:
             if await request.is_disconnected():
                 return
@@ -289,9 +291,9 @@ async def stream_operator_conversation(
                     yield (
                         "data:" + json.dumps(frame, sort_keys=True, separators=(",", ":")) + "\n\n"
                     )
-                heartbeat_at = asyncio.get_running_loop().time() + 5
+                heartbeat_at = current_time() + 5
                 continue
-            now = asyncio.get_running_loop().time()
+            now = current_time()
             if now >= heartbeat_at:
                 yield ": heartbeat\n\n"
                 heartbeat_at = now + 5
@@ -310,6 +312,13 @@ async def confirm_operator_proposal(
     proposal_id: str,
     body: ConfirmProposalRequest,
 ) -> dict[str, Any]:
+    """Allow a pending Operator proposal.
+
+    Without ``LIONAGI_STUDIO_AUTH_TOKEN``, any process that can reach the daemon's
+    listener, including programs run by other local accounts, can allow or deny
+    Operator proposals. The permission prompt is a workflow safeguard, not
+    isolation from local programs; set a token on a shared machine.
+    """
     try:
         return await get_operator_coordinator().decide(
             conversation_id,
@@ -332,6 +341,13 @@ async def decide_operator_proposal(
     proposal_id: str,
     body: DecideProposalRequest,
 ) -> dict[str, Any]:
+    """Allow or deny a pending Operator proposal.
+
+    Without ``LIONAGI_STUDIO_AUTH_TOKEN``, any process that can reach the daemon's
+    listener, including programs run by other local accounts, can allow or deny
+    Operator proposals. The permission prompt is a workflow safeguard, not
+    isolation from local programs; set a token on a shared machine.
+    """
     try:
         return await get_operator_coordinator().decide(
             conversation_id,

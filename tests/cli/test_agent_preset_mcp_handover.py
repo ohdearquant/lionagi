@@ -264,7 +264,10 @@ async def test_antigravity_leg_keeps_non_requested_mcp_sets_non_failing(
         snapshot = tmp_path / "job" / "mcp.json"
         snapshot.parent.mkdir()
         _write_mcp_server_snapshot(
-            snapshot, {"found": {"command": "server"}}, source=tmp_path / ".mcp.json"
+            snapshot,
+            {"found": {"command": "server"}},
+            source=tmp_path / ".mcp.json",
+            searched_from=tmp_path,
         )
         kwargs["mcp_config"] = str(snapshot)
     elif config_case == "disabled":
@@ -296,10 +299,16 @@ async def test_preset_leg_gets_the_submitted_servers_not_the_target_directory(sp
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", ["claude_code/sonnet", "codex/gpt-5.3-codex"])
-async def test_explicit_mcp_config_beats_a_config_at_the_target_directory(spawn, tmp_path, model):
+async def test_explicit_mcp_config_beats_a_config_at_the_target_directory(
+    spawn, tmp_path, model, codex_home
+):
     """--mcp-config names the set; a config sitting at --cwd does not win."""
     from lionagi.cli.agent import _run_agent
 
+    # A named set on codex disables every server codex declares on its own, read from its
+    # config; with no config there it asks the `codex` binary. A config with no servers
+    # keeps the test off the binary.
+    codex_home.write_config({})
     named = _write_mcp_config(tmp_path / "named", {"named": {"command": "named-server"}})
     _write_mcp_config(spawn.target_dir, NEARBY)
 
@@ -368,10 +377,15 @@ async def test_a_submitted_legs_snapshot_is_recorded_for_its_resume(spawn, tmp_p
     from lionagi.cli.agent import _MCP_LAUNCH_KEY, _run_agent
     from lionagi.mcp.jobs import _write_mcp_server_snapshot
 
+    server_dir = tmp_path / "server"
+    server_dir.mkdir()
     snapshot = tmp_path / "job" / "mcp.json"
     snapshot.parent.mkdir()
     _write_mcp_server_snapshot(
-        snapshot, {"found": {"command": "found-server"}}, source=tmp_path / ".mcp.json"
+        snapshot,
+        {"found": {"command": "found-server"}},
+        source=server_dir / ".mcp.json",
+        searched_from=server_dir,
     )
 
     await _run_agent(
@@ -382,7 +396,11 @@ async def test_a_submitted_legs_snapshot_is_recorded_for_its_resume(spawn, tmp_p
         mcp_config=str(snapshot),
     )
 
-    assert spawn.branches[-1].metadata[_MCP_LAUNCH_KEY]["mcp_config"] == str(snapshot.resolve())
+    launched = spawn.branches[-1].metadata[_MCP_LAUNCH_KEY]
+    assert launched["mcp_config"] == str(snapshot.resolve())
+    # The search directory is provenance; a resume reads from this process's own directory.
+    assert launched["launch_dir"] == str(Path.cwd().resolve())
+    assert launched["launch_dir"] != str(server_dir)
     assert _forwarded_servers(spawn.branches[-1]) == {"found": {"command": "found-server"}}
 
 
@@ -413,6 +431,58 @@ async def test_no_mcp_config_leaves_the_leg_no_servers_of_its_own_either(
     else:
         assert kwargs["mcp_servers"] == {}
         assert kwargs["strict_mcp_config"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("preset", [None, "coding"], ids=["plain", "preset"])
+async def test_a_leg_with_no_config_found_is_told_it_starts_without_servers(
+    monkeypatch, tmp_path, preset
+):
+    """A search that finds nothing leaves the leg no server set of its own.
+
+    `--cwd` points at a directory with no `.mcp.json` at or above it and no
+    config is named, so the leg starts with only what its provider CLI finds
+    for itself. That is the case this warning exists for, on the plain path and
+    on the path that builds the branch through `create_agent` alike.
+    """
+    from lionagi.cli.agent import _run_agent
+
+    _wire_agent_stubs(monkeypatch, tmp_path)
+    barren = tmp_path / "barren"
+    barren.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(barren)
+
+    with _capture_cli_messages() as messages:
+        await _run_agent("claude_code/sonnet", "go", preset=preset, yolo=True)
+
+    reported = "\n".join(messages)
+    assert "no MCP servers are being handed to this leg" in reported
+    assert "this leg" in reported.lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("preset", [None, "coding"], ids=["plain", "preset"])
+async def test_a_home_config_does_not_reach_a_leg_that_found_none(monkeypatch, tmp_path, preset):
+    """This command resolves its servers once, from where it was run, and hands
+    that result to the branch: a search that finds nothing hands over nothing,
+    and the branch does not go looking on its own. The home-level config is the
+    one such a search would otherwise pick up, so it is the one checked here."""
+    from lionagi.cli.agent import _run_agent
+
+    branches = _wire_agent_stubs(monkeypatch, tmp_path)
+    launch = tmp_path / "launch"
+    launch.mkdir()
+    home = tmp_path / "home"
+    _write_mcp_config(home / ".lionagi", {"home-only": {"command": "home-server"}})
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(launch)
+
+    await _run_agent("claude_code/sonnet", "go", preset=preset, yolo=True)
+
+    assert "mcp_servers" not in branches[-1].chat_model.endpoint.config.kwargs
 
 
 @pytest.mark.asyncio

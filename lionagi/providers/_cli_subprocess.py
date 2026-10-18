@@ -140,27 +140,166 @@ class Redacted:
     __str__ = __repr__
 
 
+def reveal_redacted(value):
+    """The value inside a ``Redacted`` wrapper, or the value unchanged.
+
+    ``redact_runtime_fields_in_place`` runs at the TOP of every model-level
+    ``mode="before"`` validator, so any validator after the first one sees the
+    wrapper where the caller passed a mapping. ``Redacted`` is deliberately not
+    a mapping, so a reader that forgets this gets a silent miss rather than an
+    error — a validator asking ``isinstance(env, Mapping)`` simply decides the
+    caller supplied nothing. Code that needs to READ such a field goes through
+    here; nothing revealed this way may be printed, logged, or serialized.
+    """
+    return value.reveal() if isinstance(value, Redacted) else value
+
+
 def raise_if_env_is_not_a_string_map(value: Mapping) -> None:
     """Reject a malformed environment without quoting anything out of it.
 
-    Values are never printed, whatever their type; non-string keys are
-    reported by position and type only, since printing one could print a
-    credential the caller embedded there. Raises TypeError, not ValueError —
-    pydantic quotes a ValueError's rejected input verbatim into the error.
+    Nothing from the mapping is printed: each bad entry is reported by its
+    position and the type that is wrong. A key can carry a credential as easily
+    as a value (a token pasted where a name belongs, ``NAME=value`` written as a
+    name), and no test of a key's shape tells the two apart. Raises TypeError,
+    not ValueError — pydantic quotes a ValueError's rejected input verbatim into
+    the error.
     """
-    named: list[str] = []
-    unnamed: list[str] = []
+    bad: list[str] = []
     for index, (key, val) in enumerate(value.items()):
-        if isinstance(key, str):
-            if not isinstance(val, str):
-                named.append(f"{key!r} (value is {type(val).__name__})")
-        else:
-            unnamed.append(f"entry {index} (key is {type(key).__name__})")
-    if named or unnamed:
-        raise TypeError(
-            "env must map strings to strings; these entries do not: "
-            + ", ".join([*sorted(named), *unnamed])
-        )
+        # `issubclass(type(x), str)`, never `isinstance`: a type whose `__class__` merely
+        # answers `str` passes `isinstance` and is then rendered by pydantic, which
+        # quotes the value.
+        if not issubclass(type(key), str):
+            bad.append(f"entry {index} (key is {type(key).__name__})")
+        elif not issubclass(type(val), str):
+            bad.append(f"entry {index} (value is {type(val).__name__})")
+    if bad:
+        raise TypeError("env must map strings to strings; these entries do not: " + ", ".join(bad))
+    unencodable = unencodable_env_entry(value)
+    if unencodable is not None:
+        raise TypeError(_unencodable_env_message(unencodable))
+
+
+def unencodable_env_entry(env: Mapping[str, str]) -> str | None:
+    """The first key or value of a string environment the spawn cannot encode, named by
+    its position, else None.
+
+    On POSIX a surrogate escape (U+DC80 to U+DCFF) passes as the byte it stands for and any
+    other lone surrogate fails. The codec's error holds the whole key or value, which can be a
+    credential, so only the position is returned, and the caller raises its refusal after
+    this handler has ended.
+
+    The text is read as ``env_as_the_spawn_encodes_it`` reads it: ``os.fsencode`` calls a
+    ``str`` subclass's own ``encode`` and answers with whatever it returns, so a ``bytes``
+    answer is taken through the base type's own slice, decoded, reduced to a plain ``str``
+    and encoded again here. The bytes that answer for the entry are then the bytes the spawn
+    would send, not the first encoder's own answer. An encoder that raises anything at all —
+    an answer that is not text or bytes, a path-like read that fails, a value whose own
+    method raises — is refused by position and type with ``TypeError``; the error it raised
+    is neither kept as the refusal's context nor reachable through its message or ``args``.
+    """
+    for index, (key, val) in enumerate(env.items()):
+        for part, item in (("key", key), ("value", val)):
+            unreadable = False
+            try:
+                encoded = os.fsencode(item)
+                if isinstance(encoded, bytes):
+                    encoded = bytes.__getitem__(encoded, slice(None))
+                os.fsencode(str.__str__(os.fsdecode(encoded)))
+            except UnicodeEncodeError:
+                return f"The environment entry {index} {part}"
+            except Exception:
+                # Any other exception an encoder raises is refused by position and type.
+                # The value's own text is not carried: the exception that was caught may
+                # hold it in its message or its args, and raising inside this handler
+                # would chain the refusal to it.
+                unreadable = True
+            if unreadable:
+                # Raised after the handler, so the refusal keeps no error as its context;
+                # the wording is the spawn copy's own refusal for the same entry.
+                raise TypeError(
+                    f"The environment entry {index} {part}, of type {type(item).__name__}, "
+                    "could not be read as text, so it cannot be passed to a CLI process."
+                )
+    return None
+
+
+def env_as_the_spawn_encodes_it(env: Mapping) -> dict[str, str]:
+    """``env`` copied once, each key and value read once and kept as the text of the bytes
+    the spawn passes.
+
+    The spawn builds the process environment from a copy of the mapping
+    (``prepare_process_group_env``), and on POSIX the subprocess module encodes every key and
+    value of that copy with ``os.fsencode``. Doing both here, once, and handing this copy to
+    the spawn means every entry the caller passes is read and checked here once, and the spawn
+    is handed that read, whatever a view of the mapping or a path-like value answers on a
+    later read. The secret fill and the process-group marker add or replace entries after this
+    check; both are text the codec cannot refuse, so neither can fail it. On POSIX a surrogate
+    escape (U+DC80 to U+DCFF) passes as the byte it stands for, so the spawn encodes the copy
+    to the same bytes.
+
+    A key or value that cannot be encoded, or whose read raises an ``Exception``, is refused by
+    its position: the codec's error, or the error a path-like value raises, can hold the whole
+    key or value, which can be a credential, so the refusal is raised after that handler has
+    ended and carries no part of it. A read that raised ``TypeError`` is refused with
+    ``TypeError``, any other with ``ValueError``. A value that is ``bytes`` is read as the
+    bytes it holds, taken through the base ``bytes`` type's own slice, so a subclass's own
+    ``decode``, ``__bytes__``, ``__getitem__``, ``__len__`` and ``__index__`` do not run and
+    cannot change the text or fail the read. Two keys that encode to the same bytes name one
+    variable: the pair is taken when their values are equal, since the process then has one
+    well-defined value to read, and refused by position when they differ. An exception that
+    is not an ``Exception``, or one the caller's own mapping raises while ``dict()`` copies
+    it, propagates unchanged.
+    """
+    copied: dict[str, str] = {}
+    first_index: dict[str, int] = {}
+    for index, (key, val) in enumerate(dict(env).items()):
+        texts: list[str] = []
+        for part, item in (("key", key), ("value", val)):
+            refusal = None
+            refused_as: type[Exception] = ValueError
+            try:
+                # The spawn concatenates the encoded entries, so a bytes value is read as the
+                # bytes it holds, taken through the base type's own slice: a subclass's own
+                # ``decode``, ``__bytes__`` or ``__getitem__`` cannot change or fail the read.
+                encoded = os.fsencode(item)
+                if isinstance(encoded, bytes):
+                    encoded = bytes.__getitem__(encoded, slice(None))
+                # ``os.fsencode`` calls a str subclass's own ``encode`` and ``os.fsdecode``
+                # hands its answer back unchecked, so the text is reduced to a plain ``str``
+                # and encoded again here: the bytes checked are the bytes the spawn builds
+                # from this copy, and an encoder that answers a lone surrogate is refused
+                # here rather than failing the spawn's own encode with the value on it.
+                text = str.__str__(os.fsdecode(encoded))
+                os.fsencode(text)
+                texts.append(text)
+            except UnicodeEncodeError:
+                refusal = _unencodable_env_message(f"The environment entry {index} {part}")
+            except Exception as exc:
+                if isinstance(exc, TypeError):
+                    refused_as = TypeError
+                refusal = (
+                    f"The environment entry {index} {part}, of type {type(item).__name__}, "
+                    "could not be read as text, so it cannot be passed to a CLI process."
+                )
+            if refusal is not None:
+                raise refused_as(refusal)
+        named_at = first_index.get(texts[0])
+        if named_at is not None and copied[texts[0]] != texts[1]:
+            raise ValueError(
+                f"The environment entries {named_at} and {index} name the same "
+                "variable once encoded, so they cannot be passed to a CLI process."
+            )
+        first_index.setdefault(texts[0], index)
+        copied[texts[0]] = texts[1]
+    return copied
+
+
+def _unencodable_env_message(what: str) -> str:
+    return (
+        f"{what} holds a character the process environment cannot encode: a lone "
+        "surrogate cannot be passed to a CLI process."
+    )
 
 
 def redact_runtime_fields_in_place(data) -> None:
@@ -682,6 +821,11 @@ async def ndjson_from_cli(
     propagates through the teardown below, which ends the child's group.
     See docs/internals/providers.md#cli-subprocess-lifecycle.
     """
+    # A request copied with model_copy(update=...) skips validation, and the spawn's own
+    # encode error would hold the whole key or value, so the environment is read and
+    # checked here, once, and that copy is what the fill and the spawn receive.
+    if env is not None:
+        env = env_as_the_spawn_encodes_it(env)
     # Every CLI provider spawns through here, so a secret the child must read
     # from its own environment is filled in one place rather than four. Purely
     # additive: with nothing configured this returns ``env`` unchanged, and a
@@ -1098,11 +1242,28 @@ def build_declarative_cli_args(model_instance: Any) -> list[str]:
     return args
 
 
+def cli_fallback_bin_dirs() -> tuple[Path, ...]:
+    """Dirs probed, in order, when PATH lookup fails. Detached servers (MCP
+    bridges, launchd jobs) inherit their launcher's PATH, which routinely
+    lacks the per-user install dirs the CLIs actually live in; PATH still wins
+    when it resolves, so a user's explicit override is never shadowed.
+    Computed at call time: ``Path.home()`` follows the live environment."""
+    return (
+        Path.home() / ".local" / "bin",
+        Path("/usr/local/bin"),
+        Path("/opt/homebrew/bin"),
+    )
+
+
 def discover_cli(binary: str) -> tuple[bool, str | None]:
-    """Return (available, resolved_path_or_name) for a CLI binary discovered on PATH."""
+    """Return (available, resolved_path) for a CLI binary, from PATH first, then cli_fallback_bin_dirs()."""
     candidate = shutil.which(binary) or binary
     if shutil.which(candidate):
         return True, candidate
+    for bin_dir in cli_fallback_bin_dirs():
+        fallback = bin_dir / binary
+        if fallback.is_file() and os.access(fallback, os.X_OK):
+            return True, str(fallback)
     return False, None
 
 

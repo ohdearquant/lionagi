@@ -159,6 +159,11 @@
     "effect": {
       "requested": "Requested interface action: {kind}"
     },
+    "truncation": {
+      "title": "このターンの一部は保持されていません",
+      "summary": "{frames} フレーム未保持 · {size}",
+      "limit": " · 上限: {limit}"
+    },
     "outcome": {
       "completed": "Turn completed",
       "failed": "Turn failed",
@@ -241,8 +246,8 @@
       "allHint": "最初のエージェントまたはワークフローを作成して開始しましょう。",
       "filtered": "フィルターに一致する項目はありません。",
       "filteredHint": "別の種類を試すか、検索をクリアしてください。",
+      "clearFilters": "フィルターをクリア",
       "createFirst": "最初の項目を作成",
-      "createWorkflow": "新規ワークフロー",
       "createAgent": "新規エージェント",
       "allSkill": "スキルが見つかりません。",
       "allSkillHint": "~/.lionagi/skills/NAME/ に SKILL.md を追加するとここに表示されます。",
@@ -303,12 +308,12 @@
       "engineMaxDepth": "最大深度",
       "engineMaxAgents": "最大エージェント数",
       "loadFailed": "(バージョンの読み込みに失敗)",
-      "invocations": "呼び出し",
-      "successRate": "成功率",
-      "lastUsed": "最終使用",
-      "never": "未使用",
-      "recentInvocations": "最近の呼び出し",
-      "noInvocations": "呼び出しはまだ記録されていません。",
+      "invocations": "記録された呼び出し",
+      "successRate": "記録された成功率",
+      "lastUsed": "最後に追跡された使用",
+      "never": "記録なし",
+      "recentInvocations": "最近更新された記録",
+      "noInvocations": "記録された呼び出しはありません。",
       "skillValidationFailed": "検証に失敗しました。保存する前に以下のエラーを修正してください。",
       "pluginOwnedSkillHint": "プラグインに同梱されています — 変更するにはプラグインのファイルを直接編集してください。",
       "readOnly": "読み取り専用",
@@ -320,7 +325,10 @@
       "pluginHooksSection": "フック設定",
       "pluginReadmeSection": "README",
       "yes": "はい",
-      "no": "いいえ"
+      "no": "いいえ",
+      "usageCoverage": "このスキルまたはプラグインの追跡範囲は不明です。記録された呼び出しのみ表示します。成功率は終了した記録のうち正常完了した割合です。最近の経過時間は更新からの時間です。",
+      "usageUnavailable": "記録された使用状況を取得できません。",
+      "usageUnknown": "不明"
     },
     "template": {
       "badge": "ビルトイン",
@@ -666,6 +674,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "最近の実行を取得できません",
     "title": "スケジュール",
     "subtitle": "cron、インターバル、GitHubトリガーの常設オートメーション",
     "calendar": "カレンダー",
@@ -1250,6 +1259,12 @@
       "body": "Something answered at {base}, but it isn't a lionagi daemon.",
       "fix": "Stop that program, or point the daemon at a different port:",
       "command": "li studio --port 8766"
+    },
+    "accessRequired": {
+      "title": "このデーモンにはアクセストークンが必要です",
+      "body": "{base} の lionagi デーモンは応答しましたが、このページを拒否しました。デーモンは、別のオリジンのページをアクセストークンがある場合にのみ受け付けます。li studio コマンドは、このページを開くときにトークンを渡します。ページを再読み込みするとトークンは失われます。",
+      "fix": "デーモンが動いている場所でこれを実行し、アクセス付きで Studio を開きます：",
+      "command": "li studio"
     },
     "retry": "Retry",
     "dismiss": "Dismiss"

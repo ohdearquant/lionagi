@@ -3,7 +3,17 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
 import enMessages from "@/messages/en.json";
-import type { OperatorFrame, OperatorModelCatalogEntry } from "@/lib/types";
+import type {
+  OperatorFrame,
+  OperatorModelCatalogEntry,
+  OperatorTruncationPayload,
+} from "@/lib/types";
+
+type StreamHandlers = {
+  onFrame: (frame: OperatorFrame) => void;
+  onConnection?: (state: "connecting" | "open" | "reconnecting") => void;
+  onError?: (error: Error, fatal: boolean) => void;
+};
 
 const api = vi.hoisted(() => ({
   acknowledgeOperatorEffect: vi.fn(),
@@ -17,7 +27,9 @@ const api = vi.hoisted(() => ({
   getOperatorConversation: vi.fn(),
   listOperatorConversations: vi.fn(),
   reportOperatorView: vi.fn(() => Promise.resolve()),
-  streamOperatorConversation: vi.fn(() => vi.fn()),
+  streamOperatorConversation: vi.fn(
+    (_conversationId: string, _afterSequence: number, _handlers: StreamHandlers) => vi.fn(),
+  ),
   submitOperatorTurn: vi.fn(),
   updateOperatorConversation: vi.fn(),
   getRunFile: vi.fn(),
@@ -26,8 +38,13 @@ const router = vi.hoisted(() => ({ navigate: vi.fn() }));
 
 vi.mock("@/lib/api", () => api);
 vi.mock("@tanstack/react-router", () => ({
-  Link: ({ children }: { children?: React.ReactNode }) => <a href="/fleet">{children}</a>,
+  Link: ({ children, search }: { children?: React.ReactNode; search?: { s?: string } }) => (
+    <a data-selected-session={search?.s} href="/fleet">
+      {children}
+    </a>
+  ),
   useLocation: () => ({ pathname: "/", search: {} }),
+  useSearch: () => ({}),
   useNavigate: () => router.navigate,
 }));
 
@@ -42,6 +59,32 @@ function textFrame(sequence: number, role: "user" | "assistant", content: string
     type: "text",
     payload: { content, format: "plain", role },
     createdAt: sequence,
+  };
+}
+
+function truncationFrame(sequence: number): OperatorFrame<OperatorTruncationPayload> {
+  return {
+    version: 1,
+    conversationId: "conversation-1",
+    requestId: "request-1",
+    sequence,
+    type: "truncation",
+    payload: {
+      reason: "frames_per_turn",
+      limits: {
+        maxFramesPerTurn: 2000,
+        maxTurnPayloadBytes: 8388608,
+        maxFramePayloadBytes: 65536,
+      },
+      elidedFrames: 4,
+      elidedBytes: 2048,
+      elidedFrameTypes: { text: 4 },
+      firstElidedAt: 1_700_000_000,
+      lastElidedAt: 1_700_000_020,
+      message:
+        "This turn reached its durable retention limit; frames after this point were not stored and are counted here.",
+    },
+    createdAt: 1_700_000_020,
   };
 }
 
@@ -166,6 +209,228 @@ describe("OperatorPanel", () => {
     expect(
       [...Array(window.localStorage.length)].map((_, index) => window.localStorage.key(index)),
     ).not.toContain("studio:operator-token");
+  });
+
+  it("shows a retained turn's truncation notice and its terminal outcome together", async () => {
+    window.localStorage.setItem("studio:operator-conversation", "conversation-1");
+    api.listOperatorConversations.mockResolvedValue([
+      {
+        id: "conversation-1",
+        title: "Long turn",
+        status: "active",
+        activeRequestId: null,
+        updatedAt: 3,
+      },
+    ]);
+    api.getOperatorConversation.mockResolvedValue({
+      conversation: {
+        id: "conversation-1",
+        status: "active",
+        activeRequestId: null,
+      },
+      frames: [
+        textFrame(1, "assistant", "Retained before the limit."),
+        truncationFrame(2),
+        {
+          version: 1,
+          conversationId: "conversation-1",
+          requestId: "request-1",
+          sequence: 3,
+          type: "done",
+          payload: { outcome: "completed", lastSequence: 3 },
+          createdAt: 3,
+        },
+      ],
+    });
+
+    await mount();
+
+    // The notice states what was not retained, in frames and bytes, and says
+    // the retained transcript is not the whole turn.
+    expect(container.textContent).toContain("Retained before the limit.");
+    expect(container.textContent).toContain("4 frames not retained");
+    expect(container.textContent).toContain("2 KB");
+    expect(container.textContent).toContain("frames_per_turn");
+    // The transcript did not continue: the notice must not read as an
+    // ordinary message between two pieces of the same turn.
+    expect(container.textContent).not.toContain("This turn reached its durable retention limit");
+    expect(container.textContent).toMatch(/Turn completed/);
+  });
+
+  it("links a run result using its session identity when CLI provenance is present", async () => {
+    window.localStorage.setItem("studio:operator-conversation", "conversation-1");
+    api.listOperatorConversations.mockResolvedValue([
+      {
+        id: "conversation-1",
+        title: "Run details",
+        status: "active",
+        activeRequestId: null,
+        updatedAt: 2,
+      },
+    ]);
+    api.getOperatorConversation.mockResolvedValue({
+      conversation: {
+        id: "conversation-1",
+        status: "active",
+        activeRequestId: null,
+      },
+      frames: [
+        {
+          version: 1,
+          conversationId: "conversation-1",
+          requestId: "request-1",
+          sequence: 1,
+          type: "tool_result",
+          payload: {
+            callId: "call-1",
+            ok: true,
+            result: {
+              id: "session-1",
+              sessionId: "session-1",
+              runId: "20260829T120000-linked",
+            },
+          },
+          createdAt: 1,
+        },
+      ],
+    });
+
+    await mount();
+
+    expect(
+      container.querySelector("[data-selected-session]")?.getAttribute("data-selected-session"),
+    ).toBe("session-1");
+  });
+
+  it("links a session when its result has no CLI run provenance", async () => {
+    window.localStorage.setItem("studio:operator-conversation", "conversation-1");
+    api.listOperatorConversations.mockResolvedValue([
+      {
+        id: "conversation-1",
+        title: "Run details",
+        status: "active",
+        activeRequestId: null,
+        updatedAt: 2,
+      },
+    ]);
+    api.getOperatorConversation.mockResolvedValue({
+      conversation: {
+        id: "conversation-1",
+        status: "active",
+        activeRequestId: null,
+      },
+      frames: [
+        {
+          version: 1,
+          conversationId: "conversation-1",
+          requestId: "request-1",
+          sequence: 1,
+          type: "tool_result",
+          payload: {
+            callId: "call-1",
+            ok: true,
+            result: { id: "session-2", sessionId: "session-2", runId: null },
+          },
+          createdAt: 1,
+        },
+      ],
+    });
+
+    await mount();
+
+    expect(
+      container.querySelector("[data-selected-session]")?.getAttribute("data-selected-session"),
+    ).toBe("session-2");
+  });
+
+  it("reopens a fatal stream after a turn is durably accepted", async () => {
+    window.localStorage.setItem("studio:operator-conversation", "conversation-1");
+    api.listOperatorConversations.mockResolvedValue([
+      {
+        id: "conversation-1",
+        title: "Restart recovery",
+        status: "active",
+        activeRequestId: null,
+        updatedAt: 2,
+      },
+    ]);
+    api.getOperatorConversation.mockResolvedValue({
+      conversation: {
+        id: "conversation-1",
+        status: "active",
+        activeRequestId: null,
+      },
+      frames: [textFrame(1, "assistant", "Before restart")],
+    });
+    api.submitOperatorTurn.mockResolvedValue({
+      conversationId: "conversation-1",
+      requestId: "request-after-restart",
+      acceptedSequence: 2,
+    });
+    const subscriptions: StreamHandlers[] = [];
+    const closers: ReturnType<typeof vi.fn>[] = [];
+    api.streamOperatorConversation.mockImplementation(
+      (_conversationId: string, _afterSequence: number, handlers: StreamHandlers) => {
+        subscriptions.push(handlers);
+        const close = vi.fn();
+        closers.push(close);
+        return close;
+      },
+    );
+    const animationFrames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      animationFrames.push(callback);
+      return animationFrames.length;
+    });
+
+    await mount();
+    expect(subscriptions).toHaveLength(1);
+    await act(async () => {
+      subscriptions[0].onError?.(new Error("Connection lost — reload to continue."), true);
+    });
+
+    const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      setter?.call(textarea, "sent during restart");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const send = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.startsWith("Send"),
+    );
+    await act(async () => {
+      send?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.submitOperatorTurn).toHaveBeenCalledOnce();
+    expect(closers[0]).toHaveBeenCalledOnce();
+    expect(subscriptions).toHaveLength(2);
+    await act(async () => {
+      subscriptions[1].onConnection?.("connecting");
+    });
+    expect(container.textContent).toContain("Connection lost — reload to continue.");
+    await act(async () => {
+      subscriptions[1].onConnection?.("open");
+      subscriptions[1].onFrame({
+        ...textFrame(2, "user", "sent during restart"),
+        requestId: "request-after-restart",
+      });
+      subscriptions[1].onFrame({
+        ...textFrame(3, "assistant", ""),
+        requestId: "request-after-restart",
+        type: "done",
+        payload: { outcome: "completed", lastSequence: 3 },
+      });
+      animationFrames.shift()?.(0);
+    });
+
+    expect(container.textContent).toContain("sent during restart");
+    expect(container.textContent).not.toContain("Connection lost — reload to continue.");
+    expect(
+      [...container.querySelectorAll("button")].some((button) => button.textContent === "Stop"),
+    ).toBe(false);
   });
 
   it("recovers the latest daemon conversation when there is no cached id", async () => {

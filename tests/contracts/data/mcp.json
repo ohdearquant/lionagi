@@ -283,7 +283,7 @@
           },
           "agent": {
             "type": "string",
-            "description": "Load agent profile by name. Resolves .lionagi/agents/<NAME>/<NAME>.md first, then .lionagi/agents/<NAME>.md, then a trusted+enabled plugin's declared profile ('<plugin>/<NAME>', or a bare NAME when only one plugin declares it). Profile provides system prompt, default model, effort, yolo, timeout, resume_on_timeout. CLI flags override profile settings.",
+            "description": "Load agent profile by name. Resolves .lionagi/agents/<NAME>/<NAME>.md first, then .lionagi/agents/<NAME>.md, then a trusted+enabled plugin's declared profile ('<plugin>/<NAME>', or a bare NAME when only one plugin declares it). Profile provides system prompt, default model, effort, yolo, timeout, idle_timeout, resume_on_timeout. CLI flags override profile settings.",
             "x-flag": "--agent",
             "x-aliases": [
               "-a"
@@ -350,6 +350,13 @@
             "type": "string",
             "description": "Read this MCP config and hand its servers to the leg explicitly. By default the nearest .mcp.json at or above the directory this command was run in is used, so the leg's tools come from the submission rather than from `cwd`. The file is read once at spawn.",
             "x-flag": "--mcp-config"
+          },
+          "idle_timeout": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991,
+            "description": "Stop the run as stalled when the worker goes this many seconds without output after it has started answering. Defaults to the LIONAGI_WORKER_IDLE_TIMEOUT setting (600); a profile's 'idle_timeout' sets it for a role. Raise it for a model that thinks long between outputs. It watches a CLI worker's streamed output; an API-model leg's turn is bounded by `timeout` instead.",
+            "x-flag": "--idle-timeout"
           },
           "no_mcp_config": {
             "type": "boolean",
@@ -811,7 +818,7 @@
           },
           "metadata": {
             "type": "string",
-            "description": "JSON merged key-by-key into the invocation's existing metadata, so anything written during the run survives unless this overwrites that key.",
+            "description": "JSON merged key-by-key into the invocation's existing metadata as an RFC 7396 merge patch, so anything written during the run survives unless this overwrites that key. A nested object merges into the stored object rather than replacing it, and a key set to null is removed. A close naming a different status than the stored one records neither the status nor this payload.",
             "x-flag": "--metadata"
           }
         },
@@ -894,7 +901,7 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Entity id to kill: run_id / session_id / invocation_id / play_id / show_id. Accepts a full UUID, or an id prefix (resolved to the first matching row).",
+            "description": "Entity id to kill: session_id / invocation_id / play_id / show_id. Accepts a full UUID, or an id prefix, which is refused when it matches more than one row rather than resolved to one of them. A run_id can reach a degraded run when persistence setup failed. It stops the process only when run.json records a process identity. `li agent` writes that identity and prints its run id when it starts. `li state import` rows have no pid; `li kill` uses a matching degraded run.json when it can identify a process and otherwise refuses. Use `li monitor` for the session ids a run started.",
             "x-positional": true
           },
           "reason": {
@@ -1032,9 +1039,10 @@
               "session",
               "invocation",
               "show",
-              "play"
+              "play",
+              "command"
             ],
-            "description": "Narrow the table to one kind of entity: session, invocation, show or play.",
+            "description": "Narrow the table to one kind of entity: session, invocation, show or play. `command` narrows to invocations launched as a command action. Use `session` for flow runs, or `invocation` for registered invocation records.",
             "x-flag": "--type",
             "x-aliases": [
               "-t"
@@ -1096,7 +1104,7 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Running flow, playbook run, or agent leg to message, by session, invocation, play, or run id (full, or an unambiguous prefix).",
+            "description": "Running flow, playbook run, or agent leg to message, by session, invocation, play, or run id (exact, an unambiguous 8-character hex prefix, or an unambiguous run-id prefix through the T after its date).",
             "x-positional": true
           },
           "text": {
@@ -1129,7 +1137,7 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Running flow to pause, by session, invocation, play, or run id (full, or an unambiguous prefix). The pause lands at the next op boundary, not mid-op.",
+            "description": "Running flow to pause, by session, invocation, play, or run id (full, an unambiguous 8-character hex prefix, or an unambiguous run-id prefix through the T after its date). In-flight operations are not interrupted.",
             "x-positional": true
           }
         },
@@ -1196,7 +1204,7 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Paused flow to release, by session, invocation, play, or run id (full, or an unambiguous prefix).",
+            "description": "Paused flow to release, by session, invocation, play, or run id (full, an unambiguous 8-character hex prefix, or an unambiguous run-id prefix through the T after its date).",
             "x-positional": true
           }
         },
@@ -1849,7 +1857,7 @@
           },
           "adopt": {
             "type": "boolean",
-            "description": "Migrate a same-named row owned by another set/quick-create into this set. Not yet supported.",
+            "description": "Take an existing unowned row into this set in place, keeping its id and history. Refuses unless the member declares the row's behavior, compared by how the scheduler acts on each column, enablement included.",
             "default": false,
             "x-flag": "--adopt"
           },
@@ -2563,7 +2571,7 @@
           },
           "host": {
             "type": "string",
-            "description": "Host to bind (default: 127.0.0.1)",
+            "description": "Host to bind (default: 127.0.0.1). `docker` also publishes the container port on this host, so anything else there exposes the daemon to that interface. This is an IP address, not an address with a port: the port is `port`, and a value carrying a port is refused.",
             "x-flag": "--host"
           },
           "frontend_port": {
@@ -2588,7 +2596,7 @@
           },
           "docker": {
             "type": "boolean",
-            "description": "Run the bundled frontend + backend via Docker",
+            "description": "Run the bundled frontend + backend via Docker. The port is published on `host` (loopback by default)",
             "x-flag": "--docker"
           },
           "no_frontend": {

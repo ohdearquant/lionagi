@@ -1,3 +1,6 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Hashable, MutableMapping
@@ -9,7 +12,13 @@ from weakref import finalize
 
 from typing_extensions import Self, TypedDict, override
 
-from .._structural import _IdentityKey, _structural_hash, _structural_key
+from .._structural import (
+    UnhashableStructuralValueError,
+    _dataclass_structural_key,
+    _IdentityKey,
+    _structural_hash,
+    _structural_key,
+)
 from ._sentinel import Undefined, Unset, _compat_policy, _SentinelPolicy
 
 __all__ = (
@@ -286,7 +295,12 @@ class Params:
 
 @dataclass(slots=True)
 class DataClass:
-    """Mutable dataclass base with sentinel-aware serialization; configure via _config = ModelConfig(...)."""
+    """Unhashable mutable dataclass with sentinel-aware serialization.
+
+    Configure serialization through ``_config = ModelConfig(...)``. Subclasses
+    declaring ``eq=False`` retain exact-type public-field structural equality;
+    ordinary dataclass subclasses retain their generated equality.
+    """
 
     _config: ClassVar[ModelConfig] = ModelConfig()
 
@@ -359,15 +373,23 @@ class DataClass:
         """Return constructor values without applying wire omission rules."""
         return _declared_field_state(self)
 
-    def __hash__(self) -> int:
-        from .._hash import hash_dict
+    __hash__ = None
 
-        return hash_dict(self.to_dict())
+    def __eq__(self, other: object) -> bool:
+        """Compare readable declared field state of instances from the same class.
 
-    def __eq__(self, other: Any) -> bool:
-        if not isinstance(other, DataClass):
+        A cyclic value or a deleted nested field compares unequal.
+        """
+        if self is other:
+            return True
+        if type(self) is not type(other):
             return False
-        return hash(self) == hash(other)
+        try:
+            return _dataclass_structural_key(self._field_state()) == _dataclass_structural_key(
+                cast(DataClass, other)._field_state()
+            )
+        except (AttributeError, UnhashableStructuralValueError):
+            return False
 
 
 # Concrete key-container types accepted by fuzzy_match_keys. Bare ``str`` is

@@ -175,6 +175,8 @@ def build_default_registry() -> PolicyRegistry:
             "total_cost_usd",
             "num_turns",
             "duration_ms",
+            # A live phase ends in the same write as terminal session status.
+            "current_phase",
             # liveness markers a sweep reads; must move atomically with status
             "node_metadata",
         }
@@ -381,6 +383,24 @@ def build_default_registry() -> PolicyRegistry:
             same_status="append",
             patch_fields=frozenset({"attempt", "next_attempt_at", "last_error"}),
             reason_prefixes=frozenset({"dispatch"}),
+            reason_columns=False,
+        )
+    )
+
+    registry.register(
+        LifecyclePolicy(
+            entity_type="schedule",
+            table="schedules",
+            statuses=frozenset({"enabled", "disabled", "deleted"}),
+            initial_statuses=frozenset({"enabled", "disabled"}),
+            terminal_statuses=frozenset({"deleted"}),
+            edges=_edges(
+                ("enabled", _to("disabled", "deleted")),
+                ("disabled", _to("enabled", "deleted")),
+            ),
+            same_status="noop",
+            patch_fields=frozenset(),
+            reason_prefixes=frozenset({"schedule_definition"}),
             reason_columns=False,
         )
     )

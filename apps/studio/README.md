@@ -40,7 +40,7 @@ All variables are optional; defaults are shown.
 | `LIONAGI_STUDIO_MIRROR_CODEX_ROOT` | *(unset)* | Explicit Codex sessions source root |
 | `LIONAGI_STUDIO_MIRROR_IMPORT_AMBIENT` | automatic | Read `~/.claude`/`~/.codex`; on by default only for the conventional `~/.lionagi` profile |
 | `STUDIO_API_URL` | selected `--host` / `--port` in dev mode | Explicit Vite proxy target; an operator-supplied value takes precedence over CLI flags |
-| `CORS_ORIGINS` | `localhost:5173,localhost:3000` | Comma-separated allowed browser origins |
+| `CORS_ORIGINS` | `http://localhost:5173`, `http://localhost:3000`, `http://localhost:3765`, `https://lion-studio.khive.ai` | Comma-separated allowed browser origins; a value replaces the defaults, and only a page on one of these origins can pair with `li studio` |
 
 Selecting a different `LIONAGI_HOME` creates an isolated Studio profile: its
 mirror does not read the ambient user transcript trees unless explicit roots
@@ -66,7 +66,19 @@ li studio          # starts the local daemon and opens https://lion-studio.khive
 **Self-contained local build (Docker or same-origin serve)**:
 
 ```bash
-li studio --docker # auto-pulls ghcr.io/ohdearquant/lion-studio; UI + API on :8765
+li studio --docker # auto-pulls ghcr.io/ohdearquant/lion-studio; UI + API on
+                   # 127.0.0.1:8765. The container port is published on --host,
+                   # which must be an IP address: li studio --docker --host
+                   # 192.168.1.5 publishes there and tells the daemon that
+                   # address, so requests to it pass the Host check. 0.0.0.0
+                   # and :: publish on every interface but name no single
+                   # address a client connects to, so clients elsewhere reach
+                   # the daemon by one of the machine's real addresses and need
+                   # LIONAGI_STUDIO_HOST set on the container to that address.
+                   # The Host check is a DNS-rebinding guard, not access
+                   # control: it reads the Host header, so set
+                   # LIONAGI_STUDIO_AUTH_TOKEN first — see Authentication; the
+                   # CLI passes it by name, never by value.
 ```
 
 **Dev mode (hot-reload)**:
@@ -142,7 +154,7 @@ stop the turn.
   ```
 
 For permission behavior, resume details, real-provider verification, and the
-CI stub boundary, see the [Studio guide](../../docs/guides/studio.md).
+CI stub boundary, see the [Operator guide](../../docs/guides/studio-operator.md).
 
 ## Development
 
@@ -162,7 +174,12 @@ npm run dev        # http://localhost:5173 — proxies /api → :8765
 
 ## Authentication
 
-When `LIONAGI_STUDIO_AUTH_TOKEN` is unset, all local API routes are open.
+When `LIONAGI_STUDIO_AUTH_TOKEN` is unset, API routes are open to command-line
+clients and to pages on a loopback origin or on the daemon's own origin. A page
+on any other origin, the hosted Studio included, is refused with 401 unless it
+sends the bearer of this daemon's launch. `li studio` gives the page that bearer
+when it opens it, through a one-time pairing code in the URL fragment; a page
+opened any other way, or reloaded, says to run `li studio`.
 
 When set, all `/api/*` requests must include:
 
@@ -170,6 +187,7 @@ When set, all `/api/*` requests must include:
 Authorization: Bearer <token>
 ```
 
+`li studio` pairs the hosted page with the configured token the same way.
 `/health` remains open regardless.
 
 ## Database

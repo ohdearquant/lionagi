@@ -159,6 +159,11 @@
     "effect": {
       "requested": "Requested interface action: {kind}"
     },
+    "truncation": {
+      "title": "لم يتم الاحتفاظ بجزء من هذه الجولة",
+      "summary": "لم يتم الاحتفاظ بـ {frames} إطار · {size}",
+      "limit": " · الحد: {limit}"
+    },
     "outcome": {
       "completed": "Turn completed",
       "failed": "Turn failed",
@@ -241,8 +246,8 @@
       "allHint": "أنشئ أول وكيل أو سير عمل للبدء.",
       "filtered": "لا توجد عناصر تطابق عامل التصفية.",
       "filteredHint": "جرّب نوعًا آخر أو امسح البحث.",
+      "clearFilters": "مسح عوامل التصفية",
       "createFirst": "أنشئ أول",
-      "createWorkflow": "سير عمل جديد",
       "createAgent": "وكيل جديد",
       "allSkill": "لم يتم العثور على مهارات.",
       "allSkillHint": "أضف ملف SKILL.md ضمن ~/.lionagi/skills/NAME/ لتظهر هنا.",
@@ -303,12 +308,12 @@
       "engineMaxDepth": "العمق الأقصى",
       "engineMaxAgents": "الحد الأقصى للوكلاء",
       "loadFailed": "(فشل تحميل الإصدار)",
-      "invocations": "الاستدعاءات",
-      "successRate": "معدل النجاح",
-      "lastUsed": "آخر استخدام",
-      "never": "أبدًا",
-      "recentInvocations": "الاستدعاءات الأخيرة",
-      "noInvocations": "لم تُسجّل أي استدعاءات بعد.",
+      "invocations": "الاستدعاءات المسجلة",
+      "successRate": "معدل النجاح المسجل",
+      "lastUsed": "آخر استخدام متتبع",
+      "never": "غير مسجل",
+      "recentInvocations": "السجلات المحدثة مؤخرًا",
+      "noInvocations": "لا توجد استدعاءات مسجلة.",
       "skillValidationFailed": "فشل التحقق. أصلح الأخطاء أدناه قبل الحفظ.",
       "pluginOwnedSkillHint": "مرفقة ضمن إضافة — عدّل ملفات الإضافة مباشرة لتغييرها.",
       "readOnly": "للقراءة فقط",
@@ -320,7 +325,10 @@
       "pluginHooksSection": "إعدادات الخطافات",
       "pluginReadmeSection": "README",
       "yes": "نعم",
-      "no": "لا"
+      "no": "لا",
+      "usageCoverage": "نطاق تتبع هذه المهارة أو الإضافة غير معروف؛ تُعرض الاستدعاءات المسجلة فقط. تُحسب نسبة النجاح من العمليات المكتملة بنجاح بين السجلات المنتهية. تشير الأزمنة الأخيرة إلى الوقت منذ التحديث.",
+      "usageUnavailable": "بيانات الاستخدام المسجل غير متاحة.",
+      "usageUnknown": "غير معروف"
     },
     "template": {
       "badge": "مدمج",
@@ -666,6 +674,7 @@
     }
   },
   "schedules": {
+    "recentRunsUnavailable": "عمليات التشغيل الأخيرة غير متاحة",
     "title": "الجداول",
     "subtitle": "أتمتات دائمة عبر cron أو الفواصل الزمنية أو مشغّلات GitHub",
     "calendar": "التقويم",
@@ -1250,6 +1259,12 @@
       "body": "Something answered at {base}, but it isn't a lionagi daemon.",
       "fix": "Stop that program, or point the daemon at a different port:",
       "command": "li studio --port 8766"
+    },
+    "accessRequired": {
+      "title": "يحتاج هذا الخادم الخلفي إلى رمز وصول",
+      "body": "استجاب خادم lionagi الخلفي على {base}، لكنه رفض هذه الصفحة. لا يقبل الخادم الخلفي صفحة من أصل آخر إلا برمز وصول، والأمر li studio يمنح هذه الصفحة رمزًا عندما يفتحها. تؤدي إعادة تحميل الصفحة إلى فقدان الرمز.",
+      "fix": "شغّل هذا الأمر حيث يعمل الخادم الخلفي لفتح Studio مع إذن الوصول:",
+      "command": "li studio"
     },
     "retry": "Retry",
     "dismiss": "Dismiss"

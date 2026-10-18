@@ -74,6 +74,27 @@ async def test_run_quota_error_is_runtime_error():
         await _drain(run(branch, "do something", RunParam()))
 
 
+async def test_run_takes_a_429_status_on_the_chunk_as_a_quota_error():
+    """A provider that reports its error's status beside the text: 429 decides, the text need not."""
+    chunk = StreamChunk(type="error", content="Request refused", metadata={"error_status": 429})
+    branch = Branch()
+    branch.chat_model = _make_fake_cli_model([chunk])
+
+    with pytest.raises(ProviderQuotaError, match="Request refused"):
+        await _drain(run(branch, "do something", RunParam()))
+
+
+async def test_run_does_not_take_quoted_limit_text_as_quota_under_another_status():
+    text = "Unrelated failure. The example answer quotes: You've hit your session limit"
+    chunk = StreamChunk(type="error", content=text, metadata={"error_status": 500})
+    branch = Branch()
+    branch.chat_model = _make_fake_cli_model([chunk])
+
+    with pytest.raises(ProviderError) as info:
+        await _drain(run(branch, "do something", RunParam()))
+    assert not isinstance(info.value, ProviderQuotaError)
+
+
 # Auth error chunk → ProviderAuthError
 
 

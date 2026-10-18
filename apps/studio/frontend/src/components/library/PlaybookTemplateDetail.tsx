@@ -155,24 +155,34 @@ export function PlaybookTemplateDetail({
     }
   }
 
+  // In the collapsed layout this pane replaces the list, so Back is offered
+  // while it loads or after it failed as well.
+  const back = onBack && <DrawerBackButton onClick={onBack}>{tDrawer("back")}</DrawerBackButton>;
+
   if (loading) {
     return (
-      <div className="flex h-full items-center justify-center text-[length:var(--t-sm)] text-content-muted">
-        {tDrawer("loading")}
+      <div className="flex h-full flex-col overflow-hidden">
+        {back}
+        <div className="flex flex-1 items-center justify-center text-[length:var(--t-sm)] text-content-muted">
+          {tDrawer("loading")}
+        </div>
       </div>
     );
   }
   if (error || !data) {
     return (
-      <div className="p-4 text-[length:var(--t-sm)] text-status-failure">
-        {error ?? tDrawer("notFound")}
+      <div className="flex h-full flex-col overflow-hidden">
+        {back}
+        <div className="p-4 text-[length:var(--t-sm)] text-status-failure">
+          {error ?? tDrawer("notFound")}
+        </div>
       </div>
     );
   }
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      {onBack && <DrawerBackButton onClick={onBack}>{tDrawer("back")}</DrawerBackButton>}
+      {back}
 
       <DrawerHeader
         name={name}
@@ -297,9 +307,9 @@ export function PlaybookTemplateDetail({
               <div className="overflow-hidden rounded border border-edge">
                 {runs.map((run, i) => (
                   <Link
-                    key={run.run_id}
+                    key={run.id}
                     to="/fleet"
-                    search={{ s: run.run_id }}
+                    search={{ s: run.id }}
                     className="flex items-center gap-3 bg-surface-raised px-3 py-1.5 transition-colors duration-100 hover:bg-surface-overlay"
                     style={{ borderTop: i === 0 ? undefined : "1px solid var(--edge-hairline)" }}
                   >
@@ -315,7 +325,7 @@ export function PlaybookTemplateDetail({
                         one identical label -- the short id stays visible as a muted
                         secondary so rows remain distinguishable. */}
                     <span className="shrink-0 font-data text-[length:var(--t-xs)] text-content-muted">
-                      {run.run_id.slice(-12)}
+                      {run.id.slice(-12)}
                     </span>
                     <span className="shrink-0 font-data text-[length:var(--t-xs)] text-content-muted">
                       {/* Only terminal runs have a stable duration — a still-running

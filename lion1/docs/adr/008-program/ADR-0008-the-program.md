@@ -185,7 +185,7 @@ cycle over reference and control edges and refuses the message (C1).
 
 ## Decisions
 
-### D1: A compiler in `src/lion1/lndl/`, its graph handed to the existing dispatcher ^d1
+### D1: A compiler in `src/lion1/lndl.py`, its graph handed to the existing dispatcher ^d1
 
 Serves C1, C3, C6 and C7. `read` normalises (C2), the parser builds the AST, and `compile` lowers it
 to the graph, an `if` becoming a conditional node whose control result gates its suffix (C7).

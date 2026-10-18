@@ -49,6 +49,49 @@ CAUSE_FILENAME = "terminal_cause.json"
 # so the interpreter running it already resolves the CLI (see li_command).
 LI_BIN_ENV_VAR = "LIONAGI_MCP_LI_BIN"
 
+# Directory roots a submission's own directory may anchor a declared sender
+# under, separated the way this platform separates paths. Server configuration:
+# it is set where the server is declared, so a caller reaching the server over
+# the wire cannot add to it. Unset keeps the pre-existing default: a declared
+# sender is judged at the submitting directory. When set, a caller-named anchor
+# must sit under one of these roots.
+SENDER_ROOTS_ENV_VAR = "LIONAGI_MCP_SENDER_ROOTS"
+
+# The suffix a write-capable run appends to its submitting actor when the server
+# mints the run's own khive actor. Unset or empty disables minting entirely, so
+# a submission that main accepted keeps its existing behaviour.
+CHILD_ACTOR_SUFFIX_ENV_VAR = "LIONAGI_MCP_CHILD_ACTOR_SUFFIX"
+
+
+def sender_roots() -> list[str]:
+    """The configured roots, absolute and symlink-resolved, in declaration order.
+
+    A relative entry is a misconfiguration rather than a root: it would resolve
+    against whatever directory this process happens to hold, which is exactly
+    what the anchor exists to stop depending on. Raised rather than skipped,
+    because a silently dropped root becomes a refusal the operator cannot
+    account for.
+    """
+    raw = os.environ.get(SENDER_ROOTS_ENV_VAR, "")
+    roots = []
+    for entry in raw.split(os.pathsep):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if not os.path.isabs(entry):
+            raise ValueError(
+                f"{SENDER_ROOTS_ENV_VAR} entry {entry!r} is not an absolute path; "
+                f"a sender root must not depend on the server's current directory"
+            )
+        roots.append(os.path.realpath(entry))
+    return roots
+
+
+def child_actor_suffix() -> str | None:
+    """The configured suffix for a run's own actor, or ``None`` when minting is off."""
+    suffix = os.environ.get(CHILD_ACTOR_SUFFIX_ENV_VAR, "")
+    return suffix or None
+
 
 def li_command() -> list[str]:
     """Return the argv prefix that invokes the ``li`` CLI.

@@ -1,6 +1,6 @@
 """The served actor (ADR-0021): one service over an actor's offers and the runs it started, each read
 as rows, bus events and its state, spoken to and ended from outside. The HTTP transport over it is
-tests/test_serve_http.py."""
+lion1/tests/test_serve_http.py."""
 
 import ast
 import asyncio

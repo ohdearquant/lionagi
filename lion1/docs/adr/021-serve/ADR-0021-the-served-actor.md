@@ -24,10 +24,9 @@ tags:
 
 ## Context
 
-This record serves the author's request of 2026-10-02 that serving an agent be as easy as serving an
-API, starting with a local app and designed in a record first; its first consumer is the native app
-(ADR-0022). Its transport serves his of 2026-10-05: serving is split out, to the hub or anywhere, as
-`Lion().serve(actor)` under `asyncio.run`; FastAPI replaces the hand-written logic.
+This record defines an HTTP API for starting and observing an agent. The native app is its first
+consumer (ADR-0022). `Lion().serve(actor)` runs under `asyncio.run`; the hub provides the transport
+through FastAPI.
 
 An actor is reached only by the Python that calls `Actor.run`. Every program outside that process
 gets its own glue: the areas server reads residents' files
@@ -155,8 +154,8 @@ Stop wakes a waiting run, whose wait answers false, and cancels an awaited call;
 settle, and the run ends `Stopped` at its next turn unless it ended first.
 
 Cancel cancels the task: an abort with no outcome ([[ADR-0002-the-run#^c4|ADR-0002/C4]]). The
-terminal commit follows the last reap ([[ADR-0020-the-experience|ADR-0020]]), so a cancel during
-that reap is before it (S20). A cancel with an interrupt is the cancel
+terminal commit follows the last reap ([[ADR-0006-the-notification|ADR-0006/S6]]), so a cancel
+during that reap is before it (S20). A cancel with an interrupt is the cancel
 ([[ADR-0018-chat-in-a-box#^c9|ADR-0018/C9]]).
 
 ### C7: With a directory, a run's log holds what was published and says how the run ended _(enforced: mechanical)_ ^c7
@@ -593,12 +592,12 @@ the key unchanged; only the refusal of the act that took a key releases it.
 | -------- | ---------------- |
 | Extending the areas server to any actor | it reads residents' files from a registry, on a thread per request, inside the command-line package; a served run needs the actor's own loop and nothing of the registry |
 | The standard library's threaded server with a bridge to the loop | every event crosses a thread and shutdown owns threads beside tasks; uvicorn runs on the actor's loop (D8) |
-| A web framework | rejected at first as a dependency in the core, or `Actor.serve` absent without an extra; reversed on 2026-10-05, when the transport moved to the hub: FastAPI and uvicorn are its `serve` extra, and the core gains nothing (C12) |
-| The transport in the core, as `Actor.serve` over `asyncio.start_server` | the form until 2026-10-05: a reader written by hand, one request per connection, with rules of its own on the raw head; replaced by `Lion` in the hub over FastAPI (D8, D10) |
+| A web framework in the core | FastAPI and uvicorn belong in the hub's `serve` extra; the core gains no dependency (C12) |
+| The transport in the core, as `Actor.serve` over `asyncio.start_server` | a reader written by hand, one request per connection, with rules of its own on the raw head; replaced by `Lion` in the hub over FastAPI (D8, D10) |
 | Checks on the raw head in front of uvicorn | h11 refuses a space before a colon and a second Host, and takes a folded line, a bare line feed, `Expect` and Transfer-Encoding beside a length; with no proxy between, none is read two ways. The guard counts Host and Origin as sent (A3) |
 | A bound on each write of a stream | a stalled stream's queue overflows and closes it, and the run never waits (C3); at the end uvicorn cuts its write after 5 seconds |
-| A run lookup for an empty run id (`/runs/`), the earlier transport's | FastAPI routes a run id of one character or more, so `/runs/` is no route and answers `not_found` (D9); no run has an empty id |
-| A deadline on the head and a cap on connections, the earlier transport's | uvicorn has neither for a head still arriving, and adding them means its protocol class subclassed; a request and its body are bounded instead (C10, S24) |
+| A route for an empty run id (`/runs/`) | FastAPI routes a run id of one character or more, so `/runs/` is no route and answers `not_found` (D9); no run has an empty id |
+| A deadline on the request head and a cap on connections | uvicorn has neither for a head still arriving, and adding them means its protocol class subclassed; a request and its body are bounded instead (C10, S24) |
 | A client that sends its own profile, prompt or tools | the actor would run what any local page or process hands it; the owner's offer is the gate (C1) |
 | Publishing rows at every bus event | every event falls on a complete row today, and nothing holds the runtime to that: an event added between a notification and its fold would publish half a row to the log and every stream; the named points are the ones `chat` uses (A5) |
 | The runtime's 8-hex run id as the served run's id | a directory outlives the process and 32 bits collide across kept logs; the id is known only once the run began, too late to reserve its log |

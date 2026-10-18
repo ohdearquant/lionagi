@@ -49,7 +49,8 @@ class TransitionResult(BaseModel):
     conflict: bool = False
     previous_state: str | None = None
     current_state: str
-    # None on a conflict: no status_transitions row is written, so there is no id to return.
+    # None when no history row was written (a conflict); an applied transition
+    # names the ``status_transitions`` row it wrote -- see docs/adr/ADR-0057.
     transition_id: str | None = None
     event_id: str | None = None
 
@@ -85,6 +86,9 @@ async def transition(
     guard = guard or {}
     patch = patch or {}
 
+    if any(value is None for value in guard.values()):
+        raise ValueError("transition(): guard values cannot be None")
+
     allowed_columns = _GUARD_PATCH_COLUMNS.get(request.entity_type, frozenset())
     for label, cols in (("guard", guard), ("patch", patch)):
         unknown = sorted(set(cols) - allowed_columns)
@@ -117,6 +121,7 @@ async def transition(
         ) from exc
 
     if outcome.result == "conflict":
+        # No history row was written, so there is no transition id to return.
         return TransitionResult(
             applied=False,
             conflict=True,

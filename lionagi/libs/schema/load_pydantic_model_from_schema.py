@@ -17,6 +17,7 @@ from typing import Any, Optional, TypeVar, Union
 from pydantic import BaseModel, Field, PydanticUserError, create_model
 
 from lionagi.libs.nested import deep_merge as _deep_merge
+from lionagi.ln import is_pydantic_model_class
 from lionagi.utils import is_import_installed
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ except ImportError:
     generate = None
 
 B = TypeVar("B", bound=BaseModel)
+_ModelCache = dict[int, tuple[dict[str, Any], type[BaseModel]]]
 
 # JSON-Schema type -> Python type mapping
 _JSON_TYPE_MAP: dict[str, type] = {
@@ -108,7 +110,7 @@ def _schema_to_type(
     prop_schema: dict[str, Any],
     prop_name: str,
     root_schema: dict[str, Any],
-    models_cache: dict[str, type[BaseModel]],
+    models_cache: _ModelCache,
     parent_name: str,
 ) -> type:
     if "$ref" in prop_schema:
@@ -137,8 +139,11 @@ def _schema_to_type(
             return Union[tuple(py_types)]  # type: ignore[return-value]
 
     if "allOf" in prop_schema:
+        items = prop_schema["allOf"]
+        if len(items) == 1 and "$ref" in items[0]:
+            return _schema_to_type(items[0], prop_name, root_schema, models_cache, parent_name)
         merged: dict[str, Any] = {}
-        for sub in prop_schema["allOf"]:
+        for sub in items:
             if "$ref" in sub:
                 sub = _resolve_ref(sub["$ref"], root_schema)
             merged = _deep_merge(merged, sub)
@@ -214,7 +219,7 @@ def _array_type(
     prop_schema: dict[str, Any],
     prop_name: str,
     root_schema: dict[str, Any],
-    models_cache: dict[str, type[BaseModel]],
+    models_cache: _ModelCache,
     parent_name: str,
 ) -> type:
     items = prop_schema.get("items")
@@ -228,12 +233,14 @@ def _build_model_from_object(
     schema_dict: dict[str, Any],
     model_name: str,
     root_schema: dict[str, Any],
-    models_cache: dict[str, type[BaseModel]],
+    models_cache: _ModelCache,
 ) -> type[BaseModel]:
     safe_name = _sanitize_model_name(model_name) or "DynamicModel"
 
-    if safe_name in models_cache:
-        return models_cache[safe_name]
+    node_id = id(schema_dict)
+    cached = models_cache.get(node_id)
+    if cached is not None and cached[0] is schema_dict:
+        return cached[1]
 
     properties = schema_dict.get("properties", {})
     required_fields = set(schema_dict.get("required", []))
@@ -280,7 +287,10 @@ def _build_model_from_object(
                 )
 
     model_cls = create_model(safe_name, **field_definitions)  # type: ignore[call-overload]
-    models_cache[safe_name] = model_cls
+    # Keep the node itself beside its identity key. Besides documenting the
+    # authority, that strong reference prevents id reuse from aliasing two
+    # distinct nodes during this load.
+    models_cache[node_id] = (schema_dict, model_cls)
     return model_cls
 
 
@@ -290,7 +300,7 @@ def _create_model_from_schema(
 ) -> type[BaseModel]:
     root_schema = dict(schema_dict)
 
-    models_cache: dict[str, type[BaseModel]] = {}
+    models_cache: _ModelCache = {}
 
     for defs_key in ("$defs", "definitions"):
         defs = root_schema.get(defs_key, {})
@@ -354,7 +364,7 @@ def _load_via_codegen(
             raise RuntimeError(error_msg) from e
 
         def _validate(m: Any) -> None:
-            if not isinstance(m, type) or not issubclass(m, BaseModel):
+            if not is_pydantic_model_class(m):
                 raise TypeError(
                     f"Found attribute '{resolved_model_name}' is not a Pydantic BaseModel class."
                 )
@@ -393,6 +403,10 @@ def _load_via_codegen(
 
 
 # Public API
+
+SCHEMA_MODEL_MODULE = __name__
+
+__all__ = ("SCHEMA_MODEL_MODULE", "load_pydantic_model_from_schema")
 
 
 def load_pydantic_model_from_schema(

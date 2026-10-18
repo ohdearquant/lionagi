@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import re
+import shlex
 import shutil
 import sys
 import tempfile
@@ -47,7 +48,7 @@ _ALIAS_ACTION_KINDS: dict[str, str] = {"playbook": "play"}
 # action_model must be a safe model-spec token: alphanumerics, dots, slashes,
 # colons, hyphens and underscores only.  Values starting with '-' are rejected
 # unconditionally to block flag injection into the spawned li process (CWE-88).
-_MODEL_RE = re.compile(r"^[a-zA-Z0-9_./:@-]+$")
+_MODEL_RE = re.compile(r"^[a-zA-Z0-9_./:@-]+\Z")
 
 # Identifier fields (action_agent, action_project, action_playbook) share the
 # same character set as model specs: they name agents, projects, and playbooks
@@ -187,17 +188,36 @@ def _command_allowlist() -> frozenset[str]:
 def _validate_command_allowlisted(command: str) -> None:
     """Raise ValueError if *command* is not on ``LIONAGI_SCHEDULER_COMMAND_ALLOWLIST``.
 
-    Called both at schedule build/validation time (services/schedules.py)
-    and again here inside ``build_argv`` at actual spawn time, since the
-    environment variable can change between schedule creation and fire.
+    Called at schedule build/validation time (services/schedules.py,
+    services/schedule_declaration.py) and again here inside ``build_argv`` at
+    actual spawn time, since the environment variable can change between
+    schedule creation and fire.
+
+    The declaration and spawn checks can run in processes with different
+    environments. The declaration path checks its caller's environment; the
+    spawn path checks the scheduler daemon's environment. The refusal identifies
+    the process whose configuration it read.
     """
     allowlist = _command_allowlist()
-    if command not in allowlist:
-        raise ValueError(
-            f"action_command {command!r} is not in {_COMMAND_ALLOWLIST_ENV} "
-            f"(currently: {sorted(allowlist)!r}). Add it to the allow-list "
-            "environment variable to permit this command."
-        )
+    if command in allowlist:
+        return
+    raw = os.environ.get(_COMMAND_ALLOWLIST_ENV)
+    if raw is None:
+        read = "which is not set in the environment of this process"
+    elif not allowlist:
+        read = f"which this process's environment sets to {raw!r}, naming no command"
+    else:
+        read = f"which this process's environment sets to {sorted(allowlist)!r}"
+    permitted = ",".join(sorted(allowlist | {command}))
+    raise ValueError(
+        f"action_command {command!r} is not in {_COMMAND_ALLOWLIST_ENV}, {read} "
+        f"(pid {os.getpid()}). That is a property of the process running this check, not of the "
+        "document being checked: the scheduler daemon reads the same variable from its OWN "
+        "environment and checks again at spawn time, so an empty value here says nothing about "
+        "what the daemon will permit. Set this variable in the scheduler daemon's "
+        "environment and restart the scheduler daemon to permit the command: "
+        f"{_COMMAND_ALLOWLIST_ENV}={shlex.quote(permitted)}"
+    )
 
 
 def _render_command_arg(template: str, context: dict) -> str:
@@ -261,6 +281,31 @@ def _reserved_flow_flags() -> frozenset[str]:
             if option.startswith("--")
         )
     return _RESERVED_FLOW_FLAGS
+
+
+def _playbook_args(schedule: dict) -> object:
+    """The typed playbook args a play launch passes to ``li play``, as stored.
+
+    A one-shot launch stores them on ``action_playbook_args``. A scheduled row
+    has no such column: a declaration's args ride in the target snapshot the row
+    resolves, so they are read from there. Either way the same validation and the
+    same flags apply, so a declared arg reaches the child instead of being
+    dropped. A stored value of the wrong shape is returned as it is, so the
+    validation refuses it rather than the launch running with no args.
+    """
+    declared = schedule.get("action_playbook_args")
+    # An empty object is what a launch with no args stores; anything else, an
+    # empty list or string included, is a stored value and goes to validation.
+    if declared is not None and declared != {}:
+        return declared
+    snapshot = schedule.get("resolved_target")
+    if isinstance(snapshot, dict):
+        target = snapshot.get("target")
+        if isinstance(target, dict) and target.get("kind") == "playbook":
+            args = target.get("args")
+            if args is not None:
+                return args
+    return {}
 
 
 def _validate_playbook_args(pb_args: object) -> None:
@@ -461,8 +506,11 @@ def build_argv(
         _validate_identifier(playbook, "action_playbook")
     if isinstance(extra, list):
         _validate_extra_args(extra)
+    play_args: dict = {}
     if kind == "play":
-        _validate_playbook_args(schedule.get("action_playbook_args") or {})
+        stored_args = _playbook_args(schedule)
+        _validate_playbook_args(stored_args)
+        play_args = stored_args if isinstance(stored_args, dict) else {}
     if kind == "engine":
         _validate_engine_options(schedule.get("action_engine_options"))
 
@@ -528,7 +576,7 @@ def build_argv(
         argv += ["play"]
         if playbook:
             argv.append(playbook)
-            for key, value in (schedule.get("action_playbook_args") or {}).items():
+            for key, value in play_args.items():
                 flag = "--" + key.replace("_", "-")
                 if isinstance(value, bool):
                     if value:

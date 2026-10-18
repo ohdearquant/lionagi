@@ -118,6 +118,16 @@ async def _act(
             )
 
     except Exception as e:
+        from lionagi.state.compat import refusal_in
+
+        # A hook or the call itself can wrap the refusal in a task group, so it is looked up
+        # however deeply nested rather than read off the outermost error alone.
+        refusal = refusal_in(e)
+        if refusal is not None:
+            # The store refused a write in compatibility mode (ADR-0128 D6), including one a
+            # TOOL_POST handler made: the run stops rather than recording it as a tool error,
+            # and the refusal leaves as itself so a caller's check finds it.
+            raise refusal  # noqa: B904 -- raised as found, keeping its own cause
         if _hooks is not None:
             from lionagi.hooks.bus import HookPoint
 
@@ -201,9 +211,18 @@ async def _act(
     if action_request not in branch.messages:
         await branch.msgs.a_add_message(action_request=action_request)
 
+    # Build the response explicitly and hand it to the manager as a response: a
+    # successful call whose output is None must still leave a linked ActionResponse,
+    # and an explicit response object says "the output is None" where a bare
+    # action_output=None would read as an omitted keyword.
+    action_response = branch.msgs.create_action_response(
+        action_request=action_request,
+        action_output=func_call.response,
+    )
     await branch.msgs.a_add_message(
         action_request=action_request,
         action_output=func_call.response,
+        action_response=action_response,
     )
 
     return ActionResponseModel(

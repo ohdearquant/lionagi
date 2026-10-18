@@ -56,6 +56,7 @@ concurrency:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
     - uses: actions/checkout@v7
       with:
@@ -79,6 +80,7 @@ jobs:
 
   core-install:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
     - uses: actions/checkout@v7
       with:
@@ -131,6 +133,7 @@ jobs:
     # is absent.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
     - uses: actions/checkout@v7
       with:
@@ -191,6 +194,16 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    # Every job in this workflow has a timeout. After a worker crash the
+    # pytest-xdist controller can block with no test running, where no per-test
+    # timeout reaches it (the max-worker-restart note in pyproject.toml).
+    # Unbounded, that leg runs to the six-hour job limit, and because runs on a
+    # pushed branch share one concurrency group and are never cancelled, every
+    # push in the meantime queues behind it and all but the newest are cancelled
+    # without running. A leg takes 11 to 29 minutes. The test steps stop at 45,
+    # before the job's 60, so a stopped leg still runs the failure telemetry and
+    # the peak-RSS report, which names the test a crashed worker was running.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -239,11 +252,12 @@ jobs:
         uv venv
         uv sync --all-extras
 
-    # Coverage runs on 3.10, and only on pushes — never on a pull request.
+    # Coverage runs on 3.10, only on pushes and manual runs — never on a pull
+    # request.
     #
     # Running the suite under coverage instrumentation is materially slower than
-    # running it plain. The 3.10 leg is kept in the reduced pull-request matrix
-    # and ci-gate hard-gates on `test`, so before this split that extra time sat
+    # running it plain. The 3.10 leg runs on every pull request and ci-gate
+    # hard-gates on `test`, so before this split that extra time sat
     # directly on the path every pull request had to clear before it could merge.
     #
     # Coverage is a report rather than a gate, so pushes to a long-lived branch
@@ -253,6 +267,7 @@ jobs:
     # plain one.
     - name: Run tests with coverage
       if: matrix.python-version == '3.10' && github.event_name != 'pull_request'
+      timeout-minutes: 45
       run: scripts/ci.sh test-python-cov
       env:
         MAXFAIL: 25
@@ -260,6 +275,7 @@ jobs:
 
     - name: Run tests
       if: matrix.python-version != '3.10' || github.event_name == 'pull_request'
+      timeout-minutes: 45
       run: scripts/ci.sh test-python
       env:
         MAXFAIL: 0
@@ -336,6 +352,8 @@ jobs:
   quarantine:
     continue-on-error: true
     runs-on: ubuntu-latest
+    # The same hang as `test` (see there); this lane takes about a minute.
+    timeout-minutes: 15
     env:
       UV_PYTHON: "3.12"
       PYTEST_JUNIT_XML: ${{ github.workspace }}/.pytest-results/junit.xml
@@ -356,9 +374,11 @@ jobs:
         uv venv
         uv sync --all-extras
     - name: Run quarantined tests only
+      timeout-minutes: 10
       run: scripts/ci.sh test-python-quarantine
       env:
         MAXFAIL: 0
+        PYTEST_RSS_LOG: ${{ github.workspace }}/.pytest-rss
     - name: Collect quarantine failure telemetry
       if: failure()
       run: |
@@ -376,9 +396,18 @@ jobs:
         path: .pytest-results/failures.jsonl
         if-no-files-found: error
         retention-days: 30
+    - name: Worker peak-RSS report
+      if: always()
+      run: |
+        if ls .pytest-rss/rss-*.jsonl >/dev/null 2>&1; then
+          python3 scripts/rss_report.py .pytest-rss
+        else
+          echo "no RSS log produced"
+        fi
 
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: apps/studio/frontend
@@ -448,7 +477,20 @@ jobs:
     - name: Run seeded-daemon e2e smoke tests
       working-directory: apps/studio/frontend
       run: npm run e2e
-    - name: Upload Playwright report
+    # The stop/resume test in the Operator suite has failed intermittently: after
+    # the page reloads, the daemon stops answering and every later request
+    # returns 502. The smoke step above runs it once, which is not enough to
+    # catch an intermittent failure there, so it is repeated three more times
+    # against the same build. Its own global setup boots a fresh seeded daemon
+    # and preview server on free ports, so this invocation starts cleanly on its
+    # own.
+    - name: Repeat the Operator stop/resume test
+      working-directory: apps/studio/frontend
+      run: npx playwright test e2e/operator.spec.ts -g "Operator streams, persists, stops, records a run, and resumes it" --repeat-each 3
+    # The bundle also carries the daemon and preview server logs from
+    # apps/studio/frontend/e2e-logs/, which is where a mid-run server failure
+    # is explained.
+    - name: Upload Playwright report and server logs
       if: failure()
       uses: actions/upload-artifact@v7
       with:
@@ -456,11 +498,26 @@ jobs:
         path: |
           apps/studio/frontend/playwright-report/
           apps/studio/frontend/test-results/
+          apps/studio/frontend/e2e-logs/
+        if-no-files-found: warn
+        retention-days: 7
+    # The daemon and preview server logs are uploaded on every run, so a passing
+    # run carries them too: a failure can be read against a run that passed, and
+    # a run without them is visible as a failed step rather than a missing file.
+    - name: Upload server logs
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: studio-e2e-server-logs
+        path: apps/studio/frontend/e2e-logs/
+        if-no-files-found: error
+        overwrite: true
         retention-days: 7
 
   # Detect which conditional-job inputs changed, to gate the jobs below.
   changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       studio: ${{ steps.filter.outputs.studio }}
       adr: ${{ steps.filter.outputs.adr }}
@@ -513,6 +570,7 @@ jobs:
     needs: changes
     if: ${{ always() && needs.changes.result == 'success' && needs.changes.outputs.studio == 'true' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@v7
       with:
@@ -543,6 +601,7 @@ jobs:
     needs: changes
     if: ${{ always() && needs.changes.result == 'success' && needs.changes.outputs.imports == 'true' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -593,6 +652,7 @@ jobs:
     needs: changes
     if: ${{ always() && needs.changes.result == 'success' && needs.changes.outputs.imports == 'true' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -629,6 +689,7 @@ jobs:
     needs: changes
     if: ${{ always() && needs.changes.result == 'success' && needs.changes.outputs.lionrs == 'true' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: lionrs/crates
@@ -654,6 +715,7 @@ jobs:
     needs: changes
     if: ${{ always() && needs.changes.result == 'success' && needs.changes.outputs.lion1 == 'true' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: lion1
@@ -664,7 +726,7 @@ jobs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         persist-credentials: false
-    - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+    - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       with:
         python-version: "3.11"
         enable-cache: true
@@ -678,6 +740,7 @@ jobs:
 
   vscode:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: apps/vscode
@@ -701,6 +764,7 @@ jobs:
 
   marketplace:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
     - uses: actions/checkout@v7
       with:
@@ -712,7 +776,7 @@ jobs:
 
   # Single aggregate context for branch protection. Required status checks must
   # reference this job, never the matrix legs directly: matrix names shift with
-  # the event (PRs run a subset of Python versions) and a renamed leg would
+  # the event (a manual run can ask for a subset of Python versions) and a renamed leg would
   # strand PRs on a check that never reports. Fail-closed: every hard gate must
   # report success; a skipped, failed, or cancelled hard gate fails the aggregate.
   # The conditional jobs (studio-docker, minimal-import, no-eager-heavies,
@@ -723,6 +787,7 @@ jobs:
   ci-gate:
     if: ${{ always() }}
     needs: [lint, core-install, docs, test, frontend, studio-e2e, changes, studio-docker, minimal-import, no-eager-heavies, lionrs, lion1, vscode, marketplace]
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
     - name: Check aggregate result
@@ -784,6 +849,7 @@ jobs:
   publish:
     needs: [lint, test]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read

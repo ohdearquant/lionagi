@@ -37,6 +37,32 @@ else:
     os.environ["LIONAGI_HOME"] = _TEST_LIONAGI_HOME
     atexit.register(_remove_test_home, _TEST_LIONAGI_HOME)
 
+# A store URL exported by the calling shell outranks LIONAGI_HOME, so without this a suite run
+# from that shell would open the caller's real store. The settings loader matches environment
+# names without regard to case, so every spelling goes. Tests that need the setting set their own.
+for _name in [name for name in os.environ if name.upper() == "LIONAGI_STATE_DB_URL"]:
+    del os.environ[_name]
+
+# The provider layer reads $CODEX_HOME (global codex config and config
+# profiles). Tests must never see the developer's real ~/.codex OR an
+# externally exported CODEX_HOME: a machine-local model_reasoning_effort would
+# change what the builders emit for an effort-less codex spawn, so the
+# replacement is unconditional. Tests that need a config write into this
+# directory or monkeypatch CODEX_HOME themselves.
+_TEST_CODEX_HOME = tempfile.mkdtemp(prefix="lionagi-tests-codex-")
+os.environ["CODEX_HOME"] = _TEST_CODEX_HOME
+atexit.register(_remove_test_home, _TEST_CODEX_HOME)
+
+# Discovery reads the user-level `.lionagi` (profiles, MCP config, settings)
+# through $HOME on every call, so a run that keeps the developer's HOME hands
+# any test that builds a profiled agent the real directory. The replacement is
+# unconditional, made before anything imports lionagi, and inherited by every
+# child process the suite starts. Tests that need a user-level directory write
+# into this one or monkeypatch HOME themselves.
+_TEST_USER_HOME = os.path.realpath(tempfile.mkdtemp(prefix="lionagi-tests-home-"))
+os.environ["HOME"] = _TEST_USER_HOME
+atexit.register(_remove_test_home, _TEST_USER_HOME)
+
 if "lionagi._paths" in sys.modules:
     # The constants are already bound to the old value, so the redirect above
     # did nothing and every run-directory write in this session lands in the
@@ -46,6 +72,15 @@ if "lionagi._paths" in sys.modules:
         "LIONAGI_HOME; the run directory used by this session is not isolated."
     )
 
+if "lionagi.config" in sys.modules:
+    # Settings are read once, when lionagi.config is first imported, so a store URL the caller
+    # exported is already bound and removing it above changed nothing.
+    raise RuntimeError(
+        "lionagi.config was imported before tests/conftest.py could remove "
+        "LIONAGI_STATE_DB_URL; this session's settings may name the caller's store."
+    )
+
+import inspect
 import json
 import types
 
@@ -65,6 +100,32 @@ def pytest_collection_modifyitems(items):
     """Apply quarantine markers from the checked-in exact-nodeid manifest."""
 
     apply_quarantine_markers(items, _QUARANTINE, pytest.mark.flaky_quarantine)
+
+
+def pytest_pycollect_makeitem(collector, name, obj):
+    """Mark every coroutine test not written for anyio as an asyncio test.
+
+    pytest-asyncio runs in strict mode (see pyproject.toml), so it only takes
+    tests that carry its marker, and anyio's plugin keeps the ones marked
+    ``anyio`` or taking ``anyio_backend`` as an argument. This marks the rest
+    before the test item is built, the same way anyio's plugin attaches its
+    fixture, so that no coroutine test is left without a runner. A test that
+    reaches ``anyio_backend`` only through another fixture is not seen here and
+    is marked asyncio; mark such a test ``anyio``.
+    """
+    if not collector.istestfunction(obj, name):
+        return
+    func = obj.hypothesis.inner_test if hasattr(obj, "hypothesis") else obj
+    if not inspect.iscoroutinefunction(func):
+        return
+    own_marks = {mark.name for mark in getattr(obj, "pytestmark", ())}
+    if own_marks & {"anyio", "asyncio"}:
+        return
+    if collector.get_closest_marker("anyio") or collector.get_closest_marker("asyncio"):
+        return
+    if "anyio_backend" in inspect.signature(func).parameters:
+        return
+    pytest.mark.asyncio(obj)
 
 
 @pytest.fixture(autouse=True)
@@ -208,6 +269,33 @@ def write_plugin(plugin_home):
         return bundle
 
     return _write
+
+
+@pytest.fixture(autouse=True)
+def _contain_the_frontend_dist_variable(monkeypatch: pytest.MonkeyPatch):
+    """Stop the CLI's frontend-dist path from following every later test.
+
+    ``studio/cli.py`` sets ``LIONAGI_STUDIO_FRONTEND_DIST`` directly in
+    ``os.environ`` on the production start path -- correctly, since the app
+    reads it at import to decide whether to mount the SPA. But a test that
+    drives that path leaves the variable set for every later test in the same
+    worker, and those tests then build an app with the SPA mounted without
+    asking for one.
+
+    The failures that causes do not look like leakage. The SPA's 404 handler
+    answers unrouted paths with the shell at 200, and mounting it registers an
+    extra route, so what shows up is a traversal assertion getting 200 instead
+    of 404 in one file and a route-count baseline off by one in another --
+    both far from the test that actually set the variable, and both dependent
+    on execution order, so neither reproduces when its own file is run alone.
+
+    This removes an inherited value before each test. If the name was already
+    absent, ``delenv`` records no original value to restore, so a later raw
+    write to ``os.environ`` must be cleaned up by that test. Tests that want
+    the SPA mounted should use ``monkeypatch.setenv`` so teardown restores the
+    prior value.
+    """
+    monkeypatch.delenv("LIONAGI_STUDIO_FRONTEND_DIST", raising=False)
 
 
 @pytest.fixture(autouse=True)

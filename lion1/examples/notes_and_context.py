@@ -7,7 +7,7 @@ actor's is the graph's, ADR-0025). A second run of the same profile lists and po
 hidden entries keep their names and resolve, and `context.show` brings them back. The model carries
 its big picture in notes and its details behind pointers. Scripted backend; runs offline.
 
-    uv run python examples/notes_and_context.py
+    cd lion1 && uv run python examples/notes_and_context.py
 """
 
 from __future__ import annotations

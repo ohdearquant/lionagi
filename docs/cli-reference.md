@@ -82,10 +82,17 @@ Available on `li agent`, `li o fanout`, `li o flow`. Source: `cli/_providers.py`
 | `--invocation ID` | none | Group the session under an ID from `li invoke start` |
 | `--project NAME` | auto | Override project detection from config/git metadata |
 
+MCP servers are resolved once per launch, from the directory the command was run in:
+`--mcp-config PATH` names a file, `--no-mcp-config` states that there are none, and otherwise the
+nearest `.mcp.json` at or above that directory is used. On `li o fanout` and `li o flow`, every
+worker the launch builds is handed that one result, so no worker starts with servers the run did
+not resolve; `li agent` resolves the same way and warns when it hands a leg no servers because no
+config was found.
+
 **Model spec**: `provider/model[-effort]` — for example
 `claude/opus-4-7-high` or `codex/gpt-5.4-xhigh`. Current bare aliases include
 `claude` → `claude_code/sonnet`, `codex` → `codex/gpt-5.3-codex-spark`,
-`gemini-code` → `gemini_code/gemini-3.5-flash`, and
+`gemini-code` → `gemini_code/gemini-4-argon`, and
 `pi` → `pi/gemini-2.5-flash`. Use `gemini`, without `-code`, for the direct Google
 API provider rather than the Gemini CLI backend.
 
@@ -112,6 +119,7 @@ li agent [model] prompt [flags]
 | `--form SPEC` | none | Validate a YAML/JSON work-form before making any model call, then inject its typed values |
 | `--context-from REF` | none | Inject distilled context from a prior session id, branch id, run id, or file path into the new branch's first instruction (above the prompt). Repeatable — refs concatenate in argv order, sharing one budget. `cli/_context_from.py` |
 | `--context-budget N` | `8000` | Total token budget (~4 chars/token) for `--context-from` content, shared across all refs. |
+| `--idle-timeout SECONDS` | `LIONAGI_WORKER_IDLE_TIMEOUT` (`600`) | Stop the run as stalled (`WorkerLivenessError`) when the worker emits nothing for this long after it has started answering. `1` to `2**53 - 1`; `0` is refused. A profile's `idle_timeout` sets it for a role, and the flag wins over the profile. Raise it for a model that thinks long between outputs. It watches a CLI worker's streamed output; an API-model leg's turn is bounded by `--timeout` instead. |
 | `--resume-on-timeout` | false | Resume a timed-out agent session once with a bounded continuation |
 
 `-r` and `-c` are mutually exclusive. `--context-from` is rejected together with `-r` / `-c` (resume already carries the source context). Common flags apply.
@@ -333,6 +341,59 @@ li o ctl msg ID "Prioritize correctness over breadth"
 using context-mode operator steering. Use `li o ctl SUBCOMMAND --help` for the
 command-specific ID and JSON options.
 
+Foreground flows print `Session: <full ID>` after recording the session, before
+planning. Background launch prints the full session ID assigned to its child.
+Control actions accept an exact recorded session, invocation, play or run ID, an
+unambiguous 8-character hex prefix, or an unambiguous prefix of a run ID (the ID
+`li agent` prints) that reaches the `T` after its date, such as `20260801T0201`.
+Any other string is looked up as an exact id first; a string shorter than eight
+characters or carrying a non-hex character is treated as a prefix only when it
+reaches that `T` and begins a recorded run ID, and one that begins both a run ID
+and another ID is refused as ambiguous. A run-id prefix that stops short of the
+`T`, such as `2` or `2026`, therefore cannot act on a run; an eight-character
+hex string is read as a printed id prefix, so `20260801` acts on the session
+whose printed id it begins, exactly as any other eight-hex prefix does — unless
+a recorded run id also begins with those eight digits, which makes the string
+ambiguous and refused. Shorter prefixes remain available to `status`, which does
+not act on a run. An exact
+stored ID need not be a UUID. `--invocation` must name an existing invocation
+registered with `li invoke start`; unknown values fail before flow
+setup/planning or background launch, rather than silently disabling persistence.
+Both `li o flow` and `li o fanout` check it before anything is spawned. The flag
+does not register an alias.
+
+While a flow is waiting for DAG execution, controls are deferred until its DAG
+execution poller starts, including pre-planning, graph construction and resumed
+run windows. The poller checks about every two seconds during DAG execution;
+this is not a delivery deadline or a guarantee before the first operation.
+Controls will not be applied after the poller stops. Flows whose poller has
+stopped, and older flows without control-delivery tracking, refuse new controls.
+The stop marker is published before the poll loop stops, and enqueue re-checks it
+in the same statement that inserts the control, so a run that has lost its poller
+refuses rather than queueing against a consumer that is gone. A control admitted
+just before the marker lands can miss the last poll; when the run's teardown
+writes its terminal status, every control still queued and unclaimed is closed as
+rejected rather than left pending. Teardown also closes them if a later teardown
+step fails after that status write. That teardown path closes the flow/play
+queue: a process killed outright runs no teardown, and neither `li kill` nor a
+reaper sweeps the queue, so a control queued in that window stays pending and
+`li o ctl status`
+renders it as never landed. `li o ctl resolve` closes only a row a consumer
+claimed and never reported back. Marker writes are best-effort: a failed
+stop-marker write can leave a stale active marker, so enqueue is never a delivery
+guarantee. Check `status` for application.
+
+Pause/resume acts at operation boundaries before the concurrency limiter.
+Operations already past the pause gate, including those waiting for limiter
+capacity, may still start; running operations are not interrupted. Messages affect
+only operations prepared after delivery and are rejected if none remain pending.
+Applied pause/resume writes `paused`/`executing` with one retry after a phase-write
+failure; repeated write failure can leave telemetry stale. The paths that end a
+flow run clear `current_phase` in the same statement as the terminal status; a
+legacy or out-of-band terminal row can keep a stored phase, and reads hide one on
+a terminal row. Flow runs are sessions: use
+`li monitor --type session`, or `--type invocation` for registered invocations.
+
 ---
 
 ## Playbooks (`-f`, `-p`, `li play`)
@@ -506,8 +567,9 @@ li monitor                      # table of all running entities
 li monitor <id>                 # detail view for one run/play/agent/invocation
 li monitor --watch              # live-refresh table
 li monitor --watch <id>         # live-refresh detail view
-li monitor --since 1h           # entities updated in the last hour
+li monitor --since 1h           # entities updated in the last hour, including terminal rows
 li monitor --type session       # filter table by entity type
+li monitor --type command --since 1h  # recent command actions, including failed fires
 li monitor --project myproject  # filter sessions by project
 ```
 
@@ -516,13 +578,18 @@ li monitor --project myproject  # filter sessions by project
 | `id` | none | Entity ID or prefix; omit for the table view |
 | `-w, --watch` | false | Live-refresh every `--refresh` seconds |
 | `--refresh SECS` | 2 | Refresh interval for `--watch` |
-| `--since WINDOW` | all | Time window: `30m`, `1h`, `2d` |
-| `-t, --type` | none | One of `session`, `invocation`, `show`, `play` |
+| `--since WINDOW` | active entities only | Time window: `30m`, `1h`, `2d`; includes terminal rows updated in the window |
+| `-t, --type` | none | One of `session`, `invocation`, `show`, `play`, `command`. `command` narrows to invocations launched as a command action |
 | `-p, --project` | none | Filter sessions by project name |
 
+Flow runs are sessions: use `--type session`, even when the table's `type` column
+labels the row `flow`. Use `--type invocation` for records registered through
+`li invoke start`. `flow` is not a supported `--type` value.
+
 A session detail view includes a `khive injection` block when an opted-in profile recorded
-non-zero recall, injection, failure, or writeback counters. The block contains aggregate counts,
-not injected source text.
+non-zero recall, injection, failure, degradation, or writeback counters. `degraded_turns`
+distinguishes a provider-contained transport failure from a successful recall that returned no
+context. The block contains aggregate counts, not injected source text.
 
 For scripts, use a waiter instead of scraping the watch display:
 
@@ -621,6 +688,25 @@ li invoke end "$INV" --status completed
 | `end ID` | `--status` (default `completed`), `--metadata` | Closes it with a canonical terminal status |
 | `list` | `--skill`, `--status`, `--limit` (default 20) | Lists recent invocations |
 
+`end` closes a *running* invocation, and it records `--metadata` on a row an
+earlier close already put in the requested status: that same-status close merges
+the payload without moving the stored status or end time, and exits 0; the same
+close with no `--metadata` also exits 0, since there is nothing left to record.
+`--metadata` merges key by key into the invocation's stored metadata, and the
+merge runs inside the store's own write, so a payload another closer records in
+between is merged with rather than overwritten and both closes keep their keys.
+Keys merge per RFC 7396: a nested object merges into the stored object, a key set
+to `null` is removed, and an array or scalar replaces the stored value. A stored
+value that is not an object (an old row whose metadata is a bare string, for
+instance) is kept under `_discarded_node_metadata`. An `end` that names a
+*different* status than the stored one — the row was cancelled, reaped, or closed
+by a sibling launch while the work ran — records neither the requested `--status`
+nor its `--metadata`. That refusal is reported on stderr and **exits 1**, and the
+stored status another writer recorded is left exactly as it is. The status write
+and the metadata merge are separate writes in that order, so a reader can see the
+terminal status a moment before the closer's metadata lands. Treat a zero exit as
+proof the status and metadata were saved.
+
 ---
 
 ## `li hooks`
@@ -701,6 +787,7 @@ then report it:
 | `terminal` | `true` |
 | `outcome` | `indeterminate` |
 | `reason_code` | `process_gone_without_outcome` |
+| `reason_detail` | `persistence_degraded` or `null` |
 | `terminal_source` | `mcp_orphan_reaper` |
 
 `outcome: "indeterminate"` means the process is conclusively gone and **no authoritative
@@ -740,6 +827,9 @@ failure and kill. Nothing is configured out of the box, so the default is no
 notice. The command is an argv list run directly (never through a shell); the
 placeholders `{run_id}`, `{status}`, `{label}`, and `{target}` are substituted
 into its arguments, and the same fields are offered as a JSON object on stdin.
+`{sender}` names the actor signing the notice, `{reason_code}` carries the
+run's terminal reason when one was recorded, and `{reason_detail}` its finer
+detail; a reason placeholder with no value becomes empty.
 
 Configure the command once via lionagi's own `notify.on_terminal` setting
 (`~/.lionagi/settings.yaml` or a project `.lionagi/settings.yaml`):
@@ -754,12 +844,20 @@ notify:
 
 Or per submit: `notify` overrides the delivery command for one run (a JSON argv
 list), `notify_seat` fills the `{target}` placeholder, and `notify_sender` fills
-`{sender}`, naming the actor signing the notice. An explicit sender is accepted
-only when the submitting directory resolves to that actor. The environment
+`{sender}`, naming the actor signing the notice. By default an explicit sender is
+checked against the submitting directory, as before. A deployment that wants
+callers to attest from their run directories sets
+`LIONAGI_MCP_SENDER_ROOTS` to an OS-path-separated list of absolute paths where
+the server is declared; then a declared sender is checked against the run
+directory the submission names in `cwd`, which must sit under one of those roots
+and hold `.khive/config.toml`. A submission that names no `cwd` is checked
+against the submitting directory, as before. The notice is delivered from the
+directory that was checked, so the identity it claims is the one it is signed
+with. The environment
 variables `LIONAGI_MCP_NOTIFY_COMMAND`, `LIONAGI_MCP_NOTIFY_TARGET` and
 `LIONAGI_MCP_NOTIFY_SENDER` set a process-wide default, and
 `LIONAGI_MCP_NOTIFY_CWD` names the directory delivery runs in instead of the
-submitting one. These are the server operator's settings and are used as given:
+checked (or submitting) one. These are the server operator's settings and are used as given:
 the sender check applies only to a `notify_sender` passed on the submit. With no
 sender from either, a delivery command that takes `{sender}` is not run, and one
 that does not reports whatever identity it resolves from the directory it runs
@@ -773,6 +871,38 @@ result was interrupted or it was stopped for running past its deadline, or
 `none` when no notifier was configured — so a run whose notice never went out
 is spotted while scanning runs, not only when one is looked up. The full `job.status.notify_delivery`
 object is null only for a non-terminal run.
+
+### Spawning and the MCP server set
+
+The four spawn verbs (`agent.submit`, `flow.submit`, `fanout.submit`,
+`play.submit`) accept `exclude_mcp_servers`, a list of server names to remove
+from the MCP config the submission resolves before its immutable snapshot is
+written. Every name must exist in that config — a name it does not declare is
+refused rather than silently ignored — and the parameter cannot be combined
+with `mcp_config` or `no_mcp_config`, since neither leaves a resolved set to
+filter. The removed names are reported as `excluded_mcp_servers` on the handle,
+the job record, and `job.status`.
+
+A run is write-capable when its `agent.submit` arguments or its agent profile
+set `yolo` or `bypass`, or when it resumes or continues a branch, which reloads
+the provider settings that branch kept. Every `flow.submit`, `fanout.submit` and
+`play.submit` run is write-capable too, because it casts its workers onto
+profiles while it runs. By default a write-capable run gets no separate khive
+actor, and a submission without `cwd` is accepted as before. A deployment that
+wants each
+writable run to have its own identity sets `LIONAGI_MCP_CHILD_ACTOR_SUFFIX` to a
+non-empty suffix. Then a write-capable run submitted with a `cwd` gets the actor
+`<submitting actor><suffix>`
+(for example, with a suffix of `:child`, `<submitting actor>:child`), minted into
+`<cwd>/.khive/config.toml` before the run starts, so a writable run does not
+sign as the submitting identity. The mint copies the submitting directory's
+config and rewrites only its `[actor]` table; it refuses when the run has no
+own directory, when the submitting directory has no actor config, or when the
+run directory already holds a config other than exactly the one it would mint;
+a config that is exactly that one is reused as it is, and one minted before the
+submitting config changed is refused until it is removed. `job.status`
+reports the result as `child_actor`, `child_actor_config` and
+`submitting_actor`.
 
 ---
 
@@ -964,7 +1094,10 @@ All frontmatter fields are optional; matching CLI flags override them at invocat
 | `effort` | Reasoning effort level (e.g. `high`, `xhigh`) |
 | `yolo` | Auto-approve tool calls |
 | `fast_mode` | Route via the OpenAI priority tier (codex only) |
+| `contain_account_integrations` | Codex only. `true` turns the signed-in account's `apps` and `plugins` features off for this role (`--disable apps --disable plugins`). Default `false` |
+| `account_connectors` | Codex only. List of the account's app connectors the role is for. Naming any leaves both features as the account and config set them, even when contained. Never written into run records or branch snapshots |
 | `timeout` | Default hard timeout in seconds |
+| `idle_timeout` | Seconds of silence from an answering worker before the run counts as stalled; defaults to `LIONAGI_WORKER_IDLE_TIMEOUT` (`600`). `--idle-timeout` overrides it |
 | `resume_on_timeout` | Set to `once` for one bounded automatic continuation |
 | `lion_system` | Prepend `LION_SYSTEM_MESSAGE` to the body (default: `true`) |
 | `artifact_defaults` | Expected-artifact defaults; see [ADR-0064](adr/ADR-0064-cli-execution-outcome-and-completion-record.md) |

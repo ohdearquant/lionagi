@@ -10,6 +10,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from lionagi.state.compat import StateCompatibilityRefused
+
 
 @dataclass(slots=True)
 class PendingMessageEvent:
@@ -23,6 +25,27 @@ class PendingMessageEvent:
     system_branch_update_before_activity: bool = False
     activity_at: float | None = None
     on_persisted: Callable[[], None] | None = None
+
+
+def _describe_failure(exc: Exception | None) -> tuple[Any, Exception | None]:
+    """What a retry warning says about *exc*, and the traceback it carries.
+
+    A refused writer lock is ordinary contention, so it is one line naming the
+    driver's error and no traceback; SQLAlchemy's own text for it spans lines.
+    The observer's driver-error classifier is shared here, so an error raised
+    while handling a refusal keeps its message and traceback in both paths.
+    Any other failure, and one whose text cannot be read, keeps its traceback.
+    """
+    try:
+        from lionagi.session.observer import _writer_lock_refusal  # noqa: PLC0415
+
+        if isinstance(exc, BaseException):
+            refusal = _writer_lock_refusal(exc)
+            if refusal is not None:
+                return " ".join(repr(refusal).split()), None
+    except Exception:  # noqa: BLE001 -- describing a failure must not become one
+        return exc, exc
+    return exc, exc
 
 
 class MessagePersistRetryQueue:
@@ -49,9 +72,13 @@ class MessagePersistRetryQueue:
         """Queue ``event`` and persist pending events in their original order."""
         async with self._lock:
             self._pending.append(event)
-            if self._retry_deferred:
+            from lionagi.state.compat import is_compatibility_store  # noqa: PLC0415
+
+            if self._retry_deferred and not is_compatibility_store(self._db):
                 return False
-            return await self._drain_locked()
+            # In compatibility mode a deferred queue still attempts its head: the store may be
+            # refusing it, and a refusal stops the run now rather than at teardown (ADR-0128 D6).
+            return await self._drain_locked(force=self._retry_deferred)
 
     async def flush(self) -> bool:
         """Make the one additional teardown attempt for every pending event."""
@@ -69,6 +96,9 @@ class MessagePersistRetryQueue:
         deduped by pending count rather than re-logged every call: a repeated
         identical count is the same incident restated, a changed count is new
         information. See docs/internals/plugin-runtime.md#hook-lifecycle.
+
+        A write the store refuses in compatibility mode is raised, with its event
+        kept at the head, and is not reported as lost.
         """
         flushed = await self.flush()
         if flushed:
@@ -104,6 +134,10 @@ class MessagePersistRetryQueue:
                     ),
                     activity_at=event.activity_at,
                 )
+            except StateCompatibilityRefused:
+                # The store refuses the same write on every retry, so the refusal is raised to the
+                # caller with the event kept at the head, instead of being retried (ADR-0128 D6).
+                raise
             except ValueError as exc:
                 # StateDB._validate_message raises ValueError for a
                 # deterministically malformed message (missing content/role);
@@ -142,20 +176,23 @@ class MessagePersistRetryQueue:
         if state == self._state:
             return
         self._state = state
+        if state == "healthy":
+            self._logger.debug("live persist retries recovered for %s", self._owner)
+            return
+        reason, exc_info = _describe_failure(exc)
         if state == "retrying":
             self._logger.warning(
                 "live persist write failed for %s; event queued for ordered retry: %s",
                 self._owner,
-                exc,
-                exc_info=exc,
+                reason,
+                exc_info=exc_info,
             )
         elif state == "deferred":
             self._logger.warning(
                 "live persist retries deferred for %s after %d consecutive failures; "
-                "pending events will retry at teardown",
+                "pending events will retry at teardown: %s",
                 self._owner,
                 self._consecutive_failures,
-                exc_info=exc,
+                reason,
+                exc_info=exc_info,
             )
-        elif state == "healthy":
-            self._logger.debug("live persist retries recovered for %s", self._owner)

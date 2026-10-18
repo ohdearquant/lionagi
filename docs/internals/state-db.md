@@ -16,8 +16,11 @@ records the shape this code understands. A writable `StateDB.open()` rewrites
 an older on-disk database into the current shape and stamps the new version;
 if the on-disk version is *higher* than `SCHEMA_VERSION`, open refuses rather
 than guessing what a later release's shape means (`SchemaTooNewError`).
-Read-only opens apply no schema migration at all and are unaffected by this
-check.
+It also refuses a SQLite store whose `schema_meta` `lineage` row names another
+application (`ForeignLineageError`, ADR-0128 D7), reading that row on each
+writable connection before the connection's settings change the file; a store
+with no such row, or one naming lionagi, opens as before. Read-only opens
+apply no schema migration at all and are unaffected by these checks.
 
 Three kinds of schema change show up in the code:
 
@@ -225,7 +228,12 @@ its full lifecycle, and they're worth reading as one sequence:
 1. **`insert_session_control`** admits a new control row only if the target
    session is still `running` (see the admission-condition pattern above),
    and returns the new control's id, or `None` if the session had already
-   terminalized.
+   terminalized. Its operator callers also ask it to re-check the flow/play
+   delivery marker in the same statement: a run's teardown publishes
+   `flow_control_poller='stopped'` before it stops applying controls, so a
+   marker read moments earlier can already be stale by the time this write
+   runs. Without the re-check the control commits against a consumer that is
+   gone; with it the insert refuses the same way the terminal case does.
 2. **`mark_session_control_applying`** is how a consumer claims a pending row
    before attempting it: a compare-and-set that moves `result` from `NULL` to
    `applying[:<owner>]`, returning the exact claim string it wrote, or `None`
@@ -286,11 +294,15 @@ a fresh claim on the same reapable status, for instance).
 
 On top of that sits an integrity floor: once an entity's status is terminal
 (per `TERMINAL_STATUSES_BY_ENTITY_TYPE`), any write that would *change* it is
-rejected and recorded in `admin_events` — a terminal record must never
+rejected, and a rejection that the transition vocabulary or the terminal floor
+produces is recorded in `admin_events` — a terminal record must never
 silently move back to running or oscillate to a different terminal value. A
-same-status write is not treated as a transition and passes through
-untouched, since callers rely on it to refresh a reason code on an
-already-terminal row. The one deliberate escape hatch is
+guarded write refused earlier by its `expected_statuses` membership, before
+that vocabulary is consulted, returns the conflict without writing a
+rejection row: the caller named the states it could move from, and the row
+was not one of them. A same-status write is not treated as a transition and
+passes through untouched, since callers rely on it to refresh a reason code
+on an already-terminal row. The one deliberate escape hatch is
 `override=True` with both `override_actor` and `override_justification`
 required — an operational repair that does change a terminal value, recorded
 in `admin_events` distinctly from an ordinary transition so the two are never
@@ -313,19 +325,17 @@ by an `update_*(node_metadata=...)` write, which let two concurrent callers
 each read the same row and overwrite each other's patch. Both now run as a
 single dialect-specific `UPDATE`, so the merge is serialized by the database
 itself (SQLite's write lock; PostgreSQL's ordinary row-level MVCC locking)
-instead of racing in Python. A patch value that is itself a nested dict is
-rejected before any SQL runs, because SQLite's `json_patch` merges nested
-objects recursively while PostgreSQL's `jsonb ||` replaces them shallowly —
-allowing either silently would make the two backends persist different state
-from the same call.
+instead of racing in Python. Both backends merge the patch under RFC 7396:
+a nested object patch merges into the stored object rather than replacing it,
+and a key the patch sets to `null` is removed. SQLite's `json_patch` already
+implements RFC 7396; PostgreSQL's `jsonb ||` merges top-level keys only, so
+its branch reproduces the same semantics with one `jsonb_set` per patch node,
+containers ahead of their contents, and `#-` for a key the patch takes out.
 
-On PostgreSQL the merge SQL also has to reproduce RFC 7396's "null in the
-patch deletes the key" semantics by hand, because `jsonb ||` keeps an
-explicit null instead of deleting it (unlike SQLite's `json_patch`, which
-already implements RFC 7396). Rather than stripping *all* nulls from the
-merged document — which would also strip nulls that pre-date this patch and
-have nothing to do with it — the statement subtracts exactly the set of keys
-the incoming patch itself set to null.
+The PostgreSQL branch's `#-` removal takes out exactly the keys the incoming
+patch itself set to null, rather than stripping *all* nulls from the merged
+document — which would also strip nulls that pre-date this patch and have
+nothing to do with it, such as the `ended_at: None` a flow segment carries.
 
 Two shapes the merge deliberately does not destroy. A malformed or non-object
 existing value, meaning an array, a scalar, or on SQLite even non-JSON text, is
@@ -346,6 +356,32 @@ in a stored object or array, is data rather than noise, and the merge never
 strips it. Only keys the patch itself sets to null are removed.
 
 ## Schedules: what counts as a fire, and what recovers one
+
+A Schedule definition has its own lifecycle: `enabled`, `disabled`, then hard deletion.
+Definition events use `entity_type="schedule"` and `schedule_definition.*` reasons in
+`status_transitions`; they do not emit execution-terminal callbacks. `enabled` remains the
+only live state field. A new definition records its actual initial state; ordinary cursor,
+configuration and same-state updates add no event. No initial history is invented for legacy
+rows. Deleted definition ids cannot be reused while their history is retained.
+
+All definition write boundaries, including ScheduleSet batches and occurrence advancement
+that changes enablement, append history on the same connection and transaction. A failed
+audit insert or late batch claim rolls back earlier writes. The Schedule adapter reads the
+observed state under PostgreSQL row locking, with a transaction-scoped lock covering
+absent ids, and under SQLite's existing immediate transaction.
+
+`ScheduleAuditContext` carries actual submitter provenance independently of execution cwd.
+Existing context-less calls remain accepted with explicit unavailable attribution. Scheduler
+limit disables supply a named system actor and actual process cwd when available. Declaration
+disables carry generated declared/omitted causes and member ownership facts; optional apply
+text is retained. Manual reason admission and client context transport remain a later change.
+
+`StateDB.get_schedule_history(id, limit=100, offset=0)` reads newest events in descending
+`created_at, id` order independently of the live definition, with a limit of 1–1000. An
+available empty ledger returns `available=True, events=[]`; an old read-only store missing
+the ledger returns `available=False, events=[]` without migration. Schedule detail exposes
+only `lifecycle.available` and `lifecycle.latest`, leaving list responses bounded and
+occurrence history separate.
 
 A `schedule_runs` row is an occurrence: the record that a schedule's cursor
 moved. Whether anything actually *ran* is a separate question, and several
@@ -495,7 +531,13 @@ The predicate is a lower bound only, so a row timestamped in the future is
 included rather than held back until its time arrives. Three of its members do
 not fit even that shape. `p95_latency_ms` needs a sorted
 sample, which SQLite has no percentile function for, so it fetches raw
-invocation durations and computes the percentile in Python.
+invocation durations and computes the percentile in Python. It excludes rows
+whose `ended_at` is an observation of a run being ended from outside: a cancelled
+row, whose end records when cleanup noticed it, and a row the lifecycle reaper
+ended. The reaper tags its rows with `{"kind": "invocation"}` in
+`status_evidence_refs` and no run-side terminal writer adds that entry, so the
+query both drops `cancelled` and reads that column to drop reaped rows; a run
+that recorded its own timeout stays in the sample.
 `github_poll_healthy_age_minutes` is a point-in-time gauge rather than a
 windowed aggregate, so it accepts `window_start` for signature parity and
 ignores it, reading "now" fresh inside the method.

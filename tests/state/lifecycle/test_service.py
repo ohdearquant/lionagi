@@ -13,6 +13,7 @@ import uuid
 from unittest.mock import patch
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import text
 
 from lionagi.state.db import StateDB
@@ -29,7 +30,7 @@ from lionagi.state.lifecycle.service import SQLAlchemyLifecycleService
 # Fixtures
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def db():
     state = StateDB(":memory:")
     await state.open()
@@ -409,6 +410,30 @@ async def test_public_transition_override_bypasses_undeclared_edge(db: StateDB) 
     assert outcome.current_status == "completed"
     events = await db.list_admin_events(action="status_transition_override", target_id=run_id)
     assert len(events) == 1
+
+
+@pytest.mark.asyncio
+async def test_guard_conflict_does_not_record_override_event(db: StateDB) -> None:
+    run_id = await _make_schedule_run(db, status="completed")
+    service = SQLAlchemyLifecycleService(db)
+
+    outcome = await service._transition(  # noqa: SLF001 - guarded adapter path
+        _command(
+            entity_type="schedule_run",
+            entity_id=run_id,
+            to_status="running",
+            reason=ReasonRecord(code="run.started.ok"),
+            override=OverrideRecord(actor="operator", justification="manual repair"),
+        ),
+        extra_guard={"dispatched_at": 123.0},
+        enforce_edges=True,
+    )
+
+    assert outcome.result == "conflict"
+    assert outcome.transition_id is None
+    assert (await db.get_schedule_run(run_id))["status"] == "completed"
+    events = await db.list_admin_events(action="status_transition_override", target_id=run_id)
+    assert events == []
 
 
 @pytest.mark.asyncio

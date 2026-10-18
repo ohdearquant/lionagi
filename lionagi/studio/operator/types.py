@@ -218,6 +218,14 @@ class OperatorEngineTurn:
     model: str | None = None
     provider: str | None = None
     effort: str | None = None
+    # The (provider, model) the coordinator actually resolved for this turn, and
+    # built runtime_branch from. Distinct from `provider`/`model`, which are the
+    # caller's SELECTION and stay None for a turn that deliberately cleared them
+    # so the environment default still applies. Every resolution re-reads the
+    # environment, so without a recorded pair the preflight, the branch build and
+    # the terminal manifest are three chances to disagree about what ran.
+    resolved_provider: str | None = None
+    resolved_model: str | None = None
 
 
 class OperatorEngine(Protocol):

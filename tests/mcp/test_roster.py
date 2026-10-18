@@ -470,6 +470,31 @@ def test_fields_returns_only_what_was_asked_for_plus_the_name(roots):
     assert entries == [{"name": "builder", "resolved": {"model": "anthropic/claude"}}]
 
 
+def test_fields_can_ask_for_account_integration_settings(roots):
+    write_profile(
+        roots.proj,
+        "builder",
+        "---\nmodel: m\ncontain_account_integrations: true\n"
+        "account_connectors: [github]\n---\nbody\n",
+    )
+
+    result = op(
+        "profile.list",
+        {"fields": ["resolved.contain_account_integrations", "resolved.account_connectors"]},
+    )
+
+    assert result["ok"] is True, result
+    assert result["result"]["profiles"] == [
+        {
+            "name": "builder",
+            "resolved": {
+                "contain_account_integrations": True,
+                "account_connectors": ["github"],
+            },
+        }
+    ]
+
+
 def test_fields_can_ask_for_placement_without_the_configuration(roots):
     builder = write_profile(roots.proj, "builder", "---\nmodel: m\n---\nbody\n")
 
@@ -565,3 +590,22 @@ def test_names_and_fields_narrow_the_same_reply_together(roots):
     assert result["profiles"] == [{"name": "builder", "resolved": {"model": "b"}}]
     # The roots are still named: they explain a name that came back missing.
     assert [r["scope"] for r in result["roots"]] == ["project", "global"]
+
+
+def test_fields_can_ask_for_settings_a_profile_need_not_declare(roots):
+    """An optional setting is part of the surface on every profile.
+
+    A caller narrowing one reply to `resolved.idle_timeout` asks a question
+    every profile can answer; refusing the field on a profile that leaves it
+    out would make the field's availability depend on which file happens to be
+    read.
+    """
+    write_profile(roots.proj, "builder", "---\nmodel: m\nidle_timeout: 300\n---\nbody\n")
+    write_profile(roots.proj, "plain", "---\nmodel: m\n---\nbody\n")
+
+    result = op("profile.list", {"fields": ["resolved.idle_timeout"]})
+
+    assert result["ok"] is True, result
+    profiles = {p["name"]: p["resolved"] for p in result["result"]["profiles"]}
+    assert profiles["builder"] == {"idle_timeout": 300}
+    assert profiles["plain"] == {"idle_timeout": None}

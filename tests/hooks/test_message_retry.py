@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import pytest
+
 from lionagi.hooks._message_retry import MessagePersistRetryQueue, PendingMessageEvent
 
 
@@ -302,3 +304,186 @@ async def test_a_recovery_between_teardowns_does_not_swallow_a_later_loss(caplog
     assert len(losses) == 2, (
         "the second loss has the same count as the first and is still a different loss"
     )
+
+
+def _writer_lock_refused() -> Exception:
+    """What a contended store raises through SQLAlchemy when BEGIN IMMEDIATE times out."""
+    import sqlite3
+
+    from sqlalchemy.exc import OperationalError
+
+    return OperationalError("BEGIN IMMEDIATE", {}, sqlite3.OperationalError("database is locked"))
+
+
+class _FailingDB:
+    def __init__(self, make_error) -> None:
+        self.make_error = make_error
+
+    async def _persist_live_message(self, message: dict[str, Any], **kwargs: Any) -> None:
+        raise self.make_error()
+
+
+async def _warnings_until_deferred(db, caplog) -> list[logging.LogRecord]:
+    queue = MessagePersistRetryQueue(db, logger=logging.getLogger("test"), owner="b1")
+    with caplog.at_level(logging.WARNING, logger="test"):
+        for i in range(3):
+            await queue.submit(_event(f"m{i}"))
+    warnings = [rec for rec in caplog.records if rec.levelno == logging.WARNING]
+    assert ["ordered retry" in rec.getMessage() for rec in warnings] == [True, False]
+    assert "deferred" in warnings[1].getMessage()
+    return warnings
+
+
+async def test_a_refused_writer_lock_is_one_warning_line_without_a_traceback(caplog):
+    """SQLAlchemy's text for a lock refusal spans lines, and its traceback ran ~120 more."""
+    warnings = await _warnings_until_deferred(_FailingDB(_writer_lock_refused), caplog)
+
+    for rec in warnings:
+        assert rec.exc_info is None
+        assert "\n" not in rec.getMessage()
+        assert "OperationalError('database is locked')" in rec.getMessage()
+
+
+async def test_any_other_write_failure_keeps_its_traceback(caplog):
+    warnings = await _warnings_until_deferred(
+        _FailingDB(lambda: RuntimeError("disk I/O error")), caplog
+    )
+
+    for rec in warnings:
+        assert rec.exc_info is not None and isinstance(rec.exc_info[1], RuntimeError)
+        assert "disk I/O error" in rec.getMessage()
+
+
+def _raised_while_handling_a_lock_refusal() -> Exception:
+    import sqlite3
+
+    try:
+        raise sqlite3.OperationalError("database is locked")
+    except sqlite3.OperationalError:
+        try:
+            raise RuntimeError("rollback failed")
+        except RuntimeError as exc:
+            return exc
+
+
+async def test_a_failure_raised_while_handling_a_lock_refusal_keeps_its_traceback(caplog):
+    """The refusal is only this error's context; the error itself is a different failure."""
+    warnings = await _warnings_until_deferred(
+        _FailingDB(_raised_while_handling_a_lock_refusal), caplog
+    )
+
+    for rec in warnings:
+        assert rec.exc_info is not None and isinstance(rec.exc_info[1], RuntimeError)
+        assert "rollback failed" in rec.getMessage()
+
+
+async def test_a_failure_that_cannot_be_classified_is_still_logged_and_retried(caplog):
+    """Classifying reads attributes of a foreign error, which can raise; describing it must not."""
+
+    class DriverError(Exception):
+        @property
+        def sqlite_errorcode(self) -> int:
+            raise RuntimeError("connection already closed")
+
+    warnings = await _warnings_until_deferred(
+        _FailingDB(lambda: DriverError("write failed")), caplog
+    )
+
+    for rec in warnings:
+        assert rec.exc_info is not None and isinstance(rec.exc_info[1], DriverError)
+        assert "write failed" in rec.getMessage()
+
+
+async def test_a_lock_refusal_whose_repr_spans_lines_is_still_one_line(caplog):
+    class Refusal(Exception):
+        sqlite_errorcode = 5
+
+        def __repr__(self) -> str:
+            return "Refusal(\n'database is locked')"
+
+    warnings = await _warnings_until_deferred(_FailingDB(Refusal), caplog)
+
+    for rec in warnings:
+        assert rec.exc_info is None
+        assert "\n" not in rec.getMessage()
+        assert "Refusal( 'database is locked')" in rec.getMessage()
+
+
+async def test_a_write_the_store_refuses_is_raised_and_stays_queued():
+    """A compatibility-mode refusal is the same on every retry, and the run must not go on as
+    if the message were written (ADR-0128 D6): it is raised, the event stays at the head, and
+    the teardown flush raises it again."""
+    from lionagi.state.compat import StateCompatibilityRefused
+
+    class _RefusingDB:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def _persist_live_message(self, message: dict[str, Any], **kwargs: Any) -> None:
+            self.calls += 1
+            raise StateCompatibilityRefused("persist_live_message", "owned@1", "refused")
+
+    db = _RefusingDB()
+    queue = MessagePersistRetryQueue(db, logger=logging.getLogger("test"), owner="b1")
+
+    async def submit() -> bool:
+        return await queue.submit(_event("m1"))
+
+    for attempt in (submit, queue.flush_final):
+        try:
+            await attempt()
+        except StateCompatibilityRefused:
+            pass
+        else:
+            raise AssertionError("the refusal was not raised")
+
+    assert db.calls == 2
+    assert queue.pending_count == 1
+
+
+class _LockedThenRefusingDB:
+    def __init__(self, compatibility: Any) -> None:
+        self.compatibility = compatibility
+        self.calls = 0
+
+    async def _persist_live_message(self, message: dict[str, Any], **kwargs: Any) -> None:
+        from lionagi.state.compat import StateCompatibilityRefused
+
+        self.calls += 1
+        if self.calls <= 3:
+            raise RuntimeError("database is locked")
+        raise StateCompatibilityRefused("persist_live_message", "owned@1", "refused")
+
+
+def _compatibility_profile():
+    """The type of object a store actually carries in its ``compatibility`` attribute."""
+    from lionagi.state.compat import Closure, CompatibilityProfile
+
+    return CompatibilityProfile(
+        name="synthetic", version=1, closure=Closure(tables=()), writes={}, operations={"op"}
+    )
+
+
+@pytest.mark.parametrize(
+    "compatibility", [None, _compatibility_profile()], ids=["native", "compatibility"]
+)
+async def test_a_deferred_queue_attempts_its_head_only_in_compatibility_mode(compatibility):
+    """Deferred after three ordinary failures, a queue on a compatibility-mode store still attempts
+    its head on each submit, so a refusal stops the run then rather than at teardown (ADR-0128 D6);
+    natively it waits for the teardown flush as before."""
+    from lionagi.state.compat import StateCompatibilityRefused
+
+    db = _LockedThenRefusingDB(compatibility)
+    queue = MessagePersistRetryQueue(db, logger=logging.getLogger("test"), owner="b1")
+    for n in range(3):
+        assert await queue.submit(_event(f"m{n}")) is False
+    assert db.calls == 3
+
+    if compatibility is None:
+        assert await queue.submit(_event("m3")) is False
+        assert db.calls == 3
+    else:
+        with pytest.raises(StateCompatibilityRefused):
+            await queue.submit(_event("m3"))
+        assert db.calls == 4
+    assert queue.pending_count == 4

@@ -15,6 +15,7 @@ import io
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import pytest_asyncio
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
@@ -66,7 +67,7 @@ def _config(name: str, endpoint: str, base_url: str, **overrides) -> EndpointCon
     return EndpointConfig(**kwargs)
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def run_server():
     servers = []
 

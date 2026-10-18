@@ -14,6 +14,7 @@ from lionagi import iModel
 from lionagi._paths import find_lionagi_dirs as _find_lionagi_dirs
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.libs.path_safety import validate_bare_name
+from lionagi.ln import coerce_created_at
 from lionagi.providers.openai._codex_profile import (
     resolve_codex_config_profile,
 )
@@ -32,6 +33,7 @@ from lionagi.service.providers import (
     ModelSpec,
     _clamp_claude_effort,
     _clamp_codex_effort,
+    codex_unset_effort_default,
     normalize_effort,
     parse_model_spec,
 )
@@ -40,6 +42,7 @@ __all__ = (
     "BACKENDS",
     "CLI_PROVIDERS",
     "EFFORT_LEVELS",
+    "MAX_TIMEOUT_SECONDS",
     "ModelSpec",
     "PROVIDER_BYPASS_KWARGS",
     "PROVIDER_EFFORT_KWARG",
@@ -78,6 +81,17 @@ __all__ = (
 # Kept in this module's namespace and __all__ because callers import it here.
 
 
+def _add_codex_account_integration_kwargs(
+    extra: dict, account_connectors: tuple[str, ...], contain: bool
+) -> None:
+    # Both are left out when unset, so a codex leg's argv is unchanged unless a
+    # role opts in.
+    if account_connectors:
+        extra["account_connectors"] = list(account_connectors)
+    if contain:
+        extra["contain_account_integrations"] = True
+
+
 def build_imodel_from_spec(
     spec: str,
     *,
@@ -87,6 +101,8 @@ def build_imodel_from_spec(
     effort_override: str | None = None,
     theme: str | None = None,
     fast: bool = False,
+    account_connectors: tuple[str, ...] = (),
+    contain_account_integrations: bool = False,
 ) -> iModel:
     """Parse spec, build iModel. Effort in spec unless overridden."""
     ms = parse_model_spec(spec)
@@ -118,10 +134,16 @@ def build_imodel_from_spec(
         extra.update(PROVIDER_YOLO_KWARGS.get(provider_raw, {}))
     if fast:
         extra.update(PROVIDER_FAST_KWARGS.get(provider_raw, {}))
+    if provider_raw == "codex":
+        _add_codex_account_integration_kwargs(
+            extra, account_connectors, contain_account_integrations
+        )
     if verbose:
         extra["verbose_output"] = True
     if theme is not None:
         extra["cli_display_theme"] = theme
+    if effort is None and provider_raw == "codex":
+        effort = codex_unset_effort_default(ms.model, codex_profile_overrides)
     if effort is not None:
         kwarg = PROVIDER_EFFORT_KWARG.get(provider_raw)
         if kwarg is not None:
@@ -162,8 +184,15 @@ def build_chat_model(
     bypass: bool = False,
     mcp_servers: dict | None = None,
     mcp_exclusive: bool = False,
+    account_connectors: tuple[str, ...] = (),
+    contain_account_integrations: bool = False,
 ) -> iModel | str:
-    """Legacy: for agent.py compat. Returns bare spec string when no flags."""
+    """Legacy: for agent.py compat.
+
+    Returns the bare spec string only when no flag is set and no effort was
+    given or derived (a codex request may derive one from the global config);
+    any such setting needs an iModel to carry it.
+    """
     effort = normalize_effort(effort)
     extra: dict = {}
     # Before anything keyed on the model — the effort clamp below included,
@@ -199,10 +228,16 @@ def build_chat_model(
         extra.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
     if fast:
         extra.update(PROVIDER_FAST_KWARGS.get(provider, {}))
+    if provider == "codex":
+        _add_codex_account_integration_kwargs(
+            extra, account_connectors, contain_account_integrations
+        )
     if verbose:
         extra["verbose_output"] = True
     if theme is not None:
         extra["cli_display_theme"] = theme
+    if effort is None and provider == "codex":
+        effort = codex_unset_effort_default(model, codex_profile_overrides)
     if effort is not None:
         kwarg = PROVIDER_EFFORT_KWARG.get(provider)
         if kwarg is not None:
@@ -411,13 +446,10 @@ def _validate_bare_name(name: str) -> None:
 def build_deadline_preamble(timeout_seconds: int) -> str:
     """Build a [DEADLINE] preamble injected as the first user message when --timeout is set."""
     import time as _time
-    from datetime import datetime, timezone
 
     minutes = max(1, int(timeout_seconds / 60))
     deadline_ts = _time.time() + timeout_seconds
-    deadline_iso = datetime.fromtimestamp(deadline_ts, tz=timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
+    deadline_iso = coerce_created_at(deadline_ts).strftime("%Y-%m-%dT%H:%M:%SZ")
     return (
         f"[DEADLINE]\n"
         f"You have {minutes} minute{'s' if minutes != 1 else ''} "
@@ -449,6 +481,13 @@ class AgentProfile:
     resume_on_timeout: bool = False
     """Auto-resume-once on a timeout terminal status (profile 'resume_on_timeout: once')."""
     extra: dict = field(default_factory=dict)
+    # Last, so a positional construction keeps the meaning it had before these existed.
+    contain_account_integrations: bool = False
+    """Run a codex leg of this role with the account's app and plugin integrations turned off."""
+    account_connectors: tuple[str, ...] = ()
+    """Account app connectors a codex leg of this role may reach; naming any lifts the containment."""
+    idle_timeout: int | None = None
+    """Default --idle-timeout (seconds) used when the CLI flag is not given."""
 
 
 def _unreadable_symlink_target(path: Path) -> str | None:
@@ -588,7 +627,7 @@ def profile_config(profile: AgentProfile) -> dict[str, Any]:
     second path for exposing or copying profile instructions. Every reader of the
     roster goes through here so they cannot disagree about either half.
     """
-    return {
+    config: dict[str, Any] = {
         "model": profile.model,
         "effort": profile.effort,
         "role": profile.extra.get("role"),
@@ -601,6 +640,14 @@ def profile_config(profile: AgentProfile) -> dict[str, Any]:
         "timeout": profile.timeout,
         "resume_on_timeout": profile.resume_on_timeout,
     }
+    # Only when set, so a role that uses none of them reports exactly what it did before.
+    if profile.idle_timeout is not None:
+        config["idle_timeout"] = profile.idle_timeout
+    if profile.contain_account_integrations:
+        config["contain_account_integrations"] = True
+    if profile.account_connectors:
+        config["account_connectors"] = list(profile.account_connectors)
+    return config
 
 
 def build_agent_profile_catalog() -> dict[str, dict[str, Any]]:
@@ -648,12 +695,13 @@ def _warn_if_shadowing_plugin_profile(name: str) -> None:
     )
 
 
-def load_agent_profile(name: str) -> AgentProfile:
+def load_agent_profile(name: str, *, cwd: Path | None = None) -> AgentProfile:
     """Load a named agent profile, searching project-local then global ~/.lionagi/agents/,
 
     then active plugin bundles: a plugin's agent profiles join the search
     only after a project/global miss, and only for a plugin that is trusted +
-    enabled + version-compatible (see ``lionagi.plugins``).
+    enabled + version-compatible (see ``lionagi.plugins``). Project-local
+    directories are found from *cwd*, the process working directory by default.
     """
     plugin_token = "/" in name
     if plugin_token:
@@ -665,7 +713,7 @@ def load_agent_profile(name: str) -> AgentProfile:
     else:
         _validate_bare_name(name)
 
-    dirs = _find_lionagi_dirs()
+    dirs = _find_lionagi_dirs() if cwd is None else _find_lionagi_dirs(cwd)
     unreadable_symlinks: list[tuple[Path, str]] = []
     if not plugin_token:
         for d in dirs:
@@ -698,8 +746,14 @@ def load_agent_profile(name: str) -> AgentProfile:
     raise AgentProfileNotFoundError(msg)
 
 
-def _parse_profile_timeout(name: str, raw: Any) -> int | None:
-    """Validate the profile 'timeout' field; warn and ignore garbage rather than raising.
+#: The largest whole number of seconds a timeout may name: the largest a float holds exactly,
+#: which is what the run's deadline arithmetic and a JSON-number MCP caller both carry.
+MAX_TIMEOUT_SECONDS = 2**53 - 1
+
+
+def _parse_profile_timeout(name: str, raw: Any, field: str = "timeout") -> int | None:
+    """Validate a profile seconds field ('timeout', 'idle_timeout'); warn and ignore garbage
+    rather than raising.
 
     See docs/internals/cli.md for why bool/float are rejected, not coerced.
     """
@@ -708,10 +762,16 @@ def _parse_profile_timeout(name: str, raw: Any) -> int | None:
     from ._logging import warn
 
     if isinstance(raw, bool) or not isinstance(raw, int):
-        warn(f"agent profile {name!r}: ignoring invalid timeout {raw!r} (must be a positive int)")
+        warn(f"agent profile {name!r}: ignoring invalid {field} {raw!r} (must be a positive int)")
         return None
     if raw <= 0:
-        warn(f"agent profile {name!r}: ignoring non-positive timeout {raw!r}")
+        warn(f"agent profile {name!r}: ignoring non-positive {field} {raw!r}")
+        return None
+    if raw > MAX_TIMEOUT_SECONDS:
+        warn(
+            f"agent profile {name!r}: ignoring {field} {raw!r} "
+            f"(must be at most {MAX_TIMEOUT_SECONDS})"
+        )
         return None
     return raw
 
@@ -728,6 +788,40 @@ def _parse_profile_resume_on_timeout(name: str, raw: Any) -> bool:
         f"agent profile {name!r}: ignoring unrecognized resume_on_timeout {raw!r} (expected 'once')"
     )
     return False
+
+
+def _parse_profile_contain_account_integrations(name: str, raw: Any) -> bool:
+    """Validate the profile flag; a connector grant can lift containment when a request is built.
+
+    An unreadable value warns and defaults to contained.
+    """
+    if raw is None:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    from ._logging import warn
+
+    warn(
+        f"agent profile {name!r}: contain_account_integrations {raw!r} is not true or false; "
+        "containing"
+    )
+    return True
+
+
+def _parse_profile_account_connectors(name: str, raw: Any) -> tuple[str, ...]:
+    """Validate the profile 'account_connectors' list; warn and grant none when it does not
+    read as connector names, rather than read it as all."""
+    if raw is None:
+        return ()
+    if isinstance(raw, list) and all(isinstance(c, str) and c.strip() for c in raw):
+        return tuple(dict.fromkeys(c.strip() for c in raw))
+    from ._logging import warn
+
+    warn(
+        f"agent profile {name!r}: ignoring account_connectors {raw!r} "
+        "(must be a list of connector names)"
+    )
+    return ()
 
 
 def _parse_profile(name: str, text: str) -> AgentProfile:
@@ -758,6 +852,15 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
         resume_on_timeout=_parse_profile_resume_on_timeout(
             name, frontmatter.get("resume_on_timeout")
         ),
+        contain_account_integrations=_parse_profile_contain_account_integrations(
+            name, frontmatter.get("contain_account_integrations")
+        ),
+        account_connectors=_parse_profile_account_connectors(
+            name, frontmatter.get("account_connectors")
+        ),
+        idle_timeout=_parse_profile_timeout(
+            name, frontmatter.get("idle_timeout"), field="idle_timeout"
+        ),
         extra={
             k: v
             for k, v in frontmatter.items()
@@ -773,6 +876,9 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
                 "artifact_defaults",
                 "timeout",
                 "resume_on_timeout",
+                "idle_timeout",
+                "contain_account_integrations",
+                "account_connectors",
             )
         },
     )

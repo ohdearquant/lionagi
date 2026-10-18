@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """`li o ctl pause|resume|msg` — enqueue session_controls rows for a running flow.
 
-Pure writers: resolve the target session (id/invocation id/play id/run id,
-same shapes `li o ctl status` accepts) and insert one row into
-session_controls; do not wait for it to apply. See
+Pure writers: resolve an exact session/invocation/play/run ID, an unambiguous
+eight-character hex prefix or an unambiguous run-id prefix that reaches the run id's
+`T`, then insert one row into session_controls; do not wait for it to apply. See
 ``docs/internals/cli.md`` (`_control.py`) for consumer wiring and admission
 gating.
 """
@@ -18,7 +18,13 @@ from typing import Any
 
 from .._logging import log_error
 from .._util import AmbiguousIdError
-from ..status import EXIT_UNKNOWN, _resolve_any_target, _resolve_primary_session
+from ..status import (
+    _RUN_ID_THROUGH_T,
+    EXIT_UNKNOWN,
+    _resolve_any_target,
+    _resolve_primary_session,
+    _run_id_candidates,
+)
 
 __all__ = (
     "run_ctl_pause",
@@ -47,9 +53,29 @@ _CONSUMER_KINDS_BY_VERB: dict[str, frozenset[str]] = {
 
 
 async def _resolve_session(db: Any, entity_id: str) -> dict[str, Any] | None:
-    """Resolve a session/invocation/play id (or unambiguous prefix) to the
-    backing session row, mirroring `li o ctl status`'s generic resolution."""
-    target = await _resolve_any_target(db, entity_id)
+    """Resolve an exact ID, an unambiguous eight-character printed prefix, or a run-id prefix.
+
+    Status may search shorter prefixes, but an action must not mistake a label,
+    a number or a date for a partial ID of another run. Exact registered IDs can
+    be any length. A run-id prefix resolves only once it reaches the `T` after
+    the date (ADR-0108, Amendment 2): before it every character is a digit, so
+    `2` or `2026` would act on whichever run happens to start with it. A string
+    that also prefixes an entity id is refused as ambiguous by the resolver
+    below rather than resolved to either.
+    """
+    if len(entity_id) != 8 or any(char not in "0123456789abcdefABCDEF" for char in entity_id):
+        exact = False
+        for table in ("sessions", "invocations", "plays", "branches"):
+            if await db.fetch_one(f"SELECT id FROM {table} WHERE id = ?", (entity_id,)):  # noqa: S608
+                exact = True
+                break
+        if (
+            not exact
+            and not await db.get_sessions_for_run(entity_id)
+            and not (_RUN_ID_THROUGH_T.match(entity_id) and await _run_id_candidates(db, entity_id))
+        ):
+            return None
+    target = await _resolve_any_target(db, entity_id, run_prefix_through_t=True)
     if target is None:
         return None
     entity_type, row = target
@@ -73,10 +99,20 @@ def _runner_drains_controls(session: dict[str, Any]) -> bool:
     return bool(meta.get("drains_controls")) if isinstance(meta, dict) else False
 
 
+def _flow_control_poller_state(session: dict[str, Any]) -> str | None:
+    meta = session.get("node_metadata") or {}
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except (TypeError, ValueError):
+            return None
+    return meta.get("flow_control_poller") if isinstance(meta, dict) else None
+
+
 async def _enqueue_control_inner(
     *, entity_id: str, verb: str, payload: dict[str, Any] | None
 ) -> tuple[str, int]:
-    from lionagi.state.db import StateDB, state_db_known_absent
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES, StateDB, state_db_known_absent
 
     if state_db_known_absent():
         return "state.db not found — no runs recorded yet", EXIT_UNKNOWN
@@ -88,7 +124,12 @@ async def _enqueue_control_inner(
         except AmbiguousIdError as exc:
             return str(exc), EXIT_UNKNOWN
         if session is None:
-            return f"no session/invocation/play found for id {entity_id!r}", EXIT_UNKNOWN
+            return (
+                f"no session/invocation/play found for id {entity_id!r} — use the printed "
+                "session ID or an invocation ID registered with `li invoke start`; "
+                "`--invocation` alone does not register a control target",
+                EXIT_UNKNOWN,
+            )
         session_id = session["id"]
         status = session.get("status")
         if status != "running":
@@ -138,18 +179,48 @@ async def _enqueue_control_inner(
                 "so the control would sit pending forever",
                 EXIT_UNKNOWN,
             )
+        poller_state = _flow_control_poller_state(session) if kind in {"flow", "play"} else None
+        if kind in {"flow", "play"} and poller_state not in {"pending", "active"}:
+            reason = (
+                "its DAG execution poller has stopped"
+                if poller_state == "stopped"
+                else "it predates control-delivery tracking or has no confirmed DAG poller state"
+            )
+            return (
+                f"session {session_id[:8]} cannot accept {verb}: {reason}; "
+                "no control will be queued for a consumer that is not confirmed",
+                EXIT_UNKNOWN,
+            )
         control_id = await db.insert_session_control(
-            session_id=session_id, verb=verb, payload=payload
+            session_id=session_id,
+            verb=verb,
+            payload=payload,
+            # The status/marker checks above are reads; the write re-checks the
+            # delivery marker so a run that lost its poller between them refuses
+            # the control instead of queueing it against a consumer that is gone.
+            require_live_flow_poller=True,
         )
         if control_id is None:
-            # The status check above and the insert are two statements, and the
-            # run can reach its terminal status between them. The insert carries
-            # the same running-session condition so that it, not the earlier
-            # read, decides: refusing here is the alternative to leaving a
-            # control queued against a run whose consumer has already gone.
+            # The checks above and the insert are separate statements: the run can
+            # reach its terminal status, or lose its poller, between them. The insert
+            # carries the same conditions so that it, not the earlier read, decides.
+            # It does not say which condition failed, so the row is read again to
+            # name the reason instead of guessing one.
+            after = await db.get_session(session_id) or {}
+            if after.get("status") in SESSION_TERMINAL_STATUSES:
+                reason = f"reached terminal status {after['status']}"
+            elif after.get("status") != "running":
+                reason = f"is {after.get('status') or 'missing'}, not running"
+            elif kind in {"flow", "play"} and _flow_control_poller_state(after) not in {
+                "pending",
+                "active",
+            }:
+                reason = "lost its DAG execution poller"
+            else:
+                reason = "was refused by the store's admission check"
             return (
-                f"session {session_id[:8]} reached a terminal status while the "
-                "control was being queued — nothing would consume it",
+                f"session {session_id[:8]} {reason} while the control was being "
+                "queued — nothing would consume it",
                 EXIT_UNKNOWN,
             )
 
@@ -158,15 +229,36 @@ async def _enqueue_control_inner(
     # leg drains at its next turn boundary — which can be much later than 2s
     # into a long provider call. Stating the flow-poller number for an agent
     # steer would tell the operator to expect delivery well before it lands.
-    landing = (
-        "lands as a continuation turn once the run's current turn ends"
-        if kind == "agent"
-        else f"applies within ~{2:.0f}s while the flow is live"
-    )
+    if kind == "agent":
+        landing = "lands as a continuation turn once the run's current turn ends"
+    else:
+        landing = (
+            "deferred until the DAG execution poller starts; "
+            if poller_state == "pending"
+            else "execution poller checks about every 2s during DAG execution; "
+        )
+        landing += (
+            "controls will not be applied after the poller stops; delivery is not guaranteed; "
+        )
+        landing += (
+            "context reaches only operations prepared after delivery"
+            if verb == "message"
+            else "pause/resume acts at operation boundaries before the concurrency limiter; "
+            "operations already past the gate may still start; "
+            "running operations are not interrupted"
+        )
     return (
         f"queued {verb} (control {control_id[:8]}) for session {session_id[:8]} — "
         f"{landing}; check `li o ctl status {session_id[:8]}`",
         0,
+    )
+
+
+def _db_busy_on_write() -> tuple[str, int]:
+    return (
+        f"state.db busy (no write within {_DB_BUSY_TIMEOUT_S:.0f}s) — "
+        "another writer may be holding a long transaction; try again",
+        EXIT_UNKNOWN,
     )
 
 
@@ -179,11 +271,7 @@ async def _enqueue_control(
             timeout=_DB_BUSY_TIMEOUT_S,
         )
     except (TimeoutError, asyncio.TimeoutError):  # 3.10 support: not aliased until 3.11
-        return (
-            f"state.db busy (no write within {_DB_BUSY_TIMEOUT_S:.0f}s) — "
-            "another writer may be holding a long transaction; try again",
-            EXIT_UNKNOWN,
-        )
+        return _db_busy_on_write()
 
 
 def _dispatch_control(*, entity_id: str, verb: str, payload: dict[str, Any] | None) -> int:
@@ -272,16 +360,19 @@ def run_ctl_resolve(args: argparse.Namespace) -> int:
     """
     from lionagi.ln.concurrency import run_async
 
-    output, exit_code = run_async(
-        asyncio.wait_for(
-            _resolve_control_inner(
-                control_id=args.control_id,
-                outcome=args.outcome,
-                actor=getattr(args, "actor", None),
-            ),
-            timeout=_DB_BUSY_TIMEOUT_S,
+    try:
+        output, exit_code = run_async(
+            asyncio.wait_for(
+                _resolve_control_inner(
+                    control_id=args.control_id,
+                    outcome=args.outcome,
+                    actor=getattr(args, "actor", None),
+                ),
+                timeout=_DB_BUSY_TIMEOUT_S,
+            )
         )
-    )
+    except (TimeoutError, asyncio.TimeoutError):  # 3.10 support: not aliased until 3.11
+        output, exit_code = _db_busy_on_write()
     if exit_code == EXIT_UNKNOWN:
         log_error(output)
     else:

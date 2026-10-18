@@ -7,7 +7,6 @@ import logging
 import os
 import sys
 from collections.abc import AsyncGenerator
-from dataclasses import fields
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -16,6 +15,7 @@ import anyio
 from pydantic import JsonValue
 
 from lionagi.ln import acreate_path, json_dumps
+from lionagi.ln.concurrency import current_time
 from lionagi.models.note import Note
 from lionagi.protocols.messages import (
     ActionRequest,
@@ -24,6 +24,7 @@ from lionagi.protocols.messages import (
     Instruction,
 )
 from lionagi.providers._provider_errors import WorkerLivenessError, classify_provider_error
+from lionagi.service.accounts._pricing import CACHE_WRITE_LIFETIMES, cache_write_split
 
 from .._api_hooks import emit_api_post_call, emit_api_pre_call, emit_api_stream_chunk
 from .._turn_origin import consume_turn_origin
@@ -89,7 +90,7 @@ async def _stream_with_deadline(model, api_call, deadline: float | None):
         while True:
             try:
                 if deadline is not None:
-                    remaining = deadline - anyio.current_time()
+                    remaining = deadline - current_time()
                     if remaining <= 0:
                         raise TimeoutError("run() stream timeout exceeded")
                     with anyio.fail_after(remaining):
@@ -148,7 +149,6 @@ async def _stream_with_liveness(
     if liveness_timeout is None and idle_timeout is None:
         api_call = await model.create_event(**kw)
         api_call_holder.append(api_call)
-        await model.executor.append(api_call)
         agen = _stream_with_deadline(model, api_call, stream_deadline)
         try:
             async for chunk in agen:
@@ -179,7 +179,6 @@ async def _stream_with_liveness(
     attempts = max_attempts if liveness_timeout is not None else 1
     for attempt in range(attempts):
         api_call = await model.create_event(**kw)
-        await model.executor.append(api_call)
         if api_call_holder:
             api_call_holder[0] = api_call
         else:
@@ -194,7 +193,7 @@ async def _stream_with_liveness(
                 first_chunk = await stream_iter.__anext__()
             else:
                 remaining_to_deadline = (
-                    stream_deadline - anyio.current_time() if stream_deadline is not None else None
+                    stream_deadline - current_time() if stream_deadline is not None else None
                 )
                 # Liveness "owns" the timeout only when it's the tighter bound;
                 # otherwise this is the caller's total-stream deadline.
@@ -268,7 +267,7 @@ async def _stream_with_liveness(
                 else:
                     while True:
                         remaining_to_deadline = (
-                            stream_deadline - anyio.current_time()
+                            stream_deadline - current_time()
                             if stream_deadline is not None
                             else None
                         )
@@ -328,15 +327,53 @@ _RESULT_META_DELTA_KEYS = ("total_cost_usd", "num_turns")
 def _accumulate_result_meta(result_meta: dict, metadata: dict) -> None:
     """Merge a "result" chunk's metadata into the in-progress accumulator.
 
-    Numeric usage/cost/turn fields are summed; everything else is overwritten
-    with the latest value.
+    Numeric usage/cost/turn fields are summed -- including the parts of the
+    nested ``usage.cache_creation`` cache-write lifetime map, which a provider
+    may split across chunks; everything else is overwritten with the latest
+    value. Each chunk's own split is read with
+    ``service.accounts._pricing.cache_write_split`` against that chunk's own
+    cache-write total, so a sequence of chunks gives the same answer a single
+    report with the summed counts would give. See the cache-write lifetime
+    rule in docs/internals/core.md (``session/``).
     """
     for key, value in metadata.items():
         if key == "usage" and isinstance(value, dict):
             usage = result_meta.setdefault("usage", {})
             for uk, uv in value.items():
-                if isinstance(uv, (int, float)) and not isinstance(uv, bool):
-                    usage[uk] = usage.get(uk, 0) + uv
+                if uk == "cache_creation":
+                    if uv is None:
+                        # Like an absent key: this chunk states no split.
+                        continue
+                    # The cache-write lifetime split is a nested map: one
+                    # result chunk may report the five-minute writes and the
+                    # next the one-hour writes, so its parts are summed like
+                    # the flat counters rather than replaced. The chunk's own
+                    # split is first read against that chunk's own total with
+                    # the shared rule; a chunk whose split is not a valid one,
+                    # a value that is not a mapping included, leaves the merged
+                    # part uncertifiable (None), which the reader rejects. A
+                    # chunk with no split adds no part.
+                    merged = usage.setdefault(uk, {})
+                    if not isinstance(merged, dict):
+                        usage[uk] = merged = {}
+                    chunk_split = cache_write_split(value)
+                    for index, lifetime in enumerate(CACHE_WRITE_LIFETIMES):
+                        if merged.get(lifetime) is None and lifetime in merged:
+                            continue  # an earlier chunk already broke this part
+                        part = chunk_split[index] if chunk_split is not None else None
+                        if part is None:
+                            merged[lifetime] = None
+                        elif isinstance(merged.get(lifetime), int):
+                            merged[lifetime] = merged[lifetime] + part
+                        else:
+                            merged[lifetime] = part
+                elif isinstance(uv, (int, float)) and not isinstance(uv, bool):
+                    previous = usage.get(uk, 0)
+                    if isinstance(previous, (int, float)) and not isinstance(previous, bool):
+                        usage[uk] = previous + uv
+                    # Otherwise an earlier chunk reported this counter as a
+                    # non-count; it stays as reported, so the reader still
+                    # rejects it instead of reading a later count alone.
                 else:
                     usage[uk] = uv
         elif (
@@ -516,7 +553,7 @@ async def run(
         _timeout = kw.pop("timeout", None)
         _stream_deadline: float | None = None
         if isinstance(_timeout, int | float) and _timeout > 0:
-            _stream_deadline = anyio.current_time() + float(_timeout)
+            _stream_deadline = current_time() + float(_timeout)
 
         request_model = getattr(endpoint, "_request_model", None)
         if request_model is not None:
@@ -575,6 +612,28 @@ async def run(
             _api_call_holder,
             idle_timeout=_idle_timeout,
         )
+        _stream_gen_closed = False
+
+        async def _close_stream_gen() -> None:
+            """Close once so call-final metadata exists before response persistence."""
+            nonlocal _stream_gen_closed
+            if _stream_gen_closed:
+                return
+            _stream_gen_closed = True
+            _unwinding = sys.exc_info()[1] is not None
+            try:
+                await stream_gen.aclose()
+            except Exception as _close_exc:
+                logger.debug("run: stream_gen.aclose() raised during cleanup: %r", _close_exc)
+            except BaseException as _close_exc:
+                if not _unwinding:
+                    raise
+                logger.debug(
+                    "run: aclose() raised %r while another exception was already "
+                    "propagating; suppressing the secondary cleanup failure",
+                    _close_exc,
+                )
+
         try:
             try:
                 async for chunk in stream_gen:
@@ -666,8 +725,15 @@ async def run(
                             if res := await _flush_response():
                                 yield res
                             content = chunk.content or "(empty error)"
-                            raise classify_provider_error(content)
+                            raise classify_provider_error(
+                                content, status=chunk.metadata.get("error_status")
+                            )
 
+                # A benign provider sentinel exits the loop before the wrapper
+                # naturally exhausts. Close it now: iModel stamps exact-call
+                # served-model evidence in its stream finally, and the final
+                # AssistantResponse below must serialize only after that stamp.
+                await _close_stream_gen()
                 if res := await _flush_response():
                     _final_api_call = _api_call_holder[0] if _api_call_holder else None
                     if _final_api_call is not None and hasattr(_final_api_call, "to_dict"):
@@ -685,9 +751,12 @@ async def run(
                 raise
             except RuntimeError as _exc:
                 # ProviderError is a RuntimeError subclass — avoid double-wrapping; re-raise if already classified.
+                # A write the store refused in compatibility mode is no provider failure, and keeps
+                # its type (ADR-0128 D6).
                 from lionagi.providers._provider_errors import ProviderError
+                from lionagi.state.compat import StateCompatibilityRefused
 
-                if isinstance(_exc, ProviderError):
+                if isinstance(_exc, (ProviderError, StateCompatibilityRefused)):
                     _run_exc = _exc
                     raise
                 classified = classify_provider_error(str(_exc))
@@ -702,19 +771,7 @@ async def run(
             # can raise CancelledError (a BaseException `except Exception` won't
             # catch) — preserve whatever exception is already propagating instead
             # of letting a secondary cleanup failure replace it.
-            _unwinding = sys.exc_info()[1] is not None
-            try:
-                await stream_gen.aclose()
-            except Exception as _close_exc:
-                logger.debug("run: stream_gen.aclose() raised during cleanup: %r", _close_exc)
-            except BaseException as _close_exc:
-                if not _unwinding:
-                    raise
-                logger.debug(
-                    "run: aclose() raised %r while another exception was already "
-                    "propagating; suppressing the secondary cleanup failure",
-                    _close_exc,
-                )
+            await _close_stream_gen()
             model.streaming_process_func = prev_stream_func
             if param.stream_persist:
                 snapshot_dir = param.snapshot_dir or param.persist_dir
@@ -781,7 +838,7 @@ async def run(
 def _promote_to_run_param(chat_param: ChatParam) -> RunParam:
     if isinstance(chat_param, RunParam):
         return chat_param
-    kw = {f.name: getattr(chat_param, f.name) for f in fields(ChatParam)}
+    kw = {k: getattr(chat_param, k) for k in ChatParam.field_names()}
     return RunParam(**kw)
 
 

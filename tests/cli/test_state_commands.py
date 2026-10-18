@@ -597,8 +597,8 @@ async def test_doctor_dry_run_does_not_modify_status(temp_db_path: Path):
     async with StateDB() as db:
         stale = await _seed_session(db, status="running")
         await db.execute(
-            "UPDATE sessions SET started_at = ? WHERE id = ?",
-            (old, stale),
+            "UPDATE sessions SET started_at = ?, current_phase = ? WHERE id = ?",
+            (old, "executing", stale),
         )
         recent = await _seed_session(db, status="running")
         await db.execute(
@@ -646,6 +646,9 @@ async def test_doctor_sweeps_stale_running_sessions_to_aborted(
         s_recent = await db.get_session(recent)
     assert s_stale["status"] == "aborted"
     assert s_stale["ended_at"] is not None
+    # The swept row is terminal, so it must not keep the live phase the dead
+    # process left behind.
+    assert s_stale["current_phase"] is None
     assert s_recent["status"] == "running"
 
 
@@ -690,6 +693,51 @@ async def test_doctor_leaves_an_old_session_whose_process_is_still_running(
     async with StateDB() as db:
         assert (await db.get_session(alive))["status"] == "running"
         assert (await db.get_session(dead))["status"] == "aborted"
+
+
+async def test_doctor_preserves_a_live_imported_degraded_run(tmp_path, temp_db_path, monkeypatch):
+    from lionagi.cli._runs import PERSISTENCE_DEGRADED_REASON_FIELD
+
+    old = time.time() - (48 * 3600)
+    run_id = str(uuid.uuid4())
+    runs_root = tmp_path / "runs"
+    run_dir = runs_root / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "status": "running",
+                PERSISTENCE_DEGRADED_REASON_FIELD: "database unavailable",
+                "pid": 12345,
+                "pid_create_time": 1.0,
+            }
+        )
+    )
+    monkeypatch.setattr("lionagi.cli._runs.RUNS_ROOT", runs_root)
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda _pid: True)
+    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", lambda *a, **kw: "ours")
+
+    async with StateDB() as db:
+        progression_id = str(uuid.uuid4())
+        await db.create_progression(progression_id)
+        await db.create_session(
+            {
+                "id": run_id,
+                "progression_id": progression_id,
+                "status": "running",
+                "started_at": old,
+                "node_metadata": None,
+                "source_kind": "imported_fs",
+            }
+        )
+
+    result = await _doctor(stale_hours=24, dry_run=False)
+
+    assert result == {"running": 1, "swept": 0, "skipped": 1}
+    async with StateDB() as db:
+        row = await db.get_session(run_id)
+    assert row["status"] == "running"
 
 
 async def test_doctor_sweeps_a_session_whose_pid_was_recycled(temp_db_path: Path):

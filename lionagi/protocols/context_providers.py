@@ -35,12 +35,14 @@ class ContextProvider(Protocol):
 @dataclass(frozen=True)
 class ProviderReport:
     """Per-turn observability: rendered blocks plus which providers fired,
-    were skipped (budget) or failed (exception or invalid output)."""
+    were skipped (budget), failed (exception or invalid output), or degraded
+    internally while deliberately keeping the turn alive."""
 
     blocks: list[str] = field(default_factory=list)
     fired: list[dict] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
+    degraded: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -62,6 +64,7 @@ class ContextProviderRegistry:
             "recall_turns": 0,
             "blocks_injected": 0,
             "failed": 0,
+            "degraded_turns": 0,
             "writeback_records": 0,
             "writeback_failed": 0,
         }
@@ -100,6 +103,10 @@ class ContextProviderRegistry:
         for entry in self._entries:
             try:
                 text = await entry.provider.provide(branch, instruction)
+                reason = getattr(entry.provider, "degradation_reason", None)
+                if isinstance(reason, str) and reason:
+                    report.degraded.append({"provider_name": entry.name, "reason": reason})
+                    logger.warning("context provider %r degraded: %s", entry.name, reason)
                 if text is not None and not isinstance(text, str):
                     raise TypeError("context provider output must be a string or None")
                 if not text:
@@ -135,6 +142,7 @@ class ContextProviderRegistry:
             self.stats["recall_turns"] += 1
         self.stats["blocks_injected"] += len(report.fired)
         self.stats["failed"] += len(report.failed)
+        self.stats["degraded_turns"] += int(bool(report.degraded))
         return report
 
     async def gather_writeback(self, branch: Branch, action_responses: list) -> None:

@@ -16,10 +16,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from lionagi._paths import is_account_home
+from lionagi.mcp._errors import SubmitInputError
+
 __all__ = (
     "MCP_CONFIG_FILENAME",
     "McpConfigError",
     "McpResolution",
+    "SNAPSHOT_SEARCHED_FROM_KEY",
     "SNAPSHOT_SOURCE_KEY",
     "discover_mcp_config",
     "explicit_mcp_config_path",
@@ -33,9 +37,13 @@ MCP_CONFIG_FILENAME = ".mcp.json"
 # --mcp-config, the flag a caller names a file with, so without this key the set
 # a search found would reach the run as one the caller asked for.
 SNAPSHOT_SOURCE_KEY = "lionagiSnapshotOf"
+# Beside it, the directory that search began in. When the submission names a cwd
+# other than that directory, the run reading the snapshot starts there, so its own
+# directory cannot stand in for this one.
+SNAPSHOT_SEARCHED_FROM_KEY = "lionagiSnapshotSearchedFrom"
 
 
-class McpConfigError(ValueError):
+class McpConfigError(SubmitInputError):
     """A named MCP config cannot be used. Its own type, so a caller can refuse
     the spawn on it without also catching every other ValueError raised on the
     way there."""
@@ -90,7 +98,7 @@ def discover_mcp_config(start: str | Path) -> Path | None:
     current = Path(start).expanduser().resolve()
     for directory in (current, *current.parents):
         candidate = directory / MCP_CONFIG_FILENAME
-        if candidate.is_file():
+        if candidate.is_file() and not is_account_home(directory):
             return candidate
     return None
 
@@ -121,11 +129,15 @@ def _read_config(path: Path) -> dict[str, Any]:
     """The config object at *path*, its ``mcpServers`` checked as
     :func:`_read_servers` documents."""
     try:
-        raw = path.read_text()
+        raw = path.read_bytes()
     except OSError as exc:
         raise McpConfigError(f"could not read {path}: {exc}") from exc
     try:
-        data = json.loads(raw, parse_constant=_reject_json_constant)
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise McpConfigError(f"{path} is not valid UTF-8: {exc}") from exc
+    try:
+        data = json.loads(text, parse_constant=_reject_json_constant)
     except json.JSONDecodeError as exc:
         raise McpConfigError(f"{path} is not valid JSON: {exc}") from exc
     except ValueError as exc:
@@ -148,6 +160,14 @@ def explicit_mcp_config_path(explicit: str | Path, *, launch_dir: str | Path) ->
     if path.is_absolute():
         return path
     return (Path(launch_dir).expanduser().resolve() / path).resolve()
+
+
+def _snapshot_path(data: dict[str, Any], key: str, path: Path) -> Path:
+    """A path a snapshot records, which its writer always makes absolute."""
+    value = data[key]
+    if not isinstance(value, str) or not value or not Path(value).is_absolute():
+        raise McpConfigError(f"{path}: {key!r} must be an absolute path, got {value!r}")
+    return Path(value)
 
 
 def resolve_spawn_mcp_servers(
@@ -173,12 +193,16 @@ def resolve_spawn_mcp_servers(
         if not path.is_file():
             raise McpConfigError(f"--mcp-config {str(explicit)!r} is not a readable file ({path})")
         data = _read_config(path)
+        if SNAPSHOT_SOURCE_KEY not in data:
+            return McpResolution(data["mcpServers"], None, path, searched_from, explicit=True)
+        # A snapshot written before the search directory was recorded falls back to this one.
         return McpResolution(
             data["mcpServers"],
             None,
-            path,
-            searched_from,
-            explicit=SNAPSHOT_SOURCE_KEY not in data,
+            _snapshot_path(data, SNAPSHOT_SOURCE_KEY, path),
+            _snapshot_path(data, SNAPSHOT_SEARCHED_FROM_KEY, path)
+            if SNAPSHOT_SEARCHED_FROM_KEY in data
+            else searched_from,
         )
 
     found = discover_mcp_config(searched_from)

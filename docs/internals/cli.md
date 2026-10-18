@@ -84,22 +84,41 @@ the directory that doesn't have it). "Nothing was configured" and "something was
 could not be used" are returned as distinct states, so a failed resolution always carries its
 reason.
 
+Every newly allocated CLI `run.json` persists the resolved execution `cwd`
+alongside that submit-time discovery provenance. `mcp_config_source` is the
+resolved source `.mcp.json` path or explicit JSON `null`; the latter differs
+from a legacy manifest where the field is absent. `mcp_config_searched_from`,
+`mcp_config_explicit`, and `mcp_config_reason` preserve where discovery began,
+whether the caller named the file, and why no usable source was selected.
+`RunDir.write_manifest()` reinjects these allocation-owned fields on every
+whole-file lifecycle write, including orchestration live-start and terminal
+persistence, so a later status update cannot erase or redefine them.
+
 A run submitted through the MCP server reaches its snapshot through `--mcp-config`, the flag a
 caller names a file with, so the snapshot carries `lionagiSnapshotOf`, the path of the config the
 submission found. A file carrying that key resolves as found (`McpResolution.explicit` is false),
 so the set the submission found is not taken for one the caller named: the job-control policy
 under `_hand_mcp_servers` still applies to it, and a leg on a provider with no MCP transport is
 not refused for it the way it is for a named config. The key is read wherever the file is named,
-so a caller who names a copy of a snapshot gets it read as found too.
+so a caller who names a copy of a snapshot gets it read as found too. The resolution keeps the
+original path in `source`, which is the path persisted as `mcp_config_source`; the snapshot path
+is only the file the child reads. The snapshot also carries `lionagiSnapshotSearchedFrom`, the
+directory the submission searched from, which the resolution reports as `searched_from` and the
+run persists as `mcp_config_searched_from`, since a submission that names a cwd starts the child
+there, which need not be the directory the search began in. A snapshot from a submission that
+predates that key reports the child's own directory. Both keys must hold absolute paths; any
+other value makes the file unusable. The child's own directory stays the one a relative
+`--mcp-config` name and a resume read from.
 
 `McpResolution.declared_empty` separates a set of no servers that the caller gave from one that
 was not found. `--no-mcp-config` and a named config listing no servers are answers: every spawn
 path (plain, `--preset`/role, resumed) hands the leg an exclusive empty set, so its CLI loads
-none of its own servers either. A search that found nothing, or found a config declaring no
-servers, leaves a new leg to what its CLI discovers; a resumed leg keeps the servers its earlier
-run was handed. The one exception is a codex leg whose servers' `env` or `http_headers` went
-through a generated profile: that file is removed when the run that wrote it exits, so the resume
-is refused, naming the profile, rather than handing codex a profile whose file is gone.
+none of its own servers either, and the launch prints nothing about it. A search that found
+nothing, or found a config declaring no servers, leaves a new leg to what its CLI discovers; a
+resumed leg keeps the servers its earlier run was handed. The one exception is a codex leg whose
+servers' `env` or `http_headers` went through a generated profile: that file is removed when the
+run that wrote it exits, so the resume is refused, naming the profile, rather than handing codex
+a profile whose file is gone.
 
 A resumed or continued `li agent` leg that names neither flag replays the MCP choice its branch
 was launched with. A new branch records that choice once, in `branch.metadata` under
@@ -342,13 +361,12 @@ are different requests: `{}` means "apply no servers" and is applied as the
 whole set; `None` means there's nothing to hand over and the model keeps
 whatever it already had. Branches built through `create_agent` get the
 matching set as `resolved_mcp_servers` (the built-in orchestrator the run's
-set; casts-role workers and the fanout synthesis branch the worker set): left
-unset, the factory discovers a config of its own, the home
-`.lionagi/.mcp.json` included, and that replaces the set just handed over.
-Only a run with no set at all leaves it unset, so in such a run the built-in
-orchestrator, a casts-role worker and the fanout synthesis branch each get the
-factory's home `.lionagi/.mcp.json`, which the job-control policy does not
-filter (#3444).
+set; casts-role workers and the fanout synthesis branch the worker set). A run
+passes that key on every one of those calls, so no branch it builds falls back
+on the factory's own discovery, which would pick up a config the run did not
+choose, the home `.lionagi/.mcp.json` included. A run that found no config
+resolves no set and hands each of those branches no set. A worker built from a
+user profile is built without the factory and is handed no servers either.
 
 **`collect_worker_artifacts`** — the worker roster comes from the artifact
 directories the run actually handed out, not a scan for non-empty ones, so a
@@ -373,16 +391,36 @@ crash or orphan exit before teardown still leaves the DB accurate.
 
 `_reconstruct_spawned_nodes` rebuilds a checkpoint's `spawned` entries into a
 fresh graph on resume, checked BEFORE any node is added so a refusal never
-leaves the graph partially mutated. Three soundness checks per entry: (1) it
+leaves the graph partially mutated. Four soundness checks per entry: (1) it
 must carry `operation` (CHECKPOINT_VERSION 2+; older checkpoints have nothing
-to rebuild from); (2) if it has a `parent_id`, that parent must itself be
-checkpointed terminal (completed/failed) or be another entry in the same
-`checkpoint_spawned` list — a parent merely existing in the DAG isn't enough,
-since resuming while that parent reruns live risks duplicating or dropping the
-spawn decision; (3) an entry with `assignee` must also carry `spawn_id` (both
-are stamped together unconditionally by `role_node_builder`, so one without
-the other means the checkpoint predates that field or is corrupt). Any failure
-refuses resume for only the affected node(s), never the whole run.
+to rebuild from); (2) its `status` must be `completed` or `failed`; (3) an
+entry with `assignee` must also carry `spawn_id` (both are stamped together
+unconditionally by `role_node_builder`, so one without the other means the
+checkpoint predates that field or is corrupt); (4) if it has a `parent_id`,
+that parent must itself be checkpointed terminal (completed/failed) or be
+another entry in the same `checkpoint_spawned` list — a parent merely existing
+in the DAG isn't enough, since resuming while that parent reruns live risks
+duplicating or dropping the spawn decision. A failure raises
+`FlowResumeError` and refuses the whole resume, naming only the failing
+node(s): no entry is rebuilt, so a checkpoint carrying one unreconstructible
+spawn is not resumed at all.
+
+A checkpoint's planned `completed` and `failed` entries are read the same way
+on the same pass: `_apply_checkpoint_precompletion` pre-marks a planned node
+`COMPLETED` from the entry's recorded `status` and hands it the recorded
+`response`, with no check of anything the node produced, and a checkpoint that
+records a failed planned or spawned node refuses the resume unless
+`--retry-failed` is passed. A completed spawned entry is pre-marked the same
+way from its own recorded `status`. Nothing on either path reads or re-checks
+the declared artifact set. The artifact root the resumed run reads is not the
+original run's: without `--save`, `allocate_run` gives it a fresh
+`<state_root>/artifacts` directory, and with `--save` it is the path `--save`
+names (`lionagi/cli/_runs.py:423-426`), neither read from the original `RunDir`
+that `resolve_checkpoint_target` returned. What a result-verifying resume would
+need — reading the persisted `artifact_contract_json`, checking the declared
+set, the completion-time digest for contract-less nodes, the byte-level check,
+the consumed-producer refusal, and threading the original artifact root — is
+ADR-0069's delta rows 2 and 6-9, not shipped behavior.
 
 Spawn-id sequencing: on resume, the ordinal sequence must start past the MAX
 existing ordinal among restored spawns + 1 (not `count`, since a crashed run
@@ -563,10 +601,92 @@ statements; a session can go terminal between them. The insert re-checks the
 running condition so it — not the earlier read — is what decides admission,
 avoiding a control queued against a run whose consumer has already exited.
 
-Landing time is a property of the consumer, not the verb: a flow/play poller
-renders queued context before the next op (~2s poll interval), while an
-agent leg only drains at its next turn boundary, which can be far later than
-2s into a long provider call.
+Flow/play sessions persist `planning` before calling the planner. Their scalar
+`node_metadata.flow_control_poller` declaration records `pending`, `active`, then
+`stopped`, using the existing metadata merge helper. Pending controls wait until
+`_execute_dag` starts its poller, regardless of a stale or NULL phase. Stopped
+consumers refuse new controls; missing declarations are refused as predating
+control-delivery tracking. Agent turn-end drain declarations are unchanged.
+The stopped marker is published before the DAG poll loop is cancelled; once it
+commits, admission refuses new controls. The marker write's budget bounds the
+caller, not the store, and it is shielded against cooperative cancellation only:
+a cooperative write is cancelled at the budget, while one parked in the store
+driver's busy wait cannot be interrupted from Python and keeps the writer lock
+until that call returns, bounded by the busy timeout
+(`LIONAGI_SQLITE_BUSY_TIMEOUT_MS`, 5 s by default). A control admitted before it
+commits
+(while the write runs, after it outlives its budget, or after a native
+cancellation interrupts the wait) may never be applied once the loop is gone, so
+`_run_flow`'s teardown closes every control still queued and unclaimed as
+`rejected: run reached terminal status before its DAG poller applied the control`
+after the session's terminal status is written -- and it closes them even if a
+later teardown step fails after that commit, since the status write is what makes
+them undeliverable -- as the agent runner closes its undelivered steers; a claimed
+row is left to its claimant. Marker writes remain
+best-effort, and a failed write may leave a stale active marker; it admits nothing
+once the session is terminal, because the insert also requires a running session.
+Enqueue re-checks the marker and the running status in the same statement that
+inserts the control, so a run that lost its poller or ended between the admission
+read and the write refuses, and the refusal says which.
+Enqueue explicitly says no control will be applied after the poller stops. The
+approximately two-second interval is neither a deadline nor a guarantee before
+the first operation.
+
+Applied pause/resume closes/opens the gate and writes `paused`/`executing`, retrying
+one failed phase write without replaying the executor action. Two failures leave
+the existing best-effort stale-telemetry limit. The pause gate precedes concurrency
+limiter admission: operations already past it, including those waiting for limiter
+capacity, may still start. In-flight operations continue. Messages affect only
+operations prepared after delivery and are rejected when none remain pending.
+Agent legs drain at the next turn boundary, which can be far later than two seconds
+into a provider call.
+
+The writers below carry `current_phase=None` in their terminal status UPDATE:
+teardown, the setup-failure sweep, the `li kill` writer, the doctor sweep, the
+monitor's linked-engine reconcile, the engine runner, the studio reapers and the
+studio admin transition. The transcript mirrors write no phase. The SESSION_END
+hook (`hooks/builtins.py`) does not: when it is the writer that terminalizes a
+row it writes the status without clearing the phase, and a row it finds already
+terminal still takes the usage columns it carries, written without the status or
+the phase, which is why reads normalize a stored phase on a terminal row rather
+than relying on every writer. `current_phase` was
+added to the two session status-patch allowlists; unrelated fields remain refused.
+The existing cancellation shield covers cooperative scopes, not native task
+cancellation: repeated native cancellation can still interrupt the pre-existing
+teardown before it commits, and a SIGKILLed process runs no writer at all, which
+is why reads still normalize a stored phase on a terminal row. Status/monitor
+normalize historical terminal phases while retaining the agent or playbook name
+fallback. Queuing a control does not change the applied phase.
+
+The teardown close above closes an unclaimed flow control on the flow's own
+teardown; an agent run closes its own undelivered steers the same way, at its
+turn-end teardown. `li kill`, the doctor sweep and the studio reapers
+end a session without sweeping its control queue, and a SIGKILLed process runs no
+teardown at all, so a control queued before one of those ends a run stays pending;
+`li o ctl status` renders it on a terminal row as never landed, and
+`li o ctl resolve` closes only a row a consumer claimed and never reported back.
+Whether those paths should sweep is a separate decision this change does not take.
+
+Control actions accept an exact recorded session/invocation/play/run ID, an
+unambiguous 8-character hex prefix, or an unambiguous run-id prefix that reaches
+the `T` after the date (ADR-0108, Amendment 2). Any other string is an exact id:
+shorter than eight characters or containing a non-hex character, it enters the
+prefix search only when it reaches that `T` and prefixes a recorded run id. Before
+the `T` a run id is all digits, so a number or a date never acts on a run, and an
+eight-digit date is searched only as a printed hex prefix — unless a recorded
+run id also begins with those digits, which makes the string ambiguous and
+refused. A string that prefixes
+both a run id and a session, invocation, play or branch id is refused as
+ambiguous. A label therefore cannot match another run's session, invocation or
+play. Read-only status keeps its broader run-id prefix lookup, but it shares the
+resolver and so it too refuses a string that begins both spaces rather than
+returning one of them.
+Foreground flow prints its full persisted Session ID before planning; background
+launch prints the full ID assigned to its child. `--invocation` is validated against
+the real invocation row before setup/planning and before background spawn; register
+with `li invoke start` first. It does not register an alias. In monitor,
+`--type session` includes flow sessions; `--type invocation` selects registered
+invocations. The row label `flow` is not a monitor entity-type filter.
 
 ### `_finalize.py` — the exclusive claim over closing a manifest round
 
@@ -750,8 +870,8 @@ but never bind to a row this run did not create.
 **`_do_engine_run` BaseException handling** — `asyncio.CancelledError` and
 `KeyboardInterrupt` are `BaseException` paths that bypass the `except Exception` handler.
 Mark the row cancelled before re-raising so Studio doesn't show it as permanently "running".
-`run_async()` (`lionagi/ln/concurrency/utils.py:86`) cancels the task on SIGINT and then raises
-`KeyboardInterrupt` at `:108`; re-raising here preserves that exit-code behavior (interpreter
+`run_async()` (`lionagi/ln/concurrency/utils.py:124`) cancels the task on SIGINT (`:175`) and then raises
+`KeyboardInterrupt` at `:202`; re-raising here preserves that exit-code behavior (interpreter
 default for SIGINT).
 
 **`_do_engine_run` export_dir sourcing** — serializes the result to stdout as JSON.
@@ -763,6 +883,21 @@ engine model that does include it.
 
 ## `invoke.py` — invocation records
 
+**`_end_invocation`** — the guarded `status` write returns an `InvocationEnd` rather than a
+bare row, so the handler can tell an applied close from a refused one. A refusal means the
+row was already in a *different* terminal status (another closer, the reaper, or a sibling
+launch won the race), so the requested `--status` and `--metadata` were not recorded; the
+command reports that on stderr and exits 1 instead of printing the stored status as a
+successful close. A close naming the status the row already carries is applied: the status
+and end time are left alone and only the `--metadata` payload is merged, which is how a
+finalizer records its result on a row an earlier close already moved. That merge is
+`StateDB.merge_invocation_node_metadata`, one UPDATE that merges the payload inside the
+database, so a second closer merging its own payload meanwhile is merged with rather than
+overwritten; there is no read-modify-write in Python and no retry. The payload lands with
+that write or the write fails and the failure propagates, so a zero exit still means the
+metadata was saved. The status write and the merge are two writes in that order, so a reader
+can see the terminal status a moment before the closer's metadata.
+
 **`_start_invocation`** — invocation records carry no pid marker. `li invoke start` is a
 short-lived CLI command that creates the row and exits (`INV=$(li invoke start ...)`); it is
 NOT the long-lived owner. Recording its pid would be a recycled-PID hazard — a later live
@@ -772,17 +907,23 @@ pid markers.
 
 ## `skill.py` — skill path resolution
 
-**`resolve_skill_path`** — symlink containment (security). Rejects any path whose resolved
-target escapes the resolved skills root. Blocks the disclosure vector where a `SKILL.md` is
-itself a symlink to an arbitrary file on disk.
+**`resolve_skill_path`** — symlink containment (security). The resolved target must be a file
+named `SKILL.md` and must stay under the nearest git working tree containing the resolved skills
+root, or under the root itself when no repository contains it. Blocks the disclosure vector where
+a `SKILL.md` is itself a symlink to an arbitrary file on disk, while a skills root that is a
+symlink into a repository whose skill directories link to sibling trees of that repository still
+resolves. A repository is recognised by git's own shape (a `.git` directory with `HEAD`, and
+`refs/` and `objects/` there or in the directory its `commondir` names, or a gitfile naming one);
+pointer files are read only when the open descriptor is a regular file, so a FIFO or device at
+that path cannot block the lookup.
 
 ## `stats.py` — aggregate run stats
 
-**`_reject_non_positive_since`** — `li stats --since` positivity tightening vs `li monitor`.
-Monitor's shared `_since_timestamp()` accepts `0d`/`-1d` without complaint (fine for its own
-semantics), but for an aggregate report that would silently produce a false-empty or
-nonsensical result instead of failing loudly — this only tightens `li stats runs`. Malformed
-values (bad unit, non-numeric) are still left to `_since_timestamp` to reject.
+**`_since_timestamp`** — `li stats runs` and `li monitor` share positive integer
+window validation through `ln.parse_duration`. Windows require a lowercase
+`s`, `m`, `h` or `d` unit. The parser rejects invalid or empty windows; stats
+reports these as clear `--since` input errors and needs no separate positivity
+check.
 
 **`_query_run_stats`** — `group_by` validate-before-SQL-interpolation contract. `group_by`
 entries are validated against `GROUP_BY_COLUMNS` before this is ever called, so interpolating
@@ -846,15 +987,28 @@ current_phase, progress_completed, progress_total, model, provider,
 project, last_activity_at, session_id, branch_id, invocation_id, label,
 degraded, degraded_reason,
 status_reason_code, status_reason_summary, status_evidence_refs,
-pending_controls
+pending_controls, pending_controls_note
 ```
 
 Exit codes: `0` terminal-success, `1` terminal-failure, `3` still running/active, `2` lookup
 failed (unknown id, or state.db unreachable; also argparse's own usage-error code).
 
-`pending_controls`: unapplied `session_controls` rows (id, verb, created_at) for the resolved
+`current_phase` describes live execution (`planning`, `executing`, `paused`, or
+`synthesizing`). It is null when the requested entity or its backing session is
+terminal, including older records that still store a live phase.
+
+`pending_controls`: unapplied `session_controls` rows for the resolved
 session, oldest first — queued via `li o ctl pause|resume|msg`, then consumed by the control
-poller while a flow runs. `[]` when no backing session or nothing queued.
+poller while a flow runs. Each row carries its id, verb and created_at, its claim (`result`,
+`claimed_at`) when a consumer took it, `never_landed` when the row is unclaimed on a terminal
+run, and `remedy`, the one command that can still deliver it — set only for the kinds that
+have such a command (an agent run's `li agent -r`), `null` otherwise. `[]` when no backing
+session or nothing queued.
+
+`pending_controls_note`: one sentence naming how a queued control for this session would be
+delivered — the flow/play DAG execution poller or, for an agent run, its next turn boundary —
+or `null` when the surface has no consumer to name. Chosen from the row, because the consumer
+is a property of the session kind, not of the queue.
 
 **`_resolve_session_by_branch_id`** — branches/sessions schema note. There is no `branch_id`
 column on `sessions` — `branches` is a separate table, and `branches.session_id` is a NOT NULL
@@ -880,12 +1034,10 @@ of hanging indefinitely.
 record whose backing session shows no sign the normal teardown path (`persist_session_end` /
 `SESSION_END` hook) ever ran — a proxy for an orphan/limit-exit that forced a "completed"
 status. Deliberately narrower than a literal "`current_phase` non-terminal OR `duration_ms` is
-NULL" check: `current_phase` is only ever written as "executing"/"synthesizing"
-(`lionagi/cli/orchestrate/flow.py`) and is never reset to a terminal marker on any path, healthy
-or not, so alone it would flag every successful flow/play run. `duration_ms` is never populated
-by the CLI teardown path at all (`_collect_branch_usage`'s return has no `duration_ms` key) —
-checking it alone would flag every completed session, healthy or not. `num_turns` IS populated
-by that path (`persist_session_end` receives it from `_collect_branch_usage`, default 0, not
+NULL" check: older successful flow/play records can retain a live phase, and older teardown
+paths left duration unset. Current flow finalization clears the phase, and terminal display
+suppresses legacy phases; neither field alone proves whether usage was recorded. `num_turns`
+is populated by that path (`persist_session_end` receives it from `_collect_branch_usage`, default 0, not
 None), so its absence is a real signal — scoped to `source_kind='live'` because mirrored Claude
 Code transcripts (`source_kind='imported_fs'`) use a dormancy-based "completed" with no usage
 metrics by design (`lionagi/state/claude_mirror.reconcile_session_status`) and must not be
@@ -974,6 +1126,68 @@ delivery is idempotent so those two reaches cannot both fire. The condition is t
 own branch and not the `will_auto_resume` computed earlier in teardown: that one is read before
 the effective status is applied, so suppressing on it could silence a leg that then does not
 recurse.
+
+**`_run_agent` API-model tool loop** — a CLI provider runs its own tool loop, so one
+`branch.operate` call is the whole leg. An API model (`anthropic/...`, `openai/...`) has none, so
+`li agent` runs lionagi's: `Branch.ReAct(tools=True, max_extensions=N)` over the branch's tools,
+bounded as a whole by `--timeout` (`anyio.fail_after`; past it the run ends `timed_out`). The path
+is opt-in per profile and refused otherwise, with the same "only supports CLI endpoints" error as
+before plus a pointer to the opt-in:
+
+- `api_tools: read` — the only tool set: `reader`, `search` and `context`, bound through
+  `create_agent` with `AgentSpec.coding_tools` and the path guard on `reader` scoped to `cwd`
+  (`search` resolves its path inside the workspace itself, and leaves out the matches of any
+  file whose path holds a name the reader refuses, such as `.env`; it reads each match from the
+  NUL grep writes after the file name, so a name holding a newline is read whole, and skips
+  binary files, so no notice names a matching file). Tools that write files or run
+  commands are not offered: they would run with this process's own permissions, and this path
+  has no operating-system sandbox. Any other value is refused before a run exists.
+- `max_extensions` — rounds after the first, a whole number from 1 to 100 (default 10).
+- `api_loop` — the tool loop (ADR-0132): `react`, the default, or `lndl`. An `lndl` leg runs
+  `branch.operate(..., middle=build_lndl_middle(round_budget=1 + max_extensions,
+  max_actions=16, lacts_with_out=False))` with the same tools, guards and timeout, and guidance
+  that keeps calls and the answer in separate rounds. A round either declares tool calls as
+  `<lact>` aliases, at most 16, which run through `act()` when it ends, or writes the answer
+  as `OUT{}`; a round that declares more than 16, declares calls beside its `OUT{}`, or has
+  neither a `<lact>` nor an `OUT{}` in an `lndl` block (a call written as an `<invoke>` tag
+  included), is a repair round and none of its calls runs. The answer model (`_LndlAnswer`) takes only text the
+  model wrote, so an `OUT{}` that binds a call's result is refused. A refusal is shown to the
+  next round only, and the last round's notice says it is the last. A turn that spends its
+  rounds without an accepted answer raises the Middle's `LNDLError`, which ends the turn as any
+  other turn failure does: the session records `failed` and the error's message, and `li agent`
+  reports the error and exits non-zero. Any other value, or `api_loop` without `api_tools`, is
+  refused before a run exists.
+
+`--preset coding` and `--image` are refused for an API model. The leg is handed no MCP server.
+A profile's `khive_injection` keeps its recall on the leg, and its writeback is turned off
+(`_recall_only`): the read set runs in this process, so writeback would store file text in khive.
+An API model is built from its model spec alone: the display options `-v` and `--theme` are CLI
+endpoint settings and are not put on its request, so its key and endpoint stay its own.
+The Anthropic endpoint requires an output limit, so an API leg on it sets `max_tokens` (8192)
+unless the endpoint's settings already carry one. The default role is `reviewer` (a
+declared `role:` key still wins).
+
+The branch records `{"tools", "max_extensions", "loop"}` under `metadata["api_launch"]`. When a
+turn ends, however it ends, `_run_api_turn` adds what the turn spent to the record's `spend`,
+the total for this `li agent` invocation (its turn and any queued messages it drains as further
+turns; a resume is a new invocation and clears the stored total first): `requests` (the
+requests the branch's chat and parse models sent, read from each `iModel.calls_sent` against a
+baseline taken at the turn's start, failed requests included and a request its endpoint retries
+counted once), `tool_calls` (the `ActionResponse` messages the turn added) and `wall_seconds`
+(monotonic, rounded to milliseconds). It prints the total on the hint channel (stderr) as
+`[api] spend: <requests> request(s), <tool_calls> tool call(s), <wall_seconds>s`, with one
+decimal, and then writes the snapshot to the run's branches dir, so `li agent -r` finds both and
+runs the loop again from that record, on the recorded loop; a record written before `loop`
+existed runs `react`. A stored branch keeps its messages, not its
+tools, so the resume binds the read set again, guarded to its own working directory; a profile's
+current `max_extensions` replaces the recorded bound, and a resume without `-a` runs on the
+recorded one. A resume under a profile that no longer declares `api_tools`, or with `--image`,
+or of a record naming a tool set, a bound or a loop this version does not run, is refused before
+a run exists, and the display options stay off the resumed model's request too. A non-CLI branch without the record runs the earlier
+`branch.operate` path unchanged. Queued operator messages drain as further turns of the loop
+(`_drain_pending_steers(run_turn=...)`), on the budget the deadline leaves. Messages persist
+through the same branch-level hooks as a CLI leg; there is no stream dir, since nothing streams
+from a subprocess.
 
 ## `_agent_depth.py` — inherited agent-depth env marker
 
@@ -1148,10 +1362,36 @@ conversation opens a fresh transcript whose first message points — via `parent
 last message of the session it continues. `_Lineage` indexes each file's current leaf uuid and,
 when a file's root parent resolves to a different session's leaf, records a provenance link.
 
-**`_load_states`** — `offsets.json` persisted-state contract. Persists `tool_names` +
+**`_load_states`** — `offsets.json` persisted-state contract. Persists the tool-name map +
 `leaf_uuid` alongside the byte offset so a restart resumes mid-conversation without dropping a
 later tool_result's function name or losing cross-session lineage — both live only in process
 memory otherwise. Legacy `{path: int}` caches (offset only) load as bare cursors, then upgrade.
+A tool result consumes its use's entry, so a file's map holds the uses still waiting for a
+result; it is saved as `pending_tool_names` and loaded whole, so a use that never gets a result
+stays in it for as long as the file's state is kept. The same map is also saved as `tool_names`,
+the key earlier releases read. A map saved by an earlier release has only `tool_names` and held
+every use ever seen (answered ones included); a load keeps the newest `_LEGACY_TOOL_NAMES_KEEP`
+(64) entries of such a map, so an answered use among those stays in the map until a repeat of its
+result consumes it, and a pending use with 64 or more later uses in the map is dropped. A second
+result for a use already answered finds no entry; a pass names it from the use's own row, in the
+batch or already stored, before it writes the row, so it replaces the row the first result wrote
+without blanking the name. The map, and for a Codex rollout the current turn, move with the
+cursor: a pass hands
+`mirror_session` copies and adopts them only after the batch is durable, so a re-read batch finds
+the names it consumed and the turn it started in. `_save_states`
+reads `offsets.json` and skips the write when the file already holds the content, so an idle
+pass writes nothing and a file removed from outside is written again on the next pass.
+
+**`write_mirrored_messages`** (`state/_mirror_common.py`) — one transaction per chunk of
+`MIRROR_WRITE_CHUNK` (500) messages through `StateDB.insert_messages`. Each progression is read
+once per chunk and, when it holds an array of string ids and the batch gives string ids,
+rewritten at most once per chunk; any other stored value or id takes the per-message statement.
+Appending message by message rewrote both of a session's progression arrays once per message, so
+a pass of k messages rewrote each array k times; now a string-id progression is rewritten once per
+chunk. Each rewrite still writes the whole array, so the cost of a pass still grows with the
+session's length until progression storage changes (ADR-0117). The mirror names a repeated
+result from the row of the use it answers, in the batch or the store, before handing the batch
+to this writer, so a repeated result keeps the name the first one wrote.
 
 **`_read_new_events`** — cursor-advance-after-durable-write contract. The cursor is NOT
 advanced inside this function — the caller sets `state.offset` to the returned offset only
@@ -1303,6 +1543,9 @@ across its branches; bare `li agent -a <profile>` teardown records the same shap
 A top-level resume seeds its totals from the durable session; an in-process timeout resume carries
 the first leg's counters into the final teardown. Only counts are persisted — never the injected
 source text — and absent, zero, or malformed counter sets are omitted from the session drill-in.
+`degraded_turns` increments once when one or more providers report degradation during a turn. It
+includes contained transport failures and operation refusals, with each provider's reason logged.
+It is separate from `failed` (an exception escaped the provider) and a successful empty recall.
 
 **`_format_coordination_line`** — coordination telemetry shape contract. Renders an
 invocation's coordination telemetry (`node_metadata["coordination"]`, written by the scheduler
@@ -1320,7 +1563,10 @@ clearing, no table), meant for a harness to poll `li monitor run <id>` as a back
 rather than hand-rolling raw sqlite polling against the live WAL-mode `state.db`. Separate code
 path from `_watch_loop` (the human dashboard) — this one blocks until specific `schedule_runs`
 go terminal, then exits with a meaningful code. Ticks via per-call `run_async` (not one
-long-lived `asyncio.sleep` loop) so both SIGINT and SIGTERM get a clean exit.
+long-lived `asyncio.sleep` loop) so both SIGINT and SIGTERM get a clean exit: a signal between
+ticks sets the wait's own flag, and one inside a tick surfaces from `run_async` as
+`KeyboardInterrupt` or `SigtermInterrupt`, which the wait catches. Its own handlers are installed
+with `temporary_signal_handlers` and given back when the wait returns.
 
 **Chain-following** (default on; `--no-chain` to opt out): the scheduler can fire a child run
 from a terminal run's schedule `on_success`/`on_fail` (engine records `chain_parent_id`/
@@ -1420,7 +1666,7 @@ on expiry, whatever is still pending is reported the same way an interrupt would
 exit code is whatever the *initial* bounded set already resolved to; new runs discovered during
 the tail print their own lines but don't feed the final aggregate.
 
-**`_run_tick` KeyboardInterrupt handling** — `run_async` raises a bare `KeyboardInterrupt` when
-SIGINT lands during its own call (it installs a temporary handler for that duration — see
-`run_async`'s docstring in `ln/concurrency/utils.py`). Treated exactly like `interrupted` being
-set between ticks: no traceback, no half-updated state, just the same clean stop.
+**`_run_tick` interrupt handling** — `run_async` raises a bare `KeyboardInterrupt` when SIGINT,
+or `SigtermInterrupt` when SIGTERM, lands during its own call (it installs a temporary handler
+for that duration — see `run_async`'s docstring in `ln/concurrency/utils.py`). Either is treated
+exactly like `interrupted` being set between ticks: no traceback, no half-updated state.

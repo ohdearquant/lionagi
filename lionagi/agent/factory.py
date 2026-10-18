@@ -5,14 +5,19 @@ from __future__ import annotations
 
 import logging
 import os
-import re
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Mapping
 from typing import TYPE_CHECKING, Any
 
 from lionagi._errors import ConfigurationError
 from lionagi.ln import Unset
 from lionagi.ln.concurrency import is_coro_func
 from lionagi.ln.types import UnsetType
+from lionagi.providers.openai._codex_profile import (
+    CODEX_MCP_PROFILE_PREFIX as _CODEX_MCP_PROFILE_PREFIX,
+)
+from lionagi.providers.openai._codex_profile import (
+    is_generated_codex_profile as _is_generated_codex_profile,
+)
 from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
 from lionagi.session.branch import Branch
 
@@ -36,6 +41,12 @@ CREATE_AGENT_BRANCH_ORIGIN_KEY = "create_agent_origin"
 logger = logging.getLogger(__name__)
 
 
+class _AgentSettingError(ConfigurationError):
+    """The agent being built cannot carry ``agent_env`` or ``contain_account_integrations``."""
+
+    __slots__ = ()
+
+
 async def create_agent(
     config: AgentSpec,
     *,
@@ -47,6 +58,7 @@ async def create_agent(
     log_config: Any = None,
     resolved_mcp_servers: dict[str, Any] | None | UnsetType = Unset,
     resolved_mcp_explicit: bool = False,
+    agent_env: Mapping[str, str] | None = None,
 ) -> Branch:
     """Create a fully wired Branch from AgentSpec: settings → hooks → prompt → model → tools.
 
@@ -56,6 +68,36 @@ async def create_agent(
     directory. ``None`` means "hand nothing over"; leaving it unset keeps the
     discovery behaviour. ``resolved_mcp_explicit`` says that set was named by
     the caller rather than found near its launch directory.
+
+    ``agent_env`` is an environment overlay for the spawned CLI child. It is
+    merged over ``os.environ`` here, because the CLI request hands its env to
+    the child as the complete environment: a bare overlay would strip PATH,
+    which shows up as a broken toolchain rather than a missing setting.
+    ``os.environ`` is read once, now, so a later change to this process's
+    environment does not reach the agent. Every case where the overlay could
+    not reach a child raises instead of dropping it: a caller-supplied
+    ``chat_model``, no ``spec.model``, or an endpoint that takes no
+    environment. A codex agent's overlay may not set ``CODEX_HOME`` or
+    ``HOME``: this process resolves the codex home for the agent's MCP server
+    profile and default reasoning effort, and would read a different one than
+    the child. Only the overlay is checked: an ``env`` passed with a later call
+    replaces the child environment this factory built, and one naming another
+    ``CODEX_HOME`` or ``HOME`` is not refused. The overlay is runtime state and
+    is not serialized, so a model restored with ``iModel.from_dict`` spawns its
+    child with this process's environment; an agent rebuilt with
+    ``create_agent`` gets the overlay only when ``agent_env`` is passed again.
+
+    ``spec.contain_account_integrations`` turns a codex agent's account
+    ``apps`` and ``plugins`` features off by default. It is applied to the
+    endpoint this factory builds, whatever spelling of the provider built it, so
+    a caller-supplied ``chat_model`` or a missing ``spec.model`` (which leaves
+    the branch to build its default model) with it set raises rather than
+    running uncontained. It is the endpoint's default, not a limit on later
+    calls: a call that passes ``contain_account_integrations=False`` or names
+    ``account_connectors``, or a model put on the branch in place of the one
+    built here, is not held to it. The endpoint is recognised by its class, so
+    a registered provider that wraps codex in another endpoint class is not
+    contained.
     """
     spec = config
 
@@ -71,6 +113,71 @@ async def create_agent(
         )
 
     from lionagi.service.imodel import iModel
+
+    if agent_env:
+        # The request model checks env only when a call is built, so a bad
+        # entry would surface at the first call instead of here. Neither check
+        # prints anything from the mapping: an entry is reported by its position,
+        # since an environment routinely carries credentials and a key can hold
+        # one as easily as a value.
+        from lionagi.providers._cli_subprocess import raise_if_env_is_not_a_string_map
+
+        if not isinstance(agent_env, Mapping):
+            raise _AgentSettingError(
+                f"agent_env must be a mapping of strings to strings, got {type(agent_env).__name__}"
+            )
+        try:
+            raise_if_env_is_not_a_string_map(agent_env)
+        except TypeError as exc:
+            raise _AgentSettingError(f"agent_env: {exc}") from exc
+
+        def _spawnable(text: str) -> bool:
+            # The spawn encodes each entry with os.fsencode, which refuses a lone
+            # surrogate outside U+DC80 to U+DCFF. One inside that range is a surrogate
+            # escape for an undecodable byte, so it passes and reaches the child as
+            # that byte.
+            try:
+                os.fsencode(text)
+            except UnicodeEncodeError:
+                return False
+            return "\0" not in text
+
+        unusable = [
+            f"entry {index}"
+            for index, (key, val) in enumerate(agent_env.items())
+            if not key or "=" in key or not _spawnable(key) or not _spawnable(val)
+        ]
+        if unusable:
+            raise _AgentSettingError(
+                "agent_env: a variable needs a non-empty name with no '=', and a name and "
+                "value with no NUL that encode to the filesystem encoding; these entries "
+                f"are not: {', '.join(unusable)}"
+            )
+        if chat_model is not None:
+            raise _AgentSettingError(
+                "agent_env cannot be combined with a caller-supplied chat_model: "
+                "the overlay is applied while this factory builds the endpoint. "
+                "Set env on the model you built, or let this factory build it."
+            )
+        if not spec.model:
+            raise _AgentSettingError(
+                "agent_env requires spec.model: with no model this factory "
+                "builds no endpoint, so no child process receives the overlay."
+            )
+
+    if spec.contain_account_integrations and chat_model is not None:
+        raise _AgentSettingError(
+            "spec.contain_account_integrations cannot be combined with a caller-supplied "
+            "chat_model: it is applied while this factory builds the endpoint. Set "
+            "contain_account_integrations on the codex model you built, or let this "
+            "factory build it."
+        )
+    if spec.contain_account_integrations and chat_model is None and not spec.model:
+        raise _AgentSettingError(
+            "spec.contain_account_integrations requires spec.model: with no model this "
+            "factory builds no endpoint, and the model the branch builds by default "
+            "is not contained."
+        )
 
     branch_kwargs = {}
 
@@ -96,6 +203,13 @@ async def create_agent(
 
         extra = {}
         effort = spec.effort or ms.effort
+        if not effort and provider == "codex":
+            # Unset is not "no opinion": codex would read the global config's
+            # effort, tuned for that config's own model, and 400 when it
+            # exceeds this one's ceiling. Same seam the CLI builders use.
+            from lionagi.service.providers import codex_unset_effort_default
+
+            effort = codex_unset_effort_default(model_name)
         if effort:
             kwarg = PROVIDER_EFFORT_KWARG.get(provider)
             if kwarg:
@@ -115,11 +229,42 @@ async def create_agent(
             if repo_kwarg:
                 extra[repo_kwarg] = spec.cwd
 
+        if agent_env:
+            extra["env"] = {**os.environ, **agent_env}
+
         chat_model = iModel(
             provider=provider,
             model=model_name,
             **extra,
         )
+        # A CLI endpoint takes env as runtime state; an API endpoint has no
+        # child and would leave it unread in its config. Ask the endpoint.
+        if agent_env and "env" not in getattr(chat_model.endpoint, "_runtime_state", {}):
+            raise _AgentSettingError(
+                f"agent_env was not taken by the {type(chat_model.endpoint).__name__} "
+                f"built for model {model_name!r}: this endpoint takes no environment for "
+                "a child process (the codex and claude_code CLI endpoints do)."
+            )
+        if spec.contain_account_integrations or agent_env:
+            from lionagi.providers.openai.codex import CodexCLIEndpoint
+
+            # Decided by the endpoint that was built, so an alias or another case of
+            # the provider name ("openai-codex", "Codex") is treated as codex.
+            if isinstance(chat_model.endpoint, CodexCLIEndpoint):
+                moved = sorted(k for k in ("CODEX_HOME", "HOME") if agent_env and k in agent_env)
+                if moved:
+                    raise _AgentSettingError(
+                        f"agent_env cannot set {' or '.join(moved)} for a codex agent: this "
+                        "process resolves the codex home for the agent's MCP server profile "
+                        "and default reasoning effort, and would read a different one than "
+                        "the child."
+                    )
+                # Codex attaches the signed-in account's app connectors and plugins
+                # whatever MCP servers the request carries, and a connector acts as
+                # the account. Kept in the endpoint's config, so a restored model
+                # stays contained.
+                if spec.contain_account_integrations:
+                    chat_model.endpoint.config.kwargs["contain_account_integrations"] = True
         branch_kwargs["chat_model"] = chat_model
 
     if log_config is not None:
@@ -479,7 +624,13 @@ def _register_coding_tools(branch: Branch, spec: AgentSpec) -> None:
 
     workspace_root = Path(spec.cwd) if spec.cwd else Path.cwd()
     context_management = getattr(spec, "context_management", True)
-    tools = None if context_management else tuple(t for t in DEFAULT_CODING_TOOLS if t != "context")
+    selected = getattr(spec, "coding_tools", None)
+    if selected is None:
+        tools = (
+            None if context_management else tuple(t for t in DEFAULT_CODING_TOOLS if t != "context")
+        )
+    else:
+        tools = tuple(t for t in selected if context_management or t != "context")
     toolkit = CodingToolkit(workspace_root=workspace_root, tools=tools)
 
     for key, handlers in spec.hook_handlers.items():
@@ -525,14 +676,21 @@ def _resolve_mcp_path(spec: AgentSpec, *, trust_project_settings: bool = False) 
             f"spec.mcp_config_path={spec.mcp_config_path!r} does not resolve to an existing file"
         )
 
+    from lionagi._paths import is_account_home, is_account_lionagi_dir
+
     candidates = []
     cwd = Path(spec.cwd) if spec.cwd else Path.cwd()
 
     if trust_project_settings:
         for parent in [cwd, *cwd.parents]:
-            candidates.append(parent / ".lionagi" / ".mcp.json")
-            candidates.append(parent / ".mcp.json")
-            if (parent / ".lionagi").is_dir():
+            lionagi_dir = parent / ".lionagi"
+            # The account home's own files are user-level configuration, reached
+            # below through HOME or not at all; its `.lionagi` still ends the walk.
+            if not is_account_lionagi_dir(lionagi_dir):
+                candidates.append(lionagi_dir / ".mcp.json")
+            if not is_account_home(parent):
+                candidates.append(parent / ".mcp.json")
+            if lionagi_dir.is_dir():
                 break
 
     candidates.append(Path.home() / ".lionagi" / ".mcp.json")
@@ -823,8 +981,8 @@ def _forward_mcp_to_cli_request(
         from pathlib import Path
 
         try:
-            data = json.loads(Path(mcp_path).read_text())
-        except (OSError, json.JSONDecodeError) as exc:
+            data = json.loads(Path(mcp_path).read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             import logging
 
             logging.getLogger(__name__).warning(
@@ -853,7 +1011,13 @@ def _forward_mcp_to_cli_request(
 
     # Branch keeps a caller-supplied chat_model by reference; copy before
     # mutating config.kwargs to avoid cross-contaminating other branches.
-    branch.chat_model = branch.chat_model.copy(share_session=True, share_executor=True)
+    # The factory takes no parse model of its own, so the branch's parse model
+    # is its chat model (the same object, or the twin Branch builds from the
+    # same str or dict). Parse repair runs on it, so it moves to the copy too:
+    # otherwise a repair call starts the CLI without the forwarded server set.
+    forwarded = branch.chat_model.copy(share_session=True, share_executor=True)
+    branch.chat_model = forwarded
+    branch.parse_model = forwarded
     apply_forwarded_mcp_servers(
         branch.chat_model.endpoint.config.kwargs,
         servers,
@@ -910,7 +1074,11 @@ def _discover_ambient_codex_mcp_server_names() -> set[str]:
     config_path = codex_home / "config.toml"
     try:
         data = toml.loads(config_path.read_text())
-    except (OSError, toml.TomlDecodeError):
+    except (OSError, UnicodeError, RecursionError, toml.TomlDecodeError):
+        # UnicodeError: read_text() decodes, so a config that is not UTF-8 is
+        # as unreadable as an unparseable one. RecursionError: the parser
+        # recurses per nesting level, so a config nested past the limit is too.
+        # Both fall through to the fallback rather than escaping discovery.
         pass
     else:
         mcp_servers = data.get("mcp_servers") if isinstance(data, dict) else None
@@ -928,7 +1096,7 @@ def _discover_ambient_codex_mcp_server_names() -> set[str]:
         )
         listed = json.loads(result.stdout)
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
-        raise ConfigurationError(
+        raise _AgentSettingError(
             "Cannot enforce the explicit codex MCP server allowlist: failed "
             f"to discover ambient/profile-configured servers via both "
             f"{str(config_path)!r} and `codex mcp list --json` "
@@ -938,25 +1106,12 @@ def _discover_ambient_codex_mcp_server_names() -> set[str]:
         ) from exc
 
     if not isinstance(listed, list):
-        raise ConfigurationError(
+        raise _AgentSettingError(
             "Cannot enforce the explicit codex MCP server allowlist: "
             f"`codex mcp list --json` returned unexpected output "
             f"(expected a JSON array, got {type(listed).__name__})."
         )
     return {entry["name"] for entry in listed if isinstance(entry, dict) and "name" in entry}
-
-
-# Fixed prefix + 32 hex chars marks a profile as lionagi-generated (the name
-# has to carry this since a resumed leg's profile was written by a different
-# process). A caller name in this exact shape is treated as ours and
-# replaced; anything else is the caller's and refused, never overwritten.
-_CODEX_MCP_PROFILE_PREFIX = "lionagi-mcp-"
-_GENERATED_CODEX_PROFILE_RE = re.compile(rf"^{re.escape(_CODEX_MCP_PROFILE_PREFIX)}[0-9a-f]{{32}}$")
-
-
-def _is_generated_codex_profile(name: object) -> bool:
-    """Whether *name* is a profile name `_write_codex_mcp_secret_profile` minted."""
-    return isinstance(name, str) and _GENERATED_CODEX_PROFILE_RE.fullmatch(name) is not None
 
 
 def _codex_home() -> Path:

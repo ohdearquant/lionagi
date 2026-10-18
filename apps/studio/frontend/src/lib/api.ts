@@ -34,7 +34,8 @@ import type {
   WorkerStepNode,
   WorkerLinkEdge,
 } from "./types";
-import { reportConnectivityFailure } from "./connectivity";
+import { reportAccessRefused, reportConnectivityFailure } from "./connectivity";
+import { pairedBearer } from "./pairing";
 
 declare global {
   interface Window {
@@ -44,38 +45,30 @@ declare global {
 }
 
 /**
- * Return the per-launch bearer token injected by the desktop shell, if any.
+ * Constrain the desktop shell's bearer token when a viewer overrides the API.
+ * Requests use the base selected when this module loaded. Later SPA query or
+ * storage changes cannot change that destination, so credential admission must
+ * use the same frozen base. A loopback address alone does not establish trust:
+ * another local process can listen on a different address or port.
  *
- * The token authenticates against the daemon the shell started, and the shell
- * names that daemon in `__STUDIO_API_BASE__` when it injects the token. A
- * `?api=` override takes priority over that base, so without a check here the
- * page would keep sending the token after being pointed at a *different*
- * daemon. Restricting the override to loopback bounds who that can be; it does
- * not make them trusted, since any process able to listen on a local port would
- * then be handed the credential by the next request.
- *
- * So the token travels only to the origin it was issued for. If an override is
- * active and that origin cannot be established, the token is withheld:
- * withholding costs an unauthenticated request against a daemon the viewer
- * redirected the page to deliberately, and sending costs the credential itself.
- *
- * Decided here rather than at the call sites because there are several of them,
- * and a rule about where a credential may travel should not be re-implemented
- * once per request builder.
+ * Without a viewer override at load time, trusted runtime/build configuration
+ * retains its token behavior, including relative bases and same-origin requests.
+ * For a viewer override, the injected issuing base is captured at load time too.
+ * Withhold the token if that origin is unknown, unparseable, or different from
+ * the loaded destination. Later injection changes cannot establish new trust.
  */
 export function resolveAuthToken(): string | undefined {
   if (typeof window === "undefined") return undefined;
   const token = window.__STUDIO_AUTH_TOKEN__;
-  if (!token) return undefined;
+  // Without an injected token, the bearer `li studio` paired this page with.
+  if (!token) return pairedBearer(API_BASE);
 
-  const override = resolveApiOverride();
-  if (!override) return token;
+  if (!API_OVERRIDE) return token;
 
-  const issuedFor = window.__STUDIO_API_BASE__;
+  const issuedFor = TOKEN_ISSUING_BASE;
   if (!issuedFor) return undefined;
   try {
-    // resolveApiOverride already returns a bare origin, so both sides normalize.
-    return new URL(issuedFor).origin === override ? token : undefined;
+    return new URL(issuedFor).origin === new URL(API_BASE).origin ? token : undefined;
   } catch {
     return undefined;
   }
@@ -108,8 +101,9 @@ function resolveApiOverride(): string | undefined {
     } catch {
       return undefined;
     }
+    // URL canonicalizes valid IPv4 literals to dotted decimal; all of 127/8 is loopback.
     const loopback =
-      parsed.hostname === "127.0.0.1" ||
+      /^127(?:\.\d{1,3}){3}$/.test(parsed.hostname) ||
       parsed.hostname === "localhost" ||
       parsed.hostname === "[::1]" ||
       parsed.hostname === "::1";
@@ -135,16 +129,16 @@ function resolveApiOverride(): string | undefined {
   }
 }
 
-export function resolveApiBase(): string {
+function resolveApiBase(): string {
   // Priority: ?api= loopback override (per-tab) >
   // window.__STUDIO_API_BASE__ (runtime injection) >
   // VITE_STUDIO_API_BASE (build-time env) > origin logic.
   // Treat empty string as "not configured" — defense against baking an empty
   // env var that silently produced same-origin /api/* requests.
-  const override = resolveApiOverride();
-  if (override) {
-    return override;
-  }
+  return API_OVERRIDE ?? resolveConfiguredApiBase();
+}
+
+function resolveConfiguredApiBase(): string {
   if (typeof window !== "undefined" && window.__STUDIO_API_BASE__) {
     return window.__STUDIO_API_BASE__;
   }
@@ -169,6 +163,8 @@ export function resolveApiBase(): string {
   return "http://localhost:8765";
 }
 
+const API_OVERRIDE = resolveApiOverride();
+const TOKEN_ISSUING_BASE = typeof window === "undefined" ? undefined : window.__STUDIO_API_BASE__;
 export const API_BASE = resolveApiBase();
 
 export class ApiError extends Error {
@@ -264,6 +260,9 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     reportConnectivityFailure();
     throw err;
   }
+  if (response.status === 401) {
+    reportAccessRefused();
+  }
   if (!response.ok) {
     // Preserve the backend `detail` field (FastAPI/Pydantic validation errors,
     // our structured 409 body, etc.) so callers can surface it to the operator.
@@ -324,9 +323,14 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 // studio endpoints: unnamed `data: <json>\n\n` frames, auto-reconnect after
 // 2s unless closed. Callers parse the JSON and call the returned closer on
 // their terminal "done" frame.
+// "closed" is a stream the server ended with that frame: unlike "disconnected",
+// it does not reconnect.
+export type StreamConnectionState = "connecting" | "open" | "disconnected" | "closed";
+
 function sseSubscribe(
   path: string | (() => string),
   onData: (data: string, eventId?: string) => void,
+  onConnectionState?: (state: StreamConnectionState) => void,
 ): () => void {
   const controller = new AbortController();
   let closed = false;
@@ -341,6 +345,7 @@ function sseSubscribe(
         const token = resolveAuthToken();
         const headers: Record<string, string> = { Accept: "text/event-stream" };
         if (token) headers["Authorization"] = `Bearer ${token}`;
+        onConnectionState?.("connecting");
         const requestPath = typeof path === "function" ? path() : path;
         const response = await fetch(`${API_BASE}${requestPath}`, {
           headers,
@@ -363,6 +368,7 @@ function sseSubscribe(
         if (!response.body) {
           throw new Error(`SSE request failed: ${response.status}`);
         }
+        if (!closed) onConnectionState?.("open");
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
@@ -391,6 +397,7 @@ function sseSubscribe(
         // Aborted by close(), or a network error worth retrying.
       }
       if (!closed) {
+        onConnectionState?.("disconnected");
         await new Promise((resolve) => setTimeout(resolve, 2000));
       }
     }
@@ -410,6 +417,7 @@ const OPERATOR_FRAME_TYPES = new Set<OperatorFrameType>([
   "confirmation",
   "error",
   "done",
+  "truncation",
 ]);
 
 type RawRecord = Record<string, unknown>;
@@ -465,10 +473,45 @@ export function isOperatorFrame(value: unknown): value is OperatorFrame {
     raw.sequence >= 1 &&
     typeof raw.type === "string" &&
     OPERATOR_FRAME_TYPES.has(raw.type as OperatorFrameType) &&
-    raw.payload != null &&
-    typeof raw.payload === "object" &&
-    typeof raw.createdAt === "number"
+    isOperatorPayload(raw.type, raw.payload) &&
+    typeof raw.createdAt === "number" &&
+    Number.isFinite(raw.createdAt)
   );
+}
+
+function isNonNegativeInteger(value: unknown): boolean {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+// The retention notice is generated by the daemon from the turn's own counts.
+// A notice missing those counts would understate what was not retained, so it
+// is rejected like any other unsupported frame rather than rendered with
+// placeholder numbers.
+function isOperatorTruncationPayload(payload: RawRecord): boolean {
+  const limits = asRecord(payload.limits);
+  const byType = payload.elidedFrameTypes;
+  const elidedFrameTypes = asRecord(byType);
+  return (
+    (payload.reason === "frames_per_turn" || payload.reason === "turn_payload_bytes") &&
+    isNonNegativeInteger(limits.maxFramesPerTurn) &&
+    isNonNegativeInteger(limits.maxTurnPayloadBytes) &&
+    isNonNegativeInteger(limits.maxFramePayloadBytes) &&
+    isNonNegativeInteger(payload.elidedFrames) &&
+    isNonNegativeInteger(payload.elidedBytes) &&
+    byType != null &&
+    typeof byType === "object" &&
+    !Array.isArray(byType) &&
+    Object.values(elidedFrameTypes).every(isNonNegativeInteger) &&
+    typeof payload.firstElidedAt === "number" &&
+    Number.isFinite(payload.firstElidedAt) &&
+    typeof payload.lastElidedAt === "number" &&
+    Number.isFinite(payload.lastElidedAt)
+  );
+}
+
+function isOperatorPayload(type: string, value: unknown): boolean {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return false;
+  return type !== "truncation" || isOperatorTruncationPayload(value as RawRecord);
 }
 
 export async function createOperatorConversation(input?: {
@@ -751,6 +794,11 @@ export interface OperatorStreamHandlers {
   onError?: (error: Error, fatal: boolean) => void;
 }
 
+// The daemon emits a heartbeat every five seconds. Three missed heartbeats is
+// enough to distinguish a dead upstream from ordinary scheduling jitter while
+// still recovering a turn accepted by a replacement daemon promptly.
+const OPERATOR_STREAM_LIVENESS_TIMEOUT_MS = 15_000;
+
 /**
  * Authenticated, replayable SSE subscription. The cursor advances only after
  * a validated v1 frame and is sent on every reconnect, so delivery may repeat
@@ -786,14 +834,34 @@ export function streamOperatorConversation(
     while (!closed) {
       handlers.onConnection?.(firstAttempt ? "connecting" : "reconnecting");
       controller = new AbortController();
+      let livenessExpired = false;
+      const withLivenessDeadline = async <T>(operation: Promise<T>): Promise<T> => {
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        try {
+          return await Promise.race([
+            operation,
+            new Promise<T>((_resolve, reject) => {
+              timer = setTimeout(() => {
+                livenessExpired = true;
+                controller?.abort();
+                reject(new Error("Operator stream heartbeat timed out."));
+              }, OPERATOR_STREAM_LIVENESS_TIMEOUT_MS);
+            }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      };
       try {
         const query = new URLSearchParams({ after_sequence: String(cursor) });
         const headers: Record<string, string> = { Accept: "text/event-stream" };
         const token = resolveAuthToken();
         if (token) headers.Authorization = `Bearer ${token}`;
-        const response = await fetch(
-          `${API_BASE}/api/operator/conversations/${encodeURIComponent(conversationId)}/stream?${query}`,
-          { headers, signal: controller.signal },
+        const response = await withLivenessDeadline(
+          fetch(
+            `${API_BASE}/api/operator/conversations/${encodeURIComponent(conversationId)}/stream?${query}`,
+            { headers, signal: controller.signal },
+          ),
         );
         if (!response.ok || !response.body) {
           const fatal =
@@ -816,7 +884,7 @@ export function streamOperatorConversation(
         const decoder = new TextDecoder();
         let buffer = "";
         while (!closed) {
-          const { done, value } = await reader.read();
+          const { done, value } = await withLivenessDeadline(reader.read());
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
           const chunk = consumeOperatorSse(buffer);
@@ -855,10 +923,17 @@ export function streamOperatorConversation(
           }
         }
       } catch (error) {
-        if (closed || controller.signal.aborted) break;
+        // close() or a fatal response or protocol error ends the loop. A
+        // liveness abort follows the retry path: the durable cursor lets the
+        // replacement daemon replay frames committed while this stream was silent.
+        if (closed) break;
         reportConnectivityFailure();
         handlers.onError?.(
-          error instanceof Error ? error : new Error("Operator stream disconnected."),
+          livenessExpired
+            ? new Error("Operator stream heartbeat timed out.")
+            : error instanceof Error
+              ? error
+              : new Error("Operator stream disconnected."),
           false,
         );
       }
@@ -1481,6 +1556,7 @@ export async function getSession(
 export function streamSession(
   id: string,
   onEvent: (event: Record<string, unknown>) => void,
+  onConnectionState?: (state: StreamConnectionState) => void,
 ): () => void {
   let cursor: string | undefined;
   const close = sseSubscribe(
@@ -1500,6 +1576,7 @@ export function streamSession(
       }
       if (event.type === "done") {
         close();
+        onConnectionState?.("closed");
       }
       onEvent(event);
       // Advance only after the consumer accepted this frame. If the callback
@@ -1508,6 +1585,7 @@ export function streamSession(
         cursor = eventId;
       }
     },
+    onConnectionState,
   );
   return close;
 }
@@ -1540,6 +1618,7 @@ export function normalizeSignalEvent(raw: SignalEvent): SignalEvent {
 export function streamSignals(
   id: string,
   onEvent: (event: SignalEvent | { type: string }) => void,
+  onConnectionState?: (state: StreamConnectionState) => void,
 ): () => void {
   let afterSeq = 0;
   const close = sseSubscribe(
@@ -1556,7 +1635,10 @@ export function streamSignals(
         return;
       }
       if ("type" in event) {
-        if (event.type === "done") close();
+        if (event.type === "done") {
+          close();
+          onConnectionState?.("closed");
+        }
         onEvent(event);
         return;
       }
@@ -1568,6 +1650,7 @@ export function streamSignals(
       // processed is the cheaper failure of the two.
       afterSeq = Math.max(afterSeq, event.seq);
     },
+    onConnectionState,
   );
   return close;
 }
@@ -1644,6 +1727,8 @@ export async function listArtifactsForSession(
 }
 
 export interface InvocationListResponse {
+  /** Latest recorded start across all matching rows; omitted by older servers. */
+  latest_started_at?: number | null;
   invocations: InvocationSummary[];
   limit: number;
   offset: number;
@@ -1654,6 +1739,8 @@ export interface InvocationListResponse {
   /** Total matching the filters with status == "completed" specifically,
    * ignoring `params.status` — always a meaningful success-rate numerator. */
   completed_total: number;
+  /** Terminal records matching skill/plugin, ignoring params.status; older servers omit it. */
+  finished_total?: number | null;
 }
 
 export interface InvocationListParams {
@@ -1662,6 +1749,8 @@ export interface InvocationListParams {
   status?: string;
   limit?: number;
   offset?: number;
+  /** Ask the server for the recorded-usage aggregates; polls leave it off. */
+  includeUsage?: boolean;
 }
 
 export async function listInvocations(
@@ -1673,6 +1762,7 @@ export async function listInvocations(
   if (params?.status) query.set("status", params.status);
   if (params?.limit !== undefined) query.set("limit", String(params.limit));
   if (params?.offset !== undefined) query.set("offset", String(params.offset));
+  if (params?.includeUsage) query.set("include_usage", "true");
   const qs = query.toString();
   return fetchJson<InvocationListResponse>(`/api/invocations/${qs ? `?${qs}` : ""}`);
 }
@@ -2343,11 +2433,14 @@ export async function listSchedules(params?: {
   enabled?: boolean;
   trigger_type?: string;
   project?: string;
+  include_recent_runs?: boolean;
 }): Promise<ScheduleListResponse> {
   const query = new URLSearchParams();
   if (params?.enabled !== undefined) query.set("enabled", String(params.enabled));
   if (params?.trigger_type) query.set("trigger_type", params.trigger_type);
   if (params?.project) query.set("project", params.project);
+  if (params?.include_recent_runs !== undefined)
+    query.set("include_recent_runs", String(params.include_recent_runs));
   const qs = query.toString();
   return fetchJson<ScheduleListResponse>(`/api/schedules/${qs ? `?${qs}` : ""}`);
 }

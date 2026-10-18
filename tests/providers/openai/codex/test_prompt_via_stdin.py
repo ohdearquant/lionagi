@@ -24,7 +24,7 @@ import sys
 import pytest
 
 from lionagi.providers._cli_subprocess import ndjson_from_cli
-from lionagi.providers.openai.codex import CodexCodeRequest
+from lionagi.providers.openai.codex import CODEX_MAX_TURN_INPUT_CHARS, CodexCodeRequest
 
 # Larger than a pipe buffer on every platform we run on (64 KiB on Linux and
 # macOS), so both directions genuinely block and a sequential write-then-read
@@ -94,13 +94,17 @@ class TestCommandLineNoLongerCarriesThePrompt:
         huge = CodexCodeRequest(prompt=_big_prompt(), repo=tmp_path).as_cmd_args()
         assert small == huge
 
-    def test_prompt_far_larger_than_arg_max_still_builds_a_spawnable_command(self, tmp_path):
+    def test_the_largest_prompt_the_cli_takes_still_builds_a_spawnable_command(self, tmp_path):
         """A prompt bigger than the OS argument-length limit used to make the
-        spawn itself fail; the command line built for it now stays tiny."""
+        spawn itself fail; the command line built for it now stays tiny. The
+        largest prompt the request accepts is the CLI's own turn-input limit,
+        which on macOS is the whole argument area, so it could never travel
+        as an argument either."""
         arg_max = os.sysconf("SC_ARG_MAX")
-        oversized = "x" * (arg_max + 1024)
-        args = CodexCodeRequest(prompt=oversized, repo=tmp_path).as_cmd_args()
+        largest = "x" * CODEX_MAX_TURN_INPUT_CHARS
+        args = CodexCodeRequest(prompt=largest, repo=tmp_path).as_cmd_args()
         total = sum(len(a) + 1 for a in args)
+        assert largest not in args
         assert total < arg_max, f"command line is {total} bytes against a limit of {arg_max}"
 
 

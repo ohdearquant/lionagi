@@ -39,6 +39,79 @@ class UnhashableStructuralValueError(TypeError):
         )
 
 
+# ``memoryview`` is the one built-in whose hash refusals are ``ValueError`` rather than
+# ``TypeError``: for a writable view, for a view whose format is not a byte format, and
+# for a released view. The messages are the interpreter's own and are stable across
+# supported versions. Recognizing exactly these keeps the promised equality fallback
+# for a value whose hash reaches a memoryview without swallowing any other
+# ``ValueError`` a value's own ``__hash__`` raises.
+_MEMORYVIEW_HASH_REFUSALS = frozenset(
+    {
+        "cannot hash writable memoryview object",
+        "memoryview: hashing is restricted to formats 'B', 'b' or 'c'",
+        "operation forbidden on released memoryview object",
+    }
+)
+# Pydantic's serializer refuses a model that holds itself with a ``ValueError`` whose
+# message starts with this text, whether it finds the repeated object or runs out of depth.
+_CIRCULAR_REFERENCE = "Circular reference detected"
+
+
+def _is_memoryview_hash_refusal(exc: ValueError) -> bool:
+    """Whether *exc* is a ``ValueError`` a ``memoryview``'s own hash raises.
+
+    Hashing a writable, non-byte-format or released ``memoryview`` -- on its own or
+    nested in a container or model whose hash reaches it -- raises one of these. Every
+    other ``ValueError`` from a value's own ``__hash__`` is a defect in that ``__hash__``
+    and must propagate, so a refusal is recognized by its own message rather than by
+    the exception type.
+    """
+    return (
+        len(exc.args) == 1 and type(exc.args[0]) is str and exc.args[0] in _MEMORYVIEW_HASH_REFUSALS
+    )
+
+
+def _is_circular_reference(exc: ValueError) -> bool:
+    """Whether *exc* is the serializer's refusal of a model that holds itself."""
+    return (
+        len(exc.args) == 1
+        and type(exc.args[0]) is str
+        and exc.args[0].startswith(_CIRCULAR_REFERENCE)
+    )
+
+
+def _serialized(value: Any, path: str, build: Callable[[], Any]) -> Any:
+    """Return *build()*, the builtins a model serializes to, or refuse the model.
+
+    Pydantic's ``model_dump`` refuses a model that holds itself with ``ValueError``, and
+    ``msgspec.to_builtins`` reaches the recursion limit on one, before the projection can
+    walk it, so the model is refused with the same error a cycle the projection meets on
+    its own path raises. Any other error from the model's own serializer, a
+    ``ValueError`` included, propagates.
+    """
+    try:
+        return build()
+    except RecursionError as exc:
+        raise UnhashableStructuralValueError(path, type(value)) from exc
+    except ValueError as exc:
+        if not _is_circular_reference(exc):
+            raise
+        raise UnhashableStructuralValueError(path, type(value)) from exc
+
+
+def _forward_collection(
+    key_ref: weakref.ref[_IdentityKey], on_collect: Callable[[_IdentityKey], None]
+) -> Callable[[weakref.ref], None]:
+    """A weakref callback that calls ``on_collect`` with the key while the key is alive."""
+
+    def callback(_ref: weakref.ref) -> None:
+        key = key_ref()
+        if key is not None:
+            on_collect(key)
+
+    return callback
+
+
 class _IdentityKey:
     """Identity key that does not extend the lifetime of what it identifies.
 
@@ -48,18 +121,42 @@ class _IdentityKey:
     target retains. The hash is the id taken while the target was alive, so it stays usable
     after the target dies; equality demands both referents still be live, so an id the
     interpreter has reused cannot collide with a dead entry, and the dead entry matches
-    nothing and is evicted in its turn. A target that cannot be weakly referenced is held
-    strongly, which keeps it and everything it carries alive for as long as the key lives;
-    `holds_weakly` says which of the two a key is, so a caller storing one past the call
-    can decide whether to.
+    nothing until it leaves the cache: for a key given `on_collect`, at the cache's next
+    read or write after its target is collected, and for any other when the cache evicts it
+    (a plain dict never does).
+    A target that cannot be weakly referenced is held strongly, which keeps it and
+    everything it carries alive for as long as the key lives; `holds_weakly` says which
+    of the two a key is, so a caller storing one past the call can decide whether to.
+
+    A dead entry is never hit, but until it is removed it shares a hash bucket with every
+    later object allocated at the same address, and each lookup there compares against it.
+    `on_collect` is called with the key when its weakly-held target is collected, while
+    the key itself is still alive, so a `BoundedLRUCache` can remove the entry stored
+    under it; the dataclass projection cache gives it to every key it stores. The key's
+    weakref holds `on_collect` until the target is collected, so a bound method such as
+    `cache.forget` would put the cache in a reference cycle with every key it stores, freed
+    only by the cycle collector or once those targets are collected; the projection cache
+    passes its removal queue's `append`, which does not hold the cache. A plain
+    dict keyed by `_IdentityKey`, such as `_SingletonMeta._cache`, gives none and keeps
+    a dead entry until it is deleted. A key nested inside a larger key, such as a tuple,
+    is not the entry's key, so `on_collect` cannot remove that entry when the target is
+    collected.
     """
 
-    __slots__ = ("_hash", "_ref", "_strong")
+    __slots__ = ("__weakref__", "_hash", "_ref", "_strong")
 
-    def __init__(self, target: object) -> None:
+    def __init__(
+        self, target: object, on_collect: Callable[[_IdentityKey], None] | None = None
+    ) -> None:
         self._hash = id(target)
+        # The key is referenced weakly, so the key, its reference and the callback form no
+        # cycle. An `on_collect` that held the cache storing this key would form one
+        # through the cache, so the dataclass projection cache passes its queue's append.
+        callback = (
+            None if on_collect is None else _forward_collection(weakref.ref(self), on_collect)
+        )
         try:
-            self._ref: weakref.ref | None = weakref.ref(target)
+            self._ref: weakref.ref | None = weakref.ref(target, callback)
             self._strong: object = None
         except TypeError:
             self._ref = None
@@ -91,6 +188,21 @@ class _IdentityKey:
         module = getattr(target, "__module__", type(target).__module__)
         name = getattr(target, "__qualname__", type(target).__qualname__)
         return f"_IdentityKey({module}.{name})"
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _ValueEqualityKey:
+    """Hashable wrapper that always delegates comparison to the wrapped value."""
+
+    value: Hashable
+
+    def __hash__(self) -> int:
+        return hash(self.value)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, _ValueEqualityKey):
+            return NotImplemented
+        return bool(self.value == other.value)
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -158,7 +270,11 @@ _PATH = 21
 _UUID = 22
 _ELLIPSIS = 23
 _TYPING_SINGLETON = 24
+_MEMORYVIEW = 25
 
+# Keyed by identity, so a frozen dataclass's key is computed once: its fields are assumed not
+# to change after that. A field written through `object.__setattr__` once the key is cached is
+# not seen, and the old key is returned until newer entries evict it or its object is collected.
 _stable_dataclass_keys: BoundedLRUCache[_IdentityKey, _StructuralKey] = BoundedLRUCache(
     "LIONAGI_STRUCTURAL_CACHE_SIZE",
     10000,
@@ -292,7 +408,104 @@ def _is_msgspec_struct(value: Any) -> bool:
     )
 
 
-def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
+def _project_memoryview(
+    view: memoryview, path: str, active: set[int], *, value_semantics: bool
+) -> _StructuralKey:
+    """Key a memoryview by the values it holds, or by identity.
+
+    A memoryview compares equal to another view of the same shape holding equal values,
+    whatever the two formats, and to the bytes holding the same values when it is
+    one-dimensional. Its projection follows that comparison, as the hash representation
+    in ``_hash`` does: a one-dimensional view of whole-number values from 0 to 255 is
+    the ``bytes`` it holds, whatever its format, and any other view is keyed by its
+    shape and by Python's own value equality over the values it unpacks to. Only a
+    read-only view of a ``bytes`` object holds values that cannot change; a writable
+    view, a read-only view of a mutable buffer, a released view, and a view whose
+    format cannot be unpacked are keyed by identity and are unsafe to hash, as a
+    ``bytearray`` is. Never cached, because releasing the view later leaves it equal
+    only to itself.
+    """
+    try:
+        values = view.tolist() if view.readonly and type(view.obj) is bytes else None
+    except (ValueError, NotImplementedError):
+        values = None
+    if values is None:
+        return _StructuralKey(
+            (_OPAQUE_MUTABLE, _IdentityKey(view)),
+            cache_stable=False,
+            hash_safe=False,
+            _sort_token=_frame(b"x", _identity_token(view)),
+            _unsafe_path=path,
+            _unsafe_type=memoryview,
+        )
+    if not _nested_lengths_match(values, view.shape):
+        # The values cannot be read in the shape the view compares, so no projection
+        # represents it; a key that cannot stand for an equal value is refused.
+        raise UnhashableStructuralValueError(path, memoryview)
+    if view.ndim == 1 and all(
+        isinstance(value, int | float) and 0 <= value <= 255 and value == int(value)
+        for value in values
+    ):
+        # The bytes key is the one a bytes value gets, which may be cached; this one never
+        # is, since a released view no longer equals the bytes it held.
+        return dataclasses.replace(
+            _project(
+                bytes(int(value) for value in values),
+                path,
+                active,
+                value_semantics=value_semantics,
+            ),
+            cache_stable=False,
+        )
+    # The tuples are this call's own copy of the values, so they do not make the key
+    # unsafe.
+    projected = _project(_nested_values(values), path, active, value_semantics=True)
+    return _StructuralKey(
+        (_MEMORYVIEW, view.shape, projected.value),
+        cache_stable=False,
+        hash_safe=True,
+        _sort_token=_frame(
+            b"mv",
+            _frame(b"t", *(_encode_int(size) for size in view.shape)),
+            projected._sort_token,
+        ),
+        _pins=projected._pins,
+    )
+
+
+def _nested_lengths_match(values: Any, shape: tuple[int, ...]) -> bool:
+    """Whether unpacked view values nest exactly to *shape*."""
+    if not shape:
+        # A zero-dimensional view unpacks to its one value.
+        return not isinstance(values, list)
+    if not isinstance(values, list) or len(values) != shape[0]:
+        return False
+    if len(shape) == 1:
+        return not any(isinstance(value, list) for value in values)
+    return all(_nested_lengths_match(value, shape[1:]) for value in values)
+
+
+def _nested_values(values: Any) -> tuple[Any, ...]:
+    """Unpacked view values as nested tuples whose equality is the view's.
+
+    A ``?`` view compares its values as the integers they hold, so a ``bool`` becomes
+    that integer, and a whole-number ``float`` equals the integer it holds, so it becomes
+    that integer too; every other value is kept as it was unpacked.
+    """
+    if isinstance(values, list):
+        return tuple(_nested_values(value) for value in values)
+    if type(values) is bool or (type(values) is float and values.is_integer()):
+        return (int(values),)
+    return (values,)
+
+
+def _project(
+    value: Any,
+    path: str,
+    active: set[int],
+    *,
+    value_semantics: bool = False,
+) -> _StructuralKey:
     value_type = type(value)
 
     if value is None:
@@ -317,15 +530,32 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
     if value_type is int:
         return _StructuralKey((_INT, value), True, True, _frame(b"i", _encode_int(value)))
     if value_type is float:
-        encoded = struct.pack(">d", value)
-        return _StructuralKey((_FLOAT, encoded), True, True, _frame(b"f", encoded))
+        if not value_semantics:
+            encoded = struct.pack(">d", value)
+            return _StructuralKey((_FLOAT, encoded), True, True, _frame(b"f", encoded))
+        sort_value = 0.0 if value == 0.0 else value
+        sort_token = struct.pack(">d", sort_value)
+        return _StructuralKey(
+            (_FLOAT, _ValueEqualityKey(value)), True, True, _frame(b"f", sort_token)
+        )
     if value_type is complex:
-        encoded = struct.pack(">dd", value.real, value.imag)
-        return _StructuralKey((_COMPLEX, encoded), True, True, _frame(b"c", encoded))
+        if not value_semantics:
+            encoded = struct.pack(">dd", value.real, value.imag)
+            return _StructuralKey((_COMPLEX, encoded), True, True, _frame(b"c", encoded))
+        sort_value = complex(
+            0.0 if value.real == 0.0 else value.real,
+            0.0 if value.imag == 0.0 else value.imag,
+        )
+        sort_token = struct.pack(">dd", sort_value.real, sort_value.imag)
+        return _StructuralKey(
+            (_COMPLEX, _ValueEqualityKey(value)), True, True, _frame(b"c", sort_token)
+        )
     if value_type is str:
         return _StructuralKey((_STR, value), True, True, _frame(b"s", _encode_text(value)))
     if value_type is bytes:
         return _StructuralKey((_BYTES, value), True, True, _frame(b"y", value))
+    if value_type is memoryview:
+        return _project_memoryview(value, path, active, value_semantics=value_semantics)
 
     sentinel_name = _lion_sentinel_name(value)
     if sentinel_name is not None:
@@ -338,7 +568,7 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
         )
 
     if isinstance(value, Enum):
-        projected = _project(value.value, f"{path}.value", active)
+        projected = _project(value.value, f"{path}.value", active, value_semantics=value_semantics)
         type_key = _IdentityKey(value_type)
         return _StructuralKey(
             (_ENUM, type_key, projected.value),
@@ -389,7 +619,7 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
         if origin is Callable and raw_arguments and isinstance(raw_arguments[0], list):
             raw_arguments = (tuple(raw_arguments[0]), *raw_arguments[1:])
         arguments = tuple(
-            _project(argument, f"{path}.args[{index}]", active)
+            _project(argument, f"{path}.args[{index}]", active, value_semantics=value_semantics)
             for index, argument in enumerate(raw_arguments)
         )
         combined = _combine(
@@ -408,13 +638,17 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
             ),
         )
 
-    if value_type is dict:
+    if value_type is dict or (value_semantics and isinstance(value, dict)):
         identity = _enter(value, path, active)
         try:
             entries: list[tuple[_StructuralKey, _StructuralKey]] = []
             for index, (key, item) in enumerate(value.items()):
-                key_projection = _project(key, f"{path}.keys[{index}]", active)
-                value_projection = _project(item, f"{path}.values[{index}]", active)
+                key_projection = _project(
+                    key, f"{path}.keys[{index}]", active, value_semantics=value_semantics
+                )
+                value_projection = _project(
+                    item, f"{path}.values[{index}]", active, value_semantics=value_semantics
+                )
                 entries.append((key_projection, value_projection))
             ordered = _ordered_mapping_entries(entries, path)
             unsafe = next(
@@ -437,13 +671,14 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
         finally:
             active.remove(identity)
 
-    if value_type is list or value_type is tuple:
+    if value_type in (list, tuple) or (value_semantics and isinstance(value, list | tuple)):
         identity = _enter(value, path, active)
         try:
             children = tuple(
-                _project(item, f"{path}[{index}]", active) for index, item in enumerate(value)
+                _project(item, f"{path}[{index}]", active, value_semantics=value_semantics)
+                for index, item in enumerate(value)
             )
-            marker = _LIST if value_type is list else _TUPLE
+            marker = _LIST if isinstance(value, list) else _TUPLE
             combined = _combine(marker, children, b"l" if marker == _LIST else b"t")
             if marker == _LIST:
                 return dataclasses.replace(
@@ -457,14 +692,17 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
         finally:
             active.remove(identity)
 
-    if value_type is set or value_type is frozenset:
+    if value_type in (set, frozenset) or (value_semantics and isinstance(value, set | frozenset)):
         identity = _enter(value, path, active)
         try:
             children = _unordered(
-                [_project(item, f"{path}[{index}]", active) for index, item in enumerate(value)],
+                [
+                    _project(item, f"{path}[{index}]", active, value_semantics=value_semantics)
+                    for index, item in enumerate(value)
+                ],
                 path,
             )
-            marker = _SET if value_type is set else _FROZENSET
+            marker = _SET if isinstance(value, set) else _FROZENSET
             combined = _combine(marker, children, b"u" if marker == _SET else b"v")
             if marker == _SET:
                 return dataclasses.replace(
@@ -480,7 +718,7 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
 
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         identity_key = _IdentityKey(value)
-        cached = _stable_dataclass_keys.get(identity_key)
+        cached = None if value_semantics else _stable_dataclass_keys.get(identity_key)
         if cached is not None:
             return cached
         identity = _enter(value, path, active)
@@ -491,6 +729,7 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
                     getattr(value, field_info.name),
                     f"{path}.{field_info.name}",
                     active,
+                    value_semantics=value_semantics,
                 )
                 for field_info in fields
             )
@@ -519,8 +758,12 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
                     result.cache_stable
                     and result._weight <= _MAX_CACHED_WEIGHT
                     and identity_key.holds_weakly
+                    and not value_semantics
                 ):
-                    _stable_dataclass_keys.put(identity_key, result)
+                    # The queue's own append rather than `forget`, a bound method that would
+                    # hold the cache and put every stored key in a cycle with it.
+                    remove_later = _stable_dataclass_keys._pending_removals.append
+                    _stable_dataclass_keys.put(_IdentityKey(value, on_collect=remove_later), result)
                 return result
             return dataclasses.replace(
                 combined,
@@ -536,8 +779,10 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
     if _is_pydantic_model(value):
         identity = _enter(value, path, active)
         try:
-            dumped = typing.cast(Any, value).model_dump(mode="python")
-            projected = _project(dumped, path, active)
+            dumped = _serialized(
+                value, path, lambda: typing.cast(Any, value).model_dump(mode="python")
+            )
+            projected = _project(dumped, path, active, value_semantics=value_semantics)
             return _StructuralKey(
                 (_PYDANTIC, _IdentityKey(value_type), projected.value),
                 cache_stable=False,
@@ -559,7 +804,12 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
         try:
             import msgspec
 
-            projected = _project(msgspec.to_builtins(value), path, active)
+            projected = _project(
+                _serialized(value, path, lambda: msgspec.to_builtins(value)),
+                path,
+                active,
+                value_semantics=value_semantics,
+            )
             return _StructuralKey(
                 (_MSGSPEC, _IdentityKey(value_type), projected.value),
                 projected.cache_stable,
@@ -599,6 +849,25 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
             _unsafe_type=value_type,
         )
 
+    if value_semantics:
+        type_key = _IdentityKey(value_type)
+        try:
+            value_token = _encode_int(hash(value))
+        except (TypeError, ValueError) as exc:
+            # The value reports itself unhashable, so no content key exists for it and
+            # the base equality that asks for one reads it as an uncomparable state
+            # rather than letting the refusal escape. A TypeError is the ordinary refusal,
+            # and a memoryview the value's hash reaches refuses with ValueError. Every other
+            # error from the value's own __hash__ propagates.
+            if isinstance(exc, ValueError) and not _is_memoryview_hash_refusal(exc):
+                raise
+            raise UnhashableStructuralValueError(path, value_type) from exc
+        return _StructuralKey(
+            (_OPAQUE, type_key, _ValueEqualityKey(value)),
+            cache_stable=False,
+            hash_safe=True,
+            _sort_token=_frame(b"o", _identity_token(value_type), value_token),
+        )
     identity = _IdentityKey(value)
     return _StructuralKey(
         (_OPAQUE, identity),
@@ -619,6 +888,11 @@ def _enter(value: Any, path: str, active: set[int]) -> int:
 def _structural_key(value: Any) -> _StructuralKey:
     """Return a detached, type-sensitive runtime value key."""
     return _project(value, "$", set())
+
+
+def _dataclass_structural_key(value: Any) -> _StructuralKey:
+    """Return a field-value key that preserves Python value equality."""
+    return _project(value, "$", set(), value_semantics=True)
 
 
 def _try_stable_cache_key(value: Any) -> _StructuralKey | None:

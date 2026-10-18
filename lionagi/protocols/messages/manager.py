@@ -1,8 +1,9 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import warnings
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn
 
 from pydantic import BaseModel, JsonValue
 
@@ -19,6 +20,33 @@ from .message import Message, SenderRecipient
 from .system import System
 
 DEFAULT_SYSTEM = "You are a helpful AI assistant. Let's think step by step."
+
+_log = logging.getLogger(__name__)
+
+
+def _raise_callback_errors(errors: list[BaseException]) -> NoReturn:
+    """Re-raise what the on_message_added callbacks raised.
+
+    One error is raised as itself and several as one group, except that a store refusal
+    (ADR-0128 D6) is always raised as itself, with its own cause, so a caller's ``isinstance``
+    check finds it; the other callbacks' errors are logged, since only one exception leaves.
+    A cancellation collected beside the refusal is not logged: it is the teardown's ordinary
+    noise, not a failure the run should report.
+    """
+    if len(errors) == 1:
+        raise errors[0]
+    from lionagi.ln.concurrency import is_cancelled  # noqa: PLC0415
+    from lionagi.state.compat import refusal_in  # noqa: PLC0415
+
+    for error in errors:
+        refusal = refusal_in(error)
+        if refusal is not None:
+            for other in errors:
+                if other is error or is_cancelled(other):
+                    continue
+                _log.warning("on_message_added callback error beside a store refusal: %r", other)
+            raise refusal
+    raise _BaseExceptionGroup("on_message_added hooks failed", errors)
 
 
 class MessageManager(Manager):
@@ -82,12 +110,7 @@ class MessageManager(Manager):
             system = kwargs.get("system")
             if system:
                 self.set_system(_msg)
-            if _msg in self.messages:
-                idx = self.messages.progression.index(_msg.id)
-                self.messages.exclude(_msg.id)
-                self.messages.insert(idx, _msg)
-            else:
-                self.messages.include(_msg)
+            self.messages.update(_msg)
 
         callbacks = list(self._on_message_added)
         errors: list[BaseException] = []
@@ -100,9 +123,7 @@ class MessageManager(Manager):
             except BaseException as exc:  # noqa: BLE001 — collect, re-raise grouped
                 errors.append(exc)
         if errors:
-            if len(errors) == 1:
-                raise errors[0]
-            raise _BaseExceptionGroup("on_message_added hooks failed", errors)
+            _raise_callback_errors(errors)
 
         return _msg
 
@@ -382,12 +403,7 @@ class MessageManager(Manager):
         _msg = self.create_message(**params)
         if system:
             self.set_system(_msg)
-        if _msg in self.messages:
-            idx = self.messages.progression.index(_msg.id)
-            self.messages.exclude(_msg.id)
-            self.messages.insert(idx, _msg)
-        else:
-            self.messages.include(_msg)
+        self.messages.update(_msg)
 
         self._fire_on_message_added(_msg, hook_snapshot)
 
@@ -414,9 +430,7 @@ class MessageManager(Manager):
             except BaseException as exc:  # noqa: BLE001 — collect, re-raise grouped
                 errors.append(exc)
         if errors:
-            if len(errors) == 1:
-                raise errors[0]
-            raise _BaseExceptionGroup("on_message_added hooks failed", errors)
+            _raise_callback_errors(errors)
 
     def clear_messages(self):
         self.messages.clear()

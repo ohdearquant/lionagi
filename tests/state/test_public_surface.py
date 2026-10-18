@@ -13,7 +13,22 @@ def test_all_is_declared():
 
 
 def test_all_contents():
-    assert set(state_pkg.__all__) == {"StateDB", "SchemaTooNewError"}
+    assert set(state_pkg.__all__) == {
+        "CompatibilityProfile",
+        "ForeignLineageError",
+        "SchemaTooNewError",
+        "StateCompatibilityRefused",
+        "StateDB",
+        "UnreadableStoreError",
+        "UnrecognizedStoreError",
+    }
+
+
+def test_compatibility_names_resolve_to_their_module():
+    from lionagi.state import compat
+
+    assert state_pkg.CompatibilityProfile is compat.CompatibilityProfile
+    assert state_pkg.StateCompatibilityRefused is compat.StateCompatibilityRefused
 
 
 def test_statedb_importable():
@@ -28,6 +43,24 @@ def test_schema_too_new_error_importable():
 
     assert SchemaTooNewError is from_module
     assert SchemaTooNewError is state_pkg.SchemaTooNewError
+
+
+def test_foreign_lineage_error_importable():
+    from lionagi.state.db import ForeignLineageError
+
+    assert state_pkg.ForeignLineageError is ForeignLineageError
+
+
+def test_unrecognized_store_error_importable():
+    from lionagi.state.db import UnrecognizedStoreError
+
+    assert state_pkg.UnrecognizedStoreError is UnrecognizedStoreError
+
+
+def test_unreadable_store_error_importable():
+    from lionagi.state.db import UnreadableStoreError
+
+    assert state_pkg.UnreadableStoreError is UnreadableStoreError
 
 
 def test_statedb_lazy_export_supports_import_attribute_and_hasattr():

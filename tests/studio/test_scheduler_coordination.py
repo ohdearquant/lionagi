@@ -12,13 +12,14 @@ import uuid
 from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
 
 from lionagi.state.db import StateDB
 from lionagi.studio.scheduler.coordination import compute_files_overlap
 from lionagi.studio.scheduler.signals import SchedulerSignalBus, ScheduleRunSucceeded
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def db():
     state = StateDB(":memory:")
     await state.open()
@@ -195,7 +196,7 @@ def _make_svc() -> AsyncMock:
     svc = AsyncMock()
     svc.get_invocation = AsyncMock(return_value=None)
     svc.compute_files_overlap = AsyncMock(return_value={"count": 0, "top": []})
-    svc.update_invocation = AsyncMock()
+    svc.merge_invocation_node_metadata = AsyncMock()
     return svc
 
 
@@ -218,55 +219,123 @@ async def test_flush_run_telemetry_writes_signals_and_overlap_once():
         "signals": {"emitted": {"ScheduleRunSucceeded": 1}, "received": 1, "acted_on": 1},
         "files_overlap": {"count": 1, "top": [{"path": "/shared.py", "workers": 2}]},
     }
-    svc.update_invocation.assert_awaited_once_with(
-        "inv-1", node_metadata={"coordination": telemetry}
+    svc.merge_invocation_node_metadata.assert_awaited_once_with(
+        "inv-1", {"coordination": telemetry}
     )
     # Popped -- a second flush attempt for the same run_id sees no signals.
     assert bus.pop_run_counters("run-1") is None
 
 
 @pytest.mark.asyncio
-async def test_flush_run_telemetry_merges_into_existing_node_metadata():
-    """update_invocation replaces node_metadata wholesale, so the flush must
-    read-modify-write rather than clobber pre-existing keys."""
+async def test_flush_run_telemetry_preserves_keys_already_in_node_metadata(db: StateDB):
+    """The flush merges its own key through the store: a row that already
+    carries another writer's keys keeps them and gains "coordination", rather
+    than having the whole column replaced by the flush's snapshot."""
     from lionagi.studio.services.scheduler_state import flush_run_telemetry
+
+    inv_id = _uid()
+    await db.create_invocation(
+        {
+            "id": inv_id,
+            "skill": "test",
+            "started_at": time.time(),
+            "status": "running",
+            "node_metadata": {"result": "pr-url", "nested": {"keep": 1}},
+        }
+    )
+
+    class _StoreSvc:
+        async def compute_files_overlap(self, invocation_id, *, top_n=5):
+            return {"count": 1, "top": [{"path": "/shared.py", "workers": 2}]}
+
+        async def merge_invocation_node_metadata(self, inv_id, patch):
+            await db.merge_invocation_node_metadata(inv_id, patch)
 
     bus = SchedulerSignalBus()
     await bus.emit(ScheduleRunSucceeded(run_id="run-2", schedule_id="s1", reason_code="ok"))
 
-    svc = _make_svc()
-    svc.get_invocation = AsyncMock(
-        return_value={"id": "inv-2", "node_metadata": {"segments": ["existing"]}}
-    )
-
-    telemetry = await flush_run_telemetry(svc, bus, run_id="run-2", invocation_id="inv-2")
+    telemetry = await flush_run_telemetry(_StoreSvc(), bus, run_id="run-2", invocation_id=inv_id)
 
     assert telemetry is not None
-    svc.update_invocation.assert_awaited_once()
-    _, kwargs = svc.update_invocation.await_args
-    assert kwargs["node_metadata"]["segments"] == ["existing"]
-    assert kwargs["node_metadata"]["coordination"] == telemetry
+    row = await db.get_invocation(inv_id)
+    # The keys another writer stored survive, and the flush's key lands beside
+    # them -- including a nested object, which merges rather than replaces.
+    assert row["node_metadata"]["result"] == "pr-url"
+    assert row["node_metadata"]["nested"] == {"keep": 1}
+    assert row["node_metadata"]["coordination"] == telemetry
+
+
+class _StoreBackedSvc:
+    """A SchedulerStateService over a real StateDB, with a close racing the flush.
+
+    Both persist methods land a competing close's ``{"result": "pr-url"}`` before
+    delegating. A flush that reads the row and writes a whole-column snapshot
+    taken before that result landed drops it; a flush that merges in the database
+    keeps it. Wrapping both names means the competing write lands whichever one
+    this flush uses.
+    """
+
+    def __init__(self, db: StateDB, invocation_id: str, competing: dict) -> None:
+        self._db = db
+        self._invocation_id = invocation_id
+        self._competing = competing
+        self.landed = False
+
+    async def _land_the_close(self) -> None:
+        if not self.landed:
+            self.landed = True
+            await self._db.merge_invocation_node_metadata(self._invocation_id, self._competing)
+
+    async def compute_files_overlap(self, invocation_id, *, top_n=5):
+        return {"count": 1, "top": [{"path": "/shared.py", "workers": 2}]}
+
+    async def get_invocation(self, invocation_id):
+        return await self._db.get_invocation(invocation_id)
+
+    async def update_invocation(self, inv_id, **fields):
+        await self._land_the_close()
+        await self._db.update_invocation(inv_id, **fields)
+
+    async def merge_invocation_node_metadata(self, inv_id, patch):
+        await self._land_the_close()
+        await self._db.merge_invocation_node_metadata(inv_id, patch)
 
 
 @pytest.mark.asyncio
-async def test_flush_run_telemetry_parses_string_node_metadata():
-    """A raw-text() query without column typing can return node_metadata as
-    a JSON string (SQLite) rather than an already-decoded dict."""
+async def test_flush_run_telemetry_keeps_a_close_result_written_mid_flush(db: StateDB):
+    """A close's merged ``result`` survives a flush that started before it landed.
+
+    The row already carries the close's result, and another close lands it again
+    inside the flush window. Reporting coordination telemetry must merge that one
+    key in the database rather than write back a snapshot of the whole column,
+    which would drop whatever the closer recorded in between.
+    """
     from lionagi.studio.services.scheduler_state import flush_run_telemetry
 
-    bus = SchedulerSignalBus()
-    await bus.emit(ScheduleRunSucceeded(run_id="run-3", schedule_id="s1", reason_code="ok"))
-
-    svc = _make_svc()
-    svc.get_invocation = AsyncMock(
-        return_value={"id": "inv-3", "node_metadata": '{"segments": ["existing"]}'}
+    inv_id = _uid()
+    await db.create_invocation(
+        {
+            "id": inv_id,
+            "skill": "test",
+            "started_at": time.time(),
+            "status": "completed",
+            "node_metadata": {"segments": ["existing"]},
+        }
     )
+    bus = SchedulerSignalBus()
+    await bus.emit(ScheduleRunSucceeded(run_id="run-close", schedule_id="s1", reason_code="ok"))
+    # The close's result is NOT in the row when the flush reads it; the competing
+    # write lands it between that read and the flush's own write.
+    svc = _StoreBackedSvc(db, inv_id, {"result": "pr-url"})
 
-    await flush_run_telemetry(svc, bus, run_id="run-3", invocation_id="inv-3")
+    telemetry = await flush_run_telemetry(svc, bus, run_id="run-close", invocation_id=inv_id)
 
-    _, kwargs = svc.update_invocation.await_args
-    assert kwargs["node_metadata"]["segments"] == ["existing"]
-    assert "coordination" in kwargs["node_metadata"]
+    assert telemetry is not None
+    assert svc.landed, "the competing close must land inside the flush window"
+    row = await db.get_invocation(inv_id)
+    assert row["node_metadata"]["segments"] == ["existing"]
+    assert row["node_metadata"]["result"] == "pr-url"
+    assert row["node_metadata"]["coordination"] == telemetry
 
 
 @pytest.mark.asyncio
@@ -281,7 +350,7 @@ async def test_flush_run_telemetry_no_signal_and_no_overlap_writes_nothing():
     result = await flush_run_telemetry(svc, bus, run_id="never-emitted", invocation_id="inv-4")
 
     assert result is None
-    svc.update_invocation.assert_not_awaited()
+    svc.merge_invocation_node_metadata.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -300,7 +369,7 @@ async def test_flush_run_telemetry_writes_when_only_overlap_is_nonzero():
 
     assert telemetry["signals"] == {"emitted": {}, "received": 0, "acted_on": 0}
     assert telemetry["files_overlap"]["count"] == 2
-    svc.update_invocation.assert_awaited_once()
+    svc.merge_invocation_node_metadata.assert_awaited_once()
 
 
 # flush_run_telemetry must be best-effort: I/O failures never propagate
@@ -322,14 +391,14 @@ async def test_flush_run_telemetry_swallows_compute_overlap_failure():
     result = await flush_run_telemetry(svc, bus, run_id="run-6", invocation_id="inv-6")
 
     assert result is None
-    svc.update_invocation.assert_not_awaited()
+    svc.merge_invocation_node_metadata.assert_not_awaited()
     # Popped regardless of the failure -- best-effort means the counters are
     # deliberately dropped, not retried.
     assert bus.pop_run_counters("run-6") is None
 
 
 @pytest.mark.asyncio
-async def test_flush_run_telemetry_swallows_update_invocation_failure():
+async def test_flush_run_telemetry_swallows_merge_failure():
     """A failure persisting node_metadata must not propagate either."""
     from lionagi.studio.services.scheduler_state import flush_run_telemetry
 
@@ -340,7 +409,7 @@ async def test_flush_run_telemetry_swallows_update_invocation_failure():
     svc.compute_files_overlap = AsyncMock(
         return_value={"count": 1, "top": [{"path": "/shared.py", "workers": 2}]}
     )
-    svc.update_invocation = AsyncMock(side_effect=OSError("disk error"))
+    svc.merge_invocation_node_metadata = AsyncMock(side_effect=OSError("disk error"))
 
     result = await flush_run_telemetry(svc, bus, run_id="run-7", invocation_id="inv-7")
 

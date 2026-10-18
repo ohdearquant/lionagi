@@ -81,9 +81,9 @@ def _sorted_json(value):
     return json.dumps(value, indent=2, sort_keys=True)
 
 
-def test_http_route_count_is_141():
+def test_http_route_count_is_143():
     live = _capture.capture_http()
-    assert live["count"] == 141
+    assert live["count"] == 143
 
 
 def _routes_by_key(payload: dict) -> dict[str, dict]:
@@ -524,7 +524,7 @@ def test_schedule_quick_create_validates_before_any_network_call():
 # unrelated to this module's own registry/dispatch consolidation, so the
 # import-laziness oracle allowlists exactly these two instead of asserting a
 # blanket zero that would misreport them as regressions:
-#   - orchestrate: lionagi/cli/orchestrate/_common.py:14 does a *module-level*
+#   - orchestrate: lionagi/cli/orchestrate/_common.py:15 does a *module-level*
 #     `from .. import team as _team_module` (team-mode support), so importing
 #     lionagi.cli.orchestrate always pulls in lionagi.cli.team.
 #   - stats: lionagi/cli/stats.py:14 does a *module-level*

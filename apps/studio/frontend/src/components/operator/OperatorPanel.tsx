@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link, useLocation, useNavigate } from "@tanstack/react-router";
+import { Link, useLocation, useNavigate, useSearch } from "@tanstack/react-router";
 import { useTranslations } from "use-intl";
 import {
   ApiError,
@@ -39,6 +39,7 @@ import type {
   OperatorTextPayload,
   OperatorToolCallPayload,
   OperatorToolResultPayload,
+  OperatorTruncationPayload,
   OperatorUiCommandPayload,
 } from "@/lib/types";
 import Button from "@/components/ui/Button";
@@ -67,6 +68,7 @@ import {
   type StoredEffectAcknowledgement,
 } from "./operatorEffects";
 import { nextObservationSeq, observationObserver } from "./observationSequence";
+import { useOperatorProject } from "./OperatorProjectContext";
 import { applyTheme } from "@/lib/theme";
 
 const STORAGE_KEY = "studio:operator-conversation";
@@ -131,6 +133,14 @@ function conversationLabel(conversation: OperatorConversation): string {
   return conversation.id.slice(0, 8);
 }
 
+function formatRetentionBytes(bytes: number): string {
+  const amount = (value: number): string =>
+    Number.isInteger(value) ? String(value) : value.toFixed(1);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${amount(bytes / 1024)} KB`;
+  return `${amount(bytes / (1024 * 1024))} MB`;
+}
+
 function displayItems(frames: OperatorFrame[]): DisplayItem[] {
   const items: DisplayItem[] = [];
   for (const frame of frames) {
@@ -173,7 +183,7 @@ function findRunId(value: unknown, depth = 0): string | null {
     return null;
   }
   const record = value as Record<string, unknown>;
-  for (const key of ["runId", "run_id", "sessionId", "session_id"]) {
+  for (const key of ["sessionId", "session_id", "runId", "run_id"]) {
     if (typeof record[key] === "string" && record[key]) return record[key];
   }
   for (const nested of Object.values(record)) {
@@ -248,6 +258,7 @@ export function formatProposalCommand(command: Record<string, unknown>): Formatt
 function operatorContext(
   pathname: string,
   search: Record<string, unknown>,
+  project: string | null,
 ): OperatorContextSnapshot & { observationSeq: number; observerId: string } {
   let space: OperatorContextSnapshot["space"] = "mission";
   if (pathname.startsWith("/library")) space = "library";
@@ -285,6 +296,7 @@ function operatorContext(
   const queryString = query.toString();
   return {
     space,
+    ...(project ? { project } : {}),
     route: `${pathname}${queryString ? `?${queryString}` : ""}`,
     selection: Object.keys(selection).length ? selection : null,
     filters,
@@ -656,12 +668,46 @@ function FrameCard({
       </div>
     );
   }
+  if (frame.type === "truncation") {
+    const payload = frame.payload as OperatorTruncationPayload;
+    const reasonLimit =
+      payload.reason === "frames_per_turn"
+        ? payload.limits.maxFramesPerTurn
+        : payload.limits.maxTurnPayloadBytes;
+    return (
+      <div className="rounded border border-status-warning/30 bg-status-warning-bg px-2.5 py-2 text-meta text-content-secondary">
+        <div className="flex items-start gap-1.5">
+          <IconError size={13} className="mt-0.5 shrink-0 text-status-warning" />
+          <div className="min-w-0 break-words">
+            <div className="font-medium text-content-primary">{t("truncation.title")}</div>
+            <div>
+              {t("truncation.summary", {
+                frames: payload.elidedFrames,
+                size: formatRetentionBytes(payload.elidedBytes),
+              })}
+            </div>
+            <div className="font-data">
+              {payload.reason}
+              {t("truncation.limit", {
+                limit:
+                  payload.reason === "frames_per_turn"
+                    ? String(reasonLimit)
+                    : formatRetentionBytes(reasonLimit),
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
   return null;
 }
 
 export default function OperatorPanel({ open, onClose }: Props) {
   const t = useTranslations("operator");
   const location = useLocation();
+  const search = useSearch({ from: "/fleet", shouldThrow: false });
+  const project = useOperatorProject(location.pathname, search ?? {});
   const navigate = useNavigate();
   const [state, dispatch] = useReducer(operatorReducer, initialOperatorState);
   const [instruction, setInstruction] = useState("");
@@ -669,6 +715,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const [model, setModel] = useState<string>("");
   const [effort, setEffort] = useState<OperatorEffort | "">("");
   const [sending, setSending] = useState(false);
+  const [streamEpoch, setStreamEpoch] = useState(0);
   const [stopping, setStopping] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [deciding, setDeciding] = useState<Set<string>>(() => new Set());
@@ -899,10 +946,13 @@ export default function OperatorPanel({ open, onClose }: Props) {
       if (animationFrame != null) window.cancelAnimationFrame(animationFrame);
       if (queued.length) dispatch({ type: "APPEND_FRAMES", frames: queued });
     };
-    // Reconnect is owned by streamOperatorConversation; changing cursor must
-    // not tear down a healthy stream after every frame.
+    // Reconnect is normally owned by streamOperatorConversation; changing the
+    // cursor must not tear down a healthy stream after every frame. A
+    // successful submit deliberately advances streamEpoch, though: the POST
+    // may have reached a replacement daemon after the old stream died, and a
+    // fresh subscription replays that durable user frame immediately.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.conversation?.id, state.loadState]);
+  }, [state.conversation?.id, state.loadState, streamEpoch]);
 
   const applyClientEffect = useCallback(
     async (effect: unknown): Promise<StoredEffectAcknowledgement> => {
@@ -1032,12 +1082,16 @@ export default function OperatorPanel({ open, onClose }: Props) {
     // the debounce and the network both reorder, so two navigations can reach
     // the server reversed and the server has to keep whichever the browser
     // observed later rather than whichever arrived later.
-    const context = operatorContext(location.pathname, location.search as Record<string, unknown>);
+    const context = operatorContext(
+      location.pathname,
+      location.search as Record<string, unknown>,
+      project,
+    );
     const timer = window.setTimeout(() => {
       void reportOperatorView(conversationId, context).catch(() => {});
     }, 150);
     return () => window.clearTimeout(timer);
-  }, [conversationId, location.pathname, location.search]);
+  }, [conversationId, location.pathname, location.search, project]);
 
   useLayoutEffect(() => {
     const oldHeight = anchorHeightRef.current;
@@ -1080,6 +1134,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
       const context = operatorContext(
         location.pathname,
         location.search as Record<string, unknown>,
+        project,
       );
       // The menu is hydrated from the conversation's pin, so an empty
       // selection here means the operator moved it back to Default. Sending
@@ -1095,6 +1150,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         ...(clearing ? { clearSelection: true } : {}),
       });
       dispatch({ type: "TURN_ACCEPTED", requestId: accepted.requestId });
+      setStreamEpoch((current) => current + 1);
       setInstruction("");
       nearBottomRef.current = true;
     } catch (error) {
@@ -1115,6 +1171,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
     instruction,
     location.pathname,
     location.search,
+    project,
     model,
     effectiveEffort,
     sending,
@@ -1709,7 +1766,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         )}
 
         <footer className="shrink-0 border-t border-edge bg-surface-raised p-3">
-          {(actionError || (state.connectionState === "error" && state.error)) && (
+          {(actionError || state.error) && (
             <div className="mb-2 flex items-start gap-1.5 rounded border border-status-failure/30 bg-status-error-bg px-2 py-1.5 text-meta text-status-failure">
               <IconError size={12} className="mt-0.5 shrink-0" />
               <span className="min-w-0 flex-1 break-words">{actionError ?? state.error}</span>

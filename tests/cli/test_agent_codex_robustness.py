@@ -58,8 +58,12 @@ def test_build_chat_model_bypass_takes_precedence_over_yolo(monkeypatch):
     assert "full_auto" not in kwargs, "full_auto (yolo) must not override bypass"
 
 
-def test_build_chat_model_no_bypass_no_yolo_returns_str_for_codex():
-    """Without any flags, build_chat_model returns a plain spec string (no iModel)."""
+def test_build_chat_model_no_bypass_no_yolo_returns_str_for_codex(tmp_path, monkeypatch):
+    """Without any flags AND without a global codex effort, build_chat_model
+    returns a plain spec string (no iModel). The empty CODEX_HOME is the
+    premise, stated here rather than inherited from the suite's isolation: a
+    global model_reasoning_effort would rightly turn this into an iModel."""
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     result = build_chat_model("codex", "gpt-5.3-codex-spark", yolo=False, verbose=False, theme=None)
     assert isinstance(result, str)
     assert result == "codex/gpt-5.3-codex-spark"

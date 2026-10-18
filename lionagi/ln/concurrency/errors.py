@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import Awaitable, Callable
 from typing import ParamSpec, TypeVar
 
@@ -58,8 +59,14 @@ def get_cancelled_exc_class() -> type[BaseException]:
 
 
 def is_cancelled(exc: BaseException) -> bool:
-    """True if exc is the backend's cancellation exception type."""
-    return isinstance(exc, cancelled_exc_classes())
+    """True if exc is asyncio's or, once trio is imported, trio's cancellation exception."""
+    if isinstance(exc, cancelled_exc_classes()):
+        return True
+    # The cache always holds asyncio's class and holds trio's only if it was
+    # primed inside a trio loop, so trio's is checked directly; it can only be
+    # raised once trio has been imported.
+    trio = sys.modules.get("trio")
+    return trio is not None and isinstance(exc, trio.Cancelled)
 
 
 async def shield(func: Callable[P, Awaitable[T]], *args: P.args, **kwargs: P.kwargs) -> T:

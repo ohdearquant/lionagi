@@ -612,11 +612,34 @@ async def test_execute_cancel_command_identity_mismatch_does_not_report_cancelle
     monkeypatch.setattr(kill_mod, "_kill_one", fake_kill_one)
 
     result = await execute_cancel_command({"session_id": run_id, "project": DEFAULT_TEST_PROJECT})
-    assert result == {"status": "identity_mismatch", "id": run_id, "signal": "identity_mismatch"}
+    assert result == {"status": "not_stopped", "id": run_id, "signal": "identity_mismatch"}
 
     async with StateDB() as db:
         row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (run_id,))
         assert row["status"] == "running"
+
+
+async def test_execute_cancel_command_reports_an_imported_row_that_was_not_stopped(
+    tmp_path, monkeypatch
+):
+    from lionagi.state.db import StateDB
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        run_id = await _seed_session(db, status="running", pid=None)
+        await db.execute("UPDATE sessions SET source_kind = 'imported_fs' WHERE id = ?", (run_id,))
+
+    result = await execute_cancel_command({"session_id": run_id, "project": DEFAULT_TEST_PROJECT})
+
+    assert result == {
+        "status": "not_stopped",
+        "id": run_id,
+        "signal": "imported_no_process",
+    }
+    async with StateDB() as db:
+        row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (run_id,))
+    assert row["status"] == "running"
 
 
 async def test_execute_cancel_command_terminalized_during_approval_is_not_cancelled(
@@ -710,7 +733,7 @@ async def test_cancel_run_allow_path_identity_mismatch_reports_not_cancelled(tmp
     assert decision["status"] == "succeeded"  # the executor ran without raising
     assert result == {
         "cancelled": False,
-        "status": "identity_mismatch",
+        "status": "not_stopped",
         "id": run_id,
         "signal": "identity_mismatch",
         "run_untouched": True,
@@ -762,11 +785,14 @@ async def test_cancel_run_text_search_is_scoped_to_the_turns_project(tmp_path, m
     }
 
 
-async def test_cancel_run_text_search_without_project_context_fails_closed(tmp_path, monkeypatch):
-    """No turn/project context (e.g. a caller that never named a project)
-    must never fall back to unscoped resolution -- a turn with no owner
-    mapping is refused with a typed error before either same-named run in a
-    different project is ever read back, let alone offered as a candidate."""
+async def test_cancel_run_unscoped_turn_is_refused_for_every_reference_form(tmp_path, monkeypatch):
+    """Cancellation mutates the run it names, so a turn that declares no
+    project is refused before anything is resolved -- the same position
+    ``run_control`` takes for pause/resume/steer, and for the same two
+    reasons: the turn cannot prove it owns the run, and refusing before
+    resolution keeps the answer from becoming an oracle for which run ids
+    exist in projects it cannot see. Every reference form gets the one
+    refusal, including an exact full UUID, and no proposal is created."""
     from lionagi.state.db import StateDB
 
     path = tmp_path / "state.db"
@@ -776,35 +802,54 @@ async def test_cancel_run_text_search_without_project_context_fails_closed(tmp_p
         await db.update_session(first, project="/Users/admin/acme-research")
         second = await _seed_session(db, status="completed", name="nightly-triage")
         await db.update_session(second, project="/Users/admin/acme-ops")
+        running = await _seed_session(db, status="running", pid=None)
 
     store = OperatorStore(path)
     cid, request_id = await _make_running_turn(
-        store, context={"space": "mission", "route": "/", "filters": {}}
+        store,
+        context={
+            "space": "history",
+            "route": "/fleet",
+            "filters": {},
+            "selection": {"s": first},
+        },
     )
     _set_identity(monkeypatch, path, cid, request_id)
 
-    with pytest.raises(MissingOwnerContextError):
-        await cancel_run({"run": "nightly-triage"})
+    refusal = {"cancelled": False, "reason": "missing_owner_context", "run_untouched": True}
 
-    # A short id prefix is fenced the same way -- prefixes enumerate.
-    with pytest.raises(MissingOwnerContextError):
-        await cancel_run({"run": first[:8]})
+    # A name, an id prefix, and an exact full id of a row this turn cannot
+    # prove it owns.
+    assert await cancel_run({"run": "nightly-triage"}) == refusal
+    assert await cancel_run({"run": first[:8]}) == refusal
+    assert await cancel_run({"run": running}) == refusal
+    # The same answer for an id that does not exist at all: a not-found
+    # answer here would tell the turn that the previous id exists.
+    assert await cancel_run({"run": str(uuid.uuid4())}) == refusal
+    # And the run the human has open -- 'current' is a write target here,
+    # not a read.
+    assert await cancel_run({"run": "current"}) == refusal
 
     assert await store.list_proposals_for_request(request_id) == []
+    async with StateDB() as db:
+        row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (running,))
+        assert row["status"] == "running"
 
 
-async def test_cancel_run_exact_id_resolves_on_a_turn_with_no_project(tmp_path, monkeypatch):
-    """A turn with an owner but no declared project may still target one run
-    by its full id -- an exact 36-character UUID identifies at most one row
-    and cannot enumerate, so it passes the fence that keeps refusing prefix
-    and name resolution. The already-terminal outcome proves resolution
-    succeeded without any proposal machinery."""
+async def test_cancel_run_resolver_refuses_an_unscoped_turn_with_a_typed_error(
+    tmp_path, monkeypatch
+):
+    """The tool reports the refusal as a structured reason, but the resolver
+    beneath it still raises the typed error -- a caller that goes through the
+    resolver instead of the tool handler gets a refusal too, never a silent
+    unscoped lookup."""
     from lionagi.state.db import StateDB
+    from lionagi.studio.operator.cancel_run import _resolve_reference
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
     async with StateDB() as db:
-        run_id = await _seed_session(db, status="completed", pid=None)
+        run_id = await _seed_session(db, status="running", pid=None)
 
     store = OperatorStore(path)
     cid, request_id = await _make_running_turn(
@@ -812,22 +857,22 @@ async def test_cancel_run_exact_id_resolves_on_a_turn_with_no_project(tmp_path, 
     )
     _set_identity(monkeypatch, path, cid, request_id)
 
-    result = await cancel_run({"run": run_id})
+    with pytest.raises(MissingOwnerContextError):
+        await _resolve_reference(store, request_id, run_id)
+    # Nothing is selected on this turn, so 'current' would read as not-found if it
+    # were resolved before the refusal.
+    with pytest.raises(MissingOwnerContextError):
+        await _resolve_reference(store, request_id, "current")
+    assert await store.list_proposals_for_request(request_id) == []
 
-    assert result == {
-        "cancelled": False,
-        "status": "already_terminal",
-        "id": run_id,
-        "run_untouched": True,
-    }
 
-
-async def test_cancel_run_allow_path_cancels_a_projectless_row_by_exact_id(tmp_path, monkeypatch):
-    """A running row with no project of its own (Operator-launched runs have
-    none today) resolves through the exact-id arm and goes through the full
-    proposal flow: the human's approval is the authority, and the command
-    carries the row's own empty project so the executor can hold it to
-    still-projectless at execute time."""
+async def test_cancel_run_scoped_turn_cannot_reach_a_projectless_row_by_exact_id(
+    tmp_path, monkeypatch
+):
+    """A turn that declares a project and names a running row that carries no
+    project of its own gets the same not-found answer it gets for another
+    project's row: ownership is an equality check, and an unscoped row is not
+    a wildcard. No proposal is created and the row keeps running."""
     from lionagi.state.db import StateDB
 
     path = tmp_path / "state.db"
@@ -839,68 +884,21 @@ async def test_cancel_run_allow_path_cancels_a_projectless_row_by_exact_id(tmp_p
     calls: list = []
     coordinator = OperatorCoordinator(store=store, command_executor=_command_executor(calls))
     await coordinator.startup()
-    cid, request_id = await _make_running_turn(
-        store, context={"space": "mission", "route": "/", "filters": {}}
-    )
+    cid, request_id = await _make_running_turn(store)
     _set_identity(monkeypatch, path, cid, request_id)
 
-    task = asyncio.create_task(cancel_run({"run": run_id}))
-    proposal = await _wait_proposal(store, request_id)
-    assert proposal["command"] == {"session_id": run_id, "reason": "", "project": None}
+    # A correctly-scoped resolution returns "not_found" immediately -- it
+    # never creates a proposal to wait on. Bound the wait so a regression
+    # that resumes creating a proposal fails the test instead of hanging.
+    result = await asyncio.wait_for(cancel_run({"run": run_id}), timeout=5)
 
-    await coordinator.decide(
-        cid,
-        proposal["id"],
-        allow=True,
-        expected_command_hash=proposal["commandHash"],
-        expected_target_version=proposal["targetVersion"],
-    )
-    result = await asyncio.wait_for(task, timeout=2)
-
-    assert result == {
-        "cancelled": True,
-        "status": "terminal",
-        "id": run_id,
-        "signal": "no_pid",
-        "run_untouched": False,
-    }
+    assert result == {"cancelled": False, "reason": "not_found", "run_untouched": True}
+    assert await store.list_proposals_for_request(request_id) == []
+    assert calls == []
     async with StateDB() as db:
         row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (run_id,))
-        assert row["status"] == "cancelled"
+        assert row["status"] == "running"
     await coordinator.shutdown()
-
-
-async def test_cancel_run_current_resolves_via_the_exact_id_arm(tmp_path, monkeypatch):
-    """'Cancel the run the human is looking at' must work from any view:
-    the frozen selection is a full id the human's own browser reported, so
-    it rides the exact-id arm through the project fence."""
-    from lionagi.state.db import StateDB
-
-    path = tmp_path / "state.db"
-    _patch_state_db(monkeypatch, path)
-    async with StateDB() as db:
-        run_id = await _seed_session(db, status="completed", pid=None)
-
-    store = OperatorStore(path)
-    cid, request_id = await _make_running_turn(
-        store,
-        context={
-            "space": "history",
-            "route": "/fleet",
-            "filters": {},
-            "selection": {"s": run_id},
-        },
-    )
-    _set_identity(monkeypatch, path, cid, request_id)
-
-    result = await cancel_run({"run": "current"})
-
-    assert result == {
-        "cancelled": False,
-        "status": "already_terminal",
-        "id": run_id,
-        "run_untouched": True,
-    }
 
 
 async def test_execute_cancel_command_without_project_cannot_touch_an_owned_row(
@@ -951,6 +949,62 @@ async def test_execute_cancel_command_projectless_pairing_requires_row_still_pro
         assert row["status"] == "cancelled"
         row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (gained_owner,))
         assert row["status"] == "running"
+
+
+async def test_cancel_run_id_prefix_window_counts_only_visible_rows(tmp_path, monkeypatch):
+    """A run of the turn's own project must still be found when foreign rows
+    fill the id-ordered window the prefix query reads: the window counts only
+    rows the turn may see."""
+    from lionagi.state.db import StateDB
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    owned = "deadbeef-0006-2222-3333-444455556666"
+    async with StateDB() as db:
+        prog_owned = str(uuid.uuid4())
+        await db.create_progression(prog_owned)
+        await db.create_session(
+            {
+                "id": owned,
+                "progression_id": prog_owned,
+                "status": "completed",
+                "name": "owned-run",
+                "project": "/Users/admin/acme-research",
+                "started_at": time.time(),
+            }
+        )
+        for index in range(6):
+            foreign = f"deadbeef-{index:04d}-8888-7777-666655554444"
+            prog_foreign = str(uuid.uuid4())
+            await db.create_progression(prog_foreign)
+            await db.create_session(
+                {
+                    "id": foreign,
+                    "progression_id": prog_foreign,
+                    "status": "completed",
+                    "name": "foreign-run",
+                    "project": "/Users/admin/acme-ops",
+                    "started_at": time.time(),
+                }
+            )
+
+    store = OperatorStore(path)
+    cid, request_id = await _make_running_turn(
+        store,
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "project": "/Users/admin/acme-research",
+        },
+    )
+    _set_identity(monkeypatch, path, cid, request_id)
+
+    result = await cancel_run({"run": "deadbeef"})
+
+    assert result["id"] == owned
+    assert result["cancelled"] is False
+    assert result["status"] == "already_terminal"
 
 
 async def test_cancel_run_exact_id_of_a_foreign_project_terminal_run_is_not_found(
@@ -1087,3 +1141,98 @@ async def test_cancel_run_ambiguous_id_prefix_hides_foreign_project_candidates(
         "id": owned,
         "run_untouched": True,
     }
+
+
+# ── cancel_run(): an id-prefix collision reports a bounded candidate window ──
+
+
+async def _seed_prefixed_runs(path: Path, count: int, project: str) -> list[str]:
+    """Seed *count* runs whose ids share one literal prefix, sorted by index,
+    and return those ids in order."""
+    from lionagi.state.db import StateDB
+
+    ids = [f"deadbeef-{index:04d}-2222-3333-444455556666" for index in range(count)]
+    async with StateDB() as db:
+        for sid in ids:
+            progression_id = str(uuid.uuid4())
+            await db.create_progression(progression_id)
+            await db.create_session(
+                {
+                    "id": sid,
+                    "progression_id": progression_id,
+                    "status": "running",
+                    "name": "nightly-triage",
+                    "project": project,
+                    "started_at": time.time(),
+                }
+            )
+    return ids
+
+
+async def test_cancel_run_id_prefix_candidates_cap_at_the_listing_size(tmp_path, monkeypatch):
+    """Seven in-scope runs share an id prefix: cancel proposes no target and
+    reports candidates the same way the read-only resolver does -- at most the
+    CLI helper's listing size, with truncation true because more rows matched
+    than are returned."""
+    from lionagi.cli._util import _CANDIDATES_SHOWN
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    project = "/Users/admin/acme-research"
+    ids = await _seed_prefixed_runs(path, 7, project)
+
+    store = OperatorStore(path)
+    cid, request_id = await _make_running_turn(
+        store,
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "project": project,
+        },
+    )
+    _set_identity(monkeypatch, path, cid, request_id)
+
+    result = await cancel_run({"run": "deadbeef"})
+
+    assert result["cancelled"] is False
+    assert result["reason"] == "ambiguous_reference"
+    assert result["run_untouched"] is True
+    assert len(result["candidates"]) == _CANDIDATES_SHOWN
+    assert set(result["candidates"]) == set(ids[:_CANDIDATES_SHOWN])
+    assert result["truncated"] is True
+    assert await store.list_proposals_for_request(request_id) == []
+
+
+async def test_cancel_run_id_prefix_exactly_the_listing_size_is_not_truncated(
+    tmp_path, monkeypatch
+):
+    """Exactly the listing size of in-scope runs share an id prefix: every
+    match is returned, so nothing was dropped and truncation is false."""
+    from lionagi.cli._util import _CANDIDATES_SHOWN
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    project = "/Users/admin/acme-research"
+    ids = await _seed_prefixed_runs(path, _CANDIDATES_SHOWN, project)
+
+    store = OperatorStore(path)
+    cid, request_id = await _make_running_turn(
+        store,
+        context={
+            "space": "mission",
+            "route": "/",
+            "filters": {},
+            "project": project,
+        },
+    )
+    _set_identity(monkeypatch, path, cid, request_id)
+
+    result = await cancel_run({"run": "deadbeef"})
+
+    assert result["cancelled"] is False
+    assert result["reason"] == "ambiguous_reference"
+    assert len(result["candidates"]) == _CANDIDATES_SHOWN
+    assert set(result["candidates"]) == set(ids)
+    assert result["truncated"] is False
+    assert await store.list_proposals_for_request(request_id) == []

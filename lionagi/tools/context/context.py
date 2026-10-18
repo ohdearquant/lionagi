@@ -5,11 +5,11 @@
 
 from __future__ import annotations
 
-from enum import Enum
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
+from lionagi.ln.types import Enum
 from lionagi.protocols.action.tool import Tool
 from lionagi.service.token_calculator import TokenCalculator
 
@@ -89,7 +89,8 @@ class ContextRequest(BaseModel):
         description=(
             "For 'compact': 'tool_io' (default) collapses only tool request/result "
             "messages in the span and keeps your reasoning + the task/guidance in view; "
-            "'all' collapses everything in the span except the system message."
+            "'all' collapses everything in the span except the system message and the "
+            "first instruction in your view, which every model call needs."
         ),
     )
     scope: str | None = Field(
@@ -129,7 +130,12 @@ class ContextTool(LionTool):
 
     def bind(self, branch: Branch) -> Tool:
         from lionagi.protocols.generic.progression import Progression
-        from lionagi.protocols.messages import ActionRequest, ActionResponse
+        from lionagi.protocols.messages import (
+            ActionRequest,
+            ActionResponse,
+            AssistantResponse,
+            Instruction,
+        )
 
         msgs = branch.msgs
 
@@ -141,6 +147,31 @@ class ContextTool(LionTool):
                     cp.append(uid)
                 branch.metadata["current_progression"] = cp
             return branch.metadata["current_progression"]
+
+        def _grammar_error(view: list, summary_at: int, pile) -> str | None:
+            """Why a proposed active view cannot be compiled into a chat call.
+
+            ``view`` is the active view with the collapsed messages removed and
+            ``summary_at`` the position the assistant summary would take. The
+            chat compiler requires the first model-facing turn to be an
+            Instruction when a system message is set.
+            """
+            roles: list[str] = []
+            for i, uid in enumerate([*view, None]):
+                if i == summary_at:
+                    roles.append("assistant")
+                if uid is None:
+                    break
+                if uid not in pile:
+                    return "the active view references an unavailable message"
+                message = pile[uid]
+                if isinstance(message, Instruction):
+                    roles.append("instruction")
+                elif isinstance(message, AssistantResponse):
+                    roles.append("assistant")
+            if msgs.system and roles and roles[0] == "assistant":
+                return "the active view would begin with an assistant response"
+            return None
 
         def _tokens(msg) -> int:
             c = getattr(msg, "content", "") or ""
@@ -335,12 +366,37 @@ class ContextTool(LionTool):
                         if u in pile and isinstance(pile[u], ActionRequest | ActionResponse)
                     ]
                 else:  # "all" — collapse everything in the span (system is at idx 0, excluded)
-                    collapse = list(span)
+                    # The first instruction in the view stays: the chat compiler
+                    # needs one before any assistant turn, and pinning the first
+                    # durable message would not help a view whose prefix is
+                    # already evicted.
+                    anchor = next(
+                        (u for u in cp if u in pile and isinstance(pile[u], Instruction)),
+                        None,
+                    )
+                    collapse = [u for u in span if u != anchor]
                 if not collapse:
                     return {
                         "success": False,
                         "error": "Nothing to compact in range (no tool messages; "
                         "use mode='all' to collapse reasoning too).",
+                    }
+
+                # The summary takes the place of the first message it replaces,
+                # so a kept message at the start of the span stays ahead of it.
+                collapsed = set(collapse)
+                view = list(cp)
+                summary_at = view.index(collapse[0])
+                remaining = [u for u in view if u not in collapsed]
+                grammar_error = _grammar_error(remaining, summary_at, pile)
+                if grammar_error is not None:
+                    return {
+                        "success": False,
+                        "error": (
+                            f"Compaction refused: {grammar_error}, which the next model "
+                            "call could not render. Nothing was changed; choose a "
+                            "different range."
+                        ),
                     }
 
                 if (not summary or not summary.strip()) and auto:
@@ -361,8 +417,9 @@ class ContextTool(LionTool):
                 note = await msgs.a_add_message(
                     assistant_response=f"[CONTEXT COMPACTION] {summary.strip()}"
                 )
-                # place the summary where the span began, then drop the collapsed uids
-                cp.insert(s, note.id)
+                # place the summary where the first collapsed message was, then
+                # drop the collapsed uids
+                cp.insert(summary_at, note.id)
                 cp.exclude(collapse)
                 return {
                     "success": True,

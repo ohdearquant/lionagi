@@ -5,7 +5,7 @@
 
 import orjson
 import pytest
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from lionagi.models.hashable_model import HashableModel
 
@@ -14,6 +14,26 @@ class _Sample(HashableModel):
     name: str
     count: int = 0
     metadata: dict = Field(default_factory=dict)
+
+
+def test_a_frozen_subclass_hashes_by_its_field_values():
+    """A mutable instance has no hash. A frozen subclass gets pydantic's hash of
+    its field values, which a tuple field allows and a list field refuses."""
+
+    class FrozenTags(HashableModel):
+        model_config = ConfigDict(frozen=True)
+        tags: tuple[str, ...]
+
+    class FrozenList(HashableModel):
+        model_config = ConfigDict(frozen=True)
+        tags: list[str]
+
+    assert hash(FrozenTags(tags=("a",))) == hash(FrozenTags(tags=("a",)))
+    assert len({FrozenTags(tags=("a",)), FrozenTags(tags=("a",)), FrozenTags(tags=("b",))}) == 2
+    with pytest.raises(TypeError, match="unhashable"):
+        hash(FrozenList(tags=["a"]))
+    with pytest.raises(TypeError, match="unhashable"):
+        hash(_Sample(name="x"))
 
 
 class TestToDictModes:
@@ -100,19 +120,23 @@ class TestJsonRoundtrip:
 
 
 class TestHashing:
-    def test_hash_is_stable(self):
+    def test_mutable_models_cannot_be_container_keys(self):
         m = _Sample(name="x", count=1)
-        assert hash(m) == hash(m)
+        for admit in (hash, lambda value: {value}, lambda value: {value: "present"}):
+            with pytest.raises(TypeError, match="unhashable type"):
+                admit(m)
 
-    def test_equal_models_hash_equal(self):
+    def test_equal_models_remain_equal(self):
         a = _Sample(name="x", count=1)
         b = _Sample(name="x", count=1)
-        assert hash(a) == hash(b)
+        assert a == b
 
-    def test_different_models_hash_differ(self):
+    def test_mutation_updates_value_equality(self):
         a = _Sample(name="x", count=1)
-        b = _Sample(name="x", count=2)
-        assert hash(a) != hash(b)
+        b = _Sample(name="x", count=1)
+        a.count = 2
+        assert a != b
+        assert a.to_dict()["count"] == 2
 
 
 class TestDefaultSerializer:
@@ -128,10 +152,8 @@ class TestDefaultSerializer:
         s = o.to_json()
         assert '"v":5' in s.replace(" ", "")
 
-    def test_serializer_caches_on_subsequent_calls(self):
+    def test_serializer_is_the_element_serializer(self):
         from lionagi.models import hashable_model as hm
+        from lionagi.protocols.generic.element import DEFAULT_ELEMENT_SERIALIZER
 
-        hm._DEFAULT_HASHABLE_SERIALIZER = None
-        a = hm._get_default_hashable_serializer()
-        b = hm._get_default_hashable_serializer()
-        assert a is b
+        assert hm._get_default_hashable_serializer() is DEFAULT_ELEMENT_SERIALIZER

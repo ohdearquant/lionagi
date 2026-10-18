@@ -186,6 +186,8 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/api/schedules/{schedule_id}/trigger"),
     ("POST", "/api/sessions/{session_id}/tags"),
     ("POST", "/api/shows/import"),
+    ("POST", "/api/studio/pair"),
+    ("POST", "/api/studio/pairing-codes"),
     ("POST", "/api/workflow-defs/"),
     ("POST", "/api/workflow-defs/{def_id}/run"),
     ("PUT", "/api/agents/{name}"),
@@ -275,7 +277,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 137
+    assert len(_GOLDEN_ROUTES) == 139
 
 
 def _compiled_match_shape(path_template: str) -> str:
@@ -598,6 +600,7 @@ _SESSION_DETAIL_KEYS = sorted(
         "output_tokens",
         "pause_is_held",
         "playbook_name",
+        "run_id",
         "project",
         "project_source",
         "provider",
@@ -704,6 +707,9 @@ _SCHEDULE_DETAIL_KEYS = sorted(
         # schedule still reading a quiet repo from one that stopped.
         "last_healthy_poll_at",
         "last_status",
+        # The latest definition change and whether its history is readable.
+        # Record route only; no list surface serves it.
+        "lifecycle",
         "max_runs",
         "missed_fire_policy",
         "name",

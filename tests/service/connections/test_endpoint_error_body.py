@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import aiohttp
 import pytest
+import pytest_asyncio
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
@@ -18,7 +19,7 @@ from lionagi.service.connections.endpoint_config import EndpointConfig
 _NO_SLEEP = patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock())
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def run_server():
     servers = []
 

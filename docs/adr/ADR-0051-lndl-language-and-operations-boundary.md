@@ -221,7 +221,9 @@ with no context it falls back to the bare identifier.
   marker without digits is not consumed as part of the number.
 - `Parser.parse()` requires `source_text`; omitting it raises `ParseError`. Non-LNDL
   tokens outside declarations are skipped. Parsing stops after the first `OUT{}`;
-  later declarations are not part of the `Program`.
+  later declarations are not part of the `Program`. With `parse(read_past_out=True)`,
+  declarations on either side of `OUT{}` are part of the `Program` and a second `OUT{}`
+  raises `ParseError`.
 - Aliases must be unique across both lvars and lacts. A duplicate raises `ParseError`.
   Missing `</lvar>` or `</lact>` raises `ParseError`; content is stripped at both ends.
 - An action alias that is a Python reserved word or selected builtin is accepted but

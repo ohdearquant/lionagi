@@ -226,22 +226,35 @@ class TestLookupContextWindow:
             tb._PROVIDER_MODULES.pop("_bad_test_provider", None)
             tb._provider_cache.pop("_bad_test_provider", None)
 
-    def test_all_provider_windows_skips_import_error(self):
-        """_all_provider_windows continues past ImportError providers (lines 75-76)."""
+    def test_all_provider_windows_yields_each_providers_lookup_in_order(self, monkeypatch):
+        """Iterating every provider goes through the per-provider lookup: in table order,
+        a cached table is read rather than re-imported, a loaded table is cached, and a
+        module that fails to import or has no CONTEXT_WINDOWS dict is skipped uncached."""
+        import importlib
+
         import lionagi.service.token_budget as tb
         from lionagi.service.token_budget import _all_provider_windows
 
-        original = tb._PROVIDER_MODULES.copy()
-        tb._PROVIDER_MODULES = {
-            "_bad_mod": "nonexistent.module.xyz",
-            "openai": tb._PROVIDER_MODULES["openai"],
-        }
-        tb._provider_cache.pop("_bad_mod", None)
-        try:
-            results = list(_all_provider_windows())
-            assert len(results) >= 1  # openai succeeded despite _bad_mod failing
-        finally:
-            tb._PROVIDER_MODULES = original
+        monkeypatch.setattr(
+            tb,
+            "_PROVIDER_MODULES",
+            {
+                "openai": tb._PROVIDER_MODULES["openai"],
+                "_no_windows": "lionagi.service.token_budget",
+                "_bad_mod": "nonexistent.module.xyz",
+                "anthropic": tb._PROVIDER_MODULES["anthropic"],
+            },
+        )
+        cached_openai = {"cached-only-model": 1}
+        monkeypatch.setattr(tb, "_provider_cache", {"openai": cached_openai})
+
+        yielded = list(_all_provider_windows())
+
+        anthropic = importlib.import_module(tb._PROVIDER_MODULES["anthropic"]).CONTEXT_WINDOWS
+        assert len(yielded) == 2
+        assert yielded[0] is cached_openai
+        assert yielded[1] is anthropic
+        assert tb._provider_cache == {"openai": cached_openai, "anthropic": anthropic}
 
 
 class TestGetContextWindowModelLookup:

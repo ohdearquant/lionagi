@@ -28,7 +28,6 @@ from lionagi import Branch, Session
 from lionagi._errors import ConfigurationError
 from lionagi.agent import AgentSpec, create_agent
 from lionagi.agent.factory import register_profile_injection
-from lionagi.ln import Unset
 from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
@@ -839,6 +838,10 @@ async def setup_orchestration(
         effort_override=effort,
         theme=theme,
         fast=fast,
+        account_connectors=tuple(getattr(orc_profile, "account_connectors", None) or ()),
+        contain_account_integrations=bool(
+            getattr(orc_profile, "contain_account_integrations", False)
+        ),
     )
     _orc_provider = orc_imodel.endpoint.config.provider
     _hand_mcp_servers(orc_imodel, run_mcp_servers, label="orchestrator")
@@ -847,6 +850,12 @@ async def setup_orchestration(
         orc_imodel.endpoint.config.kwargs.setdefault("repo", Path(cwd))
 
     run = allocate_run(save_dir=save_dir)
+    if isinstance(run, RunDir):
+        run = run.with_execution_provenance(
+            cwd=cwd or os.getcwd(),
+            mcp_resolution=mcp_resolution,
+            mcp_disabled=no_mcp_config,
+        )
     run.ensure_artifact_root()
 
     orc_log_config = DataLoggerConfig(auto_save_on_exit=False)
@@ -862,17 +871,17 @@ async def setup_orchestration(
     else:
         # Built-in "orchestrator" casts role via AgentSpec.compose + factory.
         orc_spec = AgentSpec.compose("orchestrator", pack=loaded_pack, grant_emissions=False)
-        # The factory discovers a config of its own (the home
-        # `.lionagi/.mcp.json` included) unless a caller hands it a set, and
-        # what it finds replaces the set the orchestrator was just given. So the
-        # run's set goes in as the set, a refusal as the empty one; only a run
-        # with neither leaves the factory to discover.
+        # This run resolved its server set once, above, and every branch it
+        # builds starts with that set: the resolved servers, the empty set a
+        # refusal is, or no set at all when the search found nothing. The
+        # factory's own discovery is what a run must not fall back on, since the
+        # home `.lionagi/.mcp.json` is not the run's to apply.
         orc_branch = await create_agent(
             orc_spec,
             load_settings=False,
             chat_model=orc_imodel,
             log_config=orc_log_config,
-            resolved_mcp_servers=Unset if run_mcp_servers is None else run_mcp_servers,
+            resolved_mcp_servers=run_mcp_servers,
         )
         orc_branch.name = "orchestrator"
     _session_id_env = os.environ.get("LIONAGI_SESSION_ID")
@@ -941,6 +950,76 @@ def _resolve_worker_model_spec(
             w_model = env.default_model_spec
 
     return w_model, w_profile, w_cfg
+
+
+def _warn_worker_config_collision(
+    env: OrchestrationEnv,
+    role: str,
+    *,
+    model_override: str | None,
+    system_prompt_override: str | None,
+    modes: list[str] | None,
+    profile: AgentProfile | None,
+    pack_config: Any,
+) -> None:
+    """Disclose the setting-by-setting precedence for a split worker config."""
+    if env.bare or profile is None or pack_config is None:
+        return
+
+    if model_override:
+        model_source = "worker override"
+    elif pack_config.model:
+        model_source = "pack"
+    elif profile.model:
+        model_source = "profile"
+    else:
+        # `profile` is never None here (guarded above), so the profile branch
+        # of `_resolve_worker_model_spec` always matches when neither an
+        # override nor a pack model is set. A profile whose `model` is falsy
+        # resolves to the role name itself, not to the orchestration default --
+        # that fallback is unreachable on this path. "No effective model" rather
+        # than "no model declared": `model: ""` parses through and is falsy, so
+        # the field can be present and still contribute nothing.
+        model_source = "profile (no effective model; role name used as spec)"
+
+    if env.effort:
+        effort_source = "orchestration override"
+    elif profile.effort:
+        effort_source = "profile"
+    elif pack_config.effort:
+        effort_source = "pack"
+    else:
+        effort_source = "provider default"
+
+    if modes:
+        modes_source = (
+            "task override validated by pack" if pack_config.modes_allow else "task override"
+        )
+    else:
+        modes_source = "pack"
+    if system_prompt_override is not None:
+        prompt_source = "worker override"
+    elif profile.raw_body:
+        prompt_source = "profile"
+    elif _is_casts_role(role):
+        prompt_source = "cast role with pack policy"
+    else:
+        prompt_source = "generic worker"
+
+    pack_name = getattr(env.pack, "name", "default")
+    message = (
+        f"worker role {role!r} matches both cast pack {pack_name!r} and agent profile "
+        f"{profile.name!r}; resolved sources: model={model_source}, effort={effort_source}, "
+        f"modes={modes_source}, prompt={prompt_source}"
+    )
+    reported = getattr(env, "_reported_worker_config_collisions", None)
+    if reported is None:
+        reported = set()
+        env._reported_worker_config_collisions = reported
+    if message in reported:
+        return
+    reported.add(message)
+    warn(message)
 
 
 def worker_is_cli(
@@ -1026,6 +1105,16 @@ async def build_worker_branch(
     if not env.bare and w_profile and w_profile.fast_mode:
         w_fast = True
 
+    _warn_worker_config_collision(
+        env,
+        role,
+        model_override=model_override,
+        system_prompt_override=system_prompt_override,
+        modes=modes,
+        profile=w_profile,
+        pack_config=w_cfg,
+    )
+
     w_imodel = build_imodel_from_spec(
         w_model,
         yolo=w_yolo,
@@ -1034,6 +1123,13 @@ async def build_worker_branch(
         effort_override=w_effort,
         theme=env.theme,
         fast=w_fast,
+        # The role's settings, as for its other fields; a bare worker has no role.
+        account_connectors=(
+            tuple(getattr(w_profile, "account_connectors", None) or ()) if not env.bare else ()
+        ),
+        contain_account_integrations=bool(
+            not env.bare and getattr(w_profile, "contain_account_integrations", False)
+        ),
     )
     worker_mcp_servers = getattr(env, "mcp_servers", None)
     _hand_mcp_servers(
@@ -1129,15 +1225,16 @@ async def build_worker_branch(
             system_prompt=composed_extra,
             khive_injection=(getattr(w_profile, "khive_injection", None) if w_profile else None),
         )
-        # Handed no set, the factory would discover one and replace the set
-        # _hand_mcp_servers gave this worker above (see the orchestrator).
+        # This run resolved its servers once and hands the result to every
+        # branch it builds: the resolved servers, the empty set a refusal is, or
+        # no set at all when the search found nothing (see the orchestrator).
         run_servers = getattr(env, "mcp_servers", None)
         wb = await create_agent(
             spec,
             load_settings=False,
             chat_model=w_imodel,
             log_config=log_config,
-            resolved_mcp_servers=Unset if run_servers is None else run_servers,
+            resolved_mcp_servers=run_servers,
         )
         wb.name = wname
     else:
@@ -1409,17 +1506,36 @@ def collect_worker_artifacts(env: OrchestrationEnv) -> list[dict]:
     for agent_id, adir in registered.items():
         entry: dict = {"agent_id": agent_id, "dir": str(adir), "files": [], "status": "reported"}
         adir = Path(adir)
-        if not adir.exists():
+        # `stat` distinguishes an absent path from one that cannot be inspected.
+        try:
+            adir.stat()
+        except (FileNotFoundError, NotADirectoryError):
             entry["status"] = "missing"
             entry["error"] = "the directory recorded for this worker does not exist"
+        except (OSError, ValueError) as exc:
+            entry["status"] = "unreadable"
+            entry["error"] = f"{type(exc).__name__}: {exc}"
         else:
             try:
-                files = sorted(str(p.relative_to(adir)) for p in adir.rglob("*") if p.is_file())
-            except OSError as exc:
+                files: list[str] = []
+                scan_error: OSError | None = None
+
+                def record_scan_error(error: OSError) -> None:
+                    nonlocal scan_error
+                    if scan_error is None:
+                        scan_error = error
+
+                for directory, _, names in os.walk(adir, onerror=record_scan_error):
+                    for name in names:
+                        path = Path(directory) / name
+                        if path.is_file():
+                            files.append(str(path.relative_to(adir)))
+                if scan_error is not None:
+                    raise scan_error
+                entry["files"] = sorted(files)
+            except (OSError, ValueError) as exc:
                 entry["status"] = "unreadable"
                 entry["error"] = f"{type(exc).__name__}: {exc}"
-            else:
-                entry["files"] = files
         entries.append(entry)
 
     for agent_id in getattr(env, "expected_worker_ids", None) or ():
@@ -1499,6 +1615,7 @@ def finalize_orchestration(
         "recall_turns": 0,
         "blocks_injected": 0,
         "failed": 0,
+        "degraded_turns": 0,
         "writeback_records": 0,
         "writeback_failed": 0,
     }
@@ -1640,6 +1757,8 @@ async def setup_orchestration_persist(
     extra_node_metadata: dict | None = None,
 ) -> dict | None:
     db = None
+    from lionagi.state.compat import refusal_in
+
     try:
         session_id = str(session.id)
         session_dict = session.to_dict(mode="db")
@@ -1743,12 +1862,45 @@ async def setup_orchestration_persist(
 
         return ctx
     except Exception as exc:
+        refusal = refusal_in(exc)
+        if refusal is not None:
+            # The store refused an admission write in compatibility mode, alone or inside a
+            # group, so the run fails with that refusal as its reason instead of going on without
+            # persistence (ADR-0128 D6). The refusal is recorded on the run's own manifest here,
+            # the way `li agent` records it at its setup: setup returns no context, so nothing
+            # downstream writes the reason for this run.
+            _log_orch.error("live persist setup refused: %s", refusal)
+            if run is not None and run_manifest is not None:
+                run_manifest["status"] = "failed"
+                run_manifest["ended_at"] = time.time()
+                run_manifest["error"] = f"The store refused a write: {refusal}"
+                try:
+                    run.write_manifest(run_manifest)
+                except Exception as write_exc:  # noqa: BLE001 — the refusal is what to report
+                    _log_orch.warning("could not record the refusal on this run: %s", write_exc)
+            if db is not None:
+                try:
+                    await db.close()
+                except Exception as close_exc:
+                    _log_orch.warning(
+                        "fallback db.close after setup refusal also failed: %s", close_exc
+                    )
+                from lionagi.state.db import unregister_shared_db
+
+                unregister_shared_db(db)
+            raise
         _log_orch.warning(
             "live persist setup failed (%r) — disabling persistence for this run",
             exc,
             exc_info=True,
         )
         _record_persistence_degraded(exc, run=run, run_manifest=run_manifest)
+        # It records no process to stop, so its run id is no `li kill` handle: say so now, with the
+        # pid, rather than leave the operator to find out at kill time (ADR-0104 Amendment 2).
+        warn(
+            f"run {run.run_id if run is not None else '(no run id)'}: persistence setup returned no "
+            f"session, and its run id is no `li kill` handle; its process is pid {os.getpid()}"
+        )
         if db is not None:
             try:
                 await db.close()
@@ -1924,6 +2076,18 @@ async def stop_live_persist(
         cwd=env.cwd,
     )
     env._run_manifest["status"] = final_status
+    decided = ctx.get("terminal_reason") if ctx is not None else None
+    from lionagi.state.compat import is_compatibility_store
+
+    if (
+        final_status == "failed"
+        and decided
+        and decided[0] == final_status
+        and is_compatibility_store(ctx.get("db"))
+    ):
+        # In compatibility mode run.json names the reason teardown decided, as `li agent`'s
+        # does, so a run the store refused a write of says so (ADR-0128 D6).
+        env._run_manifest["error"] = decided[1]
     from lionagi.state.db import SESSION_TERMINAL_STATUSES
 
     if final_status in SESSION_TERMINAL_STATUSES:

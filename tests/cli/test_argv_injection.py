@@ -167,6 +167,12 @@ class TestBuildArgvActionModelInjection:
         positionals = argv[argv.index("--") + 1 :]
         assert positionals == ["sonnet", "hello world", "strict"]
 
+    def test_model_with_a_trailing_newline_raises(self):
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        with pytest.raises(ValueError, match="characters not allowed"):
+            build_argv(_schedule(action_model="sonnet\n"), {})
+
     def test_model_valid_identifiers_accepted(self):
         from lionagi.studio.scheduler.subprocess import build_argv
 
@@ -277,6 +283,12 @@ class TestBuildArgvIdentifierInjection:
         argv, tmp = build_argv(_schedule(action_agent="my-agent"), {})
         assert "my-agent" in argv
         assert tmp is None
+
+    def test_action_agent_with_a_trailing_newline_raises(self):
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        with pytest.raises(ValueError, match="action_agent"):
+            build_argv(_schedule(action_agent="my-agent\n"), {})
 
     def test_action_project_valid_accepted(self):
         from lionagi.studio.scheduler.subprocess import build_argv

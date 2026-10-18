@@ -27,7 +27,7 @@ settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "dev"))
 # the stub `kkernel`: the lion pack's note verbs over a JSON file beside it, and a refusal of every
 # other call. Written by `kkernel_stub` under the test's interpreter.
 _STUB_KKERNEL = """\
-\"\"\"The stub `kkernel` of the tests: the lion pack answered by `tests/lionfake.py` over a JSON file
+\"\"\"The stub `kkernel` of the tests: the lion pack answered by `lion1/tests/lionfake.py` over a JSON file
 beside this script (an empty store at first); any other pack is refused.\"\"\"
 import fcntl, json, os, sys
 from pathlib import Path
@@ -764,7 +764,7 @@ def _refuse_undeclared_cli_launches(request, refused_launches):
     launches made by a child process the test started, nor one made past `subprocess.Popen`
     (`os.system`, `os.posix_spawn`, `os.spawn*`, `os.exec*`, `pty.spawn`, `subprocess._fork_exec`,
     `_posixsubprocess.fork_exec`, a native call through `ctypes` or `cffi`, `multiprocessing`): the code
-    under test makes none, and `tests/test_launch_guard.py` keeps it so for code that names what it
+    under test makes none, and `lion1/tests/test_launch_guard.py` keeps it so for code that names what it
     calls, refusing what runs code it cannot read (text, bytes, a dotted name, a computed import); text
     built while the code runs and handed to an evaluator it does not name, and a lookup by a computed
     name on an object other than those modules, are beyond a source scan (ADR-0027). Nor does it see
@@ -800,7 +800,7 @@ def _refuse_undeclared_cli_launches(request, refused_launches):
 @pytest.fixture
 def kkernel_stub(tmp_path_factory, monkeypatch):
     """A `kkernel` on PATH for a test of the wiring around the khive client, on a machine without the
-    binary (a sandbox VM, CI). It serves the lion pack (ADR-0025 D4, D6) from `tests/lionfake.py` over
+    binary (a sandbox VM, CI). It serves the lion pack (ADR-0025 D4, D6) from `lion1/tests/lionfake.py` over
     a file of its own and refuses every other pack."""
     b = tmp_path_factory.mktemp("kkernel-stub")  # beside the test's tmp_path, never inside it
     repo = repr(str(Path(__file__).resolve().parent.parent))

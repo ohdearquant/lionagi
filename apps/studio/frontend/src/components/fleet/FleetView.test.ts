@@ -58,6 +58,7 @@ describe("fleet/ — no Drawer overlay import", () => {
 
 function makeRun(overrides: Partial<RunSummary> & { run_id: string; status: string }): RunSummary {
   return {
+    id: overrides.id ?? overrides.run_id,
     playbook_name: null,
     agent_name: null,
     invocation_kind: null,

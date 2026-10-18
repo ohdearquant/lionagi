@@ -356,10 +356,7 @@ class CodingRun(ChainRun):
         return super().collect(event)  # type: ignore[return-value]
 
     def find(self, eid: str) -> CodingChainEvent | None:
-        return self._index.get(eid)
-
-    def events_of(self, event_type: type) -> list[Any]:
-        return self.store.get(event_type, [])
+        return super().find(eid)
 
     def last(self, event_type: type) -> Any | None:
         evs = self.store.get(event_type, [])

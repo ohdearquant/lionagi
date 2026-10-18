@@ -145,16 +145,43 @@ def _record_placement(name: str) -> dict[str, Any]:
     }
 
 
+# Reported by ``profile_config`` only when a profile declares it (presence is
+# meaningful there — see its docstring), so a blank profile's own output never
+# carries it. The projection schema still has to name it: a caller can only ask
+# for ``resolved.idle_timeout`` on a profile that DOES declare one if the field
+# is recognised on every profile, declaring or not.
+_OPTIONAL_RESOLVED_FIELDS = ("idle_timeout",)
+
+
 def _resolved_fields() -> tuple[str, ...]:
     """The keys a resolved block carries, asked of the function that builds one
-    (not a second hardcoded list, which could drift from it)."""
+    (not a second hardcoded list, which could drift from it) plus the fields a
+    profile may or may not carry, so the schema recognises them either way."""
     from lionagi.cli._providers import AgentProfile, profile_config
 
-    return tuple(profile_config(AgentProfile(name="")))
+    # Both optional account-integration fields set, so the keys profile_config
+    # adds only when set are listed too.
+    base = tuple(
+        profile_config(
+            AgentProfile(
+                name="",
+                contain_account_integrations=True,
+                account_connectors=("github",),
+            )
+        )
+    )
+    extra = tuple(field for field in _OPTIONAL_RESOLVED_FIELDS if field not in base)
+    return base + extra
 
 
-def _parse_fields(fields: list[str]) -> tuple[set[str], tuple[str, ...] | None]:
+def _parse_fields(
+    fields: list[str],
+) -> tuple[set[str], tuple[str, ...] | None, bool]:
     """Split a requested field list into per-profile keys and resolved sub-keys.
+
+    The third value says whether the whole resolved block was asked for:
+    naming it returns exactly what the loader produced, while naming
+    individual sub-keys reports an absent optional field as None.
 
     An unrecognised field is refused by name rather than silently dropped —
     otherwise a typo reads as "profile doesn't declare this", a wrong answer.
@@ -181,8 +208,8 @@ def _parse_fields(fields: list[str]) -> tuple[set[str], tuple[str, ...] | None]:
             )
             raise ValueError(f"unknown profile field {field!r}; known fields are: {known}")
     if whole_resolved:
-        return keys, resolved_fields
-    return keys, tuple(sub) if sub else None
+        return keys, resolved_fields, True
+    return keys, tuple(sub) if sub else None, False
 
 
 def _profile_entry(
@@ -192,6 +219,7 @@ def _profile_entry(
     resolved_fields: tuple[str, ...] | None,
     *,
     projected: bool,
+    whole_resolved: bool = False,
 ) -> dict[str, Any]:
     """One row of the list, either whole or narrowed to the fields asked for."""
     if not projected:
@@ -200,7 +228,14 @@ def _profile_entry(
     if selected:
         entry.update({k: v for k, v in _placement(name).items() if k in selected})
     if resolved_fields is not None:
-        entry["resolved"] = {k: config[k] for k in resolved_fields}
+        # `.get`, not `[...]`: an optional field the profile doesn't declare is
+        # absent from `config` itself — reported as None here rather than
+        # raising, since the schema recognises the field regardless of whether
+        # this particular profile set it.
+        if whole_resolved:
+            entry["resolved"] = config
+        else:
+            entry["resolved"] = {k: config.get(k) for k in resolved_fields}
     return entry
 
 
@@ -219,14 +254,23 @@ def profile_list(
     """
     from lionagi.cli._providers import build_agent_profile_catalog
 
-    selected, resolved_fields = (set(), None) if fields is None else _parse_fields(fields)
+    selected, resolved_fields, whole_resolved = (
+        (set(), None, False) if fields is None else _parse_fields(fields)
+    )
     with _resolving_under(cwd):
         catalog = build_agent_profile_catalog()
         if names is not None:
             wanted = set(names)
             catalog = {name: config for name, config in catalog.items() if name in wanted}
         profiles = [
-            _profile_entry(name, config, selected, resolved_fields, projected=fields is not None)
+            _profile_entry(
+                name,
+                config,
+                selected,
+                resolved_fields,
+                projected=fields is not None,
+                whole_resolved=whole_resolved,
+            )
             for name, config in sorted(catalog.items())
         ]
         return {

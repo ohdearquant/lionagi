@@ -76,8 +76,12 @@ export type ArtifactVerification = ArtifactVerificationResult | ArtifactVerifica
 // list_runs() (services/runs.py). Fields worker_name/finished_at were stale
 // filesystem-run remnants; the real fields are playbook_name/ended_at etc.
 export interface RunSummary {
-  run_id: string;
-  id?: string;
+  /** Session-projection identity used by Studio routes, controls, and row keys. */
+  id: string;
+  /** Explicit Session identity for consumers that need the route key by name. */
+  session_id?: string;
+  /** Nullable, non-unique CLI-run provenance; never use as Session identity. */
+  run_id: string | null;
   name?: string | null;
   playbook_name?: string | null;
   agent_name?: string | null;
@@ -432,6 +436,12 @@ export interface ScheduleSummary {
   health_last_outcome?: string | null;
   health_last_outcome_at?: number | null;
   health_since?: number;
+  /**
+   * Absent on daemons that predate the field; the client reads those rows
+   * through their own history endpoint and marks them unavailable only when
+   * that read fails.
+   */
+  recent_runs_summary?: ScheduleRecentRunsSummary;
   created_at: number;
   updated_at: number;
 }
@@ -463,7 +473,7 @@ export interface ScheduleRunSummary {
 }
 
 /**
- * A run as the /schedules/summary slice serves it. Narrower than ScheduleRunSummary on
+ * A run as a schedule's recent summary slice serves it. Narrower than ScheduleRunSummary on
  * purpose: the summary surface carries no error_detail, only a translatable
  * classification of the failure.
  */
@@ -479,6 +489,15 @@ export interface ScheduleRunSliceRow {
   ended_at: number | null;
   error_class: string | null;
 }
+
+/** Newest 25 occurrences, ordered by fired_at DESC then id DESC, including chains. */
+export type ScheduleRecentRunsSummary = {
+  version: 1;
+  limit: 25;
+} & (
+  | { status: "available"; has_next: boolean; runs: ScheduleRunSliceRow[] }
+  | { status: "unavailable"; has_next: null; runs: [] }
+);
 
 export interface ScheduleDetail extends ScheduleSummary {
   // Served by the single-schedule route only. The list surfaces withhold them:
@@ -648,6 +667,22 @@ export interface OperatorDonePayload {
   lastSequence: number;
 }
 
+/** Stored notice that the turn hit its durable retention limit. */
+export interface OperatorTruncationPayload {
+  reason: "frames_per_turn" | "turn_payload_bytes";
+  limits: {
+    maxFramesPerTurn: number;
+    maxTurnPayloadBytes: number;
+    maxFramePayloadBytes: number;
+  };
+  elidedFrames: number;
+  elidedBytes: number;
+  elidedFrameTypes: Record<string, number>;
+  firstElidedAt: number;
+  lastElidedAt: number;
+  message: string;
+}
+
 export type OperatorFrameType =
   | "text"
   | "tool_call"
@@ -656,7 +691,8 @@ export type OperatorFrameType =
   | "proposal"
   | "confirmation"
   | "error"
-  | "done";
+  | "done"
+  | "truncation";
 
 export type OperatorPayload =
   | OperatorTextPayload
@@ -666,7 +702,8 @@ export type OperatorPayload =
   | OperatorProposalPayload
   | OperatorConfirmationPayload
   | OperatorErrorPayload
-  | OperatorDonePayload;
+  | OperatorDonePayload
+  | OperatorTruncationPayload;
 
 export interface OperatorFrame<T extends OperatorPayload = OperatorPayload> {
   version: 1;

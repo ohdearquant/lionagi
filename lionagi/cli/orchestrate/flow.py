@@ -11,7 +11,6 @@ import logging
 import math
 import os
 import statistics
-import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,10 +18,11 @@ from typing import Any
 
 import psutil
 
-from lionagi._errors import EmptyOutgoingContentError, LionError
+from lionagi._errors import CLIInputRefusedError, EmptyOutgoingContentError, LionError
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.casts.emission import SpawnRequest, TaskAssignment
-from lionagi.ln.concurrency import CancelScope, move_on_after
+from lionagi.ln import coerce_created_at
+from lionagi.ln.concurrency import CancelScope, current_time, move_on_after
 from lionagi.orchestration import normalize_dep_indices, plan, role_node_builder
 from lionagi.session.exchange import Exchange
 from lionagi.tools.communication.messenger import LionMessenger
@@ -201,7 +201,36 @@ class FlowPlanError(LionError):
     """Orchestrator failed to produce a usable plan."""
 
 
-async def _persist_session_phase(env, phase: str) -> None:
+async def _validate_flow_invocation(invocation_id: str) -> None:
+    """Reject a dangling invocation before setup can degrade persistence.
+
+    Every way this check can fail to confirm the row is reported through
+    :class:`FlowPlanError`: an unreadable store (a missing table, a locked or
+    unopenable file) leaves the id just as unproven as an absent one, and
+    letting the read error escape would surface a traceback where the caller
+    expects a refusal it can act on.
+    """
+    from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
+
+    registered = False
+    if not state_db_known_absent():
+        try:
+            async with StateDB(readonly=read_only_open_supported()) as db:
+                registered = await db.get_invocation(invocation_id) is not None
+        except Exception as exc:  # noqa: BLE001 — an unreadable store is a refusal
+            raise FlowPlanError(
+                f"--invocation {invocation_id!r} could not be checked against the "
+                f"recorded invocations: {exc}. Register one with `li invoke start` "
+                "and use its exact ID, or repair the state store and retry"
+            ) from exc
+    if not registered:
+        raise FlowPlanError(
+            f"--invocation {invocation_id!r} is not a registered invocation ID; "
+            "register one with `li invoke start` and use its exact ID"
+        )
+
+
+async def _persist_session_phase(env, phase: str | None) -> None:
     """Best-effort write of the live execution phase to the session row."""
     ctx = getattr(env, "_live_persist", None)
     if ctx and ctx.get("db"):
@@ -221,6 +250,87 @@ async def _persist_node_metadata_patch(db, session_id: str, patch: dict) -> None
     exactly the race that used to lose one side's patch.
     """
     await db.merge_session_node_metadata(session_id, patch)
+
+
+async def _persist_control_poller_state(env, state: str) -> None:
+    """Publish flow/play consumer availability through existing scalar metadata."""
+    ctx = getattr(env, "_live_persist", None)
+    if ctx and ctx.get("db"):
+        try:
+            await _persist_node_metadata_patch(
+                ctx["db"], ctx["session_id"], {"flow_control_poller": state}
+            )
+        except Exception as exc:  # noqa: BLE001 — metadata stays best-effort
+            logger.debug("control poller state %s could not be persisted: %s", state, exc)
+
+
+async def _cancel_poller_marker_write(write: _asyncio.Task, reason: str) -> None:
+    """Cancel a still-running marker write and give it the drain's grace period.
+
+    A marker write left running is not free: while it runs it holds the store
+    when it is the writer, and teardown's own status write is queued behind
+    that lock, so the write is cancelled here rather than left to run to its
+    own end. Cancelling cuts a write that cooperates: one parked in a driver
+    call (SQLite's busy wait, say) cannot be interrupted from Python, so it
+    keeps the store until that call returns, up to the driver's own busy
+    timeout. A write that ignores its cancel is abandoned after the grace
+    period and reported, as one segment write would be. A cancellation that
+    arrives from further out is left to propagate, so this never swallows one
+    that was not its to take.
+    """
+    if write.done():
+        return
+    write.cancel()
+    with move_on_after(_DRAIN_GRACE_SECONDS):
+        await _asyncio.wait({write})
+    if not write.done():
+        _warn(
+            f"control-poller marker write was abandoned {reason}; it still holds "
+            "the store until its driver call returns, and whether the marker "
+            "landed is not known from here"
+        )
+    else:
+        # The write unwound, which does not say the merge committed: a cancel
+        # delivered while the driver call ran can land here with the UPDATE
+        # already applied. The helper cannot tell the two apart, so it does not
+        # claim the marker is stale.
+        _warn(
+            f"control-poller marker write was cancelled {reason}; whether the "
+            "marker landed is not known from here"
+        )
+
+
+async def _persist_control_poller_state_bounded(env, state: str) -> None:
+    """Best-effort marker write, bounded so a wedged store cannot hold the caller.
+
+    The marker is telemetry, like every other node_metadata write, so it gets
+    the same budget the drain gives one segment-metadata write. A write still
+    running at the budget is cancelled and given the drain's grace period to
+    unwind, because leaving it running would let it go on holding the store's
+    write lock, and teardown's own status write is queued behind it. The budget
+    bounds the caller, not the store: a cooperative write is cut at the budget,
+    while one parked in a driver call (SQLite's busy wait) keeps the lock until
+    that call returns, bounded by the driver's busy timeout
+    (``LIONAGI_SQLITE_BUSY_TIMEOUT_MS``, 5 s by default). A write that ignores
+    the cancel is abandoned and reported, not awaited.
+    """
+    write = _asyncio.ensure_future(_persist_control_poller_state(env, state))
+    try:
+        _done, pending = await _asyncio.wait({write}, timeout=_DRAIN_GRACE_SECONDS)
+    except BaseException:
+        # The caller is being cancelled with this write still in flight. The
+        # write is cancelled so it cannot outlive the caller, but a write this
+        # does not unwind (one parked in a driver call) keeps the store until
+        # that call returns.
+        await _cancel_poller_marker_write(write, "with its caller")
+        raise
+    if pending:
+        await _cancel_poller_marker_write(write, "after its budget")
+        return
+    # The write swallows every error it can report itself; what escapes it is a
+    # cancellation, and the caller asked for this write, so it is the caller's
+    # to see.
+    write.result()
 
 
 # ── Artifact-contract text — shared by planned legs and spawned nodes ─────────
@@ -308,9 +418,35 @@ _CONTROL_UNSTAMPED = "unstamped"
 _ESCALATION_LINK_RETRIES = 5
 _ESCALATION_LINK_RETRY_INTERVAL = 1.0
 
+# The grace period of a bounded drain of observer writes: added to the budget of a write that
+# has one of its own, the whole budget of one that has none (segment and control-log
+# metadata), and how long the writes it then cancels get to unwind.
+_DRAIN_GRACE_SECONDS = 2.0
+# How often, within that grace period, the drain repeats its cancel to an escalation link still
+# running. A link that catches one cancellation unwinds on a later one, as it did when an expired
+# cancel scope cancelled it again on every delivery, rather than being abandoned. The other writes
+# are store writes, which need only one cancel: they unwind once the statement in flight returns.
+# So they get that one and then the grace period; a further cancel would land in their cleanup,
+# where, on a store that does not finish a write cancelled more than once, it can leave the
+# write's pooled connection checked out. One cancelled while it holds SQLite's write lock can
+# leave that lock held after it has unwound, until a full cyclic garbage collection runs
+# (dropping the task is not enough), and writes after it wait out the busy timeout, then fail.
+_DRAIN_RECANCEL_SECONDS = 0.1
+
 # ── Team lifecycle (done-signal / wakeup rounds / quiescence) ───────────────
 # Driven by ReactiveExecutor's on_op_complete hook, not a poll loop (which
 # would race the executor's task-group teardown) — see TeamLifecycleCoordinator.
+
+
+async def _persist_applied_control_phase(db, session_id: str, phase: str) -> None:
+    """Retry one failed phase write without replaying the executor action."""
+    for attempt in range(2):
+        try:
+            await db.update_session(session_id, current_phase=phase)
+            return
+        except Exception as exc:  # noqa: BLE001 — phase telemetry stays best-effort
+            if attempt:
+                logger.debug("control phase write failed after retry: %s", exc)
 
 
 async def _apply_session_control(db, executor, row: dict) -> str | None:
@@ -329,10 +465,12 @@ async def _apply_session_control(db, executor, row: dict) -> str | None:
     try:
         if verb == "pause":
             executor.pause()
+            await _persist_applied_control_phase(db, row["session_id"], "paused")
             return await _finalize_applied(db, control_id)
 
         if verb == "resume":
             executor.resume()
+            await _persist_applied_control_phase(db, row["session_id"], "executing")
             return await _finalize_applied(db, control_id)
 
         if verb == "message":
@@ -531,9 +669,7 @@ def _format_budget_preamble(
     op_budget_seconds: int,
     deadline_epoch: float,
 ) -> str:
-    import datetime
-
-    deadline_dt = datetime.datetime.fromtimestamp(deadline_epoch, tz=datetime.timezone.utc)
+    deadline_dt = coerce_created_at(deadline_epoch)
     deadline_iso = deadline_dt.strftime("%Y-%m-%dT%H:%M:%S")
     return _BUDGET_PREAMBLE_TEMPLATE.format(
         op_index=op_index,
@@ -821,6 +957,13 @@ class _ExecResult:
     # taken before the graph stopped changing, so anything arriving later is
     # misclassified by default, which is the failure this carries.
     checkpoint_skip_ids: set[str] = field(default_factory=set, repr=False)
+    # The execution engine's lifecycle observers remain attached when the
+    # same engine run is reused for synthesis.  Their async persistence work
+    # therefore has two production boundaries to drain: once after the worker
+    # DAG, and once after the later synthesis pass.  This callable closes over
+    # the observer-owned task queues and is intentionally absent on synthetic
+    # test results that never installed those observers.
+    drain_observer_writes: Any | None = field(default=None, repr=False)
 
 
 # ── Phase 1: build DAG ────────────────────────────────────────────────────────
@@ -1075,10 +1218,9 @@ def _reconstruct_spawned_nodes(
     replay. Children of such a parent are expected to have been dropped
     before this point; excluding it here means any that were not are refused
     by that check rather than kept against a superseded parent."""
-    from uuid import UUID as _UUID
-
     from lionagi.operations.node import create_operation
     from lionagi.protocols.graph.edge import Edge
+    from lionagi.protocols.ids import to_uuid
     from lionagi.protocols.types import EventStatus
 
     legacy = [e for e in checkpoint_spawned if not e.get("operation")]
@@ -1159,7 +1301,7 @@ def _reconstruct_spawned_nodes(
         node = create_operation(
             entry["operation"],
             parameters=parameters,
-            id=_UUID(node_id),
+            id=to_uuid(node_id),
             metadata=metadata,
         )
         if entry["status"] == "completed":
@@ -1183,7 +1325,7 @@ def _reconstruct_spawned_nodes(
         parent_id = entry.get("parent_id")
         if not parent_id:
             continue
-        parent_uuid = _UUID(parent_id) if parent_id in known_ids else built[parent_id].id
+        parent_uuid = to_uuid(parent_id) if parent_id in known_ids else built[parent_id].id
         graph.add_edge(Edge(head=parent_uuid, tail=built[entry["node_id"]].id, label=["spawn"]))
 
 
@@ -1363,6 +1505,172 @@ async def _execute_dag(
     _segment_tasks: list = []
     _control_log_tasks: list = []
 
+    async def _drain_tasks_bounded(
+        tasks: list,
+        label: str,
+        budget: float,
+        scopes: list | None = None,
+        *,
+        recancel: bool = False,
+    ) -> None:
+        # A write that never returns must not hold teardown forever. Give in-flight writes
+        # *budget* seconds to land, then cancel the survivors once and give them the grace
+        # period to unwind; with *recancel*, cancel those still running again every
+        # _DRAIN_RECANCEL_SECONDS. Each wait is asyncio.wait under a deadline, which returns at
+        # the deadline whatever the tasks do and never cancels them itself, so a write that
+        # ignores its cancel is abandoned, not awaited.
+        # The budget's scope goes into *scopes*, so a caller can shorten it while it runs.
+        with move_on_after(budget) as scope:
+            if scopes is not None:
+                scopes.append(scope)
+            await _asyncio.wait(tasks)
+        survivors = [task for task in tasks if not task.done()]
+        if survivors:
+            for task in survivors:
+                task.cancel()
+            with move_on_after(_DRAIN_GRACE_SECONDS):
+                if recancel:
+                    while running := [task for task in survivors if not task.done()]:
+                        await _asyncio.wait(running, timeout=_DRAIN_RECANCEL_SECONDS)
+                        for task in running:
+                            task.cancel()
+                else:
+                    await _asyncio.wait(survivors)
+            abandoned = [task for task in survivors if not task.done()]
+            if abandoned:
+                _warn(
+                    f"abandoned {len(abandoned)} {label} task(s) "
+                    "still alive after cancellation grace period"
+                )
+        # A cancelled task is a lost write: the write body's own ``except Exception`` never
+        # sees CancelledError, so without this check nothing records that it never landed.
+        cancelled = [task for task in tasks if task.cancelled()]
+        if cancelled:
+            _warn(f"cancelled {len(cancelled)} {label} task(s) after timeout; write not durable")
+
+    async def _drain_observer_writes(
+        *,
+        cancellation_in_flight: bool = False,
+        in_flight_exc: BaseException | None = None,
+    ) -> None:
+        """Finish one snapshot of observer persistence work before its DB closes.
+
+        The queues stay live after this call because synthesis reuses the same
+        engine run and observer callbacks.  Taking and clearing a snapshot
+        makes the drain repeatable without re-reporting an earlier cancelled
+        task; work enqueued by a later phase remains visible to the next call.
+
+        *in_flight_exc* is the exception the caller is unwinding with, if any.
+        A cancellation that reaches the caller while the drain runs is held
+        until the drain ends and raised then, unless the caller was already
+        unwinding, in which case its own exception is raised instead.
+
+        A direct ``cancel()`` held this way stays counted on the task
+        (``Task.cancelling()``), also when *in_flight_exc* is raised in its
+        place. A caller that catches that exception and goes on running calls
+        ``uncancel()`` itself if it means to withdraw the request; the drain
+        does not withdraw a request it did not make.
+        """
+        from lionagi.state import engine as _state_engine
+
+        branch_status_tasks, _branch_status_tasks[:] = list(_branch_status_tasks), []
+        checkpoint_tasks, _checkpoint_tasks[:] = list(_checkpoint_tasks), []
+        segment_tasks, _segment_tasks[:] = list(_segment_tasks), []
+        control_log_tasks, _control_log_tasks[:] = list(_control_log_tasks), []
+        escalation_link_tasks, _escalation_link_tasks[:] = list(_escalation_link_tasks), []
+
+        # How long one store write may wait for the writer before it fails by itself.
+        write_wait = _state_engine.SQLITE_BUSY_TIMEOUT_MS / 1000
+        # Set once a cancellation reaches the caller during the drain; from then on the
+        # escalation links are under a cancellation too.
+        late_cancel: BaseException | None = None
+        link_scopes: list = []
+
+        async def _drain() -> None:
+            # Every wait here but the checkpoint one is bounded, so a write that never returns
+            # cannot hold this drain, or the flow's own timeout, forever. A write abandoned while
+            # it holds the store's write lock still holds it, and teardown's own writes wait for
+            # that lock. A write still queued for the store when its budget runs out (behind the
+            # store's write lock, or for a pooled connection) is cancelled with the rest and
+            # reported as not durable.
+            if branch_status_tasks:
+                # Run data: each write gets as long as a store write may wait for the writer, once
+                # for every store write of this drain still running, since each of those may hold
+                # the store's write lock ahead of it. Writes made outside this drain are not
+                # counted, so one queued behind them can still run out its budget.
+                running = sum(
+                    not task.done()
+                    for task in (
+                        *branch_status_tasks,
+                        *segment_tasks,
+                        *control_log_tasks,
+                        *escalation_link_tasks,
+                    )
+                )
+                await _drain_tasks_bounded(
+                    branch_status_tasks,
+                    "branch-status",
+                    running * write_wait + _DRAIN_GRACE_SECONDS,
+                )
+            if checkpoint_tasks:
+                # Not bounded, because it does not suspend: once a checkpoint write holds the
+                # writer's lock it is synchronous file I/O, so each task finishes when it runs.
+                # A stalled disk blocks the event loop itself there, which no bound could cut.
+                with contextlib.suppress(Exception):
+                    await _asyncio.gather(*checkpoint_tasks, return_exceptions=True)
+            # Session metadata keeps the bound it had, the grace period to land and the grace
+            # period to unwind, so one queued behind a link on the write lock can be cut short.
+            if segment_tasks:
+                await _drain_tasks_bounded(segment_tasks, "segment-metadata", _DRAIN_GRACE_SECONDS)
+            if control_log_tasks:
+                await _drain_tasks_bounded(
+                    control_log_tasks, "control-log-metadata", _DRAIN_GRACE_SECONDS
+                )
+            if escalation_link_tasks:
+                # A link is attribution, not run data. Outside a cancellation it gets its whole
+                # retry budget, so that a late retry lands here rather than in a store teardown
+                # is about to close; under one it gets the grace period.
+                if cancellation_in_flight or late_cancel is not None:
+                    budget = _DRAIN_GRACE_SECONDS
+                else:
+                    budget = (
+                        (_ESCALATION_LINK_RETRIES - 1) * _ESCALATION_LINK_RETRY_INTERVAL
+                        + _ESCALATION_LINK_RETRIES * write_wait
+                        + _DRAIN_GRACE_SECONDS
+                    )
+                await _drain_tasks_bounded(
+                    escalation_link_tasks, "escalation-link", budget, link_scopes, recancel=True
+                )
+
+        # The drain runs as a task of its own, so a cancellation of this task, from a cancel
+        # scope or a direct cancel(), reaches only this await and not the drain.
+        drain = _asyncio.ensure_future(_drain())
+        try:
+            await _asyncio.shield(drain)
+        except _asyncio.CancelledError as exc:
+            late_cancel = exc
+            # Links already waiting out their retry budget get the grace period from now on.
+            deadline = current_time() + _DRAIN_GRACE_SECONDS
+            for scope in link_scopes:
+                scope.deadline = min(scope.deadline, deadline)
+            # Wait out the rest of the drain. The CancelScope stops a cancel scope from
+            # delivering its cancellation again on every pass; a further direct cancel() is
+            # absorbed here, and the first cancellation is raised below. A direct cancel()
+            # still counts on the task (Task.cancelling()) whichever exception is raised. So an
+            # asyncio.timeout() the caller entered before the cancel, whose own deadline then
+            # fires, lets its cancellation out as CancelledError instead of TimeoutError; one
+            # entered afterwards counts the cancel at entry and raises TimeoutError.
+            with CancelScope(shield=True):
+                while not drain.done():
+                    with contextlib.suppress(_asyncio.CancelledError):
+                        await _asyncio.shield(drain)
+        if not drain.cancelled() and drain.exception() is not None:
+            logger.warning("observer write drain failed", exc_info=drain.exception())
+        if late_cancel is not None:
+            if in_flight_exc is not None:
+                raise in_flight_exc from late_cancel
+            raise late_cancel
+
     # Restored spawns already consumed spawn budget and exist as completed/
     # failed work; both the budget below and spawn accounting must count them.
     restored_spawn_count = len(checkpoint_spawned_seed or [])
@@ -1503,9 +1811,9 @@ async def _execute_dag(
         flow_ctx = None
         if executor is not None:
             with contextlib.suppress(Exception):
-                from uuid import UUID as _UUID
+                from lionagi.protocols.ids import to_uuid
 
-                response = executor.results.get(_UUID(sig.op_id))
+                response = executor.results.get(to_uuid(sig.op_id))
             with contextlib.suppress(Exception):
                 flow_ctx = dict(executor.context.content)
         if sig.op_id in known_node_strs:
@@ -1523,9 +1831,9 @@ async def _execute_dag(
             # as unreconstructable for this node alone (see flow.py's resume path).
             spawn_fields: dict[str, Any] = {"parent_id": sig.parent_id}
             with contextlib.suppress(Exception):
-                from uuid import UUID as _UUID
+                from lionagi.protocols.ids import to_uuid
 
-                spawned_node = env.builder.get_graph().internal_nodes.get(_UUID(sig.op_id))
+                spawned_node = env.builder.get_graph().internal_nodes.get(to_uuid(sig.op_id))
                 if spawned_node is not None:
                     params = spawned_node.parameters
                     spawn_fields["operation"] = spawned_node.operation
@@ -1867,6 +2175,7 @@ async def _execute_dag(
             exclusive=worker_mcp_servers is not None,
         )
         kwargs = chat_model.endpoint.config.kwargs
+        kwargs.pop("account_connectors", None)
         kwargs["repo"] = artifact_dir
         project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
         add_dir = kwargs.setdefault("add_dir", [])
@@ -1874,11 +2183,17 @@ async def _execute_dag(
             add_dir.append(project_root)
 
     t_exec = time.monotonic()
+    # The run-start publish is bounded the same way as the stop marker, and has
+    # the same limit: a cooperative write is cut at the budget, while one parked
+    # in the store driver's busy wait keeps the writer lock until that call
+    # returns, so run start can wait out the driver's busy timeout on a stalled
+    # store.
+    await _persist_control_poller_state_bounded(env, "active")
     _hb_task = _asyncio.ensure_future(_heartbeat_loop())
     _ctl_task = _asyncio.ensure_future(_control_poll_loop())
     _exchange = getattr(env, "exchange", None)
     _exch_task = _asyncio.ensure_future(_exchange.run(0.5)) if _exchange is not None else None
-    _dag_cancelled = False
+    _dag_exc: BaseException | None = None
     try:
         dag_result = await eng_run.run_dag(
             env.builder.get_graph(),
@@ -1905,130 +2220,57 @@ async def _execute_dag(
             spawn_branch_setup=_spawn_branch_setup if reactive else None,
             on_op_complete=_on_op_complete,
         )
-    except _asyncio.CancelledError:
-        _dag_cancelled = True
+    except BaseException as exc:
+        _dag_exc = exc
         raise
     finally:
-        _hb_task.cancel()
-        _ctl_task.cancel()
-        with contextlib.suppress(_asyncio.CancelledError):
-            await _hb_task
-        with contextlib.suppress(_asyncio.CancelledError):
-            await _ctl_task
-        if _exch_task is not None:
-            _exchange.stop()
-            with contextlib.suppress(_asyncio.CancelledError):
-                await _exch_task
-            # Route any final outbox sends left over after the last collect tick.
-            await _exchange.collect_all()
-
-        async def _drain_escalation_links_bounded() -> None:
-            # An escalation-link row is nice-to-have attribution, not run
-            # data — losing one to cancellation is acceptable, but a hung
-            # link write (stuck DB call) blocking teardown indefinitely is
-            # not. Give in-flight links a short grace period to land
-            # normally, then cancel whatever is left and wait for it to
-            # actually unwind before returning.
-            with contextlib.suppress(Exception), move_on_after(2):
-                await _asyncio.gather(*_escalation_link_tasks, return_exceptions=True)
-            _survivors = [t for t in _escalation_link_tasks if not t.done()]
-            for _t in _survivors:
-                _t.cancel()
-            if _survivors:
-                # A survivor that itself swallows cancellation (or blocks in
-                # sync code) would otherwise hang this await forever — bound
-                # the wait too, and abandon whatever is still alive after it
-                # rather than let a single stuck link task block teardown.
-                with contextlib.suppress(Exception), move_on_after(2):
-                    await _asyncio.gather(*_survivors, return_exceptions=True)
-                _abandoned = [t for t in _survivors if not t.done()]
-                if _abandoned:
-                    _warn(
-                        f"abandoned {len(_abandoned)} escalation-link task(s) "
-                        "still alive after cancellation grace period"
-                    )
-
-        async def _drain_metadata_tasks_bounded(tasks: list, label: str) -> None:
-            # Same bounded grace/cancellation shape as
-            # _drain_escalation_links_bounded: a hung metadata write (stuck
-            # DB call) must not block teardown forever. Give in-flight
-            # writes a short grace period, then cancel whatever is left and
-            # wait for it to actually unwind before returning.
-            with contextlib.suppress(Exception), move_on_after(2):
-                await _asyncio.gather(*tasks, return_exceptions=True)
-            _survivors = [t for t in tasks if not t.done()]
-            for _t in _survivors:
-                _t.cancel()
-            if _survivors:
-                with contextlib.suppress(Exception), move_on_after(2):
-                    await _asyncio.gather(*_survivors, return_exceptions=True)
-                _abandoned = [t for t in _survivors if not t.done()]
-                if _abandoned:
-                    _warn(
-                        f"abandoned {len(_abandoned)} {label} task(s) "
-                        "still alive after cancellation grace period"
-                    )
-            # A task can finish cancelled either here or already during the
-            # first move_on_after(2) above (its timeout cancels the host
-            # task's gather() await, which cascades cancel() onto every
-            # not-yet-done child). Either way it's a lost write, not a
-            # success: the write body's own `except Exception` never sees
-            # CancelledError (a BaseException), so without this check the
-            # caller gets no record at all that the metadata never landed.
-            _cancelled = [t for t in tasks if t.cancelled()]
-            if _cancelled:
-                _warn(
-                    f"cancelled {len(_cancelled)} {label} task(s) after timeout; write not durable"
-                )
-
-        # Completion observers schedule persistence writes synchronously but the
-        # writes themselves are async. Drain them while the live DB is still open.
-        with CancelScope(shield=True):
-            if _branch_status_tasks:
-                with contextlib.suppress(Exception):
-                    await _asyncio.gather(*_branch_status_tasks, return_exceptions=True)
-            if _checkpoint_tasks:
-                with contextlib.suppress(Exception):
-                    await _asyncio.gather(*_checkpoint_tasks, return_exceptions=True)
-            if _segment_tasks:
-                await _drain_metadata_tasks_bounded(_segment_tasks, "segment-metadata")
-            if _control_log_tasks:
-                await _drain_metadata_tasks_bounded(_control_log_tasks, "control-log-metadata")
-            if _escalation_link_tasks:
-                if _dag_cancelled:
-                    # Cancellation already landed while run_dag() was running,
-                    # so go straight to the bounded path.
-                    await _drain_escalation_links_bounded()
-                else:
-                    # Bounded by _ESCALATION_LINK_RETRIES * _ESCALATION_LINK_RETRY_INTERVAL
-                    # (a few seconds worst case); draining here rather than
-                    # firing untracked keeps a late retry from writing into a
-                    # store teardown_persist is about to close.
-                    #
-                    # A cancellation can land on *this* task after run_dag()
-                    # already returned (the CancelScope shield above only
-                    # stops anyio-mediated cancellation, not a direct
-                    # cancel()), so _dag_cancelled stays False and this await
-                    # would otherwise absorb it. asyncio.shield lets this
-                    # await raise promptly instead of blocking on gather()
-                    # until every child settles (a link task that swallows or
-                    # outlives its own cancel would otherwise park this await
-                    # forever) — the children keep running in the background
-                    # for _drain_escalation_links_bounded() to finish off.
-                    # Re-raised below unless the try body already raised a
-                    # real exception, which must win over a cancellation that
-                    # only landed during this teardown drain.
-                    _in_flight_exc = sys.exc_info()[1]
-                    try:
-                        with contextlib.suppress(Exception):
-                            await _asyncio.shield(
-                                _asyncio.gather(*_escalation_link_tasks, return_exceptions=True)
-                            )
-                    except _asyncio.CancelledError as _late_cancel:
-                        await _drain_escalation_links_bounded()
-                        if _in_flight_exc is not None:
-                            raise _in_flight_exc from _late_cancel
-                        raise
+        # What the teardown ends with, if anything, and whether a cancellation is in flight.
+        _unwinding: BaseException | None = _dag_exc
+        _cancelled = isinstance(_dag_exc, _asyncio.CancelledError)
+        try:
+            _hb_task.cancel()
+            if _exch_task is not None:
+                _exchange.stop()
+            # Publish the stop, then cancel the poll loop. Once the marker commits,
+            # admission refuses new controls. A control admitted before that -- while
+            # this write runs, after the write outlives its budget, or after a native
+            # cancellation interrupts the wait -- may never be applied once the loop is
+            # gone; _run_flow's teardown closes every such control as rejected after the
+            # session is terminal, so none is left pending. Ordered after the heartbeat
+            # and exchange stops above so the write cannot delay or skip them, and
+            # shielded against cooperative cancellation. The cancel runs in the finally
+            # either way.
+            try:
+                with CancelScope(shield=True):
+                    await _persist_control_poller_state_bounded(env, "stopped")
+            finally:
+                _ctl_task.cancel()
+            # Waited, not awaited: awaiting a cancelled task under suppress(CancelledError)
+            # would also swallow a cancellation of this task arriving meanwhile.
+            await _asyncio.wait({_hb_task, _ctl_task})
+            for _bg in (_hb_task, _ctl_task):
+                with contextlib.suppress(_asyncio.CancelledError):
+                    _bg.result()
+            if _exch_task is not None:
+                await _asyncio.wait({_exch_task})
+                with contextlib.suppress(_asyncio.CancelledError):
+                    _exch_task.result()
+                # Route any final outbox sends left over after the last collect tick.
+                await _exchange.collect_all()
+        except BaseException as exc:
+            _cancelled = _cancelled or isinstance(exc, _asyncio.CancelledError)
+            if _dag_exc is not None and isinstance(exc, _asyncio.CancelledError):
+                # As in the drain: a cancellation that lands while the run is already unwinding
+                # with its own exception is raised as that exception's cause, not in its place.
+                raise _dag_exc from exc
+            _unwinding = exc
+            raise
+        finally:
+            # Drained whatever the teardown above raised, so a failure there cannot skip it.
+            await _drain_observer_writes(
+                cancellation_in_flight=_cancelled,
+                in_flight_exc=_unwinding,
+            )
     t_exec_elapsed = time.monotonic() - t_exec
 
     _surface_dropped_spawns(env, list(dag_result.get("dropped_spawns") or []))
@@ -2298,6 +2540,7 @@ async def _execute_dag(
         escalated_agent_ids=escalated_agent_ids,
         engine_run=eng_run,
         checkpoint_skip_ids=checkpoint_skip_ids,
+        drain_observer_writes=_drain_observer_writes,
     )
 
 
@@ -2380,11 +2623,26 @@ async def _synthesize(
     # when it was built and has no branch it belongs to. Exclude it before
     # the pass rather than after: the observer fires during run_dag.
     exec_result.checkpoint_skip_ids.add(str(synth_node))
-    synth_result_raw = await exec_result.engine_run.run_dag(
-        synth_graph,
-        verbose=env.verbose,
-        skip_signal_ops=already_ran,
-    )
+    synth_exc: BaseException | None = None
+    try:
+        synth_result_raw = await exec_result.engine_run.run_dag(
+            synth_graph,
+            verbose=env.verbose,
+            skip_signal_ops=already_ran,
+        )
+    except BaseException as exc:
+        synth_exc = exc
+        raise
+    finally:
+        # Synthesis reuses the execution engine's lifecycle bridge, so its
+        # node signals enqueue work into the same observer-owned persistence
+        # queues.  Drain this second wave before finalization can close the
+        # live database, including when synthesis fails or is cancelled.
+        if exec_result.drain_observer_writes is not None:
+            await exec_result.drain_observer_writes(
+                cancellation_in_flight=isinstance(synth_exc, _asyncio.CancelledError),
+                in_flight_exc=synth_exc,
+            )
     t_synth_elapsed = time.monotonic() - t_synth
     synth_res = synth_result_raw.get("operation_results", {}).get(synth_node)
     synthesis_result = {
@@ -2628,6 +2886,9 @@ async def _run_flow(
     if legacy_kwargs:
         raise TypeError(f"_run_flow() got unexpected keyword arguments: {list(legacy_kwargs)}")
 
+    if invocation_id is not None:
+        await _validate_flow_invocation(invocation_id)
+
     _started_at = time.time()
     _invocation_kind = "play" if playbook_name else "flow"
     # The directory this run resolves its MCP config from: the launching
@@ -2760,7 +3021,10 @@ async def _run_flow(
     # Every flow run stamps its own run_id into node_metadata so a later
     # --resume can resolve this session back to a checkpoint; a resumed run
     # additionally links to the run it resumed from.
-    _extra_node_metadata: dict = {"run_id": env.run.run_id}
+    _extra_node_metadata: dict = {
+        "run_id": env.run.run_id,
+        "flow_control_poller": "pending",
+    }
     if resume_checkpoint is not None and resume_checkpoint.get("session_id"):
         _extra_node_metadata["resumed_from"] = resume_checkpoint["session_id"]
 
@@ -2786,6 +3050,12 @@ async def _run_flow(
         artifact_contract=artifact_contract,
         extra_node_metadata=_extra_node_metadata,
     )
+
+    if env._live_persist is not None:
+        from .._logging import hint
+
+        session_id = env._live_persist["session_id"]
+        hint(f"Session: {session_id}  →  li o ctl status {session_id[:8]}")
 
     inner_kw = dict(
         env=env,
@@ -2833,7 +3103,61 @@ async def _run_flow(
         raise
     finally:
         with CancelScope(shield=True):
-            effective_status = await stop_live_persist(env, status=_terminal_status)
+            # Teardown clears the live phase in its terminal status UPDATE.
+            # This shield covers cooperative cancel scopes; native task.cancel
+            # can still interrupt the existing teardown before that commit.
+            _control_session_id = (env._live_persist or {}).get("session_id")
+            try:
+                effective_status = await stop_live_persist(env, status=_terminal_status)
+            finally:
+                if _control_session_id is not None:
+                    # The DAG poller is gone, so a control still queued and unclaimed
+                    # will never be applied: close it, as the agent runner closes its
+                    # undelivered steers. This runs even when the teardown above raised
+                    # after its terminal commit, so a failure there cannot leave a
+                    # control queued against a consumer that has already gone. The
+                    # sweep refuses a session whose stored status is not terminal, and
+                    # leaves a claimed row to whoever claimed it; teardown closed the
+                    # live handle, so it gets a fresh one.
+                    from lionagi.cli.agent import _tombstone_pending_steers
+                    from lionagi.state.db import (
+                        SESSION_TERMINAL_STATUSES,
+                        StateDB,
+                        read_only_open_supported,
+                        state_db_known_absent,
+                    )
+
+                    try:
+                        # A read-only probe first, because the sweep needs a writable
+                        # handle and the writable open takes the store's writer lock and
+                        # re-runs the schema reconciliation. Most runs queue no control at
+                        # all, and for a file store a read-only open skips both, so that
+                        # common exit stays a read. Read-only is SQLite-only: a store with
+                        # no file path (a server-backed URL) opens writable either way, so
+                        # the probe is an optimisation for file stores, not for every
+                        # store. The sweep re-checks the terminal precondition and the
+                        # claim before it writes, so the probe is only an optimisation.
+                        if not state_db_known_absent():
+                            async with StateDB(readonly=read_only_open_supported()) as _probe_db:
+                                _probe_session = await _probe_db.get_session(_control_session_id)
+                                _probe_pending = await _probe_db.list_pending_session_controls(
+                                    _control_session_id
+                                )
+                            if (_probe_session or {}).get(
+                                "status"
+                            ) in SESSION_TERMINAL_STATUSES and any(
+                                row.get("result") is None for row in _probe_pending
+                            ):
+                                async with StateDB() as _sweep_db:
+                                    await _tombstone_pending_steers(
+                                        {"db": _sweep_db, "session_id": _control_session_id},
+                                        result=(
+                                            "rejected: run reached terminal status before its DAG "
+                                            "poller applied the control"
+                                        ),
+                                    )
+                    except Exception as _sweep_exc:  # noqa: BLE001 — teardown must not raise
+                        logger.warning("control tombstone write failed: %r", _sweep_exc)
             if effective_status != _terminal_status:
                 _terminal_status = effective_status
             import time as _time
@@ -2870,7 +3194,12 @@ async def _run_flow(
                         # atomic transition as the status write below -- a
                         # separate prior update_invocation() call could persist
                         # ended_at on a row this status write then fails to move.
-                        await _inv_db.update_status(
+                        # Guarded on the row still running, like every other
+                        # invocation terminal writer: a run a kill (or any other
+                        # finalizer) already closed keeps that outcome and its end
+                        # time, instead of this later write replacing the reason on
+                        # an already-terminal row.
+                        _inv_written = await _inv_db.update_status(
                             "invocation",
                             invocation_id,
                             new_status=inv_status,
@@ -2880,7 +3209,20 @@ async def _run_flow(
                             source="executor",
                             actor=invocation_id,
                             metadata=inv_meta,
+                            expected_statuses={"running"},
                             extra_fields={"ended_at": _ended_at},
+                        )
+                    if not _inv_written:
+                        # The guarded write was refused: the row left running
+                        # between the read above and here, so another writer owns
+                        # its outcome and already fired that entity's terminal
+                        # callbacks. Report the refusal rather than pretend this
+                        # run's own terminal status was recorded.
+                        logger.info(
+                            "Refused terminal write for invocation %s: the row is no longer "
+                            "running, so it keeps its stored outcome; requested %s.",
+                            invocation_id,
+                            inv_status,
                         )
                 except Exception:
                     import logging as _logging
@@ -2996,17 +3338,20 @@ async def _run_flow_inner(
         )
 
         progress("Planning DAG...")
+        await _persist_session_phase(env, "planning")
         try:
             assignments = await plan(
                 env.orc_branch, prompt, roles=roster, dag=True, guidance=guidance, max_tasks=max_ops
             )
         except EmptyOutgoingContentError:
             raise
-        except ValueError as exc:
+        except (ValueError, CLIInputRefusedError) as exc:
             # plan() raises a bare ValueError when the orchestrator still
             # overshoots max_tasks after the cap was stated in guidance —
             # route it through the same clean-failure channel as every
-            # other plan-time failure in this function.
+            # other plan-time failure in this function. A CLIInputRefusedError
+            # is what a request the CLI cannot take raises at construction, and
+            # it reaches here the same way.
             raise FlowPlanError(str(exc)) from exc
         if not assignments:
             # Fail loud rather than silently exiting 0 with no work done.
@@ -3023,7 +3368,7 @@ async def _run_flow_inner(
                 )
             except EmptyOutgoingContentError:
                 raise
-            except ValueError as exc:
+            except (ValueError, CLIInputRefusedError) as exc:
                 raise FlowPlanError(str(exc)) from exc
         if not assignments:
             raise FlowPlanError(

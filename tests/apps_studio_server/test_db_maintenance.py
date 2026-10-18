@@ -1258,3 +1258,133 @@ def test_every_paged_table_has_the_primary_key_index_the_query_names(tmp_path, m
             assert columns == ["id"], f"{name} covers {columns}, not the id the query seeks on"
     finally:
         con.close()
+
+
+def test_the_survivor_check_runs_as_one_statement_per_chunk(tmp_path, monkeypatch):
+    """The orphan-message DELETE checks every progression's collection in the store, a full scan.
+
+    It runs as one statement for a chunk however many messages the chunk names, where it used to
+    run once per batch of ids inside the write transaction. A message a surviving progression
+    still lists is kept, and the rest of the chunk's messages go.
+    """
+    from sqlalchemy.ext.asyncio import AsyncConnection
+
+    from lionagi.studio.services import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    old = time.time() - 40 * 86400
+
+    async def seed() -> tuple[str, str]:
+        async with StateDB() as db:
+            doomed = await _make_session(db, status="completed", started_at=old)
+            kept = await _make_session(db, status="running", started_at=time.time())
+            rows = await db.fetch_all(
+                "SELECT id, progression_id FROM sessions WHERE id IN (?, ?)", (doomed, kept)
+            )
+        progression_of = {r["id"]: r["progression_id"] for r in rows}
+        return progression_of[doomed], progression_of[kept]
+
+    doomed_pid, kept_pid = run_async(seed())
+    doomed_ids = [str(uuid.uuid4()) for _ in range(1200)]
+    shared = doomed_ids[700]
+    con = sqlite3.connect(db_path)
+    try:
+        with con:
+            con.executemany(
+                "INSERT INTO messages (id, content, created_at, role, lion_class)"
+                " VALUES (?, '{}', ?, 'user', 2)",
+                [(mid, old) for mid in doomed_ids],
+            )
+            con.execute(
+                "UPDATE progressions SET collection = ? WHERE id = ?",
+                (json.dumps(doomed_ids), doomed_pid),
+            )
+            con.execute(
+                "UPDATE progressions SET collection = ? WHERE id = ?",
+                (json.dumps([shared]), kept_pid),
+            )
+    finally:
+        con.close()
+
+    survivor_checks = []
+    execute = AsyncConnection.execute
+
+    async def recording(self, statement, *args, **kwargs):
+        sql = str(statement)
+        if "json_each(progressions.collection)" in sql and "progressions.id" not in sql:
+            survivor_checks.append(sql)
+        return await execute(self, statement, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncConnection, "execute", recording)
+    result = run_async(maint.prune_old_data(actor="test"))
+    monkeypatch.setattr(AsyncConnection, "execute", execute)
+
+    assert result["sessions_pruned"] == 1
+    # 1200 candidate messages are three batches of ids, and one survivor check
+    assert len(survivor_checks) == 1
+    con = sqlite3.connect(db_path)
+    try:
+        left = {row[0] for row in con.execute("SELECT id FROM messages")}
+    finally:
+        con.close()
+    assert left == {shared}
+
+
+def test_the_prune_keeps_a_chunk_message_a_surviving_session_or_branch_points_at(
+    tmp_path, monkeypatch
+):
+    """A pruned session's progression can list a message that no surviving progression lists but
+    a surviving session names as its first or last message, or a surviving branch as its system
+    message. Each of those is kept; the chunk's other messages go."""
+    from lionagi.studio.services import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    old = time.time() - 40 * 86400
+
+    async def seed() -> tuple[str, str, str]:
+        async with StateDB() as db:
+            doomed = await _make_session(db, status="completed", started_at=old)
+            kept = await _make_session(db, status="running", started_at=time.time())
+            rows = await db.fetch_all(
+                "SELECT id, progression_id FROM sessions WHERE id IN (?, ?)", (doomed, kept)
+            )
+        progression_of = {r["id"]: r["progression_id"] for r in rows}
+        return progression_of[doomed], kept, progression_of[kept]
+
+    doomed_pid, kept, kept_pid = run_async(seed())
+    first, last, system, gone = (str(uuid.uuid4()) for _ in range(4))
+    con = sqlite3.connect(db_path)
+    try:
+        with con:
+            con.executemany(
+                "INSERT INTO messages (id, content, created_at, role, lion_class)"
+                " VALUES (?, '{}', ?, 'user', 2)",
+                [(mid, old) for mid in (first, last, system, gone)],
+            )
+            con.execute(
+                "UPDATE progressions SET collection = ? WHERE id = ?",
+                (json.dumps([first, last, system, gone]), doomed_pid),
+            )
+            con.execute(
+                "UPDATE sessions SET first_msg_id = ?, last_msg_id = ? WHERE id = ?",
+                (first, last, kept),
+            )
+            con.execute(
+                "INSERT INTO branches (id, created_at, session_id, progression_id, system_msg_id)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), time.time(), kept, kept_pid, system),
+            )
+    finally:
+        con.close()
+
+    result = run_async(maint.prune_old_data(actor="test"))
+
+    assert result["sessions_pruned"] == 1
+    con = sqlite3.connect(db_path)
+    try:
+        left = {row[0] for row in con.execute("SELECT id FROM messages")}
+    finally:
+        con.close()
+    assert left == {first, last, system}

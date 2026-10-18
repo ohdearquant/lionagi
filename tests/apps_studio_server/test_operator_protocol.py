@@ -6,10 +6,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 from starlette.requests import Request
@@ -1271,6 +1273,145 @@ async def test_application_mcp_resume_run_rejects_instruction_for_flow_kind_befo
     await coordinator.shutdown()
 
 
+async def _seed_foreign_project_run(db, *, project: str = "someone-elses-project") -> str:
+    """A running run that a turn with no declared project cannot prove it
+    owns -- the exact row an unscoped write tool must not reach by full id."""
+    import uuid
+
+    run_id = str(uuid.uuid4())
+    progression_id = str(uuid.uuid4())
+    await db.create_progression(progression_id)
+    await db.create_session(
+        {
+            "id": run_id,
+            "progression_id": progression_id,
+            "status": "running",
+            "started_at": time.time(),
+            "project": project,
+        }
+    )
+    return run_id
+
+
+async def _unscoped_running_turn(store: OperatorStore, path: Path, monkeypatch) -> str:
+    """A conversation with no project of its own and a turn in it that is
+    running: the caller identity is present, the declared project is not."""
+    conversation = await store.create_conversation(project=None)
+    cid = conversation["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="act on a run",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    request_id = accepted["requestId"]
+    assert await store.mark_running(request_id)
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", request_id)
+    return request_id
+
+
+@pytest.mark.asyncio
+async def test_cancel_run_full_id_of_a_foreign_run_is_refused_with_no_project(
+    tmp_path, monkeypatch
+):
+    """A turn with no declared project must not propose a cancel by full id
+    for a run in another project: cancellation mutates that run, so the turn
+    is refused before the reference is resolved, and no proposal is created
+    for a human to approve."""
+    from lionagi.state.db import StateDB
+    from lionagi.studio.operator.cancel_run import cancel_run
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        foreign_run = await _seed_foreign_project_run(db)
+
+    store = OperatorStore(path)
+    await store.ensure_schema()
+    request_id = await _unscoped_running_turn(store, path, monkeypatch)
+
+    result = await asyncio.wait_for(cancel_run({"run": foreign_run}), timeout=2)
+
+    assert result == {
+        "cancelled": False,
+        "reason": "missing_owner_context",
+        "run_untouched": True,
+    }
+    # 'current' with nothing selected gets the same refusal, never a not-found.
+    assert await asyncio.wait_for(cancel_run({"run": "current"}), timeout=2) == result
+    assert await store.list_proposals_for_request(request_id) == []
+    async with StateDB() as db:
+        row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (foreign_run,))
+        assert row["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_rename_session_full_id_of_a_foreign_run_is_refused_with_no_project(
+    tmp_path, monkeypatch
+):
+    """Same fence on the rename path: a full id of another project's run gets
+    no rename proposal from a turn that declares no project."""
+    from lionagi.state.db import StateDB
+    from lionagi.studio.operator.rename_session import rename_session
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        foreign_run = await _seed_foreign_project_run(db)
+
+    store = OperatorStore(path)
+    await store.ensure_schema()
+    request_id = await _unscoped_running_turn(store, path, monkeypatch)
+
+    result = await asyncio.wait_for(
+        rename_session({"run": foreign_run, "name": "not this project's run"}), timeout=2
+    )
+
+    assert result == {"renamed": False, "reason": "missing_owner_context"}
+    # 'current' with nothing selected gets the same refusal, never a not-found.
+    current = await asyncio.wait_for(rename_session({"run": "current", "name": "x"}), timeout=2)
+    assert current == result
+    assert await store.list_proposals_for_request(request_id) == []
+    async with StateDB() as db:
+        row = await db.fetch_one("SELECT name FROM sessions WHERE id = ?", (foreign_run,))
+        assert row["name"] is None
+
+
+@pytest.mark.asyncio
+async def test_resume_run_full_id_of_a_foreign_run_is_refused_with_no_project(
+    tmp_path, monkeypatch
+):
+    """Same fence on the resume path: a full id of another project's run gets
+    no resume proposal from a turn that declares no project -- and nothing is
+    launched for it."""
+    from lionagi.state.db import StateDB
+    from lionagi.studio.operator.resume_run import resume_run
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        foreign_run = await _seed_foreign_project_run(db)
+        await db.update_session(foreign_run, invocation_kind="agent")
+
+    store = OperatorStore(path)
+    await store.ensure_schema()
+    request_id = await _unscoped_running_turn(store, path, monkeypatch)
+
+    result = await asyncio.wait_for(
+        resume_run({"run": foreign_run, "instruction": "keep going"}), timeout=2
+    )
+
+    assert result == {"resumed": False, "reason": "missing_owner_context"}
+    # 'current' with nothing selected gets the same refusal, never a not-found.
+    current = await asyncio.wait_for(
+        resume_run({"run": "current", "instruction": "keep going"}), timeout=2
+    )
+    assert current == result
+    assert await store.list_proposals_for_request(request_id) == []
+
+
 async def _noop() -> None:
     return None
 
@@ -1531,13 +1672,192 @@ async def test_scripted_turn_streams_and_is_visible_as_canonical_run(tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_a_turn_writes_its_run_json_off_the_event_loop(tmp_path, monkeypatch):
+    # each write takes the run's manifest lock, which another writer of the run can hold; made on the
+    # event loop, a held lock would stall every turn the coordinator serves
+    from lionagi.cli._runs import RunDir
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    where: list[str] = []
+    write_manifest = RunDir.write_manifest
+
+    def recording(self, payload):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            where.append("off the loop")
+        else:
+            where.append("on the loop")
+        return write_manifest(self, payload)
+
+    monkeypatch.setattr(RunDir, "write_manifest", recording)
+    coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    await coordinator.submit(
+        cid,
+        instruction="run it",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    await _wait_done(coordinator.store, cid)
+    await coordinator.shutdown()
+    assert where == ["off the loop", "off the loop"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancels", [1, 2])
+async def test_a_turn_cancelled_while_its_first_run_json_write_waits_ends_on_its_terminal_record(
+    tmp_path, monkeypatch, cancels
+):
+    # the first write runs on a worker thread and can wait there for the run's manifest lock; a
+    # cancel during that wait, or a second one while the turn's cleanup waits for it, must not let
+    # the terminal record land first and `running` after it
+    import threading
+
+    from lionagi.cli._runs import RunDir
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    waiting, release = threading.Event(), threading.Event()
+    landed: list[str] = []
+    runs: list[RunDir] = []
+    write_manifest = RunDir.write_manifest
+
+    def held(self, payload):
+        if payload["status"] == "running":
+            runs.append(self)
+            waiting.set()
+            release.wait(10)
+        write_manifest(self, payload)
+        landed.append(payload["status"])
+
+    monkeypatch.setattr(RunDir, "write_manifest", held)
+    coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    # submit returns once the run-link frames land, which is after the first write
+    submitting = asyncio.create_task(
+        coordinator.submit(
+            cid,
+            instruction="run it",
+            context={"space": "mission", "route": "/", "filters": {}},
+            expected_last_sequence=0,
+        )
+    )
+    assert await asyncio.to_thread(waiting.wait, 10)
+    request_id = (await coordinator.store.get_conversation(cid))["activeRequestId"]
+    for _ in range(cancels):
+        await coordinator.cancel(cid, request_id)
+        # time for the cancelled turn's cleanup to reach its wait for the first write
+        await asyncio.sleep(0.3)
+    release.set()
+    await submitting
+    await _wait_done(coordinator.store, cid)
+    await coordinator.shutdown()
+    assert landed == ["running", "cancelled"]
+    assert runs[0].read_manifest()["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_a_first_run_json_write_that_fails_is_logged_once_whether_or_not_its_turn_was_cancelled(
+    tmp_path, monkeypatch, caplog, cancelled
+):
+    # a turn cancelled while the first write waits has stopped waiting for it when the write fails,
+    # so the failure is logged by the cleanup that waits it out; an uncancelled turn fails on it
+    import threading
+
+    from lionagi.cli._runs import RunDir
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    waiting, release = threading.Event(), threading.Event()
+    landed: list[str] = []
+    write_manifest = RunDir.write_manifest
+    failure = OSError("the run's manifest lock could not be taken")
+
+    def failing(self, payload):
+        if payload["status"] == "running":
+            waiting.set()
+            release.wait(10)
+            raise failure
+        write_manifest(self, payload)
+        landed.append(payload["status"])
+
+    monkeypatch.setattr(RunDir, "write_manifest", failing)
+    caplog.set_level(logging.ERROR, logger="lionagi.studio.operator.coordinator")
+    coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    submitting = asyncio.create_task(
+        coordinator.submit(
+            cid,
+            instruction="run it",
+            context={"space": "mission", "route": "/", "filters": {}},
+            expected_last_sequence=0,
+        )
+    )
+    assert await asyncio.to_thread(waiting.wait, 10)
+    if cancelled:
+        request_id = (await coordinator.store.get_conversation(cid))["activeRequestId"]
+        await coordinator.cancel(cid, request_id)
+        await asyncio.sleep(0.3)
+    release.set()
+    await submitting
+    await _wait_done(coordinator.store, cid)
+    await coordinator.shutdown()
+    assert landed == ["cancelled" if cancelled else "failed"]
+    assert [r.exc_info[1] for r in caplog.records if r.exc_info] == [failure]
+
+
+@pytest.mark.asyncio
+async def test_a_terminal_run_json_write_that_fails_is_logged(tmp_path, monkeypatch, caplog):
+    """The run's record keeps its opening status when the terminal write fails, so the
+    failure is logged rather than dropped."""
+    from lionagi.cli._runs import RunDir
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    write_manifest = RunDir.write_manifest
+    failure = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    def failing(self, payload):
+        if payload["status"] != "running":
+            raise failure
+        write_manifest(self, payload)
+
+    monkeypatch.setattr(RunDir, "write_manifest", failing)
+    caplog.set_level(logging.ERROR, logger="lionagi.studio.operator.coordinator")
+    coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    await coordinator.submit(
+        cid,
+        instruction="run it",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    await _wait_done(coordinator.store, cid)
+    await coordinator.shutdown()
+    logged = [r for r in caplog.records if r.exc_info]
+    assert [r.exc_info[1] for r in logged] == [failure]
+    assert "terminal run.json write failed" in logged[0].getMessage()
+
+
+@pytest.mark.asyncio
 async def test_missing_claude_cli_finishes_with_public_provider_fix(tmp_path, monkeypatch):
     from lionagi.providers.anthropic import claude_code
     from lionagi.studio.operator.engine import BranchOperatorEngine
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
+    # Patch the resolver, not the cached constant: the preflight re-discovers
+    # at call time now, so a None constant on a machine that HAS the CLI
+    # resolves to the real binary and this case would never arise.
     monkeypatch.setattr(claude_code, "CLAUDE_CLI", None)
+    monkeypatch.setattr(claude_code, "resolve_claude_cli", lambda: None)
     coordinator = OperatorCoordinator(
         store=OperatorStore(path), engine_factory=BranchOperatorEngine
     )
@@ -1554,8 +1874,9 @@ async def test_missing_claude_cli_finishes_with_public_provider_fix(tmp_path, mo
     assert error["payload"]["error"] == {
         "code": "provider_unavailable",
         "message": (
-            "Claude Code CLI is unavailable. Install it with "
-            "`npm install -g @anthropic-ai/claude-code`, then run "
+            "Claude Code CLI is unavailable: not on PATH and not in the "
+            "per-user fallback install dirs. Install the Claude Code CLI "
+            "or start this process with a PATH that reaches it, then run "
             "`claude auth login`."
         ),
         "retryable": False,
@@ -2327,6 +2648,99 @@ async def test_context_compilation_groups_complete_turns_merges_deltas_and_persi
     assert "tool result [paired-1] (ok)" in prompt
     assert prompt.endswith("use both prior turns")
     await store.finish_turn(current["requestId"], outcome="cancelled")
+
+
+@pytest.mark.asyncio
+async def test_daemon_shutdown_during_a_store_write_terminalizes_and_can_restart(
+    tmp_path, monkeypatch
+):
+    """Drive the daemon's shutdown entry while an Operator store write owns SQLite's lock."""
+    import sqlite3
+
+    from sqlalchemy.dialects.sqlite import dialect as sqlite_dialect
+    from sqlalchemy.schema import CreateTable
+
+    import lionagi.state.engine as state_engine
+    import lionagi.studio.services.operator as operator_service
+    from lionagi.state.schema_meta import metadata
+    from lionagi.studio.services._db import open_db
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    monkeypatch.setattr(state_engine, "SQLITE_BUSY_TIMEOUT_MS", 50)
+    coordinator = OperatorCoordinator(store=OperatorStore(path), engine_factory=ScriptedEngine)
+    monkeypatch.setattr(operator_service, "get_operator_coordinator", lambda: coordinator)
+    await coordinator.startup()
+    native = sqlite3.connect(path)
+    try:
+        # A table of the test's own, in a store carrying the schema_meta version and the sessions
+        # table a StateDB open writes, so a later native open recognizes the store as lionagi's
+        # (ADR-0128 D7).
+        native.executescript(
+            "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+            "INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '1');"
+            f"{CreateTable(metadata.tables['sessions']).compile(dialect=sqlite_dialect())};"
+            "CREATE TABLE shutdown_probe (value INTEGER);"
+        )
+    finally:
+        native.close()
+
+    parked = asyncio.Event()
+    append = coordinator.store.append_frame
+
+    async def held_append(cid, rid, frame_type, payload):
+        if frame_type == "text" and payload.get("content") == "first ":
+            async with open_db(str(path)) as connection:
+                await connection.execute("BEGIN IMMEDIATE")
+                await connection.execute("INSERT INTO shutdown_probe VALUES (1), (2)")
+                cursor = await connection.execute("SELECT value FROM shutdown_probe")
+                await cursor.fetchone()  # leave the statement unfinished in the cancelled frame
+                parked.set()
+                await asyncio.Event().wait()
+        return await append(cid, rid, frame_type, payload)
+
+    monkeypatch.setattr(coordinator.store, "append_frame", held_append)
+    try:
+        cid = (await coordinator.create_conversation())["conversation"]["id"]
+        accepted = await coordinator.submit(
+            cid,
+            instruction="stop during the write",
+            context={"space": "mission", "route": "/", "filters": {}},
+            expected_last_sequence=0,
+        )
+        request_id = accepted["requestId"]
+        await asyncio.wait_for(parked.wait(), 5)
+        task = coordinator._tasks[
+            request_id
+        ]  # retain its cancelled write's cursor through assertions
+        await asyncio.wait_for(operator_service.operator_shutdown(), 10)
+        turn = await coordinator.store.get_turn(request_id)
+        assert turn["status"] == "cancelled"
+        assert task.cancelled()
+        assert not coordinator._tasks
+        frames = await coordinator.store.list_frames(cid)
+        assert frames[-1]["type"] == "done"
+        external = sqlite3.connect(path, timeout=0, isolation_level=None)
+        try:
+            external.execute("BEGIN IMMEDIATE")
+            assert external.execute("SELECT value FROM shutdown_probe").fetchall() == []
+            external.execute("ROLLBACK")
+        finally:
+            external.close()
+
+        monkeypatch.setattr(coordinator.store, "append_frame", append)
+        await coordinator.startup()
+        next_cid = (await coordinator.create_conversation())["conversation"]["id"]
+        next_turn = await coordinator.submit(
+            next_cid,
+            instruction="continue after restart",
+            context={"space": "mission", "route": "/", "filters": {}},
+            expected_last_sequence=0,
+        )
+        await _wait_done(coordinator.store, next_cid)
+        assert (await coordinator.store.get_turn(next_turn["requestId"]))["status"] == "completed"
+    finally:
+        await asyncio.wait_for(operator_service.operator_shutdown(), 10)
 
 
 @pytest.mark.asyncio
@@ -3536,3 +3950,252 @@ def test_rename_session_input_still_rejects_empty_whitespace_and_over_length(nam
 
     with pytest.raises(ValidationError):
         RenameSessionInput.model_validate({"run": "some-run", "name": name})
+
+
+async def _start_proposal_turn(
+    path: Path,
+    *,
+    command_type: str = "launch",
+    command: dict[str, Any] | None = None,
+    risk: str = "execute",
+) -> tuple[OperatorStore, str, str, dict[str, Any]]:
+    """A running turn holding one pending proposal on a complete state DB."""
+    from lionagi.state.db import StateDB
+
+    async with StateDB(path):
+        pass
+    store = OperatorStore(path)
+    cid = (await store.create_conversation())["id"]
+    accepted = await store.submit_turn(
+        cid,
+        instruction="run the approved command",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    request_id = accepted["requestId"]
+    assert await store.mark_running(request_id)
+    proposal = await store.create_proposal(
+        cid,
+        request_id,
+        command_type=command_type,
+        command=command or {"action_kind": "play", "action_playbook": "nightly-audit"},
+        risk=risk,
+        summary="Run the approved command",
+    )
+    return store, cid, request_id, proposal
+
+
+def _record_post_commit_appends(
+    monkeypatch, store: OperatorStore
+) -> list[tuple[str, dict[str, Any]]]:
+    """Record every frame a decision or expiry writes through the ordinary
+    post-commit path.
+
+    A frame that lands there is exposed to the gap: the proposal's new status
+    is already visible, so a permission poller can finish the turn first and
+    the append stores nothing. An outcome that must never be lost is written in
+    the transaction instead, which is why this list has to stay empty for a
+    decision and its expiry.
+    """
+    written: list[tuple[str, dict[str, Any]]] = []
+    original = store.append_frame
+
+    async def wrapper(conversation_id, request_id, frame_type, payload):
+        written.append((frame_type, payload))
+        return await original(conversation_id, request_id, frame_type, payload)
+
+    monkeypatch.setattr(store, "append_frame", wrapper)
+    return written
+
+
+def _confirmation_states(frames: list[dict[str, Any]]) -> list[str]:
+    return [frame["payload"].get("state") for frame in frames if frame["type"] == "confirmation"]
+
+
+@pytest.mark.asyncio
+async def test_a_finished_turn_keeps_the_result_it_committed(tmp_path, monkeypatch):
+    """A command's terminal status and the frames that report its outcome are
+    one write, so a turn that finishes the moment the result is visible still
+    carries the executed confirmation and the result. A separate later append
+    reaches a finished turn and stores nothing."""
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    store, cid, request_id, proposal = await _start_proposal_turn(path)
+    written = _record_post_commit_appends(monkeypatch, store)
+    await store.decide_proposal(
+        cid,
+        proposal["id"],
+        allow=True,
+        expected_command_hash=proposal["commandHash"],
+        expected_target_version=None,
+        claim_execution=True,
+    )
+    result = {"href": "/runs/child", "run_id": "child"}
+    await store.complete_proposal(proposal["id"], status="succeeded", result=result)
+    # The confirmation and the result were written with the status changes, so
+    # nothing went through the post-commit path the poller can beat.
+    assert written == []
+    # The turn finishes here, in the gap a permission poller would use.
+    await store.finish_turn(request_id, outcome="completed")
+
+    stored = await store.list_frames(cid)
+    assert stored[-1]["type"] == "done"
+    assert _confirmation_states(stored) == ["required", "confirmed", "executed"]
+    tool_results = [
+        frame
+        for frame in stored
+        if frame["type"] == "tool_result" and frame["payload"].get("callId") == proposal["id"]
+    ]
+    assert [frame["payload"] for frame in tool_results] == [
+        {"callId": proposal["id"], "ok": True, "result": result}
+    ]
+    assert tool_results[0]["sequence"] < stored[-1]["sequence"]
+    # The append a caller used to rely on reaches the finished turn and is
+    # refused, which is exactly the loss the in-transaction write prevents.
+    assert (
+        await store.append_frame(
+            cid,
+            request_id,
+            "confirmation",
+            {"proposalId": proposal["id"], "state": "executed"},
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_finished_turn_keeps_the_failure_it_committed(tmp_path, monkeypatch):
+    """A failed command commits its tool result with the failure status, so a
+    turn that finishes in the same gap still reports why it failed."""
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    store, cid, request_id, proposal = await _start_proposal_turn(path)
+    written = _record_post_commit_appends(monkeypatch, store)
+    await store.decide_proposal(
+        cid,
+        proposal["id"],
+        allow=True,
+        expected_command_hash=proposal["commandHash"],
+        expected_target_version=None,
+        claim_execution=True,
+    )
+    detail = {"invocationId": None}
+    await store.complete_proposal(
+        proposal["id"],
+        status="failed",
+        error_code="service_failure",
+        result={"message": "Application command failed", "details": detail},
+    )
+    assert written == []
+    await store.finish_turn(request_id, outcome="completed")
+
+    stored = await store.list_frames(cid)
+    assert stored[-1]["type"] == "done"
+    results = [
+        frame
+        for frame in stored
+        if frame["type"] == "tool_result" and frame["payload"].get("callId") == proposal["id"]
+    ]
+    assert len(results) == 1
+    result = results[0]
+    assert result["payload"]["ok"] is False
+    assert result["payload"]["error"]["code"] == "service_failure"
+    assert result["payload"]["error"]["details"] == detail
+    assert result["sequence"] < stored[-1]["sequence"]
+
+
+@pytest.mark.asyncio
+async def test_a_finished_turn_keeps_the_denial_it_committed(tmp_path, monkeypatch):
+    """A denial commits its cancelled confirmation and denial error with the
+    status, so a turn that finishes in the same gap still shows the refusal."""
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    store, cid, request_id, proposal = await _start_proposal_turn(
+        path,
+        command_type="provider_permission",
+        command={"toolName": "Bash", "input": {"command": "git status"}, "toolUseId": "t1"},
+    )
+    written = _record_post_commit_appends(monkeypatch, store)
+    await store.decide_proposal(
+        cid,
+        proposal["id"],
+        allow=False,
+        expected_command_hash=proposal["commandHash"],
+        expected_target_version=None,
+    )
+    # The cancelled confirmation and denial error are already durable, so the
+    # denial writes nothing through the post-commit path the poller can beat.
+    assert written == []
+    await store.finish_turn(request_id, outcome="completed")
+
+    stored = await store.list_frames(cid)
+    assert stored[-1]["type"] == "done"
+    assert _confirmation_states(stored) == ["required", "cancelled"]
+    denial = next(
+        frame
+        for frame in stored
+        if frame["type"] == "error" and frame["payload"]["error"]["code"] == "denied"
+    )
+    assert denial["sequence"] < stored[-1]["sequence"]
+    assert (await store.get_proposal(proposal["id"]))["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_a_finished_turn_keeps_the_expiry_it_committed(tmp_path, monkeypatch):
+    """Expiry moves a proposal out of pending, so its confirmation has the
+    same ordering requirement as a decision."""
+    from lionagi.studio.services._db import open_db
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    store, cid, request_id, proposal = await _start_proposal_turn(
+        path,
+        command_type="provider_permission",
+        command={"toolName": "Bash", "input": {"command": "git status"}, "toolUseId": "t1"},
+    )
+    async with open_db(str(store.path())) as db:
+        await db.execute(
+            "UPDATE studio_operator_proposals SET expires_at=0 WHERE id=?",
+            (proposal["id"],),
+        )
+        await db.commit()
+    written = _record_post_commit_appends(monkeypatch, store)
+    await store.expire_proposal(proposal["id"])
+    assert written == []
+    await store.finish_turn(request_id, outcome="completed")
+
+    stored = await store.list_frames(cid)
+    assert stored[-1]["type"] == "done"
+    assert _confirmation_states(stored) == ["required", "expired"]
+
+
+@pytest.mark.asyncio
+async def test_a_finished_turn_keeps_the_native_tool_confirmation_it_committed(
+    tmp_path, monkeypatch
+):
+    """A confirmed provider proposal terminalized by a native tool result has
+    the same ordering requirement as an application command."""
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    store, cid, request_id, proposal = await _start_proposal_turn(
+        path,
+        command_type="provider_permission",
+        command={"toolName": "Write", "input": {"file_path": "a.txt"}, "toolUseId": "t1"},
+        risk="mutate",
+    )
+    written = _record_post_commit_appends(monkeypatch, store)
+    await store.decide_proposal(
+        cid,
+        proposal["id"],
+        allow=True,
+        expected_command_hash=proposal["commandHash"],
+        expected_target_version=None,
+    )
+    completed = await store.complete_provider_permission(request_id, "t1", ok=True)
+    assert completed is not None and completed["status"] == "succeeded"
+    assert written == []
+    await store.finish_turn(request_id, outcome="completed")
+
+    stored = await store.list_frames(cid)
+    assert stored[-1]["type"] == "done"
+    assert _confirmation_states(stored) == ["required", "confirmed", "executed"]

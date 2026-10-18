@@ -21,10 +21,9 @@ tags:
 ## Context
 
 [[ADR-0025-the-graph|ADR-0025]] S4 names this record: how a caller submits a run of a profile, a
-fanout or a named flow, and how the result reaches it. The author's instruction of 2026-10-04 gives
-the reason: a coding assistant's own sub-agents are spent too freely, so this runtime takes their
-work, reached over its command and over an MCP server, and the sub-agents are turned off once it
-does. A flow is then written once and called by name.
+fanout or a named flow, and how the result reaches it. A coding assistant's own sub-agents are spent
+too freely, so this runtime takes their work, reached over its command and over an MCP server, and
+the sub-agents are turned off once it does. A flow is then written once and called by name.
 
 Today a run starts in three ways: `lion chat` builds a console actor from flags, `lion agent` builds
 one from `chores.toml` and runs on mail, and a test builds an `Actor` directly. None takes a profile
@@ -68,7 +67,7 @@ Source: `apps/cli/lion_cli/main.py`, `apps/cli/lion_cli/chat.py` (`profile`),
 | --- | --- | --- | --- |
 | A1 | A profile's whole configuration is what `lion chat` already takes as flags: a system text, the tool sets, a model, the bounds. | measured | `apps/cli/lion_cli/chat.py` `profile`, `main.py` `parser` |
 | A2 | A run's output is readable from its row alone once it ends: `lion.get(id)` returns the row with `output`. | measured | `tests/test_store.py`, the real-binary test reads a closed run's output back |
-| A3 | A caller reads its own inbox: result mail reaches a caller that already sweeps mail, and the MCP tool reads the rows for one that does not. | assumed | the agent of ADR-0013 and the author's console both sweep; the MCP tool is the other path |
+| A3 | A caller reads its own inbox: result mail reaches a caller that already sweeps mail, and the MCP tool reads the rows for one that does not. | assumed | the agent of ADR-0013 and the interactive console both sweep; the MCP tool is the other path |
 | A4 | A session's messages replay as a request's history: `Store.history` returns entries `RunRequest.history` takes, and a run replayed from them continues where the last ended. | measured | `tests/test_store.py`, the replay test under ADR-0025 C3 |
 
 ## Claims
@@ -177,7 +176,7 @@ refuses the wake until the owner forgets it (C9): no run opens, and the batch is
 with the run named.
 
 - `test_a_second_wake_replays_from_the_firsts_rows_and_writes_no_checkpoint_file`
-- `test_a_wake_with_no_last_run_continues_nothing_and_reads_no_checkpoint_file`
+- `test_a_wake_with_no_last_run_continues_nothing`
 - `test_each_wake_stores_only_its_own_entries_and_replays_the_whole_chain`
 - `test_a_reader_wake_continuing_an_acting_run_cannot_send_whatever_its_history_holds`
 - `test_a_cursor_naming_a_run_the_store_does_not_hold_refuses_the_wake_and_names_the_run`
@@ -310,7 +309,8 @@ readers ADR-0025 C4 keeps. ADR-0013 D3 and the ADR-0019 liveness line say so.
 
 - **Landing evidence**: `tests/test_agent.py`:
   `test_a_second_wake_replays_from_the_firsts_rows_and_writes_no_checkpoint_file`,
-  `test_a_wake_with_no_last_run_continues_nothing_and_reads_no_checkpoint_file`,
+  `test_a_wake_with_no_last_run_continues_nothing`, `hub/agent/agent.py` reads prior history from
+  the store and has no checkpoint-file read path,
   `test_a_wake_whose_run_raised_leaves_the_run_it_continued_for_the_next_wake`, C6's three more and
   C9's two,
   `test_a_history_the_store_never_answered_propagates_and_is_neither_refused_nor_forgotten`;

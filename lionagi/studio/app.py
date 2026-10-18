@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import ipaddress
 import logging
 import os
 import re
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -18,8 +20,10 @@ from starlette.staticfiles import StaticFiles
 from lionagi._errors import LionError
 from lionagi.version import __version__
 
+from ._host import normalize_host
 from ._traceback_dump import arm_traceback_dump, disarm_traceback_dump
 from .config import CORS_ORIGINS, HOST
+from .launch_access import PAIRING_REDEEM_PATH, launch_bearer
 from .registry import iter_studio_routes, load_studio_route_modules
 from .services._db import StoreNotAddressableError
 
@@ -39,6 +43,88 @@ _GUARDED_NON_API_PATHS = frozenset(
         "/docs/oauth2-redirect",
     }
 )
+
+
+# What a no-token daemon can promise about an Operator decision, and what it cannot:
+# the decision routes admit any local caller, so this is a workflow safeguard rather
+# than isolation. Stated on the startup warning and on both decision routes' API
+# descriptions, which are the surfaces a reader meets before trusting the prompt.
+_OPEN_MODE_DECISION_NOTICE = (
+    "Without LIONAGI_STUDIO_AUTH_TOKEN, any process that can reach the daemon's listener, "
+    "including programs run by other local accounts, can allow or deny Operator proposals. "
+    "The permission prompt is a workflow safeguard, not isolation from local programs; "
+    "set a token on a shared machine."
+)
+
+# With no token configured, the answer to an API request from a browser origin that is
+# neither loopback nor the daemon's own.
+_REMOTE_ORIGIN_REFUSAL = (
+    "This Studio daemon has no LIONAGI_STUDIO_AUTH_TOKEN, so it accepts a page on another "
+    "origin only with the bearer `li studio` pairs it with. Run `li studio` to open Studio."
+)
+
+
+def _origin_accepted_without_token(origins: list[str], raw_host: str) -> bool:
+    """Whether a request may use the API when no token is configured, by its Origin.
+
+    A request with no Origin header is accepted here and then judged by its
+    ``Sec-Fetch-Site`` header (``_fetch_site_accepted_without_origin``), because a
+    browser sends no Origin on some cross-site GET requests. A browser origin is accepted
+    when its host is loopback (``localhost``, 127.0.0.0/8 or ``::1``) on any port, or
+    when it is the daemon's own
+    origin: its authority equals the request's Host, as for the SPA a daemon bound to
+    another address serves itself. A request that carries an Origin from another site,
+    ``null`` included, is refused. CORS only decides which pages may read a response; a
+    page on an allowed origin can still act, so it cannot stand in for this check.
+    """
+    if not origins:
+        return True
+    if len(origins) > 1:
+        return False
+    origin = origins[0].strip()
+    try:
+        parts = urlsplit(origin)
+    except ValueError:
+        return False
+    if (
+        parts.scheme not in ("http", "https")
+        or not parts.netloc
+        or "@" in parts.netloc
+        or parts.path
+        or parts.query
+        or parts.fragment
+    ):
+        return False
+    if parts.netloc.lower() == (raw_host or "").strip().lower():
+        return True
+    host = parts.hostname
+    if host == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(host or "")
+    except ValueError:
+        return False
+    # An IPv4-mapped IPv6 address is judged as its IPv4 address on every Python version.
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return address.is_loopback
+
+
+def _fetch_site_accepted_without_origin(sec_fetch_sites: list[str]) -> bool:
+    """Whether a request with no Origin header may use the API when no token is configured.
+
+    A browser sends no Origin on a GET or HEAD it makes outside CORS: an image, a script or
+    a top-level navigation, from any site. It does send ``Sec-Fetch-Site``, and only
+    ``none`` (a typed address or a bookmark) and ``same-origin`` (the SPA this daemon
+    serves) are accepted. A request without the header, from a command-line or scripted
+    client or an older browser, is accepted. ``same-site``, ``cross-site``, any other value
+    and a second header are refused.
+    """
+    if not sec_fetch_sites:
+        return True
+    if len(sec_fetch_sites) > 1:
+        return False
+    return sec_fetch_sites[0].strip().lower() in ("none", "same-origin")
 
 
 def _bearer_matches(presented: str, token: str) -> bool:
@@ -64,22 +150,58 @@ def _collect_cors_methods(application: FastAPI) -> list[str]:
     return sorted(methods)
 
 
+def _host_reaches_other_machines(bind_host: str) -> bool:
+    """Whether a bind on *bind_host* is reachable from another machine.
+
+    True for anything that is not loopback: a wildcard (`0.0.0.0`, `::`) binds
+    every interface and a concrete address is reachable from the network it sits
+    on. `localhost` and every loopback address (`127.0.0.0/8`, `::1`) are the
+    only names that stay on this machine. An unparseable name is treated as
+    reachable, since a bind the daemon cannot classify must not read as safe.
+
+    Read through `normalize_host`, so ``LOCALHOST`` is the loopback name and a
+    bind written in brackets or in a non-canonical spelling is judged as the
+    address it names.
+    """
+    host = normalize_host(bind_host)
+    if host == "localhost" or host.endswith(".localhost"):
+        return False
+    try:
+        return not ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return True
+
+
 def _emit_startup_warnings() -> None:
     """Emit security warnings once at startup — no-op if conditions are safe."""
     token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
     if not token:
-        bind_host = os.getenv("LIONAGI_STUDIO_HOST", HOST)
-        if bind_host == "0.0.0.0":  # noqa: S104
+        bind_host = normalize_host(os.getenv("LIONAGI_STUDIO_HOST", HOST))
+        # A bind on anything but loopback is reachable from other machines, so the
+        # warning has to name the address and say who can reach it; naming only
+        # 0.0.0.0 understated `::`, which binds every interface too. The name is the
+        # canonical one, so a bracketed `[]` reads as blank and a spelling in
+        # brackets reads as the address it names.
+        if _host_reaches_other_machines(bind_host):
+            where = bind_host or "every interface"
             _log.warning(
-                "Studio running WITHOUT authentication on host 0.0.0.0 — "
-                "ALL API requests are accepted from any network interface. "
-                "This is unsafe in containers or cloud deployments. "
-                "Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token."
+                f"Studio running WITHOUT authentication on host {where} — API "
+                "requests with neither Origin nor Sec-Fetch-Site are accepted from "
+                "other machines that can reach that address. This is unsafe in "
+                "containers or cloud deployments. Set LIONAGI_STUDIO_AUTH_TOKEN to "
+                "require a bearer token. " + _OPEN_MODE_DECISION_NOTICE
             )
         else:
             _log.warning(
-                "Studio running WITHOUT authentication — all API requests are "
-                "accepted. Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token."
+                "Studio running WITHOUT authentication on loopback (reachable on this "
+                "machine only) — requests with neither Origin nor "
+                "Sec-Fetch-Site are accepted (CLI, scripts, indistinguishable browsers); "
+                "without Origin, Sec-Fetch-Site none/same-origin pass, "
+                "same-site/cross-site/other/repeated values need the paired bearer; "
+                "Origin outside loopback/the daemon needs the paired bearer. "
+                "Header admission does not prove locality. "
+                "Set LIONAGI_STUDIO_AUTH_TOKEN to require a bearer token. "
+                + _OPEN_MODE_DECISION_NOTICE
             )
 
     if "*" in CORS_ORIGINS:
@@ -264,15 +386,42 @@ def _parse_host_authority(raw_host: str) -> str | None:
     return host.lower() if host else None
 
 
+def _is_unspecified_bind_host(bind_host: str) -> bool:
+    """Whether *bind_host* names every interface rather than one address.
+
+    A wildcard (`0.0.0.0`, `::`, or an IPv6 spelling of one) binds all of them, so
+    it is not an address a page is opened at and must not widen the admitted Host
+    set. Judged by `ipaddress` on the canonical form, not by matching the literal
+    `0.0.0.0`: `::` binds the same interfaces and the string test let it through.
+    A blank value is unspecified too -- there is no name to admit. A value that is
+    not an address at all is left to the caller, which admits it as the operator's
+    chosen name.
+    """
+    host = normalize_host(bind_host)
+    if not host:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_unspecified
+    except ValueError:
+        return False
+
+
 async def validate_host_header(request: Request, call_next):
     """Reject requests whose Host header doesn't match an expected value —
     defends against DNS rebinding; see docs/internals/studio.md.
     """
     hostname = _parse_host_authority(request.headers.get("host", ""))
-    bind_host = os.getenv("LIONAGI_STUDIO_HOST", HOST)
+    # Both sides are compared in canonical form: the grammar above fixes what a
+    # Host authority may look like, and `normalize_host` then says which address
+    # it names. Without it a bind written in brackets, in a non-canonical IPv6
+    # spelling or as an IPv4-mapped address widened nothing, so a browser's Host
+    # for that very address was refused.
+    if hostname is not None:
+        hostname = normalize_host(hostname)
+    bind_host = normalize_host(os.getenv("LIONAGI_STUDIO_HOST", HOST))
     allowed_hosts = {"localhost", "127.0.0.1", "::1"}
-    if bind_host not in ("127.0.0.1", "localhost", "::1", "0.0.0.0", ""):  # noqa: S104
-        allowed_hosts.add(bind_host.lower())
+    if not _is_unspecified_bind_host(bind_host):
+        allowed_hosts.add(bind_host)
     if hostname is None or hostname not in allowed_hosts:
         return JSONResponse(
             {"detail": f"Invalid Host header: {request.headers.get('host', '')!r}"},
@@ -338,7 +487,15 @@ def _mount_spa(application: FastAPI, dist: Path) -> None:
         # /api/* paths stay 404 JSON here, not the SPA HTML shell.
         path = request.url.path
         if path.startswith("/api/") or path == "/api":
-            return JSONResponse({"detail": "Not Found"}, status_code=404)
+            # The API's own message, not a generic one. This handler is
+            # registered for the STATUS, so it also receives every deliberate
+            # HTTPException(404, detail=...) an API handler raises. Answering
+            # those with a hardcoded "Not Found" replaced "invalid path
+            # component" and "Show 'x' not found" with a string that says
+            # nothing -- and only when a frontend was mounted, so the suite,
+            # which runs API-only, could not see it and production got the
+            # degraded message.
+            return JSONResponse({"detail": getattr(exc, "detail", "Not Found")}, status_code=404)
         if request.method not in ("GET", "HEAD"):
             return JSONResponse({"detail": "Not Found"}, status_code=404)
         return FileResponse(
@@ -399,17 +556,32 @@ def create_app() -> FastAPI:
             return await call_next(request)
         token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
         path = request.url.path
+        # /api/* and schema/docs are gated; non-API GET/HEAD (SPA shell,
+        # hashed assets) stay public or the UI becomes unloadable.
+        is_api = path == "/api" or path.startswith("/api/")
+        is_guarded_non_api = path in _GUARDED_NON_API_PATHS
+        is_public_static = (
+            request.method in ("GET", "HEAD") and not is_api and not is_guarded_non_api
+        )
+        # The pairing exchange is how a page gets its bearer, so it cannot need one;
+        # the one-time code it carries is the credential.
+        is_pairing = request.method == "POST" and path == PAIRING_REDEEM_PATH
+        if path in _PUBLIC_PATHS or is_public_static or is_pairing:
+            return await call_next(request)
         presented = request.headers.get("authorization") or ""
-        if token and not _bearer_matches(presented, token):
-            # /api/* and schema/docs are gated; non-API GET/HEAD (SPA shell,
-            # hashed assets) stay public or the UI becomes unloadable.
-            is_api = path == "/api" or path.startswith("/api/")
-            is_guarded_non_api = path in _GUARDED_NON_API_PATHS
-            is_public_static = (
-                request.method in ("GET", "HEAD") and not is_api and not is_guarded_non_api
-            )
-            if path not in _PUBLIC_PATHS and not is_public_static:
+        origins = request.headers.getlist("origin")
+        if token:
+            if not _bearer_matches(presented, token):
                 return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        elif not _origin_accepted_without_token(origins, request.headers.get("host", "")) or (
+            not origins
+            and not _fetch_site_accepted_without_origin(request.headers.getlist("sec-fetch-site"))
+        ):
+            # A page on another origin, or one whose browser sent no Origin, is
+            # accepted with the bearer this launch handed it through pairing.
+            bearer = launch_bearer()
+            if bearer is None or not _bearer_matches(presented, bearer):
+                return JSONResponse({"detail": _REMOTE_ORIGIN_REFUSAL}, status_code=401)
         return await call_next(request)
 
     @application.middleware("http")

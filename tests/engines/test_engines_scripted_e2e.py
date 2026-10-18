@@ -20,6 +20,7 @@ from lionagi.engines.coding import (
 from lionagi.engines.coding import (
     VerifyResult as CodeVerifyResult,
 )
+from lionagi.engines.engine import JudgeVerdict
 from lionagi.engines.hypothesis import (
     ApplicationMapped,
     ConclusionDrawn,
@@ -29,10 +30,17 @@ from lionagi.engines.hypothesis import (
     ResultRecorded,
 )
 from lionagi.engines.research import FindingEmitted, ResearchEngine
-from lionagi.engines.review import IssueFound, ReviewEngine, VerifyResult
+from lionagi.engines.review import IssueFound, ReviewEngine, ReviewVerdict, VerifyResult
 from lionagi.testing._endpoint import ENV_SCRIPT_PATH
 
 SCRIPTED_MODEL = "scripted/scripted-test"
+
+# Every engine here is built with khive_injection=False and, for the hypothesis engine, a
+# scripted judge. A stage role's agent profile can opt into khive recall, which opens
+# `kkernel mcp` and leaves a daemon running, and the hypothesis engine's default judge is a
+# real Claude Code CLI; either reaches outside the test.
+HERMETIC = {"model": SCRIPTED_MODEL, "khive_injection": False}
+JUDGE = "quality gate of an autonomous pipeline"
 
 
 def _emit(payload: dict) -> str:
@@ -149,10 +157,22 @@ async def test_hypothesis_engine_full_chain_e2e(tmp_path, monkeypatch):
                 "Write the evidence report",
                 text="EVIDENCE REPORT: D-012 supported on quantitative basis (31x).",
             ),
+            _when(
+                JUDGE,
+                {
+                    "judge_verdict": {
+                        "subject": "Q-1",
+                        "allow": True,
+                        "reason": "on the root objective",
+                    }
+                },
+            ),
         ],
     )
 
-    eng = HypothesisEngine(model=SCRIPTED_MODEL, max_questions=1, repair_retries=0)
+    eng = HypothesisEngine(
+        **HERMETIC, judge_model=SCRIPTED_MODEL, max_questions=1, repair_retries=0
+    )
     run = eng.new_run()
     report = await eng._run(
         run,
@@ -169,6 +189,8 @@ async def test_hypothesis_engine_full_chain_e2e(tmp_path, monkeypatch):
     assert run.events_of(EvidenceCollected)[0].kind == "precedent"
     assert run.events_of(ConclusionDrawn)[0].basis == "quantitative"
     assert run.events_of(ApplicationMapped)[0].effect == "supports"
+    # the gate before Q-1's expansion ran through the scripted judge and passed it
+    assert [(v.subject, v.allow) for v in run.by_type(JudgeVerdict)] == [("Q-1", True)]
     report_md = (tmp_path / "evidence" / "report.md").read_text()
     assert "EVIDENCE REPORT" in report_md and "Evidence chains" in report_md
 
@@ -219,11 +241,14 @@ async def test_hypothesis_repair_recovers_weak_model_e2e(tmp_path, monkeypatch):
             ),
             _when("Apply conclusion", text="Bears on nothing specific."),
             _when("Write the evidence report", text="REPORT: taste conclusion recorded."),
+            _when(JUDGE, text="PASS"),
         ],
     )
 
     notified: list[dict] = []
-    eng = HypothesisEngine(model=SCRIPTED_MODEL, max_questions=1, repair_retries=1)
+    eng = HypothesisEngine(
+        **HERMETIC, judge_model=SCRIPTED_MODEL, max_questions=1, repair_retries=1
+    )
     report = await eng.run(
         "Grammar uses || for concat",
         on_event=lambda e: notified.append(e),
@@ -270,7 +295,7 @@ async def test_research_engine_e2e_with_depth_spawn(tmp_path, monkeypatch):
         ],
     )
 
-    eng = ResearchEngine(model=SCRIPTED_MODEL, roles=("researcher",), max_depth=1)
+    eng = ResearchEngine(**HERMETIC, roles=("researcher",), max_depth=1)
     run = eng.new_run()
     out = await eng._run(run, "RRF fusion defaults")
     assert out == "SYNTHESIS: k=60 needs a sweep."
@@ -315,12 +340,82 @@ async def test_review_engine_e2e_with_adversarial_verify(tmp_path, monkeypatch):
         ],
     )
 
-    eng = ReviewEngine(model=SCRIPTED_MODEL, dimensions=("correctness",))
+    eng = ReviewEngine(**HERMETIC, dimensions=("correctness",))
     run = eng.new_run()
     out = await eng._run(run, "fn next(&mut self) { self.pos += 1; ... }")
     assert "REQUEST-CHANGES" in out
     assert len(run.by_type(IssueFound)) == 1
     assert run.by_type(VerifyResult)[0].holds is True
+
+
+def _verified_issue_script(verdict: dict) -> list[dict]:
+    return [
+        _when(
+            "for **correctness** only",
+            {
+                "issue_found": {
+                    "dimension": "correctness",
+                    "description": "off-by-one in cursor advance",
+                    "severity": "critical",
+                    "location": "store.rs:41",
+                    "confidence": 0.7,
+                }
+            },
+        ),
+        _when(
+            "Adversarially verify",
+            {
+                "verify_result": {
+                    "issue": "off-by-one in cursor advance",
+                    "holds": True,
+                    "rationale": "boundary test confirms skip of last row",
+                }
+            },
+        ),
+        verdict,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_review_verdict_records_the_model_the_provider_reported(tmp_path, monkeypatch):
+    _write_script(
+        tmp_path,
+        monkeypatch,
+        _verified_issue_script(
+            {
+                "type": "stream",
+                "chunks": [
+                    {"type": "system", "metadata": {"model": "claude-served-x"}},
+                    {"type": "text", "content": "REQUEST-CHANGES: fix cursor advance."},
+                    {"type": "result", "metadata": {"done": True}},
+                ],
+                "when": {"prompt_contains": "Issue a single ProposedVerdict"},
+            }
+        ),
+    )
+
+    eng = ReviewEngine(**HERMETIC, dimensions=("correctness",))
+    run = eng.new_run()
+    await eng._run(run, "fn next(&mut self) { self.pos += 1; ... }")
+    assert run.by_type(ReviewVerdict)[-1].served_model == "claude-served-x"
+
+
+@pytest.mark.asyncio
+async def test_review_verdict_served_model_is_none_without_a_provider_report(tmp_path, monkeypatch):
+    _write_script(
+        tmp_path,
+        monkeypatch,
+        _verified_issue_script(
+            _when("Issue a single ProposedVerdict", text="REQUEST-CHANGES: fix cursor advance.")
+        ),
+    )
+
+    eng = ReviewEngine(**HERMETIC, dimensions=("correctness",))
+    run = eng.new_run()
+    await eng._run(run, "fn next(&mut self) { self.pos += 1; ... }")
+    # The synthesis call streams, and the scripted stream names no model, so none is
+    # recorded. (The double's non-streaming response echoes the requested model.)
+    assert run.by_type(ReviewVerdict)[-1].served_model is None
 
 
 @pytest.mark.asyncio
@@ -361,7 +456,7 @@ async def test_review_repair_recovers_prose_reviewer_e2e(tmp_path, monkeypatch):
     )
 
     notified: list[dict] = []
-    eng = ReviewEngine(model=SCRIPTED_MODEL, dimensions=("correctness",), repair_retries=1)
+    eng = ReviewEngine(**HERMETIC, dimensions=("correctness",), repair_retries=1)
     out = await eng.run(
         "fn next(&mut self) { self.pos += 1; ... }",
         on_event=lambda e: notified.append(e),
@@ -392,11 +487,12 @@ async def test_hypothesis_budget_degrades_gracefully_e2e(tmp_path, monkeypatch):
                 },
             ),
             _when("Write the evidence report", text="PARTIAL REPORT: 1 open question."),
+            _when(JUDGE, text="PASS"),
         ],
     )
 
     notified: list[dict] = []
-    eng = HypothesisEngine(model=SCRIPTED_MODEL, max_agents=1, repair_retries=0)
+    eng = HypothesisEngine(**HERMETIC, judge_model=SCRIPTED_MODEL, max_agents=1, repair_retries=0)
     report = await eng.run("seed finding", on_event=lambda e: notified.append(e))
     assert "PARTIAL REPORT" in report
     assert any(e["type"] == "budget_exhausted" for e in notified)
@@ -446,7 +542,7 @@ async def test_coding_engine_pass_path_e2e(tmp_path, monkeypatch):
         ],
     )
 
-    eng = CodingEngine(model=SCRIPTED_MODEL, repair_retries=0)
+    eng = CodingEngine(**HERMETIC, repair_retries=0)
     run = eng.new_run()
     result = await eng._run(
         run,

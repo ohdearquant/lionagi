@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslations } from "use-intl";
 import { AgentDetail } from "@/components/library/AgentDetail";
 import { CreateAgentPanel } from "@/components/library/CreateAgentPanel";
@@ -83,176 +83,303 @@ interface LibraryItem {
   meta?: string;
 }
 
-function useLibraryData() {
-  const [items, setItems] = useState<LibraryItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [allAgents, setAllAgents] = useState<AgentProfileSummary[]>([]);
-  const [allEngines, setAllEngines] = useState<EngineDef[]>([]);
+type KindLoadStatus = "loaded" | "failed";
 
-  const reload = useCallback(() => {
-    let alive = true;
-    setLoading(true);
-    setError(null);
+// One list endpoint each. A tab's catalog is assembled from the sources its
+// kind needs; e.g. the Playbook tab reads both bundled templates and the
+// user's own playbooks.
+type CatalogSource =
+  | "agents"
+  | "builtinPlaybooks"
+  | "playbooks"
+  | "workflows"
+  | "skills"
+  | "plugins"
+  | "engines"
+  | "mcpServers";
 
-    Promise.allSettled([
-      listAgents(),
-      listBuiltinPlaybooks(),
-      listPlaybooks(),
-      listWorkflowDefs(),
-      listSkills(),
-      listPlugins(),
-      listEngineDefs(),
-      listMcpServers(),
-    ]).then(
-      ([
-        agentsRes,
-        builtinsRes,
-        playbooksRes,
-        workflowsRes,
-        skillsRes,
-        pluginsRes,
-        enginesRes,
-        mcpRes,
-      ]) => {
-        if (!alive) return;
+const KIND_SOURCES: Record<LibraryKind, CatalogSource[]> = {
+  agent: ["agents"],
+  playbook: ["builtinPlaybooks", "playbooks"],
+  workflow: ["workflows"],
+  skill: ["skills"],
+  plugin: ["plugins"],
+  engine: ["engines"],
+  mcp: ["mcpServers"],
+};
 
-        const out: LibraryItem[] = [];
-        const results = [
-          agentsRes,
-          builtinsRes,
-          playbooksRes,
-          workflowsRes,
-          skillsRes,
-          pluginsRes,
-          enginesRes,
-          mcpRes,
-        ];
+// Rows one source contributes, plus the detail lookups a routed pane reads
+// (agent profiles, engine defs).
+interface SourceData {
+  items: LibraryItem[];
+  agents?: AgentProfileSummary[];
+  engines?: EngineDef[];
+}
 
-        if (agentsRes.status === "fulfilled") {
-          setAllAgents(agentsRes.value.agents);
-          for (const a of agentsRes.value.agents) {
-            out.push({
-              key: `agent:${a.name}`,
-              kind: "agent",
-              name: a.name,
-              description: a.description ?? undefined,
-              meta: a.model ?? undefined,
-            });
-          }
-        }
-        // Built-in templates first, then the user's own playbooks — surfacing
-        // the shipped templates the Workflows page was missing entirely
-        // (DESIGN-BRIEF §3). These are agent+prompt templates, not graphs, so
-        // they live under the "playbook" kind, separate from "workflow"
-        // (DB-backed graph designs, edited inline via the Library drawer).
-        if (builtinsRes.status === "fulfilled") {
-          for (const p of builtinsRes.value.playbooks) {
-            out.push({
-              key: `playbook:builtin:${p.name}`,
-              kind: "playbook",
-              subKind: "builtin",
-              name: p.name,
-              description: p.description,
-              meta: p.description,
-            });
-          }
-        }
-        if (playbooksRes.status === "fulfilled") {
-          for (const p of playbooksRes.value.playbooks) {
-            out.push({
-              key: `playbook:custom:${p.name}`,
-              kind: "playbook",
-              subKind: "custom",
-              name: p.name,
-              description: p.description ?? undefined,
-              meta: p.description ?? undefined,
-            });
-          }
-        }
-        if (workflowsRes.status === "fulfilled") {
-          for (const w of workflowsRes.value) {
-            out.push({
-              key: `workflow:${w.id}`,
-              kind: "workflow",
-              name: w.name,
-              description: w.description ?? undefined,
-              meta: w.id,
-            });
-          }
-        }
-        if (skillsRes.status === "fulfilled") {
-          for (const s of skillsRes.value.skills) {
-            out.push({
-              key: `skill:${s.name}`,
-              kind: "skill",
-              name: s.name,
-              description: s.description ?? undefined,
-            });
-          }
-        }
-        if (pluginsRes.status === "fulfilled") {
-          // The same plugin can be listed by several sources (marketplace +
-          // installed cache); detail lookup is by name, so one row suffices.
-          const seenPlugins = new Set<string>();
-          for (const p of pluginsRes.value.plugins) {
-            if (seenPlugins.has(p.name)) continue;
-            seenPlugins.add(p.name);
-            out.push({
-              key: `plugin:${p.name}`,
-              kind: "plugin",
-              name: p.name,
-              description: p.description ?? undefined,
-              meta: `v${p.version}`,
-            });
-          }
-        }
-        if (enginesRes.status === "fulfilled") {
-          setAllEngines(enginesRes.value);
-          for (const e of enginesRes.value) {
-            out.push({
-              key: `engine:${e.id}`,
-              kind: "engine",
-              name: e.name,
-              description: e.description ?? undefined,
-              meta: e.kind,
-            });
-          }
-        }
+// A source's settled result, held for the page's life so revisiting a tab
+// renders what it already fetched instead of requesting it again. "failed"
+// records a rejected request so a retry can target just that source.
+type SourceCache = Partial<Record<CatalogSource, SourceData | "failed">>;
 
-        if (mcpRes.status === "fulfilled") {
-          for (const s of mcpRes.value.servers) {
-            out.push({
-              key: `mcp:${s.name}`,
-              kind: "mcp",
-              name: s.name,
-              description: s.command ?? s.url ?? undefined,
-              meta: s.enabled ? s.transport : `${s.transport} · disabled`,
-            });
-          }
-        }
+// A create, delete, or clone names the kind it changed. Dropping that kind's
+// sources from the cache makes every tab that lists them fetch them again —
+// including a tab the completion did not resolve on.
+interface CatalogInvalidation {
+  token: number;
+  kinds: LibraryKind[];
+}
 
-        setItems(out);
-        if (results.some((result) => result.status === "rejected")) {
-          setError("degraded");
-        }
-        setLoading(false);
-      },
-    );
-
-    return () => {
-      alive = false;
+const SOURCE_REQUESTS: Record<CatalogSource, () => Promise<SourceData>> = {
+  agents: async () => {
+    const value = await listAgents();
+    return {
+      agents: value.agents,
+      items: value.agents.map((a) => ({
+        key: `agent:${a.name}`,
+        kind: "agent",
+        name: a.name,
+        description: a.description ?? undefined,
+        meta: a.model ?? undefined,
+      })),
     };
-  }, []);
+  },
+  // Built-in templates first, then the user's own playbooks — surfacing the
+  // shipped templates the Workflows page was missing entirely
+  // (DESIGN-BRIEF §3). These are agent+prompt templates, not graphs, so they
+  // live under the "playbook" kind, separate from "workflow" (DB-backed graph
+  // designs, edited inline via the Library drawer).
+  builtinPlaybooks: async () => {
+    const value = await listBuiltinPlaybooks();
+    return {
+      items: value.playbooks.map((p) => ({
+        key: `playbook:builtin:${p.name}`,
+        kind: "playbook",
+        subKind: "builtin",
+        name: p.name,
+        description: p.description,
+        meta: p.description,
+      })),
+    };
+  },
+  playbooks: async () => {
+    const value = await listPlaybooks();
+    return {
+      items: value.playbooks.map((p) => ({
+        key: `playbook:custom:${p.name}`,
+        kind: "playbook",
+        subKind: "custom",
+        name: p.name,
+        description: p.description ?? undefined,
+        meta: p.description ?? undefined,
+      })),
+    };
+  },
+  workflows: async () => {
+    const value = await listWorkflowDefs();
+    return {
+      items: value.map((w) => ({
+        key: `workflow:${w.id}`,
+        kind: "workflow",
+        name: w.name,
+        description: w.description ?? undefined,
+        meta: w.id,
+      })),
+    };
+  },
+  skills: async () => {
+    const value = await listSkills();
+    return {
+      items: value.skills.map((s) => ({
+        key: `skill:${s.name}`,
+        kind: "skill",
+        name: s.name,
+        description: s.description ?? undefined,
+      })),
+    };
+  },
+  plugins: async () => {
+    const value = await listPlugins();
+    // The same plugin can be listed by several sources (marketplace +
+    // installed cache); detail lookup is by name, so one row suffices.
+    const seenPlugins = new Set<string>();
+    const items: LibraryItem[] = [];
+    for (const p of value.plugins) {
+      if (seenPlugins.has(p.name)) continue;
+      seenPlugins.add(p.name);
+      items.push({
+        key: `plugin:${p.name}`,
+        kind: "plugin",
+        name: p.name,
+        description: p.description ?? undefined,
+        meta: `v${p.version}`,
+      });
+    }
+    return { items };
+  },
+  engines: async () => {
+    const value = await listEngineDefs();
+    return {
+      engines: value,
+      items: value.map((e) => ({
+        key: `engine:${e.id}`,
+        kind: "engine",
+        name: e.name,
+        description: e.description ?? undefined,
+        meta: e.kind,
+      })),
+    };
+  },
+  mcpServers: async () => {
+    const value = await listMcpServers();
+    return {
+      items: value.servers.map((s) => ({
+        key: `mcp:${s.name}`,
+        kind: "mcp",
+        name: s.name,
+        description: s.command ?? s.url ?? undefined,
+        meta: s.enabled ? s.transport : `${s.transport} · disabled`,
+      })),
+    };
+  },
+};
+
+function useLibraryData(
+  tab: LibraryTab | undefined,
+  refresh: {
+    reloadToken: number;
+    retryToken: number;
+    invalidation: CatalogInvalidation;
+  },
+  hidden = false,
+) {
+  const { reloadToken, retryToken, invalidation } = refresh;
+  const [cache, setCache] = useState<SourceCache>({});
+  const requestVersion = useRef<Partial<Record<CatalogSource, number>>>({});
+  const prevReloadToken = useRef(reloadToken);
+  const prevRetryToken = useRef(retryToken);
+  const prevInvalidationToken = useRef(invalidation.token);
+  // The request version of the newest response each source wrote to the
+  // cache. A response from an older request is dropped, so a written version
+  // above the one requested when something changed means the cache now holds
+  // a list fetched after that change.
+  const [writtenVersion, setWrittenVersion] = useState<Partial<Record<CatalogSource, number>>>({});
+  const requestedVersion = useCallback(
+    (source: CatalogSource) => requestVersion.current[source] ?? 0,
+    [],
+  );
+
+  const wants = (kind: LibraryKind) =>
+    (tab === kind && (hidden || !UNFINISHED_KINDS.has(kind))) ||
+    (tab === "all" && !UNFINISHED_KINDS.has(kind));
+  const wantedKinds = LIBRARY_KINDS.filter(wants);
+  const wantedSources = Array.from(new Set(wantedKinds.flatMap((kind) => KIND_SOURCES[kind])));
+  // The effect runs on the scope and refresh tokens; wantedKinds is derived
+  // from the scope, so a stable key stands in for the wanted set.
+  const scope = `${tab ?? ""}:${hidden}`;
 
   useEffect(() => {
-    // Return reload()'s cleanup so an unmount mid-flight flips its alive flag
-    // and the resolved fetch can't setState on the stale component.
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- reload() calls setState inside async callbacks; synchronous reset is needed to clear stale items before the fetch resolves
-    return reload();
-  }, [reload]);
+    const reload = reloadToken !== prevReloadToken.current;
+    const retry = !reload && retryToken !== prevRetryToken.current;
+    const invalidated = invalidation.token !== prevInvalidationToken.current;
+    prevReloadToken.current = reloadToken;
+    prevRetryToken.current = retryToken;
+    prevInvalidationToken.current = invalidation.token;
 
-  return { items, loading, error, reload, allAgents, allEngines };
+    // A create, delete, or clone drops the completed kind's sources here, so a
+    // tab that lists them fetches them again on its next visit even when the
+    // completion resolved on another tab. Sources the same refresh already
+    // re-requests are left in place, so the list does not blink empty under a
+    // viewer who is still on the completed tab.
+    if (invalidated) {
+      const dropped = new Set(invalidation.kinds.flatMap((kind) => KIND_SOURCES[kind]));
+      const refetched = reload ? new Set(wantedSources) : new Set<CatalogSource>();
+      setCache((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        for (const source of dropped) {
+          if (refetched.has(source)) continue;
+          if (source in next) {
+            delete next[source];
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+      // A dropped source may still have a request in flight from before the
+      // completion. Bump its version so a late response for it cannot refill
+      // the cache the drop just cleared.
+      for (const source of dropped) {
+        if (refetched.has(source)) continue;
+        requestVersion.current[source] = (requestVersion.current[source] ?? 0) + 1;
+      }
+    }
+
+    const sources = wantedSources.filter((source) => {
+      const cached = cache[source];
+      if (reload) return true;
+      if (retry) return cached === "failed";
+      // A failed source must be attempted again on a revisit; holding it
+      // would leave the tab permanently stuck on its error state.
+      return cached === undefined || cached === "failed";
+    });
+    if (sources.length === 0) return;
+
+    for (const source of sources) {
+      // A source being retried is no longer in its failed state: clear the
+      // recorded failure so the tab shows its loading state instead of the
+      // stale error banner until the response arrives.
+      if (cache[source] === "failed") {
+        setCache((prev) => {
+          if (prev[source] !== "failed") return prev;
+          const next = { ...prev };
+          delete next[source];
+          return next;
+        });
+      }
+      const version = (requestVersion.current[source] ?? 0) + 1;
+      requestVersion.current[source] = version;
+      SOURCE_REQUESTS[source]().then(
+        (data) => {
+          if (requestVersion.current[source] !== version) return;
+          setCache((prev) => ({ ...prev, [source]: data }));
+          setWrittenVersion((prev) => ({ ...prev, [source]: version }));
+        },
+        () => {
+          if (requestVersion.current[source] !== version) return;
+          setCache((prev) => ({ ...prev, [source]: "failed" }));
+          setWrittenVersion((prev) => ({ ...prev, [source]: version }));
+        },
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- wantedSources derives from tab/hidden; cache is read only to pick what to request
+  }, [scope, reloadToken, retryToken, invalidation.token, hidden]);
+
+  const items = wantedKinds.flatMap((kind) =>
+    KIND_SOURCES[kind].flatMap((source) => {
+      const entry = cache[source];
+      return entry && entry !== "failed" ? entry.items : [];
+    }),
+  );
+
+  const kindStatus: Partial<Record<LibraryKind, KindLoadStatus>> = {};
+  for (const kind of wantedKinds) {
+    const sources = KIND_SOURCES[kind];
+    if (sources.some((source) => cache[source] === "failed")) kindStatus[kind] = "failed";
+    else if (sources.every((source) => cache[source] !== undefined)) kindStatus[kind] = "loaded";
+  }
+
+  const agentsEntry = wants("agent") ? cache["agents"] : undefined;
+  const enginesEntry = wants("engine") ? cache["engines"] : undefined;
+  return {
+    items,
+    loading: wantedSources.some((source) => cache[source] === undefined),
+    error: wantedKinds.some((kind) => kindStatus[kind] === "failed") ? "degraded" : null,
+    allAgents: agentsEntry && agentsEntry !== "failed" ? (agentsEntry.agents ?? []) : [],
+    allEngines: enginesEntry && enginesEntry !== "failed" ? (enginesEntry.engines ?? []) : [],
+    kindStatus,
+    writtenVersion,
+    requestedVersion,
+  };
 }
 
 const PLAYBOOK_SUB_KINDS: PlaybookSubKind[] = ["builtin", "custom"];
@@ -347,17 +474,133 @@ function CatalogSkeleton() {
 function LibraryPage() {
   const t = useTranslations("library");
   const tDaemon = useTranslations("daemon");
-  const { items, loading, error, reload, allAgents, allEngines } = useLibraryData();
   const navigate = useNavigate({ from: "/library" });
   const { tab, sel } = Route.useSearch();
   const kindFilter: LibraryTab = tab ?? "all";
+  const parsedSel = parseSel(sel);
+  const selectedHiddenKind =
+    kindFilter !== "hooks" && parsedSel && UNFINISHED_KINDS.has(parsedSel.kind)
+      ? parsedSel.kind
+      : undefined;
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const [reloadToken, setReloadToken] = useState(0);
+  const [visibleRetryToken, setVisibleRetryToken] = useState(0);
+  const [hiddenRetryToken, setHiddenRetryToken] = useState(0);
+  // A create, delete, or clone names the kind it changed. Recording that kind
+  // here lets every tab that lists it fetch it again on its next visit, even
+  // when the completion resolved after the viewer moved to another tab.
+  const [invalidation, setInvalidation] = useState<CatalogInvalidation>({ token: 0, kinds: [] });
+  // Completion callbacks can outlive the tab where they were created. Refresh
+  // the current effects instead of issuing requests for a captured tab.
+  const reload = useCallback(() => setReloadToken((token) => token + 1), []);
+  const invalidate = useCallback(
+    (kind: LibraryKind) => setInvalidation((prev) => ({ token: prev.token + 1, kinds: [kind] })),
+    [],
+  );
+  const retryVisible = useCallback(() => setVisibleRetryToken((token) => token + 1), []);
+  const retryHidden = useCallback(() => setHiddenRetryToken((token) => token + 1), []);
+  const visible = useLibraryData(kindFilter, {
+    reloadToken,
+    retryToken: visibleRetryToken,
+    invalidation,
+  });
+  // Detail navigation must not reload or hide the visible catalog.
+  const hidden = useLibraryData(
+    selectedHiddenKind,
+    { reloadToken, retryToken: hiddenRetryToken, invalidation },
+    true,
+  );
+  const items = [...visible.items, ...hidden.items];
+  const { loading, allAgents } = visible;
+  const { allEngines } = hidden;
+  const error = visible.error;
+  const kindStatus = { ...visible.kindStatus };
+  if (selectedHiddenKind) kindStatus[selectedHiddenKind] = hidden.kindStatus[selectedHiddenKind];
+  const selectionLoading = !!selectedHiddenKind && hidden.loading;
 
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  // Set while the create form's own navigation drops the row the URL names,
+  // so that drop is not read as a tab link. Only the next address change, the
+  // drop, clears it: the form renders before the router commits that address.
+  const openingCreate = useRef(false);
+  // A create form belongs to the tab that opened it, and the detail pane's
+  // collapsed state belongs to the selection; switching tabs closes the form
+  // and returns to the list rather than leaving the previous tab's pane up.
+  // The All tab has two addresses — `?tab=all` and no `tab` at all — and they
+  // are the same tab. A tab picked while the page already shows it closes the
+  // form too: its link drops the selection, and the All tab's also drops `tab`.
+  const previousTab = useRef({ tab, sel });
+  useEffect(() => {
+    const prior = previousTab.current;
+    previousTab.current = { tab, sel };
+    const kindChanged = (prior.tab ?? "all") !== kindFilter;
+    const tabChanged = prior.tab !== tab;
+    const selDropped = prior.sel !== undefined && sel === undefined;
+    const pickingTab = kindChanged || tabChanged || (selDropped && !openingCreate.current);
+    if (!pickingTab) return;
+    setShowCreate(false);
+  }, [kindFilter, tab, sel]);
+  // A selection that appears or changes while a create form is open is a
+  // request for that row — browser Back onto it, or a link, even one followed
+  // before the router committed the form's own drop — so the form closes and
+  // the row's detail takes the pane, which it opens on its own.
+  const previousSel = useRef(sel);
+  // Each opening of the create form is a session. A create that answers after
+  // its form closed, or after another form opened, refreshes the catalog but
+  // leaves the address and any open form alone.
+  const [createSession, setCreateSession] = useState(0);
+  const openSession = useRef<number | null>(null);
+  useEffect(() => {
+    openSession.current = showCreate ? createSession : null;
+  }, [showCreate, createSession]);
+  const formOpen = (session: number) => openSession.current === session;
+  // Opening the create form drops the row the URL names, so the form's pane
+  // stays up rather than a selection returning behind it.
+  const openCreate = () => {
+    openingCreate.current = !!sel;
+    setCreateSession((session) => session + 1);
+    setShowCreate(true);
+    void navigate({
+      search: (prev) => {
+        if (prev.sel === undefined) return prev;
+        const next = { ...prev };
+        delete next.sel;
+        return next;
+      },
+      replace: false,
+    });
+  };
+  useEffect(() => {
+    const selected = !!sel && sel !== previousSel.current;
+    previousSel.current = sel;
+    openingCreate.current = false;
+    if (selected) setShowCreate(false);
+  }, [sel]);
   const [optimisticWorkflow, setOptimisticWorkflow] = useState<CreatedWorkflowDef | null>(null);
-
-  // Collapsed split-pane: show detail when a selection exists or create is open.
-  const [detailActive, setDetailActive] = useState(false);
+  // A create or clone moves the address to a row the catalog has not fetched
+  // yet. Until a request made after it writes that row's source, the list on
+  // screen predates the row, so on a tab that lists its kind that address is
+  // still the selection.
+  const [awaitedSel, setAwaitedSel] = useState<{
+    sel: string;
+    source: CatalogSource;
+    version: number;
+  } | null>(null);
+  const awaitRow = (selection: string, source: CatalogSource) =>
+    setAwaitedSel({ sel: selection, source, version: visible.requestedVersion(source) });
+  const rowAwaited =
+    awaitedSel !== null &&
+    awaitedSel.sel === sel &&
+    !!parsedSel &&
+    (kindFilter === "all" || parsedSel.kind === kindFilter) &&
+    (visible.writtenVersion[awaitedSel.source] ?? 0) <= awaitedSel.version;
 
   const ALL_KIND_TABS: Array<{ value: LibraryTab; label: string }> = [
     { value: "all", label: t("filterAll") },
@@ -387,68 +630,76 @@ function LibraryPage() {
     return true;
   });
 
-  // Auto-select the first row whenever the tab or loaded items change (and no explicit sel).
-  useEffect(() => {
-    if (loading) return;
+  const scopedItems = items.filter(
+    (item) =>
+      !UNFINISHED_KINDS.has(item.kind) && (kindFilter === "all" || item.kind === kindFilter),
+  );
 
-    // Keep any sel that resolves in the current filtered list — this is what
-    // makes deep links into the Library work. A sel from another tab won't be
-    // in `filtered`, so it falls through to select-first.
-    if (sel) {
-      const parsed = parseSel(sel);
-      const isOptimisticWorkflow =
-        parsed?.kind === "workflow" && optimisticWorkflow?.name === parsed.name;
-      const isHiddenWorkflow =
-        parsed?.kind === "workflow" &&
-        items.some((item) => item.kind === "workflow" && item.name === parsed.name);
-      if (
-        isOptimisticWorkflow ||
-        isHiddenWorkflow ||
-        (parsed &&
-          filtered.some(
-            (i) =>
-              i.kind === parsed.kind &&
-              i.name === parsed.name &&
-              (parsed.kind !== "playbook" || i.subKind === parsed.subKind),
-          ))
-      ) {
-        return;
-      }
-    }
+  // The row the detail pane shows when the URL names no selection: the first
+  // row of the tab, or the first search match.
+  const fallbackItem =
+    kindFilter === "hooks" || loading || selectionLoading ? null : (filtered[0] ?? null);
 
-    // Otherwise select first row.
-    const first = filtered[0];
-    if (first) {
-      void navigate({
-        search: (prev) => ({ ...prev, sel: encodeSel(first.kind, first.name, first.subKind) }),
-        replace: true,
-      });
-    } else {
-      void navigate({
-        search: (prev) => {
-          const next = { ...prev };
-          delete next.sel;
-          return next;
-        },
-        replace: true,
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally runs only on tab/items change
-  }, [tab, loading, items.length]);
+  // A workflow's detail loads by id, not by name, so a selection is only a
+  // row while the catalog (or the create that just made it) still has it.
+  const selectedWorkflowId =
+    parsedSel?.kind === "workflow"
+      ? (items.find((i) => i.kind === "workflow" && i.name === parsedSel.name)?.meta ??
+        (optimisticWorkflow?.name === parsedSel.name ? optimisticWorkflow.id : null))
+      : null;
+
+  // A selection belongs to the tab that shows it. A selection whose catalog
+  // can still tell whether the row exists — a kind the tab is still fetching,
+  // a row a create or clone just added, or a source that failed — is kept:
+  // those details render their own loading, error, or not-found state with a
+  // Back control. Any other selection that names no row the tab lists is no
+  // selection, so the tab shows its first row as it does without one instead
+  // of opening a pane that can only hide the catalog. The text search does not
+  // narrow this: a row the search hides still has its detail.
+  const urlSelection =
+    parsedSel &&
+    (selectedHiddenKind
+      ? hidden.loading ||
+        hidden.kindStatus[selectedHiddenKind] === "failed" ||
+        kindStatus[parsedSel.kind] === "failed" ||
+        !!selectedWorkflowId ||
+        // The engine detail renders a not-found state with its Back control.
+        parsedSel.kind === "engine"
+      : scopedItems.some(
+          (item) =>
+            item.kind === parsedSel.kind &&
+            item.name === parsedSel.name &&
+            (parsedSel.kind !== "playbook" || item.subKind === parsedSel.subKind),
+        ) ||
+        kindStatus[parsedSel.kind] === "failed" ||
+        ((kindFilter === "all" || parsedSel.kind === kindFilter) &&
+          kindStatus[parsedSel.kind] === undefined) ||
+        rowAwaited)
+      ? parsedSel
+      : null;
+
+  // An auto-selected row fills the detail pane beside the list when the URL
+  // names no selection, but it is not a detail request: the URL is not
+  // rewritten and `detailPaneActive` does not follow it.
+  const fallbackParsed =
+    !urlSelection && fallbackItem
+      ? parseSel(encodeSel(fallbackItem.kind, fallbackItem.name, fallbackItem.subKind))
+      : null;
 
   const selectItem = useCallback(
     (item: LibraryItem) => {
       setShowCreate(false);
-      setDetailActive(true);
       void navigate({
         search: (prev) => ({ ...prev, sel: encodeSel(item.kind, item.name, item.subKind) }),
         replace: false,
       });
     },
-    [navigate],
+    [navigate, setShowCreate],
   );
 
-  const parsed = parseSel(sel);
+  // The detail pane shows the selection the URL names on this tab, and the
+  // auto-selected row when it names none.
+  const parsed = urlSelection ?? fallbackParsed;
 
   // Resolve the agent/engine objects from the selection.
   const selectedAgent =
@@ -463,21 +714,44 @@ function LibraryPage() {
   const selectedEngine =
     parsed?.kind === "engine" ? allEngines.find((e) => e.name === parsed?.name) : null;
 
-  const selectedWorkflowId =
-    parsed?.kind === "workflow"
-      ? (items.find((i) => i.kind === "workflow" && i.name === parsed.name)?.meta ??
-        (optimisticWorkflow?.name === parsed.name ? optimisticWorkflow.id : null))
-      : null;
-
   const isEmpty = !loading && filtered.length === 0;
-  const isFiltered = kindFilter !== "all" || search.trim().length > 0;
+  // A search is only responsible for an empty result when clearing it would
+  // actually reveal rows. An empty kind tab is a genuinely empty collection,
+  // even when other Library kinds contain items.
+  const isFiltered = search.trim().length > 0 && scopedItems.length > 0;
   // A skill/plugin tab with nothing on it and no active text search is
   // "nothing installed here", not "a search matched nothing" — it earns its
   // own empty-state copy pointing at where these are discovered from.
-  const isEmptyLibraryTab =
-    NO_CREATE_KINDS.has(kindFilter as LibraryKind) && search.trim().length === 0;
+  const isEmptyLibraryTab = NO_CREATE_KINDS.has(kindFilter as LibraryKind) && !isFiltered;
+  // A single-kind tab whose backing source(s) failed to load can't assert
+  // its list is actually empty — an empty result there is "unknown", not
+  // "zero items", so it must not offer the create CTA that a genuine empty
+  // collection gets. The "all" tab has the same problem: if any visible
+  // kind's source failed and the fulfilled kinds happen to have nothing in
+  // them, the aggregate list is empty for the same "unknown" reason, not
+  // because every catalog is genuinely empty — so it must not show the
+  // generic empty state with a "New Workflow" CTA either.
+  const kindLoadFailed =
+    kindFilter === "hooks"
+      ? false
+      : kindFilter === "all"
+        ? LIBRARY_KINDS.some(
+            (kind) => !UNFINISHED_KINDS.has(kind) && visible.kindStatus[kind] === "failed",
+          )
+        : visible.kindStatus[kindFilter as LibraryKind] === "failed";
 
-  const detailPaneActive = detailActive || showCreate || !!parsed;
+  const createLabel =
+    kindFilter === "mcp"
+      ? t("newMcpServer")
+      : kindFilter === "agent"
+        ? t("newAgent")
+        : t("newWorkflow");
+
+  // Only the URL, a click, or a create form asks for detail; the row the
+  // catalog fills in on its own does not. A pane opens only with a detail that
+  // offers Back, or with the create form, so the collapsed layout can always
+  // return to the catalog.
+  const detailPaneActive = showCreate || !!urlSelection;
 
   // ── Master pane ────────────────────────────────────────────────────────────
 
@@ -494,28 +768,8 @@ function LibraryPage() {
           className="min-w-0 flex-1 rounded border border-edge bg-surface-overlay px-2 py-1 font-ui text-[length:var(--t-sm)] text-content-primary focus:outline-none"
         />
         {!NO_CREATE_KINDS.has(kindFilter as LibraryKind) && (
-          <Button
-            size="sm"
-            variant="primary"
-            onClick={() => {
-              setShowCreate(true);
-              setDetailActive(true);
-              void navigate({
-                search: (prev) => {
-                  const next = { ...prev };
-                  delete next.sel;
-                  return next;
-                },
-                replace: false,
-              });
-            }}
-          >
-            +{" "}
-            {kindFilter === "mcp"
-              ? t("newMcpServer")
-              : kindFilter === "agent"
-                ? t("newAgent")
-                : t("newWorkflow")}
+          <Button size="sm" variant="primary" onClick={openCreate}>
+            + {createLabel}
           </Button>
         )}
       </div>
@@ -526,8 +780,15 @@ function LibraryPage() {
           role="alert"
           className="flex shrink-0 items-center justify-between gap-3 border-b border-edge bg-status-error-bg px-3 py-2 text-body text-content-secondary"
         >
-          <span>{t("loadError")}</span>
-          <Button size="sm" variant="secondary" onClick={reload}>
+          <span>
+            {t("loadError")}{" "}
+            {ALL_KIND_TABS.filter(
+              (tab) => visible.kindStatus[tab.value as LibraryKind] === "failed",
+            )
+              .map((tab) => tab.label)
+              .join(", ")}
+          </span>
+          <Button size="sm" variant="secondary" onClick={retryVisible}>
             {tDaemon("retry")}
           </Button>
         </div>
@@ -537,6 +798,24 @@ function LibraryPage() {
       <div className="flex-1 overflow-y-auto">
         {loading ? (
           <CatalogSkeleton />
+        ) : isEmpty && kindLoadFailed ? (
+          <EmptyState
+            glyph="▤"
+            title={t("loadError")}
+            action={
+              <div className="flex items-center gap-2">
+                {isFiltered && (
+                  <Button size="sm" variant="secondary" onClick={() => setSearch("")}>
+                    {t("empty.clearFilters")}
+                  </Button>
+                )}
+                <Button size="sm" variant="secondary" onClick={retryVisible}>
+                  {tDaemon("retry")}
+                </Button>
+              </div>
+            }
+            className="px-6 py-16"
+          />
         ) : isEmpty ? (
           <EmptyState
             glyph="▤"
@@ -563,16 +842,13 @@ function LibraryPage() {
                   : t("empty.allHint")
             }
             action={
-              !isFiltered ? (
-                <Button
-                  size="sm"
-                  variant="primary"
-                  onClick={() => {
-                    setShowCreate(true);
-                    setDetailActive(true);
-                  }}
-                >
-                  + {t("empty.createWorkflow")}
+              isFiltered ? (
+                <Button size="sm" variant="secondary" onClick={() => setSearch("")}>
+                  {t("empty.clearFilters")}
+                </Button>
+              ) : !NO_CREATE_KINDS.has(kindFilter as LibraryKind) ? (
+                <Button size="sm" variant="primary" onClick={openCreate}>
+                  + {createLabel}
                 </Button>
               ) : undefined
             }
@@ -592,7 +868,10 @@ function LibraryPage() {
             <tbody>
               {filtered.map((item) => {
                 const isSelected =
-                  !showCreate && parsed?.kind === item.kind && parsed.name === item.name;
+                  !showCreate &&
+                  parsed?.kind === item.kind &&
+                  parsed.name === item.name &&
+                  (item.kind !== "playbook" || parsed.subKind === item.subKind);
                 return (
                   <tr
                     key={item.key}
@@ -652,9 +931,18 @@ function LibraryPage() {
 
   // ── Detail pane ────────────────────────────────────────────────────────────
 
+  // Leaving the detail pane drops its selection as well as its state: a URL
+  // still naming the row would reopen the pane.
   function handleBack() {
-    setDetailActive(false);
     setShowCreate(false);
+    void navigate({
+      search: (prev) => {
+        const next = { ...prev };
+        delete next.sel;
+        return next;
+      },
+      replace: false,
+    });
   }
 
   let detailPane: ReactNode;
@@ -664,17 +952,23 @@ function LibraryPage() {
       <div className="flex h-full flex-col overflow-hidden">
         <CreateMcpServerPanel
           onCreated={(name) => {
-            setShowCreate(false);
+            if (!mounted.current) return;
+            const open = formOpen(createSession);
+            if (open) {
+              setShowCreate(false);
+              awaitRow(encodeSel("mcp", name), "mcpServers");
+            }
+            invalidate("mcp");
             void reload();
             void navigate({
-              search: (prev) => ({ ...prev, sel: encodeSel("mcp", name) }),
+              search: (prev) =>
+                open && (prev.tab ?? "all") === kindFilter
+                  ? { ...prev, sel: encodeSel("mcp", name) }
+                  : prev,
               replace: false,
             });
           }}
-          onCancel={() => {
-            setShowCreate(false);
-            setDetailActive(false);
-          }}
+          onCancel={() => setShowCreate(false)}
         />
       </div>
     );
@@ -682,17 +976,23 @@ function LibraryPage() {
     detailPane = (
       <CreateAgentPanel
         onCreated={(name) => {
-          setShowCreate(false);
+          if (!mounted.current) return;
+          const open = formOpen(createSession);
+          if (open) {
+            setShowCreate(false);
+            awaitRow(encodeSel("agent", name), "agents");
+          }
+          invalidate("agent");
           void reload();
           void navigate({
-            search: (prev) => ({ ...prev, sel: encodeSel("agent", name) }),
+            search: (prev) =>
+              open && (prev.tab ?? "all") === kindFilter
+                ? { ...prev, sel: encodeSel("agent", name) }
+                : prev,
             replace: false,
           });
         }}
-        onCancel={() => {
-          setShowCreate(false);
-          setDetailActive(false);
-        }}
+        onCancel={() => setShowCreate(false)}
       />
     );
   } else if (showCreate) {
@@ -700,19 +1000,45 @@ function LibraryPage() {
       <div className="flex h-full flex-col overflow-hidden">
         <CreateWorkflowPanel
           onCreated={(workflow) => {
+            if (!mounted.current) return;
+            const open = formOpen(createSession);
             setOptimisticWorkflow(workflow);
-            setShowCreate(false);
+            if (open) setShowCreate(false);
+            invalidate("workflow");
             void reload();
             void navigate({
-              search: (prev) => ({ ...prev, sel: encodeSel("workflow", workflow.name) }),
+              search: (prev) =>
+                open && (prev.tab ?? "all") === kindFilter
+                  ? { ...prev, sel: encodeSel("workflow", workflow.name) }
+                  : prev,
               replace: false,
             });
           }}
-          onCancel={() => {
-            setShowCreate(false);
-            setDetailActive(false);
-          }}
+          onCancel={() => setShowCreate(false)}
         />
+      </div>
+    );
+  } else if (
+    selectedHiddenKind &&
+    !selectedWorkflowId &&
+    (hidden.loading || hidden.kindStatus[selectedHiddenKind] === "failed")
+  ) {
+    const failed = !hidden.loading && hidden.kindStatus[selectedHiddenKind] === "failed";
+    detailPane = (
+      <div className="flex h-full flex-col overflow-hidden">
+        <DrawerBackButton onClick={handleBack}>{t("drawer.back")}</DrawerBackButton>
+        <DrawerHeader
+          name={parsed!.name}
+          badge={ALL_KIND_TABS.find((tab) => tab.value === selectedHiddenKind)?.label}
+        />
+        <div className="flex items-center gap-3 p-4" role={failed ? "alert" : "status"}>
+          <span>{t(failed ? "loadError" : "loading")}</span>
+          {failed && (
+            <Button size="sm" variant="secondary" onClick={retryHidden}>
+              {tDaemon("retry")}
+            </Button>
+          )}
+        </div>
       </div>
     );
   } else if (parsed?.kind === "mcp") {
@@ -721,10 +1047,15 @@ function LibraryPage() {
         name={parsed.name}
         onBack={handleBack}
         onDeleted={() => {
+          if (!mounted.current) return;
+          const deleted = parsed.name;
           void reload();
-          handleBack();
+          invalidate("mcp");
           void navigate({
             search: (prev) => {
+              if ((prev.tab ?? "all") !== kindFilter) return prev;
+              const current = parseSel(prev.sel);
+              if (current?.kind !== "mcp" || current.name !== deleted) return prev;
               const next = { ...prev };
               delete next.sel;
               return next;
@@ -740,10 +1071,15 @@ function LibraryPage() {
         agent={selectedAgent}
         onBack={handleBack}
         onDeleted={() => {
-          setDetailActive(false);
+          if (!mounted.current) return;
+          const deleted = parsed.name;
+          invalidate("agent");
           void reload();
           void navigate({
             search: (prev) => {
+              if ((prev.tab ?? "all") !== kindFilter) return prev;
+              const current = parseSel(prev.sel);
+              if (current?.kind !== "agent" || current.name !== deleted) return prev;
               const next = { ...prev };
               delete next.sel;
               return next;
@@ -754,7 +1090,30 @@ function LibraryPage() {
       />
     );
   } else if (parsed?.kind === "workflow" && selectedWorkflowId) {
-    detailPane = <WorkflowDetail id={selectedWorkflowId} onBack={handleBack} />;
+    detailPane = (
+      <WorkflowDetail
+        id={selectedWorkflowId}
+        onBack={handleBack}
+        onDeleted={() => {
+          if (!mounted.current) return;
+          const deleted = parsed.name;
+          if (optimisticWorkflow?.name === deleted) setOptimisticWorkflow(null);
+          invalidate("workflow");
+          void reload();
+          void navigate({
+            search: (prev) => {
+              if ((prev.tab ?? "all") !== kindFilter) return prev;
+              const current = parseSel(prev.sel);
+              if (current?.kind !== "workflow" || current.name !== deleted) return prev;
+              const next = { ...prev };
+              delete next.sel;
+              return next;
+            },
+            replace: false,
+          });
+        }}
+      />
+    );
   } else if (parsed?.kind === "playbook") {
     detailPane = (
       <PlaybookTemplateDetail
@@ -762,9 +1121,15 @@ function LibraryPage() {
         isBuiltin={parsed.subKind === "builtin"}
         onBack={handleBack}
         onCloned={(clonedName) => {
+          if (!mounted.current) return;
+          awaitRow(encodeSel("playbook", clonedName, "custom"), "playbooks");
+          invalidate("playbook");
           void reload();
           void navigate({
-            search: (prev) => ({ ...prev, sel: encodeSel("playbook", clonedName, "custom") }),
+            search: (prev) =>
+              (prev.tab ?? "all") === kindFilter && prev.sel === sel
+                ? { ...prev, sel: encodeSel("playbook", clonedName, "custom") }
+                : prev,
             replace: false,
           });
         }}
