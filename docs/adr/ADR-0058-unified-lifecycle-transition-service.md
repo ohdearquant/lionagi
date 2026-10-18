@@ -846,13 +846,14 @@ migration, making parity defects harder to isolate.
 
 This is a target-state ADR, partially implemented. The first two phases shipped in the proposed
 module layout (`lionagi/state/lifecycle/{models,policy,service,adapters}.py`): the contract types,
-the policy registry covering all seven entity types, the guarded algorithm, and the
+the policy registry covering eight entity types, the guarded algorithm, and the
 facade-preserving wrappers — both `StateDB.update_status()` and the guarded transition adapter now
 route through the service. Creation-path initialization is further along than an earlier revision
 of this note recorded. `initialize_in_transaction` is reached through
-`StateDB._initialize_managed_entity_in_tx` (`lionagi/state/db.py:778`), and that helper has seven
+`StateDB._initialize_managed_entity_in_tx` (`lionagi/state/db.py:784`), and that helper has eight
 call sites in `lionagi/state/db.py` covering `session`, `schedule_run`, `invocation`, `show`, and
-`play`. Two policies are outside it: `team`, which has no creation path in `lionagi/state/db.py`
+`play`. Schedule uses its specialized definition adapter. Two other policies are outside
+the creation helper: `team`, which has no creation path in `lionagi/state/db.py`
 at all, and `dispatch`, whose rows are inserted by a raw statement in
 `lionagi/dispatch/outbox.py:209` that never reaches the lifecycle service. Those two, plus the
 remaining migration phases, are what is still open. Implementation is complete only when the

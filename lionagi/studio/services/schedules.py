@@ -903,7 +903,7 @@ _SCHEDULE_SUMMARY_FIELDS = (
 # --machine` reads it back from this route to report the execution root that was
 # actually persisted, which it resolves from its own environment when the caller
 # named neither a cwd nor a project.
-_SCHEDULE_RECORD_FIELDS = ("action_prompt", "on_success", "on_fail", "action_cwd")
+_SCHEDULE_RECORD_FIELDS = ("action_prompt", "on_success", "on_fail", "action_cwd", "lifecycle")
 
 
 def _schedule_summary(row: dict[str, Any], *, record: bool = False) -> dict[str, Any]:
@@ -933,6 +933,11 @@ async def get_schedule(schedule_id: str) -> dict[str, Any] | None:
         row = await db.get_schedule(schedule_id)
         if not row:
             return None
+        history = await db.get_schedule_history(schedule_id, limit=1)
+        row["lifecycle"] = {
+            "available": history["available"],
+            "latest": history["events"][0] if history["events"] else None,
+        }
         runs = await db.list_schedule_runs(schedule_id, limit=10)
         # Reconciled here, not in the route: the nested slice is served beside the
         # top-level run lists and would otherwise classify the occurrence row while

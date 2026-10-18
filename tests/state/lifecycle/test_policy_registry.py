@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""ADR-0058 Phase 1 gate: PolicyRegistry self-validation and the 7 built-in
+"""PolicyRegistry self-validation and the built-in
 policies' structural integrity."""
 
 from __future__ import annotations
@@ -32,14 +32,15 @@ def _policy(**overrides) -> LifecyclePolicy:
     return LifecyclePolicy(**base)
 
 
-def test_default_registry_has_the_seven_built_in_entity_types() -> None:
+def test_default_registry_has_the_eight_built_in_entity_types() -> None:
     assert DEFAULT_REGISTRY.entity_types() == frozenset(
-        {"session", "invocation", "show", "play", "team", "schedule_run", "dispatch"}
+        {"session", "invocation", "show", "play", "team", "schedule_run", "dispatch", "schedule"}
     )
 
 
 @pytest.mark.parametrize(
-    "entity_type", ["session", "invocation", "show", "play", "team", "schedule_run", "dispatch"]
+    "entity_type",
+    ["session", "invocation", "show", "play", "team", "schedule_run", "dispatch", "schedule"],
 )
 def test_default_registry_policy_is_internally_consistent(entity_type: str) -> None:
     policy = DEFAULT_REGISTRY.get(entity_type)
@@ -54,7 +55,8 @@ def test_default_registry_policy_is_internally_consistent(entity_type: str) -> N
 
 
 @pytest.mark.parametrize(
-    "entity_type", ["session", "invocation", "show", "play", "team", "schedule_run", "dispatch"]
+    "entity_type",
+    ["session", "invocation", "show", "play", "team", "schedule_run", "dispatch", "schedule"],
 )
 def test_default_registry_required_guard_fields_within_patch_fields_allowlist(
     entity_type: str,

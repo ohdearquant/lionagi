@@ -23,9 +23,10 @@ from lionagi.state.db import (
     TERMINAL_RUN_STATUSES,
     CursorClaim,
 )
+from lionagi.state.lifecycle import ReasonRecord, ScheduleAuditContext
 from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS, RunTerminalEnvelope
 from lionagi.state.lifecycle.notify_settings import build_handler, resolve_notify_config
-from lionagi.state.reasons import RunReasons, ScheduleReasons
+from lionagi.state.reasons import RunReasons, ScheduleDefinitionReasons, ScheduleReasons
 from lionagi.studio.scheduler import subprocess as _subprocess
 from lionagi.studio.scheduler import threshold as _threshold
 from lionagi.studio.scheduler.admit import validate_rate_limit
@@ -46,6 +47,25 @@ from lionagi.studio.services.scheduler_state import (
 )
 
 _log = logging.getLogger(__name__)
+
+
+def _scheduler_audit_context(actor: str) -> ScheduleAuditContext:
+    """Attribute an automatic definition change to this process, not its execution target."""
+    try:
+        cwd = str(Path.cwd().resolve())
+    except (OSError, RuntimeError):
+        cwd = None
+    return ScheduleAuditContext(
+        actor=actor,
+        submitting_cwd=cwd,
+        origin="scheduler",
+        source="scheduler",
+        assurance="system",
+        actor_status="available",
+        cwd_status="available" if cwd is not None else "unavailable",
+        failure_category=None if cwd is not None else "cwd_unavailable",
+    )
+
 
 _MAX_CHAIN_DEPTH = 10
 _TICK_INTERVAL = 30  # seconds
@@ -1275,7 +1295,19 @@ class SchedulerEngine:
                 return
             allowed, claim = await self._reserve_max_runs_budget(schedule)
             if not allowed:
-                await self._svc.update_schedule(schedule["id"], enabled=0)
+                await self._svc.update_schedule(
+                    schedule["id"],
+                    enabled=0,
+                    audit_context=_scheduler_audit_context("scheduler:max-runs"),
+                    reason=ReasonRecord(
+                        ScheduleDefinitionReasons.DISABLED_MAX_RUNS,
+                        f"Missed-fire recovery was refused at max_runs={schedule.get('max_runs')}.",
+                        metadata={
+                            "disable_cause": "missed_fire_max_runs",
+                            "max_runs": schedule.get("max_runs"),
+                        },
+                    ),
+                )
                 return
             slot_allowed, slot_claim = await self._reserve_global_slot()
             if not slot_allowed:
@@ -1953,7 +1985,23 @@ class SchedulerEngine:
                 "unreported_sessions": spend.get("unreported_sessions"),
             },
         )
-        await self._svc.update_schedule(schedule["id"], enabled=0)
+        await self._svc.update_schedule(
+            schedule["id"],
+            enabled=0,
+            audit_context=_scheduler_audit_context("scheduler:budget"),
+            reason=ReasonRecord(
+                ScheduleDefinitionReasons.DISABLED_BUDGET_EXHAUSTED,
+                "The configured spend budget was exhausted.",
+                metadata={
+                    "disable_cause": "budget_exhausted",
+                    "budget_usd": schedule.get("budget_usd"),
+                    "budget_tokens": schedule.get("budget_tokens"),
+                    "cost_usd": spend.get("cost_usd"),
+                    "tokens": spend.get("tokens"),
+                    "unreported_sessions": spend.get("unreported_sessions"),
+                },
+            ),
+        )
 
     async def _evaluate_threshold_breach(self, schedule: dict, now: float) -> dict[str, Any] | None:
         """Evaluate ``threshold_config`` against live metrics; None when in bounds."""
@@ -2080,7 +2128,19 @@ class SchedulerEngine:
                     schedule["id"],
                     schedule.get("max_runs"),
                 )
-                await self._svc.update_schedule(schedule["id"], enabled=0)
+                await self._svc.update_schedule(
+                    schedule["id"],
+                    enabled=0,
+                    audit_context=_scheduler_audit_context("scheduler:max-runs"),
+                    reason=ReasonRecord(
+                        ScheduleDefinitionReasons.DISABLED_MAX_RUNS,
+                        f"Scheduled fire was refused at max_runs={schedule.get('max_runs')}.",
+                        metadata={
+                            "disable_cause": "scheduled_fire_max_runs",
+                            "max_runs": schedule.get("max_runs"),
+                        },
+                    ),
+                )
                 return
 
             slot_allowed, slot_claim = await self._reserve_global_slot()
@@ -2196,7 +2256,20 @@ class SchedulerEngine:
                 max_runs,
                 count,
             )
-            await self._svc.update_schedule(sid, enabled=0)
+            await self._svc.update_schedule(
+                sid,
+                enabled=0,
+                audit_context=_scheduler_audit_context("scheduler:max-runs"),
+                reason=ReasonRecord(
+                    ScheduleDefinitionReasons.DISABLED_MAX_RUNS,
+                    f"Top-level terminal runs ({count}) reached max_runs={max_runs}.",
+                    metadata={
+                        "disable_cause": "terminal_count_max_runs",
+                        "max_runs": max_runs,
+                        "terminal_runs": count,
+                    },
+                ),
+            )
 
     async def _fire(
         self,

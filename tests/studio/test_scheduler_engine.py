@@ -9,7 +9,7 @@ import logging
 import time
 from datetime import datetime, timezone
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -1720,7 +1720,9 @@ async def test_maybe_fire_at_trigger_already_fired_refused_by_max_runs_gate():
 
     svc.create_invocation.assert_not_awaited()
     svc.create_schedule_run_and_advance.assert_not_awaited()
-    svc.update_schedule.assert_awaited_once_with("sched-001", enabled=0)
+    svc.update_schedule.assert_awaited_once_with(
+        "sched-001", enabled=0, audit_context=ANY, reason=ANY
+    )
 
 
 # recompute_next_fire — shared recompute+log path for daemon start, PATCH,
@@ -2737,6 +2739,8 @@ class _StatefulSvc:
         guard_cursor_forward=False,
         expect_next_fire_at=NO_CURSOR_CLAIM,
         expect_github_cursor=NO_CURSOR_CLAIM,
+        audit_context=None,
+        reason=None,
         **fields,
     ):
         # Mirrors the real signature and return type. Absorbing the claims into **fields

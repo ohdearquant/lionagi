@@ -15,6 +15,15 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Added
 
+- Schedule definitions now retain create, enable, disable and delete events in the existing
+  lifecycle history, separately from execution occurrences. Changes made through `StateDB`,
+  atomic ScheduleSet applies and scheduler limits commit together with their history. The
+  detail response includes `lifecycle.available` and the latest recorded definition event;
+  `StateDB.get_schedule_history` can read retained events after deletion. Untouched legacy
+  definitions have no invented history, and read-only stores missing the ledger report it as
+  unavailable. Existing callers temporarily remain compatible without a reason or submitter
+  context, explicitly recording unavailable attribution. Required manual disable reasons,
+  client provenance transport and the browser history display are not yet implemented.
 - `lionagi.ln.concurrency.temporary_signal_handlers(handler, signals=(SIGINT, SIGTERM))`, a
   context manager that installs one handler for the length of a block and restores each prior
   handler on exit. Like `run_async`, it installs nothing off the main thread and leaves alone a
