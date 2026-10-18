@@ -139,6 +139,8 @@ its area block.
   operation-graph execution kernel
 - [ADR-0024](ADR-0024-lndl-operate-integration-adapter.md) — LNDL operate integration adapter
 - 0025-0026 — unused (intentional gaps)
+- [ADR-0132](ADR-0132-batched-lndl-rounds-for-api-model-legs.md) — Batched LNDL rounds for
+  API-model legs (sequential number; see Numbering)
 
 ### service-providers (0027-0032)
 

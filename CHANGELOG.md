@@ -74,6 +74,54 @@ project those rows ran under. To keep the project, name it in those members.
   address, so the bearer token is the access control. When `LIONAGI_STUDIO_AUTH_TOKEN` is set in
   the environment, the container now receives it (by name, so the value stays out of the argument
   list).
+- Deduplicating operation fields keeps the first of equal values. A value that can be keyed is
+  grouped by its own hash and compared only inside that group, so two action outputs that
+  compare equal are one value even when they print differently; a mapping or model value has no
+  key and is compared pairwise with every kept value. An output whose `==` gives no single truth
+  value, such as an array or a data frame, is kept as a separate value instead of raising, and so
+  is an action request whose arguments hold one; an `AttributeError`, `RecursionError`,
+  `TypeError`, `ValueError` or unhashable-structural error from a value's own `__eq__` reads as
+  unequal the same way.
+  `to_list(..., unique=True)` keeps the first of equal `DataClass` values. It groups values that
+  keep the base equality by a transient hash of their declared field state, taken during
+  deduplication and not stored, groups a value whose class defines its own equality by its own
+  hash, and compares each value with its group and with the kept values of the other kind that
+  could not be keyed, asking each pair in both directions, so a pair either side's equality
+  calls equal is one value whichever value arrived first. Two values whose hashes differ are
+  never compared, so equal values of a type whose `__eq__` crosses kinds without a matching
+  `__hash__` are both kept, exactly as a `set` would keep them; a non-transitive `__eq__` can
+  still make the result depend on the order the values arrive in. A value whose key cannot be
+  taken falls back to the equality path rather than raising: a `DataClass` value whose field
+  state cannot be hashed, such as one nested past the recursion limit, is compared with the
+  kept values that define their own equality and is kept as a separate value unless it is the
+  same object or a kept value's own equality calls it equal; a value whose own hash reports
+  itself unhashable with `TypeError`, or with a `ValueError` a `memoryview` it reaches raises
+  because the view is writable, holds a non-byte format or has been released, has no key and
+  is compared by identity and equality. A mapping or model value in the plain
+  `unique=True` branch that cannot be keyed is compared against every kept value, the keyed
+  ones included, and a keyed one is compared against the keyless ones too, so a keyless and a
+  keyable value that are equal are one value in either order. A mapping or model whose
+  contents give no key -- a cycle a container, struct or model holds, which the content key
+  reports as `TypeError`, or a value nested past the recursion limit -- is compared the same
+  way, so a struct or model that holds itself no longer escapes as a serializer error. A
+  `memoryview` in a mapping or model is keyed by the shape and values it compares by, because
+  its string is its address: a one-dimensional view of byte values has the key of the bytes it
+  equals, whatever its format, and a released view, which equals only itself, is keyed by its
+  string; `hash_obj` reads it the same way. A frozen value holding a read-only view of `bytes`
+  is hashable and equals one holding a view of the same shape and values; one holding a
+  writable view, a read-only view of a mutable buffer or a released view refuses its hash, as
+  one holding a `bytearray` does, and the base `DataClass` equality reads a one-dimensional
+  view of byte values as the bytes it equals. Under the base `DataClass` equality, a field
+  holding a Pydantic model or msgspec struct that holds itself compares unequal, as other
+  cyclic values do, rather than raising the serializer's error; any other error from a
+  model's own serializer propagates. A `DataClass` value is never compared with a plain
+  mapping: the two are deduplicated in separate branches, so a pair that only the `DataClass`
+  equality would join across the two stays two values. Equality-only values are compared
+  pairwise, so a list of n such values costs up to n*(n-1)/2 comparisons. A value's own
+  `__hash__` is read exactly as a `set` reads it: only `TypeError`, or a `ValueError` a
+  `memoryview` raises refusing its hash, means the value is unhashable and takes the equality
+  path, and any other error from it, such as one that reads a field the value no longer
+  carries, is a bug in that `__hash__` and propagates.
 - The Antigravity (`gemini_code` / `gemini-code` / `gemini-cli`) backend knows the Gemini 4 Argon
   family that `agy models` now lists: `gemini-4-argon` (and `gemini-4`, `argon`) resolves to
   `Gemini 4 Argon (High)`, the `-low` / `-medium` / `-high` suffixes and `--effort` pick the tier,
@@ -148,8 +196,44 @@ project those rows ran under. To keep the project, name it in those members.
   `StateDB.close()`. `register_shared_db()` raises any error the displaced handle's close raised,
   a refusal included, rather than replacing the entry over a handle that is still open.
 
+### Removed
+
+- A mutable `HashableModel` or `DataClass` value, the operation field models included, now
+  raises `TypeError` from `hash()`, so it can no longer be put in a set or used as a dictionary
+  key. Its hash was computed from its content, which can change after the value is stored, and
+  the container then fails to find it. Use a stable identifier as the key. `HashableModel`
+  keeps its name, imports, value equality and serialization. The `MessageContent` types
+  already raised. A frozen `HashableModel` subclass now gets pydantic's hash of its field
+  values: it hashes when every field value does, so a subclass with a list or dict field now
+  raises `TypeError` where it used to hash by content. Declare such fields as tuples to keep
+  hashing.
+
 ### Fixed
 
+- `li schedule validate` and `li schedule apply` name every invalid schedule as `<project>/<name>`
+  (`global/<name>` for a global set), in the text lines and in `--json` alike. A resolution error
+  used to carry the bare member name, so `--json` reported it unqualified while plan errors were
+  qualified.
+- A scheduled playbook launch passes the args its schedule declares (`action_playbook_args`, or
+  the args of the resolved playbook target), as in `li play audit --depth 2`. It used to launch the
+  bare playbook, and adopting a declared playbook schedule with args was refused for that reason.
+  An arg the launch cannot pass (a name that is one of `li play`'s own flags, such as `project`, or a
+  value starting with `-`) is now refused when the set is validated or applied, rather than on every
+  fire, and stored args that are not an object are refused at launch rather than dropped.
+- Session health finds a stale `finalize.lock` in a run's directory and a stale `job.lock` in its
+  MCP job directory. Both sit beside the `artifacts` directory a session records, which is the only
+  tree the check walked, so for most runs a stale lock was never seen and the session was classified
+  by its process alone.
+- The Studio operator stores a proposal's outcome frame (the `confirmation`, `error` or
+  `tool_result` the conversation shows for it) in the same transaction that decides, expires or
+  completes the proposal. The frame used to be appended after that commit, so a turn that finished
+  in between kept the decision with no record of its outcome in its frame history.
+- The Studio operator's `cancel_run`, `rename_session` and `resume_run` tools refuse with
+  `missing_owner_context` on a turn that has an owner but no declared project, before resolving the
+  reference, a full run id and `"current"` included, as `run_control` (pause, resume, message)
+  already did. They used to resolve a full id on such a turn with no project check, so the turn
+  could propose changing a run in another project, and the found or not-found answer told it
+  whether that id existed. The read tools still resolve a full id on such a turn.
 - `li agent` warns when it hands a leg no MCP servers because no `.mcp.json` was found at or
   above its directory and none was named. That path skipped the warning, so the leg started
   without the servers its instructions assumed and nothing said so. `--no-mcp-config`, and a
@@ -228,6 +312,12 @@ project those rows ran under. To keep the project, name it in those members.
   and a `ReActStream` caller that passes its own `"sequential"` action parameters keeps them on
   every round. Through `ReAct()`, the first round used to run concurrently whatever it declared,
   and each extension round used to run under the strategy the round before it declared.
+- A conflicting guarded transition no longer returns a generated `transition_id`. No
+  `status_transitions` row is written for a conflict, so the returned id referenced nothing;
+  it is now `None`. An applied transition's id is unchanged and still names the row written.
+- A tool call that succeeds and returns `None` now leaves its `ActionResponse` in the branch's
+  messages, linked from its `ActionRequest`, as a call that returns any other value does. It
+  used to leave only the request.
 
 ### Security
 

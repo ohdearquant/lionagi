@@ -2,6 +2,9 @@
 
 - **Status**: Accepted
 - **Kind**: Retrospective
+- **Implementation-status**: partial — utility and adapter strata are implemented; ADR-0119's
+  mutable `DataClass`/`HashableModel` hash removal is implemented, while the remaining layer
+  relocations and path-containment alignment listed below remain open
 - **Area**: utilities
 - **Date**: 2026-07-09
 - **Relations**: extended by ADR-0119 (deterministic declarations, three-state absence, and
@@ -252,6 +255,46 @@ class Note(BaseModel):
 - `HashableModel._to_dict()` removes top-level sentinel values. `mode="json"`
   round-trips through deterministic JSON; `mode="db"` additionally renames
   `metadata` to `node_metadata`. The inverse DB path renames it back.
+- `DataClass` and `HashableModel` are mutable and unhashable. The historical
+  `HashableModel` name and imports remain available for serialization compatibility;
+  they do not promise hashability. Use stable identifiers as container keys. A frozen
+  `HashableModel` subclass gets Pydantic's hash of its field values, so it hashes only
+  when every field value does; a list or dict field makes it unhashable. `DataClass`
+  fallback equality compares public fields of the exact concrete type, while ordinary
+  message dataclasses retain generated equality.
+- `to_list(..., flatten=True, unique=True)` keeps the first of equal `DataClass` values.
+  A value that keeps the base equality is grouped by a transient hash of its declared
+  field state and compared with its group and with the kept values whose class defines
+  its own equality that could not be keyed; a value whose class defines its own equality
+  is grouped by its own hash and compared with its group and with the kept values of the
+  other kind that could not be keyed. Every comparison asks both directions, so a pair
+  either side's equality calls equal is one value whichever value arrived first. Two
+  values whose hashes differ are never compared, so equal values of a type whose `__eq__`
+  crosses kinds without a matching `__hash__` are both kept, exactly as a `set` would
+  keep them; a non-transitive `__eq__` can still make the result depend on the order the
+  values arrive in. A value whose field state cannot be hashed cannot be compared by the
+  base equality either, so it is compared with the kept values that define their own
+  equality and stays a separate value unless it is the same object or a kept value's own
+  equality calls it equal. A value whose own hash raises `TypeError` reports itself
+  unhashable, as a `set` reads it, and is compared by identity and equality, and so does a
+  value whose hash reaches a `memoryview` that reports itself unhashable with `ValueError`
+  because it is writable, holds a non-byte format or has been released; any other error from a value's own `__hash__`, such as reading a deleted field or descending
+  into a cycle without end, is a defect in that hash and propagates. A `DataClass` value is
+  never compared with a plain mapping; the two are deduplicated in separate branches.
+  Equality-only values are compared pairwise, so a list of n such values costs up to
+  n*(n-1)/2 comparisons. Generic mappings, Pydantic models, and msgspec structs retain
+  transient hash buckets with equality confirmation; one whose contents give no
+  structural hash (a cycle, which the content key reports as `TypeError` whether the value
+  is a container or a struct or model whose own serializer detects it, or an acyclic value
+  nested past the recursion limit, which the keying catches) is compared with every kept
+  value of those kinds, bucketed ones included, and each bucketed value is also compared
+  with those, while a serializer's other `ValueError` propagates in every deduplication
+  path. The operation DTO listable-field validator keys each value it can and compares it
+  inside its key's group, and compares a value it cannot key with every kept value; opaque
+  outputs whose equality differs from their representation dedupe by equality, and a pair
+  whose equality gives no single truth value (an array, a data frame, or a request whose
+  arguments hold one) or raises `AttributeError`, `RecursionError`, `TypeError`,
+  `ValueError` or an unhashable-structural error stays two values.
 - `Note.to_dict()` recursively removes sentinel values from dictionaries and lists.
   `exclude_none` and `exclude_empty` extend that recursive omission policy. The
   returned structure is a deep copy; JSON mode additionally runs recursive model

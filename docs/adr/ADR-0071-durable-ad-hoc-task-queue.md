@@ -233,7 +233,7 @@ class TransitionResult(BaseModel):
     conflict: bool = False
     previous_state: str | None = None
     current_state: str
-    transition_id: str
+    transition_id: str | None = None
     event_id: str | None = None
 
 async def transition(
