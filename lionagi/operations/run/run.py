@@ -15,6 +15,7 @@ import anyio
 from pydantic import JsonValue
 
 from lionagi.ln import acreate_path, json_dumps
+from lionagi.ln.concurrency import current_time
 from lionagi.models.note import Note
 from lionagi.protocols.messages import (
     ActionRequest,
@@ -89,7 +90,7 @@ async def _stream_with_deadline(model, api_call, deadline: float | None):
         while True:
             try:
                 if deadline is not None:
-                    remaining = deadline - anyio.current_time()
+                    remaining = deadline - current_time()
                     if remaining <= 0:
                         raise TimeoutError("run() stream timeout exceeded")
                     with anyio.fail_after(remaining):
@@ -192,7 +193,7 @@ async def _stream_with_liveness(
                 first_chunk = await stream_iter.__anext__()
             else:
                 remaining_to_deadline = (
-                    stream_deadline - anyio.current_time() if stream_deadline is not None else None
+                    stream_deadline - current_time() if stream_deadline is not None else None
                 )
                 # Liveness "owns" the timeout only when it's the tighter bound;
                 # otherwise this is the caller's total-stream deadline.
@@ -266,7 +267,7 @@ async def _stream_with_liveness(
                 else:
                     while True:
                         remaining_to_deadline = (
-                            stream_deadline - anyio.current_time()
+                            stream_deadline - current_time()
                             if stream_deadline is not None
                             else None
                         )
@@ -552,7 +553,7 @@ async def run(
         _timeout = kw.pop("timeout", None)
         _stream_deadline: float | None = None
         if isinstance(_timeout, int | float) and _timeout > 0:
-            _stream_deadline = anyio.current_time() + float(_timeout)
+            _stream_deadline = current_time() + float(_timeout)
 
         request_model = getattr(endpoint, "_request_model", None)
         if request_model is not None:

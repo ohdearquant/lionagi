@@ -113,11 +113,12 @@ other value makes the file unusable. The child's own directory stays the one a r
 `McpResolution.declared_empty` separates a set of no servers that the caller gave from one that
 was not found. `--no-mcp-config` and a named config listing no servers are answers: every spawn
 path (plain, `--preset`/role, resumed) hands the leg an exclusive empty set, so its CLI loads
-none of its own servers either. A search that found nothing, or found a config declaring no
-servers, leaves a new leg to what its CLI discovers; a resumed leg keeps the servers its earlier
-run was handed. The one exception is a codex leg whose servers' `env` or `http_headers` went
-through a generated profile: that file is removed when the run that wrote it exits, so the resume
-is refused, naming the profile, rather than handing codex a profile whose file is gone.
+none of its own servers either, and the launch prints nothing about it. A search that found
+nothing, or found a config declaring no servers, leaves a new leg to what its CLI discovers; a
+resumed leg keeps the servers its earlier run was handed. The one exception is a codex leg whose
+servers' `env` or `http_headers` went through a generated profile: that file is removed when the
+run that wrote it exits, so the resume is refused, naming the profile, rather than handing codex
+a profile whose file is gone.
 
 A resumed or continued `li agent` leg that names neither flag replays the MCP choice its branch
 was launched with. A new branch records that choice once, in `branch.metadata` under
@@ -360,13 +361,12 @@ are different requests: `{}` means "apply no servers" and is applied as the
 whole set; `None` means there's nothing to hand over and the model keeps
 whatever it already had. Branches built through `create_agent` get the
 matching set as `resolved_mcp_servers` (the built-in orchestrator the run's
-set; casts-role workers and the fanout synthesis branch the worker set): left
-unset, the factory discovers a config of its own, the home
-`.lionagi/.mcp.json` included, and that replaces the set just handed over.
-Only a run with no set at all leaves it unset, so in such a run the built-in
-orchestrator, a casts-role worker and the fanout synthesis branch each get the
-factory's home `.lionagi/.mcp.json`, which the job-control policy does not
-filter (#3444).
+set; casts-role workers and the fanout synthesis branch the worker set). A run
+passes that key on every one of those calls, so no branch it builds falls back
+on the factory's own discovery, which would pick up a config the run did not
+choose, the home `.lionagi/.mcp.json` included. A run that found no config
+resolves no set and hands each of those branches no set. A worker built from a
+user profile is built without the factory and is handed no servers either.
 
 **`collect_worker_artifacts`** — the worker roster comes from the artifact
 directories the run actually handed out, not a scan for non-empty ones, so a
@@ -919,11 +919,11 @@ that path cannot block the lookup.
 
 ## `stats.py` — aggregate run stats
 
-**`_reject_non_positive_since`** — `li stats --since` positivity tightening vs `li monitor`.
-Monitor's shared `_since_timestamp()` accepts `0d`/`-1d` without complaint (fine for its own
-semantics), but for an aggregate report that would silently produce a false-empty or
-nonsensical result instead of failing loudly — this only tightens `li stats runs`. Malformed
-values (bad unit, non-numeric) are still left to `_since_timestamp` to reject.
+**`_since_timestamp`** — `li stats runs` and `li monitor` share positive integer
+window validation through `ln.parse_duration`. Windows require a lowercase
+`s`, `m`, `h` or `d` unit. The parser rejects invalid or empty windows; stats
+reports these as clear `--since` input errors and needs no separate positivity
+check.
 
 **`_query_run_stats`** — `group_by` validate-before-SQL-interpolation contract. `group_by`
 entries are validated against `GROUP_BY_COLUMNS` before this is ever called, so interpolating

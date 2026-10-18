@@ -28,7 +28,6 @@ from lionagi import Branch, Session
 from lionagi._errors import ConfigurationError
 from lionagi.agent import AgentSpec, create_agent
 from lionagi.agent.factory import register_profile_injection
-from lionagi.ln import Unset
 from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
@@ -872,17 +871,17 @@ async def setup_orchestration(
     else:
         # Built-in "orchestrator" casts role via AgentSpec.compose + factory.
         orc_spec = AgentSpec.compose("orchestrator", pack=loaded_pack, grant_emissions=False)
-        # The factory discovers a config of its own (the home
-        # `.lionagi/.mcp.json` included) unless a caller hands it a set, and
-        # what it finds replaces the set the orchestrator was just given. So the
-        # run's set goes in as the set, a refusal as the empty one; only a run
-        # with neither leaves the factory to discover.
+        # This run resolved its server set once, above, and every branch it
+        # builds starts with that set: the resolved servers, the empty set a
+        # refusal is, or no set at all when the search found nothing. The
+        # factory's own discovery is what a run must not fall back on, since the
+        # home `.lionagi/.mcp.json` is not the run's to apply.
         orc_branch = await create_agent(
             orc_spec,
             load_settings=False,
             chat_model=orc_imodel,
             log_config=orc_log_config,
-            resolved_mcp_servers=Unset if run_mcp_servers is None else run_mcp_servers,
+            resolved_mcp_servers=run_mcp_servers,
         )
         orc_branch.name = "orchestrator"
     _session_id_env = os.environ.get("LIONAGI_SESSION_ID")
@@ -1226,15 +1225,16 @@ async def build_worker_branch(
             system_prompt=composed_extra,
             khive_injection=(getattr(w_profile, "khive_injection", None) if w_profile else None),
         )
-        # Handed no set, the factory would discover one and replace the set
-        # _hand_mcp_servers gave this worker above (see the orchestrator).
+        # This run resolved its servers once and hands the result to every
+        # branch it builds: the resolved servers, the empty set a refusal is, or
+        # no set at all when the search found nothing (see the orchestrator).
         run_servers = getattr(env, "mcp_servers", None)
         wb = await create_agent(
             spec,
             load_settings=False,
             chat_model=w_imodel,
             log_config=log_config,
-            resolved_mcp_servers=Unset if run_servers is None else run_servers,
+            resolved_mcp_servers=run_servers,
         )
         wb.name = wname
     else:

@@ -159,6 +159,11 @@
     "effect": {
       "requested": "Requested interface action: {kind}"
     },
+    "truncation": {
+      "title": "اس ٹرن کا کچھ حصہ محفوظ نہیں رہا",
+      "summary": "{frames} فریم محفوظ نہیں · {size}",
+      "limit": " · حد: {limit}"
+    },
     "outcome": {
       "completed": "Turn completed",
       "failed": "Turn failed",

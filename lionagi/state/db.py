@@ -38,6 +38,7 @@ from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
 from lionagi.config import settings
 from lionagi.libs.path_safety import check_path_safe as _check_path_safe
 from lionagi.ln import json_dumps as _json_dumps
+from lionagi.ln import short_id
 from lionagi.ln.concurrency import CancelScope, Lock, get_cancelled_exc_class, run_sync, shield
 from lionagi.ln.types import SingletonType
 from lionagi.state.compat import (
@@ -2997,12 +2998,12 @@ class StateDB:
         )
 
     @staticmethod
-    def _progression_collection_for_update_sql(dialect: str) -> str:
+    def _progression_collection_for_update_sql(dialect: str, clause: str = "") -> str:
         # SQLite's BEGIN IMMEDIATE already holds the writer reservation for the whole transaction;
         # elsewhere the row lock keeps a concurrent append from being lost between read and write.
         if dialect == "sqlite":
-            return "SELECT collection FROM progressions WHERE id = :id"
-        return "SELECT collection FROM progressions WHERE id = :id FOR UPDATE"
+            return "SELECT collection FROM progressions WHERE id = :id" + clause  # noqa: S608 -- owner predicate
+        return "SELECT collection FROM progressions WHERE id = :id" + clause + " FOR UPDATE"  # noqa: S608 -- owner predicate, before the lock clause
 
     async def insert_messages(
         self,
@@ -3041,11 +3042,15 @@ class StateDB:
     async def _extend_progression_in_tx(
         self, conn, progression_id: str, message_ids: Sequence[str]
     ) -> None:
+        # The same owner predicate the per-message append applies, on both the read and the
+        # rewrite: a progression another owner's run owns is not this run's to extend, so it is
+        # read as absent rather than rewritten. Natively the predicate is empty.
+        clause, owner = self._owner_predicate("progressions")
         row = (
             (
                 await conn.execute(
-                    text(self._progression_collection_for_update_sql(self.dialect)),
-                    {"id": progression_id},
+                    text(self._progression_collection_for_update_sql(self.dialect, clause)),
+                    {"id": progression_id, **owner},
                 )
             )
             .mappings()
@@ -3080,8 +3085,8 @@ class StateDB:
         if not added:
             return
         await conn.execute(
-            text("UPDATE progressions SET collection = :col WHERE id = :id"),
-            {"col": _to_json_column([*current, *added]), "id": progression_id},
+            text("UPDATE progressions SET collection = :col WHERE id = :id" + clause),  # noqa: S608 -- owner predicate
+            {"col": _to_json_column([*current, *added]), "id": progression_id, **owner},
         )
 
     # Sessions
@@ -5958,7 +5963,7 @@ class StateDB:
             # be served, so absolute paths and `..` are rejected at write time rather than trusted.
             _check_path_safe(file_path, "file_path")
         now = time.time()
-        art_id = uuid.uuid4().hex[:12]
+        art_id = short_id(12)
         if invocation_id is not None and session_id is not None:
             conflict = (
                 "(invocation_id, session_id, kind, name) "
@@ -6062,7 +6067,7 @@ class StateDB:
         actor: str = "admin",
     ) -> str:
         """Append one row to the admin event log; returns the event id."""
-        event_id = uuid.uuid4().hex[:12]
+        event_id = short_id(12)
         async with self._tx() as conn:
             await conn.execute(
                 text(

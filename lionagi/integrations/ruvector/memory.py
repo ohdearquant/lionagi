@@ -14,6 +14,7 @@ from uuid import UUID
 
 from lionagi.protocols.generic.element import ID
 from lionagi.protocols.graph.node import Node
+from lionagi.protocols.ids import to_uuid
 from lionagi.protocols.memory import MemoryItem, MemoryQuery
 
 from .store import RuVectorStore, SearchHit, _integer, _text
@@ -93,7 +94,7 @@ class RuVectorMemoryStore:
             raise ValueError("record is not a RuVector LionAGI memory")
         # Never use Element.from_dict/from_json: those dispatch on lion_class.
         return MemoryItem(
-            id=UUID(hit.node_id),
+            id=to_uuid(hit.node_id),
             created_at=payload["created_at"],
             content=hit.content,
             tags=payload["tags"],

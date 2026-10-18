@@ -10,7 +10,6 @@ import math
 import re
 import sqlite3
 import time
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -20,6 +19,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
 from lionagi._flow_spec import normalize_flow_spec_keys, validate_flow_spec_fields
+from lionagi.ln import short_id
 from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
 
 from ..registry import studio_route
@@ -1036,7 +1036,7 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
         if _is_usable_execution_root(project_path):
             action_cwd = project_path
 
-    schedule_id = uuid.uuid4().hex[:12]
+    schedule_id = short_id(12)
     now = time.time()
     schedule = {
         "id": schedule_id,

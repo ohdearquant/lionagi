@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import uuid
 from collections.abc import AsyncGenerator
 from typing import Any, ClassVar
 
@@ -17,6 +16,7 @@ from multidict import CIMultiDict, CIMultiDictProxy
 from yarl import URL
 
 from lionagi import ln
+from lionagi.ln import short_id
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.registry import EndpointType, register_endpoint
@@ -235,7 +235,7 @@ class ScriptedEndpoint(AgenticEndpoint):
 def _openai_text_response(text: str, payload: dict[str, Any]) -> dict[str, Any]:
     model = payload.get("model") or "scripted"
     return {
-        "id": f"chatcmpl-scripted-{uuid.uuid4().hex[:12]}",
+        "id": f"chatcmpl-scripted-{short_id(12)}",
         "object": "chat.completion",
         "created": 0,
         "model": model,
@@ -257,9 +257,9 @@ def _entry_to_openai(entry: ResponseEntry, payload: dict[str, Any]) -> dict[str,
         return _openai_text_response(entry.content, payload)
 
     if isinstance(entry, ToolCallResponse):
-        tool_call_id = entry.id or f"call_{uuid.uuid4().hex[:10]}"
+        tool_call_id = entry.id or f"call_{short_id(10)}"
         return {
-            "id": f"chatcmpl-scripted-{uuid.uuid4().hex[:12]}",
+            "id": f"chatcmpl-scripted-{short_id(12)}",
             "object": "chat.completion",
             "created": 0,
             "model": payload.get("model") or "scripted",

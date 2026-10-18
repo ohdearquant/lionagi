@@ -19,6 +19,7 @@ from uuid import UUID
 
 import anyio
 
+from lionagi.ln import now_utc
 from lionagi.service.accounts._types import (
     INT64_MAX,
     AccountRoutingError,
@@ -181,7 +182,7 @@ class CredentialLedger:
     ) -> None:
         self.path = Path(path)
         self.busy_timeout_s = busy_timeout_s
-        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._clock = clock or (lambda: now_utc())
 
     async def _run(self, operation: Callable[[], _T]) -> _T:
         try:

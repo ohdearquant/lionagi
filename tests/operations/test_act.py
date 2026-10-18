@@ -445,3 +445,65 @@ async def test_sequential_act_single_request():
     result = await _sequential_act(branch, {"function": "add", "arguments": {"a": 7, "b": 3}})
     assert len(result) == 1
     assert result[0].output == 10
+
+
+# A successful tool that returns None still leaves a persisted ActionResponse
+
+
+@pytest.mark.asyncio
+async def test_act_tool_returning_none_persists_a_linked_action_response():
+    """A call whose tool returns None must persist one ActionResponse carrying
+    that None output, and link the request to it: a consumer of the history can
+    then tell a completed no-output call from a request still awaiting
+    execution."""
+    from lionagi.protocols.messages import ActionRequest, ActionResponse
+
+    calls = []
+
+    def record(value: str) -> None:
+        """Record a value without returning output."""
+        calls.append(value)
+
+    branch = Branch(tools=[record])
+    results = await branch.act({"function": "record", "arguments": {"value": "hello"}})
+
+    requests = [m for m in branch.messages if isinstance(m, ActionRequest)]
+    responses = [m for m in branch.messages if isinstance(m, ActionResponse)]
+
+    assert calls == ["hello"]
+    assert len(results) == 1
+    assert results[0].output is None
+    assert len(requests) == 1
+    assert len(responses) == 1, "the completed None-returning call left no response record"
+    assert responses[0].output is None
+    assert responses[0].content.success is True
+    assert requests[0].content.action_response_id == str(responses[0].id)
+    assert requests[0].is_responded()
+
+
+@pytest.mark.asyncio
+async def test_act_preserves_falsy_but_non_none_outputs():
+    """Outputs that are falsy but present (0, "", False) keep producing a
+    response whose output is that value, not None."""
+
+    def zero() -> int:
+        """Return zero."""
+        return 0
+
+    def blank() -> str:
+        """Return an empty string."""
+        return ""
+
+    def negative() -> bool:
+        """Return False."""
+        return False
+
+    branch = Branch()
+    branch.register_tools([zero, blank, negative])
+
+    for name in ("zero", "blank", "negative"):
+        await branch.act({"function": name, "arguments": {}})
+
+    from lionagi.protocols.messages import ActionResponse
+
+    assert [m.output for m in branch.messages if isinstance(m, ActionResponse)] == [0, "", False]
