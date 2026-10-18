@@ -285,16 +285,36 @@ export function AgentDetail({ agent, onBack, onDeleted }: Props) {
     setFm((prev) => ({ ...prev, [key]: value }));
   }
 
+  // Back affordance — visible only in collapsed (narrow) mode, where this pane
+  // replaces the list, so it is offered while loading or failed as well.
+  const back = onBack && (
+    <button
+      type="button"
+      onClick={onBack}
+      className="flex shrink-0 items-center gap-1.5 border-b border-edge px-4 py-2 text-[length:var(--t-xs)] text-content-muted lg:hidden"
+    >
+      <IconArrowLeft size={11} strokeWidth={2} /> {t("back")}
+    </button>
+  );
+
   if (loading) {
     return (
-      <div className="flex h-full items-center justify-center text-meta text-content-muted">
-        {t("loading")}
+      <div className="flex h-full flex-col overflow-hidden">
+        {back}
+        <div className="flex flex-1 items-center justify-center text-meta text-content-muted">
+          {t("loading")}
+        </div>
       </div>
     );
   }
 
   if (error || !def) {
-    return <div className="p-4 text-meta text-status-failure">{error ?? t("notFound")}</div>;
+    return (
+      <div className="flex h-full flex-col overflow-hidden">
+        {back}
+        <div className="p-4 text-meta text-status-failure">{error ?? t("notFound")}</div>
+      </div>
+    );
   }
 
   const displayContent = previewVer
@@ -306,16 +326,7 @@ export function AgentDetail({ agent, onBack, onDeleted }: Props) {
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      {/* Back affordance — visible only in collapsed (narrow) mode */}
-      {onBack && (
-        <button
-          type="button"
-          onClick={onBack}
-          className="flex shrink-0 items-center gap-1.5 border-b border-edge px-4 py-2 text-[length:var(--t-xs)] text-content-muted lg:hidden"
-        >
-          <IconArrowLeft size={11} strokeWidth={2} /> {t("back")}
-        </button>
-      )}
+      {back}
 
       {/* Header */}
       <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-edge px-4 py-3 sm:flex-nowrap">
