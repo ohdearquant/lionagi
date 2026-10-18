@@ -229,6 +229,99 @@ def test_a_count_kept_in_a_file_time_fails_the_grading(env):
     assert act(env, "submit", answer="done").metadata["correctness"] == 0.0
 
 
+def test_a_count_kept_in_a_directory_time_fails_the_grading(env):
+    counting = FIXED["slugify"].replace(
+        "def slugify(title):\n",
+        "def slugify(title):\n"
+        "    import os\n"
+        "    st = os.stat('sub')\n"
+        "    os.utime('sub', ns=(st.st_atime_ns, st.st_mtime_ns + 1))\n",
+    )
+    env.reset(task_id="software-slugify-4")
+    act(env, "run_python", code="import os; os.mkdir('sub')")
+    act(env, "write_file", path="solution.py", content=counting)
+    assert act(env, "submit", answer="done").metadata["correctness"] == 0.0
+
+
+def test_a_count_kept_in_an_access_time_fails_the_grading(env):
+    """Setting only the access time leaves the modification time alone; the change time moves."""
+    counting = FIXED["slugify"].replace(
+        "def slugify(title):\n",
+        "def slugify(title):\n"
+        "    import os\n"
+        "    st = os.stat(__file__)\n"
+        "    os.utime(__file__, ns=(st.st_atime_ns + 1, st.st_mtime_ns))\n",
+    )
+    env.reset(task_id="software-slugify-4")
+    act(env, "write_file", path="solution.py", content=counting)
+    assert act(env, "submit", answer="done").metadata["correctness"] == 0.0
+
+
+_MARK = 1 << 62  # an access time in the future, which reading the directory does not move
+
+
+def test_the_workspace_directory_carries_no_count_between_graded_calls(env):
+    """The digest leaves the workspace directory out; its times are cleared before each call, so a
+    mark one call leaves there is gone at the next."""
+    marking = FIXED["slugify"].replace(
+        "def slugify(title):\n",
+        "def slugify(title):\n"
+        "    import os\n"
+        f"    if os.stat('.').st_atime_ns == {_MARK}:\n"
+        "        return 'seen before'\n"
+        f"    os.utime('.', ns=({_MARK}, os.stat('.').st_mtime_ns))\n",
+    )
+    env.reset(task_id="software-slugify-4")
+    act(env, "write_file", path="solution.py", content=marking)
+    assert act(env, "submit", answer="done").metadata["correctness"] == 1.0
+
+
+@pytest.mark.skipif(not hasattr(os, "setxattr"), reason="no extended attributes here")
+def test_the_workspace_directory_carries_no_attribute_between_graded_calls(env, tmp_path):
+    try:
+        os.setxattr(tmp_path, "user.probe", b"1")
+    except OSError:
+        pytest.skip("this filesystem takes no user attributes")
+    marking = FIXED["slugify"].replace(
+        "def slugify(title):\n",
+        "def slugify(title):\n"
+        "    import os\n"
+        "    if 'user.calls' in os.listxattr('.'):\n"
+        "        return 'seen before'\n"
+        "    os.setxattr('.', 'user.calls', b'1')\n",
+    )
+    env.reset(task_id="software-slugify-4")
+    act(env, "write_file", path="solution.py", content=marking)
+    assert act(env, "submit", answer="done").metadata["correctness"] == 1.0
+
+
+def test_a_graded_call_after_a_reset_that_fails_counts_for_nothing(env, monkeypatch):
+    monkeypatch.setattr(AgentWorkbenchEnvironment, "_reset_workspace_dir", lambda self: False)
+    env.reset(task_id="software-slugify-4")
+    act(env, "write_file", path="solution.py", content=FIXED["slugify"])
+    assert act(env, "submit", answer="done").metadata["correctness"] == 0.0
+
+
+def test_a_test_run_that_changes_the_files_verifies_nothing(env):
+    """The run's own files differ from those the examples are then graded on."""
+    replacing = _GRADED_UNDER + (
+        "if runner == '.grade_tests.py':\n"
+        f"    pathlib.Path(__file__).write_text({FIXED['slugify']!r})\n"
+        "def slugify(title):\n"
+        "    return 'broken'\n"
+    )
+    env.reset(task_id="software-slugify-4")
+    act(env, "write_file", path="solution.py", content=replacing)
+    out = act(env, "run_tests").output
+    assert "the test run changed the workspace, so it verifies nothing" in out
+    assert env._tested_last_change is False
+    # Control: an unchanged run that passes is verified.
+    env.reset(task_id="software-slugify-4")
+    act(env, "write_file", path="solution.py", content=FIXED["slugify"])
+    out = act(env, "run_tests").output
+    assert "verifies nothing" not in out and env._tested_last_change is True
+
+
 def test_files_that_changed_after_a_passing_test_run_are_not_verified(env):
     env.reset(task_id="software-slugify-4")
     act(env, "write_file", path="solution.py", content=FIXED["slugify"])

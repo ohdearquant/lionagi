@@ -29,7 +29,9 @@ socket's owner, so the server must see the real peer address: run uvicorn withou
 which would let a loopback client name any address it likes.
 """
 
+import ipaddress
 import os
+import sys
 from pathlib import Path
 
 try:
@@ -57,11 +59,30 @@ except ImportError:
 _PROC_NET = (Path("/proc/net/tcp"), Path("/proc/net/tcp6"))
 
 
-def _socket_owner(client_port: int, server_port: int) -> int | None:
-    """The uid owning the local socket from client_port to server_port, or None if there is none.
+def _address(ip: ipaddress.IPv4Address | ipaddress.IPv6Address):
+    """*ip*, with an IPv4-mapped IPv6 address read as the IPv4 address it carries."""
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    return ip
 
-    Only a client inside this network namespace has such a socket; a remote client's end is not here.
+
+def _endpoint(field: str) -> tuple:
+    """An address:port field of /proc/net/tcp{,6}, which prints each 32-bit word of the address as
+    a hex number in host byte order."""
+    host, port = field.rsplit(":", 1)
+    words = (int(host[i : i + 8], 16) for i in range(0, len(host), 8))
+    packed = b"".join(word.to_bytes(4, sys.byteorder) for word in words)
+    return _address(ipaddress.ip_address(packed)), int(port, 16)
+
+
+def _client_sockets(client: tuple, server: tuple) -> list[tuple[int, int]]:
+    """(uid, inode) of every local socket from *client* to *server*, both (address, port).
+
+    Only a client inside this network namespace has such a socket; a remote client's end is not
+    here. A socket no process holds any longer (one in TIME_WAIT, or closed by its owner) shows
+    inode 0 and, in TIME_WAIT, uid 0 whoever owned it.
     """
+    found = []
     for table in _PROC_NET:
         try:
             rows = table.read_text().splitlines()[1:]
@@ -69,17 +90,16 @@ def _socket_owner(client_port: int, server_port: int) -> int | None:
             continue
         for row in rows:
             fields = row.split()
-            if len(fields) < 8:
+            if len(fields) < 10:
                 continue
             try:
-                local = int(fields[1].rsplit(":", 1)[1], 16)
-                remote = int(fields[2].rsplit(":", 1)[1], 16)
-                uid = int(fields[7])
-            except (IndexError, ValueError):
+                local, remote = _endpoint(fields[1]), _endpoint(fields[2])
+                uid, inode = int(fields[7]), int(fields[9])
+            except ValueError:
                 continue
-            if local == client_port and remote == server_port:
-                return uid
-    return None
+            if local == client and remote == server:
+                found.append((uid, inode))
+    return found
 
 
 class _RefuseEpisodeClients:
@@ -114,13 +134,24 @@ class _RefuseEpisodeClients:
 
     @staticmethod
     def _from_episode(scope) -> bool:
+        """True when the connection's own socket is here and a sandbox user holds it, or when it
+        is here and no process holds it any longer, so nothing vouches for whose it was."""
         if os.geteuid() != 0:
             return False
         client, server = scope.get("client"), scope.get("server")
         if not client or not server or server[1] is None:
             return False
-        uid = _socket_owner(client[1], server[1])
-        return uid is not None and _SANDBOX_UID_BASE <= uid < _SANDBOX_UID_BASE + _SANDBOX_UID_SLOTS
+        try:
+            client = (_address(ipaddress.ip_address(client[0])), client[1])
+            server = (_address(ipaddress.ip_address(server[0])), server[1])
+        except ValueError:
+            return True
+        sockets = _client_sockets(client, server)
+        if any(
+            _SANDBOX_UID_BASE <= uid < _SANDBOX_UID_BASE + _SANDBOX_UID_SLOTS for uid, _ in sockets
+        ):
+            return True
+        return bool(sockets) and all(inode == 0 for _, inode in sockets)
 
 
 # Create the app with web interface and README integration

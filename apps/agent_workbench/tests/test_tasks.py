@@ -4,6 +4,7 @@
 import csv
 import hashlib
 import io
+import json
 import math
 import re
 from collections import defaultdict
@@ -277,6 +278,20 @@ def test_a_wrong_answer_earns_nothing(task_id):
     task = build_task(task_id)
     assert score_answer(task, "0.123456789 is my guess maybe")[0] == 0.0
     assert score_answer(task, "")[0] == 0.0
+
+
+CODE = [tid for tid in sorted(TASKS) if TASKS[tid].domain == "software"]
+
+
+@pytest.mark.parametrize("task_id", CODE)
+def test_code_examples_reach_the_grader_as_test_solution_writes_them(task_id):
+    """test_solution.py writes each call's arguments and expected value as Python literals; the
+    grader passes them through JSON. A tuple would arrive as a list, so a function could pass one
+    and fail the other."""
+    task = build_task(task_id)
+    for _name, args, want in task.code_visible + task.code_cases:
+        for value in (list(args), want):
+            assert repr(json.loads(json.dumps(value))) == repr(value), (args, want)
 
 
 @pytest.mark.parametrize("task_id", sorted(TASKS))

@@ -483,8 +483,13 @@ class AgentWorkbenchEnvironment(Environment):
         before = self._workspace_digest()
         self._write_private(".grade_tests.py", self._task.files["test_solution.py"])
         output = self._run([SANDBOX_PYTHON, "-E", "-s", "-B", ".grade_tests.py"])
+        self._clear_agent_state()
+        # A run that changed the files tested something other than what the examples then grade.
+        unchanged = before is not None and self._workspace_digest() == before
+        if not unchanged:
+            output += "\nthe test run changed the workspace, so it verifies nothing"
         results = self._grade_cases(self._task.code_visible)
-        passed = all(results)
+        passed = unchanged and all(results)
         # Verified only when the tests pass on the files as they stand: submit compares the files
         # with these, so a run that changes any of them tested something other than what is graded.
         self._tested_digest = before if passed else None
@@ -569,6 +574,7 @@ class AgentWorkbenchEnvironment(Environment):
                 "print(text if json.loads(text) == value else 'not a JSON value')\n"
             )
             self._write_private(".grade.py", probe)
+            reset = self._reset_workspace_dir()
             out = self._run(
                 [SANDBOX_PYTHON, "-E", "-s", "-B", ".grade.py", json.dumps(list(call_args))],
                 raw=True,
@@ -580,16 +586,41 @@ class AgentWorkbenchEnvironment(Environment):
                 got = _NO_VALUE
             results.append(
                 before is not None
+                and reset
                 and got is not _NO_VALUE
                 and got == json.loads(json.dumps(want))
                 and self._workspace_digest() == before
             )
         return results
 
+    def _reset_workspace_dir(self) -> bool:
+        """Clear what agent code can set on the workspace directory itself, its times and the
+        extended attributes its owner may write (user attributes, ACLs). The digest leaves that
+        directory out, since the server's own files come and go in it, so this is what keeps it
+        from carrying anything from one graded call to the next. False when it could not."""
+        ws = self._workspace()
+        try:
+            names = os.listxattr(ws, follow_symlinks=False) if hasattr(os, "listxattr") else []
+        except OSError as exc:
+            # A filesystem without extended attributes holds none to clear.
+            if exc.errno != errno.ENOTSUP:
+                return False
+            names = []
+        try:
+            for attr in names:
+                if attr.startswith(("user.", "system.posix_acl_")):
+                    os.removexattr(ws, attr, follow_symlinks=False)
+            os.utime(ws, ns=(0, 0), follow_symlinks=False)
+        except OSError:
+            return False
+        return True
+
     def _workspace_digest(self) -> str | None:
-        """A hash of every entry in the workspace but the server's own files: path, type, mode, and
-        a regular file's modification time and bytes or a symlink's target. None when an entry
-        cannot be read or the files hold more than _DIGEST_BYTES."""
+        """A hash of every entry in the workspace but the server's own files: path, type, mode,
+        modification and change times, and a regular file's bytes or a symlink's target. The change
+        time moves with any change to an entry's metadata, its access time and extended attributes
+        included, and no agent code can set it. None when an entry cannot be read or the files hold
+        more than _DIGEST_BYTES."""
         digest, total = hashlib.sha256(), 0
         try:
             for dir_fd, name, rel, st, left in _walk_tree(
@@ -599,14 +630,17 @@ class AgentWorkbenchEnvironment(Environment):
             ):
                 if left or rel in _SERVER_FILES or rel.startswith(_SERVER_DIRS):
                     continue
-                digest.update(f"{rel}\0{st.st_mode}\0".encode("utf-8", "surrogateescape"))
+                digest.update(
+                    f"{rel}\0{st.st_mode}\0{st.st_mtime_ns}\0{st.st_ctime_ns}\0".encode(
+                        "utf-8", "surrogateescape"
+                    )
+                )
                 if stat.S_ISLNK(st.st_mode):
                     digest.update(os.fsencode(os.readlink(name, dir_fd=dir_fd)))
                 elif stat.S_ISREG(st.st_mode):
                     total += st.st_size
                     if total > _DIGEST_BYTES:
                         return None
-                    digest.update(f"{st.st_mtime_ns}\0".encode())
                     fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
                     with os.fdopen(fd, "rb") as fh:
                         for chunk in iter(lambda fh=fh: fh.read(1 << 20), b""):
