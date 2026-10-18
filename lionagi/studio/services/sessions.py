@@ -349,7 +349,7 @@ class SessionFilter:
             placeholders = ",".join("?" for _ in ordered)
             # Legacy rows carry NULL status and read as "completed" everywhere else.
             null_clause = " OR s.status IS NULL" if "completed" in self.statuses else ""
-            clauses.append(f"(COALESCE(s.status, 'completed') IN ({placeholders}){null_clause})")
+            clauses.append(f"(s.status IN ({placeholders}){null_clause})")
             params.extend(ordered)
         if self.kinds:
             # Facet vocabulary: "show" covers both spellings the writers have
