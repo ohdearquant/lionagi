@@ -6,17 +6,29 @@ status surface (and eventually `li monitor`) reads through this, not a second
 ad hoc reducer.
 
 Precedence: session terminal reason > invocation terminal reason > occurrence
-``error_detail`` > status+exit_code fallback.
+skipped reason or ``error_detail`` > status+exit_code fallback.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy import bindparam, inspect, text
+
 from lionagi.state.db import (
     INVOCATION_TERMINAL_STATUSES,
     SCHEDULE_RUN_TERMINAL_STATUSES,
     SESSION_TERMINAL_STATUSES,
+)
+
+__all__ = (
+    "build_outcome",
+    "build_run_view",
+    "build_run_view_for",
+    "exit_code_for_view",
+    "get_run_view",
+    "get_schedule_status_view",
+    "list_run_views",
 )
 
 
@@ -121,9 +133,9 @@ def _fallback_outcome(run: dict[str, Any]) -> dict[str, Any]:
     if status == "skipped":
         return {
             "code": "skipped",
-            "summary": run.get("error_detail") or "skipped",
+            "summary": run.get("reason_summary") or run.get("error_detail") or "skipped",
             "source": "occurrence",
-            "summary_reported": bool(run.get("error_detail")),
+            "summary_reported": bool(run.get("reason_summary") or run.get("error_detail")),
         }
     if status == "completed":
         code = "completed"
@@ -155,7 +167,7 @@ def build_outcome(
     invocation: dict[str, Any] | None,
     sessions: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Outcome precedence: session > invocation > occurrence error_detail > fallback.
+    """Outcome precedence: session > invocation > occurrence reason/error > fallback.
 
     Each branch declares whether its summary is text a caller reported (a free-text
     column) or a string this module generated. Only the branch that produced a
@@ -186,6 +198,8 @@ def build_run_view(
         "id": run.get("id"),
         "schedule_id": run.get("schedule_id"),
         "status": run.get("status"),
+        "reason_code": run.get("reason_code"),
+        "reason_summary": run.get("reason_summary"),
         "exit_code": run.get("exit_code"),
         "fired_at": fired_at,
         "ended_at": ended_at,
@@ -230,6 +244,46 @@ def exit_code_for_view(
 # ── DB-backed assembly ──────────────────────────────────────────────────────
 
 
+async def _with_skip_reasons(db: Any, runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Read one latest reason per skipped run in bounded sets, without migrations."""
+    run_ids = [run["id"] for run in runs if run.get("status") == "skipped"]
+    if not run_ids:
+        return runs
+    reasons: dict[str, dict[str, Any]] = {}
+    async with db.read_snapshot() as connection:
+        if not await connection.run_sync(
+            lambda conn: inspect(conn).has_table("status_transitions")
+        ):
+            return runs
+        owner_where, owner_params = db._owner_predicate("status_transitions")
+        # The owner predicate is fixed SQL from StateDB; all values are bound.
+        statement = text(
+            "SELECT entity_id, reason_code, reason_summary FROM ("  # noqa: S608
+            "SELECT entity_id, reason_code, reason_summary, "
+            "ROW_NUMBER() OVER (PARTITION BY entity_id ORDER BY created_at DESC, id DESC) AS rank "
+            "FROM status_transitions WHERE entity_type = 'schedule_run' "
+            "AND status = 'skipped' AND entity_id IN :run_ids"
+            + owner_where
+            + ") AS reasons WHERE rank = 1"
+        ).bindparams(bindparam("run_ids", expanding=True))
+        # Keep bound parameter counts below SQLite's limit even for in-process
+        # readers that request more rows than the HTTP page maximum.
+        for offset in range(0, len(run_ids), 500):
+            events = await connection.execute(
+                statement, {"run_ids": run_ids[offset : offset + 500], **owner_params}
+            )
+            for event in events.mappings():
+                reasons[event["entity_id"]] = {
+                    "reason_code": event["reason_code"],
+                    "reason_summary": event["reason_summary"],
+                }
+    return [{**run, **reasons.get(run["id"], {})} for run in runs]
+
+
+async def _with_skip_reason(db: Any, run: dict[str, Any]) -> dict[str, Any]:
+    return (await _with_skip_reasons(db, [run]))[0]
+
+
 async def _linked(
     db: Any, run: dict[str, Any]
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
@@ -244,8 +298,7 @@ async def _linked(
 async def _run_view_for_run(db: Any, run: dict[str, Any]) -> dict[str, Any]:
     """Full schedule_runs row with RunView fields layered on top, additively —
     never a replacement projection."""
-    invocation, sessions = await _linked(db, run)
-    view = build_run_view(run, invocation, sessions)
+    view = await build_run_view_for(db, run)
     return {**run, **view}
 
 
@@ -254,6 +307,7 @@ async def build_run_view_for(db: Any, run: dict[str, Any]) -> dict[str, Any]:
     for an already-fetched ``schedule_runs`` row — for callers that already
     hold the row and must not re-read it (a second independent read could
     observe a different row state on a live daemon)."""
+    run = await _with_skip_reason(db, run)
     invocation, sessions = await _linked(db, run)
     return build_run_view(run, invocation, sessions)
 
@@ -274,7 +328,12 @@ async def list_run_views(
     offset: int = 0,
 ) -> list[dict[str, Any]]:
     runs = await db.list_schedule_runs(schedule_id, status=status, limit=limit, offset=offset)
-    return [await _run_view_for_run(db, run) for run in runs]
+    runs = await _with_skip_reasons(db, runs)
+    views = []
+    for run in runs:
+        invocation, sessions = await _linked(db, run)
+        views.append({**run, **build_run_view(run, invocation, sessions)})
+    return views
 
 
 async def get_schedule_status_view(db: Any, schedule_id: str) -> dict[str, Any] | None:
@@ -285,7 +344,7 @@ async def get_schedule_status_view(db: Any, schedule_id: str) -> dict[str, Any] 
     latest_run: dict[str, Any] | None = None
     exit_code = 2  # EXIT_UNKNOWN — no run recorded yet
     if runs:
-        run = runs[0]
+        run = await _with_skip_reason(db, runs[0])
         invocation, sessions = await _linked(db, run)
         # Layered on the occurrence row, like the list and detail paths: the
         # reconciled fields alone drop the row's own error text, and a projection

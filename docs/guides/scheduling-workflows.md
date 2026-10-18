@@ -237,6 +237,36 @@ For runs nobody watches live, make artifact presence part of your triage: a
 `completed` status with a missing artifact is the classic silent failure of any
 recurring system.
 
+## Inspect skipped runs and capacity
+
+`li schedule runs <id>` and `li schedule run <run-id>` show why a run was skipped
+when a reason was recorded. Their JSON output includes `reason_code` and
+`reason_summary`; `outcome.code` stays `skipped`, while `outcome.summary` uses
+the recorded reason. This includes capacity deferrals, overlap, missed fires,
+and budget limits.
+
+When the global concurrent-fire cap is full, a due schedule stays due and retries
+on the next scheduler tick. Its recorded reason is `schedule.deferred.capacity`.
+The daemon logs one INFO line at the start of each deferral episode with the
+schedule name and ID, in-flight count, and cap. A skipped run is recorded on
+the first deferral, then on the 11th, 21st, and so on. The episode ends at the
+schedule's first due evaluation the cap does not defer, whether that evaluation
+fires or not; a manual trigger does not end it. The next episode starts with a
+new log line and skipped run.
+
+`li schedule limits` and the schedules limits API expose `current_holders`
+alongside `current_inflight`. Each holder contains:
+
+- `schedule_id`: the schedule holding the slot.
+- `path`: `scheduled`, `missed_fire`, `manual`, or `github_event`. A GitHub poll
+  holds no slot while it fetches; each event it dispatches holds its own.
+- `acquired_at`: when the slot was acquired, in Unix epoch seconds.
+
+A released slot disappears from the holder list. Within each tick, timed
+schedules are evaluated by oldest `next_fire_at` first, so a deferred schedule
+is considered before one that became due later. GitHub poll passes start after
+those checks because polling has a separate cadence and runs asynchronously.
+
 ## Stopping things
 
 ```bash
@@ -253,4 +283,5 @@ li kill <run-or-session-id>  # stop an in-flight run, reaping detached workers
   reinstalling lionagi into the environment a schedule uses, run `li --version`
   there once — an import-broken install fails at spawn, which otherwise surfaces
   only as failed runs.
-- `li schedule limits` shows the global concurrent-fire cap if runs seem queued.
+- `li schedule limits` shows the global concurrent-fire cap and current slot
+  holders if runs seem queued; see [skipped runs and capacity](#inspect-skipped-runs-and-capacity).

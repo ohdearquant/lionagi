@@ -348,7 +348,7 @@ second name from it at `lionagi/state/db.py:451`.
 | --- | --- | --- |
 | `studio/services/sessions.py:1590` `is_session_stream_done` | **Yes, and it is consequence 1** | read at the source; closes the live stream on terminal + 60s stable |
 | `studio/services/run_resume.py:274` | **Yes if resume is offered on a mirrored row** | read at the source: `queued = source_status not in SESSION_TERMINAL_STATUSES`, so a falsely-terminal session launches a resume immediately instead of queueing it behind live work. **Whether the Studio offers resume for a mirrored session is UNVERIFIED and is the first thing to check.** |
-| `studio/services/run_view.py:109,160` | Likely, display only | not driven |
+| `studio/services/run_view.py:64` | Likely, display only | not driven |
 | `studio/services/artifact_verification.py:62` | Unverified | not driven |
 | `studio/services/run_resume_worker.py:71` | Unverified | not driven |
 | `cli/monitor.py:1197,1209,1267` | Unverified | not driven |

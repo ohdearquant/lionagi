@@ -333,6 +333,15 @@ behaviour, including accepting a write-capable submission without `cwd`.
 
 ### Fixed
 
+- Skipped schedule runs expose their recorded `reason_code` and `reason_summary`
+  through run reads and the CLI; `outcome.summary` uses that reason while
+  `outcome.code` stays `skipped`. A run whose outcome is its own skip serves
+  `error_class: null`. Capacity deferrals log once at INFO when an
+  episode starts; the episode ends at the schedule's first due evaluation the
+  cap does not defer. Schedule limits list
+  `current_holders` with each holder's `schedule_id`, `path`, and `acquired_at`
+  in epoch seconds. Timed schedules are considered oldest due first, before
+  GitHub poll passes, whose cadence is separate and asynchronous.
 - A scheduled `command` child inherited the daemon's `LIONAGI_STATE_DB_URL`. When the command ran
   an interpreter with a different lionagi, that lionagi opened the daemon's store, and one on a
   newer schema migrated the file, after which the daemon could no longer open it. A command child
