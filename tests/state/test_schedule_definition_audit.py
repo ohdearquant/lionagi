@@ -431,7 +431,9 @@ async def test_occurrence_cannot_use_definition_reason_through_legacy_boundaries
                     await conn.execute(text("SELECT * FROM status_transitions ORDER BY id"))
                 ).mappings()
             ]
-        with pytest.raises(ValueError, match="schedule_definition reasons belong only to definitions"):
+        with pytest.raises(
+            ValueError, match="schedule_definition reasons belong only to definitions"
+        ):
             if boundary == "update":
                 await db.update_status(
                     "schedule_run",
