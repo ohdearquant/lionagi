@@ -436,7 +436,7 @@ class SchedulerEngine:
         # Ad-hoc task-worker concurrency cap, independent of MAX_SCHEDULED_CONCURRENT by design.
         self._adhoc_slot_lock = asyncio.Lock()
         self._adhoc_inflight = 0
-        # schedule_id -> deferrals since this schedule last acquired a global slot.
+        # schedule_id -> consecutive due evaluations the global fire cap deferred.
         self._deferred_log_counts: dict[str, int] = {}
         # Threshold-alert cooldown reservations. Membership means a fire for this schedule's current
         # breach is in flight or was just reserved, which closes a race a DB-only last_alert_at
