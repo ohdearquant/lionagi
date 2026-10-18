@@ -3,7 +3,7 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
 import enMessages from "@/messages/en.json";
-import type { OperatorFrame, OperatorModelCatalogEntry } from "@/lib/types";
+import type { OperatorConversation, OperatorFrame, OperatorModelCatalogEntry } from "@/lib/types";
 
 type StreamHandlers = {
   onFrame: (frame: OperatorFrame) => void;
@@ -805,6 +805,14 @@ describe("OperatorPanel", () => {
   });
 
   describe("conversation list: rename, pin/archive, fork", () => {
+    function deferred<T>() {
+      let resolve!: (value: T) => void;
+      const promise = new Promise<T>((complete) => {
+        resolve = complete;
+      });
+      return { promise, resolve };
+    }
+
     async function openList() {
       const toggle = container.querySelector(
         'button[aria-label^="Conversations"]',
@@ -894,14 +902,6 @@ describe("OperatorPanel", () => {
           type: "done",
           payload: { outcome: "failed", lastSequence: sequence },
         };
-      }
-
-      function deferred<T>() {
-        let resolve!: (value: T) => void;
-        const promise = new Promise<T>((complete) => {
-          resolve = complete;
-        });
-        return { promise, resolve };
       }
 
       async function mountMetadataConversation(frames: OperatorFrame[] = []) {
@@ -1140,6 +1140,47 @@ describe("OperatorPanel", () => {
         expect(api.getOperatorConversation).toHaveBeenCalledTimes(3);
       });
 
+      it("preserves a selected metadata refresh when a background row is saved", async () => {
+        const { conversation, other, emit } = await mountMetadataConversation();
+        const updated = { ...conversation, title: "Stored title", description: "Stored scope" };
+        const pinnedOther = { ...other, pinned: true };
+        const first = deferred<{ conversation: typeof conversation; frames: OperatorFrame[] }>();
+        const pin = deferred<typeof other>();
+        api.getOperatorConversation
+          .mockReturnValueOnce(first.promise)
+          .mockResolvedValue({ conversation: updated, frames: [] });
+        api.listOperatorConversations.mockResolvedValue([updated, other]);
+        await emit(metadataCall(1), metadataResult(2));
+        expect(api.getOperatorConversation).toHaveBeenCalledTimes(2);
+
+        api.updateOperatorConversation.mockReturnValueOnce(pin.promise);
+        const otherTitle = [...container.querySelectorAll("ul li button")].find(
+          (button) => button.querySelector("span")?.textContent === "Other conversation",
+        ) as HTMLButtonElement;
+        const pinButton = otherTitle
+          .closest("li")
+          ?.querySelector('button[aria-label="Pin"]') as HTMLButtonElement;
+        await act(async () => pinButton.click());
+        expect(api.updateOperatorConversation).toHaveBeenLastCalledWith("conversation-2", {
+          pinned: true,
+        });
+        api.listOperatorConversations.mockResolvedValue([updated, pinnedOther]);
+        await act(async () => pin.resolve(pinnedOther));
+        await act(async () => first.resolve({ conversation: updated, frames: [] }));
+
+        expectMetadata("Stored title", "Stored scope");
+        const savedOther = [...container.querySelectorAll("ul li button")].find(
+          (button) => button.querySelector("span")?.textContent === "★ Other conversation",
+        ) as HTMLButtonElement;
+        expect(savedOther).toBeDefined();
+        expect(savedOther.title).toBe("Other scope");
+        expect(
+          savedOther.closest("li")?.querySelector('button[aria-label="Unpin"]'),
+        ).not.toBeNull();
+        await emit(metadataDone(3));
+        expectMetadata("Stored title", "Stored scope");
+      });
+
       it("discards an in-flight metadata read after selecting another conversation", async () => {
         const { conversation, other, emit } = await mountMetadataConversation();
         const updated = { ...conversation, title: "Delayed title", description: "Delayed scope" };
@@ -1167,6 +1208,234 @@ describe("OperatorPanel", () => {
         ).toBe("Conversations: Other conversation");
         expect(container.querySelector("ul")?.textContent).toContain("Scheduler check");
         expect(container.querySelector("ul")?.textContent).not.toContain("Delayed title");
+      });
+    });
+
+    describe("local conversation response ordering", () => {
+      beforeEach(() => {
+        api.updateOperatorConversation.mockReset();
+      });
+
+      async function mountLocalConversation(selectedId = "conversation-1") {
+        const conversation: OperatorConversation = {
+          id: "conversation-1",
+          title: "Scheduler check",
+          description: "Original scope",
+          status: "active",
+          pinned: true,
+          activeRequestId: null,
+        };
+        const other: OperatorConversation = {
+          id: "conversation-2",
+          title: "Other conversation",
+          description: "Other scope",
+          status: "active",
+          pinned: false,
+          activeRequestId: null,
+        };
+        const stored = new Map([conversation, other].map((row) => [row.id, row]));
+        const rows = () => [...stored.values()];
+        api.listOperatorConversations.mockImplementation(async (options?: { status?: string }) =>
+          rows().filter((row) => !options?.status || row.status === options.status),
+        );
+        api.getOperatorConversation.mockImplementation(async (id: string) => ({
+          conversation: stored.get(id),
+          frames: [],
+        }));
+        window.localStorage.setItem("studio:operator-conversation", selectedId);
+        await mount();
+        await openList();
+        return {
+          conversation,
+          other,
+          rows,
+          store: (row: OperatorConversation) => stored.set(row.id, row),
+        };
+      }
+
+      function titleButton(title: string) {
+        const button = [...container.querySelectorAll("ul li button")].find((candidate) => {
+          const label = candidate.querySelector("span")?.textContent;
+          return label === title || label === `★ ${title}`;
+        }) as HTMLButtonElement | undefined;
+        expect(button).toBeDefined();
+        return button!;
+      }
+
+      function rowAction(title: string, label: string) {
+        const button = titleButton(title)
+          .closest("li")
+          ?.querySelector(`button[aria-label="${label}"]`) as HTMLButtonElement | null;
+        expect(button).not.toBeNull();
+        return button!;
+      }
+
+      function expectStoredRow(
+        conversation: OperatorConversation,
+        selectedTitle = conversation.title,
+      ) {
+        const title = titleButton(conversation.title!);
+        expect(title.querySelector("span")?.textContent).toBe(
+          `${conversation.pinned ? "★ " : ""}${conversation.title}`,
+        );
+        expect(title.title).toBe(conversation.description);
+        expect(title.querySelectorAll("span")[1]?.textContent).toBe(conversation.description);
+        expect(rowAction(conversation.title!, conversation.pinned ? "Unpin" : "Pin")).toBeDefined();
+        expect(
+          container
+            .querySelector('button[aria-label^="Conversations"]')
+            ?.getAttribute("aria-label"),
+        ).toBe(`Conversations: ${selectedTitle}`);
+        expect(api.acknowledgeOperatorEffect).not.toHaveBeenCalled();
+      }
+
+      async function enterRename(title: string, draft: string) {
+        await act(async () => {
+          titleButton(title).dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+        });
+        const input = container.querySelector("ul li input") as HTMLInputElement;
+        expect(input).not.toBeNull();
+        const setNativeValue = Object.getOwnPropertyDescriptor(
+          window.HTMLInputElement.prototype,
+          "value",
+        )!.set!;
+        await act(async () => {
+          setNativeValue.call(input, draft);
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+        return input;
+      }
+
+      async function selectFilter(label: "Active" | "Archived") {
+        const button = [...container.querySelectorAll("button")].find(
+          (candidate) => candidate.textContent === label,
+        ) as HTMLButtonElement;
+        expect(button).toBeDefined();
+        await act(async () => button.click());
+      }
+
+      it("serializes blur rename and unpin before a rerender", async () => {
+        const { conversation, store } = await mountLocalConversation();
+        const renamed = { ...conversation, title: "Renamed check" };
+        const unpinned = { ...renamed, pinned: false };
+        const rename = deferred<OperatorConversation>();
+        const unpin = deferred<OperatorConversation>();
+        api.updateOperatorConversation
+          .mockReturnValueOnce(rename.promise)
+          .mockReturnValueOnce(unpin.promise);
+        const unpinButton = rowAction("Scheduler check", "Unpin");
+        const input = await enterRename("Scheduler check", "Renamed check");
+
+        await act(async () => {
+          input.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+          unpinButton.click();
+        });
+
+        expect(api.updateOperatorConversation).toHaveBeenCalledExactlyOnceWith("conversation-1", {
+          title: "Renamed check",
+        });
+        expect(rowAction("Scheduler check", "Unpin").disabled).toBe(true);
+        await act(async () => {
+          titleButton("Scheduler check").dispatchEvent(
+            new MouseEvent("dblclick", { bubbles: true }),
+          );
+        });
+        expect(container.querySelector("ul li input")).toBeNull();
+
+        store(renamed);
+        await act(async () => rename.resolve(renamed));
+        expectStoredRow(renamed);
+        await act(async () => rowAction("Renamed check", "Unpin").click());
+        expect(api.updateOperatorConversation).toHaveBeenLastCalledWith("conversation-1", {
+          pinned: false,
+        });
+        store(unpinned);
+        await act(async () => unpin.resolve(unpinned));
+        expectStoredRow(unpinned);
+      });
+
+      it("does not enter rename while an unpin save is pending", async () => {
+        const { conversation, store } = await mountLocalConversation();
+        const unpinned = { ...conversation, pinned: false };
+        const unpin = deferred<OperatorConversation>();
+        api.updateOperatorConversation.mockReturnValueOnce(unpin.promise);
+        await act(async () => rowAction("Scheduler check", "Unpin").click());
+        await act(async () => {
+          titleButton("Scheduler check").dispatchEvent(
+            new MouseEvent("dblclick", { bubbles: true }),
+          );
+        });
+        expect(container.querySelector("ul li input")).toBeNull();
+        expect(api.updateOperatorConversation).toHaveBeenCalledExactlyOnceWith("conversation-1", {
+          pinned: false,
+        });
+
+        store(unpinned);
+        await act(async () => unpin.resolve(unpinned));
+        expectStoredRow(unpinned);
+        const renamed = { ...unpinned, title: "Renamed check" };
+        api.updateOperatorConversation.mockResolvedValueOnce(renamed);
+        const input = await enterRename("Scheduler check", "Renamed check");
+        store(renamed);
+        await act(async () => {
+          input.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+        });
+        expectStoredRow(renamed);
+      });
+
+      it.each([
+        ["list-first", "conversation-1"],
+        ["patch-first", "conversation-1"],
+        ["list-first", "conversation-2"],
+        ["patch-first", "conversation-2"],
+      ])(
+        "keeps an unpin after an older list response arrives (%s, selected %s)",
+        async (order, selectedId) => {
+          const { conversation, other, rows, store } = await mountLocalConversation(selectedId);
+          const unpinned = { ...conversation, pinned: false };
+          const oldList = deferred<void>();
+          const unpin = deferred<OperatorConversation>();
+          api.listOperatorConversations.mockImplementationOnce(() => {
+            // Capture at request time: releasing the response later must not turn
+            // an old server snapshot into a fresh one by reading the map again.
+            const snapshot = rows();
+            return oldList.promise.then(() => snapshot);
+          });
+          api.updateOperatorConversation.mockReturnValueOnce(unpin.promise);
+          if (order === "list-first") await selectFilter("Active");
+          await act(async () => rowAction("Scheduler check", "Unpin").click());
+          if (order === "patch-first") await selectFilter("Active");
+          expect(api.updateOperatorConversation).toHaveBeenCalledExactlyOnceWith("conversation-1", {
+            pinned: false,
+          });
+
+          store(unpinned);
+          await act(async () => unpin.resolve(unpinned));
+          await act(async () => oldList.resolve());
+
+          expectStoredRow(
+            unpinned,
+            selectedId === conversation.id ? conversation.title : other.title,
+          );
+          expect(rowAction("Scheduler check", "Pin").disabled).toBe(false);
+        },
+      );
+
+      it("keeps the latest filter when an earlier list read resolves", async () => {
+        const { conversation, other } = await mountLocalConversation();
+        const archived = { ...other, status: "archived" as const };
+        const activeList = deferred<OperatorConversation[]>();
+        api.listOperatorConversations
+          .mockReturnValueOnce(activeList.promise)
+          .mockResolvedValueOnce([archived]);
+        await selectFilter("Active");
+        await selectFilter("Archived");
+        expectStoredRow(archived, conversation.title);
+        await act(async () => activeList.resolve([conversation, other]));
+
+        expectStoredRow(archived, conversation.title);
+        expect(container.querySelector("ul")?.textContent).not.toContain("Scheduler check");
+        expect(api.listOperatorConversations).toHaveBeenLastCalledWith({ status: "archived" });
       });
     });
 

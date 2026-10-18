@@ -24,6 +24,7 @@ import {
   streamOperatorConversation,
   submitOperatorTurn,
   updateOperatorConversation,
+  type OperatorConversationPatch,
 } from "@/lib/api";
 import type {
   OperatorContextSnapshot,
@@ -725,7 +726,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const [listActionError, setListActionError] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
-  const [conversationBusyId, setConversationBusyId] = useState<string | null>(null);
+  const [conversationBusyIds, setConversationBusyIds] = useState<Set<string>>(() => new Set());
   const [panelWidth, setPanelWidth] = useState(DEFAULT_WIDTH);
   const [showJump, setShowJump] = useState(false);
   const [visibleCount, setVisibleCount] = useState(200);
@@ -742,20 +743,29 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const renameButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const previousRenamingIdRef = useRef<string | null>(null);
   const conversationListButtonRef = useRef<HTMLButtonElement>(null);
-  const [metadataMutationEpoch, setMetadataMutationEpoch] = useState(0);
+  const conversationRevisionRef = useRef(0);
+  const conversationRefreshNeededRef = useRef(false);
+  const conversationMutationsRef = useRef<Map<string, number>>(new Map());
+  const conversationLoadRef = useRef(0);
   const metadataRefreshRef = useRef<{
     conversationId: string;
     sequence: number;
     pending: Map<string, Set<string>>;
-    generation: number;
-    refreshing: boolean;
-    refreshRequested: boolean;
+    lifetime: object;
   } | null>(null);
-  const metadataViewRef = useRef({ conversation: state.conversation, conversations, listFilter });
+  const metadataViewRef = useRef({
+    conversation: state.conversation,
+    loadState: state.loadState,
+    listFilter,
+  });
 
   useLayoutEffect(() => {
-    metadataViewRef.current = { conversation: state.conversation, conversations, listFilter };
-  }, [state.conversation, conversations, listFilter]);
+    metadataViewRef.current = {
+      conversation: state.conversation,
+      loadState: state.loadState,
+      listFilter,
+    };
+  }, [state.conversation, state.loadState, listFilter]);
 
   useLayoutEffect(
     () => () => {
@@ -764,97 +774,101 @@ export default function OperatorPanel({ open, onClose }: Props) {
     [state.conversation?.id, state.loadState],
   );
 
-  const beginMetadataMutation = useCallback((conversationId: string) => {
-    const tracking = metadataRefreshRef.current;
-    const generation = tracking?.generation;
-    const refreshing = tracking?.refreshing;
-    return () => {
-      if (
-        !tracking ||
-        metadataRefreshRef.current !== tracking ||
-        tracking.conversationId !== conversationId ||
-        metadataViewRef.current.conversation?.id !== conversationId ||
-        (!refreshing && tracking.generation === generation)
-      ) {
-        return false;
-      }
-      // A full row returned by a local mutation can predate the tool's write.
-      // Defer to a new read when the mutation overlapped a metadata refresh.
-      tracking.refreshRequested = true;
-      setMetadataMutationEpoch((epoch) => epoch + 1);
-      return true;
-    };
+  useEffect(
+    () => () => {
+      ++conversationRevisionRef.current;
+      ++conversationLoadRef.current;
+    },
+    [],
+  );
+
+  const beginConversationMutation = useCallback((conversationId: string) => {
+    // Blur and click can run before React renders the disabled controls.
+    if (conversationMutationsRef.current.has(conversationId)) return null;
+    const revision = ++conversationRevisionRef.current;
+    conversationMutationsRef.current = new Map(conversationMutationsRef.current).set(
+      conversationId,
+      revision,
+    );
+    setConversationBusyIds(new Set(conversationMutationsRef.current.keys()));
+    return revision;
+  }, []);
+
+  const finishConversationMutation = useCallback((conversationId: string, revision: number) => {
+    if (conversationMutationsRef.current.get(conversationId) !== revision) return false;
+    const needsRefresh =
+      conversationRevisionRef.current !== revision || conversationRefreshNeededRef.current;
+    // A read started during the PATCH may still hold pre-commit data.
+    ++conversationRevisionRef.current;
+    const pending = new Map(conversationMutationsRef.current);
+    pending.delete(conversationId);
+    conversationMutationsRef.current = pending;
+    setConversationBusyIds(new Set(pending.keys()));
+    return needsRefresh;
+  }, []);
+
+  const refreshConversationMetadata = useCallback(async (status?: "active" | "archived") => {
+    const view = metadataViewRef.current;
+    const conversationId = view.loadState === "ready" ? view.conversation?.id : undefined;
+    const lifetime = metadataRefreshRef.current?.lifetime;
+    const filter = status ?? view.listFilter;
+    const revision = ++conversationRevisionRef.current;
+    // Keep the obligation if a later save invalidates this read. Its own
+    // revision may still be current when it settles, including another row's save.
+    conversationRefreshNeededRef.current = true;
+    const current = () =>
+      conversationRevisionRef.current === revision &&
+      metadataViewRef.current.listFilter === filter &&
+      (!conversationId ||
+        (metadataViewRef.current.conversation?.id === conversationId &&
+          metadataViewRef.current.loadState === "ready" &&
+          metadataRefreshRef.current?.lifetime === lifetime));
+    try {
+      // Every list refresh also refreshes the selected row, so superseding a
+      // tool-triggered read cannot silently lose its metadata update.
+      const [snapshot, available] = await Promise.all([
+        conversationId ? getOperatorConversation(conversationId) : Promise.resolve(null),
+        listOperatorConversations({ status: filter }),
+      ]);
+      if (!current() || (snapshot && snapshot.conversation.id !== conversationId)) return;
+      if (snapshot) dispatch({ type: "UPDATE_CONVERSATION", conversation: snapshot.conversation });
+      setConversations(
+        available
+          .filter((item) => item.id !== conversationId || snapshot?.conversation.status === filter)
+          .map((item) => (item.id === conversationId && snapshot ? snapshot.conversation : item)),
+      );
+      conversationRefreshNeededRef.current = false;
+    } catch (error) {
+      if (current()) throw error;
+    }
   }, []);
 
   useEffect(() => {
     const conversationId = state.conversation?.id;
     if (!conversationId || state.loadState !== "ready") return;
-    const initial = metadataRefreshRef.current === null;
-    const tracking = metadataRefreshRef.current ?? {
+    const previous = metadataRefreshRef.current;
+    const tracking = {
       conversationId,
-      sequence: 0,
-      pending: new Map<string, Set<string>>(),
-      generation: 0,
-      refreshing: false,
-      refreshRequested: false,
+      sequence: previous?.sequence ?? 0,
+      pending: new Map<string, Set<string>>(
+        [...(previous?.pending ?? [])].map(([requestId, calls]) => [requestId, new Set(calls)]),
+      ),
+      lifetime: previous?.lifetime ?? {},
     };
-    metadataRefreshRef.current = tracking;
-    let refresh = tracking.refreshRequested;
-    tracking.refreshRequested = false;
+    let refresh = false;
     for (const frame of state.frames) {
       if (frame.conversationId !== conversationId || frame.sequence <= tracking.sequence) continue;
       tracking.sequence = frame.sequence;
       refresh = recordConversationMetadataCall(tracking.pending, frame) || refresh;
     }
+    metadataRefreshRef.current = tracking;
     // A loaded snapshot already carries current metadata. Retain its pending
     // calls so a later result or done frame can refresh an in-progress turn.
-    if (initial || !refresh) return;
-    const generation = ++tracking.generation;
-    tracking.refreshing = true;
-    const refreshMetadata = async (): Promise<void> => {
-      const view = metadataViewRef.current;
-      const [snapshot, available] = await Promise.all([
-        getOperatorConversation(conversationId),
-        listOperatorConversations({ status: view.listFilter }),
-      ]);
-      if (
-        metadataRefreshRef.current !== tracking ||
-        tracking.generation !== generation ||
-        metadataViewRef.current.conversation?.id !== conversationId ||
-        snapshot.conversation.id !== conversationId
-      ) {
-        return;
-      }
-      if (metadataViewRef.current.conversation !== view.conversation) {
-        // A pending rename/pin response may contain metadata from before the
-        // tool write. Re-read after that response instead of losing the refresh.
-        return refreshMetadata();
-      }
-      dispatch({ type: "UPDATE_CONVERSATION", conversation: snapshot.conversation });
-      setConversations((current) => {
-        const rows =
-          metadataViewRef.current.listFilter === view.listFilter && current === view.conversations
-            ? available
-            : current;
-        return rows
-          .filter(
-            (item) =>
-              item.id !== conversationId ||
-              snapshot.conversation.status === metadataViewRef.current.listFilter,
-          )
-          .map((item) => (item.id === conversationId ? snapshot.conversation : item));
-      });
-    };
-    void refreshMetadata()
-      .catch((error) => {
-        if (metadataRefreshRef.current === tracking && tracking.generation === generation) {
-          setActionError(error instanceof Error ? error.message : t("errors.load"));
-        }
-      })
-      .finally(() => {
-        if (tracking.generation === generation) tracking.refreshing = false;
-      });
-  }, [metadataMutationEpoch, state.conversation?.id, state.frames, state.loadState, t]);
+    if (!previous || !refresh) return;
+    void refreshConversationMetadata().catch((error) => {
+      setActionError(error instanceof Error ? error.message : t("errors.load"));
+    });
+  }, [refreshConversationMetadata, state.conversation?.id, state.frames, state.loadState, t]);
 
   // Derived rather than synced through an effect: archiving the row being
   // renamed, or switching the filter away from it, removes the row and its
@@ -887,27 +901,39 @@ export default function OperatorPanel({ open, onClose }: Props) {
 
   const loadConversation = useCallback(
     async (conversationId: string) => {
+      const load = ++conversationLoadRef.current;
       dispatch({ type: "LOAD_START" });
-      try {
-        const snapshot = await getOperatorConversation(conversationId);
-        window.localStorage.setItem(STORAGE_KEY, snapshot.conversation.id);
-        setConversations((current) => {
-          const index = current.findIndex((item) => item.id === snapshot.conversation.id);
-          if (index < 0) return [snapshot.conversation, ...current];
-          return current.map((item, itemIndex) =>
-            itemIndex === index ? snapshot.conversation : item,
-          );
-        });
-        dispatch({
-          type: "LOAD_SUCCESS",
-          conversation: snapshot.conversation,
-          frames: snapshot.frames,
-        });
-      } catch (error) {
-        dispatch({
-          type: "LOAD_ERROR",
-          error: error instanceof Error ? error.message : t("errors.load"),
-        });
+      while (conversationLoadRef.current === load) {
+        const revision = ++conversationRevisionRef.current;
+        try {
+          const snapshot = await getOperatorConversation(conversationId);
+          if (conversationLoadRef.current !== load) return;
+          // A local save or list read may have superseded this snapshot. Keep
+          // loading the chosen conversation instead of stranding it in loading.
+          if (conversationRevisionRef.current !== revision) continue;
+          window.localStorage.setItem(STORAGE_KEY, snapshot.conversation.id);
+          setConversations((current) => {
+            const index = current.findIndex((item) => item.id === snapshot.conversation.id);
+            if (index < 0) return [snapshot.conversation, ...current];
+            return current.map((item, itemIndex) =>
+              itemIndex === index ? snapshot.conversation : item,
+            );
+          });
+          dispatch({
+            type: "LOAD_SUCCESS",
+            conversation: snapshot.conversation,
+            frames: snapshot.frames,
+          });
+          return;
+        } catch (error) {
+          if (conversationLoadRef.current !== load) return;
+          if (conversationRevisionRef.current !== revision) continue;
+          dispatch({
+            type: "LOAD_ERROR",
+            error: error instanceof Error ? error.message : t("errors.load"),
+          });
+          return;
+        }
       }
     },
     [t],
@@ -976,9 +1002,10 @@ export default function OperatorPanel({ open, onClose }: Props) {
   useEffect(() => {
     let active = true;
     const stored = readStoredConversation();
+    const revision = ++conversationRevisionRef.current;
     void listOperatorConversations()
       .then((available) => {
-        if (!active) return;
+        if (!active || conversationRevisionRef.current !== revision) return;
         setConversations(available);
         const selected =
           (stored ? available.find((item) => item.id === stored) : null) ??
@@ -992,7 +1019,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         }
       })
       .catch(() => {
-        if (!active) return;
+        if (!active || conversationRevisionRef.current !== revision) return;
         if (stored) {
           void loadConversation(stored);
         } else {
@@ -1222,7 +1249,10 @@ export default function OperatorPanel({ open, onClose }: Props) {
     try {
       let conversation = state.conversation;
       if (!conversation) {
+        ++conversationRevisionRef.current;
+        ++conversationLoadRef.current;
         conversation = await createOperatorConversation();
+        ++conversationRevisionRef.current;
         window.localStorage.setItem(STORAGE_KEY, conversation.id);
         setConversations((current) => [
           conversation as OperatorConversation,
@@ -1340,6 +1370,8 @@ export default function OperatorPanel({ open, onClose }: Props) {
   }, [autoAllow, proposals, decidedProposalIds, deciding, handleProposalDecision]);
 
   const resetConversation = useCallback(() => {
+    ++conversationRevisionRef.current;
+    ++conversationLoadRef.current;
     window.localStorage.removeItem(STORAGE_KEY);
     dispatch({ type: "RESET" });
     setActionError(null);
@@ -1366,104 +1398,86 @@ export default function OperatorPanel({ open, onClose }: Props) {
 
   const refreshConversations = useCallback(
     (status: "active" | "archived") => {
-      return listOperatorConversations({ status })
-        .then((available) => {
-          setConversations(available);
-        })
-        .catch((error) => {
-          setListActionError(error instanceof Error ? error.message : t("errors.load"));
-        });
+      metadataViewRef.current = { ...metadataViewRef.current, listFilter: status };
+      return refreshConversationMetadata(status).catch((error) => {
+        setListActionError(error instanceof Error ? error.message : t("errors.load"));
+      });
     },
-    [t],
+    [refreshConversationMetadata, t],
+  );
+
+  const saveConversation = useCallback(
+    async (conversationId: string, patch: OperatorConversationPatch, errorMessage: string) => {
+      const revision = beginConversationMutation(conversationId);
+      if (revision === null) return;
+      setListActionError(null);
+      try {
+        const updated = await updateOperatorConversation(conversationId, patch);
+        if (conversationRevisionRef.current === revision) {
+          const filter = metadataViewRef.current.listFilter;
+          setConversations((current) =>
+            current
+              .filter((item) => item.id !== updated.id || updated.status === filter)
+              .map((item) => (item.id === updated.id ? updated : item))
+              .sort(
+                (a, b) =>
+                  Number(b.pinned) - Number(a.pinned) || (b.updatedAt ?? 0) - (a.updatedAt ?? 0),
+              ),
+          );
+          dispatch({ type: "UPDATE_CONVERSATION", conversation: updated });
+        }
+      } catch (error) {
+        setListActionError(error instanceof Error ? error.message : errorMessage);
+      } finally {
+        if (finishConversationMutation(conversationId, revision)) {
+          // A full PATCH response may predate another save or a tool write.
+          // Settlement also invalidates reads made before this save committed.
+          void refreshConversationMetadata().catch((error) => {
+            setListActionError(error instanceof Error ? error.message : t("errors.load"));
+          });
+        }
+      }
+    },
+    [beginConversationMutation, finishConversationMutation, refreshConversationMetadata, t],
   );
 
   const commitRename = useCallback(
     async (conversationId: string, title: string) => {
+      if (conversationMutationsRef.current.has(conversationId)) return;
       const trimmed = title.trim();
       setRenamingId(null);
       const existing = conversations.find((item) => item.id === conversationId);
       if (existing && (existing.title ?? "") === trimmed) return;
-      setListActionError(null);
-      const refreshAfterMutation = beginMetadataMutation(conversationId);
-      try {
-        const updated = await updateOperatorConversation(conversationId, {
+      await saveConversation(
+        conversationId,
+        {
           title: trimmed.length > 0 ? trimmed : null,
-        });
-        if (refreshAfterMutation()) return;
-        setConversations((current) =>
-          current.map((item) => (item.id === updated.id ? updated : item)),
-        );
-        if (state.conversation?.id === updated.id) {
-          dispatch({ type: "UPDATE_CONVERSATION", conversation: updated });
-        }
-      } catch (error) {
-        setListActionError(error instanceof Error ? error.message : t("errors.rename"));
-      }
+        },
+        t("errors.rename"),
+      );
     },
-    [beginMetadataMutation, conversations, state.conversation, t],
+    [conversations, saveConversation, t],
   );
 
   const togglePin = useCallback(
     async (conversation: OperatorConversation) => {
-      setConversationBusyId(conversation.id);
-      setListActionError(null);
-      const refreshAfterMutation = beginMetadataMutation(conversation.id);
-      try {
-        const updated = await updateOperatorConversation(conversation.id, {
-          pinned: !conversation.pinned,
-        });
-        if (refreshAfterMutation()) return;
-        setConversations((current) =>
-          current
-            .map((item) => (item.id === updated.id ? updated : item))
-            .sort(
-              (a, b) =>
-                Number(b.pinned) - Number(a.pinned) || (b.updatedAt ?? 0) - (a.updatedAt ?? 0),
-            ),
-        );
-        if (state.conversation?.id === updated.id) {
-          dispatch({ type: "UPDATE_CONVERSATION", conversation: updated });
-        }
-      } catch (error) {
-        setListActionError(error instanceof Error ? error.message : t("errors.pin"));
-      } finally {
-        setConversationBusyId(null);
-      }
+      await saveConversation(conversation.id, { pinned: !conversation.pinned }, t("errors.pin"));
     },
-    [beginMetadataMutation, state.conversation, t],
+    [saveConversation, t],
   );
 
   const toggleArchive = useCallback(
     async (conversation: OperatorConversation) => {
       const nextStatus = conversation.status === "archived" ? "active" : "archived";
-      setConversationBusyId(conversation.id);
-      setListActionError(null);
-      const refreshAfterMutation = beginMetadataMutation(conversation.id);
-      try {
-        const updated = await updateOperatorConversation(conversation.id, {
-          status: nextStatus,
-        });
-        if (refreshAfterMutation()) return;
-        setConversations((current) =>
-          updated.status === listFilter
-            ? current.map((item) => (item.id === updated.id ? updated : item))
-            : current.filter((item) => item.id !== updated.id),
-        );
-        if (state.conversation?.id === updated.id) {
-          dispatch({ type: "UPDATE_CONVERSATION", conversation: updated });
-        }
-      } catch (error) {
-        setListActionError(error instanceof Error ? error.message : t("errors.archive"));
-      } finally {
-        setConversationBusyId(null);
-      }
+      await saveConversation(conversation.id, { status: nextStatus }, t("errors.archive"));
     },
-    [beginMetadataMutation, listFilter, state.conversation, t],
+    [saveConversation, t],
   );
 
   const forkConversationById = useCallback(
     async (conversation: OperatorConversation) => {
-      setConversationBusyId(conversation.id);
+      const revision = beginConversationMutation(conversation.id);
+      if (revision === null) return;
       setListActionError(null);
       try {
         const snapshot = await forkOperatorConversation(conversation.id);
@@ -1481,10 +1495,10 @@ export default function OperatorPanel({ open, onClose }: Props) {
       } catch (error) {
         setListActionError(error instanceof Error ? error.message : t("errors.fork"));
       } finally {
-        setConversationBusyId(null);
+        finishConversationMutation(conversation.id, revision);
       }
     },
-    [resetConversation, t],
+    [beginConversationMutation, finishConversationMutation, resetConversation, t],
   );
 
   const clampWidth = useCallback(
@@ -1629,7 +1643,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
                         </li>
                       )}
                       {conversations.map((conversation) => {
-                        const busy = conversationBusyId === conversation.id;
+                        const busy = conversationBusyIds.has(conversation.id);
                         const archived = conversation.status === "archived";
                         return (
                           <li
@@ -1669,6 +1683,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
                               <button
                                 type="button"
                                 onDoubleClick={() => {
+                                  if (conversationMutationsRef.current.has(conversation.id)) return;
                                   setRenamingId(conversation.id);
                                   setRenameDraft(conversation.title ?? "");
                                 }}
@@ -1705,6 +1720,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
                                   title: conversationLabel(conversation),
                                 })}
                                 onClick={() => {
+                                  if (conversationMutationsRef.current.has(conversation.id)) return;
                                   setRenamingId(conversation.id);
                                   setRenameDraft(conversation.title ?? "");
                                 }}
