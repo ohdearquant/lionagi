@@ -54,10 +54,7 @@ TAG_GUARD_RUN = (
 UV_INSTALL_RUN = (
     'curl -LsSf https://astral.sh/uv/install.sh | sh\necho "$HOME/.cargo/bin" >> $GITHUB_PATH\n'
 )
-TEST_RUN = (
-    "source .venv/bin/activate\n"
-    "uv run pytest --asyncio-mode=auto --maxfail=1 --disable-warnings tests/\n"
-)
+TEST_RUN = "source .venv/bin/activate\nuv run pytest --maxfail=1 --disable-warnings tests/\n"
 VERIFY_RUN = (
     'if [ "${DOCKER_RESULT}" != success ]; then\n'
     "  echo '::error::image publication or digest verification did not succeed'\n"
