@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 import types as _types
 from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
 
@@ -158,6 +159,74 @@ def _round_instruction(
     return notice
 
 
+_CALLS_BESIDE_ANSWER = (
+    "this round declares <lact> calls and also writes OUT{}; none of its calls ran and the "
+    "answer was not taken. Declare calls in a round without OUT{}, read their results, then "
+    "write OUT{} in a later round that declares no <lact>."
+)
+
+
+def _too_many_calls(calls: int, max_actions: int | None) -> str | None:
+    if max_actions is None or calls <= max_actions:
+        return None
+    return (
+        f"this round declares {calls} <lact> calls and a round may declare at most "
+        f"{max_actions}; none of them ran. Declare at most {max_actions} now and the rest in "
+        "a later round."
+    )
+
+
+# An <lvar>/<lact> tag or an OUT{} block, as the lexer opens them.
+_ROUND_OPENER = re.compile(r"<(lvar|lact)\s|OUT\{")
+
+
+def _scan_round(text: str) -> tuple[int, int, str | None]:
+    """Count one round's ``<lact>`` calls and ``OUT{}`` blocks by the bounds the parser reads.
+
+    An ``<lvar>`` or ``<lact>`` body runs to the first closing tag after it, as the parser
+    extracts it, so a tag quoted inside a body is not counted. An ``OUT{}`` runs to the first
+    ``}`` outside a quoted string, as the lexer reads it. Returns ``(calls, answers, problem)``;
+    ``problem`` names a tag or ``OUT{}`` the round leaves open, or a tag inside an ``OUT{}``.
+    """
+    calls = answers = 0
+    pos = 0
+    while (opened := _ROUND_OPENER.search(text, pos)) is not None:
+        kind = opened.group(1)
+        if kind is None:
+            answers += 1
+            pos, problem = _out_block_end(text, opened.end())
+            if problem is not None:
+                return calls, answers, problem
+            continue
+        close = text.find(f"</{kind}>", opened.end())
+        if close < 0:
+            return calls, answers, f"a <{kind}> is not closed"
+        calls += kind == "lact"
+        pos = close + len(kind) + 3
+    return calls, answers, None
+
+
+def _out_block_end(text: str, pos: int) -> tuple[int, str | None]:
+    """The position after the ``}`` closing the ``OUT{}`` whose body starts at *pos*, or the
+    reason the block has none: input ends first, or a tag opens inside it."""
+    quote: str | None = None
+    while pos < len(text):
+        char = text[pos]
+        if quote is not None:
+            if char == "\\":
+                pos += 1
+            elif char == quote:
+                quote = None
+        elif char in "\"'":
+            quote = char
+        elif char == "}":
+            return pos + 1, None
+        elif char == "<" and _ROUND_OPENER.match(text, pos):
+            return pos, "OUT{} is not closed before the next <lvar> or <lact>"
+        pos += 1
+    return pos, "OUT{} is not closed"
+
+
 def _classify_round(
     text: str,
     target: Any,
@@ -168,7 +237,9 @@ def _classify_round(
     """Parse and assemble one round's raw text into a RoundOutcome; returns (outcome, pending_action_calls, assembled_dict).
 
     A round declaring more than ``max_actions`` ``<lact>`` calls is a repair round: none of its calls runs.
-    With ``lacts_with_out=False``, so is a round that declares ``<lact>`` calls beside its ``OUT{}``.
+    With ``lacts_with_out=False``, so is a round that declares ``<lact>`` calls beside its ``OUT{}``, one
+    that leaves a tag or its ``OUT{}`` open, and one whose calls the parser reads differently from its
+    tags (``_scan_round``).
     """
     if not extract_lndl_blocks(text):
         return Continue(), [], None
@@ -178,36 +249,49 @@ def _classify_round(
         # first would run that pass again on a block's own text and could pick
         # up a fenced example quoted inside it instead of the round's content.
         normalized = normalize_lndl_text(text)
+        scanned: tuple[int, int] | None = None
+        if not lacts_with_out:
+            # When calls and the answer must stay apart, every call the round
+            # declares counts, wherever it sits, and the round's tags are counted
+            # before the parser reads it: the lexer takes a quoted OUT{ inside a
+            # body for an opened block, and an unclosed OUT{} runs to the end of
+            # the input, so either could hide a call from the parser.
+            calls, answers, problem = _scan_round(normalized)
+            if problem is not None:
+                return (
+                    Retry(
+                        error=(
+                            f"this round could not be read: {problem}. None of its calls "
+                            "ran and the answer was not taken. Close every tag and OUT{}, "
+                            "and declare calls and the answer in separate rounds."
+                        )
+                    ),
+                    [],
+                    None,
+                )
+            refusal = _too_many_calls(calls, max_actions)
+            if refusal is None and calls and answers:
+                refusal = _CALLS_BESIDE_ANSWER
+            if refusal is not None:
+                return Retry(error=refusal), [], None
+            scanned = (calls, answers)
+
         tokens = Lexer(normalized).tokenize()
         parser = Parser(tokens, source_text=normalized)
-        # When calls and the answer must stay apart, every call the round
-        # declares counts, wherever it sits: the parser then reads past OUT{}
-        # and skips the bodies of lvars and lacts, so quoted text cannot pass
-        # for a call. Otherwise it stops at OUT{}, as it always has.
+        # Without that, the parser stops at OUT{}, as it always has.
         program = parser.parse(read_past_out=not lacts_with_out)
-        declared_calls = len(program.lacts)
 
-        if max_actions is not None and declared_calls > max_actions:
+        if scanned is None:
+            refusal = _too_many_calls(len(program.lacts), max_actions)
+            if refusal is not None:
+                return Retry(error=refusal), [], None
+        elif len(program.lacts) != scanned[0] or (program.out_block is None) == bool(scanned[1]):
             return (
                 Retry(
                     error=(
-                        f"this round declares {declared_calls} <lact> calls and a round may "
-                        f"declare at most {max_actions}; none of them ran. Declare at most "
-                        f"{max_actions} now and the rest in a later round."
-                    )
-                ),
-                [],
-                None,
-            )
-
-        if not lacts_with_out and declared_calls and program.out_block is not None:
-            return (
-                Retry(
-                    error=(
-                        "this round declares <lact> calls and also writes OUT{}; none of its "
-                        "calls ran and the answer was not taken. Declare calls in a round "
-                        "without OUT{}, read their results, then write OUT{} in a later round "
-                        "that declares no <lact>."
+                        "this round's <lact> and OUT{} tags could not be read unambiguously, "
+                        "so none of its calls ran and the answer was not taken. Keep tags "
+                        "and OUT{} out of quoted text."
                     )
                 ),
                 [],
