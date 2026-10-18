@@ -333,6 +333,13 @@ behaviour, including accepting a write-capable submission without `cwd`.
 
 ### Fixed
 
+- Skipped schedule runs expose their recorded `reason_code` and `reason_summary`
+  through run reads and the CLI; `outcome.summary` uses that reason while
+  `outcome.code` stays `skipped`. Capacity deferrals log once at INFO when an
+  episode starts and reset after slot acquisition. Schedule limits list
+  `current_holders` with each holder's `schedule_id`, `path`, and `acquired_at`
+  in epoch seconds. Timed schedules are considered oldest due first, before
+  GitHub poll passes, whose cadence is separate and asynchronous.
 - `extract_lndl_blocks` read only unindented three-character fences with LF line ends, so an
   indented block, a block fenced with four backticks, or CRLF output was not read at all; it now
   reads all three. A block closes only on the fence it opened with, at the same indentation, so

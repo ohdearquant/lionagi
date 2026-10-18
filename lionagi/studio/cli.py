@@ -1087,6 +1087,13 @@ def _cmd_limits(args: argparse.Namespace) -> int:
     cap_display = "unlimited" if not cap else str(cap)
     print(f"Max concurrent fires:      {cap_display}")
     print(f"Current in-flight:         {result.get('current_inflight', 0)}")
+    holders = result.get("current_holders") or []
+    print(f"Current holders:          {len(holders)}")
+    for holder in holders:
+        print(
+            f"  {holder.get('schedule_id', '?')}  {holder.get('path', '?')}"
+            f"  acquired: {_fmt_rfc3339(holder.get('acquired_at'))}"
+        )
     adhoc_cap = result.get("max_adhoc_concurrent")
     adhoc_cap_display = "unlimited" if not adhoc_cap else str(adhoc_cap)
     print(f"Max concurrent ad-hoc:     {adhoc_cap_display}")
@@ -1391,6 +1398,8 @@ def _print_run_table(runs: list[dict[str, Any]]) -> None:
             f"{_fmt_duration_ms(r.get('duration_ms')):<10}{outcome[:30]:<32}"
             f"{r.get('invocation_id') or '-':<14}{_fmt_artifacts(r.get('artifacts'))}"
         )
+        if r.get("reason_code") or r.get("reason_summary"):
+            print(f"  reason: {r.get('reason_code') or '-'} — {r.get('reason_summary') or '-'}")
 
 
 def _cmd_trigger(args: argparse.Namespace) -> int:

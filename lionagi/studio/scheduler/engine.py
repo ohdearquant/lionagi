@@ -152,17 +152,27 @@ class _MaxRunsClaim:
 class _GlobalSlotClaim:
     """One-shot handle for an in-process global concurrent-fire slot."""
 
-    __slots__ = ("_engine", "_released")
+    __slots__ = ("_engine", "_released", "schedule_id", "path", "acquired_at")
 
-    def __init__(self, engine: SchedulerEngine) -> None:
+    def __init__(
+        self,
+        engine: SchedulerEngine,
+        schedule_id: str,
+        *,
+        path: str,
+        acquired_at: float,
+    ) -> None:
         self._engine = engine
         self._released = False
+        self.schedule_id = schedule_id
+        self.path = path
+        self.acquired_at = acquired_at
 
     def release(self) -> None:
         if self._released:
             return
         self._released = True
-        self._engine._release_global_slot()
+        self._engine._release_global_slot(self)
 
 
 class _AdhocSlotClaim:
@@ -422,10 +432,12 @@ class SchedulerEngine:
         # has its own cap below so the two cannot starve each other.
         self._global_slot_lock = asyncio.Lock()
         self._global_inflight = 0
+        self._global_slot_claims: set[_GlobalSlotClaim] = set()
         # Ad-hoc task-worker concurrency cap, independent of MAX_SCHEDULED_CONCURRENT by design.
         self._adhoc_slot_lock = asyncio.Lock()
         self._adhoc_inflight = 0
-        self._deferred_log_counts: dict[str, int] = {}  # schedule_id -> deferrals since last record
+        # schedule_id -> deferrals since this schedule last acquired a global slot.
+        self._deferred_log_counts: dict[str, int] = {}
         # Threshold-alert cooldown reservations. Membership means a fire for this schedule's current
         # breach is in flight or was just reserved, which closes a race a DB-only last_alert_at
         # check cannot.
@@ -824,7 +836,7 @@ class SchedulerEngine:
                 )
             # A human is waiting on a manual trigger, so at-capacity is refused
             # outright rather than deferred like the automatic fire paths below.
-            slot_allowed, slot_claim = await self._reserve_global_slot()
+            slot_allowed, slot_claim = await self._reserve_global_slot(schedule_id, path="manual")
             if not slot_allowed:
                 from lionagi.studio.config import MAX_SCHEDULED_CONCURRENT
 
@@ -1307,7 +1319,9 @@ class SchedulerEngine:
                     ),
                 )
                 return
-            slot_allowed, slot_claim = await self._reserve_global_slot()
+            slot_allowed, slot_claim = await self._reserve_global_slot(
+                schedule["id"], path="missed_fire"
+            )
             if not slot_allowed:
                 return
 
@@ -1436,9 +1450,17 @@ class SchedulerEngine:
 
         schedules = await self._svc.list_schedules(enabled=True)
 
+        def schedule_order(schedule: dict) -> tuple[int, float]:
+            # Poll passes acquire slots asynchronously and use last_fired_at for their cadence.
+            # Start them after timed rows have had their admission checks in oldest-due order.
+            if schedule.get("trigger_type") == "github_poll":
+                return 1, 0.0
+            next_at = schedule.get("next_fire_at")
+            return 0, next_at if next_at is not None else float("inf")
+
         failed_schedules = 0
         last_schedule_error: Exception | None = None
-        for s in schedules:
+        for s in sorted(schedules, key=schedule_order):
             try:
                 if s["trigger_type"] == "github_poll":
                     self._start_github_tick(s, now)
@@ -1562,7 +1584,9 @@ class SchedulerEngine:
         # Reserve one global slot before polling, so a no-slot poll does not fetch, advance the
         # cursor and discard. This slot goes to whichever event fires first; later ones reserve
         # their own.
-        slot_allowed, pre_slot_claim = await self._reserve_global_slot()
+        slot_allowed, pre_slot_claim = await self._reserve_global_slot(
+            schedule["id"], path="github_poll"
+        )
         if not slot_allowed:
             if pre_rate_claim is not None:
                 pre_rate_claim.release()
@@ -1646,8 +1670,11 @@ class SchedulerEngine:
 
                     if pre_slot_claim is not None:
                         slot_claim, pre_slot_claim = pre_slot_claim, None
+                        slot_claim.path = "github_event"
                     else:
-                        slot_allowed, slot_claim = await self._reserve_global_slot()
+                        slot_allowed, slot_claim = await self._reserve_global_slot(
+                            sid, path="github_event"
+                        )
                         if not slot_allowed:
                             drop_reason = "global concurrent-fire cap reached"
                             dropped_prs = [
@@ -1870,19 +1897,43 @@ class SchedulerEngine:
         if not reservations:
             self._rate_limit_inflight.pop(schedule_id, None)
 
-    async def _reserve_global_slot(self) -> tuple[bool, _GlobalSlotClaim | None]:
+    @property
+    def global_slot_holders(self) -> list[dict[str, Any]]:
+        """Return a snapshot of the scheduled-fire claims currently holding capacity."""
+        return [
+            {
+                "schedule_id": claim.schedule_id,
+                "path": claim.path,
+                "acquired_at": claim.acquired_at,
+            }
+            for claim in sorted(
+                self._global_slot_claims,
+                key=lambda claim: (claim.acquired_at, claim.schedule_id, claim.path),
+            )
+        ]
+
+    async def _reserve_global_slot(
+        self, schedule_id: str, *, path: str
+    ) -> tuple[bool, _GlobalSlotClaim | None]:
         """Atomically claim one global concurrent-fire slot; returns (allowed, claim)."""
         from lionagi.studio.config import MAX_SCHEDULED_CONCURRENT
 
         if MAX_SCHEDULED_CONCURRENT <= 0:
+            self._deferred_log_counts.pop(schedule_id, None)
             return True, None
         async with self._global_slot_lock:
             if self._global_inflight >= MAX_SCHEDULED_CONCURRENT:
                 return False, None
+            claim = _GlobalSlotClaim(self, schedule_id, path=path, acquired_at=time.time())
+            self._global_slot_claims.add(claim)
             self._global_inflight += 1
-            return True, _GlobalSlotClaim(self)
+            self._deferred_log_counts.pop(schedule_id, None)
+            return True, claim
 
-    def _release_global_slot(self) -> None:
+    def _release_global_slot(self, claim: _GlobalSlotClaim) -> None:
+        if claim not in self._global_slot_claims:
+            return
+        self._global_slot_claims.remove(claim)
         self._global_inflight = max(0, self._global_inflight - 1)
 
     async def _reserve_adhoc_slot(self) -> tuple[bool, _AdhocSlotClaim | None]:
@@ -1901,10 +1952,21 @@ class SchedulerEngine:
         self._adhoc_inflight = max(0, self._adhoc_inflight - 1)
 
     async def _maybe_record_deferred(self, schedule: dict, now: float) -> None:
-        """Emit a throttled skipped-run record for a capacity-deferred fire."""
+        """Log each capacity-deferral episode once and throttle its skipped-run records."""
         sid = schedule["id"]
         count = self._deferred_log_counts.get(sid, 0) + 1
         self._deferred_log_counts[sid] = count
+        if count == 1:
+            from lionagi.studio.config import MAX_SCHEDULED_CONCURRENT
+
+            _log.info(
+                "Schedule %s (%s) deferred: global concurrent-fire cap reached "
+                "(inflight=%d, cap=%d); will retry next tick",
+                schedule.get("name"),
+                sid,
+                self._global_inflight,
+                MAX_SCHEDULED_CONCURRENT,
+            )
         if count % _DEFERRED_RECORD_EVERY != 1:
             return
         skipped_run_id = short_id(12)
@@ -2141,7 +2203,9 @@ class SchedulerEngine:
                 )
                 return
 
-            slot_allowed, slot_claim = await self._reserve_global_slot()
+            slot_allowed, slot_claim = await self._reserve_global_slot(
+                schedule["id"], path="scheduled"
+            )
             if not slot_allowed:
                 await self._maybe_record_deferred(schedule, now)
                 # Leave next_fire_at untouched so the next tick retries this schedule rather than
