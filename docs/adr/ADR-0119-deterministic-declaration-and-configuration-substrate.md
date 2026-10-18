@@ -12,8 +12,10 @@
   types are `Undefined`; `Params`, `Meta`, and `Spec` use one typed structural equality/hash
   projection, production declarations use the explicit `eq=False` authority, and declaration,
   field-layout, sentinel, singleton, annotation, and Pydantic model caches use identity-safe keys;
-  mutable `DataClass`/`HashableModel` migration, registry snapshots, and canonical durable
-  serialization remain open
+  mutable `DataClass`/`HashableModel` families are unhashable, and mutable dataclasses and
+  operation DTOs key each value they can and compare a keyless value pairwise; registry
+  snapshots, canonical durable
+  serialization, and the `OperableModel` adapter migration remain open
 - **Area**: utilities
 - **Date**: 2026-08-16
 - **Relations**: extends ADR-0050 (foundational utility and typed adaptation strata); required
@@ -434,10 +436,49 @@ Neither column is what D4 specifies. The decision is therefore:
   subclass that relies on the first row's same-class requirement changes behavior when the
   structural implementation takes over.
 
-`HashableModel` is split by semantics during migration: immutable concrete models retain a
-structural hash, while mutable models become unhashable. Existing uses are audited before the
-base behavior changes because a mutable object already stored in a set cannot be repaired after
-mutation.
+The closed consumer inventory contains seven `DataClass` types and ten `HashableModel` types,
+all mutable; there are no immutable concrete models to split into a new hierarchy. Both bases
+declare `__hash__ = None`. `DataClass` retains exact-concrete-type public-field structural
+equality for subclasses declaring `eq=False`; message dataclasses retain their generated equality.
+`HashableModel` remains available under its existing import paths and name, with its Pydantic
+equality and serialization behavior. The name is a compatibility spelling, not a hashability
+promise. Removing or renaming it is deferred; this migration adds no deprecation warning shim.
+A frozen `HashableModel` subclass gets Pydantic's generated hash of its field values, so it
+hashes only when every field value does: a tuple field hashes, a list or dict field raises.
+
+No intentional production set or dictionary-key consumers were found. `to_list()` groups
+`DataClass` values that keep the base equality by a transient hash of their declared field state
+and a value whose class defines its own equality by its own hash, and confirms identity-first
+equality in both directions inside each group and against the kept values of the other kind that
+could not be keyed, so a pair either side's equality calls equal is one value whichever value
+arrived first. Two values whose hashes differ are never compared, so equal values of a type whose
+`__eq__` crosses kinds without a matching `__hash__` are both kept, exactly as a `set` would keep
+them; a non-transitive `__eq__` can still make the result depend on the order the values arrive
+in. A value whose field state cannot be hashed is compared with the kept values that define their
+own equality and stays separate unless it is the same object or a kept value's own equality calls
+it equal. A value whose own hash raises `TypeError` reports itself unhashable, as a `set` reads
+it, and is compared by identity and equality, and so does a value whose hash reaches a
+`memoryview` that reports itself unhashable with `ValueError` because it is writable, holds a
+non-byte format or has been released; any other error from a value's own `__hash__`,
+such as reading a deleted field or descending into a cycle without end, is a defect in that hash
+and propagates. A `DataClass` value is never compared with a plain mapping; the two are
+deduplicated in separate branches. Equality-only values are compared pairwise, so a list of n such
+values costs up to n*(n-1)/2 comparisons. The four operation DTOs at their shared listable-field
+validator key each value they can and compare it inside its key's group, and compare a value they
+cannot key with every kept value; a pair whose equality gives no single truth value, or raises
+`AttributeError`, `RecursionError`, `TypeError`, `ValueError` or an unhashable-structural error,
+stays two values.
+Generic mapping, Pydantic, and msgspec deduplication retains its existing transient hash buckets
+and confirms equality inside each bucket; a value whose contents give no structural hash (a
+cycle, which the content key reports as `TypeError` whether the value is a container or a
+struct or model whose own serializer detects it, or an acyclic value nested past the recursion
+limit, which the keying catches) is compared with every kept value of those kinds, bucketed
+ones included, and each bucketed value is also compared with those, while a serializer's other
+`ValueError` propagates. Mutable operation outputs may be opaque values whose equality
+does not match their representation, so that boundary cannot use a content hash.
+Arbitrary default-field declarations remain fresh, validator functions have stable identities, and
+the six named lazy field constants retain singleton identity. Container keys must instead be stable
+identifiers; changing a mutable value after admission cannot repair container membership.
 
 ### D5 — `Spec` and `Operable` are the only neutral declaration vocabulary
 
@@ -608,6 +649,10 @@ The foundation suite adds the following required matrices.
 - immutable sequences and frozensets produce equal runtime hashes for equal projections within a
   process; mutable dict/list/set descendants make `Params`/`Meta`/`Spec` unhashable;
 - mutable `DataClass` and mutable Pydantic models are unhashable after their consumer migration;
+- a machine-readable closed inventory records all mutable family members, mutation evidence,
+  and consumer locations; static inheritance/alias and hash-authority checks reject unlisted
+  descendants and explicit or generated mutable hashes, while runtime tests reject hash, set,
+  and dictionary-key admission before and after supported mutation;
 - callable metadata retains identity semantics;
 - unsupported opaque mutable metadata fails explicitly;
 - `True`, `1`, `1.0`, signed zero, sentinel states, enum types, and custom-metaclass type identities

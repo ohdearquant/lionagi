@@ -237,3 +237,55 @@ async def test_legacy_transition_enforces_the_declared_edge_graph(db: StateDB) -
                 idempotency_key=_uid(),
             ),
         )
+
+
+# ── transition_id names a written row, or nothing ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_conflict_returns_no_transition_id(db: StateDB) -> None:
+    """A conflicting transition writes no status_transitions row, so its
+    result carries no transition id: an id here would reference nothing."""
+    run_id = await _make_schedule_run(db, status="queued")
+
+    result = await transition(
+        db,
+        TransitionRequest(
+            entity_type="schedule_run",
+            entity_id=run_id,
+            from_state="running",  # actual status is "queued"
+            to_state="completed",
+            reason=StateReason(code=RunReasons.COMPLETED_OK),
+            actor=Actor(type="system", id="w1"),
+            idempotency_key=_uid(),
+        ),
+    )
+
+    assert result.applied is False
+    assert result.conflict is True
+    assert result.transition_id is None
+
+
+@pytest.mark.asyncio
+async def test_applied_transition_id_names_the_written_row(db: StateDB) -> None:
+    """An applied transition's id is the id of the history row the service
+    wrote, so a caller holding the id can resolve it."""
+    run_id = await _make_schedule_run(db, status="queued")
+
+    result = await transition(
+        db,
+        TransitionRequest(
+            entity_type="schedule_run",
+            entity_id=run_id,
+            from_state="queued",
+            to_state="running",
+            reason=StateReason(code=RunReasons.STARTED_OK),
+            actor=Actor(type="system", id="w1"),
+            idempotency_key=_uid(),
+        ),
+    )
+
+    assert result.applied is True
+    assert result.transition_id is not None
+    rows = await db.fetch_all("SELECT id FROM status_transitions WHERE entity_id = ?", (run_id,))
+    assert result.transition_id in {row["id"] for row in rows}

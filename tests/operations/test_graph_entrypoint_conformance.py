@@ -3818,7 +3818,7 @@ async def test_run_fanout_persists_session_via_start_live_persist(tmp_path, monk
     """cli-o-fanout persistence: drives the REAL `_run_fanout` wrapper (only
     `setup_orchestration` and the heavy `_run_fanout_inner` execution are
     stubbed — the wrapper's own `start_live_persist` call at
-    lionagi/cli/orchestrate/fanout.py:93 is NOT) and asserts a real StateDB
+    lionagi/cli/orchestrate/fanout.py:209 is NOT) and asserts a real StateDB
     session row exists afterward. This is the seam the generic
     tests/cli/orchestrate/test_live_persist.py::
     test_start_creates_session_and_registers_hook_on_orc_branch test cannot
