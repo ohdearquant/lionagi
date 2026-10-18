@@ -237,6 +237,20 @@ For runs nobody watches live, make artifact presence part of your triage: a
 `completed` status with a missing artifact is the classic silent failure of any
 recurring system.
 
+The daemon's own stderr says when it fires. While it serves (`li studio` or
+`python -m lionagi.studio`), lionagi's INFO records print one line each, with a
+UTC timestamp:
+
+```text
+2026-10-18T21:26:40.512Z INFO:lionagi.studio.scheduler.engine:Firing schedule nightly-review (run 065ae8d3, chain_depth=0)
+```
+
+A due schedule produces this line unless the concurrent-fire cap defers it, which
+logs one line per deferral episode instead (see
+[skipped runs and capacity](#inspect-skipped-runs-and-capacity)). A log with
+neither while schedules are due points at the scheduler loop, which `/health`
+does not exercise.
+
 ## Inspect skipped runs and capacity
 
 `li schedule runs <id>` and `li schedule run <run-id>` show why a run was skipped

@@ -106,6 +106,48 @@ def test_the_daemon_serves_with_sigpipe_ignored(mode, tmp_path, monkeypatch):
     assert seen == [signal.SIG_IGN]
 
 
+@pytest.mark.parametrize("mode", ["backend", "dev"])
+def test_the_daemon_prints_lionagi_info_records_while_it_serves(
+    mode, tmp_path, monkeypatch, capsys
+):
+    """A schedule firing logs at INFO on `lionagi.studio.scheduler.engine`; `li` quiets the
+    `lionagi` logger to WARNING, so without the serve-time handler a daemon firing schedules
+    writes no line about it. Both places that serve print the record once, timestamped."""
+    import logging
+    import re
+
+    import lionagi.studio.cli as studio_mod
+
+    fire = "Firing schedule nightly (run r1, chain_depth=0)"
+    logger = logging.getLogger("lionagi")
+    saved = (logger.level, logger.propagate, list(logger.handlers))
+    try:
+        with _stubbed_serve() as mock_run:
+            mock_run.side_effect = lambda *a, **k: logging.getLogger(
+                "lionagi.studio.scheduler.engine"
+            ).info(fire)
+            if mode == "backend":
+                from lionagi.cli.main import main
+
+                assert main(["studio", "--no-open"]) == 0
+            else:
+                monkeypatch.setattr(studio_mod.shutil, "which", lambda name: "/usr/bin/node")
+                monkeypatch.setattr(studio_mod, "_ensure_apps_importable", lambda: True)
+                with patch.object(studio_mod, "_launch_vite_dev", return_value=None):
+                    assert studio_mod._start_local("127.0.0.1", 45241, 4000, tmp_path, True) == 0
+        lines = [line for line in capsys.readouterr().err.splitlines() if fire in line]
+        assert len(lines) == 1, lines
+        assert re.match(
+            r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z INFO:lionagi\.studio\.scheduler\.engine:",
+            lines[0],
+        ), lines[0]
+        assert logger.handlers == saved[2]
+    finally:
+        logger.setLevel(saved[0])
+        logger.propagate = saved[1]
+        logger.handlers[:] = saved[2]
+
+
 def test_studio_bare_invocation_does_not_raise(monkeypatch):
     """``main(["studio"])`` must not raise AttributeError when argparse omits --port/--host/--frontend-mode."""
     # Prevent the real uvicorn server (and a real frontend build) from starting.
