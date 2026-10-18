@@ -14,12 +14,21 @@ import pytest_asyncio
 
 from lionagi.state import db as db_module
 from lionagi.state.db import StateDB
+from lionagi.state.schema_migrations import MIGRATION_INDEXES
 from lionagi.studio.services import sessions
 
 
 @pytest_asyncio.fixture
-async def status_store(tmp_path, monkeypatch):
+async def status_store(tmp_path, monkeypatch, request):
     path = tmp_path / "state.db"
+    if getattr(request, "param", "fresh") == "upgraded":
+        # Keep historical payload columns needed by the real listing service;
+        # the separate minimal-shape test below covers the three-column store.
+        with sqlite3.connect(path) as conn:
+            conn.execute(
+                "CREATE TABLE sessions (id TEXT PRIMARY KEY, created_at REAL NOT NULL, "
+                "progression_id TEXT NOT NULL, node_metadata JSON, name TEXT, user TEXT)"
+            )
     monkeypatch.setattr(db_module, "DEFAULT_DB_PATH", path)
     monkeypatch.setattr(
         db_module, "settings", db_module.settings.model_copy(update={"LIONAGI_STATE_DB_URL": None})
@@ -122,6 +131,7 @@ async def test_mixed_status_page_keeps_order_offset_and_total(status_store):
     assert await sessions.count_sessions(where) == 5
 
 
+@pytest.mark.parametrize("status_store", ["fresh", "upgraded"], indirect=True)
 @pytest.mark.parametrize(
     ("statuses", "expected"),
     [
@@ -137,15 +147,20 @@ async def test_mixed_status_page_keeps_order_offset_and_total(status_store):
 async def test_sparse_status_queries_on_the_real_store(
     status_store, monkeypatch, record_property, statuses, expected
 ):
-    # Keep all production indexes: the optimizer must choose a seek without
-    # INDEXED BY or a hand-built schema that makes the choice for it.
+    # Fresh stores retain all production indexes; upgraded stores use indexes
+    # installed by real StateDB migration. Neither arm forces INDEXED BY.
     with sqlite3.connect(status_store) as conn:
+        assert "idx_sessions_status_updated" in {
+            row[1] for row in conn.execute("PRAGMA index_list(sessions)")
+        }, "StateDB must add the status index when upgrading an existing sessions table"
         conn.executemany(
             "INSERT INTO sessions (id, progression_id, created_at, updated_at, status) "
             "VALUES (?, 'progression', 0, ?, 'cancelled')",
             [(f"background-{index}", float(index + 100)) for index in range(5000)],
         )
-        conn.execute("ANALYZE")
+        assert not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'sqlite_stat1'"
+        ).fetchall(), "exercise production's unanalysed store, not manually gathered statistics"
 
     statements = []
     real_open = sessions._open_db
@@ -179,6 +194,7 @@ async def test_sparse_status_queries_on_the_real_store(
         json.dumps(
             {
                 "sqlite_version": sqlite3.sqlite_version,
+                "analyzed": False,
                 "statuses": sorted(statuses),
                 "rows": [{"id": row["id"], "status": row["status"]} for row in rows],
                 "total": total,
@@ -189,14 +205,70 @@ async def test_sparse_status_queries_on_the_real_store(
     assert [row["id"] for row in rows] == expected
     assert total == len(expected)
     assert len(statements) == 2, "capture both production page and count queries"
-    # The legacy NULL OR arm may still make SQLite choose an ordered scan.
-    # For sparse non-NULL filters, both queries must actually constrain the
-    # status index; an unrelated seek by session id in the outer join is not
-    # evidence that selecting the page avoided scanning sessions.
-    if "completed" not in statuses:
-        for statement in statements:
-            plan = statement["plan"]
+    # All four filters constrain the status index without ANALYZE, including
+    # both arms of completed's legacy NULL OR. An outer join's lookup by id
+    # alone would not prove that selecting the page avoided scanning sessions.
+    for statement in statements:
+        plan = statement["plan"]
+        status_seeks = [
+            step for step in plan if step.startswith("SEARCH s USING ") and "(status=?" in step
+        ]
+        assert status_seeks, plan
+        assert all("idx_sessions_status_updated" in step for step in status_seeks), plan
+        assert not any(step.startswith("SCAN s") for step in plan), plan
+        if "completed" in statuses:
+            assert "MULTI-INDEX OR" in plan, plan
+            assert len(status_seeks) == 2, plan
+
+
+@pytest.mark.parametrize("dialect", ["sqlite", "postgresql"])
+def test_status_index_upgrade_ddl_preserves_rows_and_is_repeatable(dialect):
+    # Exercise the portable status-index migration from each backend's list.
+    # This checks its upgrade contract on SQLite, not live PostgreSQL behavior.
+    statements = [ddl for ddl in MIGRATION_INDEXES[dialect] if "idx_sessions_status_updated" in ddl]
+    with sqlite3.connect(":memory:") as conn:
+        conn.execute("CREATE TABLE sessions (id TEXT, status TEXT, updated_at REAL)")
+        conn.executemany(
+            "INSERT INTO sessions VALUES (?, ?, ?)",
+            [("legacy", None, 1), ("newer", "running", 3), ("older", "running", 2)],
+        )
+        for _ in range(2):
+            for ddl in statements:
+                conn.execute(ddl)
+        index_keys = [
+            (row[2], row[3])
+            for row in conn.execute("PRAGMA index_xinfo(idx_sessions_status_updated)")
+            if row[5]
+        ]
+        assert index_keys == [("status", 0), ("updated_at", 1)]
+        assert conn.execute("SELECT id, status FROM sessions ORDER BY updated_at").fetchall() == [
+            ("legacy", None),
+            ("older", "running"),
+            ("newer", "running"),
+        ]
+
+
+async def test_minimal_old_store_gains_status_index_on_repeated_open(tmp_path):
+    path = tmp_path / "minimal-old.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, created_at REAL NOT NULL, "
+            "progression_id TEXT NOT NULL)"
+        )
+        conn.execute("INSERT INTO sessions VALUES ('legacy', 1, 'progression')")
+    for _ in range(2):
+        async with StateDB(path):
+            pass
+        with sqlite3.connect(path) as conn:
+            assert "idx_sessions_status_updated" in {
+                row[1] for row in conn.execute("PRAGMA index_list(sessions)")
+            }
+            assert conn.execute("SELECT id, created_at FROM sessions").fetchall() == [("legacy", 1)]
+            conn.execute("UPDATE sessions SET status = 'running', updated_at = 1")
+            sql = "SELECT id FROM sessions WHERE status IN (?) ORDER BY updated_at DESC"
+            assert conn.execute(sql, ("running",)).fetchall() == [("legacy",)]
+            plan = [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + sql, ("running",))]
             assert any(
-                step.startswith("SEARCH s USING ") and "(status=?" in step for step in plan
+                "SEARCH sessions USING INDEX idx_sessions_status_updated (status=?)" in step
+                for step in plan
             ), plan
-            assert not any(step.startswith("SCAN s") for step in plan), plan
