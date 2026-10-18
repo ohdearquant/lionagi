@@ -55,8 +55,8 @@ no answer is stored anywhere.
 
 - Numbers: 1.0 when the value is within the stated rounding and the answer is the number alone; 0.5 when the value
   is right but wrapped in other text.
-- Names and timestamps: 1.0 for an exact (case-insensitive) match; 0.5 when the right value appears among other
-  text.
+- Names, addresses and timestamps: 1.0 for the value alone (case-insensitive); 0 for anything else, since
+  crediting text that merely contains the value would reward listing every candidate.
 - Lists: 1.0 for the exact sorted list; 0.8 for the right items in another order; otherwise half the overlap.
 - Code: the share of further cases, beyond the visible tests, that the fixed function passes, each in its own
   process.

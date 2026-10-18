@@ -294,6 +294,15 @@ def test_headline_scoring():
     assert score_answer(task, good)[0] == 1.0
 
 
+@pytest.mark.parametrize("task_id", [t for t in NON_CODE if build_task(t).answer_kind == "text"])
+def test_a_text_answer_earns_credit_only_as_the_value_alone(task_id):
+    task = build_task(task_id)
+    want = str(task.expected)
+    assert score_answer(task, f" '{want}'. ")[0] == 1.0
+    assert score_answer(task, f"The answer is {want}")[0] == 0.0
+    assert score_answer(task, f"{want}, {want}x, other")[0] == 0.0
+
+
 def test_number_format_partial_credit():
     task = build_task(
         next(

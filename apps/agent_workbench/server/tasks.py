@@ -1071,13 +1071,11 @@ def _score_number(task: BuiltTask, answer: str) -> tuple[float, str]:
 
 
 def _score_text(task: BuiltTask, answer: str) -> tuple[float, str]:
-    text = answer.strip().strip("'\"`").strip()
-    want = str(task.expected)
-    if text.lower() == want.lower():
+    # No credit for text that merely contains the value: an answer listing every candidate would earn it.
+    text = answer.strip(" \t\r\n'\"`.")
+    if text.lower() == str(task.expected).lower():
         return 1.0, "correct"
-    if re.search(rf"(?<![\w.:-]){re.escape(want)}(?![\w.:-])", text, re.I):
-        return 0.5, "the right answer is there, with extra text"
-    return 0.0, "the answer is wrong"
+    return 0.0, "the answer is not exactly the value asked for"
 
 
 def _score_list(task: BuiltTask, answer: str) -> tuple[float, str]:
