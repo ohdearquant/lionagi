@@ -14,6 +14,7 @@ from lionagi import iModel
 from lionagi._paths import find_lionagi_dirs as _find_lionagi_dirs
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.libs.path_safety import validate_bare_name
+from lionagi.ln import coerce_created_at
 from lionagi.providers.openai._codex_profile import (
     resolve_codex_config_profile,
 )
@@ -445,13 +446,10 @@ def _validate_bare_name(name: str) -> None:
 def build_deadline_preamble(timeout_seconds: int) -> str:
     """Build a [DEADLINE] preamble injected as the first user message when --timeout is set."""
     import time as _time
-    from datetime import datetime, timezone
 
     minutes = max(1, int(timeout_seconds / 60))
     deadline_ts = _time.time() + timeout_seconds
-    deadline_iso = datetime.fromtimestamp(deadline_ts, tz=timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
+    deadline_iso = coerce_created_at(deadline_ts).strftime("%Y-%m-%dT%H:%M:%SZ")
     return (
         f"[DEADLINE]\n"
         f"You have {minutes} minute{'s' if minutes != 1 else ''} "

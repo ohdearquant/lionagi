@@ -13,11 +13,11 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi._paths import ensure_lionagi_dir
 from lionagi.cli._util import AmbiguousIdError
+from lionagi.ln import short_id
 from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.ln._utils import now_utc
 from lionagi.utils import LIONAGI_HOME
@@ -151,7 +151,7 @@ def _build_message(
     team-lifecycle coordinator) goes through, so the message shape can never
     drift between callers."""
     msg: dict = {
-        "id": uuid4().hex[:12],
+        "id": short_id(12),
         "from": sender,
         "to": to if isinstance(to, list) else [to],
         "content": content,
@@ -175,7 +175,7 @@ def cmd_create(args: argparse.Namespace) -> int:
         log_error("--members requires at least one name")
         return 1
 
-    team_id = uuid4().hex[:12]
+    team_id = short_id(12)
     path = _teams_dir() / f"{team_id}.json"
     with _locked_team(team_id, create_path=path) as data:
         data.update(
@@ -701,7 +701,7 @@ def _machine_create(argv: list[str]) -> dict[str, Any]:
     if not members:
         raise MachineError("invalid_input", "--members requires at least one name")
 
-    team_id = uuid4().hex[:12]
+    team_id = short_id(12)
     path = _teams_dir() / f"{team_id}.json"
     created_at = now_utc().isoformat()
     with _locked_team(team_id, create_path=path) as data:

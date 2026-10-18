@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from lionagi._auto import CliDeclaration, auto_register
+from lionagi.ln import parse_duration
 from lionagi.state.engine import mask_credentials
 
 from ._project import detect_project
@@ -138,17 +139,14 @@ def _elapsed(
 
 def _since_timestamp(window: str) -> float:
     """Parse a window string like '1h', '30m', '2d' into a cutoff epoch float."""
-    unit = window[-1].lower()
     try:
-        value = int(window[:-1])
+        seconds = parse_duration(window)
     except ValueError as exc:
         raise ValueError(
-            f"Invalid --since value {window!r}; expected format like 1h, 30m, 2d"
+            f"--since window must be positive and use an integer with a lowercase unit "
+            f"(s, m, h, d); got {window!r} ({exc})"
         ) from exc
-    multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-    if unit not in multipliers:
-        raise ValueError(f"Unknown time unit {unit!r} in --since {window!r}")
-    return time.time() - value * multipliers[unit]
+    return time.time() - seconds
 
 
 # ── DB query helpers ─────────────────────────────────────────────────────────

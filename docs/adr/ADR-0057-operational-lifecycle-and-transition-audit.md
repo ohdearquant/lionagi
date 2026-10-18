@@ -121,7 +121,7 @@ Code anchors: `lionagi/state/db.py`; `lionagi/state/reasons.py`;
 - The schedule-run declarations are reconciled through the lifecycle policy registry. Both the
   `StateDB.update_status()` validator and the guarded adapter source the nine-value vocabulary and
   the five-value terminal set (which includes `timed_out`) from the registered policy
-  (`lionagi/state/db.py:392-439`, `lionagi/state/lifecycle/policy.py:305-320`); `pending` is not
+  (`lionagi/state/db.py:393-440`, `lionagi/state/lifecycle/policy.py:305-320`); `pending` is not
   admitted by either surface.
 - The registered schedule-run edge graph declares `queued -> {waiting_dependency, running, skipped,
   cancelled}`, `waiting_dependency -> {queued, cancelled}`, `running -> {completed, failed,
@@ -405,7 +405,7 @@ class TransitionResult(BaseModel):
     conflict: bool = False
     previous_state: str | None = None
     current_state: str
-    transition_id: str
+    transition_id: str | None = None
     event_id: str | None = None
 
 async def transition(
@@ -441,8 +441,8 @@ Code anchors: `lionagi/state/transitions.py`; `lionagi/state/db.py`.
   against the status read inside the transaction.
 - A `from_state` mismatch or extra guard mismatch returns `TransitionResult(applied=False,
   conflict=True, ...)` with no write.
-- A generated `transition_id` is returned even for conflicts, although no history row with that id
-  is inserted.
+- `transition_id` names the history row the write inserted. A conflict writes no history row, so
+  its result carries `transition_id=None`: an id that references nothing is not returned.
 - Patch fields update atomically with status and history. Guard fields are reasserted in the SQL
   `WHERE` clause.
 - `idempotency_key` is required by the model but is not persisted, queried, or used to deduplicate

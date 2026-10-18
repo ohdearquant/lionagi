@@ -221,7 +221,7 @@ async def _find_sessions_by_text(
     return ordered[:limit]
 
 
-async def resolve_run(ref: str) -> dict[str, Any]:
+async def resolve_run(ref: str, *, allow_unscoped_exact_id: bool = True) -> dict[str, Any]:
     """Resolve a human-named run reference to at most one session.
 
     Returns one of:
@@ -242,7 +242,10 @@ async def resolve_run(ref: str) -> dict[str, Any]:
     identity is present but whose context names no project may still resolve
     an exact full-UUID reference (or 'current') -- a bare id identifies at
     most one row and cannot enumerate, so it is safe where prefix and
-    substring resolution are not -- see docs/internals/studio.md
+    substring resolution are not. That allowance belongs to a read: a caller
+    that pairs this resolver with a mutation passes
+    ``allow_unscoped_exact_id=False`` so the run it would act on is proved
+    within the turn's own project. See docs/internals/studio.md
     ("Resolving a run reference").
     """
     from lionagi.cli._util import _CANDIDATES_SHOWN, AmbiguousIdError, fetch_unique_row
@@ -252,9 +255,15 @@ async def resolve_run(ref: str) -> dict[str, Any]:
     if not normalized:
         return {"found": False, "reason": "empty run reference"}
 
+    if not allow_unscoped_exact_id:
+        # A caller that acts on the run proves the turn's project before reading anything,
+        # the human's view selection included, so an unscoped turn gets the one refusal
+        # whatever it names.
+        await _allowed_project()
+
     from_current_view = False
     if normalized.lower() == "current":
-        # Resolved before the project fence: this only reads the human's own
+        # A read resolves this before the project fence: it only reads the human's own
         # view selection, it enumerates nothing. Whatever id it yields still
         # goes through the same fence-or-exact-id logic as a typed reference.
         session_id = await _resolve_current()
@@ -269,7 +278,7 @@ async def resolve_run(ref: str) -> dict[str, Any]:
     try:
         project = await _allowed_project()
     except MissingOwnerContextError:
-        if _EXACT_UUID_RE.fullmatch(normalized) is None:
+        if not allow_unscoped_exact_id or _EXACT_UUID_RE.fullmatch(normalized) is None:
             raise
         # A turn with an owner but no declared project may still look up one
         # run by its full id: an exact 36-character UUID identifies at most
@@ -277,7 +286,10 @@ async def resolve_run(ref: str) -> dict[str, Any]:
         # ``run_detail`` already takes for a bare id. Prefix and
         # name-substring resolution stay behind the fence above, and a turn
         # that *does* declare a project keeps full ownership scoping on
-        # every arm, including this one.
+        # every arm, including this one. Write tools that mutate the run
+        # they name turn this arm off (``allow_unscoped_exact_id=False``):
+        # they must prove the run inside their own project, the position
+        # ``run_control._propose_run_control`` takes for the same reason.
         async with StateDB(readonly=True) as db:
             row = await db.fetch_one("SELECT id FROM sessions WHERE id = ?", (normalized,))
         if row is None:
