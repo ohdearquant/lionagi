@@ -264,11 +264,7 @@ async def test_wait_reports_the_same_reason_detail_as_status(sandbox, monkeypatc
         json.dumps(
             {
                 "run_id": rid,
-                "terminal_write_lost": {
-                    "status": "completed",
-                    "reason_code": "run.completed.ok",
-                    "at": 1.0,
-                },
+                "persistence_degraded_reason": "OperationalError('database is locked')",
             }
         )
     )
@@ -277,7 +273,7 @@ async def test_wait_reports_the_same_reason_detail_as_status(sandbox, monkeypatc
     entry = res["runs"][0]
 
     assert entry["reason_code"] == jobs.LOST_REASON
-    assert entry["reason_detail"] == jobs.REASON_DETAIL_TERMINAL_WRITE_LOST
+    assert entry["reason_detail"] == jobs.REASON_DETAIL_PERSISTENCE_DEGRADED
     assert entry["reason_detail"] == jobs.status(rid)["reason_detail"]
 
 

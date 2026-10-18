@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import time
 from typing import Any
@@ -275,15 +276,17 @@ def _resolve_command(
     return list(resolved.argv), None
 
 
+_PLACEHOLDER = re.compile(r"\{(run_id|status|label|target|sender|reason_code|reason_detail)\}")
+
+
 def _substitute(argv: list[str], fields: dict[str, str]) -> list[str]:
     """Replace ``{run_id}``/``{status}``/``{label}``/``{target}``/``{sender}``/
-    ``{reason_code}``/``{reason_detail}`` per token."""
-    out: list[str] = []
-    for tok in argv:
-        for key, value in fields.items():
-            tok = tok.replace("{" + key + "}", value)
-        out.append(tok)
-    return out
+    ``{reason_code}``/``{reason_detail}`` per token.
+
+    One pass, so a value that itself holds placeholder text (a caller's label) is
+    never expanded; a placeholder whose field has no value becomes empty.
+    """
+    return [_PLACEHOLDER.sub(lambda m: fields.get(m.group(1)) or "", tok) for tok in argv]
 
 
 def _delivery_env(sender: str) -> dict[str, str] | None:
@@ -647,6 +650,7 @@ def main(argv: list[str] | None = None) -> int:
         command=args.command,
         sender=args.sender,
         reason_code=(terminal.record or {}).get("reason_code") or reason_code,
+        reason_detail=(terminal.record or {}).get("reason_detail"),
         timeout=_supervised_delivery_timeout(),
     )
     recorded = jobs.record_notify_delivery(args.run_id, outcome)

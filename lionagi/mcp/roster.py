@@ -145,12 +145,12 @@ def _record_placement(name: str) -> dict[str, Any]:
     }
 
 
-# Reported by ``profile_config`` only when a profile declares them (presence is
+# Reported by ``profile_config`` only when a profile declares it (presence is
 # meaningful there — see its docstring), so a blank profile's own output never
-# carries these. The projection schema still has to name them: a caller can
-# only ask for ``resolved.mcp`` on a profile that DOES declare one if the field
+# carries it. The projection schema still has to name it: a caller can only ask
+# for ``resolved.idle_timeout`` on a profile that DOES declare one if the field
 # is recognised on every profile, declaring or not.
-_OPTIONAL_RESOLVED_FIELDS = ("mcp", "mcp_config", "idle_timeout")
+_OPTIONAL_RESOLVED_FIELDS = ("idle_timeout",)
 
 
 def _resolved_fields() -> tuple[str, ...]:

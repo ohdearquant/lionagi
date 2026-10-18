@@ -35,15 +35,17 @@ behaviour, including accepting a write-capable submission without `cwd`.
   the MCP config a submission resolves before its snapshot is written. Every
   name must be declared by that config; the parameter cannot be combined with
   `mcp_config` or `no_mcp_config`.
-- By default a write-capable agent profile gets no separate khive actor. When
-  `LIONAGI_MCP_CHILD_ACTOR_SUFFIX` is set, one submitted with a `cwd` gets its
-  own khive actor, named by appending that suffix to the submitting actor and
-  minted into the run's directory before it starts. The result is reported as
+- By default a write-capable run (an agent submission whose arguments or profile
+  set `yolo` or `bypass`, or any flow, fanout or playbook submission) gets no
+  separate khive actor. When `LIONAGI_MCP_CHILD_ACTOR_SUFFIX` is set, one
+  submitted with a `cwd` gets its own khive actor, named by appending that
+  suffix to the submitting actor and minted into the run's directory before it
+  starts. The result is reported as
   `child_actor`, `child_actor_config` and `submitting_actor`.
 - `job.status` reports `excluded_mcp_servers` for a submission that removed
   servers. The orphan reaper keeps `process_gone_without_outcome` as the reason
-  code for a lost terminal write and for degraded signal persistence, and adds
-  `reason_detail` (`terminal_write_lost` or `persistence_degraded`) beside it.
+  code for a run that turned its persistence off, and adds
+  `reason_detail: persistence_degraded` beside it.
 - The `{reason_code}` placeholder is available to a configured terminal-notice
   command, carrying the run's terminal reason when one was recorded.
   `{reason_detail}` carries the finer orphan-reaper detail when one was
@@ -55,10 +57,10 @@ behaviour, including accepting a write-capable submission without `cwd`.
   that long after it has started answering, and profiles may set the same value as
   `idle_timeout`. The default stays `LIONAGI_WORKER_IDLE_TIMEOUT` (`600`); the flag or profile
   value overrides it, `0` is refused, and the bound (`1` to `2**53 - 1`) is published as
-  `minimum`/`maximum` in the `agent.submit` schema.
-- `profile.list` accepts the optional `mcp`, `mcp_config` and `idle_timeout` keys under
-  `fields`, so a caller can ask for one on a profile that does not declare it and read `null`
-  instead of a refused field name.
+  `minimum`/`maximum` in the `agent.submit` schema. It watches a CLI worker's streamed output;
+  an API-model leg's turn is bounded by `--timeout` instead.
+- `profile.list` accepts the optional `idle_timeout` key under `fields`, so a caller can ask
+  for it on a profile that does not declare it and read `null` instead of a refused field name.
 - An API-model `li agent` leg can run batched LNDL rounds in place of ReAct: a profile that
   declares `api_tools: read` may set `api_loop: lndl` (default `react`). A round either declares
   up to 16 tool calls, which run together, or writes the answer as text; the turn ends when an

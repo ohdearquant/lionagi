@@ -29,15 +29,31 @@ def test_the_flag_is_absent_by_default_and_the_setting_decides():
     assert _parse(["m/p", "hi"]).idle_timeout is None
 
 
-@pytest.mark.parametrize("raw", ["0", "-1", "not-a-number", "1.5"])
-def test_the_parser_refuses_what_cannot_name_a_positive_whole_second(raw):
-    with pytest.raises(SystemExit):
+def _refusal(capsys, raw: str) -> str:
+    """What the parser writes when it refuses *raw* for the flag."""
+    with pytest.raises(SystemExit) as exc:
         _parse(["m/p", "hi", "--idle-timeout", raw])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "argument --idle-timeout" in err, err
+    return err
 
 
-def test_the_parser_refuses_a_value_past_the_greatest_whole_second():
-    with pytest.raises(SystemExit):
-        _parse(["m/p", "hi", "--idle-timeout", str(2**53)])
+@pytest.mark.parametrize(
+    ("raw", "reason"),
+    [
+        ("0", "must be from 1 to"),
+        ("-1", "must be from 1 to"),
+        ("not-a-number", "must be a whole number"),
+        ("1.5", "must be a whole number"),
+    ],
+)
+def test_the_parser_refuses_what_cannot_name_a_positive_whole_second(capsys, raw, reason):
+    assert reason in _refusal(capsys, raw)
+
+
+def test_the_parser_refuses_a_value_past_the_greatest_whole_second(capsys):
+    assert f"must be from 1 to {2**53 - 1}" in _refusal(capsys, str(2**53))
 
 
 def test_the_bounded_type_states_its_range():

@@ -2150,7 +2150,9 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
             "Stop the run as stalled when the worker goes this many seconds without "
             "output after it has started answering. Defaults to the "
             "LIONAGI_WORKER_IDLE_TIMEOUT setting (600); a profile's 'idle_timeout' "
-            "sets it for a role. Raise it for a model that thinks long between outputs."
+            "sets it for a role. Raise it for a model that thinks long between outputs. "
+            "It watches a CLI worker's streamed output; an API-model leg's turn is bounded "
+            "by --timeout instead."
         ),
     )
     agent.add_argument(

@@ -119,7 +119,7 @@ li agent [model] prompt [flags]
 | `--form SPEC` | none | Validate a YAML/JSON work-form before making any model call, then inject its typed values |
 | `--context-from REF` | none | Inject distilled context from a prior session id, branch id, run id, or file path into the new branch's first instruction (above the prompt). Repeatable — refs concatenate in argv order, sharing one budget. `cli/_context_from.py` |
 | `--context-budget N` | `8000` | Total token budget (~4 chars/token) for `--context-from` content, shared across all refs. |
-| `--idle-timeout SECONDS` | `LIONAGI_WORKER_IDLE_TIMEOUT` (`600`) | Stop the run as stalled (`WorkerLivenessError`) when the worker emits nothing for this long after it has started answering. `1` to `2**53 - 1`; `0` is refused. A profile's `idle_timeout` sets it for a role, and the flag wins over the profile. Raise it for a model that thinks long between outputs. |
+| `--idle-timeout SECONDS` | `LIONAGI_WORKER_IDLE_TIMEOUT` (`600`) | Stop the run as stalled (`WorkerLivenessError`) when the worker emits nothing for this long after it has started answering. `1` to `2**53 - 1`; `0` is refused. A profile's `idle_timeout` sets it for a role, and the flag wins over the profile. Raise it for a model that thinks long between outputs. It watches a CLI worker's streamed output; an API-model leg's turn is bounded by `--timeout` instead. |
 | `--resume-on-timeout` | false | Resume a timed-out agent session once with a bounded continuation |
 
 `-r` and `-c` are mutually exclusive. `--context-from` is rejected together with `-r` / `-c` (resume already carries the source context). Common flags apply.
@@ -787,7 +787,7 @@ then report it:
 | `terminal` | `true` |
 | `outcome` | `indeterminate` |
 | `reason_code` | `process_gone_without_outcome` |
-| `reason_detail` | `terminal_write_lost`, `persistence_degraded`, or `null` |
+| `reason_detail` | `persistence_degraded` or `null` |
 | `terminal_source` | `mcp_orphan_reaper` |
 
 `outcome: "indeterminate"` means the process is conclusively gone and **no authoritative
@@ -881,11 +881,14 @@ with `mcp_config` or `no_mcp_config`, since neither leaves a resolved set to
 filter. The removed names are reported as `excluded_mcp_servers` on the handle,
 the job record, and `job.status`.
 
-By default a write-capable agent profile (`yolo` or `bypass`) gets no separate
-khive actor, and a submission without `cwd` is accepted as before. A deployment
-that wants each writable run to have its own identity sets
-`LIONAGI_MCP_CHILD_ACTOR_SUFFIX` to a non-empty suffix. Then a write-capable
-profile submitted with a `cwd` gets the actor `<submitting actor><suffix>`
+A run is write-capable when its `agent.submit` arguments or its agent profile
+set `yolo` or `bypass`. Every `flow.submit`, `fanout.submit` and `play.submit`
+run is write-capable too, because it casts its workers onto profiles while it
+runs. By default a write-capable run gets no separate khive actor, and a
+submission without `cwd` is accepted as before. A deployment that wants each
+writable run to have its own identity sets `LIONAGI_MCP_CHILD_ACTOR_SUFFIX` to a
+non-empty suffix. Then a write-capable run submitted with a `cwd` gets the actor
+`<submitting actor><suffix>`
 (for example, with a suffix of `:child`, `<submitting actor>:child`), minted into
 `<cwd>/.khive/config.toml` before the run starts, so a writable run does not
 sign as the submitting identity. The mint copies the submitting directory's

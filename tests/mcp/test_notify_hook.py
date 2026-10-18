@@ -248,16 +248,45 @@ def test_reason_detail_has_its_own_placeholder_and_payload_field(job, monkeypatc
         "exited",
         command=json.dumps(["notify", "{reason_code}", "{reason_detail}"]),
         reason_code="process_gone_without_outcome",
-        reason_detail="terminal_write_lost",
+        reason_detail="persistence_degraded",
     )
 
     assert outcome["ok"] is True
     assert captured["argv"] == [
         "notify",
         "process_gone_without_outcome",
-        "terminal_write_lost",
+        "persistence_degraded",
     ]
-    assert json.loads(captured["proc"].input)["reason_detail"] == "terminal_write_lost"
+    assert json.loads(captured["proc"].input)["reason_detail"] == "persistence_degraded"
+
+
+def test_a_hook_reporting_after_the_reaper_names_the_reaper_s_reason_detail(monkeypatch, tmp_path):
+    """The late hook's notice describes the end the record holds, detail included."""
+    rid = _job_with(
+        monkeypatch,
+        tmp_path,
+        status="exited",
+        outcome=jobs.OUTCOME_INDETERMINATE,
+        reason_code=jobs.LOST_REASON,
+        reason_detail=jobs.REASON_DETAIL_PERSISTENCE_DEGRADED,
+        finished_at="2026-10-18T00:00:00+00:00",
+        terminal_source=jobs.TERMINAL_SOURCE_ORPHAN_REAPER,
+        notify_delivery={"attempted": False},
+    )
+    captured: dict = {}
+
+    def fake_popen(argv, **kw):
+        captured["argv"] = argv
+        captured["proc"] = _FakeCompleted(0)
+        return captured["proc"]
+
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", fake_popen)
+
+    command = json.dumps(["notify", "{reason_code}", "{reason_detail}"])
+    rc = _notify_hook.main(["--run-id", rid, "--status", "completed", "--command", command])
+
+    assert rc == 0
+    assert captured["argv"] == ["notify", jobs.LOST_REASON, "persistence_degraded"]
 
 
 def test_delivery_failure_is_recorded_not_silent(job, monkeypatch):

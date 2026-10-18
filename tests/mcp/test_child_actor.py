@@ -470,6 +470,36 @@ def test_a_write_capable_profile_without_a_cwd_spawns_when_minting_is_off(profil
     assert answer["result"]["child_actor"] is None
 
 
+def test_a_profile_name_the_resolver_refuses_is_invalid_input(profiles):
+    _submitter, child, spawned = profiles
+    args = {"agent": "a/b/c", "prompt": "w", "cwd": str(child), "no_mcp_config": True}
+
+    answer = _call(ops=[_spawn_op("agent.submit", args)])["ops"][0]
+
+    assert answer["ok"] is False, answer
+    assert answer["error"]["kind"] == "invalid_input", answer
+    assert "agent profile name" in answer["error"]["message"]
+    assert spawned == []
+
+
+def test_a_server_without_a_submitting_actor_is_unavailable_not_the_caller_s_input(
+    profiles, monkeypatch
+):
+    """The caller cannot correct the server's own directory by changing the submission."""
+    submitter, child, spawned = profiles
+    (submitter / ".khive" / "config.toml").unlink()
+    monkeypatch.setenv(config.CHILD_ACTOR_SUFFIX_ENV_VAR, ":worker")
+    args = {"agent": "writer", "prompt": "w", "cwd": str(child), "no_mcp_config": True}
+
+    answer = _call(ops=[_spawn_op("agent.submit", args)])["ops"][0]
+
+    assert answer["ok"] is False, answer
+    assert answer["error"]["kind"] == "unavailable", answer
+    assert "holds no .khive/config.toml" in answer["error"]["message"]
+    assert spawned == []
+    assert not (child / ".khive").exists()
+
+
 def test_a_write_capable_profile_with_a_cwd_is_minted(profiles):
     _submitter, child, spawned = profiles
 
@@ -490,8 +520,9 @@ def test_a_write_capable_profile_with_a_cwd_is_minted(profiles):
     assert jobs._read_job(answer["result"]["run_id"])["child_actor"] == "agent:x:worker"
 
 
-def test_a_read_shaped_profile_is_not_minted(profiles):
+def test_a_read_shaped_profile_is_not_minted(profiles, monkeypatch):
     _submitter, child, spawned = profiles
+    monkeypatch.setenv(config.CHILD_ACTOR_SUFFIX_ENV_VAR, ":worker")
 
     answer = _call(
         ops=[
@@ -506,6 +537,54 @@ def test_a_read_shaped_profile_is_not_minted(profiles):
     assert spawned == [{"cwd": str(child.resolve()), "minted": False}]
     assert not (child / ".khive").exists()
     assert jobs._read_job(answer["result"]["run_id"])["child_actor"] is None
+
+
+@pytest.mark.parametrize("flag", ["yolo", "bypass"])
+def test_a_write_flag_passed_with_a_read_shaped_profile_is_minted(profiles, monkeypatch, flag):
+    _submitter, child, spawned = profiles
+    monkeypatch.setenv(config.CHILD_ACTOR_SUFFIX_ENV_VAR, ":worker")
+    args = {
+        "agent": "reviewer",
+        "prompt": "r",
+        "cwd": str(child),
+        "no_mcp_config": True,
+        flag: True,
+    }
+
+    answer = _call(ops=[_spawn_op("agent.submit", args)])["ops"][0]
+
+    assert answer["ok"] is True, answer
+    assert spawned == [{"cwd": str(child.resolve()), "minted": True}]
+    assert _parsed(child / ".khive" / "config.toml")["actor"]["id"] == "agent:x:worker"
+    assert jobs._read_job(answer["result"]["run_id"])["child_actor"] == "agent:x:worker"
+
+
+@pytest.mark.parametrize("flag", ["yolo", "bypass"])
+def test_a_write_flag_passed_without_a_cwd_is_invalid_input(profiles, monkeypatch, flag):
+    _submitter, _child, spawned = profiles
+    monkeypatch.setenv(config.CHILD_ACTOR_SUFFIX_ENV_VAR, ":worker")
+    args = {"query": ["claude_code/sonnet"], "prompt": "w", "no_mcp_config": True, flag: True}
+
+    answer = _call(ops=[_spawn_op("agent.submit", args)])["ops"][0]
+
+    assert answer["ok"] is False, answer
+    assert answer["error"]["kind"] == "invalid_input", answer
+    assert "pass cwd" in answer["error"]["message"]
+    assert spawned == []
+
+
+@pytest.mark.parametrize("op", ["flow.submit", "fanout.submit"])
+def test_an_orchestration_run_is_minted_whatever_its_profile(profiles, monkeypatch, op):
+    """Its workers are cast onto profiles while it runs, so the submit cannot bound their writes."""
+    _submitter, child, spawned = profiles
+    monkeypatch.setenv(config.CHILD_ACTOR_SUFFIX_ENV_VAR, ":worker")
+    args = {"agent": "reviewer", "prompt": "r", "cwd": str(child), "no_mcp_config": True}
+
+    answer = _call(ops=[_spawn_op(op, args)])["ops"][0]
+
+    assert answer["ok"] is True, answer
+    assert spawned == [{"cwd": str(child.resolve()), "minted": True}]
+    assert _parsed(child / ".khive" / "config.toml")["actor"]["id"] == "agent:x:worker"
 
 
 def test_minting_is_off_unless_the_server_names_a_child_suffix(
@@ -538,3 +617,136 @@ def test_the_configured_suffix_is_the_one_minted(submit_sandbox, monkeypatch):
     assert spawned == [{"cwd": str(child), "minted": True}]
     assert _parsed(child / ".khive" / "config.toml")["actor"]["id"] == "agent:x:worker"
     assert handle["child_actor"] == "agent:x:worker"
+
+
+# --- reuse, suffix, refusal ---------------------------------------------------
+
+
+def test_a_child_config_with_the_child_id_and_another_actor_table_is_minted_again(trees):
+    submitter, child = trees
+    mint_child_actor_config(str(submitter), str(child), ":worker")
+    target = child / ".khive" / "config.toml"
+    widened = target.read_text().replace(
+        'visible_namespaces = ["agent:x"]', 'visible_namespaces = ["agent:x", "agent:other"]'
+    )
+    assert widened != target.read_text()
+    target.write_text(widened)
+
+    minted = mint_child_actor_config(str(submitter), str(child), ":worker")
+
+    assert minted.reused is False
+    assert _parsed(target)["actor"] == {
+        "id": "agent:x:worker",
+        "display_name": "agent:x:worker",
+        "visible_namespaces": ["agent:x"],
+    }
+
+
+@pytest.mark.parametrize("suffix", [":child\n# line", "   ", ":a b", ":a\tb", ":a​b", ":a\x00b"])
+def test_a_suffix_holding_whitespace_or_a_control_character_is_refused(suffix):
+    with pytest.raises(ChildActorError, match="whitespace or a control character"):
+        child_actor_for("agent:x", suffix)
+
+
+def test_a_submitting_actor_holding_whitespace_is_refused():
+    with pytest.raises(ChildActorError, match="whitespace or a control character"):
+        child_actor_for("agent:x y", ":worker")
+
+
+def test_a_relative_sender_root_refuses_only_a_submit_that_declares_a_sender(
+    submit_sandbox, tmp_path, monkeypatch
+):
+    _submitter, child, spawned = submit_sandbox
+    monkeypatch.setenv(config.SENDER_ROOTS_ENV_VAR, "signers")
+
+    jobs.submit("agent", [], prompt="work", cwd=str(child), no_mcp_config=True)
+    assert len(spawned) == 1
+
+    with pytest.raises(jobs.NotifySenderResolutionError, match="'signers'"):
+        jobs.submit(
+            "agent", [], prompt="work", cwd=str(child), no_mcp_config=True, notify_sender="agent:x"
+        )
+    assert len(spawned) == 1
+    assert len(_run_dirs(tmp_path)) == 1
+
+
+def test_a_relative_sender_root_is_reported_unavailable_not_internal(profiles, monkeypatch):
+    _submitter, child, spawned = profiles
+    monkeypatch.setenv(config.SENDER_ROOTS_ENV_VAR, "signers")
+    args = {"agent": "reviewer", "prompt": "r", "cwd": str(child), "no_mcp_config": True}
+
+    without = _call(ops=[_spawn_op("agent.submit", args)])["ops"][0]
+    declared = _call(ops=[_spawn_op("agent.submit", {**args, "notify_sender": "agent:x"})])["ops"][
+        0
+    ]
+
+    assert without["ok"] is True, without
+    assert declared["ok"] is False, declared
+    assert declared["error"]["kind"] == "unavailable", declared
+    assert len(spawned) == 1
+
+
+def test_a_refused_submit_takes_back_the_config_it_minted(submit_sandbox, tmp_path, monkeypatch):
+    _submitter, child, spawned = submit_sandbox
+    monkeypatch.setenv(config.SENDER_ROOTS_ENV_VAR, str(tmp_path / "allowed"))
+    monkeypatch.setenv(config.CHILD_ACTOR_SUFFIX_ENV_VAR, ":worker")
+
+    with pytest.raises(jobs.NotifySenderResolutionError, match="outside the roots"):
+        jobs.submit(
+            "agent",
+            [],
+            prompt="work",
+            cwd=str(child),
+            no_mcp_config=True,
+            notify_sender="agent:x:worker",
+            write_capable=True,
+        )
+
+    assert spawned == []
+    assert _run_dirs(tmp_path) == []
+    assert not (child / ".khive").exists()
+
+
+def test_a_refused_submit_leaves_a_config_it_did_not_create(submit_sandbox, tmp_path, monkeypatch):
+    submitter, child, spawned = submit_sandbox
+    mint_child_actor_config(str(submitter), str(child), ":worker")
+    target = child / ".khive" / "config.toml"
+    before = target.read_bytes()
+    monkeypatch.setenv(config.SENDER_ROOTS_ENV_VAR, str(tmp_path / "allowed"))
+    monkeypatch.setenv(config.CHILD_ACTOR_SUFFIX_ENV_VAR, ":worker")
+
+    with pytest.raises(jobs.NotifySenderResolutionError, match="outside the roots"):
+        jobs.submit(
+            "agent",
+            [],
+            prompt="work",
+            cwd=str(child),
+            no_mcp_config=True,
+            notify_sender="agent:x:worker",
+            write_capable=True,
+        )
+
+    assert spawned == []
+    assert target.read_bytes() == before
+
+
+def test_a_submit_refused_after_its_reservation_takes_back_the_config_it_minted(
+    submit_sandbox, tmp_path, monkeypatch
+):
+    _submitter, child, spawned = submit_sandbox
+    monkeypatch.setenv(config.CHILD_ACTOR_SUFFIX_ENV_VAR, ":worker")
+    monkeypatch.setattr("lionagi.cli._mcp_resolve.discover_mcp_config", lambda start: None)
+
+    with pytest.raises(jobs.SubmitInputError, match="not declared"):
+        jobs.submit(
+            "agent",
+            [],
+            prompt="work",
+            cwd=str(child),
+            exclude_mcp_servers=["ghost"],
+            write_capable=True,
+        )
+
+    assert spawned == []
+    assert _run_dirs(tmp_path) == []
+    assert not (child / ".khive").exists()

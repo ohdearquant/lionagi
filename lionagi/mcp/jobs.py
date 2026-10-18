@@ -39,7 +39,7 @@ from lionagi.ln._proc import (
 from lionagi.ln.concurrency import current_time, sleep
 
 from . import config
-from ._child_actor import ChildActorError, mint_child_actor_config
+from ._child_actor import ChildActorError, SubmittingActorError, mint_child_actor_config
 from ._errors import SubmitInputError
 
 _log = logging.getLogger(__name__)
@@ -114,14 +114,12 @@ LOST_REASON = "process_gone_without_outcome"
 # and an absent file is exactly what true silence also looks like.
 LOST_REASON_NOTICE_RECORDED_UNDELIVERED = "process_gone_notice_recorded_undelivered"
 
-# Two more siblings, read from the run's own run.json. The run decided a
-# terminal status and its store refused the write (``terminal_write_lost``), or
-# its signal persistence stopped waiting on a store that refused the writer
-# lock (``signal_persistence_degraded_at``). Neither is a recorded status, so
-# both stay OUTCOME_INDETERMINATE, and neither is ever assigned from the
-# absence of a field: retention prunes run directories, and an absent field is
-# also what an older run and a silent one look like.
-REASON_DETAIL_TERMINAL_WRITE_LOST = "terminal_write_lost"
+# A finer cause beside that reason code, read from the run's own run.json: the
+# run turned its persistence off after its setup failed
+# (``persistence_degraded_reason``), so it had no store to record an outcome in.
+# That is not a recorded status either, so it stays OUTCOME_INDETERMINATE, and it
+# is never assigned from the absence of the field: retention prunes run
+# directories, and an absent field is also what a silent run looks like.
 REASON_DETAIL_PERSISTENCE_DEGRADED = "persistence_degraded"
 
 # Outcome values valid to report back from a job record.
@@ -207,8 +205,6 @@ LIFECYCLE_TIMEOUT_SECONDS = 20.0
 _LIFECYCLE_OUTPUT_LIMIT = 1_000_000
 _PERSISTENCE_DEGRADED_REASON_FIELD = "persistence_degraded_reason"
 _SIGNAL_PERSIST_DROPPED_FIELD = "signal_persist_dropped"
-_TERMINAL_WRITE_LOST_FIELD = "terminal_write_lost"
-_SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD = "signal_persistence_degraded_at"
 
 # The most of a run.json the reaper reads to pick a reason code. An agent run's
 # file is a few kilobytes (its largest field is free-text error), so a larger
@@ -886,7 +882,7 @@ def _reject_oversized_argv(argv: list[str], env: dict[str, str], *, kind: str) -
         for arg in argv:
             n = len(arg.encode())
             if n > per_arg:
-                raise ValueError(
+                raise SubmitInputError(
                     f"cannot submit this {kind} run: one argument is {n} bytes, over the "
                     f"{per_arg}-byte limit this platform places on a single argument "
                     f"regardless of the {limit}-byte total. {advice}"
@@ -902,7 +898,7 @@ def _reject_oversized_argv(argv: list[str], env: dict[str, str], *, kind: str) -
         if kind != "agent"
         else "the command line is too long"
     )
-    raise ValueError(
+    raise SubmitInputError(
         f"cannot submit this {kind} run: {detail}, and it needs {used} bytes of "
         f"argument vector plus environment against an OS limit of {limit}. {advice}"
     )
@@ -1081,6 +1077,24 @@ def _submit_cwd() -> str | None:
 _ACTOR_CONFIG = os.path.join(".khive", "config.toml")
 
 
+def _withdraw_fresh_mint(fresh: tuple[str, os.stat_result, bool] | None) -> None:
+    """Remove a child actor config this submission minted where none existed, on a refusal.
+
+    A submission refused before its record exists leaves the run directory as it
+    found it. Only a config the mint created is removed, and only while the file at
+    that path is still the one the mint wrote; a reused or re-minted config, and a
+    ``.khive`` that held anything else, are left in place.
+    """
+    if fresh is None:
+        return
+    path, written, created_khive = fresh
+    with contextlib.suppress(OSError):
+        if os.path.samestat(os.lstat(path), written):
+            os.unlink(path)
+            if created_khive:
+                os.rmdir(os.path.dirname(path))
+
+
 def _sender_anchor(run_cwd: str | None, submit_cwd: str | None) -> tuple[str | None, bool]:
     """The directory a declared sender is judged against, and where its notice is signed.
 
@@ -1099,7 +1113,16 @@ def _sender_anchor(run_cwd: str | None, submit_cwd: str | None) -> tuple[str | N
     root. The second element says whether run-directory anchoring applied,
     because only that path requires a config at the chosen directory.
     """
-    if run_cwd and config.sender_roots():
+    if not run_cwd:
+        return submit_cwd, False
+    try:
+        roots = config.sender_roots()
+    except ValueError as exc:
+        raise NotifySenderResolutionError(
+            f"cannot choose the directory notify_sender is judged against: {exc}; "
+            f"{_NOTIFY_SENDER_FALLBACK}"
+        ) from exc
+    if roots:
         # the child spawns with this cwd, so resolve it the way the spawn will
         return os.path.abspath(run_cwd), True
     return submit_cwd, False
@@ -1276,6 +1299,8 @@ def submit(
     if len(exclusions) != len(set(exclusions)):
         raise SubmitInputError("exclude_mcp_servers contains duplicate server names")
     excluded_mcp_servers = sorted(exclusions)
+    # null on the record means no exclusion was asked for, as the job surfaces document
+    recorded_exclusions = None if exclude_mcp_servers is None else excluded_mcp_servers
     if excluded_mcp_servers and mcp_config is not None:
         raise SubmitInputError(
             "exclude_mcp_servers cannot be combined with mcp_config because the caller-owned "
@@ -1289,6 +1314,7 @@ def submit(
 
     submit_cwd = _submit_cwd()
     minted = None
+    fresh_mint = None
     child_actor_suffix = config.child_actor_suffix() if write_capable else None
     if child_actor_suffix:
         if cwd is None:
@@ -1296,22 +1322,33 @@ def submit(
                 "a write-capable run needs its own tree: pass cwd; its actor config is minted there"
             )
         if submit_cwd is None:
-            raise ChildActorError(
+            raise SubmittingActorError(
                 "the submitting directory is unavailable, so no submitting actor exists to "
                 "derive a child actor from"
             )
+        target = os.path.join(cwd, _ACTOR_CONFIG)
+        created_khive = not os.path.lexists(os.path.dirname(target))
+        absent = not os.path.lexists(target)
         # before the sender check, so a declared sender is judged against the
         # minted child actor
         minted = mint_child_actor_config(submit_cwd, cwd, child_actor_suffix)
+        if absent and not minted.reused:
+            with contextlib.suppress(OSError):
+                fresh_mint = (minted.config_path, os.lstat(minted.config_path), created_khive)
     # Captured once and used for the check, the record and the delivery, so
     # the run cannot be attested against one directory and delivered from
     # another.
-    sender_cwd, caller_named_anchor = _sender_anchor(cwd, submit_cwd)
-    if not notify_sender:
-        sender_cwd = None
-    _validate_notify_sender(notify_sender, sender_cwd, caller_named=caller_named_anchor)
-
-    run_id, d = _reserve_run_dir()
+    sender_cwd, caller_named_anchor = None, False
+    try:
+        if notify_sender:
+            # only a declared sender reads the configured roots, so a misconfigured
+            # root refuses a submission that names a sender and no other
+            sender_cwd, caller_named_anchor = _sender_anchor(cwd, submit_cwd)
+        _validate_notify_sender(notify_sender, sender_cwd, caller_named=caller_named_anchor)
+        run_id, d = _reserve_run_dir()
+    except BaseException:
+        _withdraw_fresh_mint(fresh_mint)
+        raise
     log_path = d / "console.log"
 
     # Any failure before the record exists (below) gives the reservation back
@@ -1371,6 +1408,12 @@ def submit(
                         f"cannot submit this agent run: the MCP config found at "
                         f"{resolution.source} cannot be used "
                         f"({resolution.reason.split(':', 1)[1].strip()})"
+                    )
+                if excluded_mcp_servers:
+                    raise SubmitInputError(
+                        "exclude_mcp_servers names servers not declared by the resolved config: "
+                        + ", ".join(excluded_mcp_servers)
+                        + f" (no server set resolves from {launch_dir}: {resolution.reason})"
                     )
                 mcp_config_reason = (
                     f"{resolution.reason}_at_or_above:{launch_dir}"
@@ -1446,6 +1489,7 @@ def submit(
             )
     except BaseException:
         _discard_reservation_and_warn(d, run_id)
+        _withdraw_fresh_mint(fresh_mint)
         raise
 
     # Persist the record BEFORE spawning, so the child's terminal --notify hook
@@ -1490,7 +1534,7 @@ def submit(
         "mcp_config_source": mcp_config_source,
         "mcp_config_reason": mcp_config_reason,
         "declared_mcp_servers": declared_mcp_servers,
-        "excluded_mcp_servers": excluded_mcp_servers,
+        "excluded_mcp_servers": recorded_exclusions,
         # Deprecated response/record alias; keep equal to the truthful name.
         "mcp_config_servers": declared_mcp_servers,
         "submitted_at": _now_iso(),
@@ -1509,6 +1553,7 @@ def submit(
         # back is the right answer: past this line the run exists, and a failure
         # is marked on the record rather than erased along with it.
         _discard_reservation_and_warn(d, run_id)
+        _withdraw_fresh_mint(fresh_mint)
         raise
 
     try:
@@ -1569,7 +1614,7 @@ def submit(
         "mcp_config_source": mcp_config_source,
         "mcp_config_reason": mcp_config_reason,
         "declared_mcp_servers": declared_mcp_servers,
-        "excluded_mcp_servers": excluded_mcp_servers,
+        "excluded_mcp_servers": recorded_exclusions,
         "mcp_config_servers": declared_mcp_servers,
         "notify_sender": notify_sender,
         "child_actor": minted.actor if minted else None,
@@ -1911,9 +1956,9 @@ def _read_run_json_bounded(run_id: str) -> dict[str, Any] | None:
     """*run_id*'s run.json as an object, or None when nothing trustworthy is in it.
 
     Fail-closed: absent, unreadable, larger than ``_MAX_RUN_MANIFEST_BYTES``,
-    not JSON, or not an object are one outcome, so a damaged file never assigns
-    a code. The read takes at most one byte past the cap, so a file that grows
-    while it is read is refused as well.
+    not JSON, not an object, or naming another run are one outcome, so a damaged
+    or misplaced file never assigns a code. The read takes at most one byte past
+    the cap, so a file that grows while it is read is refused as well.
     """
     try:
         with config.run_manifest(run_id).open("rb") as handle:
@@ -1923,54 +1968,26 @@ def _read_run_json_bounded(run_id: str) -> dict[str, Any] | None:
         loaded = json.loads(raw)
     except Exception:  # noqa: BLE001 — absent, unreadable, oversize and malformed are one outcome
         return None
-    return loaded if isinstance(loaded, dict) else None
+    if not isinstance(loaded, dict) or loaded.get("run_id") != run_id:
+        return None
+    return loaded
 
 
-def _terminal_write_lost_record(value: Any) -> dict[str, Any] | None:
-    """The ``terminal_write_lost`` record of a run.json, or None unless every field has its shape.
+def _orphan_reason(run_id: str) -> tuple[str, str | None]:
+    """The reason code and finer detail for a conclusively gone run.
 
-    The status must be a terminal session status, the reason code a non-empty
-    short string and the time a finite number. A record is taken whole or not
-    at all, so a malformed one reads as absent and assigns nothing.
+    In order: its directory records a terminal notice it never delivered; its
+    run.json records that its persistence was turned off; otherwise silence.
+    Each step reads only what the run wrote, never an absence. The reason code
+    keeps the value main reported for every case; the detail carries the
+    distinction beside it.
     """
-    if not isinstance(value, dict):
-        return None
-    from lionagi.state.lifecycle.policy import DEFAULT_REGISTRY
-
-    status = value.get("status")
-    code = value.get("reason_code")
-    at = value.get("at")
-    if (
-        not isinstance(status, str)
-        or status not in DEFAULT_REGISTRY.get("session").terminal_statuses
-    ):
-        return None
-    if not isinstance(code, str) or not code or len(code) > 256:
-        return None
-    if not _is_plain_number(at):
-        return None
-    return {"status": status, "reason_code": code, "at": at}
-
-
-def _orphan_reason(run_id: str) -> tuple[str, str | None, str | None]:
-    """The reason code, finer detail, and decided status for a conclusively gone run.
-
-    In order: its run.json records a terminal write its store refused; its
-    directory records a terminal notice it never delivered; its run.json records
-    that signal persistence stopped waiting on a refusing store; otherwise
-    silence. Each step reads only what the run wrote, never an absence. The
-    reason code keeps the value main reported for every case; the returned detail
-    carries the new distinction beside it.
-    """
-    run_json = _read_run_json_bounded(run_id) or {}
-    lost = _terminal_write_lost_record(run_json.get(_TERMINAL_WRITE_LOST_FIELD))
     if _notice_recorded_undelivered(run_id):
-        return LOST_REASON_NOTICE_RECORDED_UNDELIVERED, None, None
-    if lost is not None:
-        return LOST_REASON, REASON_DETAIL_TERMINAL_WRITE_LOST, lost["status"]
-    if _is_plain_number(run_json.get(_SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD)):
-        return LOST_REASON, REASON_DETAIL_PERSISTENCE_DEGRADED, None
-    return LOST_REASON, None, None
+        return LOST_REASON_NOTICE_RECORDED_UNDELIVERED, None
+    degraded = (_read_run_json_bounded(run_id) or {}).get(_PERSISTENCE_DEGRADED_REASON_FIELD)
+    if isinstance(degraded, str) and degraded:
+        return LOST_REASON, REASON_DETAIL_PERSISTENCE_DEGRADED
+    return LOST_REASON, None
 
 
 # Per-key type check for `evidence=` on `reap_orphan`: this is a record any
@@ -2121,13 +2138,9 @@ def reap_orphan(
             return ReapResult(False, job, "spawn_state_is_not_started")
         if job.get("finished_at") is not None:
             return ReapResult(False, job, "already_ended")
-        reason_code, reason_detail, decided_status = _orphan_reason(run_id)
+        reason_code, reason_detail = _orphan_reason(run_id)
         terminal_evidence = {"kind": EVIDENCE_PROCESS_GONE, "finding": finding}
         terminal_evidence.update(validated_evidence)
-        if decided_status is not None:
-            # The status the run decided, copied from its run.json; the outcome
-            # stays indeterminate, since it is not a recorded status.
-            terminal_evidence["decided_status"] = decided_status
         job.update(
             {
                 "status": "exited",

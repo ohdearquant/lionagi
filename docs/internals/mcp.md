@@ -75,30 +75,23 @@ assign a distinct `reason_code`; the next two keep the pre-existing
   checks, only as a refinement of which reason code the reap writes.
   `reason_code=process_gone_notice_recorded_undelivered`
   (`LOST_REASON_NOTICE_RECORDED_UNDELIVERED`).
-- **Terminal write lost** — the run's own `run.json` carries a
-  `terminal_write_lost` record `{status, reason_code, at}`: the run decided a
-  terminal status and its store refused the write. The reap keeps
-  `reason_code=process_gone_without_outcome` (`LOST_REASON`), reports
-  `reason_detail=terminal_write_lost`
-  (`REASON_DETAIL_TERMINAL_WRITE_LOST`), and copies the decided status into
-  `terminal_evidence.decided_status`. The record is read whole or not at all:
-  a malformed one assigns nothing.
-- **Signal persistence degraded** — `run.json` carries a finite
-  `signal_persistence_degraded_at`: the run stopped waiting on a store that
-  refused the writer lock. `reason_code=process_gone_without_outcome`
-  (`LOST_REASON`), with `reason_detail=persistence_degraded`
-  (`REASON_DETAIL_PERSISTENCE_DEGRADED`).
+- **Persistence degraded** — the run's own `run.json` carries a non-empty
+  `persistence_degraded_reason`: its live persistence setup failed and it ran
+  with persistence turned off, so it had no store to record an outcome in. The
+  reap keeps `reason_code=process_gone_without_outcome` (`LOST_REASON`) and
+  reports `reason_detail=persistence_degraded`
+  (`REASON_DETAIL_PERSISTENCE_DEGRADED`). Any other value assigns nothing.
 - **True silence** — no spawn failure, no recorded notice either way, process
   conclusively gone. `reason_code=process_gone_without_outcome` (`LOST_
   REASON`), with `reason_detail=null`.
 
-`run.json` is read for the detail cases through one bounded reader: absent,
-unreadable, larger than `_MAX_RUN_MANIFEST_BYTES`, not JSON, or not an object
-assigns nothing, so a damaged file never becomes a claim about how the run
-ended. Precedence is the order above — a lost terminal write, then an
-undelivered notice, then degraded persistence, then silence — and each step
-reads only what the run wrote, never an absence. The undelivered-notice case
-keeps its own reason code and outranks the detail-only cases.
+`run.json` is read for the detail case through one bounded reader: absent,
+unreadable, larger than `_MAX_RUN_MANIFEST_BYTES`, not JSON, not an object, or
+naming another run assigns nothing, so a damaged or misplaced file never becomes
+a claim about how the run ended. Precedence is the order above — an undelivered
+notice, then degraded persistence, then silence — and each step reads only what
+the run wrote, never an absence. The undelivered-notice case keeps its own
+reason code and outranks the detail-only case.
 
 The file read for the second case is best-effort and one-directional: found
 and parseable with `ok: false` upgrades the reason code; anything else (file
@@ -428,8 +421,8 @@ is surfaced rather than left for a reader to notice two fields disagree.
   applied — and every listed name was present in the resolved config, since a
   name that was not is refused before the run starts.
 - `reason_detail` refines an orphan-reaper `reason_code` without replacing it:
-  `terminal_write_lost` or `persistence_degraded` when the run recorded that
-  cause, null otherwise. It appears beside the same fields on the job record,
+  `persistence_degraded` when the run recorded that its persistence was turned
+  off, null otherwise. It appears beside the same fields on the job record,
   the notice payload, and a `job.list` row.
 - `child_actor` / `child_actor_config` / `submitting_actor` are set only when a
   write-capable submission runs under a server configured with

@@ -209,6 +209,40 @@ def test_dispatch_reports_an_unknown_server_exclusion_as_invalid_input(
     assert not config.JOBS_DIR.exists() or list(config.JOBS_DIR.iterdir()) == []
 
 
+@pytest.mark.parametrize(
+    ("declared", "reason"),
+    [(None, "no_mcp_config_found"), ({}, "mcp_config_declares_no_servers")],
+)
+def test_dispatch_refuses_an_exclusion_when_no_server_set_resolves(
+    sandbox, submit_dir, monkeypatch, declared, reason
+):
+    """Nothing resolved means nothing to remove, so the exclusion cannot be honoured."""
+    if declared is None:
+        monkeypatch.setattr("lionagi.cli._mcp_resolve.discover_mcp_config", lambda start: None)
+    else:
+        (submit_dir / ".mcp.json").write_text(json.dumps({"mcpServers": declared}))
+    spawned: list = []
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda *a, **kw: spawned.append(a))
+
+    answer = _spawn_verb(
+        "agent.submit",
+        {
+            "query": ["a-model"],
+            "prompt": "hi",
+            "cwd": str(submit_dir),
+            "exclude_mcp_servers": ["khive"],
+        },
+        expect_refusal=True,
+    )
+
+    assert answer["ok"] is False, answer
+    assert answer["error"]["kind"] == "invalid_input", answer
+    assert "not declared" in answer["error"]["message"]
+    assert reason in answer["error"]["message"]
+    assert spawned == []
+    assert not config.JOBS_DIR.exists() or list(config.JOBS_DIR.iterdir()) == []
+
+
 def test_no_config_anywhere_is_reported_not_raised(sandbox, submit_dir, monkeypatch):
     """Nothing configured is a choice, not a failure — the run still starts and
     the handle says why it has no servers."""
@@ -218,6 +252,21 @@ def test_no_config_anywhere_is_reported_not_raised(sandbox, submit_dir, monkeypa
     handle = jobs.submit("agent", ["-m", "x"], prompt="hi", cwd=str(submit_dir))
     assert handle["mcp_config"] is None
     assert handle["mcp_config_reason"]
+
+
+@pytest.mark.parametrize(("asked", "recorded"), [(None, None), ([], [])])
+def test_the_exclusion_is_recorded_as_asked(sandbox, submit_dir, monkeypatch, asked, recorded):
+    """null says no exclusion was asked for; an empty list says one was asked for and named none."""
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda argv, **kw: _FakeProc())
+    monkeypatch.setattr("lionagi.cli._mcp_resolve.discover_mcp_config", lambda start: None)
+
+    handle = jobs.submit(
+        "agent", ["-m", "x"], prompt="hi", cwd=str(submit_dir), exclude_mcp_servers=asked
+    )
+
+    assert handle["excluded_mcp_servers"] == recorded
+    assert jobs._read_job(handle["run_id"])["excluded_mcp_servers"] == recorded
+    assert jobs.status(handle["run_id"])["excluded_mcp_servers"] == recorded
 
 
 def test_a_caller_who_names_a_config_gets_that_config_and_a_handle_that_says_so(

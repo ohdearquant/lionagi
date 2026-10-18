@@ -22,11 +22,9 @@ from lionagi.mcp._errors import SubmitInputError
 __all__ = (
     "MCP_CONFIG_FILENAME",
     "McpConfigError",
-    "McpProfilePolicy",
     "McpResolution",
     "SNAPSHOT_SEARCHED_FROM_KEY",
     "SNAPSHOT_SOURCE_KEY",
-    "apply_profile_mcp_policy",
     "discover_mcp_config",
     "explicit_mcp_config_path",
     "resolve_spawn_mcp_servers",
@@ -52,27 +50,6 @@ class McpConfigError(SubmitInputError):
 
 
 @dataclass(frozen=True)
-class McpProfilePolicy:
-    """Normalized MCP authority declared by an agent profile.
-
-    ``enabled=False`` is an exact refusal. ``servers`` is an exact allowlist
-    over whichever catalog the higher-precedence layer resolved. ``None`` for
-    either field means the profile is silent on that dimension.
-    """
-
-    enabled: bool | None = None
-    servers: tuple[str, ...] | None = None
-
-    def as_dict(self) -> dict[str, Any]:
-        value: dict[str, Any] = {}
-        if self.enabled is not None:
-            value["enabled"] = self.enabled
-        if self.servers is not None:
-            value["servers"] = list(self.servers)
-        return value
-
-
-@dataclass(frozen=True)
 class McpResolution:
     """What the submitting side resolved, and why it is what it is.
 
@@ -90,9 +67,6 @@ class McpResolution:
     # that must tell "someone asked for these servers" from "these were lying
     # around" cannot recover the difference from ``servers`` or ``source``.
     explicit: bool = False
-    # A profile policy is also an authored authority decision, but it remains
-    # distinct from ``explicit`` because a submit-time config must outrank it.
-    profile_applied: bool = False
 
     @property
     def ok(self) -> bool:
@@ -113,19 +87,6 @@ class McpResolution:
             return True
         return self.reason is None
 
-    @property
-    def exact(self) -> bool:
-        """Whether ``servers`` is the complete set for this spawn.
-
-        A declared empty set is exact. So is any set a profile policy produced:
-        an allowlist selects from the catalog, and handing its survivors over
-        additively lets the child merge the excluded names back in from the
-        provider's own configuration -- the second discovery the allowlist
-        exists to prevent. A non-empty set that came from a named or discovered
-        config is not exact; that handoff stays additive.
-        """
-        return self.profile_applied or self.declared_empty
-
 
 def discover_mcp_config(start: str | Path) -> Path | None:
     """Nearest ``.mcp.json`` at or above *start*, or None.
@@ -140,41 +101,6 @@ def discover_mcp_config(start: str | Path) -> Path | None:
         if candidate.is_file() and not is_account_home(directory):
             return candidate
     return None
-
-
-def apply_profile_mcp_policy(
-    resolution: McpResolution,
-    policy: McpProfilePolicy | None,
-) -> McpResolution:
-    """Apply a role policy below an explicit call and above ambient discovery.
-
-    An allowlist is an exact decision even when discovery found nothing: it
-    becomes ``{}``, not ``None``, so a child cannot perform its own second
-    discovery and regain servers outside the role's authority.
-    """
-    if policy is None:
-        return resolution
-    if policy.enabled is False:
-        return McpResolution(
-            {},
-            "profile_mcp_disabled",
-            None,
-            resolution.searched_from,
-            profile_applied=True,
-        )
-    if policy.servers is None:
-        return resolution
-
-    available = resolution.servers or {}
-    selected = {name: available[name] for name in policy.servers if name in available}
-    reason = resolution.reason if resolution.servers is None else None
-    return McpResolution(
-        selected,
-        reason or "profile_mcp_allowlist",
-        resolution.source,
-        resolution.searched_from,
-        profile_applied=True,
-    )
 
 
 def _reject_json_constant(token: str) -> Any:
@@ -249,7 +175,6 @@ def resolve_spawn_mcp_servers(
     *,
     launch_dir: str | Path,
     disabled: bool = False,
-    profile_policy: McpProfilePolicy | None = None,
 ) -> McpResolution:
     """Resolve the server set to hand a child spawned from *launch_dir*.
 
@@ -257,8 +182,6 @@ def resolve_spawn_mcp_servers(
     used — a caller who named a file is not asking for a silent fallback.
     Without one, the nearest config at or above *launch_dir* is used. *disabled*
     is the caller saying "no MCP servers", which is a choice and not a failure.
-    *profile_policy* is a role's own MCP authority, applied to a set this
-    submission resolves; a named *explicit* config outranks it.
     """
     searched_from = Path(launch_dir).expanduser().resolve()
 
@@ -282,34 +205,13 @@ def resolve_spawn_mcp_servers(
             else searched_from,
         )
 
-    # A disabled role must not read ambient configuration at all. Besides
-    # avoiding needless secret-bearing I/O, this makes the profile the source
-    # of authority rather than a filter applied after a broad grant was read.
-    if profile_policy is not None and profile_policy.enabled is False:
-        return apply_profile_mcp_policy(
-            McpResolution(None, None, None, searched_from),
-            profile_policy,
-        )
-
     found = discover_mcp_config(searched_from)
     if found is None:
-        return apply_profile_mcp_policy(
-            McpResolution(None, "no_mcp_config_found", None, searched_from),
-            profile_policy,
-        )
+        return McpResolution(None, "no_mcp_config_found", None, searched_from)
     try:
         servers = _read_servers(found)
     except McpConfigError as exc:
-        return apply_profile_mcp_policy(
-            McpResolution(None, f"mcp_config_unusable:{exc}", found, searched_from),
-            profile_policy,
-        )
+        return McpResolution(None, f"mcp_config_unusable:{exc}", found, searched_from)
     if not servers:
-        return apply_profile_mcp_policy(
-            McpResolution(None, "mcp_config_declares_no_servers", found, searched_from),
-            profile_policy,
-        )
-    return apply_profile_mcp_policy(
-        McpResolution(servers, None, found, searched_from),
-        profile_policy,
-    )
+        return McpResolution(None, "mcp_config_declares_no_servers", found, searched_from)
+    return McpResolution(servers, None, found, searched_from)

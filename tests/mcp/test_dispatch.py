@@ -1233,17 +1233,71 @@ def _judged(schema: dict, args: dict) -> list[str]:
 
 
 def test_an_enum_is_checked_whatever_the_value_s_type():
-    """A string enum was skipped entirely because only arrays read their enum.
-
-    ``team send`` names the kind of message with choices; a value outside them
-    reached argv and the child was the first to reject it.
-    """
+    """``team send`` names the kind of message with choices; a value outside
+    them is refused before it reaches argv."""
     schema = call(help="team.send")["schema"]
     kind = schema["properties"]["kind"]
     assert kind["enum"], "the fixture needs a scalar enum to test"
     answer = call(ops=[{"op": "team.send", "args": {"team": "t", "to": "a", "kind": "note"}}])
     assert answer["ops"][0]["ok"] is False
     assert "must be one of" in answer["ops"][0]["error"]["message"]
+
+
+@pytest.mark.parametrize(
+    ("schema", "value"),
+    [
+        ({"type": "string", "minLength": 1, "enum": ["a", "b"]}, "c"),
+        ({"type": "integer", "minimum": 0, "enum": [1, 2]}, 3),
+        ({"type": "number", "maximum": 9, "enum": [1.5]}, 2.5),
+    ],
+)
+def test_an_enum_is_checked_beside_the_type_s_own_bounds(schema, value):
+    """Membership is checked after a type's own checks, not instead of them."""
+    assert _judged(schema, {"value": value}) == [
+        f"'value' must be one of {schema['enum']}, got {value!r}"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("schema", "value", "message"),
+    [
+        (
+            {"type": "array", "items": {"type": "string", "minLength": 1}},
+            ["a", ""],
+            "value[1] needs at least 1 character(s)",
+        ),
+        (
+            {"type": "array", "items": {"type": "string", "maxLength": 2}},
+            ["abc"],
+            "value[0] takes at most 2 character(s)",
+        ),
+        (
+            {"type": "array", "items": {"type": "string"}, "uniqueItems": True},
+            ["a", "b", "a"],
+            "'value' holds the same value more than once",
+        ),
+    ],
+    ids=["item-min-length", "item-max-length", "unique-items"],
+)
+def test_an_array_s_item_constraints_are_checked(schema, value, message):
+    assert _judged(schema, {"value": value}) == [message]
+
+
+def test_an_array_within_its_item_constraints_passes():
+    schema = {
+        "type": "array",
+        "items": {"type": "string", "minLength": 1, "maxLength": 2},
+        "uniqueItems": True,
+    }
+    assert _judged(schema, {"value": ["a", "bc"]}) == []
+
+
+def test_the_exclusion_schema_refuses_an_overlong_server_name_before_the_spawn():
+    schema = call(help="agent.submit")["schema"]["properties"]["exclude_mcp_servers"]
+    assert schema["items"]["maxLength"] == 200, "the fixture needs the advertised item bound"
+    assert dispatch._check_value("exclude_mcp_servers", schema, ["x" * 201]) == [
+        "exclude_mcp_servers[0] takes at most 200 character(s)"
+    ]
 
 
 def test_a_scalar_enum_admits_its_members():

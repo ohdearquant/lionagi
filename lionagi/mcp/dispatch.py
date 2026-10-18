@@ -348,13 +348,25 @@ def _check_value(name: str, spec: dict[str, Any], value: Any) -> list[str]:
                 )
             elif "enum" in item and element not in item["enum"]:
                 problems.append(f"{name}[{index}] must be one of {item['enum']}, got {element!r}")
+            elif isinstance(element, str):
+                if "minLength" in item and len(element) < item["minLength"]:
+                    problems.append(
+                        f"{name}[{index}] needs at least {item['minLength']} character(s)"
+                    )
+                if "maxLength" in item and len(element) > item["maxLength"]:
+                    problems.append(
+                        f"{name}[{index}] takes at most {item['maxLength']} character(s)"
+                    )
+        if spec.get("uniqueItems") and len(
+            {json.dumps(element, sort_keys=True) for element in value}
+        ) < len(value):
+            problems.append(f"{name!r} holds the same value more than once")
         if "minItems" in spec and len(value) < spec["minItems"]:
             problems.append(f"{name!r} needs at least {spec['minItems']} value(s)")
         if "maxItems" in spec and len(value) > spec["maxItems"]:
             problems.append(f"{name!r} takes at most {spec['maxItems']} value(s)")
-    # Membership is independent of the value's JSON type and its type-specific
-    # checks. Kept in the ``elif`` chain it was skipped for every scalar whose
-    # declared type was handled above -- notably strings.
+    # Membership is independent of the value's JSON type, so it is checked after
+    # the type's own checks rather than as one more branch beside them.
     if "enum" in spec and value not in spec["enum"]:
         problems.append(f"{name!r} must be one of {spec['enum']}, got {value!r}")
     return problems
@@ -734,7 +746,8 @@ def _refuse_unknown_profile(args: dict[str, Any], cwd: str | None) -> Any:
     with roster._resolving_under(cwd):
         try:
             return load_agent_profile(name)
-        except (AgentProfileNotFoundError, AmbiguousProfileNameError) as exc:
+        # ValueError covers a name the resolver refuses outright, such as one with a path in it
+        except (AgentProfileNotFoundError, AmbiguousProfileNameError, ValueError) as exc:
             raise OpError("invalid_input", str(exc)) from exc
 
 
@@ -774,6 +787,21 @@ def _refuse_invalid_playbook_spec(schema: dict[str, Any]) -> None:
         raise OpError("invalid_input", f"playbook {name!r} has an invalid spec: {error}")
 
 
+def _write_capable(verb: Verb, args: dict[str, Any], profile: Any) -> bool:
+    """Whether the run can act with write authority, which gives it its own khive actor.
+
+    An agent run has it when its own ``yolo`` or ``bypass`` argument or its profile sets one; the
+    argument reaches the child's argv whatever the profile says. A flow, fanout or playbook run
+    casts its workers onto profiles while it executes, so nothing known at submit time bounds what
+    they may write, and such a run always counts.
+    """
+    if verb.job_kind != "agent":
+        return True
+    return any(
+        bool(args.get(flag)) or bool(getattr(profile, flag, False)) for flag in ("yolo", "bypass")
+    )
+
+
 def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
     _refuse_invalid_playbook_spec(schema)
     prompt = _resolve_prompt(args)
@@ -782,8 +810,7 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
     _refuse_without_prompt(verb, args, prompt)
     cwd = _resolve_cwd(args)
     profile = _refuse_unknown_profile(args, cwd)
-    # A profile that runs the child with write authority gets its own khive actor.
-    write_capable = bool(getattr(profile, "yolo", False) or getattr(profile, "bypass", False))
+    write_capable = _write_capable(verb, args, profile)
     flags = render_argv(schema, args)
     assert verb.job_kind is not None
     try:
@@ -801,6 +828,8 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
             exclude_mcp_servers=args.get("exclude_mcp_servers"),
             write_capable=write_capable,
         )
+    except jobs.SubmittingActorError as exc:
+        raise OpError("unavailable", str(exc)) from exc
     except jobs.ChildActorError as exc:
         raise OpError("invalid_input", str(exc)) from exc
     except jobs.NotifySenderMismatchError as exc:

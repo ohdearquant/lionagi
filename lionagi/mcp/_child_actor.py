@@ -18,6 +18,7 @@ import os
 import re
 import stat
 import tempfile
+import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
@@ -29,6 +30,7 @@ except ModuleNotFoundError:  # Python 3.10
 __all__ = [
     "ChildActorError",
     "MintedChildActor",
+    "SubmittingActorError",
     "child_actor_for",
     "mint_child_actor_config",
 ]
@@ -52,20 +54,41 @@ class ChildActorError(ValueError):
     """A write-capable child's actor config cannot be minted, so the run is refused."""
 
 
+class SubmittingActorError(ChildActorError):
+    """The server's own submitting identity or its child suffix cannot yield a child actor.
+
+    A condition of the server's directory and settings rather than of the caller's input, so a
+    caller cannot correct it by changing the submission.
+    """
+
+
+def _has_space_or_control(text: str) -> bool:
+    return any(ch.isspace() or unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp") for ch in text)
+
+
 def child_actor_for(submitting_actor: str, suffix: str) -> str:
     if not isinstance(submitting_actor, str) or not submitting_actor.strip():
-        raise ChildActorError(
+        raise SubmittingActorError(
             "the submitting actor is empty, so no child actor can be derived from it"
         )
     if not isinstance(suffix, str) or not suffix:
-        raise ChildActorError("the child actor suffix is empty")
+        raise SubmittingActorError("the child actor suffix is empty")
+    if _has_space_or_control(suffix):
+        raise SubmittingActorError(
+            f"the child actor suffix {suffix!r} holds whitespace or a control character"
+        )
+    if _has_space_or_control(submitting_actor):
+        raise SubmittingActorError(
+            f"the submitting actor {submitting_actor!r} holds whitespace or a control character, "
+            f"so no child actor is derived from it"
+        )
     if submitting_actor == "local":
-        raise ChildActorError(
+        raise SubmittingActorError(
             "the submitting actor is 'local', the unattributed pool; a child actor is derived only "
             "from a named identity"
         )
     if submitting_actor.endswith(suffix):
-        raise ChildActorError(
+        raise SubmittingActorError(
             f"the submitting actor {submitting_actor!r} is already a child actor; a child does not derive "
             f"another child under its own identity"
         )
@@ -102,7 +125,7 @@ def mint_child_actor_config(submitting_dir: str, child_dir: str, suffix: str) ->
     where = f"(submitting config {source!r}, child config {target!r})"
 
     if not os.path.isfile(source):
-        raise ChildActorError(
+        raise SubmittingActorError(
             "the submitting directory holds no .khive/config.toml, so no submitting actor exists "
             f"to derive a child actor from {where}"
         )
@@ -112,17 +135,17 @@ def mint_child_actor_config(submitting_dir: str, child_dir: str, suffix: str) ->
         source_text = source_bytes.decode("utf-8")
         source_parsed = _toml.loads(source_text)
     except Exception as exc:
-        raise ChildActorError(
+        raise SubmittingActorError(
             f"the submitting config cannot be read or parsed: {exc} {where}"
         ) from exc
     actor_table = source_parsed.get("actor")
     submitting_actor = actor_table.get("id") if isinstance(actor_table, dict) else None
     if not isinstance(submitting_actor, str) or not submitting_actor:
-        raise ChildActorError(f"the submitting config names no [actor].id {where}")
+        raise SubmittingActorError(f"the submitting config names no [actor].id {where}")
     try:
         child_actor = child_actor_for(submitting_actor, suffix)
-    except ChildActorError as exc:
-        raise ChildActorError(f"{exc} {where}") from exc
+    except SubmittingActorError as exc:
+        raise SubmittingActorError(f"{exc} {where}") from exc
 
     if not os.path.isdir(child_dir):
         raise ChildActorError(
@@ -135,6 +158,11 @@ def mint_child_actor_config(submitting_dir: str, child_dir: str, suffix: str) ->
         )
 
     remaining_tables = _without_actor(source_parsed)
+    expected_actor = {
+        "id": child_actor,
+        "display_name": child_actor,
+        "visible_namespaces": [submitting_actor],
+    }
     if os.path.lexists(target):
         try:
             existing = _toml.loads(_read_regular_file(target).decode("utf-8"))
@@ -150,14 +178,15 @@ def mint_child_actor_config(submitting_dir: str, child_dir: str, suffix: str) ->
                 f"the child directory already holds a config naming actor {found!r}, not the "
                 f"minted actor {child_actor!r}; refusing to overwrite another actor's config {where}"
             )
-        if _without_actor(existing) == remaining_tables:
+        if existing_actor == expected_actor and _without_actor(existing) == remaining_tables:
             return MintedChildActor(child_actor, submitting_actor, target, source, reused=True)
-        # The minted actor's own config, behind the submitter's current tables: re-minted below.
+        # The minted actor's id with any other [actor] keys, or behind the submitter's current
+        # tables: re-minted below.
 
     lines = source_text.split("\n")
     headers = [i for i, line in enumerate(lines) if _ACTOR_HEADER.match(line)]
     if len(headers) != 1:
-        raise ChildActorError(
+        raise SubmittingActorError(
             f"the submitting config carries {len(headers)} '[actor]' header lines; exactly one is "
             f"to rewrite it {where}"
         )
@@ -189,11 +218,6 @@ def mint_child_actor_config(submitting_dir: str, child_dir: str, suffix: str) ->
         minted = _toml.loads(new_text)
     except Exception as exc:
         raise ChildActorError(f"the minted config does not parse: {exc} {where}") from exc
-    expected_actor = {
-        "id": child_actor,
-        "display_name": child_actor,
-        "visible_namespaces": [submitting_actor],
-    }
     if minted.get("actor") != expected_actor or _without_actor(minted) != remaining_tables:
         raise ChildActorError(
             f"the minted config does not verify: [actor] must be exactly {expected_actor!r} and "

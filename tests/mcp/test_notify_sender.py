@@ -605,6 +605,21 @@ def test_delivery_runs_from_the_directory_the_sender_was_attested_against(tmp_pa
     assert _notify_hook._resolve_delivery_cwd(job, str(submit_dir)) == (str(submit_dir), None)
 
 
+def test_a_value_holding_placeholder_text_is_not_expanded():
+    argv = _notify_hook._substitute(
+        ["notify", "{label}", "{target}"],
+        {"label": "my-{sender}", "sender": "seat-a", "target": "{run_id}", "run_id": "r"},
+    )
+    assert argv == ["notify", "my-{sender}", "{run_id}"]
+
+
+def test_a_reason_placeholder_with_no_value_becomes_empty():
+    argv = _notify_hook._substitute(
+        ["notify", "{status}", "{reason_code}", "{reason_detail}"], {"status": "completed"}
+    )
+    assert argv == ["notify", "completed", "", ""]
+
+
 def test_a_terminal_reason_code_fills_its_placeholder():
     argv = _notify_hook._substitute(
         ["notify", "{status}", "{reason_code}"],
