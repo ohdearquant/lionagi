@@ -4719,6 +4719,78 @@ describe("history/RunDetail.tsx — a response for a run the reader has left", (
     }
   });
 
+  it("the read at a resumed run's end is made once when the session stream's terminal frame follows it", async () => {
+    vi.useFakeTimers();
+    const r = await resumeHarness();
+    vi.mocked(r.h.getSession).mockResolvedValue(runA as never);
+    vi.mocked(r.getInvocation).mockResolvedValue(completedInvocation as never);
+    try {
+      await r.h.render("run-a");
+      await act(async () => {
+        void resumeRunProps.current?.onResumed({ run_id: "run-a", invocation_id: "inv-1" });
+      });
+      await r.h.flush();
+      await act(async () => {
+        r.signalStates.at(-1)?.("disconnected");
+      });
+      expect(r.h.getSession).toHaveBeenCalledTimes(2);
+
+      // The lifecycle check sees the end first, and its detail read lands.
+      await r.advance(750);
+      expect(vi.mocked(r.getInvocation)).toHaveBeenCalledTimes(1);
+      expect(r.h.getSession).toHaveBeenCalledTimes(3);
+
+      // The session stream's frame for the same end arrives after it.
+      await act(async () => {
+        r.sessionEvents.at(-1)?.({ type: "done" });
+      });
+      await r.h.flush();
+      expect(r.h.getSession).toHaveBeenCalledTimes(3);
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it("a resume's refresh that lands after the read at the resumed run's end does not put the earlier state back", async () => {
+    vi.useFakeTimers();
+    const r = await resumeHarness();
+    const eagerRefresh = deferred<unknown>();
+    vi.mocked(r.h.getSession)
+      .mockResolvedValueOnce(runA as never)
+      // The resume's own refresh, slow to answer.
+      .mockReturnValueOnce(eagerRefresh.promise as never)
+      // The read at the resumed run's end.
+      .mockResolvedValueOnce({ ...runA, status: "completed", name: "resumed-end-name" } as never)
+      .mockResolvedValue(runA as never);
+    vi.mocked(r.getInvocation).mockResolvedValue(completedInvocation as never);
+    try {
+      await r.h.render("run-a");
+      await act(async () => {
+        r.signalStates.at(-1)?.("disconnected");
+      });
+      await act(async () => {
+        void resumeRunProps.current?.onResumed({ run_id: "run-a", invocation_id: "inv-1" });
+      });
+      await r.h.flush();
+      expect(r.h.getSession).toHaveBeenCalledTimes(2);
+
+      await r.advance(750);
+      expect(vi.mocked(r.getInvocation)).toHaveBeenCalledTimes(1);
+      expect(r.h.getSession).toHaveBeenCalledTimes(3);
+      expect(r.h.container.textContent).toContain("resumed-end-name");
+
+      // The refresh answers last, with the run as it was before it ended.
+      await act(async () => {
+        eagerRefresh.resolve({ ...runA, status: "running", name: "before-end-name" });
+      });
+      await r.h.flush();
+      expect(r.h.container.textContent).toContain("resumed-end-name");
+      expect(r.h.container.textContent).not.toContain("before-end-name");
+    } finally {
+      r.cleanup();
+    }
+  });
+
   it("an active resumed run is checked with a growing wait, and its detail read, while the session stream is down", async () => {
     vi.useFakeTimers();
     const r = await resumeHarness();

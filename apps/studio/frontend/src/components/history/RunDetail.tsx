@@ -2090,10 +2090,11 @@ export default function RunDetail({ id }: RunDetailProps) {
   const resumeEpochRef = useRef(0);
   // The one detail read that follows a run's end, whichever source saw the end
   // first: the session stream's terminal frame or the resume fallback's
-  // lifecycle check. A read already in flight for this end is not repeated. One
-  // that lands after the reader has moved to another visit is dropped, and so is
-  // one a resume overtook: it describes the end before the resume and would put
-  // that outcome back over the resumed run.
+  // lifecycle check. A read for this end, in flight or already landed, is not
+  // repeated; one that failed may be. One that lands after the reader has moved
+  // to another visit is dropped, and so is one a resume overtook: it describes
+  // the end before the resume and would put that outcome back over the resumed
+  // run.
   const terminalReadRef = useRef<string | null>(null);
   const readTerminalDetail = useCallback((runId: string) => {
     const visit = visitTokenRef.current;
@@ -2108,8 +2109,7 @@ export default function RunDetail({ id }: RunDetailProps) {
           prev && prev.id === fresh.id ? mergeCompletedSession(prev, fresh) : prev,
         );
       })
-      .catch(() => {})
-      .finally(() => {
+      .catch(() => {
         if (terminalReadRef.current === key) terminalReadRef.current = null;
       });
   }, []);
@@ -2617,6 +2617,7 @@ export default function RunDetail({ id }: RunDetailProps) {
       // this resume must neither stand in for the read at the next end nor land
       // after the resume and put the earlier outcome back.
       resumeEpochRef.current += 1;
+      const epoch = resumeEpochRef.current;
       setDone(false);
       setLive(true);
       watchResume(result);
@@ -2625,8 +2626,15 @@ export default function RunDetail({ id }: RunDetailProps) {
         // The refresh is a second chance for the reader to have moved on, and
         // the snapshot it carries describes the run the resume was accepted
         // on. Writing it over the run now on screen would put that run's name
-        // and rows back under the current one.
-        if (visitTokenRef.current !== visitToken) return;
+        // and rows back under the current one. It is also older than the read
+        // at this resume's end, or at a later resume's, when one of those has
+        // already ended the watch.
+        if (
+          visitTokenRef.current !== visitToken ||
+          resumeEpochRef.current !== epoch ||
+          resumeWatchRef.current !== result
+        )
+          return;
         setSession((previous) =>
           previous && previous.id === fresh.id ? mergeCompletedSession(previous, fresh) : previous,
         );
