@@ -251,7 +251,13 @@ def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are
     assert "lionagi/cli/orchestrate/_orchestration.py:1378" in flat
     assert "lionagi/state/schema.sql:463" in flat
     assert "lionagi/state/db.py:5115-5117" in flat
-    assert "the store advances it only forward, so a stale write cannot move it back" in flat
+    assert (
+        "The poller's writes advance it only forward, so a stale poll cannot move it back" in flat
+    )
+    assert (
+        "a direct `update_schedule` or `apply_schedule_set` write sets it to the value given"
+        in flat
+    )
     assert "ADR-0070, Accepted" in flat
     assert "per-completion batch of targets, not a per-subscriber position" in flat
     assert "lionagi/cli/orchestrate/flow.py:1987-2032" in flat

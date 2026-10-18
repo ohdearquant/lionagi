@@ -273,7 +273,7 @@ Three things block it, each read at the source:
   as `system`, so an actor-type rule admits every system writer and restricts
   nothing that matters here.
 - The mirror does not write through the edge-enforcing path at all. It calls
-  `StateDB.update_status` (`lionagi/state/_mirror_common.py:46-68`), which the
+  `StateDB.update_status` (`lionagi/state/_mirror_common.py:342-370`), which the
   compatibility adapter routes to `service._transition`
   (`lionagi/state/lifecycle/adapters.py:92-97`) without passing
   `enforce_edges`. That parameter defaults to `False`

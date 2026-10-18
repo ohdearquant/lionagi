@@ -108,14 +108,15 @@ they are interpolated into SQL at `state/lifecycle/service.py:148` and elsewhere
 **P5 — migration is an additive ledger, and the version is not a shape
 identity.** Schema evolution is `MIGRATION_COLUMNS` applied at startup plus bespoke `*_new`
 copy-and-rename rebuilds for anything SQLite's `ALTER TABLE` cannot express (`sessions_new`,
-`invocations_new`, `schedule_runs_new`, `schedules_new`). There is no introspection of the live
+`invocations_new`, `schedule_runs_new`, `schedules_new`, `definitions_new`). There is no introspection of the live
 schema as a whole, no diff against the declared schema, and no risk classification.
 An earlier `_reconcile_columns` implementation swallowed inspection failures and could stamp
 the current version despite missing columns. That failure mode is resolved: inspection errors
 now propagate (`state/db.py:1605-1615`). The version still identifies a migration version rather
-than a verified schema shape. Notably, the schedules rebuild already *derives its target table from
-`schema_meta.py`* via `to_metadata` (`state/db.py:2107`, and again verbatim at `:2195`) — the
-generated path half-exists and works on SQLite.
+than a verified schema shape. Notably, the schedules rebuilds already *derive their target table from
+`schema_meta.py`* via `to_metadata` (`state/db.py:2107`, and verbatim again at `:2195` and
+`:2279`), and so does the definitions rebuild (`:2689`) — the generated path half-exists and
+works on SQLite.
 
 **P6 — the layer is decoupled from the rest of the codebase and oversized for what it does.**
 `state/` (13,677 lines, 25 files) plus `studio/` (37,197 lines, 79 files) together exceed the
