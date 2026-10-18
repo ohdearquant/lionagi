@@ -12,8 +12,10 @@ path):
 2. Delivers a terminal notice through a *configured* command (``--command``
    override, or lionagi's ``notify.on_terminal`` setting) with ``{run_id}``/
    ``{status}``/``{label}``/``{target}`` substituted into argv and offered as
-   JSON on stdin. Nothing configured means silent by default; configured but
-   unusable is recorded as a delivery failure, never passed off as silence.
+   JSON on stdin, with ``{sender}``, ``{reason_code}`` and ``{reason_detail}``
+   available when recorded. Nothing configured means silent by default;
+   configured but unusable is recorded as a delivery failure, never passed off
+   as silence.
    Runs in the *submitting* directory (``LIONAGI_MCP_NOTIFY_CWD`` overrides),
    not wherever the run executed, so the notifier signs as the submitter.
 
@@ -25,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import time
 from typing import Any
@@ -273,14 +276,17 @@ def _resolve_command(
     return list(resolved.argv), None
 
 
+_PLACEHOLDER = re.compile(r"\{(run_id|status|label|target|sender|reason_code|reason_detail)\}")
+
+
 def _substitute(argv: list[str], fields: dict[str, str]) -> list[str]:
-    """Replace ``{run_id}``/``{status}``/``{label}``/``{target}``/``{sender}`` per token."""
-    out: list[str] = []
-    for tok in argv:
-        for key, value in fields.items():
-            tok = tok.replace("{" + key + "}", value)
-        out.append(tok)
-    return out
+    """Replace ``{run_id}``/``{status}``/``{label}``/``{target}``/``{sender}``/
+    ``{reason_code}``/``{reason_detail}`` per token.
+
+    One pass, so a value that itself holds placeholder text (a caller's label) is
+    never expanded; a placeholder whose field has no value becomes empty.
+    """
+    return [_PLACEHOLDER.sub(lambda m: fields.get(m.group(1)) or "", tok) for tok in argv]
 
 
 def _delivery_env(sender: str) -> dict[str, str] | None:
@@ -327,9 +333,12 @@ def _resolve_delivery_cwd(
 
     Same three-way shape as :func:`_resolve_command`, for the same reason: a
     delivery run somewhere other than intended is not the same event as one
-    with nowhere named. Order: *override*, then the record's ``submit_cwd``
-    (the notice is *about* and *from* the submitting seat; nothing falls back
-    to the current directory since the two callers here don't share one). A
+    with nowhere named. Order: *override*, then the record's ``sender_cwd``
+    when the submission attested a sender (the directory that attestation was
+    checked against, so the notice is delivered from the identity it claims),
+    then the record's ``submit_cwd`` (the notice is *about* and *from* the
+    submitting identity; nothing falls back to the current directory since the two
+    callers here don't share one). A
     named directory that doesn't exist is a refusal, not a fallback — running
     elsewhere would sign the notice under an identity nobody chose. An
     *absent* ``submit_cwd`` key (pre-field record, inherits as always) and a
@@ -339,6 +348,8 @@ def _resolve_delivery_cwd(
     """
     if override:
         named: Any = override
+    elif job is not None and job.get("sender_cwd"):
+        named = job["sender_cwd"]
     elif job is not None and "submit_cwd" in job:
         named = job["submit_cwd"]
         if not named:
@@ -523,6 +534,7 @@ def deliver_terminal_notice(
     command: str | None = None,
     sender: str | None = None,
     reason_code: str | None = None,
+    reason_detail: str | None = None,
     timeout: float = _DELIVERY_TIMEOUT_S,
 ) -> dict[str, Any]:
     """Attempt this run's configured terminal notice and report what came of it.
@@ -573,6 +585,8 @@ def deliver_terminal_notice(
         }
         if reason_code:
             fields["reason_code"] = reason_code
+        if reason_detail:
+            fields["reason_detail"] = reason_detail
         return _deliver(
             _substitute(template, fields),
             fields,
@@ -636,6 +650,7 @@ def main(argv: list[str] | None = None) -> int:
         command=args.command,
         sender=args.sender,
         reason_code=(terminal.record or {}).get("reason_code") or reason_code,
+        reason_detail=(terminal.record or {}).get("reason_detail"),
         timeout=_supervised_delivery_timeout(),
     )
     recorded = jobs.record_notify_delivery(args.run_id, outcome)

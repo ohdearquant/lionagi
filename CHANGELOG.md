@@ -13,8 +13,55 @@ project (see Changed). A project-scoped document applied with an earlier release
 members write their project as null plans an `UPDATE` on its next apply that removes the
 project those rows ran under. To keep the project, name it in those members.
 
+`notify_sender` on an MCP submission keeps its existing default: it is verified
+against the server's own directory. A deployment that wants callers to attest
+from their run directories sets `LIONAGI_MCP_SENDER_ROOTS` to an OS-path-
+separated list of absolute roots; then a declared sender is verified against
+the run directory, which must hold `.khive/config.toml`, and the notice is
+delivered from that directory. A caller-chosen directory outside those roots is
+refused.
+
+A write-capable run does not get its own khive actor by default. Setting
+`LIONAGI_MCP_CHILD_ACTOR_SUFFIX` to a non-empty suffix enables minting: the run
+gets an actor named `<submitting actor><suffix>`, written to the run
+directory's `.khive/config.toml` before it starts. For example, `:child` produces
+`<submitting actor>:child`. Leaving the setting unset or empty keeps the previous
+behaviour, including accepting a write-capable submission without `cwd`.
+
 ### Added
 
+- The MCP server's `agent.submit`, `flow.submit`, `fanout.submit` and
+  `play.submit` accept `exclude_mcp_servers`, which removes named servers from
+  the MCP config a submission resolves before its snapshot is written. Every
+  name must be declared by that config; the parameter cannot be combined with
+  `mcp_config` or `no_mcp_config`.
+- By default a write-capable run (an agent submission whose arguments or profile
+  set `yolo` or `bypass` or that resumes or continues a branch, or any flow,
+  fanout or playbook submission) gets no separate khive actor. When
+  `LIONAGI_MCP_CHILD_ACTOR_SUFFIX` is set, one
+  submitted with a `cwd` gets its own khive actor, named by appending that
+  suffix to the submitting actor and minted into the run's directory before it
+  starts. The result is reported as
+  `child_actor`, `child_actor_config` and `submitting_actor`.
+- `job.status` reports `excluded_mcp_servers` for a submission that removed
+  servers. The orphan reaper keeps `process_gone_without_outcome` as the reason
+  code for a run that turned its persistence off, and adds
+  `reason_detail: persistence_degraded` beside it.
+- The `{reason_code}` placeholder is available to a configured terminal-notice
+  command, carrying the run's terminal reason when one was recorded.
+  `{reason_detail}` carries the finer orphan-reaper detail when one was
+  recorded.
+- A submitted run's MCP snapshot path is always absolute, so a child whose
+  working directory differs from the server's can read the `--mcp-config` file
+  it is handed when the jobs root itself is relative.
+- `li agent --idle-timeout SECONDS` stops a run as stalled when the worker emits nothing for
+  that long after it has started answering, and profiles may set the same value as
+  `idle_timeout`. The default stays `LIONAGI_WORKER_IDLE_TIMEOUT` (`600`); the flag or profile
+  value overrides it, `0` is refused, and the bound (`1` to `2**53 - 1`) is published as
+  `minimum`/`maximum` in the `agent.submit` schema. It watches a CLI worker's streamed output;
+  an API-model leg's turn is bounded by `--timeout` instead.
+- `profile.list` accepts the optional `idle_timeout` key under `fields`, so a caller can ask
+  for it on a profile that does not declare it and read `null` instead of a refused field name.
 - Schedule definitions now retain create, enable, disable and delete events in the existing
   lifecycle history, separately from execution occurrences. Changes made through `StateDB`,
   atomic ScheduleSet applies and scheduler limits commit together with their history. The
@@ -92,6 +139,13 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Changed
 
+- MCP argument validation now enforces `minimum`/`maximum`, `minLength`/`maxLength` and
+  `pattern`, checks `enum` whatever the value's type, and treats `null` as a type it checks
+  rather than as an absent check, so a value outside a published bound or choice is refused
+  before a run is spawned instead of reaching the child. When several ops in one call are
+  rejected against the same schema, the first carries it inline and each later one carries
+  `schema_ref` (the holding entry's `op_index` and the schema fingerprint) instead of a repeated
+  copy.
 - A writable native `StateDB` open writes `lineage = 'lionagi'` into `schema_meta` when it applies
   its schema, and admits a store by its rows (ADR-0128 D7). A store whose lineage names lionagi
   opens as before. A store without the row is adopted, and the row written, when it records a

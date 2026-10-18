@@ -119,6 +119,7 @@ li agent [model] prompt [flags]
 | `--form SPEC` | none | Validate a YAML/JSON work-form before making any model call, then inject its typed values |
 | `--context-from REF` | none | Inject distilled context from a prior session id, branch id, run id, or file path into the new branch's first instruction (above the prompt). Repeatable — refs concatenate in argv order, sharing one budget. `cli/_context_from.py` |
 | `--context-budget N` | `8000` | Total token budget (~4 chars/token) for `--context-from` content, shared across all refs. |
+| `--idle-timeout SECONDS` | `LIONAGI_WORKER_IDLE_TIMEOUT` (`600`) | Stop the run as stalled (`WorkerLivenessError`) when the worker emits nothing for this long after it has started answering. `1` to `2**53 - 1`; `0` is refused. A profile's `idle_timeout` sets it for a role, and the flag wins over the profile. Raise it for a model that thinks long between outputs. It watches a CLI worker's streamed output; an API-model leg's turn is bounded by `--timeout` instead. |
 | `--resume-on-timeout` | false | Resume a timed-out agent session once with a bounded continuation |
 
 `-r` and `-c` are mutually exclusive. `--context-from` is rejected together with `-r` / `-c` (resume already carries the source context). Common flags apply.
@@ -786,6 +787,7 @@ then report it:
 | `terminal` | `true` |
 | `outcome` | `indeterminate` |
 | `reason_code` | `process_gone_without_outcome` |
+| `reason_detail` | `persistence_degraded` or `null` |
 | `terminal_source` | `mcp_orphan_reaper` |
 
 `outcome: "indeterminate"` means the process is conclusively gone and **no authoritative
@@ -825,6 +827,9 @@ failure and kill. Nothing is configured out of the box, so the default is no
 notice. The command is an argv list run directly (never through a shell); the
 placeholders `{run_id}`, `{status}`, `{label}`, and `{target}` are substituted
 into its arguments, and the same fields are offered as a JSON object on stdin.
+`{sender}` names the actor signing the notice, `{reason_code}` carries the
+run's terminal reason when one was recorded, and `{reason_detail}` its finer
+detail; a reason placeholder with no value becomes empty.
 
 Configure the command once via lionagi's own `notify.on_terminal` setting
 (`~/.lionagi/settings.yaml` or a project `.lionagi/settings.yaml`):
@@ -839,12 +844,20 @@ notify:
 
 Or per submit: `notify` overrides the delivery command for one run (a JSON argv
 list), `notify_seat` fills the `{target}` placeholder, and `notify_sender` fills
-`{sender}`, naming the actor signing the notice. An explicit sender is accepted
-only when the submitting directory resolves to that actor. The environment
+`{sender}`, naming the actor signing the notice. By default an explicit sender is
+checked against the submitting directory, as before. A deployment that wants
+callers to attest from their run directories sets
+`LIONAGI_MCP_SENDER_ROOTS` to an OS-path-separated list of absolute paths where
+the server is declared; then a declared sender is checked against the run
+directory the submission names in `cwd`, which must sit under one of those roots
+and hold `.khive/config.toml`. A submission that names no `cwd` is checked
+against the submitting directory, as before. The notice is delivered from the
+directory that was checked, so the identity it claims is the one it is signed
+with. The environment
 variables `LIONAGI_MCP_NOTIFY_COMMAND`, `LIONAGI_MCP_NOTIFY_TARGET` and
 `LIONAGI_MCP_NOTIFY_SENDER` set a process-wide default, and
 `LIONAGI_MCP_NOTIFY_CWD` names the directory delivery runs in instead of the
-submitting one. These are the server operator's settings and are used as given:
+checked (or submitting) one. These are the server operator's settings and are used as given:
 the sender check applies only to a `notify_sender` passed on the submit. With no
 sender from either, a delivery command that takes `{sender}` is not run, and one
 that does not reports whatever identity it resolves from the directory it runs
@@ -858,6 +871,38 @@ result was interrupted or it was stopped for running past its deadline, or
 `none` when no notifier was configured — so a run whose notice never went out
 is spotted while scanning runs, not only when one is looked up. The full `job.status.notify_delivery`
 object is null only for a non-terminal run.
+
+### Spawning and the MCP server set
+
+The four spawn verbs (`agent.submit`, `flow.submit`, `fanout.submit`,
+`play.submit`) accept `exclude_mcp_servers`, a list of server names to remove
+from the MCP config the submission resolves before its immutable snapshot is
+written. Every name must exist in that config — a name it does not declare is
+refused rather than silently ignored — and the parameter cannot be combined
+with `mcp_config` or `no_mcp_config`, since neither leaves a resolved set to
+filter. The removed names are reported as `excluded_mcp_servers` on the handle,
+the job record, and `job.status`.
+
+A run is write-capable when its `agent.submit` arguments or its agent profile
+set `yolo` or `bypass`, or when it resumes or continues a branch, which reloads
+the provider settings that branch kept. Every `flow.submit`, `fanout.submit` and
+`play.submit` run is write-capable too, because it casts its workers onto
+profiles while it runs. By default a write-capable run gets no separate khive
+actor, and a submission without `cwd` is accepted as before. A deployment that
+wants each
+writable run to have its own identity sets `LIONAGI_MCP_CHILD_ACTOR_SUFFIX` to a
+non-empty suffix. Then a write-capable run submitted with a `cwd` gets the actor
+`<submitting actor><suffix>`
+(for example, with a suffix of `:child`, `<submitting actor>:child`), minted into
+`<cwd>/.khive/config.toml` before the run starts, so a writable run does not
+sign as the submitting identity. The mint copies the submitting directory's
+config and rewrites only its `[actor]` table; it refuses when the run has no
+own directory, when the submitting directory has no actor config, or when the
+run directory already holds a config other than exactly the one it would mint;
+a config that is exactly that one is reused as it is, and one minted before the
+submitting config changed is refused until it is removed. `job.status`
+reports the result as `child_actor`, `child_actor_config` and
+`submitting_actor`.
 
 ---
 
@@ -1052,6 +1097,7 @@ All frontmatter fields are optional; matching CLI flags override them at invocat
 | `contain_account_integrations` | Codex only. `true` turns the signed-in account's `apps` and `plugins` features off for this role (`--disable apps --disable plugins`). Default `false` |
 | `account_connectors` | Codex only. List of the account's app connectors the role is for. Naming any leaves both features as the account and config set them, even when contained. Never written into run records or branch snapshots |
 | `timeout` | Default hard timeout in seconds |
+| `idle_timeout` | Seconds of silence from an answering worker before the run counts as stalled; defaults to `LIONAGI_WORKER_IDLE_TIMEOUT` (`600`). `--idle-timeout` overrides it |
 | `resume_on_timeout` | Set to `once` for one bounded automatic continuation |
 | `lion_system` | Prepend `LION_SYSTEM_MESSAGE` to the body (default: `true`) |
 | `artifact_defaults` | Expected-artifact defaults; see [ADR-0064](adr/ADR-0064-cli-execution-outcome-and-completion-record.md) |

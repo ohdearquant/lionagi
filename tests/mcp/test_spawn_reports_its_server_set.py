@@ -280,3 +280,121 @@ def test_a_record_written_before_the_field_existed_reads_as_cannot_say(
 
     assert jobs.status(run_id)["declared_mcp_servers"] is None
     assert jobs.status(run_id)["mcp_config_servers"] is None
+
+
+def test_a_caller_can_leave_the_orchestration_server_out_of_the_snapshot(
+    sandbox, submit_dir, no_spawn
+):
+    """Removing a named server is an explicit submission choice.
+
+    The names removed must be the ones the resulting snapshot lacks: every
+    name has to exist in the config the submission resolved, so a typo is a
+    refusal rather than a silently unchanged tool set.
+    """
+    (submit_dir / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"lion": {"command": "li"}, "khive": {"command": "kk"}}})
+    )
+
+    handle = jobs.submit(
+        "agent",
+        ["-m", "x"],
+        prompt="hi",
+        cwd=str(submit_dir),
+        exclude_mcp_servers=["lion"],
+    )
+
+    assert handle["declared_mcp_servers"] == ["khive"]
+    assert handle["excluded_mcp_servers"] == ["lion"]
+    written = json.loads((sandbox / "jobs" / handle["run_id"] / "mcp-servers.json").read_text())
+    assert sorted(written["mcpServers"]) == ["khive"]
+    status = jobs.status(handle["run_id"])
+    assert status["declared_mcp_servers"] == ["khive"]
+    assert status["excluded_mcp_servers"] == ["lion"]
+
+
+def test_excluding_a_server_the_config_does_not_declare_is_refused_before_spawn(
+    sandbox, submit_dir, monkeypatch
+):
+    (submit_dir / ".mcp.json").write_text(json.dumps({"mcpServers": {"khive": {"command": "kk"}}}))
+    spawned: list = []
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda *a, **kw: spawned.append(a))
+
+    with pytest.raises(ValueError, match="not declared.*missing"):
+        jobs.submit(
+            "agent",
+            ["-m", "x"],
+            prompt="hi",
+            cwd=str(submit_dir),
+            exclude_mcp_servers=["missing"],
+        )
+
+    assert spawned == []
+    assert not config.JOBS_DIR.exists() or list(config.JOBS_DIR.iterdir()) == []
+
+
+def test_excluding_every_server_writes_an_explicit_empty_snapshot(sandbox, submit_dir, no_spawn):
+    """An empty filtered set is still a declaration, not "no snapshot"."""
+    (submit_dir / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"lion": {"command": "li"}, "khive": {"command": "kk"}}})
+    )
+
+    handle = jobs.submit(
+        "agent",
+        ["-m", "x"],
+        prompt="hi",
+        cwd=str(submit_dir),
+        exclude_mcp_servers=["lion", "khive"],
+    )
+
+    assert handle["declared_mcp_servers"] == []
+    assert handle["excluded_mcp_servers"] == ["khive", "lion"]
+    written = json.loads((sandbox / "jobs" / handle["run_id"] / "mcp-servers.json").read_text())
+    assert written["mcpServers"] == {}
+
+
+def test_exclusions_cannot_be_combined_with_a_caller_owned_config_or_a_refusal(
+    sandbox, submit_dir, no_spawn, tmp_path
+):
+    """Neither combination can be honoured as asked.
+
+    A caller-owned file is not inspected or rewritten here, and a refusal
+    resolves no set to filter; accepting either would report an exclusion that
+    never happened.
+    """
+    theirs = tmp_path / "theirs.json"
+    theirs.write_text(json.dumps({"mcpServers": {"khive": {"command": "kk"}}}))
+
+    with pytest.raises(ValueError, match="cannot be combined with mcp_config"):
+        jobs.submit(
+            "agent",
+            ["-m", "x"],
+            prompt="hi",
+            cwd=str(submit_dir),
+            mcp_config=str(theirs),
+            exclude_mcp_servers=["khive"],
+        )
+    with pytest.raises(ValueError, match="cannot be combined with no_mcp_config"):
+        jobs.submit(
+            "agent",
+            ["-m", "x"],
+            prompt="hi",
+            cwd=str(submit_dir),
+            no_mcp_config=True,
+            exclude_mcp_servers=["khive"],
+        )
+
+
+@pytest.mark.parametrize("bad", [["a", "a"], ["a", ""], [""], "khive"])
+def test_exclusions_must_be_unique_non_empty_names(sandbox, submit_dir, no_spawn, bad):
+    (submit_dir / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"a": {"command": "x"}, "khive": {"command": "kk"}}})
+    )
+
+    with pytest.raises(ValueError, match="exclude_mcp_servers"):
+        jobs.submit(
+            "agent",
+            ["-m", "x"],
+            prompt="hi",
+            cwd=str(submit_dir),
+            exclude_mcp_servers=bad,
+        )
