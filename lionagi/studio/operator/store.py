@@ -27,6 +27,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from lionagi.ln import short_id
 from lionagi.ln.types import Unset, UnsetType
 from lionagi.state import db as state_db_mod
 
@@ -1796,7 +1797,7 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                     "(id, created_at, action, target_id, details, actor) "
                     "VALUES (?, ?, 'studio.operator.command', ?, ?, 'studio_operator')",
                     (
-                        uuid.uuid4().hex[:12],
+                        short_id(12),
                         now,
                         proposal["id"],
                         self._json(details),
@@ -2063,7 +2064,7 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                         "(id, created_at, action, target_id, details, actor) "
                         "VALUES (?, ?, 'studio.operator.command', ?, ?, 'studio_operator')",
                         (
-                            uuid.uuid4().hex[:12],
+                            short_id(12),
                             now,
                             proposal_id,
                             self._json(details),
@@ -2121,7 +2122,7 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                         "(id, created_at, action, target_id, details, actor) "
                         "VALUES (?, ?, 'studio.operator.command', ?, ?, 'studio_operator')",
                         (
-                            uuid.uuid4().hex[:12],
+                            short_id(12),
                             now,
                             proposal_id,
                             self._json(audit_details),
@@ -2229,7 +2230,7 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                     "(id, created_at, action, target_id, details, actor) "
                     "VALUES (?, ?, 'studio.operator.command', ?, ?, 'studio_operator')",
                     (
-                        uuid.uuid4().hex[:12],
+                        short_id(12),
                         now,
                         proposal_id,
                         self._json(details),
@@ -2323,7 +2324,7 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                 "(id, created_at, action, target_id, details, actor) "
                 "VALUES (?, ?, 'studio.operator.command', ?, ?, 'studio_operator')",
                 (
-                    uuid.uuid4().hex[:12],
+                    short_id(12),
                     now,
                     matched_id,
                     self._json(details),
@@ -2374,7 +2375,7 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                     "(id, created_at, action, target_id, details, actor) "
                     "VALUES (?, ?, 'studio.operator.command', ?, ?, 'studio_operator')",
                     (
-                        uuid.uuid4().hex[:12],
+                        short_id(12),
                         now,
                         proposal_id,
                         self._json(details),

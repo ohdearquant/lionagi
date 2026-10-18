@@ -23,7 +23,7 @@ import anyio
 import sniffio
 
 from lionagi._errors import ExecutionError, OperationError
-from lionagi.ln import AlcallParams
+from lionagi.ln import AlcallParams, coerce_created_at
 from lionagi.ln.concurrency import (
     BaseExceptionGroup,
     CapacityLimiter,
@@ -80,10 +80,8 @@ Attend to them before continuing. Most recent last.
 
 
 def _format_operator_ts(ts: Any) -> str:
-    import datetime
-
     try:
-        dt = datetime.datetime.fromtimestamp(float(ts), tz=datetime.timezone.utc)
+        dt = coerce_created_at(float(ts))
         return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     except (TypeError, ValueError, OSError):
         return str(ts)

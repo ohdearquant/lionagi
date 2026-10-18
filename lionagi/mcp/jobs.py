@@ -24,9 +24,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
-from uuid import uuid4
 
 from lionagi import ln
+from lionagi.ln import coerce_created_at, now_utc, short_id
 from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.ln._proc import (
     CREATE_TIME_TOLERANCE,
@@ -36,6 +36,7 @@ from lionagi.ln._proc import (
     process_marker,
     start_time_matches,
 )
+from lionagi.ln.concurrency import current_time, sleep
 
 from . import config
 
@@ -250,13 +251,13 @@ KILL_GROUP_OWNERSHIP_UNPROVEN = "group_ownership_unproven"
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return now_utc().isoformat()
 
 
 def new_run_id() -> str:
     """Mint a run_id in the CLI's own format: ``YYYYMMDDTHHMMSS-<6hex>``."""
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-    return f"{ts}-{uuid4().hex[:6]}"
+    ts = now_utc().strftime("%Y%m%dT%H%M%S")
+    return f"{ts}-{short_id(6)}"
 
 
 # A run of taken ids this large is the shape of something else being wrong (a
@@ -365,7 +366,7 @@ def _write_job(record: dict[str, Any]) -> None:
     raise_if_non_finite(record)
     d = config.job_dir(record["run_id"])
     d.mkdir(parents=True, exist_ok=True)
-    tmp = d / f".job.json.{os.getpid()}.{uuid4().hex[:8]}.tmp"
+    tmp = d / f".job.json.{os.getpid()}.{short_id(8)}.tmp"
     try:
         tmp.write_text(json.dumps(record, indent=2))
         os.replace(tmp, d / "job.json")
@@ -1560,7 +1561,7 @@ def _note_late_report(
 def _iso_from_epoch(value: Any) -> str | None:
     """The store keeps epoch seconds; the sidecar keeps ISO-8601 strings."""
     try:
-        return datetime.fromtimestamp(float(value), timezone.utc).isoformat()
+        return coerce_created_at(float(value)).isoformat()
     except (TypeError, ValueError, OSError, OverflowError):
         return None
 
@@ -2648,7 +2649,7 @@ def _unresolved_spawn_age(submitted_at: Any) -> float | None:
         return None
     if stamped.tzinfo is None:
         stamped = stamped.replace(tzinfo=timezone.utc)  # this writer's own UTC
-    return (datetime.now(timezone.utc) - stamped).total_seconds()
+    return (now_utc() - stamped).total_seconds()
 
 
 def _wait_entry(run_id: Any) -> dict[str, Any]:
@@ -2735,12 +2736,10 @@ async def wait(
     cancels or disconnects, leaves the durable record untouched (cancelling
     an observation is not cancelling the work).
     """
-    import anyio  # deferred: the CLI's terminal hook also imports this module and stays import-light
-
     ordered = list(run_ids)
     eff_max = _clamp(max_wait, 0.0, WAIT_MAX_SECONDS)
     eff_poll = _clamp(poll_interval, WAIT_MIN_POLL_SECONDS, WAIT_MAX_POLL_SECONDS)
-    deadline = anyio.current_time() + eff_max
+    deadline = current_time() + eff_max
 
     entries: list[dict[str, Any]] = []
     pending: list[str] = []
@@ -2771,14 +2770,14 @@ async def wait(
             and not e["possibly_orphaned"]
             and e["run_id"] not in unresolved_ids
         ]
-        remaining = deadline - anyio.current_time()
+        remaining = deadline - current_time()
         if remaining <= 0:
             break
         # The stopped_without_end/unresolved_spawn back-off floor (see docs).
         if not pending and (waited or not (stopped or unresolved)):
             break
         waited = True
-        await anyio.sleep(min(eff_poll, remaining))
+        await sleep(min(eff_poll, remaining))
 
     errored = any(e["error"] is not None for e in entries)
     return {

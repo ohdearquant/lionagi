@@ -21,6 +21,7 @@ import psutil
 from lionagi._errors import CLIInputRefusedError, EmptyOutgoingContentError, LionError
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi.casts.emission import SpawnRequest, TaskAssignment
+from lionagi.ln import coerce_created_at
 from lionagi.ln.concurrency import CancelScope, current_time, move_on_after
 from lionagi.orchestration import normalize_dep_indices, plan, role_node_builder
 from lionagi.session.exchange import Exchange
@@ -668,9 +669,7 @@ def _format_budget_preamble(
     op_budget_seconds: int,
     deadline_epoch: float,
 ) -> str:
-    import datetime
-
-    deadline_dt = datetime.datetime.fromtimestamp(deadline_epoch, tz=datetime.timezone.utc)
+    deadline_dt = coerce_created_at(deadline_epoch)
     deadline_iso = deadline_dt.strftime("%Y-%m-%dT%H:%M:%S")
     return _BUDGET_PREAMBLE_TEMPLATE.format(
         op_index=op_index,
