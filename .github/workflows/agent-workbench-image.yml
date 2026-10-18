@@ -1,0 +1,141 @@
+name: Agent Workbench image
+
+# Builds the OpenEnv environment in apps/agent_workbench and publishes it as
+# ghcr.io/ohdearquant/agent-workbench. A pull request runs the tests, builds the
+# image and checks the running container the way a trainer uses it, without
+# pushing. A push to main, or a manual run, does the same and then pushes the
+# image that passed those checks, tagged with the commit and as latest.
+
+on:
+  pull_request:
+    paths:
+      - 'apps/agent_workbench/**'
+      - '.github/workflows/agent-workbench-image.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'apps/agent_workbench/**'
+      - '.github/workflows/agent-workbench-image.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-workbench-image-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/ohdearquant/agent-workbench
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/agent_workbench
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+    - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+    - name: Install
+      run: uv sync --extra dev --python 3.12
+    - name: Test
+      run: uv run pytest -q
+
+  image:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+    - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+
+    # Setting up buildx pulls the BuildKit image from Docker Hub; one retry
+    # covers a transient registry failure.
+    - name: Set up Docker Buildx
+      id: buildx
+      continue-on-error: true
+      uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4
+    - name: Set up Docker Buildx (second attempt)
+      if: steps.buildx.outcome == 'failure'
+      uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4
+
+    - name: Build
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7
+      with:
+        context: apps/agent_workbench
+        file: apps/agent_workbench/server/Dockerfile
+        platforms: linux/amd64
+        load: true
+        tags: agent-workbench:candidate
+        build-args: |
+          BUILD_MODE=standalone
+          ENV_NAME=agent_workbench
+        labels: |
+          org.opencontainers.image.revision=${{ github.sha }}
+        cache-from: type=gha,scope=agent-workbench
+        cache-to: type=gha,mode=max,scope=agent-workbench
+
+    # The checks a trainer's admission runs: the server answers /health, passes
+    # `openenv validate`, and every task ends with a reward in [0, 1] after the
+    # example action. The trainer's finish action must end an episode with 0.
+    - name: Check the running image
+      working-directory: apps/agent_workbench
+      run: |
+        set -euo pipefail
+        docker run -d --name workbench -p 127.0.0.1:8000:8000 agent-workbench:candidate
+        for _ in $(seq 1 60); do
+          if curl -sf http://127.0.0.1:8000/health >/dev/null; then break; fi
+          sleep 2
+        done
+        curl -sf http://127.0.0.1:8000/health
+        uv sync --python 3.12
+        uv run openenv validate --url http://127.0.0.1:8000
+        cd ..
+        uv run --project agent_workbench python - <<'PY'
+        from agent_workbench.client import AgentWorkbenchEnv
+        from agent_workbench.models import WorkbenchAction
+        from agent_workbench.server.tasks import TASKS
+
+        with AgentWorkbenchEnv(base_url="http://127.0.0.1:8000").sync() as env:
+            for task_id in sorted(TASKS):
+                env.reset(task_id=task_id)
+                result = env.step(WorkbenchAction(tool="submit", args={"answer": "example"}))
+                assert result.done and 0.0 <= result.reward <= 1.0, (task_id, result)
+                env.reset(task_id=task_id)
+                env.step(WorkbenchAction(tool="list_files", args={}))
+                result = env.step(WorkbenchAction(tool="finish", args={}))
+                assert result.done and result.reward == 0.0, (task_id, result)
+        print(f"{len(TASKS)} tasks: example action terminal, finish scores 0")
+        PY
+    - name: Container log
+      if: always()
+      run: docker logs workbench 2>&1 | tail -50 || true
+
+    - name: Log in to GitHub Container Registry
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    # Pushes the image that passed the checks above, not a rebuild of it.
+    - name: Push
+      if: github.event_name != 'pull_request'
+      run: |
+        set -euo pipefail
+        for tag in "${GITHUB_SHA}" latest; do
+          docker tag agent-workbench:candidate "${IMAGE}:${tag}"
+          docker push "${IMAGE}:${tag}"
+        done
+        digest="$(docker inspect --format '{{index .RepoDigests 0}}' "${IMAGE}:${GITHUB_SHA}")"
+        echo "Pushed ${IMAGE}:${GITHUB_SHA} as ${digest}" | tee -a "$GITHUB_STEP_SUMMARY"
