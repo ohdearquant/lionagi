@@ -19,6 +19,7 @@ from lionagi.lndl import (
     Retry,
     RoundOutcome,
     Success,
+    TokenType,
     assemble,
     build_action_call,
     collect_actions,
@@ -146,12 +147,15 @@ def _round_instruction(
     prior_error: str | None,
 ) -> JsonValue | Instruction:
     """Round 1 sends the instruction verbatim (LNDL contract rides in
-    ``guidance``); later rounds send a short 'Round N of M.' continuation notice."""
+    ``guidance``); later rounds send a short 'Round N of M.' continuation notice,
+    which on the last round says so and after a refused round carries its error."""
     if round_num == 1:
         return original_instruction
     notice = f"Round {round_num} of {round_budget}."
+    if round_num == round_budget:
+        notice += " This is the last round: write your answer in OUT{} now."
     if prior_error:
-        notice += f"\n\nError from your previous OUT{{}}: {prior_error}\nRepair and try again."
+        notice += f"\n\nError from your previous round: {prior_error}\nRepair and try again."
     return notice
 
 
@@ -159,8 +163,14 @@ def _classify_round(
     text: str,
     target: Any,
     action_results: dict[str, Any],
+    max_actions: int | None = None,
+    lacts_with_out: bool = True,
 ) -> tuple[RoundOutcome, list[ActionCall], dict[str, Any] | None]:
-    """Parse and assemble one round's raw text into a RoundOutcome; returns (outcome, pending_action_calls, assembled_dict)."""
+    """Parse and assemble one round's raw text into a RoundOutcome; returns (outcome, pending_action_calls, assembled_dict).
+
+    A round declaring more than ``max_actions`` ``<lact>`` calls is a repair round: none of its calls runs.
+    With ``lacts_with_out=False``, so is a round that declares ``<lact>`` calls beside its ``OUT{}``.
+    """
     blocks = extract_lndl_blocks(text)
     if not blocks:
         return Continue(), [], None
@@ -168,7 +178,48 @@ def _classify_round(
     try:
         normalized = normalize_lndl_text("\n\n".join(blocks))
         tokens = Lexer(normalized).tokenize()
-        program = Parser(tokens, source_text=normalized).parse()
+        parser = Parser(tokens, source_text=normalized)
+        program = parser.parse()
+
+        # Parser stops at OUT{}, so its lacts are only those before it. When calls
+        # and the answer must stay apart, every call the text declares counts,
+        # wherever it sits and in however many blocks. Calls before OUT{} are the
+        # parser's own; later ones are counted from the tokens, where quoted answer
+        # text is a string and so cannot pass for a call.
+        parsed_calls = len(program.lacts)
+        if lacts_with_out:
+            declared_calls = parsed_calls
+        else:
+            declared_calls = parsed_calls + sum(
+                1 for token in tokens[parser.pos :] if token.type is TokenType.LACT_OPEN
+            )
+
+        if max_actions is not None and declared_calls > max_actions:
+            return (
+                Retry(
+                    error=(
+                        f"this round declares {declared_calls} <lact> calls and a round may "
+                        f"declare at most {max_actions}; none of them ran. Declare at most "
+                        f"{max_actions} now and the rest in a later round."
+                    )
+                ),
+                [],
+                None,
+            )
+
+        if not lacts_with_out and declared_calls and program.out_block is not None:
+            return (
+                Retry(
+                    error=(
+                        "this round declares <lact> calls and also writes OUT{}; none of its "
+                        "calls ran and the answer was not taken. Declare calls in a round "
+                        "without OUT{}, read their results, then write OUT{} in a later round "
+                        "that declares no <lact>."
+                    )
+                ),
+                [],
+                None,
+            )
 
         if program.out_block is None:
             pending = [build_action_call(la.alias, la) for la in program.lacts]
@@ -182,8 +233,21 @@ def _classify_round(
     return Success(output=assembled), pending, assembled
 
 
-def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET):
-    """Build an LNDL seam Middle (ADR-0024 §1) with a custom round budget; ``lndl_middle`` is the ready-to-use default."""
+def build_lndl_middle(
+    round_budget: int = DEFAULT_ROUND_BUDGET,
+    max_actions: int | None = None,
+    lacts_with_out: bool = True,
+):
+    """Build an LNDL seam Middle (ADR-0024 §1) with a custom round budget; ``lndl_middle`` is the ready-to-use default.
+
+    ``max_actions`` bounds the ``<lact>`` calls one round may declare; None leaves them unbounded.
+    ``lacts_with_out=False`` keeps calls and the answer in separate rounds: a round that declares
+    ``<lact>`` calls beside its ``OUT{}`` is a repair round and none of its calls runs.
+    """
+    if max_actions is not None and (
+        isinstance(max_actions, bool) or not isinstance(max_actions, int) or max_actions < 1
+    ):
+        raise ValueError(f"max_actions must be a positive integer or None, got {max_actions!r}")
 
     async def _lndl_middle(
         branch: Branch,
@@ -207,12 +271,21 @@ def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET):
         if base_guidance:
             guidance_parts.append(base_guidance)
         lndl_guidance = "\n\n".join(guidance_parts)
-        # LNDL uses a free-text <lact>/OUT{} protocol, not native
-        # function-calling, so strip tool schemas and response_format here.
-        stripped_chat_param = chat_param.with_updates(tool_schemas=[], response_format=None)
+        # LNDL replies in free text, so the response format is dropped. The tools stay: a
+        # <lact> names a tool, and an endpoint that does not place the prompt cache shows the
+        # model its tools only in the current instruction. With none passed, every tool the
+        # branch registers is listed, since a <lact> may call any of them.
+        tool_schemas = chat_param.tool_schemas or branch.acts.schema_list
+        stripped_chat_param = chat_param.with_updates(
+            tool_schemas=tool_schemas, response_format=None
+        )
 
         action_results: dict[str, Any] = {}
+        # The most recent refusal, for the exhaustion error, and the one the next round is
+        # asked to repair; a round that only declares calls clears the second, since the
+        # model has already moved past it.
         last_error: str | None = None
+        repair_error: str | None = None
 
         for round_num in range(1, round_budget + 1):
             if round_num == 1:
@@ -224,13 +297,22 @@ def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET):
                 round_chat_param = stripped_chat_param.with_updates(
                     turn_origin=TurnOrigin.no_origin()
                 )
-            round_instruction = _round_instruction(instruction, round_num, round_budget, last_error)
+            round_instruction = _round_instruction(
+                instruction, round_num, round_budget, repair_error
+            )
+            repair_error = None
 
             text = await _run_round_chat(branch, round_instruction, round_chat_param)
-            outcome, pending, assembled = _classify_round(text, target, action_results)
+            outcome, pending, assembled = _classify_round(
+                text,
+                target,
+                action_results,
+                max_actions=max_actions,
+                lacts_with_out=lacts_with_out,
+            )
 
             if isinstance(outcome, Retry):
-                last_error = outcome.error
+                last_error = repair_error = outcome.error
                 continue
 
             if isinstance(outcome, Continue):
@@ -251,7 +333,7 @@ def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET):
             try:
                 return target.model_validate(assembled)
             except ValidationError as e:
-                last_error = str(e)
+                last_error = repair_error = str(e)
                 continue
 
         # Round budget exhausted without a valid OUT{}: raise rather than
