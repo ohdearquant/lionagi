@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from lionagi._auto import CliDeclaration, auto_register
+from lionagi.ln import coerce_created_at, short_id
 from lionagi.state.content_pruned import CONTENT_PRUNED_KEY, pruned_content_sql
 from lionagi.state.session_naming import resolve_display_name
 
@@ -129,18 +130,14 @@ def _derive_timestamps(
         ended_at = fs_mtime
 
     if isinstance(started_at, str):
-        import datetime
-
         try:
-            started_at = datetime.datetime.fromisoformat(started_at).timestamp()
-        except ValueError:
+            started_at = coerce_created_at(started_at).timestamp()
+        except (ValueError, TypeError, OverflowError, OSError):
             started_at = fs_ctime
     if isinstance(ended_at, str):
-        import datetime
-
         try:
-            ended_at = datetime.datetime.fromisoformat(ended_at).timestamp()
-        except ValueError:
+            ended_at = coerce_created_at(ended_at).timestamp()
+        except (ValueError, TypeError, OverflowError, OSError):
             ended_at = fs_mtime
             ended_at_is_approximate = True
 
@@ -1336,7 +1333,7 @@ async def _import_teams() -> dict[str, int]:
             counts["teams"] += 1
 
             for msg in data.get("messages") or []:
-                msg_id = msg.get("id") or uuid.uuid4().hex[:12]
+                msg_id = msg.get("id") or short_id(12)
                 to = msg.get("to") or []
                 if isinstance(to, str):
                     recipient = to or "all"
@@ -1345,10 +1342,8 @@ async def _import_teams() -> dict[str, int]:
                 content = msg.get("content") or ""
                 ts_raw = msg.get("timestamp")
                 try:
-                    from datetime import datetime
-
-                    created = datetime.fromisoformat(ts_raw).timestamp()
-                except (TypeError, ValueError):
+                    created = coerce_created_at(ts_raw).timestamp()
+                except (ValueError, TypeError, OverflowError, OSError):
                     created = created_at
                 read_by = msg.get("read_by") or {}
                 if isinstance(read_by, dict):

@@ -40,6 +40,7 @@ import type {
   OperatorTextPayload,
   OperatorToolCallPayload,
   OperatorToolResultPayload,
+  OperatorTruncationPayload,
   OperatorUiCommandPayload,
 } from "@/lib/types";
 import Button from "@/components/ui/Button";
@@ -158,6 +159,14 @@ function conversationLabel(conversation: OperatorConversation): string {
     }).format(milliseconds);
   }
   return conversation.id.slice(0, 8);
+}
+
+function formatRetentionBytes(bytes: number): string {
+  const amount = (value: number): string =>
+    Number.isInteger(value) ? String(value) : value.toFixed(1);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${amount(bytes / 1024)} KB`;
+  return `${amount(bytes / (1024 * 1024))} MB`;
 }
 
 function displayItems(frames: OperatorFrame[]): DisplayItem[] {
@@ -684,6 +693,38 @@ function FrameCard({
         <span aria-hidden className="h-px flex-1 bg-edge" />
         <span>{t(`outcome.${payload.outcome}`)}</span>
         <span aria-hidden className="h-px flex-1 bg-edge" />
+      </div>
+    );
+  }
+  if (frame.type === "truncation") {
+    const payload = frame.payload as OperatorTruncationPayload;
+    const reasonLimit =
+      payload.reason === "frames_per_turn"
+        ? payload.limits.maxFramesPerTurn
+        : payload.limits.maxTurnPayloadBytes;
+    return (
+      <div className="rounded border border-status-warning/30 bg-status-warning-bg px-2.5 py-2 text-meta text-content-secondary">
+        <div className="flex items-start gap-1.5">
+          <IconError size={13} className="mt-0.5 shrink-0 text-status-warning" />
+          <div className="min-w-0 break-words">
+            <div className="font-medium text-content-primary">{t("truncation.title")}</div>
+            <div>
+              {t("truncation.summary", {
+                frames: payload.elidedFrames,
+                size: formatRetentionBytes(payload.elidedBytes),
+              })}
+            </div>
+            <div className="font-data">
+              {payload.reason}
+              {t("truncation.limit", {
+                limit:
+                  payload.reason === "frames_per_turn"
+                    ? String(reasonLimit)
+                    : formatRetentionBytes(reasonLimit),
+              })}
+            </div>
+          </div>
+        </div>
       </div>
     );
   }

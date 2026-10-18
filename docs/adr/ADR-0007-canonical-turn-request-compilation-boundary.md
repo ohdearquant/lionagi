@@ -555,7 +555,7 @@ lines:
   and any authority type are absent from it; `_prepare_run_kwargs()` is still the active chat/run
   path
   (`lionagi/operations/chat/_prepare.py:194`, called from `lionagi/operations/chat/chat.py:62`
-  and `lionagi/operations/run/run.py:465`), and `prepare_messages_for_chat()` still stands
+  and `lionagi/operations/run/run.py:466`), and `prepare_messages_for_chat()` still stands
   separately (`lionagi/protocols/messages/prepare.py:100`);
 - kept versus dropped: over a per-provider cap or over the total budget, the registry appends
   the provider name to `ProviderReport.skipped` and moves on
@@ -565,7 +565,7 @@ lines:
   (`:335-338`). The prompt therefore shows the kept state alone and never says material was
   dropped;
 - outside the call, aggregate counters exist (`lionagi/protocols/context_providers.py:63-70`)
-  and render per session (`lionagi/cli/monitor.py:670-681`), and `branch.last_context_report`
+  and render per session (`lionagi/cli/monitor.py:668-679`), and `branch.last_context_report`
   exposes one turn's names (`lionagi/session/branch.py:291-303`). Those are event counts: they
   do not say what that same call kept, and one `skipped` list merges two causes with no reason
   code;
@@ -582,11 +582,11 @@ lines:
   The summary is what the compiler sees, and it does not say which records it stands for;
 - in-context omission markers do exist, one layer down, in the Codex provider, in three shapes: a
   head-and-tail cut of a bounded tool result's text, counting characters
-  (`lionagi/providers/openai/codex.py:2015-2018`); a list's tail replaced by an item counting the
-  entries left out (`:2137-2140`); and a mapping's `"[omitted]"` entry counting the keys left out
-  (`:2169-2174`). A fourth site repeats the mapping's shape rather than adding a new one: the
+  (`lionagi/providers/openai/codex.py:2019-2022`); a list's tail replaced by an item counting the
+  entries left out (`:2141-2144`); and a mapping's `"[omitted]"` entry counting the keys left out
+  (`:2173-2178`). A fourth site repeats the mapping's shape rather than adding a new one: the
   file-change echo appends its own `{"omitted": "<n> of <m> changes not shown"}` entry once per
-  file-change item (`lionagi/providers/openai/codex.py:2229-2232`, called from `:2418`), so the
+  file-change item (`lionagi/providers/openai/codex.py:2233-2236`, called from `:2422`), so the
   same mapping shape appears twice. None names a section: they count characters or entries. This
   amendment generalizes the posture, not the shape; that provider's own bounds are unchanged;
 - refusal exists twice on the active path. `_prepare_run_kwargs()` raises a `ValueError` when the
@@ -603,7 +603,7 @@ lines:
   results are dicts appended to `prompt_context` (`lionagi/operations/chat/_prepare.py:282-287`,
   `:299-304`); all of them meet in one minimal-YAML rendering, where caller prompt context and
   tool output share the same "Context" field
-  (`lionagi/protocols/messages/instruction.py:206-218`). Material and instruction are one
+  (`lionagi/protocols/messages/instruction.py:207-219`). Material and instruction are one
   untyped list. With ADR-0127's prompt-cache option on
   (`lionagi/operations/chat/_prepare.py:209`), the system text and the tool set, rendered once
   (`:216-222`), go out as their own system blocks instead (`:336-337`, `:360-367`), and the rest

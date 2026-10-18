@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from lionagi.libs.path_safety import safe_join
+from lionagi.ln import coerce_created_at
 from lionagi.state.session_naming import resolve_display_name
 
 from ..config import SHOWS_ROOT
@@ -609,27 +610,21 @@ async def import_shows() -> dict[str, int]:
                 started_at = meta.get("started_at")
                 ended_at = meta.get("ended_at")
                 if isinstance(started_at, str):
-                    from datetime import datetime
-
                     try:
-                        started_at = datetime.fromisoformat(started_at).timestamp()
-                    except (ValueError, TypeError):
+                        started_at = coerce_created_at(started_at).timestamp()
+                    except (ValueError, TypeError, OverflowError, OSError):
                         started_at = None
                 if isinstance(ended_at, str):
-                    from datetime import datetime
-
                     try:
-                        ended_at = datetime.fromisoformat(ended_at).timestamp()
-                    except (ValueError, TypeError):
+                        ended_at = coerce_created_at(ended_at).timestamp()
+                    except (ValueError, TypeError, OverflowError, OSError):
                         ended_at = None
 
                 merged_at = meta.get("merged_at")
                 if isinstance(merged_at, str):
-                    from datetime import datetime
-
                     try:
-                        merged_at = datetime.fromisoformat(merged_at).timestamp()
-                    except (ValueError, TypeError):
+                        merged_at = coerce_created_at(merged_at).timestamp()
+                    except (ValueError, TypeError, OverflowError, OSError):
                         merged_at = None
 
                 try:

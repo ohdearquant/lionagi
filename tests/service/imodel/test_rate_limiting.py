@@ -193,3 +193,43 @@ class TestiModelRateLimitingEdgeCases:
         # None dropped: all 8 over-budget calls eventually completed.
         assert len(completed) == 8
         assert call_count == 8
+
+
+@pytest.mark.asyncio
+async def test_unlimited_processor_does_not_deny_on_queue_occupancy():
+    """An unlimited processor drains a queue larger than its capacity.
+
+    ``queue_capacity`` bounds how many events one ``process()`` pass starts;
+    it is not the queue's size. An unlimited processor must not refuse an
+    event merely because more than that many events are waiting, or every
+    event is re-enqueued and the first pass starts nothing.
+    """
+    from lionagi.protocols.generic.event import Event
+    from lionagi.service.rate_limited_processor import RateLimitedAPIProcessor
+
+    class _Call(Event):
+        async def _invoke(self):
+            return "ok"
+
+    processor = RateLimitedAPIProcessor(
+        queue_capacity=1,
+        capacity_refresh_time=60,
+    )
+    events = [_Call() for _ in range(3)]
+    for event in events:
+        await processor.enqueue(event)
+
+    await processor.process()
+    assert events[0].status == EventStatus.COMPLETED, (
+        "an unlimited processor denied every queued event"
+    )
+
+    for _ in range(len(events)):
+        if processor.queue.empty():
+            break
+        await processor.process()
+
+    assert processor.queue.empty()
+    assert all(event.status == EventStatus.COMPLETED for event in events), (
+        f"an unlimited processor left work pending: {[e.status for e in events]}"
+    )

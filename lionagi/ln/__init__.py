@@ -1,3 +1,8 @@
+# Copyright (c) 2025 - 2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
 from ._cache import BoundedLRUCache
 from ._hash import (
     GENESIS_HASH,
@@ -6,6 +11,8 @@ from ._hash import (
     compute_chain_hash,
     compute_hash,
     hash_dict,
+    hash_fd,
+    hash_file,
     hash_obj,
 )
 from ._json_dump import (
@@ -86,14 +93,18 @@ _LAZY_MAP: dict[str, tuple[str, str | None]] = {
     "get_bins": ("_utils", "get_bins"),
     "import_module": ("_utils", "import_module"),
     "is_import_installed": ("_utils", "is_import_installed"),
+    "is_pydantic_model_class": ("_utils", "is_pydantic_model_class"),
     "is_same_dtype": ("_utils", "is_same_dtype"),
     "is_union_type": ("_utils", "is_union_type"),
     "load_type_from_string": ("_utils", "load_type_from_string"),
     "now_utc": ("_utils", "now_utc"),
+    "parse_duration": ("_utils", "parse_duration"),
     "register_type_prefix": ("_utils", "register_type_prefix"),
+    "short_id": ("_utils", "short_id"),
     "synchronized": ("_utils", "synchronized"),
     "to_uuid": ("_utils", "to_uuid"),
     "union_members": ("_utils", "union_members"),
+    "unwrap_optional": ("_utils", "unwrap_optional"),
     # ._proc (imports .concurrency at module scope)
     "capture_group_witnesses": ("_proc", "capture_group_witnesses"),
     "observe_process_group_leader": ("_proc", "observe_process_group_leader"),
@@ -139,6 +150,8 @@ __all__ = (
     "compute_chain_hash",
     "compute_hash",
     "hash_dict",
+    "hash_fd",
+    "hash_file",
     "hash_obj",
     "get_orjson_default",
     "json_dumps",
@@ -157,14 +170,18 @@ __all__ = (
     "get_bins",
     "import_module",
     "is_import_installed",
+    "is_pydantic_model_class",
     "is_same_dtype",
     "is_union_type",
     "load_type_from_string",
     "now_utc",
+    "parse_duration",
     "register_type_prefix",
+    "short_id",
     "synchronized",
     "to_uuid",
     "union_members",
+    "unwrap_optional",
     "bounded_map",
     "create_task_group",
     "fail_after",

@@ -159,6 +159,11 @@
     "effect": {
       "requested": "Requested interface action: {kind}"
     },
+    "truncation": {
+      "title": "এই টার্নের কিছু অংশ সংরক্ষিত হয়নি",
+      "summary": "{frames}টি ফ্রেম সংরক্ষিত হয়নি · {size}",
+      "limit": " · সীমা: {limit}"
+    },
     "outcome": {
       "completed": "Turn completed",
       "failed": "Turn failed",

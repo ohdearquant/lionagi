@@ -15,12 +15,13 @@ normative contract.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
+
+from lionagi.ln import compute_hash
 
 if TYPE_CHECKING:
     from .db import StateDB
@@ -96,7 +97,7 @@ def canonical_json(value: object) -> str:
 
 
 def content_sha256(content: object) -> str:
-    return hashlib.sha256(canonical_json(content).encode("utf-8")).hexdigest()
+    return compute_hash(canonical_json(content), max_bytes=None)
 
 
 def _truncate(text: str, limit: int) -> tuple[str, bool]:
@@ -240,7 +241,7 @@ def resolve_mirrored_content(
     if len(raw) != byte_count:
         return _preview("short_read")
 
-    if hashlib.sha256(raw).hexdigest() != pointer.get("source_sha256"):
+    if compute_hash(raw, max_bytes=None) != pointer.get("source_sha256"):
         return _preview("source_replaced")
 
     try:

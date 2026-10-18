@@ -72,7 +72,7 @@ supplies that name to endpoint configuration
 (`lionagi/providers/anthropic/_config.py:23`,
 `lionagi/service/connections/provider_config.py:98`). A missing settings name
 falls through to `os.getenv(name, name)`, allowing the unresolved name to become
-the credential (`lionagi/service/connections/endpoint_config.py:90`).
+the credential (`lionagi/service/connections/endpoint_config.py:132`).
 
 **P2 — A logical call is not a billable attempt.** The path is Branch chat →
 `iModel.invoke` → `APICalling` → endpoint HTTP transport

@@ -939,7 +939,8 @@ async def stream_claude_code_cli(  # noqa: C901
 
             # ------------------------ RESULT -----------------------------------
             elif typ == "result":
-                session.result = obj.get("result", "").strip()
+                result = obj.get("result")
+                session.result = result.strip() if isinstance(result, str) else ""
                 session.usage = obj.get("usage", {})
                 # modelUsage is whole-agent-tree (includes Task-tool subagent
                 # spawns); the flat `usage` above is top-level-loop-only.
@@ -950,6 +951,15 @@ async def stream_claude_code_cli(  # noqa: C901
                 session.duration_api_ms = obj.get("duration_api_ms")
                 session.is_error = obj.get("is_error", False)
                 session.error_status = obj.get("api_error_status")
+                # An error result names its failure in ``errors``; its ``result``,
+                # when it has one, can be the turn's own text, so the errors the
+                # event lists are the result whenever any says something.
+                errors = obj.get("errors")
+                if session.is_error and isinstance(errors, list):
+                    said = [e.get("message") if isinstance(e, dict) else e for e in errors]
+                    said = [e.strip() for e in said if isinstance(e, str) and e.strip()]
+                    if said:
+                        session.result = "; ".join(dict.fromkeys(said))
 
                 # Terminal usage/cost/turns/duration — the only channel run.py
                 # reads provider-reported usage from.
@@ -1118,6 +1128,15 @@ class ClaudeCodeCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
                     if isinstance(chunk, CLISession):
                         break
         cc_log.info(f"Session {session.session_id} finished with {len(responses)} chunks")
+        if session.is_error:
+            # Classified on the result event's own text: the assistant text joined
+            # below can name a different failure than the one that ended the run.
+            if session.session_id:
+                self.session_id = session.session_id
+            raise classify_provider_error(
+                session.result or "Claude Code session failed",
+                status=session.error_status,
+            )
         texts = []
         for sc in session.chunks:
             if sc.type == "text" and sc.content is not None:

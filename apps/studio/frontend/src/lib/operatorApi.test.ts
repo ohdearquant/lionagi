@@ -12,7 +12,7 @@ import {
   submitOperatorTurn,
   updateOperatorConversation,
 } from "./api";
-import type { OperatorFrame } from "./types";
+import type { OperatorFrame, OperatorTruncationPayload } from "./types";
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
@@ -37,6 +37,49 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
+
+// The durable retention notice the backend writes when a turn reaches its
+// frame count or payload-byte budget. Both reasons share this envelope.
+function truncationFrame(
+  sequence: number,
+  reason: "frames_per_turn" | "turn_payload_bytes" = "frames_per_turn",
+): OperatorFrame<OperatorTruncationPayload> {
+  return {
+    version: 1,
+    conversationId: "conversation-1",
+    requestId: "request-1",
+    sequence,
+    type: "truncation",
+    payload: {
+      reason,
+      limits: {
+        maxFramesPerTurn: 2000,
+        maxTurnPayloadBytes: 8388608,
+        maxFramePayloadBytes: 65536,
+      },
+      elidedFrames: 3,
+      elidedBytes: 4096,
+      elidedFrameTypes: { text: 2, tool_result: 1 },
+      firstElidedAt: 1_700_000_000,
+      lastElidedAt: 1_700_000_010,
+      message:
+        "This turn reached its durable retention limit; frames after this point were not stored and are counted here.",
+    },
+    createdAt: 1_700_000_010,
+  };
+}
+
+function doneFrame(sequence: number): OperatorFrame {
+  return {
+    version: 1,
+    conversationId: "conversation-1",
+    requestId: "request-1",
+    sequence,
+    type: "done",
+    payload: { outcome: "completed", lastSequence: sequence },
+    createdAt: sequence,
+  };
+}
 
 describe("Operator API v1", () => {
   it("normalizes the daemon-backed conversation index", async () => {
@@ -271,6 +314,71 @@ describe("Operator API v1", () => {
     expect(calls[1]).toContain("after_sequence=1000");
   });
 
+  it("keeps a retained truncation notice and the later terminal frame readable through paginated history", async () => {
+    // The notice is a stored frame of its own: it can land on a later page than
+    // the text before it, and the turn's `done` frame follows it.
+    const truncation = truncationFrame(2001, "turn_payload_bytes");
+    const done = doneFrame(2002);
+    const pages: Record<string, unknown[]> = {
+      "0": Array.from({ length: 1000 }, (_, index) => frame(index + 1)),
+      "1000": Array.from({ length: 1000 }, (_, index) => frame(1001 + index)),
+      "2000": [truncation, done],
+    };
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        calls.push(url);
+        const after = new URL(url, "http://studio.test").searchParams.get("after_sequence") ?? "0";
+        return Promise.resolve(
+          json({
+            conversation: {
+              id: "conversation-1",
+              status: "active",
+              nextSequence: 2003,
+              activeRequestId: null,
+            },
+            frames: pages[after],
+          }),
+        );
+      }),
+    );
+
+    const snapshot = await getOperatorConversation("conversation-1");
+
+    expect(calls).toHaveLength(3);
+    expect(snapshot.frames).toHaveLength(2002);
+    expect(snapshot.frames.at(-2)).toMatchObject({
+      type: "truncation",
+      sequence: 2001,
+      payload: { reason: "turn_payload_bytes", elidedFrames: 3 },
+    });
+    expect(snapshot.frames.at(-1)).toMatchObject({ type: "done", sequence: 2002 });
+  });
+
+  it("still rejects a stored frame type the protocol does not define, and a malformed notice", async () => {
+    for (const frameValue of [
+      { ...frame(1), type: "future_type" },
+      { ...truncationFrame(1), payload: { reason: "frames_per_turn" } },
+      { ...truncationFrame(1), payload: { ...truncationFrame(1).payload, elidedFrames: -1 } },
+    ]) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(() =>
+          Promise.resolve(
+            json({
+              conversation: { id: "conversation-1", status: "active" },
+              frames: [frameValue],
+            }),
+          ),
+        ),
+      );
+      await expect(getOperatorConversation("conversation-1")).rejects.toThrow(
+        "Operator history contains an unsupported protocol frame.",
+      );
+    }
+  });
+
   it("serializes the turn concurrency cursor with the ADR field name", async () => {
     let captured: RequestInit | undefined;
     vi.stubGlobal(
@@ -440,6 +548,62 @@ describe("Operator stream cursor", () => {
     ).toEqual(["0", "0", "4"]);
   });
 
+  it("delivers a retention notice and keeps consuming through to the later done frame", async () => {
+    vi.useFakeTimers();
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        urls.push(url);
+        const after = new URL(url, "http://studio.test").searchParams.get("after_sequence");
+        // First connection: text, the retention notice, then the turn's done.
+        // A reconnect must never be needed for a valid stream.
+        const body =
+          (after ?? "0") === "0"
+            ? [frame(1), truncationFrame(2), doneFrame(3)]
+                .map((value) => `data: ${JSON.stringify(value)}\n\n`)
+                .join("")
+            : "";
+        // The daemon keeps the subscription open after the terminal frame.
+        // A body that closes would only exercise the reconnect loop.
+        const stream = new ReadableStream({
+          start(controller) {
+            if (body) controller.enqueue(new TextEncoder().encode(body));
+          },
+        });
+        return Promise.resolve(
+          new Response(stream, {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          }),
+        );
+      }),
+    );
+
+    const delivered: OperatorFrame[] = [];
+    const errors: { message: string; fatal: boolean }[] = [];
+    const close = streamOperatorConversation("conversation-1", 0, {
+      onFrame: (value) => delivered.push(value),
+      onError: (error, fatal) => errors.push({ message: error.message, fatal }),
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(10_000);
+    close();
+
+    expect(errors).toEqual([]);
+    expect(delivered.map((value) => [value.type, value.sequence])).toEqual([
+      ["text", 1],
+      ["truncation", 2],
+      ["done", 3],
+    ]);
+    // The cursor advanced past the notice, so a reconnect would resume after
+    // the terminal frame rather than replay the whole turn.
+    expect(
+      urls.map((url) => new URL(url, "http://studio.test").searchParams.get("after_sequence")),
+    ).toEqual(["0"]);
+  });
+
   it("abandons a silent pre-restart stream and replays from the durable cursor", async () => {
     vi.useFakeTimers();
     const urls: string[] = [];
@@ -513,5 +677,51 @@ describe("Operator SSE framing", () => {
     expect(isOperatorFrame(frame(1))).toBe(true);
     expect(isOperatorFrame({ ...frame(1), version: 2 })).toBe(false);
     expect(isOperatorFrame({ ...frame(1), type: "future_type" })).toBe(false);
+  });
+
+  it("accepts the retention notice for both limits and refuses one without its counts", () => {
+    for (const reason of ["frames_per_turn", "turn_payload_bytes"] as const) {
+      expect(isOperatorFrame(truncationFrame(1, reason))).toBe(true);
+    }
+    const notice = truncationFrame(1);
+    expect(isOperatorFrame({ ...notice, payload: { ...notice.payload, elidedFrames: "1" } })).toBe(
+      false,
+    );
+    expect(isOperatorFrame({ ...notice, payload: { ...notice.payload, limits: null } })).toBe(
+      false,
+    );
+    expect(isOperatorFrame({ ...notice, payload: { ...notice.payload, reason: "other" } })).toBe(
+      false,
+    );
+    expect(
+      isOperatorFrame({
+        ...notice,
+        payload: { ...notice.payload, elidedFrameTypes: undefined },
+      }),
+    ).toBe(false);
+    expect(
+      isOperatorFrame({
+        ...notice,
+        payload: { ...notice.payload, firstElidedAt: Number.NaN },
+      }),
+    ).toBe(false);
+    // Per-type counts are a map from frame type to count: a list, whatever it
+    // holds, is not one.
+    expect(
+      isOperatorFrame({
+        ...notice,
+        payload: { ...notice.payload, elidedFrameTypes: [-1, "not-an-int", null] },
+      }),
+    ).toBe(false);
+    expect(
+      isOperatorFrame({ ...notice, payload: { ...notice.payload, elidedFrameTypes: [] } }),
+    ).toBe(false);
+  });
+
+  it("refuses a frame whose creation time is not a finite number", () => {
+    for (const createdAt of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(isOperatorFrame({ ...frame(1), createdAt })).toBe(false);
+      expect(isOperatorFrame({ ...truncationFrame(1), createdAt })).toBe(false);
+    }
   });
 });

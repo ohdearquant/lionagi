@@ -105,6 +105,7 @@ const SAMPLE_VALUES = {
   day: "Monday",
   delta: "3m",
   detail: "boom",
+  frames: 3,
   duration: "3h",
   efforts: "low / medium / high",
   end: "11:00",
@@ -115,6 +116,7 @@ const SAMPLE_VALUES = {
   interval: "5m",
   kind: "navigate",
   label: "Tab",
+  limit: "2,000 frames",
   logPages: 10,
   major: 1,
   message: "oops",
@@ -135,6 +137,7 @@ const SAMPLE_VALUES = {
   runs: 4,
   sec: 30,
   sessions: 3,
+  size: "2 KB",
   span: "20m",
   start: "10:00",
   status: "ok",
@@ -254,8 +257,11 @@ describe("messages — leaf-key parity across all 16 locales", () => {
   // unavailable recent-run slice label. The prose leaves are natively
   // translated in all 16; command is the literal `li studio`, which is
   // attributed in the identity-leak baseline below.
-  it("en.json has 1113 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1113);
+  // 1116 = 1113 + operator.truncation (title, summary, limit), the notice shown
+  // when a turn hit its durable retention limit. Natively translated in all 16,
+  // so it adds nothing to the identity-leak baseline.
+  it("en.json has 1116 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1116);
   });
 
   it.each(LOCALES.map((l) => l.code))(

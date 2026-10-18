@@ -38,6 +38,7 @@ from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
 from lionagi.config import settings
 from lionagi.libs.path_safety import check_path_safe as _check_path_safe
 from lionagi.ln import json_dumps as _json_dumps
+from lionagi.ln import short_id
 from lionagi.ln.concurrency import CancelScope, Lock, get_cancelled_exc_class, run_sync, shield
 from lionagi.ln.types import SingletonType
 from lionagi.state.compat import (
@@ -5988,7 +5989,7 @@ class StateDB:
             # be served, so absolute paths and `..` are rejected at write time rather than trusted.
             _check_path_safe(file_path, "file_path")
         now = time.time()
-        art_id = uuid.uuid4().hex[:12]
+        art_id = short_id(12)
         if invocation_id is not None and session_id is not None:
             conflict = (
                 "(invocation_id, session_id, kind, name) "
@@ -6092,7 +6093,7 @@ class StateDB:
         actor: str = "admin",
     ) -> str:
         """Append one row to the admin event log; returns the event id."""
-        event_id = uuid.uuid4().hex[:12]
+        event_id = short_id(12)
         async with self._tx() as conn:
             await conn.execute(
                 text(

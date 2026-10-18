@@ -135,13 +135,13 @@ async def test_a_benign_end_of_stream_still_reads_as_success():
 async def test_a_terminal_result_that_reports_failure_is_reported_by_the_endpoint():
     """The path where the endpoint's chunk is the only one there is.
 
-    A terminal ``result`` event carrying ``is_error`` marks the session failed
-    without any error event having arrived, so the parser appends nothing and
-    the guard's condition is true. This is what stops the guard from being a
-    way to emit nothing at all, and it is the only arm that exercises the flag
-    on the endpoint's own chunk.
+    A terminal ``result`` event carrying ``is_error`` and no text marks the
+    session failed without any error event having arrived, so the parser
+    appends nothing and the guard's condition is true. This is what stops the
+    guard from being a way to emit nothing at all, and it is the only arm that
+    exercises the flag on the endpoint's own chunk.
     """
-    events = [{"type": "result", "result": "boom", "is_error": True}]
+    events = [{"type": "result", "is_error": True}]
 
     parser_errors = [c for c in await _parser_chunks(events) if c.type == "error"]
     assert parser_errors == [], (
@@ -152,7 +152,21 @@ async def test_a_terminal_result_that_reports_failure_is_reported_by_the_endpoin
     errors = [c for c in await _endpoint_chunks(events) if c.type == "error"]
     assert len(errors) == 1, f"a failed session went unreported: {errors}"
     assert errors[0].is_error is True, f"the endpoint's own chunk reads as success: {errors[0]}"
-    assert errors[0].content == "boom"
+    assert errors[0].content == "Codex session failed"
+
+
+@pytest.mark.asyncio
+async def test_a_terminal_result_that_names_its_failure_is_reported_once():
+    """A failing ``result`` event with text is the failure's own chunk from the
+    parser, so the endpoint adds none: a stream consumer sees one error chunk
+    carrying that text."""
+    events = [{"type": "result", "result": "boom", "is_error": True}]
+
+    parser_errors = [c for c in await _parser_chunks(events) if c.type == "error"]
+    assert [(c.content, c.is_error) for c in parser_errors] == [("boom", True)]
+
+    errors = [c for c in await _endpoint_chunks(events) if c.type == "error"]
+    assert [(c.content, c.is_error) for c in errors] == [("boom", True)]
 
 
 @pytest.mark.asyncio

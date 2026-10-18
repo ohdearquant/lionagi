@@ -11,11 +11,12 @@ import base64
 import hashlib
 import json
 import os
-import uuid
 import zipfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
+
+from lionagi.ln import compute_hash, short_id
 
 _FORMAT_VERSION = 1
 _MANIFEST_NAME = "manifest.json"
@@ -41,7 +42,7 @@ class ArchiveVerificationError(ArchiveWriteError):
 
 def archive_chunk_id(*, cutoff: float, chunk_index: int, kind: str = "prune") -> str:
     """Build a unique, append-only archive id for one prune chunk."""
-    return f"{kind}-{int(cutoff)}-{chunk_index:06d}-{uuid.uuid4().hex[:8]}"
+    return f"{kind}-{int(cutoff)}-{chunk_index:06d}-{short_id(8)}"
 
 
 def _json_default(value: Any) -> Any:
@@ -266,7 +267,7 @@ def verify_archive_chunk(path: Path) -> dict[str, Any]:
                 )
             for member_name, meta in manifest.get("members", {}).items():
                 payload = zf.read(member_name)
-                digest = hashlib.sha256(payload).hexdigest()
+                digest = compute_hash(payload, max_bytes=None)
                 if digest != meta.get("sha256"):
                     raise ArchiveVerificationError(
                         f"archive {path} member {member_name!r} digest mismatch"

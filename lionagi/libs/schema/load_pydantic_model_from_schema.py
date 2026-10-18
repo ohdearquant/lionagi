@@ -17,6 +17,7 @@ from typing import Any, Optional, TypeVar, Union
 from pydantic import BaseModel, Field, PydanticUserError, create_model
 
 from lionagi.libs.nested import deep_merge as _deep_merge
+from lionagi.ln import is_pydantic_model_class
 from lionagi.utils import is_import_installed
 
 logger = logging.getLogger(__name__)
@@ -363,7 +364,7 @@ def _load_via_codegen(
             raise RuntimeError(error_msg) from e
 
         def _validate(m: Any) -> None:
-            if not isinstance(m, type) or not issubclass(m, BaseModel):
+            if not is_pydantic_model_class(m):
                 raise TypeError(
                     f"Found attribute '{resolved_model_name}' is not a Pydantic BaseModel class."
                 )
