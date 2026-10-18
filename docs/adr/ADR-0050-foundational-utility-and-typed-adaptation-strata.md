@@ -613,7 +613,7 @@ The current limits are:
 
 | Surface | Value/default | Behavior and rationale |
 |---------|---------------|------------------------|
-| `compute_hash()` payload | 10 MiB (`10 * 1024 * 1024`) | Raises `ValueError` before hashing a larger encoded payload. The source records DoS prevention as the reason; the exact 10 MiB choice is inherited with no more specific recorded rationale. |
+| `compute_hash()` payload | 10 MiB (`10 * 1024 * 1024`) | Raises `ValueError` before hashing a larger encoded payload, unless the caller passes `max_bytes=None`. The source records DoS prevention as the reason; the exact 10 MiB choice is inherited with no more specific recorded rationale. |
 | `fuzzy_json()` / JSON extraction input | 10 MiB by default | Rejects empty, non-string, or oversized input before repair/parsing. The source records memory-exhaustion prevention and calls 10 MiB generous for normal use; callers may pass a different `max_size`. |
 | Shared `Spec`/`FieldModel` annotated-type cache | 10,000 entries total by default | Thread-safe `BoundedLRUCache`, configured by `LIONAGI_FIELD_CACHE_SIZE`. Sharing one materializer removes two competing key authorities and caps their combined retention; no rationale is recorded for exactly 10,000. |
 | Stable structural declaration projection cache | 10,000 entries by default | Thread-safe `BoundedLRUCache`, configured by `LIONAGI_STRUCTURAL_CACHE_SIZE`. It retains only recursively cache-stable frozen dataclasses and keeps recursive projection off annotation/model cache-hit paths; mutable declarations never enter it. No rationale is recorded for exactly 10,000. |
@@ -879,9 +879,10 @@ caller need to opt in to what they already asked for.
 - Common primitives and the two-state sentinel convention remain available through
   stable, compact import surfaces. Framework-neutral field descriptions can be used
   before choosing Pydantic materialization.
-- Deterministic JSON and hashing behavior is shared, but callers hashing content
-  larger than 10 MiB must choose a different streaming design rather than expecting
-  `compute_hash()` to accept it.
+- Deterministic JSON and hashing behavior is shared. `compute_hash()` refuses content
+  larger than 10 MiB by default: a caller that hashes content it already holds without
+  a size bound says so with `max_bytes=None`, and a file or descriptor streams through
+  `hash_file()` or `hash_fd()` instead of being read whole.
 - Pydantic conversion and format adaptation can evolve without duplicating field
   semantics across protocol types. Adding a new `Node` or `Pile` format is localized
   to an adapter plus registration.

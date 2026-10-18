@@ -6,11 +6,11 @@
 from __future__ import annotations
 
 import re
-import types as _types
-from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
+from typing import TYPE_CHECKING, Any, get_args, get_origin
 
 from pydantic import JsonValue, ValidationError
 
+from lionagi.ln import unwrap_optional
 from lionagi.lndl import (
     ActionCall,
     Continue,
@@ -52,19 +52,9 @@ _ACTION_PARAM = ActionParam(
 )
 
 
-def _unwrap_optional_type(t: Any) -> Any:
-    """If ``t`` is Optional[X] / X | None, return X. Else return ``t``."""
-    origin = get_origin(t)
-    if origin is Union or origin is _types.UnionType:
-        args = [a for a in get_args(t) if a is not type(None)]
-        if len(args) == 1:
-            return args[0]
-    return t
-
-
 def _render_type(annotation: Any) -> str:
     """Render a field's type the way LNDL_SYSTEM_PROMPT's ``Specs:`` examples do."""
-    annotation = _unwrap_optional_type(annotation)
+    annotation = unwrap_optional(annotation)
     origin = get_origin(annotation)
     if origin is list:
         args = get_args(annotation)

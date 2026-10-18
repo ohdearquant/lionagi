@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
 import json
 import logging
 import time
@@ -16,7 +15,7 @@ from typing import Any
 
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
-from lionagi.ln import parse_duration
+from lionagi.ln import compute_hash, parse_duration
 from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.state.session_naming import sanitize_prompt_name
 from lionagi.studio.config import MIRROR_PREVIEW_CHARS
@@ -386,7 +385,7 @@ def _read_new_events(
             continue
         if isinstance(obj, dict):
             events.append(obj)
-            sources.append((line_offset, len(raw), hashlib.sha256(raw).hexdigest()))
+            sources.append((line_offset, len(raw), compute_hash(raw, max_bytes=None)))
         else:
             unreadable += 1
     return events, sources, new_offset, unreadable
