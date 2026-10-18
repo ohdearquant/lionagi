@@ -933,7 +933,7 @@ schedules:
       kind: playbook
       name: health-audit
       args:
-        project: lionagi
+        scope: lionagi
     execution:
       cwd: {tmp_path}
 """
@@ -942,8 +942,53 @@ schedules:
     assert resolved["audit"].resolved["target"] == {
         "kind": "playbook",
         "name": "health-audit",
-        "args": {"project": "lionagi"},
+        "args": {"scope": "lionagi"},
     }
+
+
+_PLAY_TARGET_WITH_ARGS_BLOCK = (
+    "    target:\n      kind: playbook\n      name: health-audit\n      args:\n        depth: 2\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_a_declared_playbook_target_passes_its_args_to_the_launch(
+    temp_db_path, agent_profile
+):
+    """A playbook target's declared args reach the fire path.
+
+    The schedules table stores a play target's args only inside the resolved
+    target snapshot, so the launch must read them from there; a launch that
+    reads only the one-shot args field drops them and the play runs with its
+    defaults, silently.
+    """
+    from lionagi.studio.scheduler.subprocess import build_argv
+
+    doc = parse_schedule_set(
+        _manifest_with_target("nightly", cwd=agent_profile, target=_PLAY_TARGET_WITH_ARGS_BLOCK)
+    )
+    async with StateDB() as db:
+        await apply_schedule_set(db, doc, agent_profile)
+        row = await db.get_schedule_by_name("demo/nightly")
+    argv, tmp = build_argv(row, {}, executable_prefix=["li"])
+    assert argv == ["li", "play", "health-audit", "--depth", "2"]
+    assert tmp is None
+
+
+def test_a_playbook_target_arg_the_launch_would_refuse_is_refused_at_declaration(agent_profile):
+    """A playbook target's args are held to the launch's rules when the set is
+    resolved, so validate and apply report a bad arg instead of the row failing
+    each time it fires."""
+    target = (
+        "    target:\n      kind: playbook\n      name: health-audit\n      args:\n"
+        '        mode: "-deep"\n'
+    )
+    doc = parse_schedule_set(_manifest_with_target("nightly", cwd=agent_profile, target=target))
+    with pytest.raises(ScheduleSetError) as excinfo:
+        resolve_schedule_set(doc, agent_profile)
+    ((name, message),) = excinfo.value.errors
+    assert name == "demo/nightly"
+    assert "starts with '-'" in message
 
 
 # cwd / project resolution
@@ -1874,7 +1919,7 @@ def test_a_profile_model_the_launch_refuses_is_refused_at_declaration(agent_prof
     with pytest.raises(ScheduleSetError) as excinfo:
         resolve_schedule_set(parse_schedule_set(manifest), agent_profile)
     ((name, message),) = excinfo.value.errors
-    assert name == "nightly"
+    assert name == "demo/nightly"
     assert "'anthropic/claude-sonnet-5[1m]' (from profile 'wide')" in message
     assert "cannot be passed to a scheduled launch" in message
 
@@ -1894,7 +1939,7 @@ def test_a_profile_model_that_is_not_text_is_refused_naming_the_profile(agent_pr
     with pytest.raises(ScheduleSetError) as excinfo:
         resolve_schedule_set(parse_schedule_set(manifest), agent_profile)
     ((name, message),) = excinfo.value.errors
-    assert name == "nightly"
+    assert name == "demo/nightly"
     assert "target.agent model 123 (from profile 'numbered') is not a model name" in message
 
 
@@ -1906,7 +1951,7 @@ def test_a_model_with_a_trailing_newline_is_refused_at_declaration(agent_profile
     with pytest.raises(ScheduleSetError) as excinfo:
         resolve_schedule_set(parse_schedule_set(manifest), agent_profile)
     ((name, message),) = excinfo.value.errors
-    assert name == "nightly"
+    assert name == "demo/nightly"
     assert "'anthropic/claude-sonnet-5\\n' (from target.model)" in message
     assert "cannot be passed to a scheduled launch" in message
 
@@ -2595,7 +2640,7 @@ async def test_adopt_accepts_the_default_github_poll_interval(
 
 
 @pytest.mark.asyncio
-async def test_adopt_refuses_playbook_args_a_scheduled_launch_does_not_pass(
+async def test_adopt_keeps_playbook_args_the_launch_now_passes(
     temp_db_path, agent_profile, pinned_scheduler_tz
 ):
     manifest = f"""
@@ -2635,12 +2680,20 @@ schedules:
             }
         )
         plan, _ = await build_plan(db, doc, agent_profile, adopt=True)
-        assert [entry.action for entry in plan] == ["ERROR"]
-        assert "playbook args {'depth': 2}" in plan[0].detail
+        assert [entry.action for entry in plan] == ["ADOPT"], plan[0].detail
+
+        # The adopted row keeps the declared args in its resolved target, which is
+        # where the launch reads them, so the play fires with what the member wrote.
+        from lionagi.studio.scheduler.subprocess import build_argv
+
+        await apply_schedule_set(db, doc, agent_profile, adopt=True)
+        row = await db.get_schedule_by_name("demo/audit")
+        argv, _ = build_argv(row, {}, executable_prefix=["li"])
+        assert argv == ["li", "play", "health-audit", "--depth", "2"]
 
         without_args = parse_schedule_set(manifest.replace("      args:\n        depth: 2\n", ""))
         plan, _ = await build_plan(db, without_args, agent_profile, adopt=True)
-        assert [entry.action for entry in plan] == ["ADOPT"]
+        assert [entry.action for entry in plan] == ["UPDATE"]
 
 
 @pytest.mark.asyncio

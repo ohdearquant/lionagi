@@ -283,6 +283,31 @@ def _reserved_flow_flags() -> frozenset[str]:
     return _RESERVED_FLOW_FLAGS
 
 
+def _playbook_args(schedule: dict) -> object:
+    """The typed playbook args a play launch passes to ``li play``, as stored.
+
+    A one-shot launch stores them on ``action_playbook_args``. A scheduled row
+    has no such column: a declaration's args ride in the target snapshot the row
+    resolves, so they are read from there. Either way the same validation and the
+    same flags apply, so a declared arg reaches the child instead of being
+    dropped. A stored value of the wrong shape is returned as it is, so the
+    validation refuses it rather than the launch running with no args.
+    """
+    declared = schedule.get("action_playbook_args")
+    # An empty object is what a launch with no args stores; anything else, an
+    # empty list or string included, is a stored value and goes to validation.
+    if declared is not None and declared != {}:
+        return declared
+    snapshot = schedule.get("resolved_target")
+    if isinstance(snapshot, dict):
+        target = snapshot.get("target")
+        if isinstance(target, dict) and target.get("kind") == "playbook":
+            args = target.get("args")
+            if args is not None:
+                return args
+    return {}
+
+
 def _validate_playbook_args(pb_args: object) -> None:
     """Validate a play launch's typed playbook args before argv construction.
 
@@ -481,8 +506,11 @@ def build_argv(
         _validate_identifier(playbook, "action_playbook")
     if isinstance(extra, list):
         _validate_extra_args(extra)
+    play_args: dict = {}
     if kind == "play":
-        _validate_playbook_args(schedule.get("action_playbook_args") or {})
+        stored_args = _playbook_args(schedule)
+        _validate_playbook_args(stored_args)
+        play_args = stored_args if isinstance(stored_args, dict) else {}
     if kind == "engine":
         _validate_engine_options(schedule.get("action_engine_options"))
 
@@ -548,7 +576,7 @@ def build_argv(
         argv += ["play"]
         if playbook:
             argv.append(playbook)
-            for key, value in (schedule.get("action_playbook_args") or {}).items():
+            for key, value in play_args.items():
                 flag = "--" + key.replace("_", "-")
                 if isinstance(value, bool):
                     if value:
