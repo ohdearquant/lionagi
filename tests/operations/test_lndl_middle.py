@@ -692,6 +692,56 @@ class TestSeparateAnswerRounds:
         '```lndl\n<lact q a>lookup(query="x")</lact>\n<lvar b>guess</lvar>\nOUT{answer: [b]}\n```'
     )
 
+    def test_a_call_after_the_answer_is_refused_too(self):
+        text = (
+            "```lndl\n<lvar a>guess</lvar>\nOUT{answer: [a]}\n"
+            '<lact q r>lookup(query="x")</lact>\n```'
+        )
+        outcome, pending, assembled = _classify_round(text, AnswerModel, {}, lacts_with_out=False)
+        assert isinstance(outcome, Retry)
+        assert "declares <lact> calls and also writes OUT{}" in outcome.error
+        assert pending == []
+        assert assembled is None
+
+    def test_a_call_in_a_later_block_is_refused_too(self):
+        text = (
+            "```lndl\n<lvar a>guess</lvar>\nOUT{answer: [a]}\n```\n"
+            '```lndl\n<lact q r>lookup(query="x")</lact>\n```'
+        )
+        outcome, pending, assembled = _classify_round(text, AnswerModel, {}, lacts_with_out=False)
+        assert isinstance(outcome, Retry)
+        assert pending == [] and assembled is None
+
+    def test_calls_after_the_answer_count_against_the_limit(self):
+        calls = "".join(f'<lact q{i} a{i}>lookup(query="{i}")</lact>\n' for i in range(3))
+        text = f"```lndl\n<lvar b>guess</lvar>\nOUT{{answer: [b]}}\n{calls}```"
+        outcome, pending, _ = _classify_round(
+            text, AnswerModel, {}, max_actions=2, lacts_with_out=False
+        )
+        assert isinstance(outcome, Retry)
+        assert "declares 3 <lact> calls" in outcome.error
+        assert pending == []
+
+    def test_a_call_inside_the_answer_text_is_not_a_call(self):
+        text = (
+            '```lndl\n<lvar a>The tag <lact q r>lookup(query="x")</lact> is the syntax.</lvar>\n'
+            "OUT{answer: [a]}\n```"
+        )
+        outcome, _, assembled = _classify_round(
+            text, AnswerModel, {}, max_actions=1, lacts_with_out=False
+        )
+        assert isinstance(outcome, Success)
+        assert assembled == {"answer": 'The tag <lact q r>lookup(query="x")</lact> is the syntax.'}
+
+    def test_the_default_still_answer_and_call_as_it_did(self):
+        text = (
+            "```lndl\n<lvar a>guess</lvar>\nOUT{answer: [a]}\n"
+            '<lact q r>lookup(query="x")</lact>\n```'
+        )
+        outcome, _, assembled = _classify_round(text, AnswerModel, {}, max_actions=16)
+        assert isinstance(outcome, Success)
+        assert assembled == {"answer": "guess"}
+
     def test_a_round_that_calls_and_answers_is_refused_with_nothing_pending(self):
         outcome, pending, assembled = _classify_round(
             self._MIXED, AnswerModel, {}, lacts_with_out=False
@@ -768,7 +818,10 @@ class TestRoundNotices:
         await middle(branch, "look it up", ChatParam(response_format=AnswerModel))
 
         calls = TestBranch.calls(branch)
+        # The first refusal is about an alias nothing declares, so its words can
+        # reach a later request only if that refusal was carried forward.
         assert "undeclared alias" in calls[1].last_user_message
+        assert "undeclared alias" not in calls[2].last_user_message
         assert "Error from your previous round" not in calls[2].last_user_message
 
     @pytest.mark.asyncio

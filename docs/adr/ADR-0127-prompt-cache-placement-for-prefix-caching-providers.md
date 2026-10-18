@@ -95,7 +95,7 @@ that code on one of two paths, and the two paths differ:
   from a plain dict. There the flag is not filtered out, so the flag reaches the mark code and one
   ephemeral five-minute mark lands on the last message's last block.
 
-`iModel` then pops the same flag from the request (`service/imodel.py:290`) and, in `Endpoint.call`,
+`iModel` then pops the same flag from the request (`service/imodel.py:291`) and, in `Endpoint.call`,
 it switches on a local response memo, except for a call routed through an account
 (`service/connections/endpoint.py:427`, `:497-515`), a different feature.
 

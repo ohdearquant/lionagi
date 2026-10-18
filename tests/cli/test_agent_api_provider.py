@@ -157,10 +157,10 @@ def leg(monkeypatch, tmp_path):
 
     monkeypatch.setattr(factory_mod, "create_agent", create_agent)
 
-    def run(profile: AgentProfile, prompt: str = "what do the notes say?", **kw):
+    def run(profile: AgentProfile, prompt: str = "what do the notes say?", model=MODEL, **kw):
         monkeypatch.setattr(agent_mod, "load_agent_profile", lambda name: profile)
         return agent_mod._run_agent(
-            MODEL, prompt, agent_name=profile.name, cwd=str(workspace), **kw
+            model, prompt, agent_name=profile.name, cwd=str(workspace), **kw
         )
 
     seen.run = run
@@ -896,3 +896,50 @@ async def test_an_lndl_branch_resumes_on_lndl_from_its_record(leg):
     record = json.loads(path.read_text())["metadata"]["api_launch"]
     assert record["loop"] == "lndl"
     assert (record["spend"]["requests"], record["spend"]["tool_calls"]) == (1, 0)
+
+
+@pytest.mark.asyncio
+async def test_a_loop_without_the_read_set_is_refused_for_a_cli_provider(
+    leg, monkeypatch, tmp_path
+):
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    monkeypatch.setattr(
+        agent_mod, "allocate_run", lambda: pytest.fail("a run was allocated for a refused leg")
+    )
+    monkeypatch.setattr(agent_mod, "build_chat_model", lambda *a, **kw: "claude_code/sonnet")
+    monkeypatch.setattr(agent_mod, "resolve_persisted_effort", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        Branch, "operate", AsyncMock(side_effect=AssertionError("the refused leg ran a turn"))
+    )
+    monkeypatch.setattr(
+        agent_mod,
+        "_provenance",
+        SimpleNamespace(
+            resolve_model_spec=lambda p, m: f"{p}/{m}",
+            agent_definition_hash=lambda n: "abc",
+        ),
+    )
+
+    with pytest.raises(ConfigurationError, match="sets api_loop but no api_tools"):
+        await leg.run(_profile(api_loop="lndl"), model="claude_code/sonnet")
+
+
+@pytest.mark.asyncio
+async def test_a_loop_without_the_read_set_is_refused_on_resume_without_a_record(leg, monkeypatch):
+    import lionagi.cli.agent as agent_mod
+    from lionagi.cli._runs import find_branch
+
+    leg.replies = [_last_round(), _answer("first")]
+    _, _, branch_id, _, _ = await leg.run(_profile(api_tools="read"))
+    _, path = find_branch(branch_id)
+    stored = json.loads(path.read_text())
+    del stored["metadata"]["api_launch"]
+    path.write_text(json.dumps(stored))
+    monkeypatch.setattr(
+        agent_mod, "allocate_run", lambda: pytest.fail("a run was allocated for a refused leg")
+    )
+
+    with pytest.raises(ConfigurationError, match="sets api_loop but no api_tools"):
+        await leg.run(_profile(api_loop="lndl"), "again", resume=branch_id)

@@ -19,6 +19,7 @@ from lionagi.lndl import (
     Retry,
     RoundOutcome,
     Success,
+    TokenType,
     assemble,
     build_action_call,
     collect_actions,
@@ -177,13 +178,27 @@ def _classify_round(
     try:
         normalized = normalize_lndl_text("\n\n".join(blocks))
         tokens = Lexer(normalized).tokenize()
-        program = Parser(tokens, source_text=normalized).parse()
+        parser = Parser(tokens, source_text=normalized)
+        program = parser.parse()
 
-        if max_actions is not None and len(program.lacts) > max_actions:
+        # Parser stops at OUT{}, so its lacts are only those before it. When calls
+        # and the answer must stay apart, every call the text declares counts,
+        # wherever it sits and in however many blocks. Calls before OUT{} are the
+        # parser's own; later ones are counted from the tokens, where quoted answer
+        # text is a string and so cannot pass for a call.
+        parsed_calls = len(program.lacts)
+        if lacts_with_out:
+            declared_calls = parsed_calls
+        else:
+            declared_calls = parsed_calls + sum(
+                1 for token in tokens[parser.pos :] if token.type is TokenType.LACT_OPEN
+            )
+
+        if max_actions is not None and declared_calls > max_actions:
             return (
                 Retry(
                     error=(
-                        f"this round declares {len(program.lacts)} <lact> calls and a round may "
+                        f"this round declares {declared_calls} <lact> calls and a round may "
                         f"declare at most {max_actions}; none of them ran. Declare at most "
                         f"{max_actions} now and the rest in a later round."
                     )
@@ -192,7 +207,7 @@ def _classify_round(
                 None,
             )
 
-        if not lacts_with_out and program.lacts and program.out_block is not None:
+        if not lacts_with_out and declared_calls and program.out_block is not None:
             return (
                 Retry(
                     error=(

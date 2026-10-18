@@ -985,6 +985,14 @@ async def _run_agent(
             "the plain profile path (no role/policy composition)."
         )
 
+    # A profile's loop must name the read set it loops over, whatever the
+    # provider or the branch: a CLI provider runs its own loop and a branch
+    # without a stored record runs as before, so `api_loop` there would be
+    # silently ignored. Without `api_tools` the call below only refuses that, and
+    # it runs before any run is allocated.
+    if "api_tools" not in (getattr(profile, "extra", None) or {}):
+        _profile_api_launch(profile)
+
     stamp_agent_depth(agent_name)
 
     # True only when a NEW branch took the create_agent path (--preset coding
