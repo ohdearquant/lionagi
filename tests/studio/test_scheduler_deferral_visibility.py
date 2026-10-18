@@ -118,9 +118,7 @@ async def test_capacity_episode_logs_once_and_records_first_and_eleventh(monkeyp
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cap", [0, 2])
-@pytest.mark.parametrize(
-    "path", ["scheduled", "missed_fire", "manual", "github_poll", "github_event"]
-)
+@pytest.mark.parametrize("path", ["scheduled", "missed_fire", "manual", "github_event"])
 async def test_successful_admission_ends_only_its_schedule_episode(monkeypatch, cap, path):
     monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", cap)
     engine = SchedulerEngine(svc=_make_svc())
@@ -158,7 +156,7 @@ async def test_slot_holder_snapshot_tracks_exact_claim_and_is_not_mutable(monkey
 
 
 @pytest.mark.asyncio
-async def test_github_poll_holder_is_relabelled_for_first_event_and_released(monkeypatch):
+async def test_a_github_poll_holds_no_slot_and_each_event_holds_its_own(monkeypatch):
     monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 2)
     engine = SchedulerEngine(svc=_make_svc())
     schedule = _minimal_schedule(
@@ -182,12 +180,12 @@ async def test_github_poll_holder_is_relabelled_for_first_event_and_released(mon
     task = asyncio.create_task(engine._tick_github(schedule, now=10_000.0))
     try:
         await asyncio.wait_for(started.wait(), timeout=2)
-        assert [h["path"] for h in engine.global_slot_holders] == ["github_poll"]
-        poll_holder = engine.global_slot_holders[0]
-        assert poll_holder["schedule_id"] == "poller"
+        # The poll is a trigger check: nothing is held while it fetches.
+        assert engine.global_slot_holders == []
+        assert engine._global_inflight == 0
         resume.set()
         await asyncio.wait_for(task, timeout=2)
-        assert event_holder == [{**poll_holder, "path": "github_event"}]
+        assert [(h["schedule_id"], h["path"]) for h in event_holder] == [("poller", "github_event")]
         assert engine.global_slot_holders == []
         assert engine._global_inflight == 0
     finally:

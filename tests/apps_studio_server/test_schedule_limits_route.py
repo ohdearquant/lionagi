@@ -87,7 +87,7 @@ def test_limits_lists_poll_and_scheduled_holders_and_drops_released_claims(tmp_p
     monkeypatch.setattr(engine_mod, "scheduler", engine)
 
     async def reserve():
-        _, poll = await engine._reserve_global_slot("poll-schedule", path="github_poll")
+        _, poll = await engine._reserve_global_slot("poll-schedule", path="github_event")
         _, scheduled = await engine._reserve_global_slot("timed-schedule", path="scheduled")
         return poll, scheduled
 
@@ -99,7 +99,7 @@ def test_limits_lists_poll_and_scheduled_holders_and_drops_released_claims(tmp_p
         assert data["current_holders"] == [
             {
                 "schedule_id": "poll-schedule",
-                "path": "github_poll",
+                "path": "github_event",
                 "acquired_at": poll.acquired_at,
             },
             {

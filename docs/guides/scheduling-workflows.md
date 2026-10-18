@@ -256,7 +256,8 @@ the episode, so the next episode starts with a new log line and skipped run.
 alongside `current_inflight`. Each holder contains:
 
 - `schedule_id`: the schedule holding the slot.
-- `path`: `scheduled`, `missed_fire`, `manual`, `github_poll`, or `github_event`.
+- `path`: `scheduled`, `missed_fire`, `manual`, or `github_event`. A GitHub poll
+  holds no slot while it fetches; each event it dispatches holds its own.
 - `acquired_at`: when the slot was acquired, in Unix epoch seconds.
 
 A released slot disappears from the holder list. Within each tick, timed

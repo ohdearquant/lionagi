@@ -12,7 +12,7 @@ from lionagi.cli import machine_schedule
 from lionagi.studio import cli as schedule_cli
 
 _HOLDERS = [
-    {"schedule_id": "poll-project", "path": "github_poll", "acquired_at": 1700000000.0},
+    {"schedule_id": "poll-project", "path": "github_event", "acquired_at": 1700000000.0},
     {"schedule_id": "nightly", "path": "scheduled", "acquired_at": 1700000001.0},
 ]
 
