@@ -58,13 +58,15 @@ export function useLiveBoard(): BoardState {
         // back the first success after the failure, and the error would stay
         // on screen with fresh data in hand.
         if (successStreak.current === 0) return;
-        // Deliberately does NOT reset successStreak. Silence means the current
-        // fetch has not come back yet, which is what a slow backend looks
-        // like, not a failure — the catch path owns that. Clearing the streak
-        // on every tick of a gap longer than the threshold makes the streak
-        // unreachable whenever a fetch is slower than STALE_THRESHOLD_MS, and
-        // the board then stays on its loading skeleton through any number of
-        // successful fetches.
+        // Resumption counts from the first success after the silence: a
+        // success that landed before it says nothing about whether the
+        // backend is answering again. The streak is cleared once, here, on the
+        // transition, and never on later ticks: staleDispatched holds the
+        // watchdog off until the board resumes. Clearing it on every tick of a
+        // gap longer than the threshold would make the streak unreachable
+        // whenever a fetch is slower than STALE_THRESHOLD_MS, and the board
+        // would then stay stale through any number of successful fetches.
+        successStreak.current = 0;
         wasStaleRef.current = true;
         staleDispatched = true;
         dispatch({ type: "MARK_STALE" });
@@ -126,6 +128,11 @@ export function useLiveBoard(): BoardState {
       } catch (err) {
         if (!active) return;
         successStreak.current = 0;
+        // The error replaces a stale mark on screen, so the next success is a
+        // recovery from the error, which the hysteresis does not hold back (see
+        // the watchdog). Leaving the mark armed would keep the error showing
+        // with fresh data in hand.
+        wasStaleRef.current = false;
         dispatch({
           type: "DATA_ERROR",
           message: err instanceof Error ? err.message : "API unreachable",

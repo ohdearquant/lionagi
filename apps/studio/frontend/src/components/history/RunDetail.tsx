@@ -2051,6 +2051,15 @@ export default function RunDetail({ id }: RunDetailProps) {
   // reconversation reload instead of a dead retry loop.
   const [olderLoadFailed, setOlderLoadFailed] = useState(false);
   const [resumeWatch, setResumeWatch] = useState<RunResumeResponse | null>(null);
+  // The watch as the stream handlers see it. They are created once per run and
+  // cannot read state, and a terminal frame can arrive between a resume being
+  // accepted and the next render, so the ref is written in the same call as
+  // the state.
+  const resumeWatchRef = useRef<RunResumeResponse | null>(null);
+  const watchResume = useCallback((next: RunResumeResponse | null) => {
+    resumeWatchRef.current = next;
+    setResumeWatch(next);
+  }, []);
   const [sessionStreamState, setSessionStreamState] = useState<StreamConnectionState>("connecting");
   const [signalStreamState, setSignalStreamState] = useState<StreamConnectionState>("connecting");
   // State rather than a ref because the affordance for loading older history
@@ -2076,25 +2085,32 @@ export default function RunDetail({ id }: RunDetailProps) {
   // instead re-creates the handler once per visit, so the copy it closes over
   // is the visit it belongs to.
   const [visitToken, setVisitToken] = useState(0);
+  // Bumped by every accepted resume on this visit. A resumed run ends again,
+  // and that end is a different one from the end before the resume.
+  const resumeEpochRef = useRef(0);
   // The one detail read that follows a run's end, whichever source saw the end
   // first: the session stream's terminal frame or the resume fallback's
-  // lifecycle check. A read already in flight for this visit is not repeated,
-  // and one that lands after the reader has moved to another visit is dropped.
-  const terminalReadRef = useRef<number | null>(null);
+  // lifecycle check. A read already in flight for this end is not repeated. One
+  // that lands after the reader has moved to another visit is dropped, and so is
+  // one a resume overtook: it describes the end before the resume and would put
+  // that outcome back over the resumed run.
+  const terminalReadRef = useRef<string | null>(null);
   const readTerminalDetail = useCallback((runId: string) => {
     const visit = visitTokenRef.current;
-    if (terminalReadRef.current === visit) return;
-    terminalReadRef.current = visit;
+    const epoch = resumeEpochRef.current;
+    const key = `${visit}:${epoch}`;
+    if (terminalReadRef.current === key) return;
+    terminalReadRef.current = key;
     getSession(runId)
       .then((fresh) => {
-        if (visitTokenRef.current !== visit) return;
+        if (visitTokenRef.current !== visit || resumeEpochRef.current !== epoch) return;
         setSession((prev) =>
           prev && prev.id === fresh.id ? mergeCompletedSession(prev, fresh) : prev,
         );
       })
       .catch(() => {})
       .finally(() => {
-        if (terminalReadRef.current === visit) terminalReadRef.current = null;
+        if (terminalReadRef.current === key) terminalReadRef.current = null;
       });
   }, []);
 
@@ -2124,6 +2140,7 @@ export default function RunDetail({ id }: RunDetailProps) {
     // pane's business: the watch it starts polls the resumed invocation, and
     // carrying it into a later visit would restart that poll for a run the
     // reader is no longer looking at (and never asked to see resumed).
+    resumeWatchRef.current = null;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset stale state before async fetch; setState only fires in the effect body synchronously, not in callbacks
     setResumeWatch(null);
     // The Fleet view keeps this component mounted and swaps `id` — the
@@ -2216,10 +2233,11 @@ export default function RunDetail({ id }: RunDetailProps) {
   // what they already deliver. A stream that drops out makes the fallback the
   // only source of freshness until it reconnects.
   const resumeStreamsHealthy = sessionStreamState === "open" && signalStreamState === "open";
-  // A stream the server ended with its terminal frame does not reconnect, unlike
-  // one that dropped. A run resumed after that has nothing else carrying its
-  // messages, so the fallback reads the detail as well while it is active.
-  const sessionStreamEnded = sessionStreamState === "closed";
+  // The session stream carries the resumed run's messages. While it is not open,
+  // whether it dropped and is reconnecting or the server ended it with its
+  // terminal frame (which does not reconnect), nothing else delivers them, so
+  // the fallback reads the detail as well while the run is active.
+  const sessionStreamOpen = sessionStreamState === "open";
   useEffect(() => {
     if (!id || !resumeWatch || resumeWatch.run_id !== id || resumeStreamsHealthy) return;
     let cancelled = false;
@@ -2240,7 +2258,7 @@ export default function RunDetail({ id }: RunDetailProps) {
         if (isEffectivelyActive(invocation)) {
           setDone(false);
           setLive(true);
-          if (sessionStreamEnded) {
+          if (!sessionStreamOpen) {
             try {
               const fresh = await getSession(id);
               if (cancelled) return;
@@ -2252,11 +2270,11 @@ export default function RunDetail({ id }: RunDetailProps) {
             } catch {
               // The next lifecycle check reads again.
             }
-            // Each detail read waits longer than the last, up to the cap.
-            delayMs = Math.min(delayMs * 2, RESUME_FALLBACK_MAX_MS);
-          } else {
-            delayMs = RESUME_FALLBACK_INITIAL_MS;
           }
+          // Each check waits longer than the last, up to the cap, whether or
+          // not it read the detail: a run that stays active for minutes is
+          // checked every few seconds, not every 750 ms.
+          delayMs = Math.min(delayMs * 2, RESUME_FALLBACK_MAX_MS);
           schedule();
         } else {
           setDone(true);
@@ -2265,7 +2283,7 @@ export default function RunDetail({ id }: RunDetailProps) {
           // final detail read rather than after it: a stream that reconnects and
           // drops again while the read is in flight must not restart polling for
           // a run that has ended. The read itself is best-effort.
-          setResumeWatch(null);
+          watchResume(null);
           readTerminalDetail(id);
         }
       } catch {
@@ -2283,7 +2301,7 @@ export default function RunDetail({ id }: RunDetailProps) {
       cancelled = true;
       if (timer != null) window.clearTimeout(timer);
     };
-  }, [id, readTerminalDetail, resumeStreamsHealthy, resumeWatch, sessionStreamEnded]);
+  }, [id, readTerminalDetail, resumeStreamsHealthy, resumeWatch, sessionStreamOpen, watchResume]);
 
   useEffect(() => {
     if (!id) return;
@@ -2292,11 +2310,19 @@ export default function RunDetail({ id }: RunDetailProps) {
       (event) => {
         if (event.type === "heartbeat") return;
         if (event.type === "done") {
+          // While a resume accepted on this run is watched, the frame can
+          // describe the end that came before it: the server reports a session
+          // done once it has stayed terminal for a while, and a frame already
+          // on its way when the resume was accepted arrives after it. The
+          // stream closes after this frame either way, which hands the watch to
+          // the fallback above, and the fallback reads the resumed invocation's
+          // own lifecycle, the authority on whether the continuation ended.
+          if (resumeWatchRef.current?.run_id === id) return;
           setDone(true);
           setLive(false);
           // The terminal frame is authoritative: the fallback has nothing
           // left to watch, so a later stream loss must not restart it.
-          setResumeWatch(null);
+          watchResume(null);
           // The initial fetch's status/reason fields are now stale (the run
           // just finished) — refetch so the terminal status/verdict derivation
           // reflects the real outcome instead of the pre-completion snapshot.
@@ -2321,7 +2347,7 @@ export default function RunDetail({ id }: RunDetailProps) {
     return () => {
       stop();
     };
-  }, [id, readTerminalDetail]);
+  }, [id, readTerminalDetail, watchResume]);
 
   useEffect(() => {
     if (!id) return;
@@ -2587,9 +2613,13 @@ export default function RunDetail({ id }: RunDetailProps) {
       // The visit, not the run id, tells the two apart: leaving a run and
       // returning to it reaches the same id but not the same visit.
       if (visitTokenRef.current !== visitToken) return;
+      // A new end to read: a terminal read still in flight from the end before
+      // this resume must neither stand in for the read at the next end nor land
+      // after the resume and put the earlier outcome back.
+      resumeEpochRef.current += 1;
       setDone(false);
       setLive(true);
-      setResumeWatch(result);
+      watchResume(result);
       try {
         const fresh = await getSession(id);
         // The refresh is a second chance for the reader to have moved on, and
@@ -2606,7 +2636,7 @@ export default function RunDetail({ id }: RunDetailProps) {
         // refresh races a transient daemon disconnect.
       }
     },
-    [id, visitToken],
+    [id, visitToken, watchResume],
   );
 
   // Confirming a proposal records the intent locally; derivePausePhase

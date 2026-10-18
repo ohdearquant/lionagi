@@ -33,6 +33,20 @@ export function resumeCommand(branchId: string | null, instruction: string): str
   return `li agent -r ${branch} --prompt ${followUp}`;
 }
 
+// The run a resume form is showing now, or null once it unmounts. A resume
+// that settles after the page moved to another run reports nothing there: its
+// accepted state and the caller's follow-up belong to the run it was sent for.
+function useShownRun(runId: string) {
+  const shown = useRef<string | null>(runId);
+  useEffect(() => {
+    shown.current = runId;
+    return () => {
+      shown.current = null;
+    };
+  }, [runId]);
+  return shown;
+}
+
 function SectionShell({ runId, children }: { runId: string; children: React.ReactNode }) {
   const t = useTranslations("runResume");
   return (
@@ -157,6 +171,7 @@ function ResumeAgentForm({
   const [result, setResult] = useState<RunResumeResponse | null>(null);
   const [copied, setCopied] = useState(false);
   const branchSelectRef = useRef<HTMLSelectElement>(null);
+  const shownRun = useShownRun(runId);
 
   const selectedBranch = branches.find((branch) => branch.id === branchId) ?? null;
   const command = resumeCommand(selectedBranch?.id ?? null, instruction);
@@ -178,18 +193,21 @@ function ResumeAgentForm({
       return;
     }
 
+    const sentFor = runId;
     setSubmitting(true);
     setError(null);
     setResult(null);
     try {
-      const accepted = await resumeRun(runId, {
+      const accepted = await resumeRun(sentFor, {
         instruction: instruction.trim(),
         branch_id: selectedBranch.id,
       });
+      if (shownRun.current !== sentFor) return;
       setResult(accepted);
       setInstruction("");
       await onResumed(accepted);
     } catch (caught) {
+      if (shownRun.current !== sentFor) return;
       const message = caught instanceof Error ? caught.message : t("failed");
       if (
         (caught instanceof ApiError && caught.status === 409 && /branch_id/i.test(message)) ||
@@ -357,16 +375,20 @@ function ResumeFlowRun({ runId, onResumed }: { runId: string; onResumed: Props["
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<RunResumeResponse | null>(null);
+  const shownRun = useShownRun(runId);
 
   async function submit() {
+    const sentFor = runId;
     setSubmitting(true);
     setError(null);
     setResult(null);
     try {
-      const accepted = await resumeRun(runId, {});
+      const accepted = await resumeRun(sentFor, {});
+      if (shownRun.current !== sentFor) return;
       setResult(accepted);
       await onResumed(accepted);
     } catch (caught) {
+      if (shownRun.current !== sentFor) return;
       setError(caught instanceof Error ? caught.message : t("failed"));
     } finally {
       setSubmitting(false);

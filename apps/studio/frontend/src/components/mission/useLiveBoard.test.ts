@@ -635,17 +635,17 @@ describe("useLiveBoard — a failed poll around the stale badge", () => {
       expect(latestState?.dataState).toBe("stale");
       expect(dispatched.filter((type) => type === "MARK_STALE")).toHaveLength(1);
 
-      // Poll 3 fails, poll 4 succeeds once. One success after a stale badge is
-      // held back, so the board has not resumed.
-      await settle(2, "fail");
-      await advance(2_000);
-      await settle(3, "ok");
-      const dataOkBeforeSilence = dispatched.filter((type) => type === "DATA_OK").length;
+      // Poll 3 comes back once. One success after a stale badge is held back,
+      // so the board has not resumed.
+      const dataOkBeforeSuccess = dispatched.filter((type) => type === "DATA_OK").length;
+      await settle(2, "ok");
+      expect(latestState?.dataState).toBe("stale");
+      expect(dispatched.filter((type) => type === "DATA_OK")).toHaveLength(dataOkBeforeSuccess);
 
       // Six seconds of silence. The board has not resumed since the badge was
       // set, so this silence is no new transition.
       await advance(6_000);
-      expect(dispatched.filter((type) => type === "DATA_OK")).toHaveLength(dataOkBeforeSilence);
+      expect(dispatched.filter((type) => type === "DATA_OK")).toHaveLength(dataOkBeforeSuccess);
       expect(dispatched.filter((type) => type === "MARK_STALE")).toHaveLength(1);
     } finally {
       spy.mockRestore();
@@ -674,5 +674,50 @@ describe("useLiveBoard — a failed poll around the stale badge", () => {
     // Silence after it is an ordinary stale transition.
     await advance(10_000);
     expect(latestState?.dataState).toBe("stale");
+  });
+
+  it("counts resumption from the first success after the silence, not from a success before it", async () => {
+    vi.useFakeTimers();
+    await act(async () => {
+      root = createRoot(container);
+      root.render(React.createElement(Harness));
+    });
+    // One success, then poll 2 goes silent past the threshold.
+    await settle(0, "ok");
+    await advance(3_000);
+    await advance(6_000);
+    expect(latestState?.dataState).toBe("stale");
+
+    // Poll 2 comes back. With the success before the silence counted, this
+    // would be the second in a row and clear the badge on one frame.
+    await settle(1, "ok");
+    expect(latestState?.dataState).toBe("stale");
+
+    // A second success after the silence resumes the board.
+    await advance(3_000);
+    await settle(2, "ok");
+    expect(latestState?.dataState).toBe("live");
+  });
+
+  it("shows the first success after a stale badge gave way to an error", async () => {
+    vi.useFakeTimers();
+    await act(async () => {
+      root = createRoot(container);
+      root.render(React.createElement(Harness));
+    });
+    await settle(0, "ok");
+    await advance(3_000);
+    await advance(6_000);
+    expect(latestState?.dataState).toBe("stale");
+
+    // Poll 2 fails after the badge was set: the error replaces it.
+    await settle(1, "fail");
+    expect(latestState?.dataState).toBe("error");
+
+    // Poll 3 succeeds once: the error gives way to the fresh data, as it does
+    // when no stale badge came before the failure.
+    await advance(3_000);
+    await settle(2, "ok");
+    expect(latestState?.dataState).toBe("live");
   });
 });
