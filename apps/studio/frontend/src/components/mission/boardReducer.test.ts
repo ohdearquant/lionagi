@@ -729,6 +729,95 @@ describe("boardReducer — disposition join and active/discharged split", () => 
     expect(s.unacknowledgedAttentionCount).toBe(0);
   });
 
+  it("finds a discharge stored under the key an earlier build wrote", () => {
+    const nowSec = 1_000_000;
+    const s = dispatchOk(
+      initialBoardState(),
+      [
+        makeRun({
+          id: "session-1",
+          run_id: "legacy-run",
+          status: "failed",
+          started_at: nowSec - 600,
+        }),
+      ],
+      [],
+      nowSec,
+      null,
+      { "run:legacy-run": makeDisposition({ item_id: "run:legacy-run", state: "resolved" }) },
+    );
+    expect(s.attentionItems).toHaveLength(0);
+    expect(s.dischargedAttentionItems).toHaveLength(1);
+    expect(s.dischargedAttentionItems[0].id).toBe("run:session-1");
+    expect(s.dischargedAttentionItems[0].legacyId).toBe("run:legacy-run");
+    expect(s.dischargedAttentionItems[0].disposition?.state).toBe("resolved");
+  });
+
+  it("carries no second key when the two names hold one value", () => {
+    const nowSec = 1_000_000;
+    const s = dispatchOk(initialBoardState(), [
+      makeRun({ id: "r1", run_id: "r1", status: "failed", started_at: nowSec - 600 }),
+    ]);
+    expect(s.attentionItems[0].id).toBe("run:r1");
+    expect(s.attentionItems[0].legacyId).toBeUndefined();
+  });
+
+  it("reads the current key over the older one when a row has both", () => {
+    const nowSec = 1_000_000;
+    const s = dispatchOk(
+      initialBoardState(),
+      [
+        makeRun({
+          id: "session-1",
+          run_id: "legacy-run",
+          status: "failed",
+          started_at: nowSec - 600,
+        }),
+      ],
+      [],
+      nowSec,
+      null,
+      {
+        "run:session-1": makeDisposition({ item_id: "run:session-1", state: "acknowledged" }),
+        "run:legacy-run": makeDisposition({ item_id: "run:legacy-run", state: "resolved" }),
+      },
+    );
+    expect(s.attentionItems).toHaveLength(1);
+    expect(s.attentionItems[0].disposition?.state).toBe("acknowledged");
+    expect(s.dischargedAttentionItems).toHaveLength(0);
+  });
+
+  it("never claims a legacy key another row presents as its current key", () => {
+    // Two sessions can share one CLI-run id. Neither may present that string
+    // as an older key: a disposition under it cannot be attributed to one of
+    // them, and reading it here would discharge both.
+    const nowSec = 1_000_000;
+    const s = dispatchOk(
+      initialBoardState(),
+      [
+        makeRun({ id: "session-a", run_id: "shared", status: "failed", started_at: nowSec - 600 }),
+        makeRun({ id: "session-b", run_id: "shared", status: "failed", started_at: nowSec - 600 }),
+      ],
+      [],
+      nowSec,
+      null,
+      { "run:shared": makeDisposition({ item_id: "run:shared", state: "resolved" }) },
+    );
+    expect(s.dischargedAttentionItems).toHaveLength(0);
+    expect(s.attentionItems).toHaveLength(2);
+    // The rows are still keyed on their session ids, and finding the shared
+    // string under the old key is what must not happen.
+    expect(s.attentionItems.map((item) => item.id)).toEqual([
+      "run:session-a",
+      "run:session-b",
+    ]);
+    expect(
+      s.attentionItems.every(
+        (item) => item.legacyId === undefined || item.legacyId !== "run:shared",
+      ),
+    ).toBe(true);
+  });
+
   it("a gated run carrying a stale resolved/expected/snoozed disposition from before gate-awareness stays active, never permanently discharged", () => {
     const nowSec = 1_000_000;
     const s = dispatchOk(

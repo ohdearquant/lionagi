@@ -68,6 +68,11 @@ export type AttentionReason = "streak" | "failed" | "stale" | "stuck" | "gated";
 
 export interface AttentionItem {
   id: string;
+  /**
+   * The key an earlier build stored this row's disposition under, when the
+   * row's run now reports a session id distinct from its CLI-run id.
+   */
+  legacyId?: string;
   kind: "run" | "invocation" | "schedule" | "play";
   name: string;
   reason: AttentionReason;
@@ -233,13 +238,21 @@ function buildAttentionItems(
       reason = "stale";
     }
     if (reason == null) continue;
+    const sessionId = run.id;
+    const legacyId = run.run_id && run.run_id !== sessionId ? `run:${run.run_id}` : undefined;
     items.push({
-      id: `run:${run.id}`,
+      id: `run:${sessionId}`,
+      // Dispositions are stored under whichever id the projection emitted
+      // when they were written, and a stored key outlives that build. A run
+      // whose `run_id` now differs from its session id can still carry a
+      // discharge under the older `run_id` key. That key is left out below
+      // when another row presents the same string as its current identity.
+      ...(legacyId ? { legacyId } : {}),
       kind: "run",
       name: resolveRunLabel(run),
       reason,
       startedAt: run.started_at ?? null,
-      href: `/runs/${run.id}`,
+      href: `/runs/${sessionId}`,
       status: run.status,
       ...(reason === "failed" && run.status_reason_summary
         ? { reasonSummary: run.status_reason_summary }
@@ -295,6 +308,28 @@ function buildAttentionItems(
     return true;
   });
 
+  // Two sessions can share one CLI-run id. A disposition stored under that
+  // string cannot be attributed to either of them, so a row may claim it as
+  // its older key only when no other row presents it as its current identity
+  // and only when it is the row's sole claimant. Counting current keys too
+  // matters: a row whose two names are equal has no older key of its own
+  // while still occupying that string.
+  const currentKeys = new Set(deduped.map((item) => item.id));
+  const legacyClaimants = new Map<string, number>();
+  for (const item of deduped) {
+    if (item.legacyId) {
+      legacyClaimants.set(item.legacyId, (legacyClaimants.get(item.legacyId) ?? 0) + 1);
+    }
+  }
+  for (const item of deduped) {
+    if (
+      item.legacyId &&
+      (currentKeys.has(item.legacyId) || (legacyClaimants.get(item.legacyId) ?? 0) > 1)
+    ) {
+      delete item.legacyId;
+    }
+  }
+
   // Join the persisted disposition (if any) onto each derived item, then
   // split into the default-visible active list and the discharged list.
   // "open" (no disposition) and "acknowledged" stay in the active list —
@@ -312,7 +347,12 @@ function buildAttentionItems(
   const active: AttentionItem[] = [];
   const discharged: AttentionItem[] = [];
   for (const item of deduped) {
-    const disposition = dispositions[item.id];
+    // Read the older key too. A discharge stored under it is what the
+    // operator already decided about this row; missing it puts the row back
+    // in the queue. The current key wins when both exist, because it is the
+    // one this build writes.
+    const disposition =
+      dispositions[item.id] ?? (item.legacyId ? dispositions[item.legacyId] : undefined);
     const joined = disposition ? { ...item, disposition } : item;
     // "A gated item only ever discharges via acknowledged" (see the comment
     // above) — this is that arm. Without it, acknowledged isn't in

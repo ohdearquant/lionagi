@@ -159,6 +159,11 @@
     "effect": {
       "requested": "Requested interface action: {kind}"
     },
+    "truncation": {
+      "title": "Part of this turn was not retained",
+      "summary": "{frames, plural, one {# frame} other {# frames}} not retained · {size}",
+      "limit": " · limit: {limit}"
+    },
     "outcome": {
       "completed": "Turn completed",
       "failed": "Turn failed",

@@ -39,8 +39,14 @@ export function useLiveBoard(): BoardState {
     // Watchdog: marks state stale if silent >5s
     let lastSuccessAt = Date.now();
     let everSucceeded = false;
+    // The watchdog reads the state it writes, so it may dispatch only on the
+    // transition into stale. Re-dispatching every tick while the badge is
+    // already stale keeps a settled board committing forever; the reducer
+    // absorbs it, but React still re-renders on each dispatch.
+    let staleDispatched = false;
     const watchdog = setInterval(() => {
       if (!active) return;
+      if (staleDispatched) return;
       if (Date.now() - lastSuccessAt > STALE_THRESHOLD_MS) {
         // Only a board that has already shown data can go stale. Before the
         // first success there is no earlier state to flap back to, and arming
@@ -55,6 +61,7 @@ export function useLiveBoard(): BoardState {
         // the board then stays on its loading skeleton through any number of
         // successful fetches.
         wasStaleRef.current = true;
+        staleDispatched = true;
         dispatch({ type: "MARK_STALE" });
       }
     }, 1_000);
@@ -92,6 +99,7 @@ export function useLiveBoard(): BoardState {
 
         lastSuccessAt = Date.now();
         everSucceeded = true;
+        staleDispatched = false;
         successStreak.current += 1;
 
         // Hysteresis: if we were stale, only clear after STABLE_RESUMPTION_COUNT

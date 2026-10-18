@@ -17,6 +17,7 @@ import {
   type ReactNode,
 } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
+
 import { useTranslations } from "use-intl";
 import InvocationSection from "@/components/history/InvocationDetail";
 import OperationGraphSection from "@/components/history/OperationGraphSection";
@@ -28,7 +29,13 @@ import { useReportOperatorProject } from "@/components/operator/OperatorProjectC
 import RunStepCard, { extractFilePaths } from "@/components/RunStepCard";
 import { IconChevronDown, IconChevronRight } from "@/components/ui/icons";
 import { ApiError, getInvocation, getSession, streamSession, streamSignals } from "@/lib/api";
-import type { SessionDetail, SessionBranch, SessionMessage, SignalEvent } from "@/lib/api";
+import type {
+  SessionDetail,
+  SessionBranch,
+  SessionMessage,
+  SignalEvent,
+  StreamConnectionState,
+} from "@/lib/api";
 import { laneFor, transitiveReduceDisplay } from "@/lib/operationGraph";
 import type { LaneSignal, OperationStatus } from "@/lib/operationGraph";
 import type { NodeActivitySnapshot } from "@/lib/nodeActivity";
@@ -76,6 +83,12 @@ import type {
   ControlVerb,
   PausePhase,
 } from "@/lib/runControls";
+
+// A resumed run's detail read only stands in for its streams while they are
+// down. The first retry is prompt, then it doubles to keep one open view from
+// issuing a detail request per heartbeat interval.
+const RESUME_FALLBACK_INITIAL_MS = 750;
+const RESUME_FALLBACK_MAX_MS = 8_000;
 
 const WorkerCanvas = lazy(() => import("@/components/canvas/WorkerCanvas"));
 const EMPTY_SIGNAL_SNAPSHOT = new SignalProjection(1).snapshot();
@@ -2038,6 +2051,10 @@ export default function RunDetail({ id }: RunDetailProps) {
   // reconversation reload instead of a dead retry loop.
   const [olderLoadFailed, setOlderLoadFailed] = useState(false);
   const [resumeWatch, setResumeWatch] = useState<RunResumeResponse | null>(null);
+  const [sessionStreamState, setSessionStreamState] =
+    useState<StreamConnectionState>("connecting");
+  const [signalStreamState, setSignalStreamState] =
+    useState<StreamConnectionState>("connecting");
   // State rather than a ref because the affordance for loading older history
   // is rendered from it: a cursor the server stopped handing back means there
   // is nothing older left to ask for, and the reader has to see that.
@@ -2175,10 +2192,21 @@ export default function RunDetail({ id }: RunDetailProps) {
     };
   }, [id, initialNodeRunId, initialUrlNodeKey, writeSelectedNodeToUrl]);
 
+  // Both streams carry a heartbeat every five seconds. While both are open the
+  // accepted continuation is live, so the detail read below would only repeat
+  // what they already deliver. A stream that drops out makes the fallback the
+  // only source of freshness until it reconnects.
+  const resumeStreamsHealthy =
+    sessionStreamState === "open" && signalStreamState === "open";
   useEffect(() => {
-    if (!id || !resumeWatch || resumeWatch.run_id !== id) return;
+    if (!id || !resumeWatch || resumeWatch.run_id !== id || resumeStreamsHealthy) return;
     let cancelled = false;
     let timer: number | null = null;
+    let delayMs = RESUME_FALLBACK_INITIAL_MS;
+
+    const schedule = () => {
+      if (!cancelled) timer = window.setTimeout(() => void poll(), delayMs);
+    };
 
     const poll = async () => {
       try {
@@ -2186,69 +2214,86 @@ export default function RunDetail({ id }: RunDetailProps) {
         // that follows is ordered after the worker's terminal transition and
         // therefore includes its final persisted messages.
         const invocation = await getInvocation(resumeWatch.invocation_id);
-        const fresh = await getSession(id);
         if (cancelled) return;
-        setSession((previous) =>
-          previous && previous.id === fresh.id ? mergeCompletedSession(previous, fresh) : fresh,
-        );
         if (isEffectivelyActive(invocation)) {
           setDone(false);
           setLive(true);
+          delayMs = RESUME_FALLBACK_INITIAL_MS;
+          schedule();
         } else {
           setDone(true);
           setLive(false);
-          setResumeWatch(null);
-          return;
+          try {
+            const fresh = await getSession(id);
+            if (cancelled) return;
+            setSession((previous) =>
+              previous && previous.id === fresh.id
+                ? mergeCompletedSession(previous, fresh)
+                : previous,
+            );
+          } catch {
+            // Terminal lifecycle is already authoritative. The one final
+            // detail refresh is best-effort and must not restart polling.
+          }
+          if (!cancelled) setResumeWatch(null);
         }
       } catch {
         // A just-created invocation can race its first detail read, and a
         // transient daemon disconnect must not strand a successfully accepted
-        // continuation. Retry until the component unmounts or activity reaches
-        // a terminal state.
+        // continuation. Back off until the component unmounts or activity
+        // reaches a terminal state.
+        delayMs = Math.min(delayMs * 2, RESUME_FALLBACK_MAX_MS);
+        schedule();
       }
-      if (!cancelled) timer = window.setTimeout(() => void poll(), 750);
     };
 
-    void poll();
+    schedule();
     return () => {
       cancelled = true;
       if (timer != null) window.clearTimeout(timer);
     };
-  }, [id, resumeWatch]);
+  }, [id, resumeStreamsHealthy, resumeWatch]);
 
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
-    const stop = streamSession(id, (event) => {
-      if (event.type === "heartbeat") return;
-      if (event.type === "done") {
-        setDone(true);
-        setLive(false);
-        // The initial fetch's status/reason fields are now stale (the run
-        // just finished) — refetch so the terminal status/verdict derivation
-        // reflects the real outcome instead of the pre-completion snapshot.
-        // Guarded on id: if the viewer navigates to a different run before
-        // this resolves, it must not clobber that run's freshly-fetched state.
-        getSession(id)
-          .then((fresh) => {
-            if (cancelled) return;
-            setSession((prev) =>
-              prev && prev.id === fresh.id ? mergeCompletedSession(prev, fresh) : prev,
-            );
-          })
-          .catch(() => {});
-        return;
-      }
-      setLive(true);
-      if (isSessionMessageEvent(event)) {
-        const msg = event as unknown as SessionMessage;
-        setSession((prev) => {
-          if (!prev) return prev;
-          const branchId = String(event.branch_id);
-          return appendStreamedMessage(prev, branchId, msg);
-        });
-      }
-    });
+    const stop = streamSession(
+      id,
+      (event) => {
+        if (event.type === "heartbeat") return;
+        if (event.type === "done") {
+          setDone(true);
+          setLive(false);
+          // The terminal frame is authoritative: the fallback has nothing
+          // left to watch, so a later stream loss must not restart it.
+          setResumeWatch(null);
+          // The initial fetch's status/reason fields are now stale (the run
+          // just finished) — refetch so the terminal status/verdict derivation
+          // reflects the real outcome instead of the pre-completion snapshot.
+          // Guarded on id: if the viewer navigates to a different run before
+          // this resolves, it must not clobber that run's freshly-fetched state.
+          getSession(id)
+            .then((fresh) => {
+              if (cancelled) return;
+              setSession((prev) =>
+                prev && prev.id === fresh.id ? mergeCompletedSession(prev, fresh) : prev,
+              );
+            })
+            .catch(() => {});
+          return;
+        }
+        setLive(true);
+        if (isSessionMessageEvent(event)) {
+          const msg = event as unknown as SessionMessage;
+          setSession((prev) => {
+            if (!prev) return prev;
+            const branchId = String(event.branch_id);
+            return appendStreamedMessage(prev, branchId, msg);
+          });
+        }
+      },
+      (state) => setSessionStreamState(state),
+    );
     return () => {
       cancelled = true;
       stop();
@@ -2268,11 +2313,15 @@ export default function RunDetail({ id }: RunDetailProps) {
         if (!cancelled) setSignalState({ id, snapshot: projection.snapshot() });
       });
     };
-    const stop = streamSignals(id, (event) => {
-      if ("type" in event) return;
-      const sig = event as SignalEvent;
-      if (projection.append(sig)) publish();
-    });
+    const stop = streamSignals(
+      id,
+      (event) => {
+        if ("type" in event) return;
+        const sig = event as SignalEvent;
+        if (projection.append(sig)) publish();
+      },
+      (state) => setSignalStreamState(state),
+    );
     return () => {
       cancelled = true;
       stop();

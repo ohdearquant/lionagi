@@ -8,13 +8,64 @@
  * unit test can't see.
  */
 
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import React, { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { IntlProvider } from "use-intl";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import enMessages from "@/messages/en.json";
+import type { AttentionItem } from "./boardReducer";
 
 const MISSION_DIR = path.resolve(__dirname);
 
 const src = fs.readFileSync(path.join(MISSION_DIR, "AttentionQueue.tsx"), "utf-8");
+
+const api = vi.hoisted(() => ({
+  putAttentionDisposition: vi.fn(),
+  deleteAttentionDisposition: vi.fn(),
+}));
+vi.mock("@/lib/api", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
+  return { ...actual, ...api };
+});
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({ children, ...rest }: { children?: React.ReactNode }) => <a {...rest}>{children}</a>,
+}));
+
+const { AttentionRow } = await import("./AttentionQueue");
+
+let root: Root | null = null;
+let container: HTMLDivElement | null = null;
+
+afterEach(() => {
+  if (root) act(() => root!.unmount());
+  container?.remove();
+  root = null;
+  container = null;
+  api.deleteAttentionDisposition.mockReset();
+  api.putAttentionDisposition.mockReset();
+});
+
+function row(item: AttentionItem) {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+  act(() => {
+    root!.render(
+      <IntlProvider locale="en" messages={enMessages}>
+        <AttentionRow item={item} nowSec={1_000_000} first />
+      </IntlProvider>,
+    );
+  });
+  return container;
+}
+
+function undoButton(el: HTMLElement) {
+  return [...el.querySelectorAll("button")].find((button) =>
+    button.textContent?.includes("Undo"),
+  );
+}
 
 describe("AttentionQueue.tsx — source contract", () => {
   it("exports a default function component", () => {
@@ -76,6 +127,31 @@ describe("AttentionQueue.tsx — source contract", () => {
     expect(src).toMatch(/acknowledgeAria.*\{\s*name:\s*item\.name\s*\}/s);
     expect(src).toMatch(/resolveAria.*\{\s*name:\s*item\.name\s*\}/s);
     expect(src).toMatch(/undoAria.*\{\s*name:\s*item\.name\s*\}/s);
+  });
+
+  it("undo clears the older key as well, so the row is not re-joined as discharged", async () => {
+    api.deleteAttentionDisposition.mockResolvedValue(undefined);
+    const item: AttentionItem = {
+      id: "run:session-1",
+      legacyId: "run:legacy-run",
+      kind: "run",
+      name: "session one",
+      reason: "failed",
+      startedAt: 1_000,
+      href: "/runs/session-1",
+      status: "failed",
+      disposition: { state: "resolved" } as never,
+    };
+    const el = row(item);
+    await act(async () => {
+      undoButton(el)?.click();
+      await Promise.resolve();
+    });
+
+    expect(api.deleteAttentionDisposition.mock.calls).toEqual([
+      ["run:session-1"],
+      ["run:legacy-run"],
+    ]);
   });
 
   it("reports a failed write with an inline error, not a thrown/swallowed exception", () => {

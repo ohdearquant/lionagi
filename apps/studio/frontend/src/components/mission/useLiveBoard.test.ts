@@ -16,6 +16,7 @@ import * as React from "react";
 import { boardReducer, initialBoardState } from "./boardReducer";
 import type { BoardState } from "./boardReducer";
 import { useLiveBoard } from "./useLiveBoard";
+import * as boardReducerModule from "./boardReducer";
 
 vi.mock("@/lib/api", () => ({
   listRuns: vi.fn(),
@@ -467,5 +468,93 @@ describe("useLiveBoard — a poll slower than the interval does not stack", () =
     // successes the gate asks for, so the board stays on its loading skeleton
     // forever while fetch after fetch succeeds.
     expect(latestState?.dataState).not.toBe("loading");
+  });
+});
+
+// ─── The stale badge settles ─────────────────────────────────────────────────
+// The watchdog writes the state it reads. Re-dispatching MARK_STALE on every
+// tick after the badge is already stale keeps the board committing forever,
+// which is the shape that ends in React's "Maximum update depth exceeded".
+// This mounts the real hook, lets the board settle into stale, and counts the
+// actions over a long silence.
+
+describe("useLiveBoard — a settled stale board stops dispatching", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let latestState: BoardState | null;
+
+  function Harness() {
+    latestState = useLiveBoard();
+    return null;
+  }
+
+  beforeEach(() => {
+    vi.mocked(listRuns).mockReset();
+    vi.mocked(listInvocations).mockReset();
+    vi.mocked(listSchedules).mockReset();
+    // The first two polls succeed; after that the backend goes silent so the
+    // watchdog is the only writer left.
+    vi.mocked(listRuns)
+      .mockResolvedValueOnce({ runs: [] } as never)
+      .mockResolvedValueOnce({ runs: [] } as never)
+      .mockReturnValue(new Promise<never>(() => {}));
+    vi.mocked(listInvocations).mockResolvedValue({ invocations: [] } as never);
+    vi.mocked(listSchedules).mockResolvedValue({ schedules: [] } as never);
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    latestState = null;
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("dispatches MARK_STALE once for one silence, not once per watchdog tick", async () => {
+    vi.useFakeTimers();
+    // Re-renders do not prove the dispatch stopped: the reducer returns the
+    // same state for a repeated MARK_STALE, so React bails out while the hook
+    // still dispatches every tick. Count the actions at the reducer instead.
+    const dispatched: string[] = [];
+    const original = boardReducerModule.boardReducer;
+    const spy = vi
+      .spyOn(boardReducerModule, "boardReducer")
+      .mockImplementation((state, action) => {
+        dispatched.push(action.type);
+        return original(state, action);
+      });
+    try {
+      await act(async () => {
+        root = createRoot(container);
+        root.render(React.createElement(Harness));
+      });
+      // Two consecutive successes: live, and hysteresis satisfied.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3_000);
+      });
+      expect(latestState?.dataState).toBe("live");
+
+      // Silence past the 5s threshold arms the badge.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8_000);
+      });
+      expect(latestState?.dataState).toBe("stale");
+
+      // Twelve more seconds of silence is twelve watchdog ticks. Only the
+      // per-second duration tick may commit, and only when the second changes;
+      // the stale transition itself must not be repeated.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(12_000);
+      });
+      expect(latestState?.dataState).toBe("stale");
+      // A settled board may commit for the duration tick, but the stale
+      // transition itself must not be dispatched again.
+      expect(dispatched.filter((type) => type === "MARK_STALE")).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

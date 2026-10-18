@@ -159,6 +159,11 @@
     "effect": {
       "requested": "Requested interface action: {kind}"
     },
+    "truncation": {
+      "title": "Ein Teil dieses Durchlaufs wurde nicht aufbewahrt",
+      "summary": "{frames} Frames nicht aufbewahrt · {size}",
+      "limit": " · Grenze: {limit}"
+    },
     "outcome": {
       "completed": "Turn completed",
       "failed": "Turn failed",
