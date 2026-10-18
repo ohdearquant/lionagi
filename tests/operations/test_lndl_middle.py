@@ -5,6 +5,7 @@
 Middle: round-outcome classification, the ActionCall -> ActionRequest bridge,
 prompt injection, and repair semantics."""
 
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -782,7 +783,7 @@ class TestSeparateAnswerRounds:
         assert "declares <lact> calls and also writes OUT{}" in outcome.error
         assert pending == []
 
-    def test_a_lact_that_quotes_and_writes_out_after_it_is_counted_once(self):
+    def test_a_lact_that_quotes_out_is_refused_before_it_is_counted(self):
         text = (
             "```lndl\n<lvar a>guess</lvar>\n"
             '<lact q r>lookup(query="OUT{answer: [a]}")</lact>\nOUT{answer: [a]}\n```'
@@ -790,9 +791,9 @@ class TestSeparateAnswerRounds:
         outcome, pending, _ = _classify_round(
             text, AnswerModel, {}, max_actions=1, lacts_with_out=False
         )
-        # Counted twice, the round would be refused for its number of calls instead.
+        # The lexer reads the quoted OUT{ as an opened block, so the round is not read at all.
         assert isinstance(outcome, Retry)
-        assert "declares <lact> calls and also writes OUT{}" in outcome.error
+        assert "a <lact> holds OUT{" in outcome.error
         assert pending == []
 
     def test_a_tilde_block_holding_a_fenced_example_keeps_its_outer_call(self):
@@ -842,7 +843,7 @@ class TestSeparateAnswerRounds:
             text, AnswerModel, {}, max_actions=1, lacts_with_out=False
         )
         assert isinstance(outcome, Retry)
-        assert "OUT{} is not closed before the next <lvar> or <lact>" in outcome.error
+        assert "OUT{} is not closed before the next <lvar>, <lact> or OUT{" in outcome.error
         assert pending == []
 
     def test_a_quoted_out_in_an_lvar_does_not_hide_a_call_beside_the_answer(self):
@@ -854,17 +855,83 @@ class TestSeparateAnswerRounds:
             text, AnswerModel, {}, max_actions=1, lacts_with_out=False
         )
         assert isinstance(outcome, Retry)
-        assert "declares <lact> calls and also writes OUT{}" in outcome.error
+        assert "a <lvar> holds OUT{" in outcome.error
         assert pending == []
         assert assembled is None
 
-    def test_a_call_the_parser_cannot_see_is_refused_rather_than_dropped(self):
-        # The quoted OUT{ makes the lexer read the call's tag as string text, so the
-        # parser finds no call where the round declares one.
-        text = (
-            '```lndl\n<lvar a>The token is "OUT{" in LNDL</lvar>\n'
-            '<lact r>lookup(query="}")</lact>\n<lvar b>done</lvar>\n```'
+    @pytest.mark.parametrize(
+        "body",
+        [
+            # A quoted OUT{ after the body, then a call inside a later OUT{} the lexer reads as text.
+            "<lvar a>In LNDL, OUT{ starts a block.</lvar>\n"
+            '"OUT{x: "\nOUT{answer: [a], [\n'
+            "<lact r>reader(action='read', path='notes.txt')</lact>\n]}\"}",
+            # Quoted tags after the body hide one call from the count and run another.
+            "<lvar a>In LNDL, OUT{ starts a block.</lvar>\n"
+            '"<lact r1>lookup(query=\'1\')</lact>"\n"<lvar b>"\n'
+            "<lact r2>lookup(query='2')</lact>\n</lvar>",
+            # A quoted answer is counted while another is assembled.
+            "<lvar a>In LNDL, OUT{ starts a block.</lvar>\n"
+            '"OUT{answer: \'first\'}"\n"<lvar b>"\nOUT{answer: [a]}\n</lvar>',
+            # No quoted tag at all: the parser on the default path cannot read it either.
+            "<lvar a>In LNDL, OUT{ opens the output block, so don't omit it.</lvar>\n"
+            "OUT{answer: [a]}",
+            '<lact r>lookup(query="OUT{")</lact>',
+        ],
+        ids=["call-in-a-later-out", "quoted-tags", "quoted-answer", "plain-answer", "lact-arg"],
+    )
+    def test_a_body_holding_out_is_refused_unread(self, body):
+        outcome, pending, assembled = _classify_round(
+            f"```lndl\n{body}\n```", AnswerModel, {}, max_actions=1, lacts_with_out=False
         )
+        assert isinstance(outcome, Retry)
+        assert "holds OUT{, which is read as the answer's start" in outcome.error
+        assert pending == []
+        assert assembled is None
+
+    def test_an_out_after_an_unclosed_out_is_refused(self):
+        text = (
+            "```lndl\n<lvar a>first</lvar>\n<lvar b>second</lvar>\n"
+            "OUT{answer: [a]\nOUT{answer: [b]}\n```"
+        )
+        outcome, pending, assembled = _classify_round(
+            text, AnswerModel, {}, max_actions=1, lacts_with_out=False
+        )
+        assert isinstance(outcome, Retry)
+        assert "OUT{} is not closed before the next <lvar>, <lact> or OUT{" in outcome.error
+        assert pending == []
+        assert assembled is None
+
+    def test_two_out_blocks_are_refused(self):
+        text = (
+            "```lndl\n<lvar a>first</lvar>\n<lvar b>second</lvar>\n"
+            "OUT{answer: [a]}\nOUT{answer: [b]}\n```"
+        )
+        outcome, pending, assembled = _classify_round(
+            text, AnswerModel, {}, max_actions=1, lacts_with_out=False
+        )
+        assert isinstance(outcome, Retry)
+        assert "writes 2 OUT{} blocks and a round may write one" in outcome.error
+        assert pending == []
+        assert assembled is None
+
+    def test_an_answer_may_quote_out_in_its_own_text(self):
+        text = '```lndl\nOUT{answer: "write OUT{answer: ...} to answer"}\n```'
+        outcome, pending, assembled = _classify_round(
+            text, AnswerModel, {}, max_actions=1, lacts_with_out=False
+        )
+        assert isinstance(outcome, Success)
+        assert assembled["answer"] == "write OUT{answer: ...} to answer"
+        assert pending == []
+
+    def test_a_round_the_scan_and_the_parser_read_differently_is_refused(self, monkeypatch):
+        # A backstop: no input found reaches it once a body holding OUT{ is refused, so the
+        # scan is made to disagree with the parser here.
+        # The package exports a function under the module's own name, so the module is
+        # reached through the function it defines.
+        module = sys.modules[_classify_round.__module__]
+        monkeypatch.setattr(module, "_scan_round", lambda text: (0, 0, None))
+        text = '```lndl\n<lact r>lookup(query="1")</lact>\n```'
         outcome, pending, _ = _classify_round(
             text, AnswerModel, {}, max_actions=1, lacts_with_out=False
         )

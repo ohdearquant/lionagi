@@ -176,7 +176,9 @@ def _scan_round(text: str) -> tuple[int, int, str | None]:
     An ``<lvar>`` or ``<lact>`` body runs to the first closing tag after it, as the parser
     extracts it, so a tag quoted inside a body is not counted. An ``OUT{}`` runs to the first
     ``}`` outside a quoted string, as the lexer reads it. Returns ``(calls, answers, problem)``;
-    ``problem`` names a tag or ``OUT{}`` the round leaves open, or a tag inside an ``OUT{}``.
+    ``problem`` names a tag or ``OUT{}`` the round leaves open, a tag or another ``OUT{`` inside
+    an ``OUT{}``, or an ``OUT{`` inside a body: the lexer reads that one as an opened block,
+    quoted or not, and goes on reading the text after the body as the block's.
     """
     calls = answers = 0
     pos = 0
@@ -191,6 +193,8 @@ def _scan_round(text: str) -> tuple[int, int, str | None]:
         close = text.find(f"</{kind}>", opened.end())
         if close < 0:
             return calls, answers, f"a <{kind}> is not closed"
+        if "OUT{" in text[opened.end() : close]:
+            return calls, answers, f"a <{kind}> holds OUT{{, which is read as the answer's start"
         calls += kind == "lact"
         pos = close + len(kind) + 3
     return calls, answers, None
@@ -198,7 +202,7 @@ def _scan_round(text: str) -> tuple[int, int, str | None]:
 
 def _out_block_end(text: str, pos: int) -> tuple[int, str | None]:
     """The position after the ``}`` closing the ``OUT{}`` whose body starts at *pos*, or the
-    reason the block has none: input ends first, or a tag opens inside it."""
+    reason the block has none: input ends first, or a tag or another ``OUT{`` opens inside it."""
     quote: str | None = None
     while pos < len(text):
         char = text[pos]
@@ -211,8 +215,8 @@ def _out_block_end(text: str, pos: int) -> tuple[int, str | None]:
             quote = char
         elif char == "}":
             return pos + 1, None
-        elif char == "<" and _ROUND_OPENER.match(text, pos):
-            return pos, "OUT{} is not closed before the next <lvar> or <lact>"
+        elif _ROUND_OPENER.match(text, pos):
+            return pos, "OUT{} is not closed before the next <lvar>, <lact> or OUT{"
         pos += 1
     return pos, "OUT{} is not closed"
 
@@ -262,6 +266,11 @@ def _classify_round(
             refusal = _too_many_calls(calls, max_actions)
             if refusal is None and calls and answers:
                 refusal = _CALLS_BESIDE_ANSWER
+            if refusal is None and answers > 1:
+                refusal = (
+                    f"this round writes {answers} OUT{{}} blocks and a round may write one; "
+                    "the answer was not taken. Write the whole answer in one OUT{}."
+                )
             if refusal is not None:
                 return Retry(error=refusal), [], None
             scanned = (calls, answers)
