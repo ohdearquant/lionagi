@@ -1053,6 +1053,18 @@ class TestSeparateAnswerRounds:
         assert [call.function for call in pending] == ["lookup"]
         assert assembled is None
 
+    def test_a_crlf_answer_reads_as_lf(self):
+        text = '```lndl\r\nOUT{answer: "line 1\r\nline 2"}\r\n```'
+        outcome, _, assembled = _classify_round(text, AnswerModel, {}, lacts_with_out=False)
+        assert isinstance(outcome, Success)
+        assert assembled == {"answer": "line 1\nline 2"}
+
+    def test_an_answer_may_hold_an_indented_code_fence(self):
+        text = "```lndl\n<lvar a>\n  ```python\n  print(1)\n  ```\n</lvar>\nOUT{answer: [a]}\n```"
+        outcome, _, assembled = _classify_round(text, AnswerModel, {}, lacts_with_out=False)
+        assert isinstance(outcome, Success)
+        assert "```python\n  print(1)\n  ```" in assembled["answer"]
+
     @pytest.mark.asyncio
     async def test_the_next_round_is_told_its_unfenced_call_did_not_run(self):
         calls_made: list[str] = []

@@ -335,7 +335,8 @@ behaviour, including accepting a write-capable submission without `cwd`.
 
 - `extract_lndl_blocks` read only unindented three-character fences with LF line ends, so an
   indented block, a block fenced with four backticks, or CRLF output was not read at all; it now
-  reads all three, and a block closes only on the fence it opened with.
+  reads all three. A block closes only on the fence it opened with, at the same indentation, so
+  an indented fence inside a value stays content, and CRLF line ends are read as LF.
 - `li schedule validate` and `li schedule apply` name every invalid schedule as `<project>/<name>`
   (`global/<name>` for a global set), in the text lines and in `--json` alike. A resolution error
   used to carry the bare member name, so `--json` reported it unqualified while plan errors were

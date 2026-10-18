@@ -58,13 +58,21 @@ def test_extract_empty_block():
 @pytest.mark.parametrize(
     ("text", "code"),
     [
-        ("```lndl\r\n<lvar x>v</lvar>\r\n```", "<lvar x>v</lvar>\r\n"),
-        ("```lndl\r\n<lvar x>v</lvar>\r\n```\r\n", "<lvar x>v</lvar>\r\n"),
+        ("```lndl\r\n<lvar x>v</lvar>\r\n```", "<lvar x>v</lvar>\n"),
+        ("```lndl\r\n<lvar x>v</lvar>\r\n```\r\n", "<lvar x>v</lvar>\n"),
+        ("```lndl\r\n<lvar x>line 1\r\nline 2</lvar>\r\n```", "<lvar x>line 1\nline 2</lvar>\n"),
         ("  ```lndl\n  <lvar x>v</lvar>\n  ```", "  <lvar x>v</lvar>\n"),
         ("\t~~~lndl\n<lvar x>v</lvar>\n\t~~~", "<lvar x>v</lvar>\n"),
         ("````lndl\n<lvar x>v</lvar>\n````", "<lvar x>v</lvar>\n"),
     ],
-    ids=["crlf", "crlf-trailing-newline", "indented", "indented-tildes", "four-backticks"],
+    ids=[
+        "crlf",
+        "crlf-trailing-newline",
+        "crlf-multiline-value",
+        "indented",
+        "indented-tildes",
+        "four-backticks",
+    ],
 )
 def test_extract_reads_crlf_indented_and_longer_fences(text, code):
     assert extract_lndl_blocks(text) == [code]
@@ -80,6 +88,14 @@ def test_a_block_closes_only_on_its_own_fence():
     # own fence never comes back is not a block.
     assert extract_lndl_blocks("````lndl\n<lvar x>v</lvar>\n```") == []
     assert extract_lndl_blocks("```lndl\n<lvar x>v</lvar>\n~~~") == []
+
+
+def test_a_block_closes_only_at_its_own_indentation():
+    # A block opened at the margin keeps an indented fence inside a value as content.
+    text = "```lndl\n<lvar code>\n  ```python\n  print(1)\n  ```\n</lvar>\n```"
+    assert extract_lndl_blocks(text) == ["<lvar code>\n  ```python\n  print(1)\n  ```\n</lvar>\n"]
+    # An indented block closes on its own indented fence, not on one at the margin.
+    assert extract_lndl_blocks("  ```lndl\n  <lvar x>v</lvar>\n```") == []
 
 
 def test_a_block_quoted_inside_another_fence_is_not_extracted():
