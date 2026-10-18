@@ -1,8 +1,11 @@
 # ADR-0128: Writing run state into a store another schema lineage manages
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Aspirational
-- **Implementation-status**: not-started
+- **Implementation-status**: partial: D1-D7 are implemented. D8 is not complete: no test covers
+  item 7's writer-hold, busy-rate and WAL-growth limits declared before a run, or item 9's recovery
+  after lionagi's writes stop, and item 8's authorizer tests run on each supported Python against
+  one aiosqlite version.
 - **Area**: persistence-state
 - **Date**: 2026-10-14
 - **Relations**: extends ADR-0122 (optional runtime profiles); constrains every writable `StateDB` open;
@@ -311,10 +314,10 @@ Public tests use synthetic profiles. A deployment proves its own profile in its 
 - The aiosqlite floor rises to 0.22.0 (D3).
 - Turning compatibility writes off is the rollback. Restoring a backup over a store the managing
   application is still writing is not.
-- No production caller opens a store in compatibility mode until the native refusal of D7 ships,
-  since before it a native open in another process can migrate a store this process is writing.
-  None does today: the mode is reached only by passing a profile to `StateDB`, and no command,
-  server or configuration passes one.
+- No production caller opened a store in compatibility mode before the native refusal of D7 shipped,
+  since until then a native open in another process could migrate a store this process was writing.
+  None does yet: the mode is reached only by passing a profile to `StateDB`, and no command, server
+  or configuration passes one.
 
 ## Alternatives considered
 
@@ -369,6 +372,11 @@ compatibility admission of that file is refused, the file being the one that han
 opened, however its URL spells the path. These refusals cover writable `StateDB` opens; a
 read-only open applies nothing and is not checked, and Studio's `open_db` and other code that
 connects to the file natively are not covered.
+
+A writable native open of a store with no `lineage` row raises `UnrecognizedStoreError` (D7) when
+its `schema_meta` version is missing or one no release writes, or, on SQLite, when it has no
+`schema_meta` table and holds a table no lionagi component creates, a case refused before the
+connection settings of P2 so the store keeps its bytes and its journal mode.
 
 ### A.1 Entry points
 
