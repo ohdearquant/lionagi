@@ -25,7 +25,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from .redact import scrub_text
-from .run_progress import resolve_run
+from .run_progress import MissingOwnerContextError, resolve_run
 from .store import OperatorStore
 
 RESUME_RUN_COMMAND_TYPE = "resume"
@@ -166,7 +166,13 @@ async def resume_run(arguments: dict[str, Any]) -> dict[str, Any]:
     args = ResumeRunInput.model_validate(arguments)
     store, conversation_id, request_id = _identity()
 
-    resolution = await resolve_run(args.run)
+    # A turn that declares no project cannot prove it owns the run it names,
+    # and a resume mutates that run: report the refusal as a reason code
+    # rather than resolving. Mirrors ``run_control``'s refusal shape.
+    try:
+        resolution = await resolve_run(args.run, allow_unscoped_exact_id=False)
+    except MissingOwnerContextError:
+        return {"resumed": False, "reason": "missing_owner_context"}
     if not resolution["found"]:
         return {
             "resumed": False,

@@ -10,7 +10,6 @@ import logging
 import os
 import tempfile
 import time
-import uuid
 import warnings
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -20,6 +19,7 @@ from uuid import uuid4
 from lionagi._paths import RUNS_ROOT, ensure_lionagi_dir
 from lionagi.cli._util import AmbiguousIdError, mark_run_allocated
 from lionagi.libs.path_safety import validate_path_component
+from lionagi.ln import short_id
 from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.ln._utils import now_utc
 from lionagi.providers._provider_errors import ProviderError
@@ -58,7 +58,7 @@ PERSISTENCE_DEGRADED_REASON_FIELD = "persistence_degraded_reason"
 
 def _new_run_id() -> str:
     ts = now_utc().strftime("%Y%m%dT%H%M%S")
-    return f"{ts}-{uuid4().hex[:6]}"
+    return f"{ts}-{short_id(6)}"
 
 
 def current_run_id() -> str | None:
@@ -1804,12 +1804,12 @@ async def setup_agent_persist(
             branch_prog_id = existing_branch["progression_id"]
 
             if session_prog_id is None:
-                candidate = str(uuid.uuid4())
+                candidate = str(uuid4())
                 await db.create_progression(candidate)
                 effective = await db.repair_session_progression(session_id, candidate)
                 session_prog_id = effective or candidate
             if branch_prog_id is None:
-                candidate = str(uuid.uuid4())
+                candidate = str(uuid4())
                 await db.create_progression(candidate)
                 effective = await db.repair_branch_progression(branch_id, candidate)
                 branch_prog_id = effective or candidate
@@ -1847,8 +1847,8 @@ async def setup_agent_persist(
             # The narrower cost -- a row reading False or undeclared keeps
             # refusing controls it could actually drain -- is the safer one.
         else:
-            session_prog_id = str(uuid.uuid4())
-            branch_prog_id = str(uuid.uuid4())
+            session_prog_id = str(uuid4())
+            branch_prog_id = str(uuid4())
             existing_msg_ids = set()
 
             await db.create_progression(session_prog_id)

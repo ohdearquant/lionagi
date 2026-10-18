@@ -1,0 +1,317 @@
+{
+  "scope_limits": "Production Python class declarations under lionagi; imports, reexports, lexical aliases and declared inheritance are scanned without executing code. Dynamic factories, arbitrary reflection and runtime set/dict dataflow are not proven by this inventory, nor is a form written to evade the scan, such as a class reached through a container, an attribute or a binding the scan does not follow before its hash is written: the scan guards against the declaration forms the framework uses drifting, and the allowlist beside it is as easy to edit as such a form. Empty key-consumer lists record the source audit, not a whole-program proof. Runtime fixtures separately assert hash/set/dict refusal and the stated mutation mechanism.",
+  "consumers": {
+    "generic_unique": {
+      "symbol": "lionagi.ln._to_list.to_list",
+      "purpose": "Optional stable uniqueness for generic DataClass and Pydantic inputs; a transient deduplication boundary, not a persistent key contract."
+    },
+    "listable_fields": {
+      "symbol": "lionagi.operations.fields._validate_listable_field",
+      "purpose": "Normalize and deduplicate listable instruction, reasoning and action DTO values."
+    },
+    "json_projection": {
+      "symbol": "lionagi.ln._json_dump._to_json_value",
+      "purpose": "Serialize substrate values through the JSON projection boundary."
+    },
+    "node_content": {
+      "symbol": "lionagi.protocols.graph.node.Node._serialize_content",
+      "purpose": "Convert DataClass node content to its dictionary representation."
+    },
+    "message_render": {
+      "symbol": "lionagi.protocols.messages.message.MessageContent.render",
+      "purpose": "Render mutable message content; hash admission is not required."
+    },
+    "log_content": {
+      "symbol": "lionagi.protocols.generic.log.Log.create",
+      "purpose": "Serialize HashableModel content into a log record."
+    },
+    "model_serialization": {
+      "symbol": "lionagi.models.hashable_model.HashableModel.to_dict",
+      "purpose": "Preserve public model dictionary serialization independently of hashability."
+    },
+    "dynamic_fields": {
+      "symbol": "lionagi.models.operable_model.OperableModel.add_field",
+      "purpose": "Materialize mutable runtime model fields."
+    },
+    "function_schema": {
+      "symbol": "lionagi.libs.schema.function_to_schema.function_to_schema",
+      "purpose": "Construct a FunctionSchema DTO and emit its function schema dictionary."
+    },
+    "react_analysis": {
+      "symbol": "lionagi.operations.ReAct.ReAct.ReActStream",
+      "purpose": "Consume mutable analysis DTOs during iterative reasoning and action."
+    }
+  },
+  "types": [
+    {
+      "name": "lionagi.ln.types.base.DataClass",
+      "family": "DataClass",
+      "runtime_fixture": "lionagi.ln.types.base.DataClass",
+      "mutation_evidence": {
+        "kind": "compatibility_subclass",
+        "member": "values",
+        "description": "The empty slotted base has no instance data field to mutate. A dataclass compatibility subclass with eq=False supplies the writable values list and exercises inherited equality/hash behavior; do not claim mutation of a nonexistent base field."
+      },
+      "consumers": [
+        "generic_unique",
+        "json_projection",
+        "node_content"
+      ],
+      "set_or_dict_key_consumers": []
+    },
+    {
+      "name": "lionagi.protocols.messages.message.MessageContent",
+      "family": "DataClass",
+      "runtime_fixture": "lionagi.protocols.messages.message.MessageContent",
+      "mutation_evidence": {
+        "kind": "field",
+        "member": "_revision",
+        "description": "The declared non-init revision field is writable and advances when tracked content changes; the base itself has no public text payload."
+      },
+      "consumers": [
+        "generic_unique",
+        "message_render",
+        "node_content"
+      ],
+      "set_or_dict_key_consumers": []
+    },
+    {
+      "name": "lionagi.protocols.messages.assistant_response.AssistantResponseContent",
+      "family": "DataClass",
+      "runtime_fixture": "lionagi.protocols.messages.assistant_response.AssistantResponseContent",
+      "mutation_evidence": {
+        "kind": "field",
+        "member": "assistant_response",
+        "description": "Assistant response text remains assignable after construction."
+      },
+      "consumers": [
+        "generic_unique",
+        "message_render"
+      ],
+      "set_or_dict_key_consumers": []
+    },
+    {
+      "name": "lionagi.protocols.messages.action_request.ActionRequestContent",
+      "family": "DataClass",
+      "runtime_fixture": "lionagi.protocols.messages.action_request.ActionRequestContent",
+      "mutation_evidence": {
+        "kind": "field",
+        "member": "function",
+        "description": "The requested function name and argument dictionary remain mutable."
+      },
+      "consumers": [
+        "generic_unique",
+        "message_render"
+      ],
+      "set_or_dict_key_consumers": []
+    },
+    {
+      "name": "lionagi.protocols.messages.action_response.ActionResponseContent",
+      "family": "DataClass",
+      "runtime_fixture": "lionagi.protocols.messages.action_response.ActionResponseContent",
+      "mutation_evidence": {
+        "kind": "field",
+        "member": "output",
+        "description": "The action result can be replaced after construction and may contain mutable values."
+      },
+      "consumers": [
+        "generic_unique",
+        "message_render"
+      ],
+      "set_or_dict_key_consumers": []
+    },
+    {
+      "name": "lionagi.protocols.messages.instruction.InstructionContent",
+      "family": "DataClass",
+      "runtime_fixture": "lionagi.protocols.messages.instruction.InstructionContent",
+      "mutation_evidence": {
+        "kind": "field",
+        "member": "instruction",
+        "description": "Instruction text and context collections remain writable after construction."
+      },
+      "consumers": [
+        "generic_unique",
+        "message_render",
+        "json_projection"
+      ],
+      "set_or_dict_key_consumers": []
+    },
+    {
+      "name": "lionagi.protocols.messages.system.SystemContent",
+      "family": "DataClass",
+      "runtime_fixture": "lionagi.protocols.messages.system.SystemContent",
+      "mutation_evidence": {
+        "kind": "field",
+        "member": "system_message",
+        "description": "System text can be replaced after construction."
+      },
+      "consumers": [
+        "generic_unique",
+        "message_render"
+      ],
+      "set_or_dict_key_consumers": []
+    },
+    {
+      "name": "lionagi.models.hashable_model.HashableModel",
+      "family": "HashableModel",
+      "runtime_fixture": "lionagi.models.hashable_model.HashableModel",
+      "mutation_evidence": {
+        "kind": "private_state",
+        "member": "_mutable_state",
+        "description": "This base declares no payload fields; Pydantic permits writable private instance state. Concrete subclasses supply validated mutable fields. No frozen model configuration is declared."
+      },
+      "consumers": [
+        "generic_unique",
+        "model_serialization",
+        "log_content"
+      ],
+      "set_or_dict_key_consumers": []
+    },
+    {
+      "name": "lionagi.models.operable_model.OperableModel",
+      "family": "HashableModel",
+      "runtime_fixture": "lionagi.models.operable_model.OperableModel",
+      "mutation_evidence": {
+        "kind": "field",
+        "member": "counter",
+        "description": "add_field creates a runtime counter field with default 1; assigning 2 demonstrates mutation of that dynamically declared field after construction."
+      },
+      "consumers": [
+        "generic_unique",
+        "model_serialization",
+        "log_content",
+        "dynamic_fields"
+      ],
+      "set_or_dict_key_consumers": []
+    },
+    {
+      "name": "lionagi.models.schema_model.SchemaModel",
+      "family": "HashableModel",
+      "runtime_fixture": "lionagi.models.schema_model.SchemaModel",
+      "mutation_evidence": {
+        "kind": "private_state",
+        "member": "_mutable_state",
+        "description": "The schema base has no declared payload fields and permits writable private instance state; its model configuration does not freeze concrete subclasses."
+      },
+      "consumers": [
+        "generic_unique",
+        "model_serialization",
+        "log_content",
+        "function_schema"
+      ],
+      "set_or_dict_key_consumers": []
+    },
+    {
+      "name": "lionagi.libs.schema.function_to_schema.FunctionSchema",
+      "family": "HashableModel",
+      "runtime_fixture": "lionagi.libs.schema.function_to_schema.FunctionSchema",
+      "mutation_evidence": {
+        "kind": "field",
+        "member": "name",
+        "description": "The function name and schema properties remain assignable; inheritance passes through SchemaModel."
+      },
+      "consumers": [
+        "generic_unique",
+        "model_serialization",
+        "function_schema"
+      ],
+      "set_or_dict_key_consumers": []
+    },
+    {
+      "name": "lionagi.operations.fields.Instruct",
+      "family": "HashableModel",
+      "runtime_fixture": "lionagi.operations.fields.Instruct",
+      "mutation_evidence": {
+        "kind": "field",
+        "member": "instruction",
+        "description": "Validated instruction data remains assignable after construction."
+      },
+      "consumers": [
+        "generic_unique",
+        "listable_fields",
+        "model_serialization"
+      ],
+      "set_or_dict_key_consumers": []
+    },
+    {
+      "name": "lionagi.operations.fields.Reason",
+      "family": "HashableModel",
+      "runtime_fixture": "lionagi.operations.fields.Reason",
+      "mutation_evidence": {
+        "kind": "field",
+        "member": "title",
+        "description": "Reasoning title, content and confidence remain mutable model fields."
+      },
+      "consumers": [
+        "generic_unique",
+        "listable_fields",
+        "model_serialization"
+      ],
+      "set_or_dict_key_consumers": []
+    },
+    {
+      "name": "lionagi.operations.fields.ActionRequestModel",
+      "family": "HashableModel",
+      "runtime_fixture": "lionagi.operations.fields.ActionRequestModel",
+      "mutation_evidence": {
+        "kind": "field",
+        "member": "function",
+        "description": "The validated function name and arguments remain assignable."
+      },
+      "consumers": [
+        "generic_unique",
+        "listable_fields",
+        "model_serialization"
+      ],
+      "set_or_dict_key_consumers": []
+    },
+    {
+      "name": "lionagi.operations.fields.ActionResponseModel",
+      "family": "HashableModel",
+      "runtime_fixture": "lionagi.operations.fields.ActionResponseModel",
+      "mutation_evidence": {
+        "kind": "field",
+        "member": "output",
+        "description": "The response output can be replaced and may be an opaque mutable object."
+      },
+      "consumers": [
+        "generic_unique",
+        "listable_fields",
+        "model_serialization"
+      ],
+      "set_or_dict_key_consumers": []
+    },
+    {
+      "name": "lionagi.operations.ReAct.utils.ReActAnalysis",
+      "family": "HashableModel",
+      "runtime_fixture": "lionagi.operations.ReAct.utils.ReActAnalysis",
+      "mutation_evidence": {
+        "kind": "field",
+        "member": "analysis",
+        "description": "Analysis text, extension flag and action strategy remain assignable."
+      },
+      "consumers": [
+        "generic_unique",
+        "model_serialization",
+        "react_analysis"
+      ],
+      "set_or_dict_key_consumers": []
+    },
+    {
+      "name": "lionagi.operations.ReAct.utils.Analysis",
+      "family": "HashableModel",
+      "runtime_fixture": "lionagi.operations.ReAct.utils.Analysis",
+      "mutation_evidence": {
+        "kind": "field",
+        "member": "answer",
+        "description": "The final answer remains a validated writable field."
+      },
+      "consumers": [
+        "generic_unique",
+        "model_serialization",
+        "react_analysis"
+      ],
+      "set_or_dict_key_consumers": []
+    }
+  ]
+}

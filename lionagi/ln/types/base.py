@@ -1,3 +1,6 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Hashable, MutableMapping
@@ -292,7 +295,12 @@ class Params:
 
 @dataclass(slots=True)
 class DataClass:
-    """Mutable dataclass base with sentinel-aware serialization; configure via _config = ModelConfig(...)."""
+    """Unhashable mutable dataclass with sentinel-aware serialization.
+
+    Configure serialization through ``_config = ModelConfig(...)``. Subclasses
+    declaring ``eq=False`` retain exact-type public-field structural equality;
+    ordinary dataclass subclasses retain their generated equality.
+    """
 
     _config: ClassVar[ModelConfig] = ModelConfig()
 
@@ -365,13 +373,11 @@ class DataClass:
         """Return constructor values without applying wire omission rules."""
         return _declared_field_state(self)
 
-    def __hash__(self) -> int:
-        return hash(_dataclass_structural_key(self._field_state()))
+    __hash__ = None
 
     def __eq__(self, other: object) -> bool:
         """Compare readable declared field state of instances from the same class.
 
-        Equal instances hash equal because both operations use the same field projection.
         A cyclic value or a deleted nested field compares unequal.
         """
         if self is other:

@@ -28,7 +28,6 @@ import hashlib
 import json
 import re
 import time
-import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +37,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lionagi._paths import _find_git_root
+from lionagi.ln import parse_duration, short_id
 from lionagi.state.db import (
     INVOCATION_TERMINAL_STATUSES,
     ScheduleOwnershipConflictError,
@@ -323,22 +323,20 @@ def parse_schedule_set(text: str, *, source: str = "<string>") -> ScheduleSetDoc
 # ---------------------------------------------------------------------------
 
 _EVERY_RE = re.compile(r"^(\d+)(s|m|h|d)$")
-_EVERY_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 _EVERY_MAX_SECONDS = 30 * 86400
 
 
 def _parse_every(raw: str) -> int:
-    m = _EVERY_RE.match(raw.strip())
-    if not m:
+    if not _EVERY_RE.match(raw.strip()):
         raise ValueError(
             f"trigger.every must be a strict positive duration like '30s'/'15m'/'6h'/'2d', got {raw!r}"
         )
-    seconds = int(m.group(1)) * _EVERY_UNIT_SECONDS[m.group(2)]
-    if seconds <= 0:
-        raise ValueError(f"trigger.every must be strictly positive, got {raw!r}")
-    if seconds > _EVERY_MAX_SECONDS:
-        raise ValueError(f"trigger.every exceeds the maximum bound of 30d, got {raw!r}")
-    return seconds
+    try:
+        return int(parse_duration(raw, max_seconds=_EVERY_MAX_SECONDS))
+    except ValueError as exc:
+        raise ValueError(
+            f"trigger.every must be positive and at most 30d, got {raw!r} ({exc})"
+        ) from exc
 
 
 def _parse_at(raw: str) -> datetime:
@@ -511,9 +509,12 @@ def _resolve_flow_target(target: FlowTarget, manifest_dir: Path) -> dict[str, An
 
 
 def _resolve_playbook_target(target: PlaybookTarget) -> dict[str, Any]:
-    from lionagi.studio.scheduler.subprocess import _validate_identifier
+    from lionagi.studio.scheduler.subprocess import _validate_identifier, _validate_playbook_args
 
     _validate_identifier(target.name, "target.playbook.name")
+    # The launch passes these args, so they are held to its rules here, where
+    # validate and apply report them, rather than first failing when the row fires.
+    _validate_playbook_args(target.args)
     return {"kind": "playbook", "name": target.name, "args": target.args}
 
 
@@ -701,7 +702,7 @@ def resolve_member(
     project: str | None,
     is_global: bool,
 ) -> ResolvedMember:
-    qualified_name = _qualified_member_name(name, project=project, is_global=is_global)
+    qualified_name = f"{'global' if is_global else project}/{name}"
     resolved_trigger = _resolve_trigger(member.trigger)
     cwd = _resolve_cwd(member.execution, manifest_dir=manifest_dir, is_global=is_global)
     resolved_target = _resolve_target(member.target, manifest_dir, cwd)
@@ -784,7 +785,7 @@ async def create_quick_schedule(
             ]
         )
 
-    schedule_id = uuid.uuid4().hex[:12]
+    schedule_id = short_id(12)
     now = time.time()
     row = {
         "id": schedule_id,
@@ -800,18 +801,11 @@ async def create_quick_schedule(
     return schedule_id, resolved
 
 
-def _qualified_member_name(name: str, *, project: str | None, is_global: bool) -> str:
-    """The qualified name a member resolves to, in the one form every error
-    names it by: ``global/<name>`` for a global document, else the document's
-    project and the member name."""
-    return f"{'global' if is_global else project}/{name}"
-
-
 def resolve_schedule_set(doc: ScheduleSetDocument, manifest_dir: Path) -> dict[str, ResolvedMember]:
     """Resolve every member. Raises ``ScheduleSetError`` aggregating every
-    failing member's message under its qualified name -- callers must not
-    write anything on error."""
+    failing member's message -- callers must not write anything on error."""
     is_global = doc.metadata.scope == "global"
+    prefix = "global" if is_global else doc.metadata.project
     resolved: dict[str, ResolvedMember] = {}
     errors: list[tuple[str, str]] = []
     for name, member in doc.schedules.items():
@@ -824,14 +818,11 @@ def resolve_schedule_set(doc: ScheduleSetDocument, manifest_dir: Path) -> dict[s
                 is_global=is_global,
             )
         except ValueError as exc:
-            errors.append(
-                (
-                    _qualified_member_name(
-                        name, project=doc.metadata.project, is_global=is_global
-                    ),
-                    str(exc),
-                )
-            )
+            # Every raise site carries the qualified name, so a caller reading
+            # ``ScheduleSetError.errors`` (the text lines and the --json payload
+            # alike) sees one naming scheme rather than a bare member key here and
+            # a qualified name from the plan errors.
+            errors.append((f"{prefix}/{name}", str(exc)))
     if errors:
         raise ScheduleSetError(errors)
     return resolved
@@ -1547,8 +1538,6 @@ async def _adopt_plan_entry(
         )
     differences = await _adopt_spec_differences(row, resolved)
     undeclared = _adopt_undeclared_values(row)
-    target = resolved.resolved["target"]
-    play_args = target.get("args") if target.get("kind") == "playbook" else None
     reasons: list[str] = []
     if differences:
         rendered = "; ".join(
@@ -1633,11 +1622,6 @@ async def _adopt_plan_entry(
         reasons.append(
             f"the row sets {rendered}, which a declaration cannot express; clear "
             f"{'it' if len(undeclared) == 1 else 'them'} on the row first."
-        )
-    if play_args:
-        reasons.append(
-            f"the member declares playbook args {play_args!r}, which a scheduled play "
-            "launch does not pass; remove them from the member."
         )
     if reasons:
         return PlanEntry(
@@ -1837,7 +1821,7 @@ async def apply_schedule_set(
             resolved = entry.resolved
             creates.append(
                 {
-                    "id": uuid.uuid4().hex[:12],
+                    "id": short_id(12),
                     "name": entry.qualified_name,
                     "managed_by": "declaration",
                     "owner_key": owner_key,

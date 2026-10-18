@@ -575,14 +575,6 @@ path converts to absolute here instead of consulting
 storage already satisfies that predicate; `Path.resolve()` always returns
 an absolute path even when `manifest_dir` is itself relative.
 
-**Error naming** — `resolve_schedule_set` and the plan both name a failing
-member by the qualified name it resolves to, `global/<member>` under
-`scope: global` and `<metadata.project>/<member>` otherwise, through one
-`_qualified_member_name` helper. `ScheduleSetError.errors` therefore carries
-qualified names for resolution failures just as `apply_schedule_set` does for
-plan failures, and `li schedule validate`/`apply` print them unchanged in both
-human and JSON output.
-
 ## lionagi/studio/services/workflow_run.py
 
 - **Module purpose** — Runs a compiled `WorkflowDef` through lionagi's
@@ -787,11 +779,11 @@ document falls back to the full original name (still unique) so two
 members are never silently merged. `convert_legacy_rows` reports
 `on_success`/`on_fail`, an unsupported action_kind, a legacy-only field
 with no v1 equivalent, or a malformed trigger as `BLOCKED` and omits them,
-never half-emitted. Because a member's `execution.project` is written as an
-explicit `null` when the row stores none, and the document's project supplies
-the namespace, applying a `--legacy` export back as its own set (with
-`--adopt`, the row being unowned) leaves every behavior column untouched and
-the next plan reports `UNCHANGED`.
+never half-emitted. A row that stores no project is written with
+`execution.project: null`, which apply reads as no project, so applying a
+`--legacy` export back as its own set (with `--adopt`, since the row has no
+owner) adopts the row with its trigger, action, cwd, project, enablement and
+timezone unchanged, and the next plan reports `UNCHANGED`.
 
 ## lionagi/studio/services/playbooks.py
 
@@ -1489,9 +1481,17 @@ filled from that project's rows alone. Foreign rows are excluded from resolved
 ids and ambiguity candidates, and cannot push an in-scope match out of the
 window or hide one behind them. The resolver's failure
 reasons can differ for a foreign id and a nonexistent reference; identical
-not-found responses are not guaranteed. An owned turn with no project can
-still resolve a full 36-character UUID, including one selected by `"current"`;
-prefix and substring lookup require project context. An ambiguous match
+not-found responses are not guaranteed. A turn with an owner but no declared
+project never gets that far: it resolves an exact full-UUID reference (or
+`"current"`) only through the read path, and prefix and substring lookup
+require project context on every path. A read tool that reuses the resolver
+keeps that allowance. The write tools that mutate the run they name —
+`cancel_run`, `rename_session`, `resume_run` — pass
+`allow_unscoped_exact_id=False`, so on such a turn they refuse with
+`missing_owner_context` before resolving anything, for a full id and
+`"current"` included: the same position `run_control` takes, and for the
+same reason, that a mutation must prove it owns the run it names rather
+than rely on an id being un-enumerable. An ambiguous match
 returns candidates rather than choosing one: substring results are capped at
 `MAX_CANDIDATES` (10), and id-prefix candidates — for both the shared resolver
 and cancellation's own resolver — at the CLI helper's own listing size (5),

@@ -1225,8 +1225,6 @@ def test_cli_export_distinct_sibling_tokens_write_all_files(temp_db_path, agent_
     assert names == ["schedules.alpha.yaml", "schedules.beta.yaml"]
 
 
-
-
 def test_legacy_export_reapplies_unchanged_as_its_own_set(
     temp_db_path, agent_profile, tmp_path, monkeypatch
 ):
@@ -1270,9 +1268,12 @@ def test_legacy_export_reapplies_unchanged_as_its_own_set(
     assert [(entry.qualified_name, entry.action) for entry in plan] == [
         ("demo/nightly", "ADOPT")
     ], [entry.detail for entry in plan]
-    assert _cmd_apply_set(
-        types.SimpleNamespace(file=str(output_path), dry_run=False, adopt=True, as_json=False)
-    ) == 0
+    assert (
+        _cmd_apply_set(
+            types.SimpleNamespace(file=str(output_path), dry_run=False, adopt=True, as_json=False)
+        )
+        == 0
+    )
 
     after = asyncio.run(_rows())
     assert set(after) == set(before)
@@ -1302,7 +1303,10 @@ def test_legacy_export_reapplies_unchanged_as_its_own_set(
     assert [(entry.qualified_name, entry.action) for entry in plan] == [
         ("demo/nightly", "UNCHANGED")
     ], [entry.detail for entry in plan]
-    assert _cmd_apply_set(
-        types.SimpleNamespace(file=str(output_path), dry_run=False, adopt=False, as_json=False)
-    ) == 0
+    assert (
+        _cmd_apply_set(
+            types.SimpleNamespace(file=str(output_path), dry_run=False, adopt=False, as_json=False)
+        )
+        == 0
+    )
     assert asyncio.run(_rows()) == after
