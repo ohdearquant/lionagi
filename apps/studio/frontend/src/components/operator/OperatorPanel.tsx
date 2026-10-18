@@ -1047,6 +1047,12 @@ export default function OperatorPanel({ open, onClose }: Props) {
           // needed to choose one when nothing is open yet.
           return;
         }
+        if (conversationLoadRef.current !== 0) {
+          // A selection, a new-conversation reset, or an earlier load already
+          // owns the panel. This list may have been read before that choice,
+          // and choosing from it now would replace the operator's.
+          return;
+        }
         if (selected) {
           void loadConversation(selected.id);
         } else if (stored) {
@@ -1408,11 +1414,23 @@ export default function OperatorPanel({ open, onClose }: Props) {
     ++conversationRevisionRef.current;
     ++conversationLoadRef.current;
     window.localStorage.removeItem(STORAGE_KEY);
+    metadataViewRef.current = {
+      ...metadataViewRef.current,
+      conversation: null,
+      loadState: "idle",
+    };
     dispatch({ type: "RESET" });
     setActionError(null);
     setInstruction("");
     setDecidedProposalIds(new Set());
-  }, []);
+    if (conversationRefreshNeededRef.current) {
+      // A save settled after its row update was deferred to a read, and this
+      // reset abandoned that read. The list still owes the saved row.
+      void refreshConversationMetadata().catch((error) => {
+        setListActionError(error instanceof Error ? error.message : t("errors.load"));
+      });
+    }
+  }, [refreshConversationMetadata, t]);
 
   const selectConversation = useCallback(
     (conversationId: string) => {
@@ -1515,9 +1533,16 @@ export default function OperatorPanel({ open, onClose }: Props) {
       const revision = beginConversationMutation(conversation.id);
       if (revision === null) return;
       setListActionError(null);
+      // A fork is slow enough for the operator to select another conversation
+      // or start a new one while it runs. That later choice wins.
+      const load = conversationLoadRef.current;
       try {
         const snapshot = await forkOperatorConversation(conversation.id);
-        setConversations((current) => [snapshot.conversation, ...current]);
+        setConversations((current) => [
+          snapshot.conversation,
+          ...current.filter((item) => item.id !== snapshot.conversation.id),
+        ]);
+        if (conversationLoadRef.current !== load) return;
         resetConversation();
         window.localStorage.setItem(STORAGE_KEY, snapshot.conversation.id);
         setVisibleCount(200);
@@ -1533,7 +1558,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
       } finally {
         if (finishConversationMutation(conversation.id, revision)) {
           conversationRefreshNeededRef.current = true;
-          void refreshConversationMetadata(undefined, conversation.id).catch((error) => {
+          void refreshConversationMetadata().catch((error) => {
             setListActionError(error instanceof Error ? error.message : t("errors.load"));
           });
         }

@@ -1495,6 +1495,128 @@ describe("OperatorPanel", () => {
         ).toBe("Conversations: Scheduler check");
       });
 
+      it("keeps a selection made while the initial list is still in flight", async () => {
+        const conversation: OperatorConversation = {
+          id: "conversation-1",
+          title: "Scheduler check",
+          status: "active",
+          pinned: false,
+          activeRequestId: null,
+        };
+        const other: OperatorConversation = {
+          id: "conversation-2",
+          title: "Other conversation",
+          status: "active",
+          pinned: false,
+          activeRequestId: null,
+        };
+        const initialList = deferred<OperatorConversation[]>();
+        const selectedRead = deferred<{
+          conversation: OperatorConversation;
+          frames: OperatorFrame[];
+        }>();
+        api.listOperatorConversations
+          .mockReturnValueOnce(initialList.promise)
+          .mockResolvedValueOnce([conversation, other]);
+        api.getOperatorConversation.mockReturnValueOnce(selectedRead.promise);
+
+        await mount();
+        api.listOperatorConversations.mockResolvedValueOnce([conversation, other]);
+        await openList();
+        await selectFilter("Active");
+        await act(async () => titleButton("Other conversation").click());
+        await act(async () => initialList.resolve([conversation, other]));
+        await act(async () => selectedRead.resolve({ conversation: other, frames: [] }));
+
+        expect(
+          container
+            .querySelector('button[aria-label^="Conversations"]')
+            ?.getAttribute("aria-label"),
+        ).toBe("Conversations: Other conversation");
+      });
+
+      it("keeps a saved row and its refresh obligation when a reset interrupts the save", async () => {
+        const { conversation, store } = await mountLocalConversation();
+        const unpinned = { ...conversation, pinned: false };
+        const save = deferred<OperatorConversation>();
+        const interruptedRead = deferred<OperatorConversation[]>();
+        const refreshRead = deferred<OperatorConversation[]>();
+        api.updateOperatorConversation.mockReturnValueOnce(save.promise);
+        await act(async () => rowAction("Scheduler check", "Unpin").click());
+        api.listOperatorConversations.mockReturnValueOnce(interruptedRead.promise);
+        await selectFilter("Active");
+        api.listOperatorConversations.mockReturnValueOnce(refreshRead.promise);
+        store(unpinned);
+        await act(async () => save.resolve(unpinned));
+        await act(async () => interruptedRead.resolve([unpinned]));
+        await act(async () => {
+          const reset = [...container.querySelectorAll("button")].find(
+            (candidate) => candidate.textContent === "Start a new conversation",
+          ) as HTMLButtonElement;
+          reset.click();
+        });
+        await act(async () => refreshRead.resolve([unpinned]));
+
+        await openList();
+        const row = titleButton("Scheduler check");
+        expect(row.querySelector("span")?.textContent).toBe("Scheduler check");
+        expect(rowAction("Scheduler check", "Pin")).toBeDefined();
+      });
+
+      it("does not replace a newer list row with the forked conversation's source", async () => {
+        const { conversation, other, rows, store } = await mountLocalConversation();
+        const renamed = { ...conversation, title: "Renamed check" };
+        api.forkOperatorConversation.mockResolvedValue({
+          conversation: {
+            id: "conversation-fork",
+            title: "Scheduler check (fork)",
+            status: "active",
+            pinned: false,
+            activeRequestId: null,
+          },
+          frames: [],
+        });
+        store(renamed);
+        api.listOperatorConversations.mockResolvedValueOnce(rows());
+        api.getOperatorConversation.mockResolvedValueOnce({ conversation, frames: [] });
+
+        await act(async () => rowAction("Scheduler check", "Fork").click());
+        await act(async () => {
+          await Promise.resolve();
+        });
+
+        await openList();
+        expect(container.querySelector("ul")?.textContent).toContain("Renamed check");
+        expect(container.querySelector("ul")?.textContent).not.toContain("★ Scheduler check");
+      });
+
+      it("keeps the conversation selected while a fork is in flight", async () => {
+        const { other } = await mountLocalConversation();
+        const fork = deferred<{ conversation: OperatorConversation; frames: OperatorFrame[] }>();
+        api.forkOperatorConversation.mockReturnValueOnce(fork.promise);
+
+        await act(async () => rowAction("Scheduler check", "Fork").click());
+        await act(async () => titleButton("Other conversation").click());
+        await act(async () =>
+          fork.resolve({
+            conversation: {
+              id: "conversation-fork",
+              title: "Scheduler check (fork)",
+              status: "active",
+              pinned: false,
+              activeRequestId: null,
+            },
+            frames: [],
+          }),
+        );
+
+        expect(
+          container
+            .querySelector('button[aria-label^="Conversations"]')
+            ?.getAttribute("aria-label"),
+        ).toBe(`Conversations: ${other.title}`);
+      });
+
       it("refreshes listed rows after a fork supersedes a metadata read", async () => {
         const { conversation, other, rows, store } = await mountLocalConversation();
         const renamed = { ...conversation, title: "Renamed check" };
