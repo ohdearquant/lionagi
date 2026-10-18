@@ -1725,6 +1725,257 @@ describe("OperatorPanel", () => {
         await openList();
         expect(container.querySelector("ul")?.textContent).toContain("Renamed check");
       });
+
+      function selectedLabel() {
+        return container
+          .querySelector('button[aria-label^="Conversations"]')
+          ?.getAttribute("aria-label");
+      }
+
+      function forked(title: string): { conversation: OperatorConversation; frames: [] } {
+        return {
+          conversation: {
+            id: `${title}-fork`,
+            title: `${title} (fork)`,
+            status: "active",
+            pinned: false,
+            activeRequestId: null,
+          },
+          frames: [],
+        };
+      }
+
+      async function startNewConversation() {
+        await act(async () => {
+          const reset = [...container.querySelectorAll("button")].find(
+            (candidate) => candidate.textContent === "Start a new conversation",
+          ) as HTMLButtonElement;
+          reset.click();
+        });
+      }
+
+      async function typeAndSend(text: string) {
+        const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+        await act(async () => {
+          const setter = Object.getOwnPropertyDescriptor(
+            HTMLTextAreaElement.prototype,
+            "value",
+          )?.set;
+          setter?.call(textarea, text);
+          textarea.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+        const sendButton = [...container.querySelectorAll("button")].find((button) =>
+          button.textContent?.startsWith("Send"),
+        );
+        expect(sendButton?.disabled).toBe(false);
+        await act(async () => sendButton!.click());
+      }
+
+      it("loads the remembered conversation when mounted under StrictMode", async () => {
+        const conversation: OperatorConversation = {
+          id: "conversation-1",
+          title: "Scheduler check",
+          status: "active",
+          pinned: false,
+          activeRequestId: null,
+        };
+        api.listOperatorConversations.mockResolvedValue([conversation]);
+        api.getOperatorConversation.mockResolvedValue({ conversation, frames: [] });
+        window.localStorage.setItem("studio:operator-conversation", "conversation-1");
+
+        await act(async () => {
+          root?.render(
+            <React.StrictMode>
+              <IntlProvider locale="en" messages={enMessages}>
+                <OperatorPanel open onClose={vi.fn()} />
+              </IntlProvider>
+            </React.StrictMode>,
+          );
+        });
+        await act(async () => {
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+
+        expect(api.getOperatorConversation).toHaveBeenCalledWith("conversation-1");
+        expect(selectedLabel()).toBe("Conversations: Scheduler check");
+      });
+
+      it("keeps a fork started while the initial list is still in flight", async () => {
+        const conversation: OperatorConversation = {
+          id: "conversation-1",
+          title: "Scheduler check",
+          status: "active",
+          pinned: false,
+          activeRequestId: null,
+        };
+        const other: OperatorConversation = {
+          id: "conversation-2",
+          title: "Other conversation",
+          status: "active",
+          pinned: false,
+          activeRequestId: null,
+        };
+        const initialList = deferred<OperatorConversation[]>();
+        const fork = deferred<{ conversation: OperatorConversation; frames: [] }>();
+        api.listOperatorConversations
+          .mockReturnValueOnce(initialList.promise)
+          .mockResolvedValueOnce([conversation, other]);
+        api.getOperatorConversation.mockResolvedValue({ conversation, frames: [] });
+        api.forkOperatorConversation.mockReturnValueOnce(fork.promise);
+
+        await mount();
+        api.listOperatorConversations.mockResolvedValueOnce([conversation, other]);
+        await openList();
+        await selectFilter("Active");
+        await act(async () => rowAction("Other conversation", "Fork").click());
+        await act(async () => initialList.resolve([conversation, other]));
+        await act(async () => fork.resolve(forked("Other conversation")));
+
+        expect(api.getOperatorConversation).not.toHaveBeenCalledWith("conversation-1");
+        expect(selectedLabel()).toBe("Conversations: Other conversation (fork)");
+      });
+
+      it.each([
+        ["in the order they started", [0, 1]],
+        ["in the reverse order", [1, 0]],
+      ])("keeps the later of two forks when they resolve %s", async (_order, resolutionOrder) => {
+        await mountLocalConversation();
+        const forks = [
+          deferred<{ conversation: OperatorConversation; frames: [] }>(),
+          deferred<{ conversation: OperatorConversation; frames: [] }>(),
+        ];
+        api.forkOperatorConversation
+          .mockReturnValueOnce(forks[0].promise)
+          .mockReturnValueOnce(forks[1].promise);
+        const titles = ["Scheduler check", "Other conversation"];
+
+        await act(async () => rowAction(titles[0], "Fork").click());
+        await act(async () => rowAction(titles[1], "Fork").click());
+        for (const index of resolutionOrder) {
+          await act(async () => forks[index].resolve(forked(titles[index])));
+        }
+
+        expect(selectedLabel()).toBe("Conversations: Other conversation (fork)");
+      });
+
+      it("does not strand a selection in loading when a fork started after it fails", async () => {
+        const { other } = await mountLocalConversation();
+        const selectedRead = deferred<{ conversation: OperatorConversation; frames: [] }>();
+        api.getOperatorConversation.mockReturnValueOnce(selectedRead.promise);
+        api.forkOperatorConversation.mockRejectedValueOnce(new Error("fork failed"));
+
+        await act(async () => titleButton("Other conversation").click());
+        await openList();
+        await act(async () => rowAction("Scheduler check", "Fork").click());
+        await act(async () => selectedRead.resolve({ conversation: other, frames: [] }));
+
+        expect(selectedLabel()).toBe("Conversations: Other conversation");
+        expect(container.textContent).toContain("fork failed");
+      });
+
+      it("refreshes a saved row a reset deferred when a new conversation is created", async () => {
+        const { conversation, store } = await mountLocalConversation();
+        const unpinned = { ...conversation, pinned: false };
+        const save = deferred<OperatorConversation>();
+        const interruptedRead = deferred<OperatorConversation[]>();
+        const refreshRead = deferred<OperatorConversation[]>();
+        const resetRead = deferred<OperatorConversation[]>();
+        const creation = deferred<OperatorConversation>();
+        api.updateOperatorConversation.mockReturnValueOnce(save.promise);
+        await act(async () => rowAction("Scheduler check", "Unpin").click());
+        api.listOperatorConversations.mockReturnValueOnce(interruptedRead.promise);
+        await selectFilter("Active");
+        api.listOperatorConversations.mockReturnValueOnce(refreshRead.promise);
+        store(unpinned);
+        await act(async () => save.resolve(unpinned));
+        await act(async () => interruptedRead.resolve([unpinned]));
+        api.listOperatorConversations.mockReturnValueOnce(resetRead.promise);
+        await startNewConversation();
+        api.createOperatorConversation.mockReturnValueOnce(creation.promise);
+        api.submitOperatorTurn.mockResolvedValueOnce({
+          conversationId: "conversation-new",
+          requestId: "request-new",
+          acceptedSequence: 1,
+        });
+        await typeAndSend("check the scheduler");
+        await act(async () => resetRead.resolve([conversation]));
+        await act(async () => refreshRead.resolve([conversation]));
+        await act(async () =>
+          creation.resolve({
+            id: "conversation-new",
+            title: "New thread",
+            status: "active",
+            pinned: false,
+            activeRequestId: null,
+          }),
+        );
+        await act(async () => {
+          await Promise.resolve();
+        });
+
+        await openList();
+        expect(titleButton("Scheduler check").querySelector("span")?.textContent).toBe(
+          "Scheduler check",
+        );
+      });
+
+      it("keeps a conversation selected while a new one is being created", async () => {
+        const { other } = await mountLocalConversation();
+        const creation = deferred<OperatorConversation>();
+        await startNewConversation();
+        api.createOperatorConversation.mockReturnValueOnce(creation.promise);
+        api.submitOperatorTurn.mockClear();
+        await typeAndSend("check the scheduler");
+        await openList();
+        await act(async () => titleButton("Other conversation").click());
+        await act(async () =>
+          creation.resolve({
+            id: "conversation-new",
+            title: "New thread",
+            status: "active",
+            pinned: false,
+            activeRequestId: null,
+          }),
+        );
+        await act(async () => {
+          await Promise.resolve();
+        });
+
+        expect(selectedLabel()).toBe(`Conversations: ${other.title}`);
+        expect(api.submitOperatorTurn).not.toHaveBeenCalled();
+        expect((container.querySelector("textarea") as HTMLTextAreaElement).value).toBe(
+          "check the scheduler",
+        );
+      });
+
+      it("refreshes a saved row a failed conversation load deferred", async () => {
+        const { conversation, store } = await mountLocalConversation();
+        const unpinned = { ...conversation, pinned: false };
+        const save = deferred<OperatorConversation>();
+        const interruptedRead = deferred<OperatorConversation[]>();
+        const refreshRead = deferred<OperatorConversation[]>();
+        api.updateOperatorConversation.mockReturnValueOnce(save.promise);
+        await act(async () => rowAction("Scheduler check", "Unpin").click());
+        api.listOperatorConversations.mockReturnValueOnce(interruptedRead.promise);
+        await selectFilter("Active");
+        api.listOperatorConversations.mockReturnValueOnce(refreshRead.promise);
+        store(unpinned);
+        await act(async () => save.resolve(unpinned));
+        await act(async () => interruptedRead.resolve([unpinned]));
+        api.getOperatorConversation.mockRejectedValueOnce(new Error("conversation gone"));
+        await act(async () => titleButton("Other conversation").click());
+        await act(async () => refreshRead.resolve([conversation]));
+        await act(async () => {
+          await Promise.resolve();
+        });
+
+        await openList();
+        expect(titleButton("Scheduler check").querySelector("span")?.textContent).toBe(
+          "Scheduler check",
+        );
+      });
     });
 
     it("renames a conversation inline and reflects the new title", async () => {

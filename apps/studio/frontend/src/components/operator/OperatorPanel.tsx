@@ -789,6 +789,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const conversationMutationsRef = useRef<Map<string, number>>(new Map());
   const conversationRowReadsRef = useRef<Map<string, number>>(new Map());
   const conversationLoadRef = useRef(0);
+  // Counts forks started. A fork does not take the panel until it resolves,
+  // so it does not cancel a load in flight, but a later fork wins over it.
+  const conversationForkRef = useRef(0);
   const selectedConversationIdRef = useRef<string | null>(null);
   const metadataRefreshRef = useRef<{
     conversationId: string;
@@ -1002,6 +1005,15 @@ export default function OperatorPanel({ open, onClose }: Props) {
             type: "LOAD_ERROR",
             error: error instanceof Error ? error.message : t("errors.load"),
           });
+          // This load superseded a refresh a save deferred to it; the list
+          // still owes the saved row.
+          if (conversationRefreshNeededRef.current) {
+            void refreshConversationMetadata().catch((refreshError) => {
+              setActionError(
+                refreshError instanceof Error ? refreshError.message : t("errors.load"),
+              );
+            });
+          }
           return;
         }
       }
@@ -1073,6 +1085,12 @@ export default function OperatorPanel({ open, onClose }: Props) {
     let active = true;
     const stored = readStoredConversation();
     const revision = ++conversationRevisionRef.current;
+    // Read at setup rather than assumed zero: StrictMode runs the unmount
+    // cleanup, which advances the load counter, before setting up again.
+    const initialLoad = conversationLoadRef.current;
+    const initialFork = conversationForkRef.current;
+    const claimed = () =>
+      conversationLoadRef.current !== initialLoad || conversationForkRef.current !== initialFork;
     void listOperatorConversations()
       .then((available) => {
         if (!active) return;
@@ -1088,10 +1106,10 @@ export default function OperatorPanel({ open, onClose }: Props) {
           // needed to choose one when nothing is open yet.
           return;
         }
-        if (conversationLoadRef.current !== 0) {
-          // A selection, a new-conversation reset, or an earlier load already
-          // owns the panel. This list may have been read before that choice,
-          // and choosing from it now would replace the operator's.
+        if (claimed()) {
+          // A selection, a new-conversation reset, a fork, or an earlier load
+          // already owns the panel. This list may have been read before that
+          // choice, and choosing from it now would replace the operator's.
           return;
         }
         if (selected) {
@@ -1332,15 +1350,30 @@ export default function OperatorPanel({ open, onClose }: Props) {
       let conversation = state.conversation;
       if (!conversation) {
         ++conversationRevisionRef.current;
-        ++conversationLoadRef.current;
+        const load = ++conversationLoadRef.current;
         conversation = await createOperatorConversation();
         ++conversationRevisionRef.current;
+        if (conversationLoadRef.current !== load) {
+          // The operator chose another conversation while this one was being
+          // created. That choice keeps the panel and the draft is not sent;
+          // the list is read again so the new conversation appears in it.
+          void refreshConversationMetadata().catch((error) => {
+            setListActionError(error instanceof Error ? error.message : t("errors.load"));
+          });
+          return;
+        }
         window.localStorage.setItem(STORAGE_KEY, conversation.id);
         setConversations((current) => [
           conversation as OperatorConversation,
           ...current.filter((item) => item.id !== conversation?.id),
         ]);
         dispatch({ type: "LOAD_SUCCESS", conversation, frames: [] });
+        // Creating superseded any read a save deferred its row update to.
+        if (conversationRefreshNeededRef.current) {
+          void refreshConversationMetadata().catch((error) => {
+            setListActionError(error instanceof Error ? error.message : t("errors.load"));
+          });
+        }
       }
       const context = operatorContext(
         location.pathname,
@@ -1391,6 +1424,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
     state.lastSequence,
     t,
     loadConversation,
+    refreshConversationMetadata,
   ]);
 
   const handleStop = useCallback(async () => {
@@ -1574,16 +1608,17 @@ export default function OperatorPanel({ open, onClose }: Props) {
       const revision = beginConversationMutation(conversation.id);
       if (revision === null) return;
       setListActionError(null);
-      // A fork is slow enough for the operator to select another conversation
-      // or start a new one while it runs. That later choice wins.
+      // A fork is slow enough for the operator to select another conversation,
+      // start a new one, or fork another while it runs. That later choice wins.
       const load = conversationLoadRef.current;
+      const fork = ++conversationForkRef.current;
       try {
         const snapshot = await forkOperatorConversation(conversation.id);
         setConversations((current) => [
           snapshot.conversation,
           ...current.filter((item) => item.id !== snapshot.conversation.id),
         ]);
-        if (conversationLoadRef.current !== load) return;
+        if (conversationLoadRef.current !== load || conversationForkRef.current !== fork) return;
         resetConversation();
         window.localStorage.setItem(STORAGE_KEY, snapshot.conversation.id);
         setVisibleCount(200);
