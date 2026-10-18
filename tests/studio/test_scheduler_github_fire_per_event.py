@@ -267,11 +267,11 @@ async def test_global_slot_exhaustion_mid_batch_stops_cursor_before_undispatched
     real_reserve = engine._reserve_global_slot
     call_count = 0
 
-    async def _reserve_limited():
+    async def _reserve_limited(*args, **kwargs):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return await real_reserve()
+            return await real_reserve(*args, **kwargs)
         return False, None
 
     p_build, p_spawn = _spawn_patches()

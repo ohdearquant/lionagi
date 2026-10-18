@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: BSD-3-Clause
+
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openenv-agent_workbench"
+version = "0.1.0"
+description = "Tool-using work tasks across eight domains, with answers checked against the task data"
+requires-python = ">=3.10"
+dependencies = [
+    "openenv @ git+https://github.com/meta-pytorch/OpenEnv.git@86a180ede21e044f7929b9a7783ad83aa67d83a3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[project.scripts]
+# Server entry point - enables running via: uv run --project . server
+# or: python -m agent_workbench.server.app
+server = "agent_workbench.server.app:main"
+
+[tool.setuptools]
+include-package-data = true
+packages = ["agent_workbench", "agent_workbench.server"]
+package-dir = { "agent_workbench" = ".", "agent_workbench.server" = "server" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

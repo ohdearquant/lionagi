@@ -296,6 +296,7 @@ def _limits(argv: list[str]) -> dict[str, Any]:
         "max_scheduled_concurrent": cap,
         "unlimited": not cap,
         "current_inflight": result.get("current_inflight", 0),
+        "current_holders": result.get("current_holders") or [],
         # The ad-hoc task-worker lane draws from its own independent
         # capacity pool (see MAX_ADHOC_CONCURRENT), additive to the
         # scheduled cap above -- a caller provisioning for the scheduled cap

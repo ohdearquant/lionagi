@@ -366,6 +366,15 @@ behaviour, including accepting a write-capable submission without `cwd`.
 
 ### Fixed
 
+- Skipped schedule runs expose their recorded `reason_code` and `reason_summary`
+  through run reads and the CLI; `outcome.summary` uses that reason while
+  `outcome.code` stays `skipped`. A run whose outcome is its own skip serves
+  `error_class: null`. Capacity deferrals log once at INFO when an
+  episode starts; the episode ends at the schedule's first due evaluation the
+  cap does not defer. Schedule limits list
+  `current_holders` with each holder's `schedule_id`, `path`, and `acquired_at`
+  in epoch seconds. Timed schedules are considered oldest due first, before
+  GitHub poll passes, whose cadence is separate and asynchronous.
 - A `github_poll` schedule held one of the scheduler's global concurrent-fire slots for the whole
   of its GitHub poll, before it had any event to run. A slow or rate-limited poll kept that slot
   from every other schedule for as long as it ran, so under the default cap of four, two slow

@@ -552,8 +552,21 @@ def _error_class_for(row: dict[str, Any]) -> str | None:
     falls through to the occurrence's own error text, which is empty exactly when
     there was no error. Suppressing the class there instead would leave a genuinely
     failed run with no classification and no path to its detail.
+
+    A run whose outcome is its own skip did not fail, so it has no class whatever
+    text explains the skip: the recorded reason is caller-reported outcome text, and
+    classifying it would serve a failure class (``unclassified`` for every fixed
+    scheduler explanation) on a run that never started. A skipped run whose outcome
+    a linked session or invocation reports keeps that layer's class.
     """
-    reported = _reported_summary_class(row.get("outcome"))
+    outcome = row.get("outcome")
+    if (
+        isinstance(outcome, dict)
+        and outcome.get("source") == "occurrence"
+        and outcome.get("code") == "skipped"
+    ):
+        return None
+    reported = _reported_summary_class(outcome)
     if reported is not None:
         return reported
     return _error_class(row.get("error_detail"))
@@ -774,7 +787,39 @@ async def _recent_run_summaries(db: StateDB, schedule_ids: list[str]) -> dict[st
 # reach the wire on these routes either way -- before this list existed the routes
 # returned the joined row verbatim -- so naming them is what turns a pass-through into
 # a decision, and what makes withholding them later a one-line change in one place.
-_RUN_VIEW_FIELDS = _RUN_SUMMARY_FIELDS + ("duration_ms", "artifacts", "session_ids")
+_RUN_VIEW_FIELDS = _RUN_SUMMARY_FIELDS + (
+    "duration_ms",
+    "artifacts",
+    "session_ids",
+    "reason_code",
+    "reason_summary",
+)
+
+# Only these fixed scheduler explanations are safe on list surfaces. A reason
+# code or source label alone does not make an arbitrary recorded summary safe.
+# The stored text must match too; this list never supplies a missing summary.
+_PUBLIC_SKIP_REASONS = frozenset(
+    {
+        (
+            "schedule.deferred.capacity",
+            "Schedule fire deferred: global concurrent-fire cap reached; will retry next tick.",
+        ),
+        (
+            "schedule.skipped.overlap",
+            "Schedule fire skipped because overlap_policy=skip and a prior run is still active.",
+        ),
+        (
+            "schedule.skipped.missed_fire",
+            "Schedule fire skipped because the scheduled time passed while the server was down "
+            "or the tick was delayed (missed_fire_policy=skip).",
+        ),
+        (
+            "schedule.budget.exhausted",
+            "Schedule fire refused and the schedule disabled because its "
+            "configured spend budget is exhausted.",
+        ),
+    }
+)
 
 
 def _reported_summary_class(outcome: Any) -> str | None:
@@ -801,10 +846,23 @@ def _reported_summary_class(outcome: Any) -> str | None:
 
 def _run_view(row: dict[str, Any]) -> dict[str, Any]:
     view = {name: row[name] for name in _RUN_VIEW_FIELDS if name in row}
+    reason_summary = row.get("reason_summary")
+    public_skip_reason = (
+        row.get("status") == "skipped"
+        and (row.get("reason_code"), reason_summary) in _PUBLIC_SKIP_REASONS
+    )
+    if reason_summary and not public_skip_reason:
+        view["reason_summary"] = _error_class(reason_summary)
     view["error_class"] = _error_class_for(row)
     if "outcome" in row:
         outcome = row["outcome"]
         classified = _reported_summary_class(outcome)
+        if (
+            public_skip_reason
+            and outcome.get("source") == "occurrence"
+            and outcome.get("summary") == reason_summary
+        ):
+            classified = None
         view["outcome"] = outcome if classified is None else {**outcome, "summary": classified}
     return view
 
@@ -1373,6 +1431,7 @@ async def schedule_limits_route() -> dict[str, Any]:
     return {
         "max_scheduled_concurrent": config.MAX_SCHEDULED_CONCURRENT,
         "current_inflight": scheduler._global_inflight,
+        "current_holders": scheduler.global_slot_holders,
         "max_adhoc_concurrent": config.MAX_ADHOC_CONCURRENT,
         "current_adhoc_inflight": scheduler._adhoc_inflight,
     }
