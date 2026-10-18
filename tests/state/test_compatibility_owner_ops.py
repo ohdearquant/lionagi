@@ -1020,9 +1020,7 @@ async def test_a_refused_native_open_of_a_store_whose_first_page_a_crash_tore(tm
     assert _snapshot(store) == before
 
 
-async def test_a_store_that_moves_under_every_copy_is_refused_as_unreadable(
-    tmp_path, monkeypatch
-):
+async def test_a_store_that_moves_under_every_copy_is_refused_as_unreadable(tmp_path, monkeypatch):
     """Every copy sees the store commit or checkpoint under it, so no read of the file and its
     log is of one state. After the bounded number of copies the store is refused before any
     writable connection exists, leaving the log in place, rather than by a connection that folds

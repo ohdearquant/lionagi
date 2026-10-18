@@ -469,8 +469,9 @@ async def test_a_kept_engine_reads_the_store_before_it_reuses_a_connection(tmp_p
     assert db._engine is not None and not db._schema_applied
     monkeypatch.undo()
     await db._engine.dispose()
-    _wal_reopened(path, f"UPDATE schema_meta SET value = '{int(SCHEMA_VERSION) + 1}' "
-                        "WHERE key = 'version'")
+    _wal_reopened(
+        path, f"UPDATE schema_meta SET value = '{int(SCHEMA_VERSION) + 1}' WHERE key = 'version'"
+    )
     before = _files(path)
     connections = []
     reads = []
