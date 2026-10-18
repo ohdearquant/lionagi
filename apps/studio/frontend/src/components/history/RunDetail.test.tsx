@@ -3896,8 +3896,8 @@ describe("history/RunDetail.tsx — a response for a run the reader has left", (
       expect(h.container.textContent).not.toContain("first-run-name");
       expect(h.container.textContent).not.toContain("first-branch");
       // A resume accepted on a visit that is over is not carried into the next
-      // one either: nothing keeps polling its invocation on the way back.
-      expect(vi.mocked(getInvocation)).toHaveBeenCalledTimes(1);
+      // one either: no fallback read is made after the refresh settles.
+      expect(vi.mocked(getInvocation)).not.toHaveBeenCalled();
     } finally {
       act(() => h.root.unmount());
       h.container.remove();
@@ -4157,6 +4157,697 @@ describe("history/RunDetail.tsx — a response for a run the reader has left", (
     } finally {
       act(() => h.root.unmount());
       h.container.remove();
+    }
+  });
+
+  it("a resume while both streams are healthy reads the detail once instead of polling", async () => {
+    vi.useFakeTimers();
+    const h = await mount();
+    const { getInvocation, streamSession, streamSignals } = await import("@/lib/api");
+    const sessionStates: Array<(state: "connecting" | "open" | "disconnected" | "closed") => void> =
+      [];
+    const signalStates: Array<(state: "connecting" | "open" | "disconnected") => void> = [];
+    const sessionEvents: Array<(event: Record<string, unknown>) => void> = [];
+    // Two reads: the visit's own and the single eager refresh after the
+    // accepted resume. A poll would read the invocation and the session again.
+    vi.mocked(h.getSession)
+      .mockResolvedValueOnce(runA as never)
+      .mockResolvedValueOnce(runA as never)
+      // The terminal fallback check's one final detail refresh, then the
+      // second accepted resume's own eager refresh.
+      .mockResolvedValueOnce(runA as never)
+      .mockResolvedValueOnce(runA as never)
+      .mockResolvedValue(runA as never);
+    vi.mocked(getInvocation).mockResolvedValue({
+      id: "inv-1",
+      status: "completed",
+      ended_at: 1,
+      updated_at: 1,
+    } as never);
+    vi.mocked(streamSession).mockImplementation(
+      (
+        _id: string,
+        onEvent,
+        onConnectionState?: (state: "connecting" | "open" | "disconnected" | "closed") => void,
+      ) => {
+        sessionEvents.push(onEvent);
+        if (onConnectionState) sessionStates.push(onConnectionState);
+        onConnectionState?.("open");
+        return () => {};
+      },
+    );
+    vi.mocked(streamSignals).mockImplementation(
+      (
+        _id: string,
+        _onEvent,
+        onConnectionState?: (state: "connecting" | "open" | "disconnected") => void,
+      ) => {
+        if (onConnectionState) signalStates.push(onConnectionState);
+        onConnectionState?.("open");
+        return () => {};
+      },
+    );
+    try {
+      await h.render("run-a");
+      await act(async () => {
+        void resumeRunProps.current?.onResumed({ run_id: "run-a", invocation_id: "inv-1" });
+      });
+      await h.flush();
+      expect(h.getSession).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      await h.flush();
+
+      // The streams are the live source of truth: 30 seconds of healthy
+      // transport must not turn into repeated full detail reads.
+      expect(h.getSession).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(getInvocation)).not.toHaveBeenCalled();
+
+      // The terminal frame ends the stream. While the resume is watched the
+      // frame alone does not end the watch: the lifecycle check that follows
+      // does, with the one final detail read, so a later stream loss has
+      // nothing left to poll.
+      await act(async () => {
+        sessionEvents.at(-1)?.({ type: "done" });
+        sessionStates.at(-1)?.("closed");
+      });
+      await h.flush();
+      expect(h.getSession).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(750);
+      });
+      await h.flush();
+      expect(vi.mocked(getInvocation)).toHaveBeenCalledTimes(1);
+      expect(h.getSession).toHaveBeenCalledTimes(3);
+      await act(async () => {
+        signalStates.at(-1)?.("disconnected");
+        sessionStates.at(-1)?.("disconnected");
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(vi.mocked(getInvocation)).toHaveBeenCalledTimes(1);
+
+      // One stream alone is not healthy transport: it still falls back.
+      await act(async () => {
+        void resumeRunProps.current?.onResumed({ run_id: "run-a", invocation_id: "inv-1" });
+      });
+      await h.flush();
+      expect(h.getSession).toHaveBeenCalledTimes(4);
+      await act(async () => {
+        vi.mocked(getInvocation).mockResolvedValue({
+          id: "inv-1",
+          status: "completed",
+          ended_at: 1,
+          updated_at: 1,
+        } as never);
+        await vi.advanceTimersByTimeAsync(750);
+      });
+      expect(vi.mocked(getInvocation)).toHaveBeenCalledTimes(2);
+    } finally {
+      act(() => h.root.unmount());
+      h.container.remove();
+      vi.useRealTimers();
+      vi.mocked(streamSession).mockImplementation(() => () => {});
+      vi.mocked(streamSignals).mockImplementation(() => () => {});
+    }
+  });
+
+  it("falls back to lifecycle reads after stream loss, backs off, and stops once the run ends", async () => {
+    vi.useFakeTimers();
+    const h = await mount();
+    const { getInvocation, streamSession, streamSignals } = await import("@/lib/api");
+    vi.mocked(h.getSession)
+      .mockResolvedValueOnce(runA as never)
+      .mockResolvedValueOnce(runA as never)
+      // The terminal fallback check's one final detail refresh.
+      .mockResolvedValueOnce({ ...runA, status: "completed" } as never);
+    type Connection = (state: "connecting" | "open" | "disconnected") => void;
+    const sessionStates: Connection[] = [];
+    vi.mocked(streamSession).mockImplementation(
+      (_id: string, _onEvent, onConnectionState?: Connection) => {
+        if (onConnectionState) sessionStates.push(onConnectionState);
+        onConnectionState?.("open");
+        return () => {};
+      },
+    );
+    vi.mocked(streamSignals).mockImplementation(
+      (_id: string, _onEvent, onConnectionState?: Connection) => {
+        onConnectionState?.("open");
+        return () => {};
+      },
+    );
+    // Fail the first two lifecycle reads so the retry interval doubles, then
+    // report the run finished.
+    vi.mocked(getInvocation)
+      .mockRejectedValueOnce(new Error("daemon unavailable"))
+      .mockRejectedValueOnce(new Error("daemon unavailable"))
+      .mockResolvedValue({
+        id: "inv-1",
+        status: "completed",
+        ended_at: 1,
+        updated_at: 1,
+      } as never);
+    try {
+      await h.render("run-a");
+      await act(async () => {
+        void resumeRunProps.current?.onResumed({ run_id: "run-a", invocation_id: "inv-1" });
+      });
+      await h.flush();
+      const readsAfterAccept = vi.mocked(getInvocation).mock.calls.length;
+
+      await act(async () => {
+        sessionStates.at(-1)?.("disconnected");
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(749);
+      });
+      expect(vi.mocked(getInvocation).mock.calls.length).toBe(readsAfterAccept);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(vi.mocked(getInvocation).mock.calls.length).toBe(readsAfterAccept + 1);
+      // First failure: the next read waits 1.5 s, not another 750 ms.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_499);
+      });
+      expect(vi.mocked(getInvocation).mock.calls.length).toBe(readsAfterAccept + 1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(vi.mocked(getInvocation).mock.calls.length).toBe(readsAfterAccept + 2);
+      // Second failure: the next read waits 3 s.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_999);
+      });
+      expect(vi.mocked(getInvocation).mock.calls.length).toBe(readsAfterAccept + 2);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(vi.mocked(getInvocation).mock.calls.length).toBe(readsAfterAccept + 3);
+      // Terminal: one final detail refresh, then the watch is gone.
+      expect(h.getSession).toHaveBeenCalledTimes(3);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      expect(vi.mocked(getInvocation).mock.calls.length).toBe(readsAfterAccept + 3);
+      expect(h.getSession).toHaveBeenCalledTimes(3);
+    } finally {
+      act(() => h.root.unmount());
+      h.container.remove();
+      vi.useRealTimers();
+      vi.mocked(streamSession).mockImplementation(() => () => {});
+      vi.mocked(streamSignals).mockImplementation(() => () => {});
+    }
+  });
+
+  it("a resume after the session stream ended reads the detail while the run is active, then once at its end", async () => {
+    vi.useFakeTimers();
+    const h = await mount();
+    const { getInvocation, streamSession, streamSignals } = await import("@/lib/api");
+    vi.mocked(h.getSession).mockResolvedValue(runA as never);
+    type Connection = (state: "connecting" | "open" | "disconnected" | "closed") => void;
+    const sessionStates: Connection[] = [];
+    const sessionEvents: Array<(event: Record<string, unknown>) => void> = [];
+    vi.mocked(streamSession).mockImplementation(
+      (_id: string, onEvent, onConnectionState?: Connection) => {
+        sessionEvents.push(onEvent);
+        if (onConnectionState) sessionStates.push(onConnectionState);
+        onConnectionState?.("open");
+        return () => {};
+      },
+    );
+    vi.mocked(streamSignals).mockImplementation(
+      (_id: string, _onEvent, onConnectionState?: Connection) => {
+        onConnectionState?.("open");
+        return () => {};
+      },
+    );
+    const running = { id: "inv-1", status: "running", updated_at: 1 };
+    vi.mocked(getInvocation)
+      .mockResolvedValueOnce(running as never)
+      .mockResolvedValueOnce(running as never)
+      .mockResolvedValue({ id: "inv-1", status: "completed", ended_at: 1, updated_at: 1 } as never);
+    try {
+      await h.render("run-a");
+      // The run finishes: the server sends its terminal frame and ends the
+      // stream, which does not reconnect.
+      await act(async () => {
+        sessionStates.at(-1)?.("closed");
+        sessionEvents.at(-1)?.({ type: "done" });
+      });
+      await h.flush();
+      expect(h.getSession).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        void resumeRunProps.current?.onResumed({ run_id: "run-a", invocation_id: "inv-1" });
+      });
+      await h.flush();
+      expect(h.getSession).toHaveBeenCalledTimes(3);
+
+      // Nothing else carries the resumed run's messages, so each active
+      // lifecycle check also reads the detail, and the wait doubles.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(750);
+      });
+      expect(vi.mocked(getInvocation)).toHaveBeenCalledTimes(1);
+      expect(h.getSession).toHaveBeenCalledTimes(4);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_499);
+      });
+      expect(vi.mocked(getInvocation)).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(vi.mocked(getInvocation)).toHaveBeenCalledTimes(2);
+      expect(h.getSession).toHaveBeenCalledTimes(5);
+
+      // The end: one final detail read, then nothing.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3_000);
+      });
+      expect(vi.mocked(getInvocation)).toHaveBeenCalledTimes(3);
+      expect(h.getSession).toHaveBeenCalledTimes(6);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      expect(vi.mocked(getInvocation)).toHaveBeenCalledTimes(3);
+      expect(h.getSession).toHaveBeenCalledTimes(6);
+    } finally {
+      act(() => h.root.unmount());
+      h.container.remove();
+      vi.useRealTimers();
+      vi.mocked(streamSession).mockImplementation(() => () => {});
+      vi.mocked(streamSignals).mockImplementation(() => () => {});
+    }
+  });
+
+  it("a stream that reconnects and drops during the final detail read does not restart the fallback", async () => {
+    vi.useFakeTimers();
+    const h = await mount();
+    const { getInvocation, streamSession, streamSignals } = await import("@/lib/api");
+    const finalRead = deferred<unknown>();
+    vi.mocked(h.getSession)
+      .mockResolvedValueOnce(runA as never)
+      .mockResolvedValueOnce(runA as never)
+      .mockReturnValueOnce(finalRead.promise as never)
+      .mockResolvedValue(runA as never);
+    type Connection = (state: "connecting" | "open" | "disconnected" | "closed") => void;
+    const sessionStates: Connection[] = [];
+    vi.mocked(streamSession).mockImplementation(
+      (_id: string, _onEvent, onConnectionState?: Connection) => {
+        if (onConnectionState) sessionStates.push(onConnectionState);
+        onConnectionState?.("open");
+        return () => {};
+      },
+    );
+    vi.mocked(streamSignals).mockImplementation(
+      (_id: string, _onEvent, onConnectionState?: Connection) => {
+        onConnectionState?.("open");
+        return () => {};
+      },
+    );
+    vi.mocked(getInvocation).mockResolvedValue({
+      id: "inv-1",
+      status: "completed",
+      ended_at: 1,
+      updated_at: 1,
+    } as never);
+    try {
+      await h.render("run-a");
+      await act(async () => {
+        void resumeRunProps.current?.onResumed({ run_id: "run-a", invocation_id: "inv-1" });
+      });
+      await h.flush();
+      await act(async () => {
+        sessionStates.at(-1)?.("disconnected");
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(750);
+      });
+      expect(vi.mocked(getInvocation)).toHaveBeenCalledTimes(1);
+      expect(h.getSession).toHaveBeenCalledTimes(3);
+
+      // The final read is still in flight when the stream comes back and
+      // drops again. The run has ended, so there is nothing left to watch.
+      await act(async () => {
+        sessionStates.at(-1)?.("open");
+      });
+      await act(async () => {
+        sessionStates.at(-1)?.("disconnected");
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      await act(async () => {
+        finalRead.resolve(runA);
+      });
+      await h.flush();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(vi.mocked(getInvocation)).toHaveBeenCalledTimes(1);
+      expect(h.getSession).toHaveBeenCalledTimes(3);
+    } finally {
+      act(() => h.root.unmount());
+      h.container.remove();
+      vi.useRealTimers();
+      vi.mocked(streamSession).mockImplementation(() => () => {});
+      vi.mocked(streamSignals).mockImplementation(() => () => {});
+    }
+  });
+
+  it("a terminal frame during the fallback's final detail read does not read the detail again", async () => {
+    vi.useFakeTimers();
+    const h = await mount();
+    const { getInvocation, streamSession, streamSignals } = await import("@/lib/api");
+    const finalRead = deferred<unknown>();
+    vi.mocked(h.getSession)
+      .mockResolvedValueOnce(runA as never)
+      .mockResolvedValueOnce(runA as never)
+      .mockReturnValueOnce(finalRead.promise as never)
+      .mockResolvedValue(runA as never);
+    type Connection = (state: "connecting" | "open" | "disconnected" | "closed") => void;
+    const sessionStates: Connection[] = [];
+    const sessionEvents: Array<(event: Record<string, unknown>) => void> = [];
+    vi.mocked(streamSession).mockImplementation(
+      (_id: string, onEvent, onConnectionState?: Connection) => {
+        sessionEvents.push(onEvent);
+        if (onConnectionState) sessionStates.push(onConnectionState);
+        onConnectionState?.("open");
+        return () => {};
+      },
+    );
+    vi.mocked(streamSignals).mockImplementation(
+      (_id: string, _onEvent, onConnectionState?: Connection) => {
+        onConnectionState?.("open");
+        return () => {};
+      },
+    );
+    vi.mocked(getInvocation).mockResolvedValue({
+      id: "inv-1",
+      status: "completed",
+      ended_at: 1,
+      updated_at: 1,
+    } as never);
+    try {
+      await h.render("run-a");
+      await act(async () => {
+        void resumeRunProps.current?.onResumed({ run_id: "run-a", invocation_id: "inv-1" });
+      });
+      await h.flush();
+      await act(async () => {
+        sessionStates.at(-1)?.("disconnected");
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(750);
+      });
+      expect(h.getSession).toHaveBeenCalledTimes(3);
+
+      // The stream reconnects and delivers the terminal frame while the
+      // fallback's final read is still in flight: that read is the one.
+      await act(async () => {
+        sessionStates.at(-1)?.("open");
+        sessionEvents.at(-1)?.({ type: "done" });
+      });
+      await act(async () => {
+        finalRead.resolve(runA);
+      });
+      await h.flush();
+      expect(h.getSession).toHaveBeenCalledTimes(3);
+    } finally {
+      act(() => h.root.unmount());
+      h.container.remove();
+      vi.useRealTimers();
+      vi.mocked(streamSession).mockImplementation(() => () => {});
+      vi.mocked(streamSignals).mockImplementation(() => () => {});
+    }
+  });
+
+  type StreamState = "connecting" | "open" | "disconnected" | "closed";
+
+  async function resumeHarness() {
+    const h = await mount();
+    const { getInvocation, streamSession, streamSignals } = await import("@/lib/api");
+    const sessionStates: Array<(state: StreamState) => void> = [];
+    const signalStates: Array<(state: StreamState) => void> = [];
+    const sessionEvents: Array<(event: Record<string, unknown>) => void> = [];
+    vi.mocked(streamSession).mockImplementation(
+      (_id: string, onEvent, onConnectionState?: (state: StreamState) => void) => {
+        sessionEvents.push(onEvent);
+        if (onConnectionState) sessionStates.push(onConnectionState);
+        onConnectionState?.("open");
+        return () => {};
+      },
+    );
+    vi.mocked(streamSignals).mockImplementation(
+      (_id: string, _onEvent, onConnectionState?: (state: StreamState) => void) => {
+        if (onConnectionState) signalStates.push(onConnectionState);
+        onConnectionState?.("open");
+        return () => {};
+      },
+    );
+    const advance = async (ms: number) => {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ms);
+      });
+      await h.flush();
+    };
+    const cleanup = () => {
+      act(() => h.root.unmount());
+      h.container.remove();
+      vi.useRealTimers();
+      vi.mocked(streamSession).mockImplementation(() => () => {});
+      vi.mocked(streamSignals).mockImplementation(() => () => {});
+    };
+    return { h, getInvocation, sessionStates, signalStates, sessionEvents, advance, cleanup };
+  }
+
+  const runningInvocation = { id: "inv-1", status: "running", updated_at: 1 };
+  const completedInvocation = { id: "inv-1", status: "completed", ended_at: 1, updated_at: 1 };
+
+  it("a terminal frame that arrives after a resume was accepted hands the end to the lifecycle check", async () => {
+    vi.useFakeTimers();
+    const r = await resumeHarness();
+    vi.mocked(r.h.getSession).mockResolvedValue(runA as never);
+    vi.mocked(r.getInvocation)
+      .mockResolvedValueOnce(runningInvocation as never)
+      .mockResolvedValueOnce(runningInvocation as never)
+      .mockResolvedValue(completedInvocation as never);
+    try {
+      await r.h.render("run-a");
+      await act(async () => {
+        void resumeRunProps.current?.onResumed({ run_id: "run-a", invocation_id: "inv-1" });
+      });
+      await r.h.flush();
+      expect(r.h.getSession).toHaveBeenCalledTimes(2);
+
+      // The frame for the end before the resume arrives after it, and the
+      // server ends the stream.
+      await act(async () => {
+        r.sessionEvents.at(-1)?.({ type: "done" });
+        r.sessionStates.at(-1)?.("closed");
+      });
+      await r.h.flush();
+
+      // The resumed run is still active: it is checked, and its detail read.
+      await r.advance(750);
+      expect(vi.mocked(r.getInvocation)).toHaveBeenCalledTimes(1);
+      expect(r.h.getSession).toHaveBeenCalledTimes(3);
+      await r.advance(1_500);
+      expect(vi.mocked(r.getInvocation)).toHaveBeenCalledTimes(2);
+      expect(r.h.getSession).toHaveBeenCalledTimes(4);
+
+      // Its own end: one final detail read, then nothing.
+      await r.advance(3_000);
+      expect(vi.mocked(r.getInvocation)).toHaveBeenCalledTimes(3);
+      expect(r.h.getSession).toHaveBeenCalledTimes(5);
+      await r.advance(60_000);
+      expect(vi.mocked(r.getInvocation)).toHaveBeenCalledTimes(3);
+      expect(r.h.getSession).toHaveBeenCalledTimes(5);
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it("the read at a resumed run's end is neither skipped for nor overwritten by the read at the end before it", async () => {
+    vi.useFakeTimers();
+    const r = await resumeHarness();
+    const earlierEnd = deferred<unknown>();
+    vi.mocked(r.h.getSession)
+      .mockResolvedValueOnce(runA as never)
+      // The read at the end before the resume, still in flight.
+      .mockReturnValueOnce(earlierEnd.promise as never)
+      // The resume's own eager refresh.
+      .mockResolvedValueOnce(runA as never)
+      // The read at the resumed run's end.
+      .mockResolvedValueOnce({ ...runA, name: "resumed-end-name" } as never)
+      .mockResolvedValue(runA as never);
+    vi.mocked(r.getInvocation).mockResolvedValue(completedInvocation as never);
+    try {
+      await r.h.render("run-a");
+      await act(async () => {
+        r.sessionEvents.at(-1)?.({ type: "done" });
+        r.sessionStates.at(-1)?.("closed");
+      });
+      await r.h.flush();
+      expect(r.h.getSession).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        void resumeRunProps.current?.onResumed({ run_id: "run-a", invocation_id: "inv-1" });
+      });
+      await r.h.flush();
+      expect(r.h.getSession).toHaveBeenCalledTimes(3);
+
+      // The resumed run ends while the earlier read is still out.
+      await r.advance(750);
+      expect(vi.mocked(r.getInvocation)).toHaveBeenCalledTimes(1);
+      expect(r.h.getSession).toHaveBeenCalledTimes(4);
+      expect(r.h.container.textContent).toContain("resumed-end-name");
+
+      // The earlier read lands last, and describes the end before the resume.
+      await act(async () => {
+        earlierEnd.resolve({ ...runA, name: "earlier-end-name" });
+      });
+      await r.h.flush();
+      expect(r.h.container.textContent).toContain("resumed-end-name");
+      expect(r.h.container.textContent).not.toContain("earlier-end-name");
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it("the read at a resumed run's end is made once when the session stream's terminal frame follows it", async () => {
+    vi.useFakeTimers();
+    const r = await resumeHarness();
+    vi.mocked(r.h.getSession).mockResolvedValue(runA as never);
+    vi.mocked(r.getInvocation).mockResolvedValue(completedInvocation as never);
+    try {
+      await r.h.render("run-a");
+      await act(async () => {
+        void resumeRunProps.current?.onResumed({ run_id: "run-a", invocation_id: "inv-1" });
+      });
+      await r.h.flush();
+      await act(async () => {
+        r.signalStates.at(-1)?.("disconnected");
+      });
+      expect(r.h.getSession).toHaveBeenCalledTimes(2);
+
+      // The lifecycle check sees the end first, and its detail read lands.
+      await r.advance(750);
+      expect(vi.mocked(r.getInvocation)).toHaveBeenCalledTimes(1);
+      expect(r.h.getSession).toHaveBeenCalledTimes(3);
+
+      // The session stream's frame for the same end arrives after it.
+      await act(async () => {
+        r.sessionEvents.at(-1)?.({ type: "done" });
+      });
+      await r.h.flush();
+      expect(r.h.getSession).toHaveBeenCalledTimes(3);
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it("a resume's refresh that lands after the read at the resumed run's end does not put the earlier state back", async () => {
+    vi.useFakeTimers();
+    const r = await resumeHarness();
+    const eagerRefresh = deferred<unknown>();
+    vi.mocked(r.h.getSession)
+      .mockResolvedValueOnce(runA as never)
+      // The resume's own refresh, slow to answer.
+      .mockReturnValueOnce(eagerRefresh.promise as never)
+      // The read at the resumed run's end.
+      .mockResolvedValueOnce({ ...runA, status: "completed", name: "resumed-end-name" } as never)
+      .mockResolvedValue(runA as never);
+    vi.mocked(r.getInvocation).mockResolvedValue(completedInvocation as never);
+    try {
+      await r.h.render("run-a");
+      await act(async () => {
+        r.signalStates.at(-1)?.("disconnected");
+      });
+      await act(async () => {
+        void resumeRunProps.current?.onResumed({ run_id: "run-a", invocation_id: "inv-1" });
+      });
+      await r.h.flush();
+      expect(r.h.getSession).toHaveBeenCalledTimes(2);
+
+      await r.advance(750);
+      expect(vi.mocked(r.getInvocation)).toHaveBeenCalledTimes(1);
+      expect(r.h.getSession).toHaveBeenCalledTimes(3);
+      expect(r.h.container.textContent).toContain("resumed-end-name");
+
+      // The refresh answers last, with the run as it was before it ended.
+      await act(async () => {
+        eagerRefresh.resolve({ ...runA, status: "running", name: "before-end-name" });
+      });
+      await r.h.flush();
+      expect(r.h.container.textContent).toContain("resumed-end-name");
+      expect(r.h.container.textContent).not.toContain("before-end-name");
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it("an active resumed run is checked with a growing wait, and its detail read, while the session stream is down", async () => {
+    vi.useFakeTimers();
+    const r = await resumeHarness();
+    vi.mocked(r.h.getSession).mockResolvedValue(runA as never);
+    vi.mocked(r.getInvocation).mockResolvedValue(runningInvocation as never);
+    try {
+      await r.h.render("run-a");
+      await act(async () => {
+        void resumeRunProps.current?.onResumed({ run_id: "run-a", invocation_id: "inv-1" });
+      });
+      await r.h.flush();
+      await act(async () => {
+        r.sessionStates.at(-1)?.("disconnected");
+      });
+
+      await r.advance(750);
+      expect(vi.mocked(r.getInvocation)).toHaveBeenCalledTimes(1);
+      expect(r.h.getSession).toHaveBeenCalledTimes(3);
+      await r.advance(1_499);
+      expect(vi.mocked(r.getInvocation)).toHaveBeenCalledTimes(1);
+      await r.advance(1);
+      expect(vi.mocked(r.getInvocation)).toHaveBeenCalledTimes(2);
+      expect(r.h.getSession).toHaveBeenCalledTimes(4);
+      await r.advance(2_999);
+      expect(vi.mocked(r.getInvocation)).toHaveBeenCalledTimes(2);
+      await r.advance(1);
+      expect(vi.mocked(r.getInvocation)).toHaveBeenCalledTimes(3);
+      expect(r.h.getSession).toHaveBeenCalledTimes(5);
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it("with only the signal stream down, an active resumed run is checked with a growing wait and its messages left to the session stream", async () => {
+    vi.useFakeTimers();
+    const r = await resumeHarness();
+    vi.mocked(r.h.getSession).mockResolvedValue(runA as never);
+    vi.mocked(r.getInvocation).mockResolvedValue(runningInvocation as never);
+    try {
+      await r.h.render("run-a");
+      await act(async () => {
+        void resumeRunProps.current?.onResumed({ run_id: "run-a", invocation_id: "inv-1" });
+      });
+      await r.h.flush();
+      await act(async () => {
+        r.signalStates.at(-1)?.("disconnected");
+      });
+
+      await r.advance(750);
+      expect(vi.mocked(r.getInvocation)).toHaveBeenCalledTimes(1);
+      await r.advance(1_499);
+      expect(vi.mocked(r.getInvocation)).toHaveBeenCalledTimes(1);
+      await r.advance(1);
+      expect(vi.mocked(r.getInvocation)).toHaveBeenCalledTimes(2);
+      expect(r.h.getSession).toHaveBeenCalledTimes(2);
+    } finally {
+      r.cleanup();
     }
   });
 

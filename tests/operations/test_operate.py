@@ -477,7 +477,7 @@ async def test_operate_with_field_models_builds_operative():
 @pytest.mark.asyncio
 async def test_operate_invalid_field_models_raises_before_model_call():
     """operate() raises TypeError('Expected FieldModel or Spec') for invalid
-    field_models entries at _specs_from_fields() (operate.py:246), i.e. BEFORE
+    field_models entries at _specs_from_fields() (operate.py:213), i.e. BEFORE
     the middle/model layer is invoked.  A mock middle is injected that fails
     loudly if called — ensuring a missed raise would be detected."""
     branch = Branch()
@@ -500,13 +500,13 @@ async def test_operate_invalid_field_models_raises_before_model_call():
 
 
 # Lock-in: reason=True alone (no response_format / actions / field_models)
-# takes the Operative-construction branch (operate.py:252).
+# takes the Operative-construction branch (operate.py:215).
 
 
 @pytest.mark.asyncio
 async def test_operate_reason_only_constructs_operative_with_reason_field():
     """operate(..., reason=True) with no response_format/actions/field_models
-    must enter the Operative-construction branch (operate.py:252) and produce
+    must enter the Operative-construction branch (operate.py:215) and produce
     a response_format that includes a 'reason' field.  The generated response
     type is injected into _cctx before middle is called, so we capture it."""
     branch = Branch()

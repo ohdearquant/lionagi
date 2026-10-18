@@ -10,11 +10,11 @@ See docs/internals/plugin-runtime.md#trust-model for the full contract.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
+from lionagi.ln import compute_hash, hash_file
 from lionagi.ln.types import Enum
 
 from ._user_settings import locked_user_settings, read_user_settings
@@ -38,7 +38,7 @@ class TrustState(str, Enum):
 
 
 def _sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
+    return compute_hash(data, max_bytes=None)
 
 
 def _sha256_file(path: Path) -> str | None:
@@ -50,7 +50,7 @@ def _sha256_file(path: Path) -> str | None:
     unhandled ``OSError``.
     """
     try:
-        return _sha256_bytes(path.read_bytes())
+        return hash_file(path)
     except OSError:
         return None
 

@@ -513,6 +513,39 @@ describe("generic SSE retry policy", () => {
     expect(events.map((event) => event.id)).toEqual(["message-one", "message-two"]);
     close();
   });
+
+  it.each(["streamSession", "streamSignals"] as const)(
+    "%s reports a stream the server ended as closed, and does not reconnect it",
+    async (name) => {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve(
+          new Response('data: {"type":"done"}\n\n', {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          }),
+        ),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const api = await import("./api");
+      const states: string[] = [];
+      const events: Array<{ type?: unknown }> = [];
+
+      api[name](
+        "session-1",
+        (event) => events.push(event as { type?: unknown }),
+        (state) => states.push(state),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      // "closed" rather than a stream left reading "open": a consumer deciding
+      // whether the stream still carries the run must not take an ended one
+      // for a live one.
+      expect(states).toEqual(["connecting", "open", "closed"]);
+      expect(events.map((event) => event.type)).toEqual(["done"]);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    },
+  );
 });
 
 describe("fetchJson HTML-fallback / no-backend guard", () => {

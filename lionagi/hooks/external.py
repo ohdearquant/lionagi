@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import json
 import logging
 import os
@@ -35,6 +34,9 @@ from typing import Any
 from lionagi.ln import (
     aterminate_process_group,
     capture_group_witnesses,
+    compute_hash,
+    hash_fd,
+    hash_file,
     observe_process_group_leader,
     prepare_process_group_env,
 )
@@ -132,7 +134,7 @@ def compute_command_hash(command: list[str]) -> str:
     the executable that will run. Kept as an argv-identity key inside the
     fuller :func:`compute_trust_record`; never sufficient on its own to admit
     execution (see D7 note on content pinning below)."""
-    return hashlib.sha256(json.dumps(command).encode()).hexdigest()
+    return compute_hash(json.dumps(command), max_bytes=None)
 
 
 def resolve_hook_executable(command: list[str], cwd: str) -> Path:
@@ -162,11 +164,7 @@ def compute_executable_digest(path: Path) -> str:
     """``sha256`` over the resolved executable's file bytes — the content
     half of the trust pin, so a same-path substitution after approval
     changes this digest even though the resolved path string doesn't."""
-    digest = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return hash_file(path)
 
 
 def compute_trust_record(command: list[str], cwd: str) -> dict[str, str]:
@@ -238,15 +236,7 @@ def _hash_fd(fd: int) -> str:
     """``sha256`` over an open fd's full content, read from offset 0 —
     reads the already-open descriptor rather than a fresh path lookup
     that could resolve to a different file by the time it runs."""
-    os.lseek(fd, 0, os.SEEK_SET)
-    digest = hashlib.sha256()
-    while True:
-        chunk = os.read(fd, 1 << 20)
-        if not chunk:
-            break
-        digest.update(chunk)
-    os.lseek(fd, 0, os.SEEK_SET)
-    return digest.hexdigest()
+    return hash_fd(fd)
 
 
 def _materialize_private_copy(fd: int, basename: str) -> _BoundExecutable:

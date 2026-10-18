@@ -159,6 +159,11 @@
     "effect": {
       "requested": "Requested interface action: {kind}"
     },
+    "truncation": {
+      "title": "لم يتم الاحتفاظ بجزء من هذه الجولة",
+      "summary": "لم يتم الاحتفاظ بـ {frames} إطار · {size}",
+      "limit": " · الحد: {limit}"
+    },
     "outcome": {
       "completed": "Turn completed",
       "failed": "Turn failed",

@@ -20,14 +20,13 @@ always be closed.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
-from lionagi.ln import short_id
+from lionagi.ln import compute_hash, short_id
 from lionagi.ln.types import Unset, UnsetType
 from lionagi.state import db as state_db_mod
 
@@ -332,7 +331,7 @@ class OperatorStore:
 
     @staticmethod
     def canonical_hash(value: Any) -> str:
-        return hashlib.sha256(OperatorStore._json(value).encode("utf-8")).hexdigest()
+        return compute_hash(OperatorStore._json(value), max_bytes=None)
 
     @staticmethod
     def _conversation(row: Any) -> dict[str, Any]:
