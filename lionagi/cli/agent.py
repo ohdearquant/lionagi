@@ -11,6 +11,8 @@ import sys
 import time
 from pathlib import Path
 
+from pydantic import BaseModel, field_validator
+
 from lionagi import Branch
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi._errors import ConfigurationError
@@ -87,6 +89,20 @@ _API_TOOL_SETS: dict[str, tuple[str, ...]] = {"read": ("reader", "search", "cont
 _API_LAUNCH_KEY = "api_launch"
 # Rounds of the tool loop after the first; a profile's `max_extensions` replaces it.
 _API_DEFAULT_MAX_EXTENSIONS = 10
+# The tool loops an API leg can run (`api_loop`): ReAct, the default, or batched LNDL
+# rounds (ADR-0132). A launch record written before the key existed runs ReAct.
+_API_LOOPS = ("react", "lndl")
+_API_DEFAULT_LOOP = "react"
+# The <lact> calls one LNDL round may declare; a round that declares more runs none.
+_API_LNDL_MAX_ACTIONS = 16
+# An LNDL leg keeps calls and the answer in separate rounds, so the answer is written after
+# the results are read; this is the guidance that tells the model so.
+_API_LNDL_GUIDANCE = (
+    "A round either declares <lact> calls, with no OUT{}, or writes the answer, with no "
+    "<lact>. Calls declared in a round run when it ends, and you read their results in the "
+    "next round. Write the answer as text in an <lvar> and bind it in OUT{answer: [...]}; a "
+    "tool result is never the answer."
+)
 # The Anthropic messages endpoint refuses a request that names no output limit.
 _ANTHROPIC_DEFAULT_MAX_TOKENS = 8192
 
@@ -212,12 +228,19 @@ def _profile_api_launch(profile) -> dict | None:
     """The API tool loop a profile declares, or None when it declares none.
 
     `api_tools` names the tool set; `max_extensions` bounds the rounds after the
-    first (1 to 100). A value outside either is refused here, before a run exists.
+    first (1 to 100); `api_loop` picks the loop, `react` or `lndl`. A value outside
+    any of them, or `api_loop` without `api_tools`, is refused here, before a run exists.
     """
     extra = (getattr(profile, "extra", None) or {}) if profile is not None else {}
-    if "api_tools" not in extra:
-        return None
     name = getattr(profile, "name", "<unknown>")
+    if "api_tools" not in extra:
+        if "api_loop" in extra:
+            raise ConfigurationError(
+                f"agent profile {name!r} sets api_loop but no api_tools; the loop runs only "
+                "for an API model with the read set ('api_tools: read'), and a CLI "
+                "provider runs its own."
+            )
+        return None
     tools = extra["api_tools"]
     if not isinstance(tools, str) or tools not in _API_TOOL_SETS:
         raise ConfigurationError(
@@ -232,7 +255,13 @@ def _profile_api_launch(profile) -> dict | None:
             f"agent profile {name!r} sets max_extensions to {rounds!r}; "
             "it must be a whole number from 1 to 100."
         )
-    return {"tools": tools, "max_extensions": rounds}
+    loop = extra.get("api_loop", _API_DEFAULT_LOOP)
+    if not isinstance(loop, str) or loop not in _API_LOOPS:
+        raise ConfigurationError(
+            f"agent profile {name!r} sets api_loop to {loop!r}; an API model runs "
+            f"{' or '.join(repr(choice) for choice in _API_LOOPS)}."
+        )
+    return {"tools": tools, "max_extensions": rounds, "loop": loop}
 
 
 def _is_round_bound(rounds: object) -> bool:
@@ -247,12 +276,19 @@ def _recorded_api_launch(recorded: object) -> dict:
     """
     if isinstance(recorded, dict):
         tools, rounds = recorded.get("tools"), recorded.get("max_extensions")
-        if isinstance(tools, str) and tools in _API_TOOL_SETS and _is_round_bound(rounds):
-            return {"tools": tools, "max_extensions": rounds}
+        loop = recorded.get("loop", _API_DEFAULT_LOOP)
+        if (
+            isinstance(tools, str)
+            and tools in _API_TOOL_SETS
+            and _is_round_bound(rounds)
+            and isinstance(loop, str)
+            and loop in _API_LOOPS
+        ):
+            return {"tools": tools, "max_extensions": rounds, "loop": loop}
     raise ConfigurationError(
         f"this branch was launched on an API model's tool loop, but its stored launch "
-        f"record {recorded!r} names a tool set or a round bound this version does not "
-        "run; start a new branch."
+        f"record {recorded!r} names a tool set, a round bound or a loop this version "
+        "does not run; start a new branch."
     )
 
 
@@ -275,6 +311,39 @@ def _make_api_agent_spec(
     return spec
 
 
+class _LndlAnswer(BaseModel):
+    """The answer an LNDL leg ends its turn with: text the model wrote.
+
+    A tool's result is a mapping, and a failed call's is nothing or an error
+    mapping; placed in ``OUT{}`` it would hand back a result nobody read, so it is
+    refused and the refusal is the next round's repair message.
+    """
+
+    answer: str
+
+    @field_validator("answer", mode="before")
+    @classmethod
+    def _written_text(cls, value: object) -> object:
+        if not isinstance(value, str):
+            raise ValueError(
+                "the answer must be text you write. A tool result cannot be the answer: "
+                "read the results above and write the answer as text in OUT{answer: ...}."
+            )
+        return value
+
+
+def _calls_sent(branch) -> dict[int, int]:
+    """Calls sent so far by each model this branch uses, keyed by instance."""
+    models = (getattr(branch, "chat_model", None), getattr(branch, "parse_model", None))
+    return {id(m): m.calls_sent for m in models if hasattr(m, "calls_sent")}
+
+
+def _tool_results(branch) -> int:
+    from lionagi.protocols.messages import ActionResponse
+
+    return sum(isinstance(m, ActionResponse) for m in branch.msgs.messages)
+
+
 async def _run_api_turn(
     branch,
     instruction: str,
@@ -282,12 +351,16 @@ async def _run_api_turn(
     timeout: float | None,
     max_extensions: int,
     snapshot_dir: str,
+    loop: str = _API_DEFAULT_LOOP,
 ) -> str:
     """One turn of an API-model leg: lionagi's tool loop over the branch's tools.
 
-    The loop is ``Branch.ReAct``; *timeout* bounds the whole turn and raises
-    ``TimeoutError`` past it. The branch is written to *snapshot_dir* however the
-    turn ends, so a resume finds it. Returns the final answer's text.
+    The loop is ``Branch.ReAct`` or, for ``loop="lndl"``, batched LNDL rounds
+    (ADR-0132); *timeout* bounds the whole turn and raises ``TimeoutError`` past
+    it. However the turn ends, what it spent is added to the launch record's
+    ``spend``, the invocation's total, and printed, and then the branch is written
+    to *snapshot_dir*, so a resume and a reader of the run directory find both.
+    Returns the answer's text.
     """
     import contextlib
 
@@ -295,16 +368,57 @@ async def _run_api_turn(
 
     from lionagi.operations.run.run import _write_branch_snapshot
 
+    calls_before = _calls_sent(branch)
+    tools_before = _tool_results(branch)
+    started = time.monotonic()
     deadline = anyio.fail_after(timeout) if timeout is not None else contextlib.nullcontext()
     try:
         with deadline:
-            result = await branch.ReAct(
-                instruction=instruction,
-                tools=True,
-                max_extensions=max_extensions,
-            )
+            if loop == "lndl":
+                from lionagi.operations.lndl_middle import build_lndl_middle
+
+                schemas = branch.acts.get_tool_schema(tools=True)
+                result = await branch.operate(
+                    instruction=instruction,
+                    guidance=_API_LNDL_GUIDANCE,
+                    response_format=_LndlAnswer,
+                    tool_schemas=schemas.get("tools", []) if isinstance(schemas, dict) else [],
+                    invoke_actions=False,
+                    handle_validation="raise",
+                    middle=build_lndl_middle(
+                        round_budget=1 + max_extensions,
+                        max_actions=_API_LNDL_MAX_ACTIONS,
+                        lacts_with_out=False,
+                    ),
+                )
+            else:
+                result = await branch.ReAct(
+                    instruction=instruction,
+                    tools=True,
+                    max_extensions=max_extensions,
+                )
     finally:
         with anyio.CancelScope(shield=True):
+            calls_after = _calls_sent(branch)
+            record = branch.metadata.get(_API_LAUNCH_KEY)
+            # The record totals this invocation's turns: a queued message drained as a
+            # further turn adds to it, and a resume, a new invocation, clears it first.
+            prior = record.get("spend") if isinstance(record, dict) else None
+            prior = prior if isinstance(prior, dict) else {}
+            spend = {
+                "requests": prior.get("requests", 0)
+                + sum(count - calls_before.get(key, 0) for key, count in calls_after.items()),
+                "tool_calls": prior.get("tool_calls", 0) + _tool_results(branch) - tools_before,
+                "wall_seconds": round(
+                    prior.get("wall_seconds", 0.0) + time.monotonic() - started, 3
+                ),
+            }
+            if isinstance(record, dict):
+                record["spend"] = spend
+            hint(
+                f"[api] spend: {spend['requests']} request(s), {spend['tool_calls']} tool "
+                f"call(s), {spend['wall_seconds']:.1f}s"
+            )
             await _write_branch_snapshot(branch, snapshot_dir)
     answer = getattr(result, "answer", result)
     return "" if answer is None else str(answer)
@@ -889,6 +1003,14 @@ async def _run_agent(
             "the plain profile path (no role/policy composition)."
         )
 
+    # A profile's loop must name the read set it loops over, whatever the
+    # provider or the branch: a CLI provider runs its own loop and a branch
+    # without a stored record runs as before, so `api_loop` there would be
+    # silently ignored. Without `api_tools` the call below only refuses that, and
+    # it runs before any run is allocated.
+    if "api_tools" not in (getattr(profile, "extra", None) or {}):
+        _profile_api_launch(profile)
+
     stamp_agent_depth(agent_name)
 
     # True only when a NEW branch took the create_agent path (--preset coding
@@ -1119,8 +1241,8 @@ async def _run_agent(
             if api_launch is not None:
                 branch.metadata[_API_LAUNCH_KEY] = dict(api_launch)
                 hint(
-                    f"[api] {provider} runs lionagi's tool loop with the read set "
-                    f"({', '.join(_API_TOOL_SETS[api_launch['tools']])}), up to "
+                    f"[api] {provider} runs lionagi's {api_launch['loop']} tool loop with the "
+                    f"read set ({', '.join(_API_TOOL_SETS[api_launch['tools']])}), up to "
                     f"{api_launch['max_extensions']} more round(s); no MCP server is handed to it"
                 )
             else:
@@ -1276,6 +1398,8 @@ async def _run_agent(
     api_launch = None
     if not getattr(branch.chat_model, "is_cli", False) and _API_LAUNCH_KEY in branch.metadata:
         api_launch = _recorded_api_launch(branch.metadata[_API_LAUNCH_KEY])
+        # What an earlier invocation spent is not this one's.
+        branch.metadata[_API_LAUNCH_KEY].pop("spend", None)
         declared = _profile_api_launch(profile) if is_resumed_branch else None
         if is_resumed_branch and profile is not None and declared is None:
             raise ConfigurationError(
@@ -1576,6 +1700,7 @@ async def _run_agent(
                 timeout=turn_timeout,
                 max_extensions=api_launch["max_extensions"],
                 snapshot_dir=str(run.branches_dir),
+                loop=api_launch["loop"],
             )
 
     # Passed only when set: an absent key is what lets the run fall back to

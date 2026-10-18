@@ -59,6 +59,22 @@ behaviour, including accepting a write-capable submission without `cwd`.
 - `profile.list` accepts the optional `mcp`, `mcp_config` and `idle_timeout` keys under
   `fields`, so a caller can ask for one on a profile that does not declare it and read `null`
   instead of a refused field name.
+- An API-model `li agent` leg can run batched LNDL rounds in place of ReAct: a profile that
+  declares `api_tools: read` may set `api_loop: lndl` (default `react`). A round either declares
+  up to 16 tool calls, which run together, or writes the answer as text; the turn ends when an
+  answer is accepted. A turn that uses up its rounds without an answer ends `failed` with the
+  error recorded. The loop is recorded on the branch and a resume runs the recorded one.
+- Every API-model `li agent` invocation records what it spent under
+  `metadata["api_launch"]["spend"]` (`requests`, `tool_calls`, `wall_seconds`, for that
+  invocation only) and prints it as `[api] spend: ...` after each turn.
+- `build_lndl_middle(lacts_with_out=False)` keeps tool calls and the answer in separate rounds:
+  a round that declares `<lact>` calls beside its `OUT{}` is refused and none of its calls runs.
+  From the second round on, the last round's notice says it is the last, and a refused round's
+  error is shown to the next round only.
+- `lionagi.lndl.Parser.parse(read_past_out=True)` reads declarations on both sides of `OUT{}`
+  and raises `ParseError` on a second `OUT{}`; without it, parsing still stops at the first
+  `OUT{}`.
+
 - `lionagi.ln.short_id(n=12)` returns a UUID4 hexadecimal prefix with an explicit
   integer length from 1 to 32; boolean and out-of-range lengths raise `ValueError`.
 - `lionagi.ln.parse_duration` parses positive finite durations in lowercase `s`, `m`,
