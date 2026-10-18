@@ -1,3 +1,8 @@
+# Copyright (c) 2025 - 2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
 from ._cache import BoundedLRUCache
 from ._hash import (
     GENESIS_HASH,
@@ -90,7 +95,9 @@ _LAZY_MAP: dict[str, tuple[str, str | None]] = {
     "is_union_type": ("_utils", "is_union_type"),
     "load_type_from_string": ("_utils", "load_type_from_string"),
     "now_utc": ("_utils", "now_utc"),
+    "parse_duration": ("_utils", "parse_duration"),
     "register_type_prefix": ("_utils", "register_type_prefix"),
+    "short_id": ("_utils", "short_id"),
     "synchronized": ("_utils", "synchronized"),
     "to_uuid": ("_utils", "to_uuid"),
     "union_members": ("_utils", "union_members"),
@@ -161,7 +168,9 @@ __all__ = (
     "is_union_type",
     "load_type_from_string",
     "now_utc",
+    "parse_duration",
     "register_type_prefix",
+    "short_id",
     "synchronized",
     "to_uuid",
     "union_members",

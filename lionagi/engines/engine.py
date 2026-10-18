@@ -9,7 +9,6 @@ import asyncio
 import contextlib
 import logging
 import os
-import uuid
 from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -19,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from lionagi.agent import AgentSpec, create_agent
+from lionagi.ln import short_id
 from lionagi.ln.concurrency import Semaphore, gather
 from lionagi.ln.concurrency._compat import (
     ExceptionGroup,
@@ -337,7 +337,7 @@ class EngineRun:
         self.root: str = ""
         # Unique per run: stamped into every stage agent's khive-injection
         # namespace so recall/writeback never crosses runs or projects.
-        self.run_id: str = uuid.uuid4().hex[:12]
+        self.run_id: str = short_id(12)
         self.agents_made: int = 0
         # Each branch make_agent built while either setting was on: the engine's
         # agent_env and containment as make_agent read them before building it, the

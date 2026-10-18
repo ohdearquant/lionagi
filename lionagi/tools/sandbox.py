@@ -5,10 +5,10 @@
 
 from __future__ import annotations
 
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from lionagi.ln import short_id
 from lionagi.ln.concurrency import run_sync
 
 from ._subprocess import _subprocess_sync
@@ -264,7 +264,7 @@ async def create_sandbox(
             )
         base_branch = stdout or "main"
 
-    branch_name = name or f"sandbox-{uuid.uuid4().hex[:8]}"
+    branch_name = name or f"sandbox-{short_id(8)}"
     return await run_sync(_create_worktree_sync, repo_root, branch_name, base_branch)
 
 

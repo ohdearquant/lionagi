@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import json
 import logging
@@ -20,6 +19,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lionagi.libs.path_safety import check_paths_safe
 from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
+from lionagi.ln.concurrency import current_time
 from lionagi.ln.concurrency.utils import maybe_await
 from lionagi.providers._agentic_handlers import AgenticHandlersMixin
 from lionagi.providers._cli_subprocess import (
@@ -416,7 +416,7 @@ async def stream_pi_cli(
     if session is None:
         session = PiSession()
     theme = request.cli_display_theme or "light"
-    _start = asyncio.get_running_loop().time()
+    _start = current_time()
 
     stream = stream_pi_cli_events(request)
     try:
@@ -570,7 +570,7 @@ async def stream_pi_cli(
     if session.num_turns is None and session.messages:
         session.num_turns = len(session.messages)
     if session.duration_ms is None:
-        session.duration_ms = int((asyncio.get_running_loop().time() - _start) * 1000)
+        session.duration_ms = int((current_time() - _start) * 1000)
 
     if on_final:
         await maybe_await(on_final(session))
