@@ -529,33 +529,57 @@ function LibraryPage() {
   // collapsed layout, so only a deep link, a row click, or the create form
   // sets this.
   const [detailActive, setDetailActive] = useState(false);
+  // Set while the create form's own navigation drops the row the URL names,
+  // so that drop is not read as a tab link.
+  const openingCreate = useRef(false);
   // A create form belongs to the tab that opened it, and the detail pane's
   // collapsed state belongs to the selection; switching tabs closes the form
   // and returns to the list rather than leaving the previous tab's pane up.
+  // The All tab has two addresses — `?tab=all` and no `tab` at all — and they
+  // are the same tab. A tab picked while the page already shows it closes the
+  // form too: its link drops the selection, and the All tab's also drops `tab`.
+  const previousTab = useRef({ tab, sel });
   useEffect(() => {
-    /* eslint-disable react-hooks/set-state-in-effect -- a tab change closes the
-       create form and returns the collapsed layout to the list */
+    const prior = previousTab.current;
+    previousTab.current = { tab, sel };
+    const kindChanged = (prior.tab ?? "all") !== kindFilter;
+    const tabChanged = prior.tab !== tab;
+    const selDropped = prior.sel !== undefined && sel === undefined;
+    const pickingTab = kindChanged || tabChanged || (selDropped && !openingCreate.current);
+    if (!pickingTab) return;
     setShowCreate(false);
     setDetailActive(false);
-    /* eslint-enable react-hooks/set-state-in-effect */
-  }, [kindFilter]);
+  }, [kindFilter, tab, sel]);
   // A URL that stops naming a selection also returns the collapsed layout to
   // the list, so Back to the catalog does not leave its last row's detail up.
-  // Opening the create form removes the selection but keeps its own pane.
+  // A selection that appears while a create form is open is a request for that
+  // row — browser Back onto it, or a link — so the form closes and the row's
+  // detail takes the pane, which it opens on its own.
   const previousSel = useRef(sel);
-  const openingCreate = useRef(false);
+  // Opening the create form drops the row the URL names, so the form's pane
+  // stays up rather than a selection returning behind it.
   const openCreate = () => {
-    openingCreate.current = true;
+    openingCreate.current = !!sel;
     setShowCreate(true);
     setDetailActive(true);
+    void navigate({
+      search: (prev) => {
+        if (prev.sel === undefined) return prev;
+        const next = { ...prev };
+        delete next.sel;
+        return next;
+      },
+      replace: false,
+    });
   };
   useEffect(() => {
     const dropped = !!previousSel.current && !sel;
+    const selected = !previousSel.current && !!sel;
     previousSel.current = sel;
     const keptOpen = openingCreate.current || showCreate;
     openingCreate.current = false;
-    if (!dropped || keptOpen) return;
-    setDetailActive(false);
+    if (selected) setShowCreate(false);
+    if (dropped && !keptOpen) setDetailActive(false);
   }, [sel, showCreate]);
   const [optimisticWorkflow, setOptimisticWorkflow] = useState<CreatedWorkflowDef | null>(null);
 
@@ -597,11 +621,45 @@ function LibraryPage() {
   const fallbackItem =
     kindFilter === "hooks" || loading || selectionLoading ? null : (filtered[0] ?? null);
 
+  // A workflow's detail loads by id, not by name, so a selection is only a
+  // row while the catalog (or the create that just made it) still has it.
+  const selectedWorkflowId =
+    parsedSel?.kind === "workflow"
+      ? (items.find((i) => i.kind === "workflow" && i.name === parsedSel.name)?.meta ??
+        (optimisticWorkflow?.name === parsedSel.name ? optimisticWorkflow.id : null))
+      : null;
+
+  // A selection belongs to the tab that shows it. A selection whose catalog
+  // can still tell whether the row exists — a hidden workflow or engine being
+  // fetched, or a source that failed — is kept: those details render their own
+  // loading, error, or not-found state with a Back control. Any other
+  // selection that names no row the tab lists is no selection, so the tab
+  // shows its first row as it does without one instead of opening a pane that
+  // can only hide the catalog. The text search does not narrow this: a row the
+  // search hides still has its detail.
+  const urlSelection =
+    parsedSel &&
+    (selectedHiddenKind
+      ? hidden.loading ||
+        hidden.kindStatus[selectedHiddenKind] === "failed" ||
+        kindStatus[parsedSel.kind] === "failed" ||
+        !!selectedWorkflowId ||
+        // The engine detail renders a not-found state with its Back control.
+        parsedSel.kind === "engine"
+      : scopedItems.some(
+          (item) =>
+            item.kind === parsedSel.kind &&
+            item.name === parsedSel.name &&
+            (parsedSel.kind !== "playbook" || item.subKind === parsedSel.subKind),
+        ) || kindStatus[parsedSel.kind] === "failed")
+      ? parsedSel
+      : null;
+
   // An auto-selected row fills the detail pane beside the list when the URL
   // names no selection, but it is not a detail request: the URL is not
   // rewritten and `detailPaneActive` does not follow it.
   const fallbackParsed =
-    !sel && fallbackItem
+    !urlSelection && fallbackItem
       ? parseSel(encodeSel(fallbackItem.kind, fallbackItem.name, fallbackItem.subKind))
       : null;
 
@@ -617,9 +675,9 @@ function LibraryPage() {
     [navigate, setShowCreate, setDetailActive],
   );
 
-  // The detail pane shows the URL selection, and the auto-selected row when
-  // the URL names none.
-  const parsed = parseSel(sel) ?? fallbackParsed;
+  // The detail pane shows the selection the URL names on this tab, and the
+  // auto-selected row when it names none.
+  const parsed = urlSelection ?? fallbackParsed;
 
   // Resolve the agent/engine objects from the selection.
   const selectedAgent =
@@ -633,12 +691,6 @@ function LibraryPage() {
 
   const selectedEngine =
     parsed?.kind === "engine" ? allEngines.find((e) => e.name === parsed?.name) : null;
-
-  const selectedWorkflowId =
-    parsed?.kind === "workflow"
-      ? (items.find((i) => i.kind === "workflow" && i.name === parsed.name)?.meta ??
-        (optimisticWorkflow?.name === parsed.name ? optimisticWorkflow.id : null))
-      : null;
 
   const isEmpty = !loading && filtered.length === 0;
   // A search is only responsible for an empty result when clearing it would
@@ -674,8 +726,10 @@ function LibraryPage() {
         : t("newWorkflow");
 
   // Only the URL, a click, or a create form asks for detail; the row the
-  // catalog fills in on its own does not.
-  const detailPaneActive = detailActive || showCreate || !!sel;
+  // catalog fills in on its own does not. A pane opens only with a detail that
+  // offers Back, or with the create form, so the collapsed layout can always
+  // return to the catalog.
+  const detailPaneActive = showCreate || !!urlSelection || (detailActive && !!parsed);
 
   // ── Master pane ────────────────────────────────────────────────────────────
 
@@ -692,21 +746,7 @@ function LibraryPage() {
           className="min-w-0 flex-1 rounded border border-edge bg-surface-overlay px-2 py-1 font-ui text-[length:var(--t-sm)] text-content-primary focus:outline-none"
         />
         {!NO_CREATE_KINDS.has(kindFilter as LibraryKind) && (
-          <Button
-            size="sm"
-            variant="primary"
-            onClick={() => {
-              openCreate();
-              void navigate({
-                search: (prev) => {
-                  const next = { ...prev };
-                  delete next.sel;
-                  return next;
-                },
-                replace: false,
-              });
-            }}
-          >
+          <Button size="sm" variant="primary" onClick={openCreate}>
             + {createLabel}
           </Button>
         )}
@@ -806,7 +846,10 @@ function LibraryPage() {
             <tbody>
               {filtered.map((item) => {
                 const isSelected =
-                  !showCreate && parsed?.kind === item.kind && parsed.name === item.name;
+                  !showCreate &&
+                  parsed?.kind === item.kind &&
+                  parsed.name === item.name &&
+                  (item.kind !== "playbook" || parsed.subKind === item.subKind);
                 return (
                   <tr
                     key={item.key}
@@ -879,6 +922,17 @@ function LibraryPage() {
       },
       replace: false,
     });
+  }
+
+  // A delete can resolve after the viewer has moved on: to another row, to the
+  // create form, or to another tab. The pane state belongs to whatever is on
+  // screen now, so the completion clears it only while the address on this tab
+  // still names the deleted item.
+  function handleDeleted(kind: LibraryKind, name: string) {
+    if (!completionOnTab(kindFilter) || showCreate) return;
+    const selected = parseSel(sel);
+    if (!selected || selected.kind !== kind || selected.name !== name) return;
+    setDetailActive(false);
   }
 
   let detailPane: ReactNode;
@@ -985,9 +1039,9 @@ function LibraryPage() {
         onDeleted={() => {
           if (!mounted.current) return;
           const deleted = parsed.name;
+          handleDeleted("mcp", deleted);
           void reload();
           invalidate("mcp");
-          if (completionOnTab(kindFilter)) handleBack();
           void navigate({
             search: (prev) => {
               if ((prev.tab ?? "all") !== kindFilter) return prev;
@@ -1010,7 +1064,7 @@ function LibraryPage() {
         onDeleted={() => {
           if (!mounted.current) return;
           const deleted = parsed.name;
-          if (completionOnTab(kindFilter)) setDetailActive(false);
+          handleDeleted("agent", deleted);
           invalidate("agent");
           void reload();
           void navigate({
@@ -1035,7 +1089,7 @@ function LibraryPage() {
         onDeleted={() => {
           if (!mounted.current) return;
           const deleted = parsed.name;
-          if (completionOnTab(kindFilter)) setDetailActive(false);
+          handleDeleted("workflow", deleted);
           if (optimisticWorkflow?.name === deleted) setOptimisticWorkflow(null);
           invalidate("workflow");
           void reload();

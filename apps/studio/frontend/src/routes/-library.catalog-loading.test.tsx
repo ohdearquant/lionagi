@@ -132,25 +132,39 @@ vi.mock("@/components/library/WorkflowDetail", () => ({
   ),
 }));
 vi.mock("@/components/library/PlaybookTemplateDetail", () => ({
-  PlaybookTemplateDetail: ({ onCloned }: { onCloned: (name: string) => void }) => (
-    <button
-      type="button"
-      data-testid="clone-playbook"
-      onClick={() => void mutations.clonePlaybook().then(() => onCloned("cloned-playbook"))}
-    >
-      clone playbook
-    </button>
+  PlaybookTemplateDetail: ({
+    name,
+    isBuiltin,
+    onCloned,
+  }: {
+    name: string;
+    isBuiltin: boolean;
+    onCloned: (name: string) => void;
+  }) => (
+    <div data-testid="playbook-detail" data-builtin={String(isBuiltin)}>
+      {name}
+      <button
+        type="button"
+        data-testid="clone-playbook"
+        onClick={() => void mutations.clonePlaybook().then(() => onCloned("cloned-playbook"))}
+      >
+        clone playbook
+      </button>
+    </div>
   ),
 }));
 vi.mock("@/components/library/McpServerDetail", () => ({
-  McpServerDetail: ({ onDeleted }: { onDeleted: () => void }) => (
-    <button
-      type="button"
-      data-testid="delete-mcp"
-      onClick={() => void mutations.deleteMcp().then(onDeleted)}
-    >
-      delete mcp
-    </button>
+  McpServerDetail: ({ name, onDeleted }: { name: string; onDeleted: () => void }) => (
+    <div data-testid="mcp-detail">
+      {name}
+      <button
+        type="button"
+        data-testid="delete-mcp"
+        onClick={() => void mutations.deleteMcp().then(onDeleted)}
+      >
+        delete mcp
+      </button>
+    </div>
   ),
   CreateMcpServerPanel: ({ onCreated }: { onCreated: (name: string) => void }) => (
     <button
@@ -373,16 +387,55 @@ describe("Library catalog loading", () => {
     expect(detailActiveAttr()).toBe("true");
   });
 
-  it("keeps an unresolved selection open when the tab has rows", async () => {
+  it("treats a selection that names no row as no selection", async () => {
     api.listAgents.mockResolvedValue({
       agents: [{ name: "first-agent" }, { name: "second-agent" }],
     });
-    await renderLibrary({ tab: "agent", sel: "agent:missing-agent" });
-    expect(detailActiveAttr()).toBe("true");
+    await renderLibrary({ tab: "agent", sel: "bogus" });
+    // The catalog stays up with its first row shown, as it would without a
+    // selection, and no pane hides it behind a detail with nothing to show.
+    expect(detailActiveAttr()).toBe("false");
+    expect(container.querySelector("tbody")?.textContent).toContain("first-agent");
     expect(container.querySelector('[data-testid="agent-detail"]')?.textContent).toBe(
-      "missing-agent",
+      "first-agent",
     );
-    expect(router.search).toEqual({ tab: "agent", sel: "agent:missing-agent" });
+    expect(container.querySelectorAll("tbody tr")[0].getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("keeps a hidden workflow detail on its own tab when the catalog has it", async () => {
+    api.listWorkflowDefs.mockResolvedValue([{ id: "workflow-id", name: "saved-flow" }]);
+    await renderLibrary({ tab: "workflow", sel: "workflow:saved-flow" });
+    expect(container.querySelector('[data-testid="workflow-detail"]')?.textContent).toBe(
+      "workflow-id",
+    );
+    expect(detailActiveAttr()).toBe("true");
+  });
+
+  it("does not open a hidden workflow its catalog does not have", async () => {
+    api.listAgents.mockResolvedValue({ agents: [{ name: "first-agent" }] });
+    await renderLibrary({ tab: "all", sel: "workflow:missing-flow" });
+    expect(api.listWorkflowDefs).toHaveBeenCalledOnce();
+    expect(detailActiveAttr()).toBe("false");
+    expect(container.querySelector('[data-testid="workflow-detail"]')).toBeNull();
+    expect(container.querySelector("tbody")?.textContent).toContain("first-agent");
+  });
+
+  it("does not render another kind's selection on the active tab", async () => {
+    api.listSkills.mockResolvedValue({ skills: [{ name: "first-skill" }] });
+    await renderLibrary({ tab: "skill", sel: "agent:first-agent" });
+    expect(api.listAgents).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="agent-detail"]')).toBeNull();
+    expect(detailActiveAttr()).toBe("false");
+  });
+
+  it("marks the builtin playbook row a custom link falls back to", async () => {
+    api.listBuiltinPlaybooks.mockResolvedValue({ playbooks: [{ name: "bundled" }] });
+    await renderLibrary({ tab: "playbook", sel: "playbook:custom:bundled" });
+    expect(detailActiveAttr()).toBe("false");
+    expect(container.querySelectorAll("tbody tr")[0].getAttribute("aria-selected")).toBe("true");
+    expect(
+      container.querySelector('[data-testid="playbook-detail"]')?.getAttribute("data-builtin"),
+    ).toBe("true");
   });
 
   it("keeps the fallback row off the URL in StrictMode", async () => {
@@ -402,21 +455,32 @@ describe("Library catalog loading", () => {
       ?.getAttribute("data-detail-active");
   }
 
-  it("keeps the catalog when a tab loads again without a selection", async () => {
+  it("keeps the catalog when the page mounts again at an address without a selection", async () => {
     api.listAgents.mockResolvedValue({
       agents: [{ name: "first-agent" }, { name: "second-agent" }],
     });
     await renderLibrary({ tab: "agent" });
     expect(detailActiveAttr()).toBe("false");
 
-    // Reloading the same address must not turn the row on screen into a
-    // request for detail, because the address never named it.
+    // Opening a row and backing out of it returns the address to the tab.
+    await act(async () => container.querySelector<HTMLTableRowElement>("tbody tr")!.click());
+    expect(router.search.sel).toBe("agent:first-agent");
+    const back = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "drawer.back",
+    );
+    await act(async () => back!.click());
+    expect(router.search).toEqual({ tab: "agent" });
+
+    // Mounting the page again at the same address must not turn the row on
+    // screen into a request for detail, because the address never named it.
+    act(() => root.unmount());
+    root = createRoot(container);
     await renderLibrary({ tab: "agent" });
     expect(detailActiveAttr()).toBe("false");
     expect(router.search).toEqual({ tab: "agent" });
   });
 
-  it("opens the pane when the URL changes to a row in the same tab or a row is clicked", async () => {
+  it("opens the pane when the URL changes to another row on the same tab", async () => {
     api.listAgents.mockResolvedValue({
       agents: [{ name: "first-agent" }, { name: "second-agent" }],
     });
@@ -472,6 +536,21 @@ describe("Library catalog loading", () => {
     expect(detailActiveAttr()).toBe("false");
   });
 
+  it("returns to the catalog when the All tab is picked while its create form is open", async () => {
+    await renderLibrary({ tab: "all" });
+    const create = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("newWorkflow"),
+    );
+    expect(create).toBeDefined();
+    await act(async () => create!.click());
+    expect(detailActiveAttr()).toBe("true");
+
+    await clickTab("filterAll");
+    expect(container.querySelector('[data-testid="submit-workflow"]')).toBeNull();
+    expect(detailActiveAttr()).toBe("false");
+    expect(router.search).toEqual({});
+  });
+
   it("does not flash the detail pane while a filtered catalog changes the auto-selection", async () => {
     api.listAgents.mockResolvedValue({
       agents: [{ name: "first-agent" }, { name: "second-agent" }],
@@ -503,6 +582,58 @@ describe("Library catalog loading", () => {
     await act(async () => create!.click());
     expect(detailActiveAttr()).toBe("true");
     expect(container.querySelector('[data-testid="submit-workflow"]')).not.toBeNull();
+  });
+
+  it("drops a missing selection when the empty catalog opens its create form", async () => {
+    await renderLibrary({ tab: "agent", sel: "agent:missing-agent" });
+    const create = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("newAgent"),
+    );
+    expect(create).toBeDefined();
+    await act(async () => create!.click());
+    expect(router.search).toEqual({ tab: "agent" });
+    expect(detailActiveAttr()).toBe("true");
+
+    const cancel = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Cancel",
+    );
+    expect(cancel).toBeDefined();
+    await act(async () => cancel!.click());
+    expect(router.search).toEqual({ tab: "agent" });
+    expect(detailActiveAttr()).toBe("false");
+  });
+
+  it("returns to the selected row when Back closes the create form", async () => {
+    api.listAgents.mockResolvedValue({
+      agents: [{ name: "first-agent" }, { name: "second-agent" }],
+    });
+    await renderLibrary({ tab: "agent" });
+    await act(async () => container.querySelector<HTMLTableRowElement>("tbody tr")!.click());
+    expect(router.search).toEqual({ tab: "agent", sel: "agent:first-agent" });
+
+    const create = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("newAgent"),
+    );
+    expect(create).toBeDefined();
+    await act(async () => create!.click());
+    expect(router.search).toEqual({ tab: "agent" });
+    expect(container.querySelector('[data-testid="submit-agent"]')).not.toBeNull();
+
+    // Back restores the row the form's address dropped: its detail takes the
+    // pane and the form is gone. The address is re-rendered from the history
+    // entry, without the row being selected again, so the pane opens on its own.
+    await renderLibrary({ tab: "agent", sel: "agent:first-agent" });
+    expect(container.querySelector('[data-testid="submit-agent"]')).toBeNull();
+    expect(container.querySelector('[data-testid="agent-detail"]')?.textContent).toBe(
+      "first-agent",
+    );
+    expect(container.querySelectorAll("tbody tr")[0].getAttribute("aria-selected")).toBe("true");
+    expect(detailActiveAttr()).toBe("true");
+
+    // Back again reaches the catalog.
+    await renderLibrary({ tab: "agent" });
+    expect(container.querySelector('[data-testid="submit-agent"]')).toBeNull();
+    expect(detailActiveAttr()).toBe("false");
   });
 
   it("revisits a tab from its cached rows with no new request or skeleton", async () => {
@@ -969,6 +1100,52 @@ describe("Library catalog loading", () => {
     expect(container.querySelector<HTMLElement>('[data-testid="agent-detail"]')?.textContent).toBe(
       "second-agent",
     );
+  });
+
+  it("keeps a row picked while an MCP delete is in flight", async () => {
+    api.listMcpServers.mockResolvedValue({
+      servers: [{ name: "existing-mcp" }, { name: "second-mcp" }],
+    });
+    const deletion = deferred<void>();
+    mutations.deleteMcp.mockReturnValue(deletion.promise);
+    await renderLibrary({ tab: "mcp", sel: "mcp:existing-mcp" });
+
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="delete-mcp"]')!.click(),
+    );
+    await act(async () => container.querySelectorAll<HTMLTableRowElement>("tbody tr")[1].click());
+    expect(router.search.sel).toBe("mcp:second-mcp");
+
+    deletion.resolve();
+    await flush();
+    expect(router.search).toEqual({ tab: "mcp", sel: "mcp:second-mcp" });
+    expect(detailActiveAttr()).toBe("true");
+    expect(container.querySelector('[data-testid="mcp-detail"]')?.firstChild?.textContent).toBe(
+      "second-mcp",
+    );
+  });
+
+  it("keeps a create form open when an MCP delete resolves behind it", async () => {
+    api.listMcpServers.mockResolvedValue({ servers: [{ name: "existing-mcp" }] });
+    const deletion = deferred<void>();
+    mutations.deleteMcp.mockReturnValue(deletion.promise);
+    await renderLibrary({ tab: "mcp", sel: "mcp:existing-mcp" });
+
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="delete-mcp"]')!.click(),
+    );
+    const create = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("newMcpServer"),
+    );
+    await act(async () => create!.click());
+    expect(router.search).toEqual({ tab: "mcp" });
+    expect(container.querySelector('[data-testid="submit-mcp"]')).not.toBeNull();
+
+    deletion.resolve();
+    await flush();
+    expect(container.querySelector('[data-testid="submit-mcp"]')).not.toBeNull();
+    expect(router.search).toEqual({ tab: "mcp" });
+    expect(detailActiveAttr()).toBe("true");
   });
 
   it("drops the selection when the delete resolves and it still names the deleted item", async () => {
