@@ -14,6 +14,37 @@ ActorType = Literal["executor", "agent", "admin", "system", "scheduler", "operat
 TransitionResultKind = Literal["applied", "conflict", "rejected"]
 SameStatusRule = Literal["append", "noop", "reject"]
 
+ScheduleOrigin = Literal[
+    "programmatic", "cli", "mcp", "http", "browser", "declaration", "scheduler", "unavailable"
+]
+ProvenanceStatus = Literal["available", "unavailable"]
+ScheduleAssurance = Literal["client_resolved", "client_reported", "system", "unavailable"]
+ScheduleFailureCategory = Literal[
+    "not_provided",
+    "resolver_unavailable",
+    "resolver_failed",
+    "cwd_unavailable",
+    "browser_unavailable",
+]
+
+
+@dataclass(frozen=True)
+class ScheduleAuditContext:
+    """Observed submitter provenance, independent of execution identity and cwd.
+
+    The defaults describe a write that carried no context: nothing about its entry
+    point was observed, so origin and source are unavailable rather than a guess.
+    """
+
+    actor: str | None = None
+    submitting_cwd: str | None = None
+    origin: ScheduleOrigin = "unavailable"
+    source: str = "unavailable"
+    assurance: ScheduleAssurance = "unavailable"
+    actor_status: ProvenanceStatus = "unavailable"
+    cwd_status: ProvenanceStatus = "unavailable"
+    failure_category: ScheduleFailureCategory | None = "not_provided"
+
 
 @dataclass(frozen=True)
 class ActorRecord:
