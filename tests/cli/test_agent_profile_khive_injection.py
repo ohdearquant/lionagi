@@ -191,6 +191,7 @@ async def test_bare_li_agent_path_no_injection_when_profile_lacks_optin(monkeypa
         system_prompt="hi",
         artifact_defaults=None,
         timeout=None,
+        idle_timeout=None,
         bypass=False,
         resume_on_timeout=False,
         lion_system=True,

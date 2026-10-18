@@ -1280,7 +1280,9 @@ def test_agent_submit_advertises_and_checks_the_idle_timeout(submitted):
     assert idle["type"] == "integer"
     assert idle["minimum"] == 1
 
-    answer = call(ops=[spawn_op("agent.submit", {"model": "m/p", "prompt": "x", "idle_timeout": 0})])
+    answer = call(
+        ops=[spawn_op("agent.submit", {"model": "m/p", "prompt": "x", "idle_timeout": 0})]
+    )
     assert answer["ops"][0]["ok"] is False
     assert "must be at least 1" in answer["ops"][0]["error"]["message"]
     assert submitted == {}
