@@ -746,7 +746,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const conversationRevisionRef = useRef(0);
   const conversationRefreshNeededRef = useRef(false);
   const conversationMutationsRef = useRef<Map<string, number>>(new Map());
+  const conversationRowReadsRef = useRef<Map<string, number>>(new Map());
   const conversationLoadRef = useRef(0);
+  const selectedConversationIdRef = useRef<string | null>(null);
   const metadataRefreshRef = useRef<{
     conversationId: string;
     sequence: number;
@@ -755,6 +757,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
   } | null>(null);
   const metadataViewRef = useRef({
     conversation: state.conversation,
+    conversations,
     loadState: state.loadState,
     listFilter,
   });
@@ -762,10 +765,12 @@ export default function OperatorPanel({ open, onClose }: Props) {
   useLayoutEffect(() => {
     metadataViewRef.current = {
       conversation: state.conversation,
+      conversations,
       loadState: state.loadState,
       listFilter,
     };
-  }, [state.conversation, state.loadState, listFilter]);
+    selectedConversationIdRef.current = state.conversation?.id ?? null;
+  }, [conversations, state.conversation, state.loadState, listFilter]);
 
   useLayoutEffect(
     () => () => {
@@ -807,41 +812,56 @@ export default function OperatorPanel({ open, onClose }: Props) {
     return needsRefresh;
   }, []);
 
-  const refreshConversationMetadata = useCallback(async (status?: "active" | "archived") => {
-    const view = metadataViewRef.current;
-    const conversationId = view.loadState === "ready" ? view.conversation?.id : undefined;
-    const lifetime = metadataRefreshRef.current?.lifetime;
-    const filter = status ?? view.listFilter;
-    const revision = ++conversationRevisionRef.current;
-    // Keep the obligation if a later save invalidates this read. Its own
-    // revision may still be current when it settles, including another row's save.
-    conversationRefreshNeededRef.current = true;
-    const current = () =>
-      conversationRevisionRef.current === revision &&
-      metadataViewRef.current.listFilter === filter &&
-      (!conversationId ||
-        (metadataViewRef.current.conversation?.id === conversationId &&
-          metadataViewRef.current.loadState === "ready" &&
-          metadataRefreshRef.current?.lifetime === lifetime));
-    try {
-      // Every list refresh also refreshes the selected row, so superseding a
-      // tool-triggered read cannot silently lose its metadata update.
-      const [snapshot, available] = await Promise.all([
-        conversationId ? getOperatorConversation(conversationId) : Promise.resolve(null),
-        listOperatorConversations({ status: filter }),
-      ]);
-      if (!current() || (snapshot && snapshot.conversation.id !== conversationId)) return;
-      if (snapshot) dispatch({ type: "UPDATE_CONVERSATION", conversation: snapshot.conversation });
-      setConversations(
-        available
-          .filter((item) => item.id !== conversationId || snapshot?.conversation.status === filter)
-          .map((item) => (item.id === conversationId && snapshot ? snapshot.conversation : item)),
-      );
-      conversationRefreshNeededRef.current = false;
-    } catch (error) {
-      if (current()) throw error;
-    }
-  }, []);
+  const refreshConversationMetadata = useCallback(
+    async (status?: "active" | "archived", conversationOverride?: string) => {
+      const view = metadataViewRef.current;
+      const conversationId =
+        conversationOverride ?? (view.loadState === "ready" ? view.conversation?.id : undefined);
+      const lifetime = metadataRefreshRef.current?.lifetime;
+      const filter = status ?? view.listFilter;
+      const revision = ++conversationRevisionRef.current;
+      const rowReads = new Map(conversationRowReadsRef.current);
+      if (conversationId) rowReads.set(conversationId, revision);
+      for (const row of view.conversations) rowReads.set(row.id, revision);
+      conversationRowReadsRef.current = rowReads;
+      // A later save may invalidate this read before its response is applied.
+      // Keep the obligation until a refresh settles with current data.
+      conversationRefreshNeededRef.current = true;
+      const current = () =>
+        conversationRevisionRef.current === revision &&
+        metadataViewRef.current.listFilter === filter &&
+        (Boolean(conversationOverride) ||
+          !conversationId ||
+          (metadataViewRef.current.conversation?.id === conversationId &&
+            metadataViewRef.current.loadState === "ready" &&
+            metadataRefreshRef.current?.lifetime === lifetime));
+      try {
+        // Every list refresh also refreshes the selected row, so superseding a
+        // tool-triggered read cannot silently lose its metadata update.
+        const [snapshot, available] = await Promise.all([
+          conversationId ? getOperatorConversation(conversationId) : Promise.resolve(null),
+          listOperatorConversations({ status: filter }),
+        ]);
+        if (!current() || (snapshot && snapshot.conversation.id !== conversationId)) {
+          conversationRefreshNeededRef.current = true;
+          return;
+        }
+        if (snapshot)
+          dispatch({ type: "UPDATE_CONVERSATION", conversation: snapshot.conversation });
+        setConversations(
+          available
+            .filter(
+              (item) => item.id !== conversationId || snapshot?.conversation.status === filter,
+            )
+            .map((item) => (item.id === conversationId && snapshot ? snapshot.conversation : item)),
+        );
+        conversationRefreshNeededRef.current = false;
+      } catch (error) {
+        if (current()) throw error;
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     const conversationId = state.conversation?.id;
@@ -905,6 +925,10 @@ export default function OperatorPanel({ open, onClose }: Props) {
       dispatch({ type: "LOAD_START" });
       while (conversationLoadRef.current === load) {
         const revision = ++conversationRevisionRef.current;
+        conversationRowReadsRef.current = new Map(conversationRowReadsRef.current).set(
+          conversationId,
+          revision,
+        );
         try {
           const snapshot = await getOperatorConversation(conversationId);
           if (conversationLoadRef.current !== load) return;
@@ -924,6 +948,11 @@ export default function OperatorPanel({ open, onClose }: Props) {
             conversation: snapshot.conversation,
             frames: snapshot.frames,
           });
+          if (conversationRefreshNeededRef.current) {
+            void refreshConversationMetadata().catch((error) => {
+              setActionError(error instanceof Error ? error.message : t("errors.load"));
+            });
+          }
           return;
         } catch (error) {
           if (conversationLoadRef.current !== load) return;
@@ -936,7 +965,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         }
       }
     },
-    [t],
+    [refreshConversationMetadata, t],
   );
 
   useEffect(() => {
@@ -1005,13 +1034,19 @@ export default function OperatorPanel({ open, onClose }: Props) {
     const revision = ++conversationRevisionRef.current;
     void listOperatorConversations()
       .then((available) => {
-        if (!active || conversationRevisionRef.current !== revision) return;
-        setConversations(available);
+        if (!active) return;
         const selected =
           (stored ? available.find((item) => item.id === stored) : null) ??
           available.find((item) => item.status === "active") ??
           available[0] ??
           null;
+        if (conversationRevisionRef.current === revision) {
+          setConversations(available);
+        } else if (selectedConversationIdRef.current !== null) {
+          // A newer read has already selected a row. This initial list is only
+          // needed to choose one when nothing is open yet.
+          return;
+        }
         if (selected) {
           void loadConversation(selected.id);
         } else if (stored) {
@@ -1413,7 +1448,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
       setListActionError(null);
       try {
         const updated = await updateOperatorConversation(conversationId, patch);
-        if (conversationRevisionRef.current === revision) {
+        if ((conversationRowReadsRef.current.get(updated.id) ?? 0) <= revision) {
           const filter = metadataViewRef.current.listFilter;
           setConversations((current) =>
             current
@@ -1432,6 +1467,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         if (finishConversationMutation(conversationId, revision)) {
           // A full PATCH response may predate another save or a tool write.
           // Settlement also invalidates reads made before this save committed.
+          conversationRefreshNeededRef.current = true;
           void refreshConversationMetadata().catch((error) => {
             setListActionError(error instanceof Error ? error.message : t("errors.load"));
           });
@@ -1495,10 +1531,21 @@ export default function OperatorPanel({ open, onClose }: Props) {
       } catch (error) {
         setListActionError(error instanceof Error ? error.message : t("errors.fork"));
       } finally {
-        finishConversationMutation(conversation.id, revision);
+        if (finishConversationMutation(conversation.id, revision)) {
+          conversationRefreshNeededRef.current = true;
+          void refreshConversationMetadata(undefined, conversation.id).catch((error) => {
+            setListActionError(error instanceof Error ? error.message : t("errors.load"));
+          });
+        }
       }
     },
-    [beginConversationMutation, finishConversationMutation, resetConversation, t],
+    [
+      beginConversationMutation,
+      finishConversationMutation,
+      refreshConversationMetadata,
+      resetConversation,
+      t,
+    ],
   );
 
   const clampWidth = useCallback(

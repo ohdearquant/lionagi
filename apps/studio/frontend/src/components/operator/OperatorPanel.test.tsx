@@ -1437,6 +1437,95 @@ describe("OperatorPanel", () => {
         expect(container.querySelector("ul")?.textContent).not.toContain("Scheduler check");
         expect(api.listOperatorConversations).toHaveBeenLastCalledWith({ status: "archived" });
       });
+
+      it("keeps a saved row when another conversation is selected before the save settles", async () => {
+        const { conversation, other, rows, store } = await mountLocalConversation("conversation-1");
+        const unpinned = { ...conversation, pinned: false };
+        const save = deferred<OperatorConversation>();
+        const selectedRead = deferred<{
+          conversation: typeof conversation;
+          frames: OperatorFrame[];
+        }>();
+        const refreshList = deferred<void>();
+        api.updateOperatorConversation.mockReturnValueOnce(save.promise);
+        api.getOperatorConversation.mockReturnValueOnce(selectedRead.promise);
+        await act(async () => rowAction("Scheduler check", "Unpin").click());
+
+        await act(async () => titleButton("Other conversation").click());
+        api.listOperatorConversations.mockImplementationOnce(() =>
+          refreshList.promise.then(() => rows()),
+        );
+        store(unpinned);
+        await act(async () => save.resolve(unpinned));
+        await act(async () => {
+          selectedRead.resolve({ conversation: other, frames: [] });
+        });
+        await act(async () => refreshList.resolve());
+
+        await openList();
+        expectStoredRow(unpinned, other.title);
+      });
+
+      it("loads a conversation when the first list read is superseded by a filter", async () => {
+        const conversation: OperatorConversation = {
+          id: "conversation-1",
+          title: "Scheduler check",
+          status: "active",
+          pinned: false,
+          activeRequestId: null,
+        };
+        const initialList = deferred<OperatorConversation[]>();
+        const filteredList = deferred<OperatorConversation[]>();
+        api.listOperatorConversations
+          .mockReturnValueOnce(initialList.promise)
+          .mockReturnValueOnce(filteredList.promise);
+        api.getOperatorConversation.mockResolvedValue({ conversation, frames: [] });
+
+        await mount();
+        await openList();
+        await selectFilter("Active");
+        await act(async () => filteredList.resolve([conversation]));
+        await act(async () => initialList.resolve([conversation]));
+
+        expect(api.getOperatorConversation).toHaveBeenCalledOnce();
+        expect(
+          container
+            .querySelector('button[aria-label^="Conversations"]')
+            ?.getAttribute("aria-label"),
+        ).toBe("Conversations: Scheduler check");
+      });
+
+      it("refreshes listed rows after a fork supersedes a metadata read", async () => {
+        const { conversation, other, rows, store } = await mountLocalConversation();
+        const renamed = { ...conversation, title: "Renamed check" };
+        const pendingRead = deferred<{
+          conversation: typeof conversation;
+          frames: OperatorFrame[];
+        }>();
+        api.getOperatorConversation.mockReturnValueOnce(pendingRead.promise);
+        api.listOperatorConversations.mockResolvedValueOnce([conversation, other]);
+
+        await selectFilter("Active");
+        api.forkOperatorConversation.mockResolvedValue({
+          conversation: {
+            id: "conversation-fork",
+            title: "Scheduler check (fork)",
+            status: "active",
+            pinned: false,
+            activeRequestId: null,
+          },
+          frames: [],
+        });
+        store(renamed);
+        api.listOperatorConversations.mockImplementationOnce(() => Promise.resolve(rows()));
+        await act(async () => rowAction("Scheduler check", "Fork").click());
+        await act(async () => {
+          pendingRead.resolve({ conversation, frames: [] });
+        });
+
+        await openList();
+        expect(container.querySelector("ul")?.textContent).toContain("Renamed check");
+      });
     });
 
     it("renames a conversation inline and reflects the new title", async () => {

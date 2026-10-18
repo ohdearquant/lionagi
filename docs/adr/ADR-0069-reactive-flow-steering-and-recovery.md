@@ -546,7 +546,7 @@ against the artifact set a node declared, it does not make.
   (`lionagi/cli/orchestrate/flow.py:942-951`), so removing a role's `artifact_defaults` between runs
   loses that leg's contract. The persisted record exists — `artifact_contract_json` is the column
   ADR-0064 D3 has a flow write
-  (`docs/adr/ADR-0064-cli-execution-outcome-and-completion-record.md:410`; declared at
+  (`docs/adr/ADR-0064-cli-execution-outcome-and-completion-record.md:412`; declared at
   `lionagi/state/schema.sql:192`). Two writers fill it, both append-only and frozen before the work
   they describe runs: `_build_dag` folds each planned leg's role defaults in at DAG-build time
   (`lionagi/cli/orchestrate/flow.py:1075-1076`), and `_execute_dag` folds a reactively spawned node's own
