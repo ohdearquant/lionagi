@@ -14,6 +14,7 @@ Reward (0..1) = 0.7 x correctness + 0.1 x read a file or ran code before submitt
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -23,6 +24,7 @@ import stat
 import subprocess
 import tempfile
 import threading
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -69,6 +71,14 @@ _uids_lock = threading.Lock()
 _next_uid_slot = 0
 # World-writable places agent code can leave files in outside its workspace.
 _SHARED_TMP_DIRS = ("/tmp", "/var/tmp", "/dev/shm")  # noqa: S108
+# The files the server itself writes into a workspace, to run the agent's code and to grade it.
+_SERVER_FILES = (".run.py", ".grade.py", ".grade_tests.py")
+_SERVER_DIRS = tuple(f"{name}/" for name in _SERVER_FILES)
+# A workspace holding more than this is not hashed, so a run on it cannot be shown to change nothing.
+_DIGEST_BYTES = 64 * 1024 * 1024
+# Directories a walk holds open at once; a deeper tree is moved up to be removed (see _remove_entries).
+_WALK_DEPTH = 128
+_MAX_PASSES = 1 << 16
 
 
 def _claim_sandbox_uid() -> int | None:
@@ -95,11 +105,151 @@ def _release_sandbox_uid(uid: int | None) -> None:
             _uids_in_use.discard(uid)
 
 
+def _walk_tree(
+    top: str | Path,
+    descend: Callable[[int, str, str, os.stat_result], bool],
+    *,
+    strict: bool = False,
+) -> Iterator[tuple[int, str, str, os.stat_result, bool]]:
+    """Every entry under the directory *top*, depth first, as ``(dir_fd, name, rel, st, left)``.
+
+    Each entry is yielded once with *left* False, read by ``lstat`` through the open descriptor
+    *dir_fd* of the directory holding it; *rel* is its path below *top*. A directory *descend*
+    accepts (and may change the mode of first) is then entered, and yielded again with *left* True
+    once everything under it was. Nothing follows a symlink, and the walk keeps its own stack, so
+    neither a path longer than PATH_MAX nor a tree deeper than the interpreter's recursion limit
+    stops it; agent code can build either in a second. At most _WALK_DEPTH directories are open at
+    once, so a directory that deep is yielded but not entered. What cannot be read is skipped, or
+    raises when *strict*, a directory too deep to enter included.
+    """
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
+    # One frame per open directory: (fd, depth, its parent's fd, name, rel, stat, names left).
+    stack: list[tuple[int, int, int, str, str, os.stat_result | None, Iterator[str]]] = []
+
+    def enter(fd: int, depth: int, parent_fd: int, name: str, rel: str, st: Any) -> None:
+        try:
+            names = sorted(os.listdir(fd))
+        except OSError:
+            if strict:
+                os.close(fd)
+                raise
+            names = []
+        stack.append((fd, depth, parent_fd, name, rel, st, iter(names)))
+
+    try:
+        top_fd = os.open(top, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError:
+        if strict:
+            raise
+        return
+    try:
+        enter(top_fd, 0, -1, "", "", None)
+        while stack:
+            fd, depth, parent_fd, name, rel, st, names = stack[-1]
+            entry = next(names, None)
+            if entry is None:
+                stack.pop()
+                os.close(fd)
+                if st is not None:
+                    yield parent_fd, name, rel, st, True
+                continue
+            entry_rel = f"{rel}/{entry}" if rel else entry
+            try:
+                entry_st = os.stat(entry, dir_fd=fd, follow_symlinks=False)
+            except OSError:
+                if strict:
+                    raise
+                continue
+            yield fd, entry, entry_rel, entry_st, False
+            if not stat.S_ISDIR(entry_st.st_mode) or not descend(fd, entry, entry_rel, entry_st):
+                continue
+            if depth + 1 >= _WALK_DEPTH:
+                if strict:
+                    raise OSError(errno.ELOOP, "the tree is too deep to walk", entry_rel)
+                continue
+            try:
+                child = os.open(entry, flags, dir_fd=fd)
+            except OSError:
+                if strict:
+                    raise
+                continue
+            enter(child, depth + 1, fd, entry, entry_rel, entry_st)
+    finally:
+        for frame in stack:
+            os.close(frame[0])
+
+
+def _chmod_dir(name: str, dir_fd: int, mode: int) -> None:
+    """Set the mode of the directory *name* in *dir_fd* without following a symlink."""
+    try:
+        os.chmod(name, mode, dir_fd=dir_fd, follow_symlinks=False)
+    except NotImplementedError:
+        # A C library that cannot chmod without following: nothing of the agent's runs while the
+        # server walks its files, so the entry checked here is the entry changed.
+        if stat.S_ISDIR(os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode):
+            os.chmod(name, mode, dir_fd=dir_fd)
+
+
+def _remove_entries(
+    root: str | Path,
+    owned: Callable[[os.stat_result], bool],
+    enter: Callable[[os.stat_result], bool],
+    keep_dir: Callable[[int, str], None] | None = None,
+) -> None:
+    """Remove every entry under the directory *root* that *owned* accepts, entering the directories
+    *enter* accepts; an owned one gets its permissions back first, so a lock the agent set keeps
+    nothing. An owned directory that cannot be removed is handed to *keep_dir*. An owned directory
+    too deep to enter is moved up into *root* and removed on a later pass, so no depth of tree
+    outlasts the removal.
+    """
+    try:
+        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError:
+        return
+
+    def descend(dir_fd: int, name: str, _rel: str, st: os.stat_result) -> bool:
+        if not enter(st):
+            return False
+        if owned(st):
+            try:
+                _chmod_dir(name, dir_fd, 0o700)
+            except (OSError, NotImplementedError):
+                pass
+        return True
+
+    try:
+        for _ in range(_MAX_PASSES):
+            moved = False
+            for dir_fd, name, rel, st, left in _walk_tree(root, descend):
+                if not owned(st):
+                    continue
+                try:
+                    if left:
+                        try:
+                            os.rmdir(name, dir_fd=dir_fd)
+                        except OSError:
+                            if keep_dir is not None:
+                                keep_dir(dir_fd, name)
+                    elif not stat.S_ISDIR(st.st_mode):
+                        os.unlink(name, dir_fd=dir_fd)
+                    elif rel.count("/") + 1 >= _WALK_DEPTH and enter(st):
+                        os.rename(
+                            name, f".wb-deep-{uuid4().hex}", src_dir_fd=dir_fd, dst_dir_fd=root_fd
+                        )
+                        moved = True
+                except (OSError, NotImplementedError):
+                    continue
+            if not moved:
+                break
+    finally:
+        os.close(root_fd)
+
+
 def _remove_tree(root: Path) -> None:
     """Remove a workspace even after its agent took the permissions away from its own directories.
 
     A *root* that is no longer a directory (agent code put a symlink in its place) is removed as
-    what it is: the permission pass below never reaches anything outside the tree.
+    what it is, and nothing below ever leaves the tree.
     """
     try:
         if not stat.S_ISDIR(os.lstat(root).st_mode):
@@ -107,16 +257,21 @@ def _remove_tree(root: Path) -> None:
             return
     except OSError:
         return
-    stack = [root]
-    while stack:
-        top = stack.pop()
-        try:
-            os.chmod(top, 0o700)
-            with os.scandir(top) as entries:
-                stack.extend(Path(e.path) for e in entries if e.is_dir(follow_symlinks=False))
-        except OSError:
-            continue
-    shutil.rmtree(root, ignore_errors=True)
+    try:
+        os.chmod(root, 0o700)
+    except OSError:
+        pass
+    _remove_entries(root, lambda _st: True, lambda _st: True)
+    try:
+        os.rmdir(root)
+    except OSError:
+        pass
+
+
+def _sendable(text: str) -> str:
+    """*text* as valid UTF-8. A lone surrogate, from a file name or a path the agent chose, would
+    fail the observation's JSON encoding and with it the whole step."""
+    return text.encode("utf-8", "replace").decode("utf-8")
 
 
 def _clip(text: str, limit: int = OUTPUT_CHARS) -> str:
@@ -164,6 +319,7 @@ class AgentWorkbenchEnvironment(Environment):
         self._inspected = False
         self._checked: set[str] = set()
         self._tested_last_change = False
+        self._tested_digest: str | None = None
         self._checks = 0
         try:
             uid = _claim_sandbox_uid()
@@ -184,7 +340,7 @@ class AgentWorkbenchEnvironment(Environment):
         return WorkbenchObservation(
             task=self._task.instruction,
             tools=TOOLS_TEXT,
-            output="Workspace files:\n" + self._listing(),
+            output=_sendable("Workspace files:\n" + self._listing()),
             steps_left=MAX_STEPS,
             done=False,
             reward=0.0,
@@ -261,6 +417,10 @@ class AgentWorkbenchEnvironment(Environment):
             raise _RefusalError(
                 f"write_file needs a string 'content' of at most {WRITE_CHARS} characters"
             )
+        try:
+            data = content.encode("utf-8")
+        except UnicodeEncodeError:
+            raise _RefusalError("write_file 'content' must be text UTF-8 can encode") from None
         path = self._path(args.get("path"))
         try:
             missing = [
@@ -274,8 +434,8 @@ class AgentWorkbenchEnvironment(Environment):
         fd = self._open_regular(path, os.O_WRONLY | os.O_CREAT, args.get("path"))
         # Truncated only once the target is known to be a regular file.
         os.ftruncate(fd, 0)
-        with os.fdopen(fd, "w") as fh:
-            fh.write(content)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
         self._chown(path)
         self._tested_last_change = False
         return self._obs(f"wrote {path.relative_to(self._ws)} ({len(content)} characters)")
@@ -285,15 +445,14 @@ class AgentWorkbenchEnvironment(Environment):
         if self._task.answer_kind != "code":
             raise _RefusalError("run_tests is only for code tasks; use check to test an answer")
         # The examples as the task gave them, whatever the workspace's copy now says.
-        before = self._solution_digest()
+        before = self._workspace_digest()
         self._write_private(".grade_tests.py", self._task.files["test_solution.py"])
-        output = self._run([SANDBOX_PYTHON, "-E", "-s", ".grade_tests.py"])
+        output = self._run([SANDBOX_PYTHON, "-E", "-s", "-B", ".grade_tests.py"])
         passed = all(self._grade_cases(self._task.code_visible))
-        # Verified only when the tests pass on the code as it stands: a run that changes
-        # solution.py tested something other than what would be submitted.
-        self._tested_last_change = (
-            passed and before is not None and self._solution_digest() == before
-        )
+        # Verified only when the tests pass on the files as they stand: submit compares the files
+        # with these, so a run that changes any of them tested something other than what is graded.
+        self._tested_digest = before if passed else None
+        self._tested_last_change = self._tested_digest is not None
         return self._obs(output)
 
     def _tool_check(self, args: dict) -> WorkbenchObservation:
@@ -331,7 +490,8 @@ class AgentWorkbenchEnvironment(Environment):
             else score_answer(self._task, answer, code_runner=self._grade_cases)
         )
         if self._task.answer_kind == "code":
-            verified = self._tested_last_change
+            # The files the tests passed on are still the files being graded.
+            verified = self._tested_last_change and self._workspace_digest() == self._tested_digest
         else:
             verified = answer is not None and answer.strip() in self._checked
         reward = 0.7 * correctness
@@ -346,8 +506,14 @@ class AgentWorkbenchEnvironment(Environment):
         return self._obs(text, done=True, correctness=correctness)
 
     def _grade_cases(self, cases: list[tuple[str, tuple, Any]]) -> list[bool]:
+        # Each case runs on its own: before it, no process of the agent's is left, none of its files
+        # is in the shared tmp directories, and none of the server's script files is in the
+        # workspace. A case that leaves the workspace different fails, and so does every case after
+        # it, so no call can hand state to the next.
+        before = self._workspace_digest()
         results = []
         for name, call_args, want in cases:
+            self._clear_agent_state()
             probe = (
                 "import json, sys\n"
                 "sys.path.insert(0, '.')\n"
@@ -356,23 +522,49 @@ class AgentWorkbenchEnvironment(Environment):
             )
             self._write_private(".grade.py", probe)
             out = self._run(
-                [SANDBOX_PYTHON, "-E", "-s", ".grade.py", json.dumps(list(call_args))], raw=True
+                [SANDBOX_PYTHON, "-E", "-s", "-B", ".grade.py", json.dumps(list(call_args))],
+                raw=True,
             )
             lines = [ln for ln in out.strip().splitlines() if ln.strip()]
             try:
                 got = json.loads(lines[-1]) if lines else None
             except ValueError:
                 got = None
-            results.append(got == json.loads(json.dumps(want)))
+            results.append(
+                before is not None
+                and got == json.loads(json.dumps(want))
+                and self._workspace_digest() == before
+            )
         return results
 
-    def _solution_digest(self) -> str | None:
+    def _workspace_digest(self) -> str | None:
+        """A hash of every entry in the workspace but the server's own files: path, type, mode, and
+        a regular file's modification time and bytes or a symlink's target. None when an entry
+        cannot be read or the files hold more than _DIGEST_BYTES."""
+        digest, total = hashlib.sha256(), 0
         try:
-            fd = self._open_regular(self._workspace() / "solution.py", os.O_RDONLY, "solution.py")
-        except _RefusalError:
+            for dir_fd, name, rel, st, left in _walk_tree(
+                self._workspace(),
+                lambda _fd, _name, rel, _st: rel not in _SERVER_FILES,
+                strict=True,
+            ):
+                if left or rel in _SERVER_FILES or rel.startswith(_SERVER_DIRS):
+                    continue
+                digest.update(f"{rel}\0{st.st_mode}\0".encode("utf-8", "surrogateescape"))
+                if stat.S_ISLNK(st.st_mode):
+                    digest.update(os.fsencode(os.readlink(name, dir_fd=dir_fd)))
+                elif stat.S_ISREG(st.st_mode):
+                    total += st.st_size
+                    if total > _DIGEST_BYTES:
+                        return None
+                    digest.update(f"{st.st_mtime_ns}\0".encode())
+                    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+                    with os.fdopen(fd, "rb") as fh:
+                        for chunk in iter(lambda fh=fh: fh.read(1 << 20), b""):
+                            digest.update(chunk)
+        except OSError:
             return None
-        with os.fdopen(fd, "rb") as fh:
-            return hashlib.sha256(fh.read()).hexdigest()
+        return digest.hexdigest()
 
     # ------------------------------------------------------------------ helpers
 
@@ -386,7 +578,7 @@ class AgentWorkbenchEnvironment(Environment):
         if correctness is not None:
             meta["correctness"] = correctness
         return WorkbenchObservation(
-            output=output,
+            output=_sendable(output),
             steps_left=max(0, MAX_STEPS - self._state.step_count),
             done=done,
             reward=self._final_reward if done else 0.0,
@@ -403,7 +595,7 @@ class AgentWorkbenchEnvironment(Environment):
         if self._state.step_count >= MAX_STEPS:
             return self._finish(None, f"Refused: {reason}. No tool calls left.")
         obs = self._obs("")
-        obs.error = reason
+        obs.error = _sendable(reason)
         return obs
 
     def _only(self, args: Any, allowed: set[str]) -> None:
@@ -489,15 +681,14 @@ class AgentWorkbenchEnvironment(Environment):
         return fd
 
     def _listing(self) -> str:
-        # Symlinks are neither followed nor listed: the size of a link's target is not the agent's to see.
-        rows = []
-        for top, _dirs, names in os.walk(self._workspace()):
-            for name in names:
-                p = Path(top) / name
-                if name.startswith(".") or p.is_symlink() or not p.is_file():
-                    continue
-                rows.append(f"{p.relative_to(self._ws)} ({p.lstat().st_size} bytes)")
-        return "\n".join(sorted(rows)) or "(empty)"
+        # Symlinks are neither followed nor listed: the size of a link's target is not the agent's to
+        # see. What cannot be read, under a directory the agent locked, is left out.
+        rows = [
+            f"{rel} ({st.st_size} bytes)"
+            for _fd, name, rel, st, left in _walk_tree(self._workspace(), lambda *_: True)
+            if not left and stat.S_ISREG(st.st_mode) and not name.startswith(".")
+        ]
+        return _clip("\n".join(sorted(rows)) or "(empty)")
 
     def _own_workspace(self) -> None:
         if self._ids is None:
@@ -509,6 +700,20 @@ class AgentWorkbenchEnvironment(Environment):
             os.chown(p, *self._ids, follow_symlinks=False)
 
     def _write_private(self, name: str, text: str) -> None:
+        try:
+            data = text.encode("utf-8")
+        except UnicodeEncodeError:
+            raise _RefusalError(f"cannot prepare {name}: the text is not valid UTF-8") from None
+        path = self._clear_private(name)
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+            self._chown(path)
+        except OSError as exc:
+            raise _RefusalError(f"cannot prepare {name}: {exc.strerror}") from None
+
+    def _clear_private(self, name: str) -> Path:
         # The agent's code can plant a symlink, or a directory it locked, at this name; never
         # follow it as root, and refuse rather than fail when it cannot be cleared.
         path = self._workspace() / name
@@ -518,12 +723,20 @@ class AgentWorkbenchEnvironment(Environment):
                     _remove_tree(path)
                 else:
                     path.unlink()
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
-            with os.fdopen(fd, "w") as fh:
-                fh.write(text)
-            self._chown(path)
         except OSError as exc:
             raise _RefusalError(f"cannot prepare {name}: {exc.strerror}") from None
+        if os.path.lexists(path):
+            raise _RefusalError(f"cannot prepare {name}: it could not be removed")
+        return path
+
+    def _clear_agent_state(self) -> None:
+        """Leave nothing of the agent's running or in the shared tmp directories, and none of the
+        server's script files in the workspace, so the next run starts from the workspace alone."""
+        if self._ids is not None:
+            self._kill_until_none()
+            self._remove_shared_tmp_files()
+        for name in (".run.py", ".grade_tests.py"):
+            self._clear_private(name)
 
     def _chown(self, path: Path) -> None:
         if self._ids is not None:
@@ -548,7 +761,9 @@ class AgentWorkbenchEnvironment(Environment):
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
+                # Whatever bytes the agent's code prints come back as text.
+                encoding="utf-8",
+                errors="replace",
                 start_new_session=True,
                 **kwargs,
             )
@@ -597,39 +812,37 @@ class AgentWorkbenchEnvironment(Environment):
                 continue
         return found
 
+    def _kill_until_none(self) -> None:
+        # Until a scan finds none, so nothing forks past a single scan of /proc.
+        for _ in range(10):
+            if not self._kill_sandbox_uid():
+                break
+
     def _remove_shared_tmp_files(self) -> None:
         # A file the agent left in /tmp, at any depth, would otherwise be there for the next
-        # episode under this uid. Only this uid's entries go: a directory it made that another
-        # episode wrote into keeps the other episode's files and is handed to root, so the uid's
-        # next holder does not inherit it. The walk works through directory descriptors and never
-        # follows a symlink.
+        # episode under this uid, or for the next case its code is graded on. Only directories this
+        # uid could have written in are entered, its own and world-writable ones, so no other
+        # episode's home is. Only this uid's entries go: a directory of its own that holds another
+        # uid's files is handed to root as a sticky, world-writable directory, so the other uid
+        # keeps its files and the uid's next holder inherits nothing.
         uid = self._ids[0]
+
+        def to_root(dir_fd: int, name: str) -> None:
+            os.chown(name, 0, 0, dir_fd=dir_fd, follow_symlinks=False)
+            _chmod_dir(name, dir_fd, 0o1777)
+
         for root in _SHARED_TMP_DIRS:
-            if not os.path.isdir(root):
-                continue
-            for _top, dirs, names, dir_fd in os.fwalk(root, topdown=False, follow_symlinks=False):
-                for name in [*names, *dirs]:
-                    try:
-                        st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-                        if st.st_uid != uid:
-                            continue
-                        if not stat.S_ISDIR(st.st_mode):
-                            os.unlink(name, dir_fd=dir_fd)
-                            continue
-                        try:
-                            os.rmdir(name, dir_fd=dir_fd)
-                        except OSError:
-                            os.chown(name, 0, 0, dir_fd=dir_fd, follow_symlinks=False)
-                    except OSError:
-                        continue
+            _remove_entries(
+                root,
+                lambda st: st.st_uid == uid,
+                lambda st: st.st_uid == uid or bool(st.st_mode & stat.S_IWOTH),
+                to_root,
+            )
 
     def _cleanup(self) -> None:
         if self._ids is not None:
-            # Processes first, until none is left, so nothing writes into a tree being removed or
-            # forks past a single scan of /proc.
-            for _ in range(10):
-                if not self._kill_sandbox_uid():
-                    break
+            # Processes first, so nothing writes into a tree being removed.
+            self._kill_until_none()
             self._remove_shared_tmp_files()
         if self._home is not None:
             _remove_tree(self._home)

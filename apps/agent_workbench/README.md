@@ -47,8 +47,8 @@ Only the final observation carries a reward, in [0, 1]:
 reward = 0.7 x correctness
        + 0.1 if the agent read a file or ran code before submitting
        + 0.1 if it verified what it submitted: check confirmed that exact answer, or, for
-         code tasks, the visible tests passed after its last change to the files and the
-         test run left solution.py as it was
+         code tasks, the visible tests passed after its last change to the files and no
+         file in the workspace changed between that test run and the submission
        + 0.1 if it made no refused calls
 ```
 
@@ -68,6 +68,9 @@ no answer is stored anywhere.
   credit is then the share of the further cases the original code fails that the fixed function passes, each
   in its own process. The further cases are not the visible tests, so code that special-cases the visible
   inputs earns nothing. Submitting the code unchanged, or with an edit that fixes nothing, earns 0.
+  Each case starts with none of the agent's processes running and none of its files in the shared tmp
+  directories, and a case that changes any file in the workspace (its bytes, mode or modification time) fails,
+  as does every case after it, so code cannot carry a count or an answer from one call to the next.
 - Headline (media): 1.0 when every rule in the brief holds; 0 when the headline is over the length limit;
   otherwise partial credit only once the required words are present.
 
@@ -75,16 +78,21 @@ Tasks are generated from their ids with a seeded generator, so every reset of a 
 
 ## Sandbox
 
-In the image the server runs as root, and each episode runs its agent code under a uid of its own with the
-system interpreter, in a workspace the episode creates and removes. The workspace sits inside a directory the
-episode's uid can pass through but not write, so agent code can empty its workspace but cannot rename it or put
-anything in its place. Concurrent episodes cannot read each other's workspaces, and a call's cleanup kills only
-its own episode's processes. When an episode ends, its processes are killed, the files its uid left anywhere
-under `/tmp`, `/var/tmp` and `/dev/shm` are removed with its workspace (files another uid wrote are left alone),
-and its uid goes to the back of the rotation. The server's code and its virtual environment are not readable
-from agent code. Paths given to the file tools are relative, stay inside the workspace and may not pass through
-a symlink or a reserved name; they read and write regular files only, and the listing neither follows nor shows
-symlinks. A workspace whose permissions agent code took away is given them back before the next call.
+In the image the server runs as root, and each episode runs its agent code under a uid of its own with the system
+interpreter, in a workspace the episode creates and removes. The workspace sits inside a directory the episode's
+uid can pass through but not write, so agent code can empty its workspace but cannot rename it or put anything in
+its place. Concurrent episodes cannot read each other's workspaces, and a call's cleanup kills only its own
+episode's processes. When an episode ends, and before each graded case, its processes are killed and the files its
+uid left anywhere under `/tmp`, `/var/tmp` and `/dev/shm` are removed; files another uid wrote are left alone, and
+directories the uid could not write in, such as another episode's, are not entered. When the episode ends its
+workspace is removed too, and its uid goes to the back of the rotation. The server's code and its virtual
+environment are not readable from agent code. Paths given to the file tools are relative, stay inside the
+workspace and may not pass through a symlink or a reserved name; they read and write regular files only, and the
+listing neither follows nor shows symlinks. A workspace whose permissions agent code took away is given them back
+before the next call. The server walks agent-made trees through directory descriptors with a stack of its own, so
+a path longer than `PATH_MAX` or a tree deeper than the interpreter's recursion limit neither escapes a call as an
+error nor outlives the episode. Text the tools send back is valid UTF-8 whatever bytes the agent wrote; text the
+agent sends in must be text UTF-8 can encode.
 
 Outside the image (the server not running as root) there is no separate uid: agent code runs as the server's
 user, and a process that starts its own session can outlive its call. Train against the image.

@@ -3,6 +3,7 @@
 
 import os
 import stat
+import sys
 import time
 from pathlib import Path
 
@@ -182,7 +183,7 @@ def test_run_tests_runs_the_examples_as_the_task_gave_them(env):
     assert final.reward == pytest.approx(0.1)  # the rewritten test file verified nothing
 
 
-def test_a_test_run_that_changes_solution_py_verifies_nothing(env):
+def test_code_that_changes_its_workspace_when_called_earns_nothing(env):
     fixed = FIXED["slugify"]
     self_editing = (
         fixed
@@ -192,13 +193,139 @@ def test_a_test_run_that_changes_solution_py_verifies_nothing(env):
     act(env, "write_file", path="solution.py", content=self_editing)
     act(env, "run_tests")
     final = act(env, "submit", answer="done")
-    assert final.metadata["correctness"] == 1.0
-    assert final.reward == pytest.approx(0.8)
+    assert final.metadata["correctness"] == 0.0
+    assert final.reward == pytest.approx(0.1)
     # Control: the same fix, tested without changing itself, is verified.
     env.reset(task_id="software-slugify-4")
     act(env, "write_file", path="solution.py", content=fixed)
     act(env, "run_tests")
     assert act(env, "submit", answer="done").reward == pytest.approx(0.9)
+
+
+def test_a_count_kept_between_graded_calls_fails_the_grading(env):
+    """Code that counts its calls in a file could answer a case by its position, not its input."""
+    counting = FIXED["slugify"].replace(
+        "def slugify(title):\n",
+        "def slugify(title):\n"
+        "    import pathlib\n"
+        "    p = pathlib.Path('.calls')\n"
+        "    p.write_text(str(int(p.read_text()) + 1 if p.exists() else 1))\n",
+    )
+    env.reset(task_id="software-slugify-4")
+    act(env, "write_file", path="solution.py", content=counting)
+    assert act(env, "submit", answer="done").metadata["correctness"] == 0.0
+
+
+def test_a_count_kept_in_a_file_time_fails_the_grading(env):
+    counting = FIXED["slugify"].replace(
+        "def slugify(title):\n",
+        "def slugify(title):\n"
+        "    import os\n"
+        "    st = os.stat(__file__)\n"
+        "    os.utime(__file__, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))\n",
+    )
+    env.reset(task_id="software-slugify-4")
+    act(env, "write_file", path="solution.py", content=counting)
+    assert act(env, "submit", answer="done").metadata["correctness"] == 0.0
+
+
+def test_files_that_changed_after_a_passing_test_run_are_not_verified(env):
+    env.reset(task_id="software-slugify-4")
+    act(env, "write_file", path="solution.py", content=FIXED["slugify"])
+    act(env, "run_tests")
+    # Changed by no tool call, as a process that outlived its call could have.
+    (env._ws / "notes.txt").write_text("changed")
+    assert act(env, "submit", answer="done").reward == pytest.approx(0.8)
+
+
+_GRADED_UNDER = "import pathlib, sys\nrunner = pathlib.Path(sys.argv[0]).name\n"
+
+
+def test_a_helper_the_test_run_changes_verifies_nothing(env):
+    helper = _GRADED_UNDER + (
+        "if runner == '.grade_tests.py':\n"
+        "    me = pathlib.Path(__file__)\n"
+        "    me.write_text(me.read_text() + '#')\n"
+    )
+    env.reset(task_id="software-slugify-4")
+    act(env, "write_file", path="helper.py", content=helper)
+    act(env, "write_file", path="solution.py", content="import helper\n" + FIXED["slugify"])
+    act(env, "run_tests")
+    final = act(env, "submit", answer="done")
+    assert final.metadata["correctness"] == 1.0
+    assert final.reward == pytest.approx(0.8)
+
+
+def test_a_file_changed_and_changed_back_during_a_test_run_verifies_nothing(env):
+    """The tests ran on one version, the examples on another, and the file ends as it began."""
+    toggling = (
+        FIXED["slugify"]
+        + _GRADED_UNDER
+        + (
+            "me = pathlib.Path(__file__)\n"
+            "if runner == '.grade_tests.py':\n"
+            "    me.write_text(me.read_text() + '#B\\n')\n"
+            "elif runner == '.grade.py' and me.read_text().endswith('#B\\n'):\n"
+            "    me.write_text(me.read_text()[:-3])\n"
+        )
+    )
+    env.reset(task_id="software-slugify-4")
+    act(env, "write_file", path="solution.py", content=toggling)
+    act(env, "run_tests")
+    assert (env._ws / "solution.py").read_text() == toggling
+    final = act(env, "submit", answer="done")
+    assert final.metadata["correctness"] == 1.0
+    assert final.reward == pytest.approx(0.8)
+
+
+def test_every_graded_case_starts_from_a_cleared_state(env, monkeypatch):
+    events = []
+    real_run, real_clear = (
+        AgentWorkbenchEnvironment._run,
+        AgentWorkbenchEnvironment._clear_agent_state,
+    )
+
+    def run(self, argv, raw=False):
+        events.append(argv[4] if raw else "run")
+        return real_run(self, argv, raw)
+
+    def clear(self):
+        events.append("clear")
+        real_clear(self)
+
+    monkeypatch.setattr(AgentWorkbenchEnvironment, "_run", run)
+    monkeypatch.setattr(AgentWorkbenchEnvironment, "_clear_agent_state", clear)
+    env.reset(task_id="software-slugify-4")
+    act(env, "write_file", path="solution.py", content=FIXED["slugify"])
+    assert act(env, "submit", answer="done").metadata["correctness"] == 1.0
+    graded = [i for i, event in enumerate(events) if event == ".grade.py"]
+    assert len(graded) > 3
+    assert all(events[i - 1] == "clear" for i in graded)
+
+
+def test_clearing_the_agent_state_kills_sweeps_and_removes_the_server_scripts(env, monkeypatch):
+    env.reset(task_id="software-slugify-4")
+    (env._ws / ".run.py").write_text("x")
+    (env._ws / ".grade_tests.py" / "sub").mkdir(parents=True)
+    os.chmod(env._ws / ".grade_tests.py", 0)
+    calls = []
+    found = iter([1, 0])
+    monkeypatch.setattr(
+        AgentWorkbenchEnvironment,
+        "_kill_sandbox_uid",
+        lambda self: calls.append("kill") or next(found),
+    )
+    monkeypatch.setattr(
+        AgentWorkbenchEnvironment, "_remove_shared_tmp_files", lambda self: calls.append("sweep")
+    )
+    env._ids = (os.getuid(), os.getgid())
+    try:
+        env._clear_agent_state()
+    finally:
+        env._ids = None
+    assert calls == ["kill", "kill", "sweep"]
+    assert not os.path.lexists(env._ws / ".run.py")
+    assert not os.path.lexists(env._ws / ".grade_tests.py")
 
 
 @pytest.mark.parametrize("task_id", SOFTWARE)
@@ -493,6 +620,65 @@ def test_a_workspace_replaced_by_a_symlink_is_never_followed(env, tmp_path):
     assert stat.S_IMODE(outside.stat().st_mode) == 0o755
 
 
+@pytest.mark.parametrize("tool", ["run_python", "run_tests", "submit"])
+def test_running_code_in_a_workspace_replaced_by_a_symlink_is_refused(env, tmp_path, tool):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "solution.py").write_text("raise SystemExit('ran outside')\n")
+    env.reset(task_id="software-slugify-4")
+    act(
+        env,
+        "run_python",
+        code="import os, shutil; ws = os.getcwd(); os.chdir('/'); shutil.rmtree(ws); "
+        f"os.symlink({str(outside)!r}, ws)",
+    )
+    args = (
+        {"code": "print(1)"}
+        if tool == "run_python"
+        else {"answer": "x"}
+        if tool == "submit"
+        else {}
+    )
+    obs = act(env, tool, **args)
+    assert "no longer a directory" in obs.error and not obs.done
+    assert sorted(p.name for p in outside.iterdir()) == ["solution.py"]
+
+
+def test_a_script_the_server_cannot_write_is_refused(env, monkeypatch):
+    env.reset(task_id="science-gas-1")
+    real_open = workbench.os.open
+
+    def refuse_scripts(path, *args, **kwargs):
+        if str(path).endswith(".run.py"):
+            raise PermissionError(13, "Permission denied")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(workbench.os, "open", refuse_scripts)
+    obs = act(env, "run_python", code="print(1)")
+    assert "cannot prepare .run.py" in obs.error and not obs.done
+
+
+def test_a_command_that_cannot_start_is_refused(env, monkeypatch):
+    env.reset(task_id="science-gas-1")
+
+    def no_start(*args, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(workbench.subprocess, "Popen", no_start)
+    obs = act(env, "run_python", code="print(1)")
+    assert "cannot run in the workspace" in obs.error and not obs.done
+
+
+def test_a_run_whose_workspace_went_away_is_refused_before_it_starts(env, monkeypatch):
+    env.reset(task_id="science-gas-1")
+    started = []
+    monkeypatch.setattr(workbench.subprocess, "Popen", lambda *a, **k: started.append(a))
+    os.rename(env._ws, env._ws.with_name("moved"))
+    with pytest.raises(workbench._RefusalError, match="workspace directory is gone"):
+        env._run(["true"])
+    assert started == []
+
+
 def test_removing_a_workspace_home_replaced_by_a_symlink_leaves_the_target_alone(env, tmp_path):
     # Outside the image the agent runs as the server's own user and can replace even the home.
     outside = tmp_path / "outside"
@@ -604,6 +790,16 @@ def test_the_shared_tmp_sweep_reaches_every_depth_and_removes_only_the_uids_entr
     (shared / "theirs_dir").mkdir(parents=True)
     (shared / "theirs_dir" / "mine.txt").write_text("42")
     (shared / "theirs_dir" / "theirs.txt").write_text("keep")
+    # World-writable, so the uid could have written in it.
+    os.chmod(shared / "theirs_dir", 0o777)  # noqa: S103
+    # Another episode's home: the uid cannot write in it, so the walk does not enter it.
+    (shared / "their_home").mkdir()
+    (shared / "their_home" / "mine.txt").write_text("keep")
+    # The uid's own directory, locked: its files still go.
+    (shared / "locked_mine" / "sub").mkdir(parents=True)
+    (shared / "locked_mine" / "sub" / "secret.txt").write_text("42")
+    os.chmod(shared / "locked_mine" / "sub", 0o500)
+    os.chmod(shared / "locked_mine", 0)
     (shared / "my_dir" / "deep").mkdir(parents=True)
     (shared / "my_dir" / "deep" / "mine.txt").write_text("42")
     (shared / "my_shared_dir").mkdir()
@@ -618,7 +814,11 @@ def test_the_shared_tmp_sweep_reaches_every_depth_and_removes_only_the_uids_entr
 
     def as_another_uid(path, *args, **kwargs):
         st = real_stat(path, *args, **kwargs)
-        if isinstance(path, str) and os.path.basename(path) in {"theirs_dir", "theirs.txt"}:
+        if isinstance(path, str) and os.path.basename(path) in {
+            "theirs_dir",
+            "theirs.txt",
+            "their_home",
+        }:
             fields = list(st[:10])
             fields[4] = os.getuid() + 2
             return os.stat_result(fields)
@@ -647,10 +847,14 @@ def test_the_shared_tmp_sweep_reaches_every_depth_and_removes_only_the_uids_entr
         "shared",
         "shared/my_shared_dir",
         "shared/my_shared_dir/theirs.txt",
+        "shared/their_home",
+        "shared/their_home/mine.txt",
         "shared/theirs_dir",
         "shared/theirs_dir/theirs.txt",
     ]
     assert chowned == [("my_shared_dir", 0, 0)]
+    # Handed on as a sticky directory anyone can write in, so the other uid keeps its access.
+    assert stat.S_IMODE((shared / "my_shared_dir").stat().st_mode) == 0o1777
 
 
 @pytest.mark.parametrize("path", ["a\x00b", "a" * 300, "locked/f"])
@@ -683,6 +887,84 @@ def test_a_fifo_is_refused_without_blocking(env, tool):
     started = time.monotonic()
     obs = act(env, tool, **args)
     assert obs.error and time.monotonic() - started < 5
+
+
+def test_a_tree_past_path_max_or_behind_a_locked_directory_lists_and_is_removed(env):
+    env.reset(task_id="science-gas-1")
+    act(
+        env,
+        "run_python",
+        code="import os\nfor _ in range(25):\n"
+        "    open('f' * 200, 'w').write('x'); os.mkdir('d' * 200); os.chdir('d' * 200)\n",
+    )
+    act(
+        env,
+        "run_python",
+        code="import os; os.mkdir('rdir'); open('rdir/f.txt', 'w').write('x'); os.chmod('rdir', 0o400)",
+    )
+    obs = act(env, "list_files")
+    assert obs.error is None and not obs.done
+    # Sorted first: the deepest file, some 5,000 characters below the workspace.
+    assert obs.output.startswith("/".join(["d" * 200] * 7))
+    home = env._home
+    env.close()
+    assert not home.exists()
+
+
+def test_a_tree_deeper_than_the_walk_is_listed_and_removed_without_recursion(env):
+    env.reset(task_id="software-slugify-4")
+    act(
+        env,
+        "run_python",
+        code="import os\nfor _ in range(600):\n    os.mkdir('d'); os.chdir('d')\n"
+        "open('leaf.txt', 'w').write('x')\n",
+    )
+    home = env._home
+    limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(300)
+    try:
+        obs = act(env, "list_files")
+        # Too deep to hash, so nothing can be verified or graded on it.
+        digest = env._workspace_digest()
+        env.close()
+    finally:
+        sys.setrecursionlimit(limit)
+    assert obs.error is None and "test_solution.py" in obs.output
+    assert digest is None
+    assert not home.exists()
+
+
+@pytest.mark.parametrize("tool", ["write_file", "run_python"])
+def test_text_utf8_cannot_encode_is_refused(env, tool):
+    env.reset(task_id="science-gas-1")
+    args = (
+        {"path": "a.txt", "content": "\ud800"} if tool == "write_file" else {"code": "x = '\ud800'"}
+    )
+    obs = act(env, tool, **args)
+    assert "UTF-8" in obs.error and not obs.done
+    assert not (env._ws / "a.txt").exists()
+
+
+def test_bytes_that_are_not_utf8_come_back_as_sendable_text(env):
+    env.reset(task_id="science-gas-1")
+    obs = act(env, "run_python", code="import sys; sys.stdout.buffer.write(b'\\xff\\xfe ok\\n')")
+    assert obs.error is None and "ok" in obs.output
+    obs.model_dump_json()  # a lone surrogate would fail here
+
+
+def test_a_file_name_that_is_not_utf8_comes_back_as_sendable_text(env):
+    env.reset(task_id="science-gas-1")
+    try:
+        os.close(os.open(os.fsencode(env._ws) + b"/\xff.txt", os.O_WRONLY | os.O_CREAT, 0o644))
+    except OSError:
+        pytest.skip("this filesystem refuses a file name that is not UTF-8")
+    for obs in (
+        act(env, "list_files"),
+        act(env, "write_file", path="\udcff.txt", content="x"),
+        act(env, "read_file", path="\udcff.txt"),
+    ):
+        assert obs.error is None
+        obs.model_dump_json()  # a lone surrogate would fail here
 
 
 def test_reset_without_a_task_id_picks_one(env):
