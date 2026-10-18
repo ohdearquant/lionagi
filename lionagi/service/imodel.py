@@ -12,7 +12,8 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel
 
 from lionagi.ln import is_coro_func, now_utc
-from lionagi.protocols.generic import ID, Event, EventStatus, Log
+from lionagi.protocols.generic import Event, EventStatus, Log
+from lionagi.protocols.ids import to_uuid
 from lionagi.providers._agentic_handlers import RUNTIME_STATE_NAMES
 
 from .connections import AgenticEndpoint, APICalling, Endpoint, match_endpoint
@@ -85,7 +86,7 @@ class iModel:  # noqa: N801
         self.id = None
         self.created_at = None
         if id is not None:
-            self.id = ID.get_id(id)
+            self.id = to_uuid(id)
         else:
             self.id = uuid4()
         if created_at is not None:

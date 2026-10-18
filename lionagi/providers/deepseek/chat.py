@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from lionagi.ln.types import Undefined
 from lionagi.providers.openai._chat_schemas import OpenAIChatCompletionsRequest
 from lionagi.service.connections.endpoint import Endpoint
 
@@ -62,8 +63,7 @@ def normalize_deepseek_usage(response: Any) -> Any:
         details = {}
 
     # Prefer provider-native location as canonical source.
-    # Use sentinel to distinguish 0 from missing.
-    _missing = object()
+    # Undefined distinguishes 0 from missing.
     thinking_tokens = None
     for src, key in (
         (details, "reasoning_tokens"),
@@ -71,8 +71,8 @@ def normalize_deepseek_usage(response: Any) -> Any:
         (usage, "reasoning_tokens"),
         (usage, "thinking_tokens"),
     ):
-        val = src.get(key, _missing)
-        if val is not _missing:
+        val = src.get(key, Undefined)
+        if val is not Undefined:
             thinking_tokens = val
             break
     if thinking_tokens is not None:

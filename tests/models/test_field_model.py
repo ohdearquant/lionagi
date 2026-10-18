@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from pydantic.fields import FieldInfo
 
-from lionagi.ln.types import Undefined, Unset
+from lionagi.ln.types import Meta, Undefined, Unset
 from lionagi.models import FieldModel
 
 
@@ -370,3 +370,25 @@ def test_to_spec_forwards_reserved_metadata_keys(key):
     """
     spec = FieldModel(base_type=int).with_metadata(key, "kept").to_spec()
     assert spec.get(key) == "kept"
+
+
+@pytest.mark.parametrize(
+    "derive",
+    [
+        lambda fm: fm.with_metadata("extra", 1),
+        lambda fm: fm.as_nullable(),
+        lambda fm: fm.as_listable(),
+        lambda fm: fm.with_validator(lambda v: True),
+        lambda fm: fm.with_json_schema_extra(title="t"),
+    ],
+)
+def test_metadata_limit_warning_names_the_caller_of_a_derived_field(derive, monkeypatch):
+    """A derived field is validated, and the over-limit warning points at its caller."""
+    from lionagi.models import field_model
+
+    monkeypatch.setattr(field_model, "METADATA_LIMIT", 1)
+    base = FieldModel(base_type=int, metadata=(Meta("a", 1),))
+    with pytest.warns(UserWarning, match="exceeding recommended limit") as record:
+        derive(base)
+    over = [w for w in record if "exceeding recommended limit" in str(w.message)]
+    assert [w.filename for w in over] == [__file__]
