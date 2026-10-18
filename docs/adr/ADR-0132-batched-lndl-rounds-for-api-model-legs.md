@@ -26,7 +26,7 @@ The LNDL Middle has no separate answer request. In a round a model declares tool
 aliases and may write its answer as an `OUT{}` block. A round with no `OUT{}` runs every declared
 call, concurrently and through the ordinary `act()` path with its permissions and hooks, and the
 next round sees the results; a round whose `OUT{}` validates ends the turn
-(`lionagi/operations/lndl_middle/lndl_middle.py:217-262`; ADR-0024 D3-D4). The same one-read task
+(`lionagi/operations/lndl_middle/lndl_middle.py:207-252`; ADR-0024 D3-D4). The same one-read task
 takes two requests: the round that declares the read, and the round that reads the result and
 writes the answer. With the same number of rounds, then, the batched loop saves the request ReAct
 makes for the answer, one per turn, a turn with no tool calls included (two requests against one).
