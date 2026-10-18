@@ -6,7 +6,6 @@
 import os
 
 import pytest
-from dotenv import load_dotenv
 
 from lionagi.providers.nvidia_nim.chat import NvidiaNimChatEndpoint
 from lionagi.providers.nvidia_nim.embed import NvidiaNimEmbedEndpoint
@@ -15,9 +14,6 @@ from lionagi.service.connections.match_endpoint import match_endpoint
 # Create config objects using the new endpoint classes (equivalent to old module-level constants)
 NVIDIA_NIM_CHAT_ENDPOINT_CONFIG = NvidiaNimChatEndpoint().config
 NVIDIA_NIM_EMBED_ENDPOINT_CONFIG = NvidiaNimEmbedEndpoint().config
-
-# Load environment variables
-load_dotenv()
 
 # Skip tests if API key is not available
 skip_if_no_api_key = pytest.mark.skipif(

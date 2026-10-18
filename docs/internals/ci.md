@@ -258,13 +258,21 @@ from a checkout below the account home.
 `test_the_callers_home_reaches_neither_the_suite_nor_its_children` in
 `tests/test_run_directory_isolation.py` checks the replacement from outside.
 
-`LIONAGI_STATE_DB_URL` is removed from the environment at the same point. It
-names the state store directly and outranks `LIONAGI_HOME`, so a run from a
-shell that exports it would open that shell's store however `LIONAGI_HOME` was
-redirected. Tests that need the setting set it themselves. A `.env` file in the
-directory the suite runs from is still read by the settings loader; the repo
-keeps none. `test_an_exported_store_url_reaches_neither_the_suite_nor_its_children`
-checks the removal from outside.
+`LIONAGI_STATE_DB_URL` is removed from the environment at the same point, in
+every spelling: the settings loader matches environment names without regard to
+case. It names the state store directly and outranks `LIONAGI_HOME`, so a run
+from a shell that exports it would open that shell's store however
+`LIONAGI_HOME` was redirected. Tests that need the setting set it themselves.
+Settings are read once, when `lionagi.config` is first imported, so the conftest
+refuses to start if that module is already loaded (a plugin imported it first)
+rather than run with a store URL it could no longer remove. The settings loader
+also reads `.env`, `.env.local` and `.secrets.env` from the directory the suite
+runs from; the repo keeps none of them, and no test module loads a `.env` of its
+own. `test_an_exported_store_url_reaches_neither_the_suite_nor_its_children`
+checks the removal from outside, opening the default store in a child process
+for each spelling, and
+`test_a_suite_whose_settings_were_read_before_the_removal_refuses_to_run`
+checks the refusal.
 
 Cleanup runs after pytest has already reported the session's result, so a
 failure there has nowhere left to be an assertion. `_remove_test_home`
