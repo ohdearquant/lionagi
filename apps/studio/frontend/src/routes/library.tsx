@@ -474,9 +474,11 @@ function LibraryPage() {
     activeTab.current = kindFilter;
   }, [kindFilter]);
   const completionOnTab = (captured: LibraryTab) => activeTab.current === captured;
-  const parsed = parseSel(sel);
+  const parsedSel = parseSel(sel);
   const selectedHiddenKind =
-    kindFilter !== "hooks" && parsed && UNFINISHED_KINDS.has(parsed.kind) ? parsed.kind : undefined;
+    kindFilter !== "hooks" && parsedSel && UNFINISHED_KINDS.has(parsedSel.kind)
+      ? parsedSel.kind
+      : undefined;
   const mounted = useRef(false);
   useEffect(() => {
     mounted.current = true;
@@ -521,15 +523,12 @@ function LibraryPage() {
 
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
-  // Collapsed split-pane: show detail when a selection exists or create is open.
+  // Collapsed split-pane: show detail when a selection exists or create is
+  // open. The row the catalog picks on its own is not a selection: it fills
+  // the detail pane beside the list but must not replace the catalog in the
+  // collapsed layout, so only a deep link, a row click, or the create form
+  // sets this.
   const [detailActive, setDetailActive] = useState(false);
-  // A row the catalog selected on its own must not count as the viewer asking
-  // for detail: in a collapsed pane that would replace the catalog with the
-  // first row's detail on arrival. Explicit deep links and row clicks still do.
-  const [implicitSelection, setImplicitSelection] = useState<{
-    tab: LibraryTab;
-    sel: string;
-  } | null>(null);
   // A create form belongs to the tab that opened it, and the detail pane's
   // collapsed state belongs to the selection; switching tabs closes the form
   // and returns to the list rather than leaving the previous tab's pane up.
@@ -538,9 +537,26 @@ function LibraryPage() {
        create form and returns the collapsed layout to the list */
     setShowCreate(false);
     setDetailActive(false);
-    setImplicitSelection(null);
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [kindFilter]);
+  // A URL that stops naming a selection also returns the collapsed layout to
+  // the list, so Back to the catalog does not leave its last row's detail up.
+  // Opening the create form removes the selection but keeps its own pane.
+  const previousSel = useRef(sel);
+  const openingCreate = useRef(false);
+  const openCreate = () => {
+    openingCreate.current = true;
+    setShowCreate(true);
+    setDetailActive(true);
+  };
+  useEffect(() => {
+    const dropped = !!previousSel.current && !sel;
+    previousSel.current = sel;
+    const keptOpen = openingCreate.current || showCreate;
+    openingCreate.current = false;
+    if (!dropped || keptOpen) return;
+    setDetailActive(false);
+  }, [sel, showCreate]);
   const [optimisticWorkflow, setOptimisticWorkflow] = useState<CreatedWorkflowDef | null>(null);
 
   const ALL_KIND_TABS: Array<{ value: LibraryTab; label: string }> = [
@@ -576,61 +592,18 @@ function LibraryPage() {
       !UNFINISHED_KINDS.has(item.kind) && (kindFilter === "all" || item.kind === kindFilter),
   );
 
-  // Auto-select the first row whenever the tab or loaded items change (and no explicit sel).
-  useEffect(() => {
-    if (kindFilter === "hooks" || loading || selectionLoading) return;
+  // The row the detail pane shows when the URL names no selection: the first
+  // row of the tab, or the first search match.
+  const fallbackItem =
+    kindFilter === "hooks" || loading || selectionLoading ? null : (filtered[0] ?? null);
 
-    // Keep any sel that resolves in the current filtered list — this is what
-    // makes deep links into the Library work. A sel from another tab won't be
-    // in `filtered`, so it falls through to select-first.
-    if (sel) {
-      const parsed = parseSel(sel);
-      const isOptimisticWorkflow =
-        parsed?.kind === "workflow" && optimisticWorkflow?.name === parsed.name;
-      const isHiddenSelection =
-        parsed &&
-        UNFINISHED_KINDS.has(parsed.kind) &&
-        items.some((item) => item.kind === parsed.kind && item.name === parsed.name);
-      if (
-        isOptimisticWorkflow ||
-        isHiddenSelection ||
-        (parsed?.kind === "engine" && hidden.kindStatus.engine === "loaded") ||
-        (parsed && kindStatus[parsed.kind] === "failed") ||
-        (parsed &&
-          filtered.some(
-            (i) =>
-              i.kind === parsed.kind &&
-              i.name === parsed.name &&
-              (parsed.kind !== "playbook" || i.subKind === parsed.subKind),
-          ))
-      ) {
-        return;
-      }
-    }
-
-    // Otherwise select first row.
-    const first = filtered[0];
-    if (first) {
-      const selection = encodeSel(first.kind, first.name, first.subKind);
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- records which row the catalog chose itself
-      setImplicitSelection({ tab: kindFilter, sel: selection });
-      void navigate({
-        search: (prev) => ({ ...prev, sel: selection }),
-        replace: true,
-      });
-    } else {
-      setImplicitSelection(null);
-      void navigate({
-        search: (prev) => {
-          const next = { ...prev };
-          delete next.sel;
-          return next;
-        },
-        replace: true,
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally runs only on tab/items change
-  }, [tab, loading, selectionLoading, items.length]);
+  // An auto-selected row fills the detail pane beside the list when the URL
+  // names no selection, but it is not a detail request: the URL is not
+  // rewritten and `detailPaneActive` does not follow it.
+  const fallbackParsed =
+    !sel && fallbackItem
+      ? parseSel(encodeSel(fallbackItem.kind, fallbackItem.name, fallbackItem.subKind))
+      : null;
 
   const selectItem = useCallback(
     (item: LibraryItem) => {
@@ -643,6 +616,10 @@ function LibraryPage() {
     },
     [navigate, setShowCreate, setDetailActive],
   );
+
+  // The detail pane shows the URL selection, and the auto-selected row when
+  // the URL names none.
+  const parsed = parseSel(sel) ?? fallbackParsed;
 
   // Resolve the agent/engine objects from the selection.
   const selectedAgent =
@@ -696,10 +673,9 @@ function LibraryPage() {
         ? t("newAgent")
         : t("newWorkflow");
 
-  const implicitSelectionHere =
-    implicitSelection?.tab === kindFilter ? implicitSelection.sel : null;
-  const detailPaneActive =
-    detailActive || showCreate || (!!parsed && sel !== implicitSelectionHere);
+  // Only the URL, a click, or a create form asks for detail; the row the
+  // catalog fills in on its own does not.
+  const detailPaneActive = detailActive || showCreate || !!sel;
 
   // ── Master pane ────────────────────────────────────────────────────────────
 
@@ -720,8 +696,7 @@ function LibraryPage() {
             size="sm"
             variant="primary"
             onClick={() => {
-              setShowCreate(true);
-              setDetailActive(true);
+              openCreate();
               void navigate({
                 search: (prev) => {
                   const next = { ...prev };
@@ -810,14 +785,7 @@ function LibraryPage() {
                   {t("empty.clearFilters")}
                 </Button>
               ) : !NO_CREATE_KINDS.has(kindFilter as LibraryKind) ? (
-                <Button
-                  size="sm"
-                  variant="primary"
-                  onClick={() => {
-                    setShowCreate(true);
-                    setDetailActive(true);
-                  }}
-                >
+                <Button size="sm" variant="primary" onClick={openCreate}>
                   + {createLabel}
                 </Button>
               ) : undefined
@@ -898,9 +866,19 @@ function LibraryPage() {
 
   // ── Detail pane ────────────────────────────────────────────────────────────
 
+  // Leaving the detail pane drops its selection as well as its state: a URL
+  // still naming the row would reopen the pane.
   function handleBack() {
     setDetailActive(false);
     setShowCreate(false);
+    void navigate({
+      search: (prev) => {
+        const next = { ...prev };
+        delete next.sel;
+        return next;
+      },
+      replace: false,
+    });
   }
 
   let detailPane: ReactNode;

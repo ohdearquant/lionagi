@@ -83,6 +83,18 @@ test.describe("narrow Studio shell", () => {
 
     await page.goto("/library");
     await expect(page.getByRole("region", { name: "Library catalog", exact: true })).toBeVisible();
+
+    // A selection named by the URL opens the detail pane even though the
+    // collapsed layout would otherwise keep the catalog up.
+    await page.goto("/library?sel=agent:e2e-smoke-reviewer");
+    await expect(
+      page
+        .getByRole("region", { name: "Item detail", exact: true })
+        .getByText("e2e-smoke-reviewer", { exact: true }),
+    ).toBeVisible();
+
+    // A row click opens it from the catalog.
+    await page.goto("/library");
     await page.getByRole("row", { name: /e2e-smoke-reviewer/ }).click();
     await expect(
       page

@@ -67,15 +67,22 @@ vi.mock("@/components/ui/SplitPane", () => ({
 vi.mock("@/components/library/AgentDetail", () => ({
   AgentDetail: ({
     agent,
+    onBack,
     onDeleted,
   }: {
     agent: { name: string; model?: string };
+    onBack?: () => void;
     onDeleted: () => void;
   }) => (
     <div>
       <div data-testid="agent-detail" data-model={agent.model}>
         {agent.name}
       </div>
+      {onBack && (
+        <button type="button" onClick={onBack}>
+          drawer.back
+        </button>
+      )}
       <button
         type="button"
         data-testid="delete-agent"
@@ -324,7 +331,9 @@ describe("Library catalog loading", () => {
       agents: [{ name: "first-agent" }, { name: "second-agent" }],
     });
     await renderLibrary({ tab: "agent" });
-    expect(router.search.sel).toBe("agent:first-agent");
+    // The row fills the detail pane without being written to the URL, so a
+    // reload of an unselected tab cannot turn the fallback into a request.
+    expect(router.search).toEqual({ tab: "agent" });
     expect(container.querySelector('[data-testid="agent-detail"]')?.textContent).toBe(
       "first-agent",
     );
@@ -343,7 +352,7 @@ describe("Library catalog loading", () => {
     api.listAgents.mockResolvedValue({
       agents: [{ name: "first-agent" }, { name: "second-agent" }],
     });
-    await renderLibrary({ tab: "agent", sel: "agent:second-agent" });
+    await renderLibrary({ tab: "agent", sel: "agent:first-agent" });
     expect(
       container.querySelector('[data-testid="split-pane"]')?.getAttribute("data-detail-active"),
     ).toBe("true");
@@ -352,16 +361,148 @@ describe("Library catalog loading", () => {
   it("opens an explicit link even when another tab auto-selected the same item", async () => {
     api.listAgents.mockResolvedValue({ agents: [{ name: "saved-agent" }] });
     api.listSkills.mockResolvedValue({ skills: [{ name: "saved-skill" }] });
-    await renderLibrary({ tab: "agent" });
-    expect(router.search).toEqual({ tab: "agent", sel: "agent:saved-agent" });
-    await clickTab("filterSkill");
+    await renderLibrary({ tab: "all" });
+    expect(container.querySelector('[data-testid="agent-detail"]')?.textContent).toBe(
+      "saved-agent",
+    );
+    expect(detailActiveAttr()).toBe("false");
     await act(async () =>
       router.navigate({ search: () => ({ tab: "agent", sel: "agent:saved-agent" }) }),
     );
     await flush();
-    expect(
-      container.querySelector('[data-testid="split-pane"]')?.getAttribute("data-detail-active"),
-    ).toBe("true");
+    expect(detailActiveAttr()).toBe("true");
+  });
+
+  it("keeps an unresolved selection open when the tab has rows", async () => {
+    api.listAgents.mockResolvedValue({
+      agents: [{ name: "first-agent" }, { name: "second-agent" }],
+    });
+    await renderLibrary({ tab: "agent", sel: "agent:missing-agent" });
+    expect(detailActiveAttr()).toBe("true");
+    expect(container.querySelector('[data-testid="agent-detail"]')?.textContent).toBe(
+      "missing-agent",
+    );
+    expect(router.search).toEqual({ tab: "agent", sel: "agent:missing-agent" });
+  });
+
+  it("keeps the fallback row off the URL in StrictMode", async () => {
+    router.strict = true;
+    api.listAgents.mockResolvedValue({ agents: [{ name: "first-agent" }] });
+    await renderLibrary({ tab: "agent" });
+    expect(router.search).toEqual({ tab: "agent" });
+    expect(detailActiveAttr()).toBe("false");
+    expect(container.querySelector('[data-testid="agent-detail"]')?.textContent).toBe(
+      "first-agent",
+    );
+  });
+
+  function detailActiveAttr() {
+    return container
+      .querySelector('[data-testid="split-pane"]')
+      ?.getAttribute("data-detail-active");
+  }
+
+  it("keeps the catalog when a tab loads again without a selection", async () => {
+    api.listAgents.mockResolvedValue({
+      agents: [{ name: "first-agent" }, { name: "second-agent" }],
+    });
+    await renderLibrary({ tab: "agent" });
+    expect(detailActiveAttr()).toBe("false");
+
+    // Reloading the same address must not turn the row on screen into a
+    // request for detail, because the address never named it.
+    await renderLibrary({ tab: "agent" });
+    expect(detailActiveAttr()).toBe("false");
+    expect(router.search).toEqual({ tab: "agent" });
+  });
+
+  it("opens the pane when the URL changes to a row in the same tab or a row is clicked", async () => {
+    api.listAgents.mockResolvedValue({
+      agents: [{ name: "first-agent" }, { name: "second-agent" }],
+    });
+    await renderLibrary({ tab: "agent" });
+    expect(detailActiveAttr()).toBe("false");
+
+    await act(async () =>
+      router.navigate({ search: () => ({ tab: "agent", sel: "agent:second-agent" }) }),
+    );
+    expect(detailActiveAttr()).toBe("true");
+
+    await act(async () =>
+      router.navigate({ search: () => ({ tab: "agent", sel: "agent:first-agent" }) }),
+    );
+    expect(detailActiveAttr()).toBe("true");
+  });
+
+  it("opens the pane for a click on the row the catalog auto-selected", async () => {
+    api.listAgents.mockResolvedValue({ agents: [{ name: "first-agent" }] });
+    await renderLibrary({ tab: "agent" });
+    expect(detailActiveAttr()).toBe("false");
+
+    await act(async () => container.querySelector<HTMLTableRowElement>("tbody tr")!.click());
+    expect(router.search.sel).toBe("agent:first-agent");
+    expect(detailActiveAttr()).toBe("true");
+  });
+
+  it("returns to the catalog when the drawer's back button is pressed", async () => {
+    api.listAgents.mockResolvedValue({
+      agents: [{ name: "first-agent" }, { name: "second-agent" }],
+    });
+    await renderLibrary({ tab: "agent" });
+    await act(async () => container.querySelectorAll<HTMLTableRowElement>("tbody tr")[1].click());
+    expect(detailActiveAttr()).toBe("true");
+
+    const back = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "drawer.back",
+    );
+    expect(back).toBeDefined();
+    await act(async () => back!.click());
+    expect(router.search.sel).toBeUndefined();
+    expect(detailActiveAttr()).toBe("false");
+  });
+
+  it("returns to the catalog when the All tab is picked while a row is open", async () => {
+    api.listAgents.mockResolvedValue({ agents: [{ name: "first-agent" }] });
+    await renderLibrary({});
+    await act(async () => container.querySelector<HTMLTableRowElement>("tbody tr")!.click());
+    expect(router.search).toEqual({ sel: "agent:first-agent" });
+    expect(detailActiveAttr()).toBe("true");
+
+    await clickTab("filterAll");
+    expect(detailActiveAttr()).toBe("false");
+  });
+
+  it("does not flash the detail pane while a filtered catalog changes the auto-selection", async () => {
+    api.listAgents.mockResolvedValue({
+      agents: [{ name: "first-agent" }, { name: "second-agent" }],
+    });
+    await renderLibrary({ tab: "agent" });
+    expect(detailActiveAttr()).toBe("false");
+
+    const select = container.querySelector<HTMLInputElement>('input[type="text"]')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(select, "second");
+      select.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(container.querySelectorAll("tbody tr")).toHaveLength(1);
+    // The fallback follows the visible row without asking for detail.
+    expect(container.querySelector('[data-testid="agent-detail"]')?.textContent).toBe(
+      "second-agent",
+    );
+    expect(router.search).toEqual({ tab: "agent" });
+    expect(detailActiveAttr()).toBe("false");
+  });
+
+  it("keeps the create form open when it opens from an empty catalog", async () => {
+    await renderLibrary({ tab: "workflow" });
+    const create = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("newWorkflow"),
+    );
+    expect(create).toBeDefined();
+    await act(async () => create!.click());
+    expect(detailActiveAttr()).toBe("true");
+    expect(container.querySelector('[data-testid="submit-workflow"]')).not.toBeNull();
   });
 
   it("revisits a tab from its cached rows with no new request or skeleton", async () => {
