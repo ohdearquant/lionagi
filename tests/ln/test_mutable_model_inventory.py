@@ -203,12 +203,12 @@ _ALLOWLIST: dict[str, str] = {
     "lionagi.models.operable_model:255:9": "an extra field set by name",
     "lionagi.models.operable_model:275:13": "a field attribute set by name on a field object",
     "lionagi.protocols.generic.pile:527:13": "a field attribute copied by name while copying",
-    "lionagi.protocols.messages.instruction:100:17": "a declared field set by name",
-    "lionagi.protocols.messages.instruction:146:17": "a declared field set by name",
+    "lionagi.protocols.messages.instruction:101:17": "a declared field set by name",
+    "lionagi.protocols.messages.instruction:147:17": "a declared field set by name",
     "lionagi.protocols.messages.message:181:9": "a declared field set by name",
     "lionagi.protocols.messages.message:193:13": "a render-input field set by name",
     "lionagi.providers.anthropic.claude_code:1108:17": "a runtime field copied by name",
-    "lionagi.service.connections.endpoint_config:222:17": "a config key set by name",
+    "lionagi.service.connections.endpoint_config:224:17": "a config key set by name",
     "lionagi.service.connections.mcp_wrapper:76:9": "a probe attribute set on an exception",
     "lionagi.state.compat:1702:13": (
         "a frozen dataclass folding its own string fields in __post_init__"

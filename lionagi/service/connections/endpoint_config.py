@@ -19,6 +19,8 @@ from pydantic import (
     model_validator,
 )
 
+from lionagi.ln import is_pydantic_model_class
+
 from .header_factory import AUTH_TYPES
 
 logger = logging.getLogger(__name__)
@@ -149,7 +151,7 @@ class EndpointConfig(BaseModel):
             return None
 
         try:
-            if isinstance(v, type) and issubclass(v, BaseModel):
+            if is_pydantic_model_class(v):
                 return v
             if isinstance(v, BaseModel):
                 return v.__class__
