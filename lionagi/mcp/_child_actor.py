@@ -130,8 +130,9 @@ def mint_child_actor_config(submitting_dir: str, child_dir: str, suffix: str) ->
             f"to derive a child actor from {where}"
         )
     try:
-        with open(source, "rb") as f:
-            source_bytes = f.read()
+        # Checked as a file above, but read without blocking and refused unless it still is one:
+        # another process can replace it in between.
+        source_bytes = _read_regular_file(source)
         source_text = source_bytes.decode("utf-8")
         source_parsed = _toml.loads(source_text)
     except Exception as exc:
@@ -178,10 +179,13 @@ def mint_child_actor_config(submitting_dir: str, child_dir: str, suffix: str) ->
                 f"the child directory already holds a config naming actor {found!r}, not the "
                 f"minted actor {child_actor!r}; refusing to overwrite another actor's config {where}"
             )
-        if existing_actor == expected_actor and _without_actor(existing) == remaining_tables:
-            return MintedChildActor(child_actor, submitting_actor, target, source, reused=True)
-        # The minted actor's id with any other [actor] keys, or behind the submitter's current
-        # tables: re-minted below.
+        if existing_actor != expected_actor or _without_actor(existing) != remaining_tables:
+            raise ChildActorError(
+                f"the child directory already holds a config naming {child_actor!r} whose "
+                f"[actor] table or other tables differ from the ones this submission would mint; "
+                f"refusing to overwrite a config it did not write {where}"
+            )
+        return MintedChildActor(child_actor, submitting_actor, target, source, reused=True)
 
     lines = source_text.split("\n")
     headers = [i for i, line in enumerate(lines) if _ACTOR_HEADER.match(line)]
@@ -214,12 +218,14 @@ def mint_child_actor_config(submitting_dir: str, child_dir: str, suffix: str) ->
     )
     new_text = "\n".join([header, *lines[:start], *block, *tail])
 
+    # The text is derived only from the submitting config and the server's suffix, so a text that
+    # does not verify is a fault in the server's own settings, not in the caller's cwd.
     try:
         minted = _toml.loads(new_text)
     except Exception as exc:
-        raise ChildActorError(f"the minted config does not parse: {exc} {where}") from exc
+        raise SubmittingActorError(f"the minted config does not parse: {exc} {where}") from exc
     if minted.get("actor") != expected_actor or _without_actor(minted) != remaining_tables:
-        raise ChildActorError(
+        raise SubmittingActorError(
             f"the minted config does not verify: [actor] must be exactly {expected_actor!r} and "
             f"every other table equal to the submitting config's; nothing was written {where}"
         )

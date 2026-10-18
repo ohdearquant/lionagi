@@ -481,14 +481,13 @@ class AgentProfile:
     resume_on_timeout: bool = False
     """Auto-resume-once on a timeout terminal status (profile 'resume_on_timeout: once')."""
     extra: dict = field(default_factory=dict)
-    # Last, so a positional construction keeps the meaning it had before the field existed.
-    idle_timeout: int | None = None
-    """Default --idle-timeout (seconds) used when the CLI flag is not given."""
     # Last, so a positional construction keeps the meaning it had before these existed.
     contain_account_integrations: bool = False
     """Run a codex leg of this role with the account's app and plugin integrations turned off."""
     account_connectors: tuple[str, ...] = ()
     """Account app connectors a codex leg of this role may reach; naming any lifts the containment."""
+    idle_timeout: int | None = None
+    """Default --idle-timeout (seconds) used when the CLI flag is not given."""
 
 
 def _unreadable_symlink_target(path: Path) -> str | None:

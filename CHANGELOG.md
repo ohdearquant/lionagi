@@ -36,8 +36,9 @@ behaviour, including accepting a write-capable submission without `cwd`.
   name must be declared by that config; the parameter cannot be combined with
   `mcp_config` or `no_mcp_config`.
 - By default a write-capable run (an agent submission whose arguments or profile
-  set `yolo` or `bypass`, or any flow, fanout or playbook submission) gets no
-  separate khive actor. When `LIONAGI_MCP_CHILD_ACTOR_SUFFIX` is set, one
+  set `yolo` or `bypass` or that resumes or continues a branch, or any flow,
+  fanout or playbook submission) gets no separate khive actor. When
+  `LIONAGI_MCP_CHILD_ACTOR_SUFFIX` is set, one
   submitted with a `cwd` gets its own khive actor, named by appending that
   suffix to the submitting actor and minted into the run's directory before it
   starts. The result is reported as

@@ -53,10 +53,10 @@ terminal fact being announced that no reader can find.
 
 #### reap-reason-code-split
 
-Five ways a run can end with nobody around to say what happened, as classified
+Four ways a run can end with nobody around to say what happened, as classified
 by `_derive()` and `reap_orphan()` (`lionagi/mcp/jobs.py`). Only the first two
-assign a distinct `reason_code`; the next two keep the pre-existing
-`process_gone_without_outcome` and add a finer `reason_detail` beside it:
+assign a distinct `reason_code`; the third keeps the pre-existing
+`process_gone_without_outcome` and adds a finer `reason_detail` beside it:
 
 - **Spawn never started doing work** — `spawn_state == "failed"`, caught and
   recorded synchronously by `_record_spawn_failure` before this run ever did

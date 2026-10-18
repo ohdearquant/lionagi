@@ -1627,6 +1627,7 @@ def test_a_run_json_that_is_not_an_object_assigns_nothing(sandbox, monkeypatch, 
     st = jobs.status(rid)
 
     assert st["reason_code"] == jobs.LOST_REASON
+    assert st["reason_detail"] is None
     assert st["outcome"] == jobs.OUTCOME_INDETERMINATE
 
 
@@ -1634,4 +1635,7 @@ def test_a_missing_run_json_assigns_nothing(sandbox, monkeypatch, no_delivery):
     _pid_absent(monkeypatch)
     rid = _stranded()
 
-    assert jobs.status(rid)["reason_code"] == jobs.LOST_REASON
+    st = jobs.status(rid)
+
+    assert st["reason_code"] == jobs.LOST_REASON
+    assert st["reason_detail"] is None

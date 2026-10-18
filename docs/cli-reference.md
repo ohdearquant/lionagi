@@ -827,8 +827,9 @@ failure and kill. Nothing is configured out of the box, so the default is no
 notice. The command is an argv list run directly (never through a shell); the
 placeholders `{run_id}`, `{status}`, `{label}`, and `{target}` are substituted
 into its arguments, and the same fields are offered as a JSON object on stdin.
-`{sender}` names the actor signing the notice and `{reason_code}` carries the
-run's terminal reason when one was recorded.
+`{sender}` names the actor signing the notice, `{reason_code}` carries the
+run's terminal reason when one was recorded, and `{reason_detail}` its finer
+detail; a reason placeholder with no value becomes empty.
 
 Configure the command once via lionagi's own `notify.on_terminal` setting
 (`~/.lionagi/settings.yaml` or a project `.lionagi/settings.yaml`):
@@ -848,10 +849,11 @@ checked against the submitting directory, as before. A deployment that wants
 callers to attest from their run directories sets
 `LIONAGI_MCP_SENDER_ROOTS` to an OS-path-separated list of absolute paths where
 the server is declared; then a declared sender is checked against the run
-directory — the `cwd` the submission names, or the server's own directory when
-it names none — which must sit under one of those roots and hold
-`.khive/config.toml`. The notice is delivered from the directory that was
-checked, so the identity it claims is the one it is signed with. The environment
+directory the submission names in `cwd`, which must sit under one of those roots
+and hold `.khive/config.toml`. A submission that names no `cwd` is checked
+against the submitting directory, as before. The notice is delivered from the
+directory that was checked, so the identity it claims is the one it is signed
+with. The environment
 variables `LIONAGI_MCP_NOTIFY_COMMAND`, `LIONAGI_MCP_NOTIFY_TARGET` and
 `LIONAGI_MCP_NOTIFY_SENDER` set a process-wide default, and
 `LIONAGI_MCP_NOTIFY_CWD` names the directory delivery runs in instead of the
@@ -882,10 +884,12 @@ filter. The removed names are reported as `excluded_mcp_servers` on the handle,
 the job record, and `job.status`.
 
 A run is write-capable when its `agent.submit` arguments or its agent profile
-set `yolo` or `bypass`. Every `flow.submit`, `fanout.submit` and `play.submit`
-run is write-capable too, because it casts its workers onto profiles while it
-runs. By default a write-capable run gets no separate khive actor, and a
-submission without `cwd` is accepted as before. A deployment that wants each
+set `yolo` or `bypass`, or when it resumes or continues a branch, which reloads
+the provider settings that branch kept. Every `flow.submit`, `fanout.submit` and
+`play.submit` run is write-capable too, because it casts its workers onto
+profiles while it runs. By default a write-capable run gets no separate khive
+actor, and a submission without `cwd` is accepted as before. A deployment that
+wants each
 writable run to have its own identity sets `LIONAGI_MCP_CHILD_ACTOR_SUFFIX` to a
 non-empty suffix. Then a write-capable run submitted with a `cwd` gets the actor
 `<submitting actor><suffix>`
@@ -894,7 +898,8 @@ non-empty suffix. Then a write-capable run submitted with a `cwd` gets the actor
 sign as the submitting identity. The mint copies the submitting directory's
 config and rewrites only its `[actor]` table; it refuses when the run has no
 own directory, when the submitting directory has no actor config, or when the
-run directory already holds a config for a different actor. `job.status`
+run directory already holds a config other than exactly the one it would mint;
+a config that is exactly that one is reused as it is. `job.status`
 reports the result as `child_actor`, `child_actor_config` and
 `submitting_actor`.
 

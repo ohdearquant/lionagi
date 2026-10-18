@@ -1244,17 +1244,33 @@ def test_an_enum_is_checked_whatever_the_value_s_type():
 
 
 @pytest.mark.parametrize(
-    ("schema", "value"),
+    ("schema", "value", "bound"),
     [
-        ({"type": "string", "minLength": 1, "enum": ["a", "b"]}, "c"),
-        ({"type": "integer", "minimum": 0, "enum": [1, 2]}, 3),
-        ({"type": "number", "maximum": 9, "enum": [1.5]}, 2.5),
+        ({"type": "string", "minLength": 1, "enum": ["a", "b"]}, "c", []),
+        ({"type": "integer", "minimum": 0, "enum": [1, 2]}, 3, []),
+        ({"type": "number", "maximum": 9, "enum": [1.5]}, 2.5, []),
+        (
+            {"type": "string", "minLength": 2, "enum": ["ab", "cd"]},
+            "c",
+            ["'value' needs at least 2 character(s)"],
+        ),
+        (
+            {"type": "integer", "minimum": 0, "enum": [1, 2]},
+            -1,
+            ["'value' must be at least 0, got -1"],
+        ),
+        (
+            {"type": "number", "maximum": 9, "enum": [1.5]},
+            9.5,
+            ["'value' must be at most 9, got 9.5"],
+        ),
     ],
 )
-def test_an_enum_is_checked_beside_the_type_s_own_bounds(schema, value):
+def test_an_enum_is_checked_beside_the_type_s_own_bounds(schema, value, bound):
     """Membership is checked after a type's own checks, not instead of them."""
     assert _judged(schema, {"value": value}) == [
-        f"'value' must be one of {schema['enum']}, got {value!r}"
+        *bound,
+        f"'value' must be one of {schema['enum']}, got {value!r}",
     ]
 
 

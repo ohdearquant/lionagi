@@ -791,11 +791,15 @@ def _write_capable(verb: Verb, args: dict[str, Any], profile: Any) -> bool:
     """Whether the run can act with write authority, which gives it its own khive actor.
 
     An agent run has it when its own ``yolo`` or ``bypass`` argument or its profile sets one; the
-    argument reaches the child's argv whatever the profile says. A flow, fanout or playbook run
-    casts its workers onto profiles while it executes, so nothing known at submit time bounds what
-    they may write, and such a run always counts.
+    argument reaches the child's argv whatever the profile says. A run that resumes or continues a
+    branch reloads the provider settings that branch persisted, ``yolo`` and ``bypass`` included,
+    so it counts whatever its arguments say. A flow, fanout or playbook run casts its workers onto
+    profiles while it executes, so nothing known at submit time bounds what they may write, and
+    such a run always counts.
     """
     if verb.job_kind != "agent":
+        return True
+    if args.get("resume") or args.get("continue_last"):
         return True
     return any(
         bool(args.get(flag)) or bool(getattr(profile, flag, False)) for flag in ("yolo", "bypass")

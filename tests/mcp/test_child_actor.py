@@ -20,7 +20,12 @@ from typing import Any
 import pytest
 
 from lionagi.mcp import _child_actor, config, dispatch, jobs
-from lionagi.mcp._child_actor import ChildActorError, child_actor_for, mint_child_actor_config
+from lionagi.mcp._child_actor import (
+    ChildActorError,
+    SubmittingActorError,
+    child_actor_for,
+    mint_child_actor_config,
+)
 
 try:
     import tomllib as _toml
@@ -173,6 +178,45 @@ def test_a_fifo_where_the_child_config_would_be_is_refused_without_blocking(tree
     assert "is not a regular file" in str(outcome[0])
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFOs are POSIX-only")
+def test_a_submitting_config_swapped_for_a_fifo_before_it_is_read_is_refused_without_blocking(
+    trees, monkeypatch
+):
+    submitter, child = trees
+    source = submitter / ".khive" / "config.toml"
+    real_isfile = os.path.isfile
+
+    def checked_then_swapped(path):
+        found = real_isfile(path)
+        if os.fspath(path) == os.fspath(source):
+            # another process, between the check that it is a file and the read
+            source.unlink()
+            os.mkfifo(source)
+        return found
+
+    monkeypatch.setattr(_child_actor.os.path, "isfile", checked_then_swapped)
+    outcome: list[BaseException | None] = []
+
+    def mint() -> None:
+        try:
+            mint_child_actor_config(str(submitter), str(child), ":worker")
+        except BaseException as exc:
+            outcome.append(exc)
+        else:
+            outcome.append(None)
+
+    worker = threading.Thread(target=mint, daemon=True)
+    worker.start()
+    worker.join(timeout=5)
+    if worker.is_alive():
+        os.close(os.open(source, os.O_WRONLY | os.O_NONBLOCK))
+        worker.join(timeout=5)
+        pytest.fail("the mint blocked opening a FIFO at the submitting config path")
+    assert isinstance(outcome[0], SubmittingActorError)
+    assert "is not a regular file" in str(outcome[0])
+    assert not (child / ".khive").exists()
+
+
 def test_a_child_tree_that_is_the_submitter_is_refused(tmp_path):
     submitter = _submitting_dir(tmp_path / "submitter")
 
@@ -238,7 +282,26 @@ def test_a_rewrite_that_drops_a_table_fails_verification_and_writes_nothing(tree
     submitter, child = trees
     monkeypatch.setattr(_child_actor, "_ANY_HEADER", re.compile(r"(?!)"))
 
-    with pytest.raises(ChildActorError, match="does not verify"):
+    with pytest.raises(SubmittingActorError, match="does not verify"):
+        mint_child_actor_config(str(submitter), str(child), ":worker")
+    assert not (child / ".khive").exists()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '[actor]\nid = "agent:x"\n\n[actor.meta]\nrole = "lead"\n',
+        '[actor]\nid = "agent:x"\nnotes = """\n[x]\n"""\n',
+    ],
+    ids=["actor-subtable", "header-inside-a-multiline-string"],
+)
+def test_a_submitting_config_the_rewrite_cannot_verify_is_the_submitter_s_fault(tmp_path, text):
+    """The minted text comes only from the submitting config and the server's suffix."""
+    submitter = _submitting_dir(tmp_path / "submitter", text)
+    child = tmp_path / "child"
+    child.mkdir()
+
+    with pytest.raises(SubmittingActorError):
         mint_child_actor_config(str(submitter), str(child), ":worker")
     assert not (child / ".khive").exists()
 
@@ -573,6 +636,37 @@ def test_a_write_flag_passed_without_a_cwd_is_invalid_input(profiles, monkeypatc
     assert spawned == []
 
 
+@pytest.mark.parametrize("resumes", [{"resume": "branch-1"}, {"continue_last": True}])
+def test_a_resumed_run_is_minted_since_it_reloads_its_branch_s_write_flags(
+    profiles, monkeypatch, resumes
+):
+    _submitter, child, spawned = profiles
+    monkeypatch.setenv(config.CHILD_ACTOR_SUFFIX_ENV_VAR, ":worker")
+    args = {"prompt": "go", "cwd": str(child), "no_mcp_config": True, **resumes}
+
+    answer = _call(ops=[_spawn_op("agent.submit", args)])["ops"][0]
+
+    assert answer["ok"] is True, answer
+    assert spawned == [{"cwd": str(child.resolve()), "minted": True}]
+    assert _parsed(child / ".khive" / "config.toml")["actor"]["id"] == "agent:x:worker"
+
+
+def test_a_submitting_config_the_rewrite_cannot_verify_is_unavailable(profiles, monkeypatch):
+    submitter, child, spawned = profiles
+    (submitter / ".khive" / "config.toml").write_text(
+        '[actor]\nid = "agent:x"\n\n[actor.meta]\nrole = "lead"\n'
+    )
+    monkeypatch.setenv(config.CHILD_ACTOR_SUFFIX_ENV_VAR, ":worker")
+    args = {"agent": "writer", "prompt": "w", "cwd": str(child), "no_mcp_config": True}
+
+    answer = _call(ops=[_spawn_op("agent.submit", args)])["ops"][0]
+
+    assert answer["ok"] is False, answer
+    assert answer["error"]["kind"] == "unavailable", answer
+    assert spawned == []
+    assert not (child / ".khive").exists()
+
+
 @pytest.mark.parametrize("op", ["flow.submit", "fanout.submit"])
 def test_an_orchestration_run_is_minted_whatever_its_profile(profiles, monkeypatch, op):
     """Its workers are cast onto profiles while it runs, so the submit cannot bound their writes."""
@@ -622,24 +716,27 @@ def test_the_configured_suffix_is_the_one_minted(submit_sandbox, monkeypatch):
 # --- reuse, suffix, refusal ---------------------------------------------------
 
 
-def test_a_child_config_with_the_child_id_and_another_actor_table_is_minted_again(trees):
+@pytest.mark.parametrize("change", ["actor-table", "other-tables"])
+def test_a_child_config_with_the_child_id_that_is_not_the_minted_one_is_refused_and_kept(
+    trees, change
+):
     submitter, child = trees
     mint_child_actor_config(str(submitter), str(child), ":worker")
     target = child / ".khive" / "config.toml"
-    widened = target.read_text().replace(
-        'visible_namespaces = ["agent:x"]', 'visible_namespaces = ["agent:x", "agent:other"]'
-    )
-    assert widened != target.read_text()
-    target.write_text(widened)
+    if change == "actor-table":
+        changed = target.read_text().replace(
+            'visible_namespaces = ["agent:x"]', 'visible_namespaces = ["agent:x", "agent:other"]'
+        )
+    else:
+        changed = target.read_text() + '\n[extra]\nkey = "value"\n'
+    assert changed != target.read_text()
+    target.write_text(changed)
+    before = target.read_bytes()
 
-    minted = mint_child_actor_config(str(submitter), str(child), ":worker")
+    with pytest.raises(ChildActorError, match="refusing to overwrite a config it did not write"):
+        mint_child_actor_config(str(submitter), str(child), ":worker")
 
-    assert minted.reused is False
-    assert _parsed(target)["actor"] == {
-        "id": "agent:x:worker",
-        "display_name": "agent:x:worker",
-        "visible_namespaces": ["agent:x"],
-    }
+    assert target.read_bytes() == before
 
 
 @pytest.mark.parametrize("suffix", [":child\n# line", "   ", ":a b", ":a\tb", ":a​b", ":a\x00b"])
@@ -727,6 +824,32 @@ def test_a_refused_submit_leaves_a_config_it_did_not_create(submit_sandbox, tmp_
         )
 
     assert spawned == []
+    assert target.read_bytes() == before
+
+
+def test_a_submit_into_a_child_config_it_would_not_mint_is_refused_and_leaves_it(
+    submit_sandbox, tmp_path, monkeypatch
+):
+    submitter, child, spawned = submit_sandbox
+    mint_child_actor_config(str(submitter), str(child), ":worker")
+    target = child / ".khive" / "config.toml"
+    target.write_text(target.read_text() + '\n[extra]\nkey = "value"\n')
+    before = target.read_bytes()
+    monkeypatch.setenv(config.CHILD_ACTOR_SUFFIX_ENV_VAR, ":worker")
+    monkeypatch.setattr("lionagi.cli._mcp_resolve.discover_mcp_config", lambda start: None)
+
+    with pytest.raises(ChildActorError, match="refusing to overwrite"):
+        jobs.submit(
+            "agent",
+            [],
+            prompt="work",
+            cwd=str(child),
+            exclude_mcp_servers=["ghost"],
+            write_capable=True,
+        )
+
+    assert spawned == []
+    assert _run_dirs(tmp_path) == []
     assert target.read_bytes() == before
 
 

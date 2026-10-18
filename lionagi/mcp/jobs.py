@@ -204,7 +204,6 @@ LIFECYCLE_TIMEOUT_SECONDS = 20.0
 # The most the lifecycle command may write on its result channel.
 _LIFECYCLE_OUTPUT_LIMIT = 1_000_000
 _PERSISTENCE_DEGRADED_REASON_FIELD = "persistence_degraded_reason"
-_SIGNAL_PERSIST_DROPPED_FIELD = "signal_persist_dropped"
 
 # The most of a run.json the reaper reads to pick a reason code. An agent run's
 # file is a few kilobytes (its largest field is free-text error), so a larger
