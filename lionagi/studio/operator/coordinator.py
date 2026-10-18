@@ -725,15 +725,20 @@ class OperatorCoordinator:
                         run_dir.run_id
                     )
                 except Exception as recovery_exc:  # noqa: BLE001
-                    from lionagi.state.db import ForeignLineageError, SchemaTooNewError
+                    from lionagi.state.db import (
+                        ForeignLineageError,
+                        SchemaTooNewError,
+                        UnrecognizedStoreError,
+                    )
 
                     refusal = refusal_in(recovery_exc)
                     if refusal is None and isinstance(
-                        recovery_exc, (ForeignLineageError, SchemaTooNewError)
+                        recovery_exc,
+                        (ForeignLineageError, SchemaTooNewError, UnrecognizedStoreError),
                     ):
                         # The recovery opens the store natively, and a store another application
-                        # manages or at a later schema than this package refuses that open: no
-                        # retry would change it.
+                        # manages, one at a later schema than this package, or one holding tables
+                        # this package never creates refuses that open: no retry would change it.
                         refusal = recovery_exc
             if live is not None:
                 run_id = live["session_id"]
