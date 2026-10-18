@@ -191,6 +191,10 @@ class iModel:  # noqa: N801
         if isinstance(self.hook_registry, dict):
             self.hook_registry = HookRegistry(**self.hook_registry)
         self.exit_hook: bool = exit_hook
+        # Requests this instance has sent, failed ones included, so a caller can read its
+        # own spend as a difference. A request its endpoint retries counts once, and a copy
+        # starts from zero.
+        self.calls_sent: int = 0
 
     async def create_event(
         self,
@@ -495,6 +499,7 @@ class iModel:  # noqa: N801
         # can still have sent it.
         self.executor.pending.exclude(api_call.id)
         api_call.metadata.pop("served_model", None)
+        self.calls_sent += 1
 
         stream_error = None
         failed = False
@@ -575,6 +580,7 @@ class iModel:  # noqa: N801
             # from queueing it a second time.
             await self.executor.pile.ainclude(api_call)
             self.executor.pending.exclude(api_call.id)
+            self.calls_sent += 1
             await self.executor.processor.enqueue(api_call)
             await self.executor.processor.process()
 
