@@ -780,10 +780,14 @@ members are never silently merged. `convert_legacy_rows` reports
 `on_success`/`on_fail`, an unsupported action_kind, a legacy-only field
 with no v1 equivalent, or a malformed trigger as `BLOCKED` and omits them,
 never half-emitted. A row that stores no project is written with
-`execution.project: null`, which apply reads as no project, so applying a
+`execution.project: null`, which apply reads as no project. Applying a
 `--legacy` export back as its own set (with `--adopt`, since the row has no
-owner) adopts the row with its trigger, action, cwd, project, enablement and
-timezone unchanged, and the next plan reports `UNCHANGED`.
+owner) then adopts a row that stores its working directory and model without
+changing any column it ran with: adoption writes only the owner and the
+declaration it adopted (`owner_key`, `managed_by`, `spec_version`,
+`resolved_digest`, `authored_spec`, `resolved_target`, and `resolved_timezone`,
+the zone the row was recorded firing in, confirmed only when the scheduler runs
+in that zone), and the next plan reports `UNCHANGED`.
 
 ## lionagi/studio/services/playbooks.py
 

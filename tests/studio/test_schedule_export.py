@@ -1225,16 +1225,31 @@ def test_cli_export_distinct_sibling_tokens_write_all_files(temp_db_path, agent_
     assert names == ["schedules.alpha.yaml", "schedules.beta.yaml"]
 
 
-def test_legacy_export_reapplies_unchanged_as_its_own_set(
-    temp_db_path, agent_profile, tmp_path, monkeypatch
-):
+# The columns adopting a legacy row writes: the owner and the declaration it adopted.
+ADOPTION_COLUMNS = {
+    "authored_spec",
+    "managed_by",
+    "owner_key",
+    "resolved_digest",
+    "resolved_target",
+    "resolved_timezone",
+    "spec_version",
+    "updated_at",
+}
+
+
+def test_legacy_export_reapplies_unchanged_as_its_own_set(temp_db_path, agent_profile, monkeypatch):
     """A row created before schedule sets existed, exported with --legacy, must
     re-apply to itself without changing: adopted as the set its document names,
-    it keeps every behavior column, then applies again as that set's own row
-    with no difference and no change."""
+    it keeps every column it ran with and gains only the adoption record, then
+    applies again as that set's own row with no difference and no change."""
     import asyncio
 
     from lionagi.studio.cli import _cmd_apply_set, _cmd_export
+
+    # The zone the row was recorded firing in; adoption confirms it only when
+    # the scheduler runs in that zone.
+    monkeypatch.setattr("lionagi.studio.config.SCHEDULER_TZ", "America/New_York")
 
     async def _seed():
         async with StateDB() as db:
@@ -1244,7 +1259,8 @@ def test_legacy_export_reapplies_unchanged_as_its_own_set(
                     "demo/nightly",
                     cwd=agent_profile,
                     action_project=None,
-                    action_model="anthropic/claude-sonnet-5",
+                    # Not the profile's own model, so a dropped model would show.
+                    action_model="openai/gpt-5",
                 )
             )
 
@@ -1253,7 +1269,7 @@ def test_legacy_export_reapplies_unchanged_as_its_own_set(
     output_path = agent_profile / "export" / "schedules.yaml"
     assert _cmd_export(_export_args(legacy=True, output=str(output_path))) == 0
     doc = parse_schedule_set(output_path.read_text(), source=str(output_path))
-    assert doc.metadata.project == "demo"
+    assert (doc.metadata.project, doc.metadata.name) == ("demo", "legacy-export")
 
     async def _rows():
         async with StateDB() as db:
@@ -1277,27 +1293,20 @@ def test_legacy_export_reapplies_unchanged_as_its_own_set(
 
     after = asyncio.run(_rows())
     assert set(after) == set(before)
-    stored = after["rt1"]
+    was, stored = before["rt1"], after["rt1"]
     assert stored["name"] == "demo/nightly"
-    assert stored["owner_key"] == f"{doc.metadata.project}/{doc.metadata.name}"
-    # The row keeps every behavior column it ran with, and the zone it fired in.
-    for column in (
-        "trigger_type",
-        "cron_expr",
-        "action_kind",
-        "action_agent",
-        "action_model",
-        "action_prompt",
-        "action_cwd",
-        "action_project",
-        "enabled",
-        "effective_timezone",
-    ):
-        assert stored[column] == before["rt1"][column], column
-    # Adoption records the declaration it adopted, and the zone the row fired in.
+    assert stored["action_model"] == "openai/gpt-5"
+    assert stored["action_project"] is None
+    # Adoption writes the ownership and the declaration it adopted, and nothing else.
+    assert stored["owner_key"] == "demo/legacy-export"
+    assert stored["managed_by"] == "declaration"
     assert stored["spec_version"] == doc.apiVersion
     assert stored["resolved_digest"]
-    assert stored["resolved_timezone"] == before["rt1"]["effective_timezone"]
+    assert stored["authored_spec"]
+    assert stored["resolved_target"]
+    assert stored["resolved_timezone"] == was["effective_timezone"]
+    changed = {key for key in set(was) | set(stored) if was.get(key) != stored.get(key)}
+    assert changed == ADOPTION_COLUMNS, sorted(changed)
 
     plan = asyncio.run(_plan(adopt=False))
     assert [(entry.qualified_name, entry.action) for entry in plan] == [
