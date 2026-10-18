@@ -496,3 +496,64 @@ def test_compute_schedule_health_is_a_pure_function_of_row_and_evidence():
         now=now,
     )
     assert no_evidence["health_state"] == "no-evidence"
+
+
+def _github_poll_row(
+    now: float, *, last_fired_at, last_healthy_poll_at, trigger_type="github_poll"
+):
+    return {
+        "enabled": 1,
+        "trigger_type": trigger_type,
+        "interval_sec": 300,
+        "poll_interval_sec": 300,
+        "created_at": now - 100_000,
+        "last_fired_at": last_fired_at,
+        "last_healthy_poll_at": last_healthy_poll_at,
+    }
+
+
+def _evidence(executed_at):
+    return {
+        "last_recorded_run_at": executed_at,
+        "last_executed_run_at": executed_at,
+        "last_executed_status": "completed" if executed_at is not None else None,
+    }
+
+
+def test_quiet_github_poll_with_a_recent_healthy_poll_is_healthy():
+    """A poll that finds no new event creates no run, so a quiet repository's last fire ages
+    past the cadence while its poller is working."""
+    now = time.time()
+    row = _github_poll_row(now, last_fired_at=now - 50_000, last_healthy_poll_at=now - 30)
+
+    result = compute_schedule_health(row, _evidence(now - 50_000), now=now)
+
+    assert result["health_state"] == "healthy"
+    assert result["health_last_outcome_at"] == now - 50_000
+
+
+def test_github_poll_that_never_fired_but_polls_is_healthy():
+    now = time.time()
+    row = _github_poll_row(now, last_fired_at=None, last_healthy_poll_at=now - 30)
+
+    assert compute_schedule_health(row, _evidence(None), now=now)["health_state"] == "healthy"
+
+
+def test_github_poll_whose_polls_stopped_is_overdue():
+    now = time.time()
+    row = _github_poll_row(now, last_fired_at=now - 50_000, last_healthy_poll_at=now - 40_000)
+
+    assert (
+        compute_schedule_health(row, _evidence(now - 50_000), now=now)["health_state"] == "overdue"
+    )
+
+
+def test_a_poll_stamp_on_another_trigger_type_is_not_liveness():
+    now = time.time()
+    row = _github_poll_row(
+        now, last_fired_at=now - 50_000, last_healthy_poll_at=now - 30, trigger_type="interval"
+    )
+
+    assert (
+        compute_schedule_health(row, _evidence(now - 50_000), now=now)["health_state"] == "overdue"
+    )
