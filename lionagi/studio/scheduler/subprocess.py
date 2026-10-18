@@ -28,6 +28,10 @@ from lionagi.ln import (
 
 _log = logging.getLogger(__name__)
 
+# The daemon's store location. Agent-kind and other `li` children inherit it so their runs
+# record into the daemon's store; command-kind children never do (see spawn_and_wait).
+STORE_URL_ENV = "LIONAGI_STATE_DB_URL"
+
 _TEMPLATE_RE = re.compile(r"\{\{(\w+)\}\}")
 
 # Default argv prefix for launching the CLI: relies on `uv run` resolving the
@@ -778,9 +782,14 @@ async def spawn_and_wait(
         _validate_action_command(command)
         _validate_command_allowlisted(command)
 
-    env, group_marker = prepare_process_group_env(
-        {**os.environ, "LIONAGI_INVOCATION_ID": invocation_id}
-    )
+    base_env = {**os.environ, "LIONAGI_INVOCATION_ID": invocation_id}
+    if action_kind == "command":
+        # A command is an arbitrary program, often run by another interpreter with its own
+        # lionagi. Inheriting the daemon's store URL would point that lionagi at the daemon's
+        # store, and a lionagi on a newer schema migrates it on open, leaving a file the
+        # daemon's own code refuses. A command that needs this store names it explicitly.
+        base_env.pop(STORE_URL_ENV, None)
+    env, group_marker = prepare_process_group_env(base_env)
 
     _log.info("Spawning: %s", " ".join(argv))
     proc = await asyncio.create_subprocess_exec(

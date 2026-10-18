@@ -276,6 +276,13 @@ When `action_kind="command"`, the command allow-list check re-runs here,
 immediately before spawn, closing the window where an awaited DB call
 between `build_argv()` and this function gives a revoked
 `LIONAGI_SCHEDULER_COMMAND_ALLOWLIST` env var a scheduling point to land in.
+A command child also gets the daemon's environment without
+`LIONAGI_STATE_DB_URL`. A command often runs another interpreter with its own
+lionagi, and an inherited store URL would open the daemon's store with that
+lionagi: one on a newer schema migrates the file on open, after which the
+daemon's own code refuses it. A command that needs the daemon's store names it
+in its own argv or environment. Every `li` child (the other action kinds) still
+inherits the URL, so its run records into the daemon's store.
 
 ## lionagi/studio/services/schedules.py
 
