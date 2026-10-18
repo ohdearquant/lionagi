@@ -254,6 +254,34 @@ def test_a_peer_with_another_user_id_gets_no_code(short_dir):
 
 
 @pytest.mark.skipif(not reconnect.unix_sockets_supported(), reason="no unix sockets")
+@pytest.mark.parametrize("served_by", ["another-user", "unreported"])
+def test_a_socket_another_user_serves_is_not_read(short_dir, served_by):
+    """Another user can place a socket at the path, or a link to one, and answer with a code and
+    key of its own. The kernel names the user serving the connected socket, so the reply is
+    refused before a byte of it is read."""
+    socket_path = short_dir / "reconnect.sock"
+    channel = reconnect.ReconnectChannel(
+        socket_path, lambda: "rogue-code", _uid_reader=lambda _conn: os.getuid()
+    )
+    channel.start()
+    other_uid = 0 if os.getuid() != 0 else 1
+    reported = other_uid if served_by == "another-user" else None
+    try:
+        with pytest.raises(PermissionError) as caught:
+            reconnect.read_reconnect_reply(socket_path, _uid_reader=lambda _conn: reported)
+        # Control: the same socket, served as this user, is read.
+        assert reconnect.read_reconnect_reply(
+            socket_path, _uid_reader=lambda _conn: os.getuid()
+        ) == ("rogue-code", channel.key)
+    finally:
+        channel.stop()
+    assert str(socket_path) in str(caught.value)
+    assert "rogue-code" not in str(caught.value)
+    if served_by == "another-user":
+        assert f"user {other_uid}" in str(caught.value)
+
+
+@pytest.mark.skipif(not reconnect.unix_sockets_supported(), reason="no unix sockets")
 def test_a_stale_socket_file_is_replaced_at_start(short_dir):
     socket_path = short_dir / "reconnect.sock"
     stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

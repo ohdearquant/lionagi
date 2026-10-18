@@ -1381,6 +1381,37 @@ def test_a_daemon_that_answers_no_proof_gets_no_code(daemon_probe, monkeypatch):
 
 
 @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="no unix sockets")
+def test_a_proof_that_is_not_ascii_is_refused_like_a_wrong_one(daemon_probe, monkeypatch):
+    """compare_digest raises on a non-ASCII string, which would end the launch with a traceback
+    rather than the refusal."""
+    import lionagi.studio.cli as studio_cli
+
+    routes = {("GET", "/health"): (200, {"status": "ok"})}
+    with _socket_daemon(monkeypatch):
+        with _loopback_server(routes, prove=lambda _challenge, _port: "\u00e9" * 32) as (port, _):
+            with pytest.raises(studio_cli._PairingRefusedError, match="another daemon"):
+                daemon_probe(port)
+
+
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="no unix sockets")
+def test_a_reconnect_socket_another_user_serves_gets_no_code(daemon_probe, monkeypatch):
+    import lionagi.studio.cli as studio_cli
+    import lionagi.studio.reconnect as reconnect
+
+    other_uid = 0 if os.getuid() != 0 else 1
+    routes = {("GET", "/health"): (200, {"status": "ok"})}
+    with _socket_daemon(monkeypatch, code="rogue-code") as channel:
+        prove = functools.partial(reconnect.port_proof, channel.key)
+        with _loopback_server(routes, prove=prove) as (port, _):
+            # Control: served as this user, the same socket and listener pair.
+            assert daemon_probe(port) == "rogue-code"
+            monkeypatch.setattr(reconnect, "peer_uid", lambda _conn: other_uid)
+            with pytest.raises(studio_cli._PairingRefusedError, match="runs as user") as caught:
+                daemon_probe(port)
+    assert "rogue-code" not in str(caught.value)
+
+
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="no unix sockets")
 def test_li_studio_on_a_port_whose_daemon_does_not_own_the_socket_exits_1_without_a_link(
     daemon_probe, monkeypatch, capsys
 ):

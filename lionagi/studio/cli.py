@@ -303,7 +303,12 @@ def _code_from_running_daemon(port: int) -> str | None:
             "this platform has no reconnect channel; restart the daemon to pair a new page"
         )
     socket_path = default_socket_path()
-    reply = read_reconnect_reply(socket_path)
+    try:
+        reply = read_reconnect_reply(socket_path)
+    except PermissionError as exc:
+        raise _PairingRefusedError(
+            f"{exc}; stop that process, or start this daemon with its own state directory"
+        ) from exc
     if reply is None:
         raise _PairingRefusedError(
             "it did not answer on its reconnect socket; restart the daemon to pair a new page"
@@ -316,12 +321,17 @@ def _code_from_running_daemon(port: int) -> str | None:
     challenge = secrets.token_hex(16)
     health = _daemon_health(port, challenge)
     proof = health.get("proof") if health is not None else None
-    if not isinstance(proof, str) or not hmac.compare_digest(
-        proof, port_proof(key, challenge, port)
+    # compare_digest takes ASCII strings only; any other proof is simply not the one expected.
+    if (
+        not isinstance(proof, str)
+        or not proof.isascii()
+        or not hmac.compare_digest(proof, port_proof(key, challenge, port))
     ):
         raise _PairingRefusedError(
             f"the reconnect socket at {socket_path} belongs to another daemon, not the one on "
-            f"port {port}; stop that daemon, or start this one with its own state directory"
+            f"port {port}, or port {port} is not the port that daemon binds (a forwarded or "
+            f"mapped port cannot pair); stop that daemon, or start this one with its own state "
+            f"directory"
         )
     return code
 

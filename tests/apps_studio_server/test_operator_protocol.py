@@ -4064,16 +4064,11 @@ async def test_a_decision_with_the_capability_header_records_its_principal(tmp_p
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "headers",
-    [{}, {"authorization": "Bearer studio-test-token"}],
-    ids=["no-credential", "bearer-only"],
-)
 async def test_a_decision_without_a_capability_is_still_accepted_and_unattributed(
-    tmp_path, monkeypatch, headers
+    tmp_path, monkeypatch
 ):
-    """This release does not yet require a decision capability: a decision that carries none,
-    or only the admission bearer, is accepted and recorded with no principal."""
+    """This release does not yet require a decision capability: a decision that carries none is
+    accepted and recorded with no principal."""
     from lionagi.studio.launch_access import reset_launch_access
     from lionagi.studio.services.operator import decide_operator_proposal
 
@@ -4092,7 +4087,7 @@ async def test_a_decision_without_a_capability_is_still_accepted_and_unattribute
         accepted["conversationId"],
         proposal["id"],
         _decide_body("deny", proposal),
-        _request(headers=headers),
+        _request(headers={}),
     )
     await asyncio.wait_for(task, timeout=2)
     await coordinator.shutdown()
@@ -4105,6 +4100,53 @@ async def test_a_decision_without_a_capability_is_still_accepted_and_unattribute
     assert row["decision_epoch"] is None
     assert details["decision"] == "denied"
     assert "principal" not in details
+
+
+@pytest.mark.asyncio
+async def test_the_admission_bearer_alone_still_decides_over_http(tmp_path, monkeypatch):
+    """With an admission token set, a decision carrying only that bearer passes the daemon's
+    admission and is accepted unattributed: this release does not yet require a decision
+    capability."""
+    httpx = pytest.importorskip("httpx")
+    from lionagi.studio.app import create_app
+    from lionagi.studio.launch_access import reset_launch_access
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    await _state_db_with_admin_events(path)
+    reset_launch_access()
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "studio-test-token")
+    app = create_app()
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(store=store, engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    accepted, proposal, task = await _pending_permission_proposal(
+        tmp_path, monkeypatch, coordinator
+    )
+    body = _decide_body("deny", proposal).model_dump(by_alias=True)
+    url = (
+        f"/api/operator/conversations/{accepted['conversationId']}"
+        f"/proposals/{proposal['id']}/decision"
+    )
+
+    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 54321))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8765") as client:
+        refused = await client.post(url, json=body)
+        answered = await client.post(
+            url, json=body, headers={"authorization": "Bearer studio-test-token"}
+        )
+    await asyncio.wait_for(task, timeout=2)
+    await coordinator.shutdown()
+
+    # Control: the token is in force, so a request without the bearer never reaches the route.
+    assert refused.status_code == 401
+    assert answered.status_code == 200, answered.text
+    # The wire status for a denied proposal is ``failed``.
+    assert answered.json()["status"] == "failed"
+    row = await _proposal_row(path, proposal["id"])
+    assert row["decision_principal_id"] is None
+    assert row["decision_epoch"] is None
+    assert "principal" not in (await _audit_rows(path, proposal["id"]))[-1]
 
 
 @pytest.mark.asyncio

@@ -156,7 +156,10 @@ behaviour, including accepting a write-capable submission without `cwd`.
   stops a running daemon. The socket also hands over a key drawn when the daemon starts, and
   `li studio --port P` pairs only when the daemon on port P answers a fresh challenge at
   `GET /health?challenge=` with an HMAC under that key covering port P; when another daemon
-  shares the state directory, or something else answers on P, it exits 1 without a link. On a platform without unix sockets, `li studio` against a running
+  shares the state directory, or a listener on P relays `/health` from another port, it exits 1
+  without a link. P must be the port the daemon binds, so a forwarded or mapped port is refused
+  the same way. `li studio` reads the socket only when the kernel reports that the process
+  serving it runs as the same user. On a platform without unix sockets, `li studio` against a running
   daemon says to restart it. Redeeming a code at `POST /api/studio/pair` now also returns a
   decision capability (`decision_token`) bound to the page's origin; the hosted page keeps it in
   `sessionStorage` for its tab and sends it in `X-Studio-Decision-Token` on the two Operator

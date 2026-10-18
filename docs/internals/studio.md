@@ -116,8 +116,9 @@ daemon keeps only as its hash, bound to a random principal id, this start's
 epoch, the frontend origin it was redeemed from and the scope `operator:decide`,
 expiring eight hours after redemption and revoked by
 `POST /api/studio/disconnect` on an explicit disconnect. A daemon restart
-invalidates every code and capability, and `LIONAGI_STUDIO_AUTH_TOKEN` neither
-mints one nor decides. The two Operator decision routes read it from
+invalidates every code and capability. `LIONAGI_STUDIO_AUTH_TOKEN` mints
+none, and a decision that carries only that token is accepted in this release
+and records no principal. The two Operator decision routes read it from
 `X-Studio-Decision-Token` when it is there, resolve it to its principal and pass
 that to `decide()`, whose store transaction records the principal id, epoch,
 method, origin and scope on the proposal row and in the audit row; a request

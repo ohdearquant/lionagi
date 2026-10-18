@@ -268,10 +268,14 @@ def _connect(path: str, timeout: float) -> socket.socket | None:
             return client
 
 
-def read_reconnect_reply(path: str | Path, *, timeout: float = 5.0) -> tuple[str, bytes] | None:
+def read_reconnect_reply(
+    path: str | Path, *, timeout: float = 5.0, _uid_reader=None
+) -> tuple[str, bytes] | None:
     """Ask the daemon at *path* for one pairing code and its port-proof key.
 
-    None when nothing answers, or the answer is not a code and a key.
+    None when nothing answers, or the answer is not a code and a key. PermissionError when the
+    process serving *path* is not this user's, or the kernel will not say whose it is: the path
+    vouches for nothing, since another user can place a socket there or a link to one.
     """
     if not unix_sockets_supported():
         return None
@@ -279,6 +283,16 @@ def read_reconnect_reply(path: str | Path, *, timeout: float = 5.0) -> tuple[str
     if client is None:
         return None
     try:
+        # Read from the connected socket, so nothing done to the path after connect() counts.
+        try:
+            uid = (peer_uid if _uid_reader is None else _uid_reader)(client)
+        except OSError:
+            uid = None
+        if uid is None or uid != current_uid():
+            owner = "a user the kernel does not report" if uid is None else f"user {uid}"
+            raise PermissionError(
+                f"the process serving {path} runs as {owner}, not as this user ({current_uid()})"
+            )
         chunks: list[bytes] = []
         total = 0
         while total < _MAX_REPLY_BYTES:
