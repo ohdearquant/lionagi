@@ -45,6 +45,7 @@ __all__ = (
     "get_bins",
     "import_module",
     "is_import_installed",
+    "is_pydantic_model_class",
     "is_same_dtype",
     "is_union_type",
     "load_type_from_string",
@@ -55,6 +56,7 @@ __all__ = (
     "synchronized",
     "to_uuid",
     "union_members",
+    "unwrap_optional",
 )
 
 
@@ -529,6 +531,18 @@ def is_same_dtype(
     return (result, dtype) if return_dtype else result
 
 
+def is_pydantic_model_class(tp: Any) -> bool:
+    """Return whether tp is a Pydantic model class, rather than an instance."""
+    try:
+        if not isinstance(tp, type):
+            return False
+        from pydantic import BaseModel
+
+        return issubclass(tp, BaseModel)
+    except TypeError:
+        return False
+
+
 def is_union_type(tp) -> bool:
     """True for typing.Union[...] and PEP 604 unions (A | B)."""
     origin = get_origin(tp)
@@ -559,6 +573,15 @@ def union_members(
     if drop_none:
         members = tuple(m for m in members if m is not _NoneType)
     return members
+
+
+def unwrap_optional(tp: Any) -> Any:
+    """Unwrap Optional[X] or X | None; leave other annotations unchanged."""
+    members = union_members(tp, unwrap_annotated=False)
+    non_none = tuple(member for member in members if member is not _NoneType)
+    if len(non_none) == 1 and len(non_none) < len(members):
+        return non_none[0]
+    return tp
 
 
 def create_path(

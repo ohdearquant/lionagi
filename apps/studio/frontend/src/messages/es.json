@@ -159,6 +159,11 @@
     "effect": {
       "requested": "Requested interface action: {kind}"
     },
+    "truncation": {
+      "title": "Parte de este turno no se conservó",
+      "summary": "No se conservaron {frames} fotogramas · {size}",
+      "limit": " · límite: {limit}"
+    },
     "outcome": {
       "completed": "Turn completed",
       "failed": "Turn failed",

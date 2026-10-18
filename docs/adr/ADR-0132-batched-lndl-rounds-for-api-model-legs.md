@@ -12,7 +12,7 @@
 ## Context
 
 An API-model `li agent` leg runs lionagi's own tool loop, `Branch.ReAct(tools=True,
-max_extensions=N)` (`lionagi/cli/agent.py:276-308`, ADR-0041 Amendment 1). Each ReAct analysis round
+max_extensions=N)` (`lionagi/cli/agent.py:278-310`, ADR-0041 Amendment 1). Each ReAct analysis round
 is at least one model request (a reply that fails to parse is asked for again), and a round's tool
 calls run through `act()`, concurrently unless the model asks for them in sequence
 (`lionagi/operations/ReAct/ReAct.py:98`, `:205`, `:542`). After the last analysis round ReAct always
@@ -26,7 +26,7 @@ The LNDL Middle has no separate answer request. In a round a model declares tool
 aliases and may write its answer as an `OUT{}` block. A round with no `OUT{}` runs every declared
 call, concurrently and through the ordinary `act()` path with its permissions and hooks, and the
 next round sees the results; a round whose `OUT{}` validates ends the turn
-(`lionagi/operations/lndl_middle/lndl_middle.py:217-262`; ADR-0024 D3-D4). The same one-read task
+(`lionagi/operations/lndl_middle/lndl_middle.py:207-252`; ADR-0024 D3-D4). The same one-read task
 takes two requests: the round that declares the read, and the round that reads the result and
 writes the answer. With the same number of rounds, then, the batched loop saves the request ReAct
 makes for the answer, one per turn, a turn with no tool calls included (two requests against one).
@@ -51,7 +51,7 @@ calls and the answer in separate rounds, and its guidance tells the model so: a 
 declares `<lact>` calls, with no `OUT{}`, or writes the answer, with no `<lact>`. A round that does
 both is a repair round, in which none of its calls runs and its answer is not taken. Left to the
 Middle's own rule, such a round would run only the calls its `OUT{}` binds and drop the rest
-(`lndl_middle.py:173-182`), so a model could answer beside a read it never saw. The answer model
+(`lndl_middle.py:163-172`), so a model could answer beside a read it never saw. The answer model
 has one field, `answer: str`, and accepts only text the model wrote: an `OUT{}` that binds a
 call's result from an earlier round (a mapping, a list, or nothing from a failed call) is refused,
 and the refusal tells the model to read the result and write the answer as text. The read tools
@@ -60,7 +60,7 @@ so an answer is never a raw tool result.
 
 Every LNDL round's request names the leg's tools, their parameters and descriptions, whatever the
 provider's prompt-cache placement. Today the Middle strips the tool schemas from its rounds
-(`lndl_middle.py:212`) and only an endpoint that places the prompt cache renders the branch's tool
+(`lndl_middle.py:202`) and only an endpoint that places the prompt cache renders the branch's tool
 set into the request (`lionagi/operations/chat/_prepare.py:209-227`), so on any other endpoint the
 model would be asked to call tools it was never shown.
 

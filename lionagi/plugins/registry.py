@@ -7,7 +7,6 @@ activation); nothing runs at ``import lionagi`` time. See docs/internals/runtime
 
 from __future__ import annotations
 
-import hashlib
 import sys
 import threading
 import types
@@ -15,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
+from lionagi.ln import compute_hash
 from lionagi.ln.types import Enum
 from lionagi.version import __version__ as _lionagi_version
 
@@ -400,7 +400,7 @@ def _read_and_verify_target_bytes(*, bundle_dir: Path, module_path: str, plugin_
     trusted_entry = _read_trusted_plugins().get(plugin_name)
     targets = trusted_entry.get("targets", {}) if isinstance(trusted_entry, dict) else {}
     recorded_hash = targets.get(module_path)
-    current_hash = hashlib.sha256(source_bytes).hexdigest()
+    current_hash = compute_hash(source_bytes, max_bytes=None)
     if recorded_hash is None or recorded_hash != current_hash:
         raise PermissionError(
             f"{module_path!r} content does not match the trusted hash recorded for "
@@ -639,7 +639,7 @@ class PluginRegistry:
             msg = f"failed to activate {target!r} from plugin {plugin_name!r} ({fresh.manifest_path}): {exc}"
             raise PluginActivationError(plugin_name, target, msg) from exc
 
-        cache_key = (plugin_name, target, hashlib.sha256(source_bytes).hexdigest())
+        cache_key = (plugin_name, target, compute_hash(source_bytes, max_bytes=None))
         if cache_key in cls._activation_errors:
             raise PluginActivationError(plugin_name, target, cls._activation_errors[cache_key])
         if cache_key in cls._activation_cache:

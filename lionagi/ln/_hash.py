@@ -6,7 +6,9 @@ from __future__ import annotations
 import contextlib
 import copy
 import hashlib
+import os
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ._json_dump import json_dumpb
@@ -31,6 +33,8 @@ __all__ = (
     "compute_chain_hash",
     "compute_hash",
     "hash_dict",
+    "hash_fd",
+    "hash_file",
     "hash_obj",
 )
 
@@ -255,11 +259,12 @@ GENESIS_HASH: str = "GENESIS"
 
 
 class HashAlgorithm(Enum):
-    """NIST FIPS 180-4 compliant hash algorithms for cryptographic integrity."""
+    """SHA-2 and BLAKE2b algorithms for cryptographic integrity."""
 
     SHA256 = "sha256"
     SHA384 = "sha384"
     SHA512 = "sha512"
+    BLAKE2B = "blake2b"
 
     def get_hasher(self) -> Callable[..., _Hash]:
         """Return hashlib constructor for this algorithm."""
@@ -267,7 +272,7 @@ class HashAlgorithm(Enum):
 
     @property
     def digest_size(self) -> int:
-        """Digest size in bytes (32/48/64 for SHA256/384/512)."""
+        """Digest size in bytes (32/48/64 for SHA256/384/512; 64 for BLAKE2b)."""
         return self.get_hasher()(b"").digest_size
 
 
@@ -275,8 +280,13 @@ def compute_hash(
     obj: Any,
     algorithm: HashAlgorithm = HashAlgorithm.SHA256,
     none_as_valid: bool = False,
+    *,
+    max_bytes: int | None = MAX_HASH_INPUT_BYTES,
 ) -> str:
-    """Cryptographic hash for content integrity; use hash_obj for __hash__ protocol. Raises ValueError if payload >10MB."""
+    """Hash content with an optional byte cap (10 MiB by default).
+
+    Pass ``max_bytes=None`` for uncapped inputs. Use hash_obj for __hash__.
+    """
     payload: bytes
     if none_as_valid and obj is None:
         payload = b"null"
@@ -287,11 +297,48 @@ def compute_hash(
     else:
         payload = json_dumpb(obj, sort_keys=True, deterministic_sets=True)
 
-    if len(payload) > MAX_HASH_INPUT_BYTES:
-        raise ValueError(f"Payload {len(payload):,}B > {MAX_HASH_INPUT_BYTES:,}B limit")
+    if max_bytes is not None and len(payload) > max_bytes:
+        raise ValueError(f"Payload {len(payload):,}B > {max_bytes:,}B limit")
 
     hasher = algorithm.get_hasher()
     return hasher(payload).hexdigest()
+
+
+def hash_file(
+    path: str | Path,
+    *,
+    algorithm: HashAlgorithm = HashAlgorithm.SHA256,
+    chunk_size: int = 1 << 20,
+) -> str:
+    """Hash a file in chunks without a size cap; filesystem errors propagate."""
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    hasher = algorithm.get_hasher()()
+    with open(path, "rb") as stream:
+        while chunk := stream.read(chunk_size):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def hash_fd(
+    fd: int,
+    *,
+    algorithm: HashAlgorithm = HashAlgorithm.SHA256,
+    chunk_size: int = 1 << 20,
+) -> str:
+    """Hash an open descriptor from offset zero, then rewind it on success.
+
+    The descriptor stays open. Read/seek errors propagate without resetting its
+    position, matching ordinary descriptor operations.
+    """
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    hasher = algorithm.get_hasher()()
+    os.lseek(fd, 0, os.SEEK_SET)
+    while chunk := os.read(fd, chunk_size):
+        hasher.update(chunk)
+    os.lseek(fd, 0, os.SEEK_SET)
+    return hasher.hexdigest()
 
 
 def compute_chain_hash(

@@ -295,4 +295,75 @@ describe("ResumeRun component", () => {
       expect(container.textContent).toContain("Follow-up accepted");
     });
   }
+
+  for (const kind of ["agent", "flow"]) {
+    it(`the ${kind} form reports nothing for a resume that settles after the page moved to another run`, async () => {
+      getResumeAvailabilityMock.mockImplementation(async (runId: string) => ({
+        run_id: runId,
+        invocation_kind: kind,
+        resumable: true,
+        branch_id: "branch-a",
+      }));
+      let settle!: (value: RunResumeResponse) => void;
+      resumeRunMock.mockReturnValue(
+        new Promise<RunResumeResponse>((resolve) => {
+          settle = resolve;
+        }),
+      );
+      const onResumed = vi.fn();
+      const render = (runId: string) =>
+        root.render(
+          <IntlProvider locale="en" messages={enMessages}>
+            <ResumeRun
+              runId={runId}
+              invocationKind={kind}
+              branches={[branch("branch-a", "Research")]}
+              onResumed={onResumed}
+            />
+          </IntlProvider>,
+        );
+      await act(async () => {
+        render("run-1");
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      if (kind === "agent") {
+        const textarea = container.querySelector("textarea")!;
+        await act(async () => {
+          Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(
+            textarea,
+            "Check the patch",
+          );
+          textarea.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+      }
+      const label = kind === "agent" ? "Resume" : "Continue";
+      const submit = [...container.querySelectorAll("button")].find((button) =>
+        button.textContent?.includes(label),
+      )!;
+      await act(async () => {
+        submit.click();
+      });
+      expect(resumeRunMock).toHaveBeenCalledWith("run-1", expect.anything());
+
+      // The page moves to another run before the resume settles.
+      await act(async () => {
+        render("run-2");
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(container.textContent).toContain(
+        kind === "agent" ? "CLI escape hatch" : "Replays the saved plan from where it stopped",
+      );
+
+      await act(async () => {
+        settle({ run_id: "run-1", invocation_id: "invocation-1" } as RunResumeResponse);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(onResumed).not.toHaveBeenCalled();
+      expect(container.textContent).not.toContain("Follow-up accepted");
+    });
+  }
 });

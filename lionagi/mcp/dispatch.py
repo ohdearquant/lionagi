@@ -12,7 +12,6 @@ moves here with it.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -22,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
-from lionagi.ln import now_utc
+from lionagi.ln import compute_hash, now_utc
 
 from . import config, jobs, projection, roster
 from .verbs import (
@@ -206,7 +205,7 @@ def schema_fingerprint(schema: dict[str, Any]) -> str:
     the build does.
     """
     body = json.dumps(schema, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(body.encode()).hexdigest()[:16]
+    return compute_hash(body, max_bytes=None)[:16]
 
 
 def _describe_fingerprint(

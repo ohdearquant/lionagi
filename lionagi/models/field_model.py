@@ -9,6 +9,8 @@ from typing import Any, ClassVar, cast
 
 from typing_extensions import Self, override
 
+from lionagi.ln import is_union_type
+
 from .._errors import ValidationError
 from ..ln._lazy_init import LazyInit
 from ..ln.types import MaybeSentinel, Meta, ModelConfig, Params, Spec, Undefined, Unset
@@ -60,14 +62,10 @@ class FieldModel(Params):
         Params._validate(self)
 
         if not self._is_sentinel(self.base_type):
-            import types
-
             is_valid_type = (
                 isinstance(self.base_type, type)
                 or hasattr(self.base_type, "__origin__")
-                or isinstance(
-                    self.base_type, types.UnionType
-                )  # Python 3.10+ union types (str | None)
+                or is_union_type(self.base_type)
             )
             if not is_valid_type:
                 raise ValueError(

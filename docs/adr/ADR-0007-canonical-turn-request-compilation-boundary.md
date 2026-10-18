@@ -603,7 +603,7 @@ lines:
   results are dicts appended to `prompt_context` (`lionagi/operations/chat/_prepare.py:282-287`,
   `:299-304`); all of them meet in one minimal-YAML rendering, where caller prompt context and
   tool output share the same "Context" field
-  (`lionagi/protocols/messages/instruction.py:206-218`). Material and instruction are one
+  (`lionagi/protocols/messages/instruction.py:207-219`). Material and instruction are one
   untyped list. With ADR-0127's prompt-cache option on
   (`lionagi/operations/chat/_prepare.py:209`), the system text and the tool set, rendered once
   (`:216-222`), go out as their own system blocks instead (`:336-337`, `:360-367`), and the rest
