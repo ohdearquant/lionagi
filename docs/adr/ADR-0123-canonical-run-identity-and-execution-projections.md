@@ -226,9 +226,10 @@ Notification, artifact verification, telemetry export, and mirror delivery occur
 through ADR-0120's durable-delivery plane. Their failure is recorded separately and never reopens
 the Run.
 
-`Run` is an intentional eighth lifecycle-policy-managed entity in `TargetRegistry`, in addition to
-the seven current ADR-0058 policies (the six legacy status-facade values plus `dispatch`) reproduced
-by ADR-0118's baseline parity gate. It is not added to the generic legacy facade.
+`Run` is an intentional additional lifecycle-policy-managed entity in `TargetRegistry`, beyond
+the original seven ADR-0058 policies (the six legacy status-facade values plus `dispatch`)
+reproduced by ADR-0118's baseline parity gate. That historical baseline does not count ADR-0058's
+separate Schedule definition amendment. Run is not added to the generic legacy facade.
 `RunRepository` owns Run record
 composition, associations, queries, and projections; it does not create a second mutation
 authority. `create()` stages ADR-0058's initial-state command with the new row; `transition()` and

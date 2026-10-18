@@ -155,6 +155,20 @@ class ScheduleReasons:
     BUDGET_EXHAUSTED = "schedule.budget.exhausted"
 
 
+class ScheduleDefinitionReasons:
+    """Definition enablement and deletion, separate from schedule occurrences."""
+
+    CREATED_OBSERVED = "schedule_definition.created.observed"
+    ENABLED_OBSERVED = "schedule_definition.enabled.observed"
+    DELETED_OBSERVED = "schedule_definition.deleted.observed"
+    DISABLED_UNSPECIFIED = "schedule_definition.disabled.unspecified"
+    DISABLED_MAX_RUNS = "schedule_definition.disabled.max_runs"
+    DISABLED_BUDGET_EXHAUSTED = "schedule_definition.disabled.budget_exhausted"
+    DISABLED_DECLARED = "schedule_definition.disabled.declared"
+    DISABLED_OMITTED = "schedule_definition.disabled.omitted"
+    DISABLED_MANUAL = "schedule_definition.disabled.manual"
+
+
 class TeamReasons:
     """Team lifecycle outcomes (entity_type='team')."""
 
@@ -195,6 +209,7 @@ VALID_REASON_CODES: Final[frozenset[str]] = _collect(
     PlayReasons,
     ShowReasons,
     ScheduleReasons,
+    ScheduleDefinitionReasons,
     TeamReasons,
     DispatchReasons,
 ) | {LEGACY_IMPORTED}

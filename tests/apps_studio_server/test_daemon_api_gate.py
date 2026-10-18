@@ -709,6 +709,9 @@ _SCHEDULE_DETAIL_KEYS = sorted(
         # schedule still reading a quiet repo from one that stopped.
         "last_healthy_poll_at",
         "last_status",
+        # The latest definition change and whether its history is readable.
+        # Record route only; no list surface serves it.
+        "lifecycle",
         "max_runs",
         "missed_fire_policy",
         "name",

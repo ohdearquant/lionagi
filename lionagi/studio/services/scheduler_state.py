@@ -21,6 +21,7 @@ from lionagi.state.db import (
     CursorClaim,
     StateDB,
 )
+from lionagi.state.lifecycle import ReasonRecord, ScheduleAuditContext
 from lionagi.state.reasons import RunReasons
 from lionagi.studio.scheduler import coordination as _coordination
 
@@ -41,6 +42,8 @@ class SchedulerStateService(Protocol):
         guard_cursor_forward: bool = False,
         expect_next_fire_at: CursorClaim = NO_CURSOR_CLAIM,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        audit_context: ScheduleAuditContext | None = None,
+        reason: ReasonRecord | None = None,
         **fields: Any,
     ) -> bool: ...
 
@@ -69,6 +72,8 @@ class SchedulerStateService(Protocol):
         schedule_fields: dict[str, Any],
         expect_next_fire_at: CursorClaim,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        audit_context: ScheduleAuditContext | None = None,
+        reason: ReasonRecord | None = None,
     ) -> bool: ...
 
     async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool: ...
@@ -188,6 +193,8 @@ class _DBSchedulerStateService:
         guard_cursor_forward: bool = False,
         expect_next_fire_at: CursorClaim = NO_CURSOR_CLAIM,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        audit_context: ScheduleAuditContext | None = None,
+        reason: ReasonRecord | None = None,
         **fields: Any,
     ) -> bool:
         async with self._db_context() as db:
@@ -196,6 +203,8 @@ class _DBSchedulerStateService:
                 guard_cursor_forward=guard_cursor_forward,
                 expect_next_fire_at=expect_next_fire_at,
                 expect_github_cursor=expect_github_cursor,
+                audit_context=audit_context,
+                reason=reason,
                 **fields,
             )
 
@@ -239,6 +248,8 @@ class _DBSchedulerStateService:
         schedule_fields: dict[str, Any],
         expect_next_fire_at: CursorClaim,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        audit_context: ScheduleAuditContext | None = None,
+        reason: ReasonRecord | None = None,
     ) -> bool:
         async with self._db_context() as db:
             return await db.create_schedule_run_and_advance(
@@ -247,6 +258,8 @@ class _DBSchedulerStateService:
                 schedule_fields=schedule_fields,
                 expect_next_fire_at=expect_next_fire_at,
                 expect_github_cursor=expect_github_cursor,
+                audit_context=audit_context,
+                reason=reason,
             )
 
     async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool:

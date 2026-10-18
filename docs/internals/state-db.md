@@ -357,6 +357,32 @@ strips it. Only keys the patch itself sets to null are removed.
 
 ## Schedules: what counts as a fire, and what recovers one
 
+A Schedule definition has its own lifecycle: `enabled`, `disabled`, then hard deletion.
+Definition events use `entity_type="schedule"` and `schedule_definition.*` reasons in
+`status_transitions`; they do not emit execution-terminal callbacks. `enabled` remains the
+only live state field. A new definition records its actual initial state; ordinary cursor,
+configuration and same-state updates add no event. No initial history is invented for legacy
+rows. Deleted definition ids cannot be reused while their history is retained.
+
+All definition write boundaries, including ScheduleSet batches and occurrence advancement
+that changes enablement, append history on the same connection and transaction. A failed
+audit insert or late batch claim rolls back earlier writes. The Schedule adapter reads the
+observed state under PostgreSQL row locking, with a transaction-scoped lock covering
+absent ids, and under SQLite's existing immediate transaction.
+
+`ScheduleAuditContext` carries actual submitter provenance independently of execution cwd.
+Existing context-less calls remain accepted with explicit unavailable attribution. Scheduler
+limit disables supply a named system actor and actual process cwd when available. Declaration
+disables carry generated declared/omitted causes and member ownership facts; optional apply
+text is retained. Manual reason admission and client context transport remain a later change.
+
+`StateDB.get_schedule_history(id, limit=100, offset=0)` reads newest events in descending
+`created_at, id` order independently of the live definition, with a limit of 1–1000. An
+available empty ledger returns `available=True, events=[]`; an old read-only store missing
+the ledger returns `available=False, events=[]` without migration. Schedule detail exposes
+only `lifecycle.available` and `lifecycle.latest`, leaving list responses bounded and
+occurrence history separate.
+
 A `schedule_runs` row is an occurrence: the record that a schedule's cursor
 moved. Whether anything actually *ran* is a separate question, and several
 methods exist only to keep the two apart.

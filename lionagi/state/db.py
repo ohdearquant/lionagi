@@ -76,6 +76,9 @@ from lionagi.state.lifecycle.models import (
     ReasonRecord as _ReasonRecord,
 )
 from lionagi.state.lifecycle.models import (
+    ScheduleAuditContext as _ScheduleAuditContext,
+)
+from lionagi.state.lifecycle.models import (
     TransitionCommand as _TransitionCommand,
 )
 from lionagi.state.lifecycle.service import SQLAlchemyLifecycleService as _LifecycleService
@@ -85,6 +88,9 @@ from lionagi.state.reasons import (
 )
 from lionagi.state.reasons import (
     RunReasons as _RunReasons,
+)
+from lionagi.state.reasons import (
+    ScheduleDefinitionReasons as _ScheduleDefinitionReasons,
 )
 from lionagi.state.reasons import (
     ScheduleReasons as _ScheduleReasons,
@@ -4854,10 +4860,20 @@ class StateDB:
 
     # Schedules
 
-    async def create_schedule(self, schedule: dict[str, Any]) -> None:
+    async def create_schedule(
+        self,
+        schedule: dict[str, Any],
+        *,
+        audit_context: _ScheduleAuditContext | None = None,
+        reason: _ReasonRecord | None = None,
+    ) -> None:
+        adapter = self._lifecycle_service().schedule_adapter
+        adapter.validate_create(schedule, audit_context=audit_context, reason=reason)
         stmt, params = self._build_schedule_insert_stmt(schedule)
         async with self._tx() as conn:
+            await adapter.assert_id_available(conn, params["id"])
             await conn.execute(stmt, params)
+            await adapter.record_created(conn, params, audit_context=audit_context, reason=reason)
 
     @staticmethod
     def _build_schedule_insert_stmt(schedule: dict[str, Any]):
@@ -4987,6 +5003,46 @@ class StateDB:
             )
         return self._row_to_dict(row) if row else None
 
+    async def get_schedule_history(
+        self, schedule_id: str, *, limit: int = 100, offset: int = 0
+    ) -> dict[str, Any]:
+        """Read newest definition events, including after deletion, without migrating old stores.
+
+        An available empty ledger means no events were recorded. An unavailable ledger
+        is reported separately; a read-only legacy store must never acquire a new table.
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+            raise ValueError("limit must be an integer between 1 and 1000")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValueError("offset must be a nonnegative integer")
+        async with self._read() as conn:
+            if not await conn.run_sync(lambda c: inspect(c).has_table("status_transitions")):
+                return {"available": False, "events": []}
+            owner_where, owner_params = self._owner_predicate("status_transitions")
+            rows = (
+                (
+                    await conn.execute(
+                        text(
+                            "SELECT id, entity_type, entity_id, previous_status, status, "
+                            "reason_code, reason_summary, evidence_refs, source, actor, created_at, metadata "
+                            "FROM status_transitions "
+                            "WHERE entity_type='schedule' AND entity_id=:id"
+                            + owner_where
+                            + " ORDER BY created_at DESC, id DESC LIMIT :limit OFFSET :offset"
+                        ),
+                        {"id": schedule_id, "limit": limit, "offset": offset, **owner_params},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        events = [dict(row) for row in rows]
+        for row in events:
+            for field in ("metadata", "evidence_refs"):
+                if isinstance(row[field], str):
+                    row[field] = json.loads(row[field])
+        return {"available": True, "events": events}
+
     async def list_schedules_by_owner_key(self, owner_key: str) -> list[dict[str, Any]]:
         async with self._read() as conn:
             rows = (
@@ -5009,6 +5065,8 @@ class StateDB:
         disables: list[str],
         expect_owner_keys: dict[str, str | None] | None = None,
         expect_updated_at: dict[str, float] | None = None,
+        audit_context: _ScheduleAuditContext | None = None,
+        reason: _ReasonRecord | None = None,
     ) -> None:
         """Atomically commit a ScheduleSet plan and any enablement edges.
 
@@ -5019,10 +5077,29 @@ class StateDB:
         """
         claims = expect_owner_keys or {}
         stamps = expect_updated_at or {}
+        adapter = self._lifecycle_service().schedule_adapter
+        context = (
+            _ScheduleAuditContext(origin="declaration", source="declaration")
+            if audit_context is None
+            else audit_context
+        )
+        adapter.validate_context(context)
+        if reason is not None:
+            _validate_reason_code(reason.code)
+            if not reason.code.startswith("schedule_definition."):
+                raise ValueError("ScheduleSet reasons must use the schedule_definition namespace")
         async with self._tx() as conn:
             for schedule in creates:
+                created_reason = self._schedule_set_reason(
+                    schedule, _ScheduleDefinitionReasons.CREATED_OBSERVED, "created", reason
+                )
+                adapter.validate_create(schedule, audit_context=context, reason=created_reason)
                 stmt, params = self._build_schedule_insert_stmt(schedule)
+                await adapter.assert_id_available(conn, params["id"])
                 await conn.execute(stmt, params)
+                await adapter.record_created(
+                    conn, params, audit_context=context, reason=created_reason
+                )
             for schedule_id, fields in updates:
                 claimed = schedule_id in claims
                 stmt, params = self._build_update_schedule_stmt(
@@ -5031,8 +5108,17 @@ class StateDB:
                     expect_owner_key=claims[schedule_id] if claimed else NO_CURSOR_CLAIM,
                     expect_updated_at=stamps.get(schedule_id, NO_CURSOR_CLAIM),
                 )
-                result = await conn.execute(stmt, params)
-                if (claimed or schedule_id in stamps) and result.rowcount == 0:
+                matched = await self._update_schedule_in_tx(
+                    conn,
+                    schedule_id,
+                    fields,
+                    stmt,
+                    params,
+                    audit_context=context,
+                    reason=reason,
+                    declaration_cause="declared",
+                )
+                if (claimed or schedule_id in stamps) and not matched:
                     raise ScheduleOwnershipConflictError([schedule_id])
             for schedule_id in disables:
                 claimed = schedule_id in claims
@@ -5042,9 +5128,74 @@ class StateDB:
                     expect_owner_key=claims[schedule_id] if claimed else NO_CURSOR_CLAIM,
                     expect_updated_at=stamps.get(schedule_id, NO_CURSOR_CLAIM),
                 )
-                result = await conn.execute(stmt, params)
-                if (claimed or schedule_id in stamps) and result.rowcount == 0:
+                matched = await self._update_schedule_in_tx(
+                    conn,
+                    schedule_id,
+                    {"enabled": 0},
+                    stmt,
+                    params,
+                    audit_context=context,
+                    reason=reason,
+                    declaration_cause="omitted",
+                )
+                if (claimed or schedule_id in stamps) and not matched:
                     raise ScheduleOwnershipConflictError([schedule_id])
+
+    @staticmethod
+    def _schedule_set_reason(
+        row: Mapping[str, Any], code: str, cause: str, reason: _ReasonRecord | None
+    ) -> _ReasonRecord:
+        """Keep optional apply text beside the generated member-specific cause."""
+        return _ReasonRecord(
+            code=code,
+            summary=reason.summary if reason else "",
+            evidence_refs=reason.evidence_refs if reason else (),
+            metadata={
+                **(dict(reason.metadata) if reason else {}),
+                "declaration": {
+                    "owner_key": row.get("owner_key"),
+                    "member_id": row["id"],
+                    "cause": cause,
+                },
+            },
+        )
+
+    async def _update_schedule_in_tx(
+        self,
+        conn: AsyncConnection,
+        schedule_id: str,
+        fields: dict[str, Any],
+        stmt: Any,
+        params: dict[str, Any],
+        *,
+        audit_context: _ScheduleAuditContext | None,
+        reason: _ReasonRecord | None,
+        declaration_cause: str | None = None,
+    ) -> bool:
+        """Preserve existing claims while coupling an enabled edge to its history."""
+        adapter = self._lifecycle_service().schedule_adapter
+        adapter.validate_context(audit_context)
+        before = None
+        after = None
+        if "enabled" in fields or reason is not None:
+            before = await adapter.read_for_update(conn, schedule_id)
+            if before is not None:
+                after = {**before, **fields}
+                if declaration_cause is not None:
+                    if after["enabled"]:
+                        code = _ScheduleDefinitionReasons.ENABLED_OBSERVED
+                    elif declaration_cause == "omitted":
+                        code = _ScheduleDefinitionReasons.DISABLED_OMITTED
+                    else:
+                        code = _ScheduleDefinitionReasons.DISABLED_DECLARED
+                    reason = self._schedule_set_reason(after, code, declaration_cause, reason)
+                adapter.validate_change(before, after, audit_context=audit_context, reason=reason)
+        result = await conn.execute(stmt, params)
+        if result.rowcount > 0 and before is not None:
+            await adapter.record_change(
+                conn, before, after, audit_context=audit_context, reason=reason
+            )
+        return result.rowcount > 0
 
     async def list_schedules(
         self,
@@ -5143,6 +5294,8 @@ class StateDB:
         expect_next_fire_at: CursorClaim = NO_CURSOR_CLAIM,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
         expect_owner_key: str | None | NoCursorClaim = NO_CURSOR_CLAIM,
+        audit_context: _ScheduleAuditContext | None = None,
+        reason: _ReasonRecord | None = None,
         **fields: Any,
     ) -> bool:
         """Update one schedule; returns whether a row matched.
@@ -5164,8 +5317,9 @@ class StateDB:
             expect_owner_key=expect_owner_key,
         )
         async with self._tx() as conn:
-            result = await conn.execute(stmt, params)
-        return result.rowcount > 0
+            return await self._update_schedule_in_tx(
+                conn, schedule_id, fields, stmt, params, audit_context=audit_context, reason=reason
+            )
 
     @classmethod
     def _build_update_schedule_stmt(
@@ -5245,12 +5399,28 @@ class StateDB:
             stmt = stmt.bindparams(*bind_params)
         return stmt, params
 
-    async def delete_schedule(self, schedule_id: str) -> bool:
+    async def delete_schedule(
+        self,
+        schedule_id: str,
+        *,
+        audit_context: _ScheduleAuditContext | None = None,
+        reason: _ReasonRecord | None = None,
+    ) -> bool:
+        adapter = self._lifecycle_service().schedule_adapter
+        adapter.validate_context(audit_context)
         async with self._tx() as conn:
+            before = await adapter.read_for_update(conn, schedule_id)
+            if before is None:
+                return False
+            adapter.validate_change(before, None, audit_context=audit_context, reason=reason)
             result = await conn.execute(
                 text("DELETE FROM schedules WHERE id = :id"),
                 {"id": schedule_id},
             )
+            if result.rowcount > 0:
+                await adapter.record_change(
+                    conn, before, None, audit_context=audit_context, reason=reason
+                )
         return result.rowcount > 0
 
     # Schedule Runs
@@ -5311,6 +5481,8 @@ class StateDB:
         schedule_fields: dict[str, Any],
         expect_next_fire_at: CursorClaim,
         expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        audit_context: _ScheduleAuditContext | None = None,
+        reason: _ReasonRecord | None = None,
     ) -> bool:
         """Insert one occurrence row and advance the schedule's cursor in a single transaction.
 
@@ -5333,8 +5505,16 @@ class StateDB:
             # The cursor claim goes FIRST so a lost race writes no occurrence at all. Selecting a
             # due schedule and firing it are separate statements, so without this predicate two
             # schedulers reading one due row both commit, each with its own run id.
-            result = await conn.execute(sched_stmt, sched_params)
-            if result.rowcount == 0:
+            matched = await self._update_schedule_in_tx(
+                conn,
+                schedule_id,
+                schedule_fields,
+                sched_stmt,
+                sched_params,
+                audit_context=audit_context,
+                reason=reason,
+            )
+            if not matched:
                 return False
             await conn.execute(run_stmt, run_params)
             await self._initialize_managed_entity_in_tx(
