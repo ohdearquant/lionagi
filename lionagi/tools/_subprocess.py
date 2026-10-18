@@ -54,10 +54,13 @@ def _subprocess_sync(
     timeout_ms: int | None = None,
     env: Mapping[str, str] | None = None,
 ) -> dict:
-    """Run ``cmd`` synchronously; ``env=None`` inherits the parent environment,
-    an explicit mapping scopes less-trusted commands to a minimal one."""
-    # The command is the agent's, any program at all: it names its own store if it needs one.
-    child_env, group_marker = prepare_process_group_env(env_without_state_db_url(env))
+    """Run ``cmd`` synchronously; ``env=None`` inherits the parent environment without the
+    state-store URL, an explicit mapping scopes less-trusted commands to a minimal one."""
+    # The command is the agent's, any program at all: it names its own store if it needs one, and
+    # an explicit mapping is the caller's choice, passed as given.
+    child_env, group_marker = prepare_process_group_env(
+        env_without_state_db_url() if env is None else env
+    )
     try:
         proc = subprocess.Popen(  # noqa: S603
             cmd,

@@ -132,3 +132,46 @@ def test_a_command_an_agent_runs_does_not_see_the_store(probe, tmp_path):
     result = _subprocess_sync([str(probe), str(out)], False, 30, str(tmp_path))
     assert result["returncode"] == 0, result
     assert out.read_text().splitlines()[:2] == ["<absent>", "<absent>"]
+
+
+@pytest.mark.asyncio
+async def test_a_configured_stdio_mcp_server_does_not_see_the_store(probe, tmp_path):
+    pytest.importorskip("fastmcp")
+    from lionagi.service.connections.mcp_wrapper import MCPConnectionPool, MCPSecurityConfig
+    from lionagi.studio.services.mcp_servers import _attempt_connection
+
+    checked, pooled = tmp_path / "mcp-check.txt", tmp_path / "mcp-pool.txt"
+    # The probe is no MCP server: each connection fails once the probe has written what it saw.
+    result = await _attempt_connection({"command": str(probe), "args": [str(checked)]})
+    assert result["ok"] is False
+    with pytest.raises(Exception):
+        await MCPConnectionPool._create_client(
+            {"command": str(probe), "args": [str(pooled)]},
+            security=MCPSecurityConfig.trusted(),
+        )
+    for out in (checked, pooled):
+        assert out.read_text().splitlines()[:2] == ["<absent>", "<absent>"]
+
+
+@pytest.mark.asyncio
+async def test_an_environment_a_caller_names_is_passed_as_given(probe, tmp_path):
+    """Only what a command would inherit is scrubbed: a store URL its caller names is the
+    caller's choice."""
+    from lionagi.tools._subprocess import _subprocess_sync
+
+    chosen = "sqlite:////chosen/store.db"
+    agent_out, notify_out = tmp_path / "agent-explicit.txt", tmp_path / "notify-explicit.txt"
+    result = _subprocess_sync(
+        [str(probe), str(agent_out)], False, 30, str(tmp_path), env={STATE_DB_URL_ENV: chosen}
+    )
+    assert result["returncode"] == 0, result
+    assert agent_out.read_text().splitlines()[:2] == [chosen, "<absent>"]
+
+    handler = _make_exec_handler(
+        [str(probe), str(notify_out)],
+        payload_fn=lambda envelope: {},
+        env_fn=lambda envelope: {STATE_DB_URL_ENV: chosen},
+    )
+    await handler(object())
+    # The inherited lowercase spelling is still gone; the named one arrives.
+    assert notify_out.read_text().splitlines()[:2] == [chosen, "<absent>"]

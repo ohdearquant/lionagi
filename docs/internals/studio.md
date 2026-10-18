@@ -283,10 +283,13 @@ lionagi, and an inherited store URL would open the daemon's store with that
 lionagi: one on a newer schema migrates the file on open, after which the
 daemon's own code refuses it. Every other path that runs a configured or
 agent-chosen command starts the same way: notify commands, external hooks, MCP
-terminal notices, secrets lookup commands, the commands run through
+terminal notices, secrets lookup commands, configured stdio MCP servers (the
+Studio connection check and the MCP connection pool), the commands run through
 `communicate_in_process_group` (tool hooks, outbox delivery), and the commands
 an agent runs through lionagi's own shell tool. A command that needs the
-daemon's store names it itself, in its argv or its own environment. Every `li`
+daemon's store names it itself, in its argv or its own environment; an
+environment a caller hands a command explicitly (a server's configured `env`, a
+sandbox cell's `env`) is passed as given. Every `li`
 child (the other action kinds) still inherits the URL, so its run records into
 the daemon's store.
 
