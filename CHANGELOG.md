@@ -83,6 +83,9 @@ behaviour, including accepting a write-capable submission without `cwd`.
   invocation only) and prints it as `[api] spend: ...` after each turn.
 - `build_lndl_middle(lacts_with_out=False)` keeps tool calls and the answer in separate rounds:
   a round that declares `<lact>` calls beside its `OUT{}` is refused and none of its calls runs.
+  A round with neither a `<lact>` nor an `OUT{}` in an `lndl` block, or with no block at all, is
+  refused too, and the next round is told that nothing in it ran, so a call written in other
+  markup is not mistaken for one that returned nothing.
   From the second round on, the last round's notice says it is the last, and a refused round's
   error is shown to the next round only.
 - `lionagi.lndl.Parser.parse(read_past_out=True)` reads declarations on both sides of `OUT{}`
@@ -330,6 +333,10 @@ behaviour, including accepting a write-capable submission without `cwd`.
 
 ### Fixed
 
+- `extract_lndl_blocks` read only unindented three-character fences with LF line ends, so an
+  indented block, a block fenced with four backticks, or CRLF output was not read at all; it now
+  reads all three. A block closes only on the fence it opened with, at the same indentation, so
+  an indented fence inside a value stays content, and CRLF line ends are read as LF.
 - `li schedule validate` and `li schedule apply` name every invalid schedule as `<project>/<name>`
   (`global/<name>` for a global set), in the text lines and in `--json` alike. A resolution error
   used to carry the bare member name, so `--json` reported it unqualified while plan errors were
