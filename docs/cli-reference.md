@@ -82,6 +82,13 @@ Available on `li agent`, `li o fanout`, `li o flow`. Source: `cli/_providers.py`
 | `--invocation ID` | none | Group the session under an ID from `li invoke start` |
 | `--project NAME` | auto | Override project detection from config/git metadata |
 
+MCP servers are resolved once per launch, from the directory the command was run in:
+`--mcp-config PATH` names a file, `--no-mcp-config` states that there are none, and otherwise the
+nearest `.mcp.json` at or above that directory is used. On `li o fanout` and `li o flow`, every
+worker the launch builds is handed that one result, so no worker starts with servers the run did
+not resolve; `li agent` resolves the same way and warns when it hands a leg no servers because no
+config was found.
+
 **Model spec**: `provider/model[-effort]` — for example
 `claude/opus-4-7-high` or `codex/gpt-5.4-xhigh`. Current bare aliases include
 `claude` → `claude_code/sonnet`, `codex` → `codex/gpt-5.3-codex-spark`,
