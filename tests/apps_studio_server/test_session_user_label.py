@@ -304,7 +304,11 @@ async def test_persisted_label_reaches_cli_and_admin_display_names(label_client,
 async def test_http_patch_is_not_registered(label_client):
     path, client = label_client
     await _seed_session(path)
+    written = await client.put("/api/sessions/labelled", json={"user_label": "PUT label"})
+    assert written.status_code == 200
+    assert written.json()["user_label"] == "PUT label"
     before = _stored_row(path)
+    assert before["user_label"] == "PUT label"
     response = await client.patch("/api/sessions/labelled", json={"user_label": "Unchanged"})
     assert response.status_code == 405
     assert _stored_row(path) == before
