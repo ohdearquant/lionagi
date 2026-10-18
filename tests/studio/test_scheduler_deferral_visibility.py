@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 import lionagi.studio.config as config
-from lionagi.studio.scheduler.engine import SchedulerEngine
+from lionagi.studio.scheduler.engine import _MAX_PREDISPATCH_REFUSALS, SchedulerEngine
 from lionagi.studio.scheduler.github import GithubPollResult
 from tests.studio.test_scheduler_github_fire_per_event import _item
 from tests.studio.test_scheduler_global_slot import _make_svc, _minimal_schedule
@@ -227,7 +227,15 @@ async def test_a_due_evaluation_ends_the_episode_unless_the_cap_defers_it(monkey
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "outcome",
-    ["not_due", "deferred", "empty_poll", "poll_raised", "event_deferred", "fired_then_deferred"],
+    [
+        "not_due",
+        "deferred",
+        "empty_poll",
+        "poll_raised",
+        "event_deferred",
+        "fired_then_deferred",
+        "refused_then_deferred",
+    ],
 )
 async def test_a_github_due_pass_ends_the_episode_unless_the_cap_defers_it(monkeypatch, outcome):
     monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
@@ -238,6 +246,10 @@ async def test_a_github_due_pass_ends_the_episode_unless_the_cap_defers_it(monke
         github_repo="acme/widgets",
         last_fired_at=10_000.0 if outcome == "not_due" else 0,
     )
+    if outcome == "refused_then_deferred":
+        # The first event's next refusal before dispatch is its last, so the pass moves past it.
+        schedule["predispatch_refusal_event"] = _item(1, "2026-01-01T00:00:00Z").cursor
+        schedule["predispatch_refusal_count"] = _MAX_PREDISPATCH_REFUSALS - 1
     engine._deferred_log_counts = {"poller": 2, "other": 3}
     held, fired = [], []
 
@@ -247,7 +259,7 @@ async def test_a_github_due_pass_ends_the_episode_unless_the_cap_defers_it(monke
         if outcome == "event_deferred":
             # The cap fills while the poll fetches, after the pre-poll read found room.
             held.append((await engine._reserve_global_slot("blocker", path="manual"))[1])
-        if outcome in ("event_deferred", "fired_then_deferred"):
+        if outcome in ("event_deferred", "fired_then_deferred", "refused_then_deferred"):
             return GithubPollResult(
                 items=[_item(1, "2026-01-01T00:00:00Z"), _item(2, "2026-01-01T00:01:00Z")],
                 scan_complete=True,
@@ -258,7 +270,7 @@ async def test_a_github_due_pass_ends_the_episode_unless_the_cap_defers_it(monke
         # The first event keeps its slot, so the second finds the cap full.
         fired.append(run_id)
         held.append(global_slot_claim)
-        return True
+        return outcome != "refused_then_deferred"
 
     monkeypatch.setattr("lionagi.studio.scheduler.github.github_poll", poll)
     monkeypatch.setattr(engine, "_fire", fire)
@@ -279,7 +291,7 @@ async def test_a_github_due_pass_ends_the_episode_unless_the_cap_defers_it(monke
         "event_deferred": {"poller": 3, "other": 3},
     }.get(outcome, {"other": 3})
     assert engine._deferred_log_counts == expected
-    assert len(fired) == (1 if outcome == "fired_then_deferred" else 0)
+    assert len(fired) == (1 if outcome in ("fired_then_deferred", "refused_then_deferred") else 0)
     assert engine._global_inflight == 0
 
 
