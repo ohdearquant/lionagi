@@ -334,9 +334,6 @@ function DispositionControls({ item }: { item: AttentionItem }) {
     setError(null);
     try {
       await deleteAttentionDisposition(item.id);
-      // The join reads both keys, so clearing only the current one would
-      // leave the row discharged under the id an earlier build wrote.
-      if (item.legacyId) await deleteAttentionDisposition(item.legacyId);
     } catch (err) {
       setError(
         err instanceof ApiError ? err.message : t("attention.action.saveFailed", { message: "" }),
