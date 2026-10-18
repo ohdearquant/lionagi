@@ -109,9 +109,12 @@ class RateLimitedAPIProcessor(Processor):
 
     @override
     async def request_permission(self, required_tokens: int | None = None, **kwargs: Any) -> bool:
-        # No limits configured, just check queue capacity
+        # No request or token limit is configured, so every event may run. Queue
+        # occupancy is not a limit: process() bounds each pass by
+        # available_capacity, and a caller can enqueue more than queue_capacity
+        # events before that pass begins.
         if self._available_requests is None and self._available_tokens is None:
-            return self.queue.qsize() < self.queue_capacity
+            return True
 
         async with self._lock:
             # Check both limits before decrementing either to avoid

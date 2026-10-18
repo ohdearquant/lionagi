@@ -60,7 +60,7 @@ project those rows ran under. To keep the project, name it in those members.
   row when it creates the store, and compatibility mode admits only a store that has it, so a
   native open in another process cannot migrate a store being written in compatibility mode;
   compatibility mode in turn refuses a store this process has open natively. A store without the
-  row opens and migrates natively as before. Studio's own store opener is not covered yet.
+  row is admitted by its other rows (see Changed). Studio's own store opener is not covered yet.
 - `RunEnd` and the run usage totals report cache writes by lifetime, `cache_write_5m_tokens` and
   `cache_write_1h_tokens`, read from Anthropic's `usage.cache_creation`; `cache_write_tokens` stays
   the total. The lifetimes are reported only when they cover the whole `cache_write_tokens` total
@@ -73,6 +73,24 @@ project those rows ran under. To keep the project, name it in those members.
   integer (an integral float such as `200.0` included).
 
 ### Changed
+
+- A writable native `StateDB` open writes `lineage = 'lionagi'` into `schema_meta` when it applies
+  its schema, and admits a store by its rows (ADR-0128 D7). A store whose lineage names lionagi
+  opens as before. A store without the row is adopted, and the row written, when it records a
+  version from 1 to the current one and holds the `sessions` table or no table lionagi never
+  creates, or when it has no `schema_meta` table and every table in it is one lionagi creates (the
+  Studio Operator store and Studio's approval ledger can create their tables first). Tables are
+  recognized by name. Any other store raises `UnrecognizedStoreError` (exported from
+  `lionagi.state`): a missing version, one no release writes, a `schema_meta` table without `key`
+  and `value` columns, or a table lionagi never creates. On SQLite these rows and the version are
+  read with the lineage row before any writable connection exists, so a store refused on them,
+  `SchemaTooNewError` included, keeps its bytes, its journal mode and its write-ahead log whenever
+  those reads can read them, and the pre-rebuild backup reads them again before its checkpoint. An open refused with
+  `SchemaTooNewError` now leaves no engine, as the other refusals do. A store whose journal or
+  write-ahead log is present and cannot be read is refused as `UnreadableStoreError` (exported from
+  `lionagi.state`) before any writable connection, rather than opened on the file's own row, which
+  can be part of an unfinished transaction or stale beside a committed log. On PostgreSQL a
+  database with no `schema_meta` table is still new.
 
 - Mirror and monitor time windows reject zero, negative, non-finite values and
   uppercase units, trim surrounding whitespace, and accept explicit seconds (`s`)

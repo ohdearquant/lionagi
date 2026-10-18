@@ -1,8 +1,11 @@
 # ADR-0128: Writing run state into a store another schema lineage manages
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Aspirational
-- **Implementation-status**: not-started
+- **Implementation-status**: partial: D1-D7 are implemented. D8 is not complete: no test covers
+  item 7's writer-hold, busy-rate and WAL-growth limits declared before a run, or item 9's recovery
+  after lionagi's writes stop, and item 8's authorizer tests run on each supported Python against
+  one aiosqlite version.
 - **Area**: persistence-state
 - **Date**: 2026-10-14
 - **Relations**: extends ADR-0122 (optional runtime profiles); constrains every writable `StateDB` open;
@@ -197,10 +200,47 @@ and by a native migration that has recognized the store. Native migration requir
 version and the expected shape together; a store without the key is adopted only if its shape is one
 lionagi's own history produced. Compatibility mode reads the store's metadata and never writes
 `version`, `lineage` or any backfill key. Non-numeric, missing and equal version values are
-classified explicitly rather than falling through a numeric comparison. Native initialization does
-not write `lineage = 'lionagi'` yet, and native migration does not yet require the key: today a
-store with no `lineage` row opens and migrates natively as before, so the refusal below covers
-only a store whose managing application wrote its row.
+classified explicitly rather than falling through a numeric comparison.
+
+Native initialization writes `lineage = 'lionagi'` in the transaction that applies its schema, and a
+writable native open admits a store by its rows:
+
+- A `lineage` row naming lionagi: the store is this package's. A version above `SCHEMA_VERSION` is
+  refused with `SchemaTooNewError`; a version that is missing or not a whole number is replaced by
+  the stamp, as before the row existed, since the row already says whose store it is.
+- No `lineage` row, and a `schema_meta` table: every store lionagi created before the row holds a
+  version from 1 to `SCHEMA_VERSION` and the `sessions` table, both created on its first open. Such
+  a store is adopted and the migration writes the row into it; so is one that holds no table a
+  lionagi component never creates, as a first open stopped before it created `sessions` leaves. A
+  version above `SCHEMA_VERSION` is refused as too new; a missing version, or one no release writes
+  (not a whole number, zero, padded, spaced or empty), raises `UnrecognizedStoreError`, since
+  nothing then says what shape a migration would meet, and so does a store holding a table no
+  lionagi component creates and no `sessions` table. A `schema_meta` table without `key` and
+  `value` columns raises `UnrecognizedStoreError`.
+- No `schema_meta` table: a store with no tables is new. A store whose tables are all ones a lionagi
+  component creates in the state file is adopted: the `StateDB` schema's tables, among them Studio's
+  approval ledger, and the Studio Operator store's, which those components create on their own and
+  can create before any `StateDB` open. A store holding any other table raises
+  `UnrecognizedStoreError`. A server database holds other applications' tables beside lionagi's,
+  so on PostgreSQL a database with no `schema_meta` table is new, as before, and a database with
+  one is admitted by its rows alone.
+
+Tables are recognized by name, not by their columns: a table of another application that takes the
+name of one lionagi creates reads as lionagi's, and the migration then meets it as it is.
+
+On SQLite the version, the table names and the shape of `schema_meta` are read with the `lineage` row,
+by the reads before any writable connection exists that the paragraphs below describe, so a store
+refused on any of them keeps its bytes, its journal mode and its write-ahead log. When those reads
+could not read a journal or a log beside the file, the file's own `lineage` row decides nothing,
+since it can be part of a transaction or stale beside a committed log, and the store is refused as
+unreadable (`UnreadableStoreError`). Each connection a handle opens while its open is in progress
+reads all of them again before its connection settings; a connection opened after the open has
+applied the schema reads only the `schema_meta` `lineage` and `version` rows, so
+`SchemaTooNewError` is raised by an open and never by an ordinary write. The
+pre-rebuild backup reads them again before the checkpoint it takes. A refused open leaves no engine,
+whichever of `ForeignLineageError`, `UnrecognizedStoreError`, `UnreadableStoreError`,
+`SchemaTooNewError` and the compatibility refusal refused it. `UnrecognizedStoreError` and `UnreadableStoreError` are exported
+from `lionagi.state`.
 
 A store another application manages carries a `lineage` row naming that application. The managing
 application writes it when it creates the store, in the transaction that creates its schema, and the
@@ -233,20 +273,23 @@ each distinct store copied keeps one descriptor open for the life of the process
 after it was copied keeps its disk space allocated until the process exits. On Windows, where a lock
 belongs to the handle that took it, the file is copied as usual. A copy the store committed or
 checkpointed under, seen as a changed journal or log header, is taken again from the first read, a
-bounded number of times; when every copy sees the store move, the file's own row stands and the
-writable connection decides the rest. A copy costs a read of the whole file, and is made only beside
-such a journal or a log without a readable index.
+bounded number of times; when every copy sees the store move, the store is refused as unreadable. A
+copy costs a read of the whole file, and is made only beside such a journal or a log without a
+readable index.
 
-A read that fails decides nothing; the writable connection then decides. Each writable connection
-reads the row again right after its busy timeout, before the connection settings of P2 and before
-any statement of `_apply_schema()`, which refuses a row written between the first reads and the
-writable connection. A connection that refuses is closed. That read is the writable connection's,
+A store beside a journal or a log whose rows could not be read (`UnreadableStoreError`, exported from
+`lionagi.state`) is refused before any writable connection exists, since the file's own row can be
+part of an unfinished transaction or stale beside a committed log; a store that moved under every
+copy counts as one. A file that cannot be read at all decides nothing there, and the writable
+connection decides. Each writable connection reads the rows again right after its busy timeout,
+before the connection settings of P2 and before any statement of `_apply_schema()`, which refuses a
+row written between the first reads and the writable connection. A connection that refuses is
+closed. That read is the writable connection's,
 and it is the case in which a refused open can change a file of the store: by the time it refuses,
 the connection may have rolled back a hot rollback journal, as on any writable open, built the
 `-shm` index or recorded its read in it, and, if no other connection has the store open when it
 closes, SQLite folds the log into the file. It happens only when the row was written after the reads
-before the writable connection, or when those reads could not read it (a file SQLite cannot open
-read-only, a copy that cannot be made or read, or a store that moved under every copy). A refused
+before the writable connection, or when the file itself could not be read. A refused
 open, and an open whose first connection never read the store, leaves no engine. A connection a
 native handle opened before the row was written is not asked again; only its later connections read
 the row. Every transaction of `_apply_schema()` that writes reads the row again under its write
@@ -292,10 +335,10 @@ Public tests use synthetic profiles. A deployment proves its own profile in its 
 - The aiosqlite floor rises to 0.22.0 (D3).
 - Turning compatibility writes off is the rollback. Restoring a backup over a store the managing
   application is still writing is not.
-- No production caller opens a store in compatibility mode until the native refusal of D7 ships,
-  since before it a native open in another process can migrate a store this process is writing.
-  None does today: the mode is reached only by passing a profile to `StateDB`, and no command,
-  server or configuration passes one.
+- No production caller opened a store in compatibility mode before the native refusal of D7 shipped,
+  since until then a native open in another process could migrate a store this process was writing.
+  None does yet: the mode is reached only by passing a profile to `StateDB`, and no command, server
+  or configuration passes one.
 
 ## Alternatives considered
 
@@ -326,19 +369,23 @@ missing here is a defect in this appendix.
 ### A.0 Today
 
 A writable open of a store stamped with a higher `schema_meta.version` raises `SchemaTooNewError`
-before any data or DDL statement. Every step `_apply_schema()` runs ahead of its main version check
-(`_reconcile_columns`, the legacy `sessions` rebuild, and the six legacy CHECK rebuilds of
-`schedules`, `invocations`, `schedule_runs` and `definitions`) either finds nothing to do or checks
-the version first inside its own `BEGIN IMMEDIATE`. The connection settings of P2 are applied before
-any of it. Compatibility mode (D1) runs none of these steps.
+before any data or DDL statement; on SQLite the version is read with the `lineage` row, before any
+writable connection exists and again by each connection the open makes before its connection
+settings of P2 (D7), and the refused open leaves no engine. Every step `_apply_schema()` runs ahead
+of its main version check (`_reconcile_columns`, the legacy `sessions` rebuild, and the six legacy
+CHECK rebuilds of `schedules`, `invocations`, `schedule_runs` and `definitions`) either finds
+nothing to do or checks the version first inside its own `BEGIN IMMEDIATE`, and the backup a
+rebuild takes reads it again before its checkpoint. Compatibility mode (D1) runs none of these
+steps.
 
 A writable native `StateDB` open of a store whose `lineage` row names another application raises
 `ForeignLineageError` (D7) before any writable connection exists, leaving the store file, its
 journal, its log and its `-shm` index as they were: beside a journal an interrupted transaction left,
 or when the row is only in the log and the log has no readable index, the row is read from a private
 copy in a temporary directory that is removed before the read returns, and otherwise a row only in
-the log is read through the index without writing it. A row written after those reads, or one they
-could not read, is refused by the writable connection's first read, before the connection settings
+the log is read through the index without writing it. A store with such a journal or log whose rows
+could not be read is refused as unreadable before any writable connection exists. A row written
+after those reads is refused by the writable connection's first read, before the connection settings
 of P2 and before any statement of `_apply_schema()`; by then that connection may have rolled back a
 hot journal, written the index, or, closing as the store's last connection, folded the log into the
 file. Wherever the lineage and the version are both read, the lineage is checked
@@ -350,6 +397,18 @@ compatibility admission of that file is refused, the file being the one that han
 opened, however its URL spells the path. These refusals cover writable `StateDB` opens; a
 read-only open applies nothing and is not checked, and Studio's `open_db` and other code that
 connects to the file natively are not covered.
+
+A writable native open of a store with no `lineage` row raises `UnrecognizedStoreError` (D7) when
+its `schema_meta` version is missing or one no release writes, or, on SQLite, when its
+`schema_meta` table has no `key` and `value` columns, when it has no `schema_meta` table and holds a
+table no lionagi component creates, or when it records a version and holds such a table but no
+`sessions` table. On SQLite each of these is read with the `lineage` row, before any writable
+connection exists, so a store those reads can read keeps its bytes, its journal mode and its log
+when it is refused; otherwise the open's first writable connection refuses it before its connection
+settings. Refused the same way is a store whose hot journal or non-empty log could not be read,
+with no conclusion drawn from the file's own rows. A plain open that fails after it committed its
+schema and kept its engine reads the store again on its next open, before any connection reuses
+that engine.
 
 ### A.1 Entry points
 
