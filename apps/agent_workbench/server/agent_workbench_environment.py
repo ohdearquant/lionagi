@@ -96,7 +96,17 @@ def _release_sandbox_uid(uid: int | None) -> None:
 
 
 def _remove_tree(root: Path) -> None:
-    """Remove a workspace even after its agent took the permissions away from its own directories."""
+    """Remove a workspace even after its agent took the permissions away from its own directories.
+
+    A *root* that is no longer a directory (agent code put a symlink in its place) is removed as
+    what it is: the permission pass below never reaches anything outside the tree.
+    """
+    try:
+        if not stat.S_ISDIR(os.lstat(root).st_mode):
+            os.unlink(root)
+            return
+    except OSError:
+        return
     stack = [root]
     while stack:
         top = stack.pop()
@@ -121,6 +131,9 @@ class AgentWorkbenchEnvironment(Environment):
     def __init__(self) -> None:
         self._state = State(episode_id=str(uuid4()), step_count=0)
         self._task: BuiltTask | None = None
+        # The workspace sits in a directory of its own that agent code cannot write, so it can
+        # neither be renamed nor replaced, only emptied.
+        self._home: Path | None = None
         self._ws: Path | None = None
         self._done = False
         self._final_reward = 0.0
@@ -155,7 +168,9 @@ class AgentWorkbenchEnvironment(Environment):
         try:
             uid = _claim_sandbox_uid()
             self._ids = None if uid is None else (uid, uid)
-            self._ws = Path(tempfile.mkdtemp(prefix="wb-")).resolve()
+            self._home = Path(tempfile.mkdtemp(prefix="wb-")).resolve()
+            self._ws = self._home / "ws"
+            self._ws.mkdir(mode=0o700)
             for rel, content in self._task.files.items():
                 path = self._ws / rel
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -353,7 +368,7 @@ class AgentWorkbenchEnvironment(Environment):
 
     def _solution_digest(self) -> str | None:
         try:
-            fd = self._open_regular(self._ws / "solution.py", os.O_RDONLY, "solution.py")
+            fd = self._open_regular(self._workspace() / "solution.py", os.O_RDONLY, "solution.py")
         except _RefusalError:
             return None
         with os.fdopen(fd, "rb") as fh:
@@ -424,7 +439,9 @@ class AgentWorkbenchEnvironment(Environment):
             raise _RefusalError("paths must stay inside the workspace (relative, no '..')")
         if not parts:
             raise _RefusalError("'path' must name a file, not the workspace itself")
-        target = self._ws
+        if any(part.startswith((".run", ".grade")) for part in parts):
+            raise _RefusalError("that file is reserved")
+        target = self._workspace()
         for part in parts:
             target = target / part
             try:
@@ -437,10 +454,20 @@ class AgentWorkbenchEnvironment(Environment):
                 raise _RefusalError(
                     "paths must stay inside the workspace and may not pass through a symlink"
                 )
-        target = self._ws.joinpath(*parts)
-        if target.name.startswith(".run") or target.name.startswith(".grade"):
-            raise _RefusalError("that file is reserved")
-        return target
+        return self._ws.joinpath(*parts)
+
+    def _workspace(self) -> Path:
+        """The workspace, checked to be a real directory and given back the permissions agent code
+        may have taken from it; a refusal when agent code removed it."""
+        try:
+            st = os.lstat(self._ws)
+        except OSError:
+            raise _RefusalError("the workspace directory is gone; nothing can run in it") from None
+        if not stat.S_ISDIR(st.st_mode):
+            raise _RefusalError("the workspace is no longer a directory; nothing can run in it")
+        if stat.S_IMODE(st.st_mode) != 0o700:
+            os.chmod(self._ws, 0o700)
+        return self._ws
 
     @staticmethod
     def _open_regular(path: Path, flags: int, shown: Any) -> int:
@@ -464,7 +491,7 @@ class AgentWorkbenchEnvironment(Environment):
     def _listing(self) -> str:
         # Symlinks are neither followed nor listed: the size of a link's target is not the agent's to see.
         rows = []
-        for top, _dirs, names in os.walk(self._ws):
+        for top, _dirs, names in os.walk(self._workspace()):
             for name in names:
                 p = Path(top) / name
                 if name.startswith(".") or p.is_symlink() or not p.is_file():
@@ -475,22 +502,28 @@ class AgentWorkbenchEnvironment(Environment):
     def _own_workspace(self) -> None:
         if self._ids is None:
             return
+        # The episode's uid may pass through its home, not write it.
+        os.chmod(self._home, 0o711)  # noqa: S103 - search only, no read or write
         os.chmod(self._ws, 0o700)
         for p in [self._ws, *self._ws.rglob("*")]:
             os.chown(p, *self._ids, follow_symlinks=False)
 
     def _write_private(self, name: str, text: str) -> None:
-        # The agent's code can plant a symlink at this name; never follow it as root.
-        path = self._ws / name
-        if path.is_symlink() or path.exists():
-            if path.is_dir() and not path.is_symlink():
-                shutil.rmtree(path)
-            else:
-                path.unlink()
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
-        with os.fdopen(fd, "w") as fh:
-            fh.write(text)
-        self._chown(path)
+        # The agent's code can plant a symlink, or a directory it locked, at this name; never
+        # follow it as root, and refuse rather than fail when it cannot be cleared.
+        path = self._workspace() / name
+        try:
+            if os.path.lexists(path):
+                if stat.S_ISDIR(os.lstat(path).st_mode):
+                    _remove_tree(path)
+                else:
+                    path.unlink()
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+            with os.fdopen(fd, "w") as fh:
+                fh.write(text)
+            self._chown(path)
+        except OSError as exc:
+            raise _RefusalError(f"cannot prepare {name}: {exc.strerror}") from None
 
     def _chown(self, path: Path) -> None:
         if self._ids is not None:
@@ -507,17 +540,20 @@ class AgentWorkbenchEnvironment(Environment):
         if self._ids is not None:
             uid, gid = self._ids
             kwargs.update(user=uid, group=gid, extra_groups=[])
-        # Runs the agent's own code on purpose, as an unprivileged user in its workspace.
-        proc = subprocess.Popen(  # noqa: S603
-            argv,
-            cwd=self._ws,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-            **kwargs,
-        )
+        try:
+            # Runs the agent's own code on purpose, as an unprivileged user in its workspace.
+            proc = subprocess.Popen(  # noqa: S603
+                argv,
+                cwd=self._workspace(),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+                **kwargs,
+            )
+        except OSError as exc:
+            raise _RefusalError(f"cannot run in the workspace: {exc.strerror}") from None
         try:
             stdout, stderr = proc.communicate(timeout=PY_TIMEOUT_S)
         except subprocess.TimeoutExpired:
@@ -562,22 +598,30 @@ class AgentWorkbenchEnvironment(Environment):
         return found
 
     def _remove_shared_tmp_files(self) -> None:
-        # A file the agent left in /tmp would otherwise be there for the next episode under this uid.
+        # A file the agent left in /tmp, at any depth, would otherwise be there for the next
+        # episode under this uid. Only this uid's entries go: a directory it made that another
+        # episode wrote into keeps the other episode's files and is handed to root, so the uid's
+        # next holder does not inherit it. The walk works through directory descriptors and never
+        # follows a symlink.
+        uid = self._ids[0]
         for root in _SHARED_TMP_DIRS:
-            try:
-                entries = list(os.scandir(root))
-            except OSError:
+            if not os.path.isdir(root):
                 continue
-            for entry in entries:
-                try:
-                    if entry.stat(follow_symlinks=False).st_uid != self._ids[0]:
+            for _top, dirs, names, dir_fd in os.fwalk(root, topdown=False, follow_symlinks=False):
+                for name in [*names, *dirs]:
+                    try:
+                        st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                        if st.st_uid != uid:
+                            continue
+                        if not stat.S_ISDIR(st.st_mode):
+                            os.unlink(name, dir_fd=dir_fd)
+                            continue
+                        try:
+                            os.rmdir(name, dir_fd=dir_fd)
+                        except OSError:
+                            os.chown(name, 0, 0, dir_fd=dir_fd, follow_symlinks=False)
+                    except OSError:
                         continue
-                    if entry.is_dir(follow_symlinks=False):
-                        _remove_tree(Path(entry.path))
-                    else:
-                        os.unlink(entry.path)
-                except OSError:
-                    continue
 
     def _cleanup(self) -> None:
         if self._ids is not None:
@@ -587,9 +631,10 @@ class AgentWorkbenchEnvironment(Environment):
                 if not self._kill_sandbox_uid():
                     break
             self._remove_shared_tmp_files()
-        if self._ws is not None:
-            _remove_tree(self._ws)
-            self._ws = None
+        if self._home is not None:
+            _remove_tree(self._home)
+            self._home = None
+        self._ws = None
         if self._ids is not None:
             _release_sandbox_uid(self._ids[0])
             self._ids = None

@@ -2,7 +2,9 @@
 """Whole episodes against the environment class."""
 
 import os
+import stat
 import time
+from pathlib import Path
 
 import pytest
 
@@ -465,6 +467,190 @@ def test_files_the_episode_uid_left_in_shared_tmp_are_removed(tmp_path, monkeypa
     env._remove_shared_tmp_files()
     assert list(shared.iterdir()) == []
     env._ids = None
+
+
+def test_a_workspace_replaced_by_a_symlink_is_never_followed(env, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir(mode=0o755)
+    (outside / "secret.txt").write_text("secret")
+    env.reset(task_id="science-gas-1")
+    act(
+        env,
+        "run_python",
+        code="import os, shutil; ws = os.getcwd(); os.chdir('/'); shutil.rmtree(ws); "
+        f"os.symlink({str(outside)!r}, ws)",
+    )
+    assert os.path.islink(env._ws)  # the replacement happened
+    home = env._home
+    answers = [
+        act(env, "list_files"),
+        act(env, "read_file", path="secret.txt"),
+        act(env, "write_file", path="secret.txt", content="overwritten"),
+    ]
+    assert all("no longer a directory" in (obs.error or obs.output) for obs in answers)
+    assert answers[-1].done and not home.exists()
+    assert (outside / "secret.txt").read_text() == "secret"
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o755
+
+
+def test_removing_a_workspace_home_replaced_by_a_symlink_leaves_the_target_alone(env, tmp_path):
+    # Outside the image the agent runs as the server's own user and can replace even the home.
+    outside = tmp_path / "outside"
+    (outside / "sub").mkdir(parents=True, mode=0o755)
+    (outside / "keep.txt").write_text("keep")
+    env.reset(task_id="science-gas-1")
+    home = env._home
+    act(
+        env,
+        "run_python",
+        code="import os, shutil; home = os.path.dirname(os.getcwd()); os.chdir('/'); "
+        f"shutil.rmtree(home); os.symlink({str(outside)!r}, home)",
+    )
+    assert os.path.islink(home)  # the replacement happened
+    env.close()
+    assert not os.path.lexists(home)
+    assert (outside / "keep.txt").read_text() == "keep"
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o755
+    assert stat.S_IMODE((outside / "sub").stat().st_mode) == 0o755
+
+
+def test_the_episode_uid_cannot_write_the_directory_holding_its_workspace(monkeypatch):
+    _no_root_side_effects(monkeypatch)
+    chowned = []
+    monkeypatch.setattr(
+        workbench.os, "chown", lambda path, uid, gid, **kw: chowned.append(Path(path))
+    )
+    env = AgentWorkbenchEnvironment()
+    try:
+        env.reset(task_id="science-gas-1")
+        home, ws = env._home, env._ws
+        assert ws.parent == home
+        assert stat.S_IMODE(home.stat().st_mode) == 0o711
+        assert stat.S_IMODE(ws.stat().st_mode) == 0o700
+        assert ws in chowned and home not in chowned
+    finally:
+        env.close()
+    assert not home.exists()
+
+
+def test_a_workspace_the_agent_locked_is_given_back(env):
+    env.reset(task_id="science-gas-1")
+    act(env, "run_python", code="import os; os.chmod('.', 0)")
+    out = act(env, "run_python", code="print('still here')").output
+    assert "still here" in out and "exit code 0" in out
+
+
+def test_a_workspace_the_agent_removed_is_refused_rather_than_an_error(env):
+    env.reset(task_id="software-slugify-4")
+    act(
+        env,
+        "run_python",
+        code="import os, shutil; ws = os.getcwd(); os.chdir('/'); shutil.rmtree(ws)",
+    )
+    for tool in ["run_tests", "run_python"]:
+        args = {"code": "print(1)"} if tool == "run_python" else {}
+        obs = act(env, tool, **args)
+        assert "workspace directory is gone" in obs.error and not obs.done
+
+
+def test_a_locked_directory_at_the_script_name_is_cleared(env):
+    env.reset(task_id="science-gas-1")
+    act(
+        env,
+        "run_python",
+        code="import os; os.remove('.run.py'); os.makedirs('.run.py/sub'); "
+        "open('.run.py/sub/f', 'w').write('x'); os.chmod('.run.py/sub', 0); os.chmod('.run.py', 0)",
+    )
+    out = act(env, "run_python", code="print('ran')").output
+    assert "ran" in out and "exit code 0" in out
+
+
+@pytest.mark.parametrize("path", [".grade.py/sub", ".run.py/x", "notes/.grade_tests.py"])
+def test_a_reserved_name_is_refused_anywhere_in_a_path(env, path):
+    env.reset(task_id="science-gas-1")
+    assert "reserved" in act(env, "write_file", path=path, content="x").error
+    assert not (env._ws / Path(path).parts[0]).exists()
+
+
+def test_cleanup_kills_until_none_is_left_then_sweeps_tmp_before_removing_the_workspace(
+    monkeypatch,
+):
+    _no_root_side_effects(monkeypatch)
+    monkeypatch.setattr(AgentWorkbenchEnvironment, "_own_workspace", lambda self: None)
+    env = AgentWorkbenchEnvironment()
+    env.reset(task_id="math-divisible-1")
+    ws = env._ws
+    calls = []
+    found = iter([2, 1, 0, 5])
+    monkeypatch.setattr(
+        AgentWorkbenchEnvironment,
+        "_kill_sandbox_uid",
+        lambda self: calls.append("kill") or next(found),
+    )
+    monkeypatch.setattr(
+        AgentWorkbenchEnvironment,
+        "_remove_shared_tmp_files",
+        lambda self: calls.append(("sweep", ws.exists())),
+    )
+    env.close()
+    assert calls == ["kill", "kill", "kill", ("sweep", True)]
+    assert not ws.exists()
+
+
+def test_the_shared_tmp_sweep_reaches_every_depth_and_removes_only_the_uids_entries(
+    tmp_path, monkeypatch
+):
+    shared = tmp_path / "shared"
+    (shared / "theirs_dir").mkdir(parents=True)
+    (shared / "theirs_dir" / "mine.txt").write_text("42")
+    (shared / "theirs_dir" / "theirs.txt").write_text("keep")
+    (shared / "my_dir" / "deep").mkdir(parents=True)
+    (shared / "my_dir" / "deep" / "mine.txt").write_text("42")
+    (shared / "my_shared_dir").mkdir()
+    (shared / "my_shared_dir" / "theirs.txt").write_text("keep")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "mine.txt").write_text("keep")
+    os.symlink(outside, shared / "link")
+    monkeypatch.setattr(workbench, "_SHARED_TMP_DIRS", (str(shared),))
+    # Files here all belong to the test's uid; these names stand for another episode's.
+    real_stat = os.stat
+
+    def as_another_uid(path, *args, **kwargs):
+        st = real_stat(path, *args, **kwargs)
+        if isinstance(path, str) and os.path.basename(path) in {"theirs_dir", "theirs.txt"}:
+            fields = list(st[:10])
+            fields[4] = os.getuid() + 2
+            return os.stat_result(fields)
+        return st
+
+    monkeypatch.setattr(workbench.os, "stat", as_another_uid)
+    chowned = []
+    monkeypatch.setattr(
+        workbench.os, "chown", lambda path, uid, gid, **kw: chowned.append((path, uid, gid))
+    )
+
+    def tree():
+        return sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*"))
+
+    before = tree()
+    env = AgentWorkbenchEnvironment()
+    env._ids = (os.getuid() + 3, os.getgid())  # control: a uid that owns nothing here
+    env._remove_shared_tmp_files()
+    assert tree() == before
+    env._ids = (os.getuid(), os.getgid())
+    env._remove_shared_tmp_files()
+    env._ids = None
+    assert tree() == [
+        "outside",
+        "outside/mine.txt",
+        "shared",
+        "shared/my_shared_dir",
+        "shared/my_shared_dir/theirs.txt",
+        "shared/theirs_dir",
+        "shared/theirs_dir/theirs.txt",
+    ]
+    assert chowned == [("my_shared_dir", 0, 0)]
 
 
 @pytest.mark.parametrize("path", ["a\x00b", "a" * 300, "locked/f"])

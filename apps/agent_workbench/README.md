@@ -76,13 +76,15 @@ Tasks are generated from their ids with a seeded generator, so every reset of a 
 ## Sandbox
 
 In the image the server runs as root, and each episode runs its agent code under a uid of its own with the
-system interpreter, in a workspace the episode creates and removes. Concurrent episodes cannot read each other's
-workspaces, and a call's cleanup kills only its own episode's processes. When an episode ends, its processes
-are killed, the files its uid left in `/tmp`, `/var/tmp` and `/dev/shm` are removed with its workspace, and its
-uid goes to the back of the rotation. The server's code and its virtual environment are not readable from agent
-code. Paths given to the file tools are relative, stay inside the
-workspace and may not pass through a symlink; they read and write regular files only, and the listing neither
-follows nor shows symlinks.
+system interpreter, in a workspace the episode creates and removes. The workspace sits inside a directory the
+episode's uid can pass through but not write, so agent code can empty its workspace but cannot rename it or put
+anything in its place. Concurrent episodes cannot read each other's workspaces, and a call's cleanup kills only
+its own episode's processes. When an episode ends, its processes are killed, the files its uid left anywhere
+under `/tmp`, `/var/tmp` and `/dev/shm` are removed with its workspace (files another uid wrote are left alone),
+and its uid goes to the back of the rotation. The server's code and its virtual environment are not readable
+from agent code. Paths given to the file tools are relative, stay inside the workspace and may not pass through
+a symlink or a reserved name; they read and write regular files only, and the listing neither follows nor shows
+symlinks. A workspace whose permissions agent code took away is given them back before the next call.
 
 Outside the image (the server not running as root) there is no separate uid: agent code runs as the server's
 user, and a process that starts its own session can outlive its call. Train against the image.
