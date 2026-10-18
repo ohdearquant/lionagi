@@ -51,7 +51,7 @@ calls and the answer in separate rounds, and its guidance tells the model so: a 
 declares `<lact>` calls, with no `OUT{}`, or writes the answer, with no `<lact>`. A round that does
 both is a repair round, in which none of its calls runs and its answer is not taken. Left to the
 Middle's own rule, such a round would run only the calls its `OUT{}` binds and drop the rest
-(`lndl_middle.py:173-182`), so a model could answer beside a read it never saw. The answer model
+(`lndl_middle.py:163-172`), so a model could answer beside a read it never saw. The answer model
 has one field, `answer: str`, and accepts only text the model wrote: an `OUT{}` that binds a
 call's result from an earlier round (a mapping, a list, or nothing from a failed call) is refused,
 and the refusal tells the model to read the result and write the answer as text. The read tools
@@ -60,7 +60,7 @@ so an answer is never a raw tool result.
 
 Every LNDL round's request names the leg's tools, their parameters and descriptions, whatever the
 provider's prompt-cache placement. Today the Middle strips the tool schemas from its rounds
-(`lndl_middle.py:212`) and only an endpoint that places the prompt cache renders the branch's tool
+(`lndl_middle.py:202`) and only an endpoint that places the prompt cache renders the branch's tool
 set into the request (`lionagi/operations/chat/_prepare.py:209-227`), so on any other endpoint the
 model would be asked to call tools it was never shown.
 
