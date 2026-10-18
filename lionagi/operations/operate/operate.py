@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Literal, Union
 
 from pydantic import BaseModel, JsonValue
 
-from lionagi.ln import AlcallParams
+from lionagi.ln import AlcallParams, is_pydantic_model_class
 from lionagi.ln.types import Spec
 from lionagi.models import FieldModel
 from lionagi.protocols.generic import Progression
@@ -205,9 +205,7 @@ async def operate(
 
     model_class = None
     if chat_param.response_format is not None:
-        if isinstance(chat_param.response_format, type) and issubclass(
-            chat_param.response_format, BaseModel
-        ):
+        if is_pydantic_model_class(chat_param.response_format):
             model_class = chat_param.response_format
         elif isinstance(chat_param.response_format, BaseModel):
             model_class = type(chat_param.response_format)
