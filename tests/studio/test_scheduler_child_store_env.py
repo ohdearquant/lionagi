@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import stat
 
+import anyio
 import pytest
 
 from lionagi.ln._proc import STATE_DB_URL_ENV, communicate_in_process_group
@@ -90,8 +91,12 @@ async def test_an_external_hook_does_not_see_the_store(probe, tmp_path):
     from lionagi.hooks.external import _run_hook_process
 
     out = tmp_path / "external-hook.txt"
+    # A hook reads the envelope on its stdin; this one reads it, then runs the probe.
+    hook = tmp_path / "hook"
+    hook.write_text(f'#!/bin/sh\ncat > /dev/null\nexec "{probe}" "$1"\n')
+    hook.chmod(hook.stat().st_mode | stat.S_IXUSR)
     returncode, _, _ = await _run_hook_process(
-        [str(probe), str(out)], None, str(tmp_path), b"{}", 30
+        [str(hook), str(out)], None, str(tmp_path), b"{}", 30
     )
     assert returncode == 0
     assert out.read_text().splitlines()[:2] == ["<absent>", "<absent>"]
@@ -134,21 +139,30 @@ def test_a_command_an_agent_runs_does_not_see_the_store(probe, tmp_path):
     assert out.read_text().splitlines()[:2] == ["<absent>", "<absent>"]
 
 
+async def _pool_connect_fails(config: dict) -> None:
+    """Start *config* through the pooled connect, which fails: the probe is no MCP server.
+
+    The pooled connect has no deadline of its own, and a server that exits during the handshake
+    can leave it waiting for an answer that never comes (seen on Linux), so the wait is bounded
+    here. Either way the probe has already written what it saw.
+    """
+    from lionagi.service.connections.mcp_wrapper import MCPConnectionPool, MCPSecurityConfig
+
+    with pytest.raises(Exception):
+        with anyio.fail_after(10):
+            await MCPConnectionPool._create_client(config, security=MCPSecurityConfig.trusted())
+
+
 @pytest.mark.asyncio
 async def test_a_configured_stdio_mcp_server_does_not_see_the_store(probe, tmp_path):
     pytest.importorskip("fastmcp")
-    from lionagi.service.connections.mcp_wrapper import MCPConnectionPool, MCPSecurityConfig
     from lionagi.studio.services.mcp_servers import _attempt_connection
 
     checked, pooled = tmp_path / "mcp-check.txt", tmp_path / "mcp-pool.txt"
     # The probe is no MCP server: each connection fails once the probe has written what it saw.
     result = await _attempt_connection({"command": str(probe), "args": [str(checked)]})
     assert result["ok"] is False
-    with pytest.raises(Exception):
-        await MCPConnectionPool._create_client(
-            {"command": str(probe), "args": [str(pooled)]},
-            security=MCPSecurityConfig.trusted(),
-        )
+    await _pool_connect_fails({"command": str(probe), "args": [str(pooled)]})
     for out in (checked, pooled):
         assert out.read_text().splitlines()[:2] == ["<absent>", "<absent>"]
 
@@ -159,7 +173,6 @@ async def test_a_store_url_a_configured_mcp_server_names_is_passed_as_given(prob
     """A server's own ``env`` entry is configuration, not inheritance: the URL it names arrives,
     and the other spelling, inherited, is still gone."""
     pytest.importorskip("fastmcp")
-    from lionagi.service.connections.mcp_wrapper import MCPConnectionPool, MCPSecurityConfig
     from lionagi.studio.services.mcp_servers import _attempt_connection
 
     chosen = "sqlite:////chosen/store.db"
@@ -169,11 +182,7 @@ async def test_a_store_url_a_configured_mcp_server_names_is_passed_as_given(prob
         {"command": str(probe), "args": [str(checked)], "env": {name: chosen}}
     )
     assert result["ok"] is False
-    with pytest.raises(Exception):
-        await MCPConnectionPool._create_client(
-            {"command": str(probe), "args": [str(pooled)], "env": {name: chosen}},
-            security=MCPSecurityConfig.trusted(),
-        )
+    await _pool_connect_fails({"command": str(probe), "args": [str(pooled)], "env": {name: chosen}})
     for out in (checked, pooled):
         assert out.read_text().splitlines()[:2] == expected
 
