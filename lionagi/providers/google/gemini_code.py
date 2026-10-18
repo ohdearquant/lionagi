@@ -779,28 +779,37 @@ class GeminiCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
 
         log.info("Antigravity session %s finished (%d chunks)", session.session_id, len(responses))
         if session.is_error:
-            # Classified on what agy itself reported: its error text, or its
-            # status when it gave none, never the turn's response. A teardown
-            # failure decides only when agy reported nothing. A failed turn
-            # keeps the provider session it ran in, as a returned one does.
-            reported = [c for c in session.chunks if c.is_error and c.metadata]
-            if reported:
-                obj = reported[-1].metadata
+            # Classified on every failure agy itself reported, in order, never
+            # the turn's response: each failed object's error text, or for a
+            # success with no content the chunk that says so. A failed status
+            # with no error text counts only when no object named its failure,
+            # and a teardown failure or unparseable output only when agy
+            # reported nothing. A failed turn keeps the provider session it ran
+            # in, as a returned one does.
+            named: list[str] = []
+            statuses: list[str] = []
+            unreported: list[str] = []
+            for c in session.chunks:
+                if c.type != "error" or not c.is_error:
+                    continue
+                obj = c.metadata if isinstance(c.metadata, dict) else {}
+                if not obj:
+                    if c.content:
+                        unreported.append(c.content)
+                    continue
                 status = str(obj.get("status", "")).upper()
-                said = str(obj.get("error") or "").strip() or (
-                    reported[-1].content
-                    if status in ("SUCCESS", "")
-                    else f"agy returned status={status}"
-                )
-            else:
-                said = next(
-                    (c.content for c in reversed(session.chunks) if c.is_error and c.content),
-                    None,
-                )
+                error = str(obj.get("error") or "").strip()
+                if status in ("SUCCESS", ""):
+                    named.append(c.content)
+                elif error:
+                    named.append(error)
+                else:
+                    statuses.append(f"agy returned status={status}")
+            said = list(dict.fromkeys(named or statuses or unreported))
             if session.session_id:
                 self.session_id = session.session_id
             raise classify_provider_error(
-                said or "Antigravity session failed",
+                "\n".join(said) or "Antigravity session failed",
                 status=session.error_status,
             )
         if not session.result:

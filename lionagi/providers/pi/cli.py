@@ -676,12 +676,13 @@ class PiCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
 
         pi_log.info(f"Session finished with {len(responses)} chunks")
         if session.is_error:
-            # Classified on the last error event that names its failure: an
-            # assistant message that arrives after the error replaces the result,
-            # and an aborted turn's error carries the assistant message it cut
-            # off, which is not the failure. Its reason stands in when it gives
-            # no message.
-            said = None
+            # Classified on every error event's message, in order: an assistant
+            # message that arrives after the error replaces the result, and an
+            # aborted turn's error carries the assistant message it cut off,
+            # which is not the failure. An event's reason counts only when no
+            # event gave a message.
+            named: list[str] = []
+            reasons: list[str] = []
             for c in session.chunks:
                 event = (
                     c.raw.get("assistantMessageEvent", {}) if c.type == "message_update" else c.raw
@@ -695,13 +696,15 @@ class PiCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
                     else:
                         text = error if isinstance(error, str) else None
                     text = text or event.get("errorMessage") or event.get("message")
-                    text = str(text or event.get("reason") or "").strip()
-                    if text:
-                        said = text
+                    if isinstance(text, str) and text.strip():
+                        named.append(text.strip())
+                    elif isinstance(event.get("reason"), str) and event["reason"].strip():
+                        reasons.append(event["reason"].strip())
+            said = list(dict.fromkeys(named or reasons))
             if session.session_id:
                 self.session_id = session.session_id
             raise classify_provider_error(
-                said or "Pi session failed",
+                "\n".join(said) or "Pi session failed",
                 status=session.error_status,
             )
         if not session.result:

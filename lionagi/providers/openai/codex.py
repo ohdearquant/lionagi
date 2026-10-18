@@ -131,8 +131,8 @@ _TOML_BARE_KEY_RE = re.compile(r"[A-Za-z0-9_-]+")
 # trailing "(" is load-bearing: it excludes terminal messages that merely
 # begin with the retry prefix, e.g. "Reconnecting... 5/5 failed".
 _RECONNECT_NOTICE_RE = re.compile(r"^\s*Reconnecting\.\.\.\s*\d+/\d+\s*\(")
-# How an error event with no message is reported; a message from an earlier
-# event of the same failure says more.
+# How an error event whose payload holds no value is reported; a message from
+# another event of the same failure says more.
 _EMPTY_ERROR_PAYLOAD = "CLI failure (empty error payload"
 
 # Models served through the CLI can write a tool call into their reply as text
@@ -2551,7 +2551,7 @@ async def stream_codex_cli(
                         or obj.get("message")
                         or (
                             f"{_EMPTY_ERROR_PAYLOAD}; event type={typ!r})"
-                            if err == {}
+                            if not any(err.values())
                             else str(err)
                         )
                     )
@@ -2709,9 +2709,19 @@ async def stream_codex_cli(
                 # Clean text does not replace pending markup.
                 if _event_result and _has_tool_call_markup(_raw_event_result):
                     _last_agent_text = _raw_event_result
-                session.is_error = session.is_error or bool(
-                    obj.get("is_error", obj.get("error") is not None)
-                )
+                _event_failed = bool(obj.get("is_error", obj.get("error") is not None))
+                session.is_error = session.is_error or _event_failed
+                # A result event that reports its own failure names it in its
+                # text, as an error event does, so it is that failure's chunk.
+                if _event_failed and _event_result:
+                    esc = StreamChunk(
+                        type="error",
+                        content=_event_result,
+                        is_error=True,
+                        metadata=dict(obj),
+                    )
+                    session.chunks.append(esc)
+                    yield esc
 
                 # Legacy terminal event (older CLI versions) -- same seam as
                 # turn.completed above.
@@ -2853,26 +2863,22 @@ class CodexCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
 
         codex_log.info(f"Session {session.session_id} finished with {len(responses)} chunks")
         if session.is_error:
-            # Classified on the failure's own error text: when the failure carries
-            # none, the stream fills the result with the turn's assistant text.
-            # An event with an empty error payload says less than an earlier one
-            # that named the failure. A failure only a terminal result event
-            # reports has no error chunk: its result is that event's text unless
-            # the stream end filled it with the joined assistant text.
-            failures = [c.content for c in session.chunks if c.is_error and c.content]
-            said = next(
-                (t for t in reversed(failures) if not t.startswith(_EMPTY_ERROR_PAYLOAD)),
-                failures[-1] if failures else None,
-            )
-            if not any(c.is_error for c in session.chunks):
-                joined = "\n".join(
-                    c.content for c in session.chunks if c.type == "text" and c.content
+            # Classified on every failure the stream reported, in order: each
+            # error event's text and a failing result event's text, never the
+            # turn's assistant text or a failed command's output. An event whose
+            # payload held nothing counts only when no event named the failure.
+            failures = list(
+                dict.fromkeys(
+                    c.content
+                    for c in session.chunks
+                    if c.type == "error" and c.is_error and c.content
                 )
-                said = session.result if session.result and session.result != joined else None
+            )
+            named = [t for t in failures if not t.startswith(_EMPTY_ERROR_PAYLOAD)]
             if session.session_id:
                 self.session_id = session.session_id
             raise classify_provider_error(
-                said or "Codex session failed",
+                "\n".join(named or failures) or "Codex session failed",
                 status=session.error_status,
             )
         if not session.result:
