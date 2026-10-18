@@ -582,11 +582,11 @@ lines:
   The summary is what the compiler sees, and it does not say which records it stands for;
 - in-context omission markers do exist, one layer down, in the Codex provider, in three shapes: a
   head-and-tail cut of a bounded tool result's text, counting characters
-  (`lionagi/providers/openai/codex.py:2015-2018`); a list's tail replaced by an item counting the
-  entries left out (`:2137-2140`); and a mapping's `"[omitted]"` entry counting the keys left out
-  (`:2169-2174`). A fourth site repeats the mapping's shape rather than adding a new one: the
+  (`lionagi/providers/openai/codex.py:2016-2019`); a list's tail replaced by an item counting the
+  entries left out (`:2138-2141`); and a mapping's `"[omitted]"` entry counting the keys left out
+  (`:2170-2175`). A fourth site repeats the mapping's shape rather than adding a new one: the
   file-change echo appends its own `{"omitted": "<n> of <m> changes not shown"}` entry once per
-  file-change item (`lionagi/providers/openai/codex.py:2229-2232`, called from `:2418`), so the
+  file-change item (`lionagi/providers/openai/codex.py:2230-2233`, called from `:2419`), so the
   same mapping shape appears twice. None names a section: they count characters or entries. This
   amendment generalizes the posture, not the shape; that provider's own bounds are unchanged;
 - refusal exists twice on the active path. `_prepare_run_kwargs()` raises a `ValueError` when the
