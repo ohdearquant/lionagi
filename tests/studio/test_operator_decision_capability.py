@@ -216,19 +216,21 @@ def test_the_reconnect_socket_is_0600_in_a_0700_directory_and_gone_after_stop(sh
 
 
 @pytest.mark.skipif(not reconnect.unix_sockets_supported(), reason="no unix sockets")
-def test_one_connection_gets_one_code_and_nothing_else(short_dir):
+def test_one_connection_gets_one_code_and_the_channels_key(short_dir):
     socket_path = short_dir / "reconnect.sock"
     codes = iter(["code-one", "code-two"])
     channel = reconnect.ReconnectChannel(socket_path, lambda: next(codes))
     channel.start()
     try:
-        first = reconnect.read_reconnect_code(socket_path)
-        second = reconnect.read_reconnect_code(socket_path)
+        first = reconnect.read_reconnect_reply(socket_path)
+        second = reconnect.read_reconnect_reply(socket_path)
     finally:
         channel.stop()
 
-    assert first == "code-one"
-    assert second == "code-two"
+    assert first == ("code-one", channel.key)
+    assert second == ("code-two", channel.key)
+    assert len(channel.key) == 32
+    assert reconnect.ReconnectChannel(socket_path, lambda: "x").key != channel.key
 
 
 @pytest.mark.skipif(not reconnect.unix_sockets_supported(), reason="no unix sockets")
@@ -245,7 +247,7 @@ def test_a_peer_with_another_user_id_gets_no_code(short_dir):
     )
     channel.start()
     try:
-        assert reconnect.read_reconnect_code(short_dir / "reconnect.sock", timeout=2) is None
+        assert reconnect.read_reconnect_reply(short_dir / "reconnect.sock", timeout=2) is None
     finally:
         channel.stop()
     assert minted == []
@@ -262,7 +264,7 @@ def test_a_stale_socket_file_is_replaced_at_start(short_dir):
     channel = reconnect.ReconnectChannel(socket_path, lambda: "code-after-restart")
     channel.start()
     try:
-        assert reconnect.read_reconnect_code(socket_path) == "code-after-restart"
+        assert reconnect.read_reconnect_reply(socket_path) == ("code-after-restart", channel.key)
     finally:
         channel.stop()
 
@@ -284,7 +286,8 @@ def test_many_concurrent_clients_each_get_their_own_code(short_dir):
 
     def read(index: int) -> None:
         ready.wait()
-        received[index] = reconnect.read_reconnect_code(socket_path)
+        reply = reconnect.read_reconnect_reply(socket_path)
+        received[index] = reply[0] if reply is not None else None
 
     channel = reconnect.ReconnectChannel(socket_path, mint)
     channel.start()
@@ -314,12 +317,15 @@ def test_a_refused_connection_is_retried_until_the_daemon_listens(short_dir):
         server.listen(1)
         conn, _address = server.accept()
         with conn:
-            conn.sendall(b"code-once-listening\n")
+            conn.sendall(b"code-once-listening " + b"ab" * 32 + b"\n")
 
     timer = threading.Timer(0.3, listen_then_answer)
     timer.start()
     try:
-        assert reconnect.read_reconnect_code(socket_path) == "code-once-listening"
+        assert reconnect.read_reconnect_reply(socket_path) == (
+            "code-once-listening",
+            bytes.fromhex("ab" * 32),
+        )
     finally:
         timer.join(timeout=10)
         server.close()
@@ -335,7 +341,7 @@ def test_a_socket_file_nothing_listens_on_answers_none_promptly(short_dir):
     stale.close()
 
     started = time.monotonic()
-    assert reconnect.read_reconnect_code(socket_path, timeout=5) is None
+    assert reconnect.read_reconnect_reply(socket_path, timeout=5) is None
     assert time.monotonic() - started < 3
 
 
@@ -419,7 +425,7 @@ def test_the_socket_file_is_the_only_thing_in_the_directory(short_dir):
 def test_a_platform_without_unix_sockets_has_no_reconnect(monkeypatch):
     monkeypatch.setattr(reconnect, "unix_sockets_supported", lambda: False)
 
-    assert reconnect.read_reconnect_code(Path("/nonexistent/reconnect.sock")) is None
+    assert reconnect.read_reconnect_reply(Path("/nonexistent/reconnect.sock")) is None
 
 
 # What the daemon starts and clears
@@ -437,10 +443,55 @@ def test_the_daemon_starts_the_channel_at_its_state_directory(short_dir, monkeyp
         assert stat.S_ISSOCK(socket_path.stat().st_mode)
         assert stat.S_IMODE(socket_path.stat().st_mode) == 0o600
         assert stat.S_IMODE(short_dir.stat().st_mode) == 0o700
-        code = reconnect.read_reconnect_code(socket_path)
+        code, key = reconnect.read_reconnect_reply(socket_path)
+        assert key == channel.key
         assert launch_access.redeem_pairing_grant(code, origin=_HOSTED) is not None
     finally:
         channel.stop()
+    assert not socket_path.exists()
+
+
+@pytest.mark.skipif(not reconnect.unix_sockets_supported(), reason="no unix sockets")
+def test_the_serving_daemon_signs_with_the_key_its_reconnect_socket_hands_out(
+    short_dir, monkeypatch, fresh
+):
+    from fastapi.testclient import TestClient
+
+    import lionagi.cli._code_identity as code_identity
+    import lionagi.studio.app as app_mod
+    import lionagi.studio.services.launches as launches_mod
+    import lionagi.studio.services.lifecycle as lifecycle_mod
+    import lionagi.studio.services.operator as operator_mod
+    from lionagi.studio.scheduler.engine import scheduler
+
+    async def _noop(*args, **kwargs) -> None:
+        return None
+
+    # Only the lifespan's wiring of the channel is under test; its other startup
+    # work is stubbed so nothing reaches a real store, the scheduler or the mirror.
+    monkeypatch.setattr(code_identity, "snapshot_git_position", lambda: None)
+    monkeypatch.setattr(scheduler, "start", _noop)
+    monkeypatch.setattr(scheduler, "stop", _noop)
+    monkeypatch.setattr(lifecycle_mod, "run_startup_reconciliation", _noop)
+    monkeypatch.setattr(operator_mod, "operator_startup", _noop)
+    monkeypatch.setattr(operator_mod, "operator_shutdown", _noop)
+    monkeypatch.setattr(launches_mod, "shutdown_launches", _noop)
+    monkeypatch.setattr(app_mod, "_start_claude_mirror", lambda: (None, None))
+    monkeypatch.setattr(app_mod, "_stop_claude_mirror", _noop)
+    monkeypatch.setattr(app_mod, "_startup_warmup", _noop)
+    monkeypatch.setattr(app_mod, "_finalize_warmup", _noop)
+    socket_path = short_dir / "reconnect.sock"
+    monkeypatch.setattr(app_mod, "default_socket_path", lambda *args: socket_path)
+
+    application = app_mod.create_app()
+    challenge = "cd" * 16
+    with TestClient(application, base_url="http://127.0.0.1:8765") as client:
+        reply = reconnect.read_reconnect_reply(socket_path)
+        assert reply is not None
+        body = client.get("/health", params={"challenge": challenge}).json()
+
+    assert body == {"status": "ok", "proof": reconnect.port_proof(reply[1], challenge, 8765)}
+    assert application.state.reconnect_key is None
     assert not socket_path.exists()
 
 

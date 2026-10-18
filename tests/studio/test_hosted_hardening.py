@@ -1083,3 +1083,33 @@ class TestPairingWithToken:
         )
 
         assert resp.status_code == 401
+
+
+# /health answers a reconnect challenge
+
+
+def test_health_signs_a_challenge_with_the_port_the_request_reached(make_client):
+    from lionagi.studio.reconnect import port_proof
+
+    client = make_client()
+    key = bytes(range(32))
+    client.app.state.reconnect_key = key
+    challenge = "0123456789abcdef" * 2
+
+    body = client.get("/health", params={"challenge": challenge}).json()
+
+    # The client's base URL is 127.0.0.1:8765, so the request reached port 8765.
+    assert body == {"status": "ok", "proof": port_proof(key, challenge, 8765)}
+    assert body["proof"] != port_proof(key, challenge, 8766)
+
+
+def test_health_signs_nothing_without_a_key_or_for_a_malformed_challenge(make_client):
+    client = make_client()
+    client.app.state.reconnect_key = None
+    assert client.get("/health", params={"challenge": "0" * 32}).json() == {"status": "ok"}
+
+    client.app.state.reconnect_key = bytes(32)
+    for malformed in ("", "0" * 31, "0" * 33, "g" * 32, "A" * 32, "0" * 31 + "\n"):
+        resp = client.get("/health", params={"challenge": malformed})
+        assert resp.json() == {"status": "ok"}, malformed
+    assert client.get("/health").json() == {"status": "ok"}

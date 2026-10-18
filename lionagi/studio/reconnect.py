@@ -4,10 +4,16 @@
 
 An HTTP route cannot issue a pairing code: any process that can reach the
 listener can reach it too. A daemon that is already running therefore mints a
-code for a new page over a unix socket in its state directory instead. The
-socket carries a code and nothing else, one code per connection, and every
+code for a new page over a unix socket in its state directory instead. Every
 connection is answered only when the peer runs as the daemon's own OS user,
-read from the socket itself rather than claimed by the peer.
+read from the socket itself rather than claimed by the peer, and the answer is
+one code and this start's port-proof key, nothing else.
+
+The socket belongs to whichever daemon uses the state directory, which need not
+be the daemon on the port ``li studio`` was given. The key settles that: the
+daemon signs a fresh challenge together with the TCP port the request arrived
+on (``port_proof``, served by ``/health``), so only the daemon holding the key,
+reached on that port, can answer it.
 
 The socket file is created with mode ``0600`` inside a ``0700`` directory before
 the daemon serves, and removed when the process exits. A socket file left behind
@@ -16,7 +22,10 @@ by a daemon that no longer runs is replaced at start.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
+import secrets
 import socket
 import stat
 import struct
@@ -30,7 +39,8 @@ __all__ = (
     "current_uid",
     "default_socket_path",
     "peer_uid",
-    "read_reconnect_code",
+    "port_proof",
+    "read_reconnect_reply",
     "state_dir",
     "unix_sockets_supported",
 )
@@ -39,7 +49,8 @@ __all__ = (
 # never widens or narrows the permissions of a directory the store shares.
 _SOCKET_DIR = "studio"
 _SOCKET_NAME = "studio-reconnect.sock"
-# A code is at most 32 characters; the reply is one of them and a newline.
+# A code is at most 32 characters and the key is 64 hex digits; the reply is the
+# two, a space between them and a newline.
 _MAX_REPLY_BYTES = 256
 _ACCEPT_TIMEOUT_S = 0.2
 # Connections waiting to be answered. Each answer is one code and no read, so the
@@ -75,6 +86,11 @@ def default_socket_path(directory: str | Path | None = None) -> Path:
     """
     target = state_dir() if directory is None else Path(directory)
     return target / _SOCKET_DIR / _SOCKET_NAME
+
+
+def port_proof(key: bytes, challenge: str, port: int) -> str:
+    """The daemon's answer to *challenge* received on TCP *port*, under this start's *key*."""
+    return hmac.new(key, f"{challenge}:{port}".encode("ascii"), hashlib.sha256).hexdigest()
 
 
 def current_uid() -> int:
@@ -151,10 +167,15 @@ def _replace_stale_socket(path: Path) -> None:
 
 
 class ReconnectChannel:
-    """A listening unix socket that mints one pairing code per same-user connection."""
+    """A listening unix socket that mints one pairing code per same-user connection.
+
+    ``key`` is drawn fresh for each channel and goes out only on this socket;
+    the daemon proves it holds it through ``port_proof``.
+    """
 
     def __init__(self, path: str | Path, mint_code, _uid_reader=peer_uid) -> None:
         self.path = Path(path)
+        self.key = secrets.token_bytes(32)
         self._mint_code = mint_code
         self._uid_reader = _uid_reader
         self._server: socket.socket | None = None
@@ -201,11 +222,11 @@ class ReconnectChannel:
             return
         if uid is None or uid != current_uid():
             return
-        # Nothing is read: the message is one code, so a peer that sends
-        # nothing still gets one, and no other content is accepted.
+        # Nothing is read: the reply is one code and the key, so a peer that
+        # sends nothing still gets them, and no other content is accepted.
         try:
             code = self._mint_code()
-            conn.sendall(code.encode("ascii") + b"\n")
+            conn.sendall(f"{code} {self.key.hex()}\n".encode("ascii"))
         except OSError:
             return
 
@@ -247,8 +268,11 @@ def _connect(path: str, timeout: float) -> socket.socket | None:
             return client
 
 
-def read_reconnect_code(path: str | Path, *, timeout: float = 5.0) -> str | None:
-    """Ask the daemon at *path* for one pairing code; None when nothing answers."""
+def read_reconnect_reply(path: str | Path, *, timeout: float = 5.0) -> tuple[str, bytes] | None:
+    """Ask the daemon at *path* for one pairing code and its port-proof key.
+
+    None when nothing answers, or the answer is not a code and a key.
+    """
     if not unix_sockets_supported():
         return None
     client = _connect(str(path), timeout)
@@ -272,7 +296,10 @@ def read_reconnect_code(path: str | Path, *, timeout: float = 5.0) -> str | None
         client.close()
     raw = b"".join(chunks).split(b"\n", 1)[0]
     try:
-        code = raw.decode("ascii").strip()
-    except UnicodeDecodeError:
+        code, key_hex = raw.decode("ascii").split()
+        key = bytes.fromhex(key_hex)
+    except (UnicodeDecodeError, ValueError):
         return None
-    return code or None
+    if not code or len(key) != 32:
+        return None
+    return code, key

@@ -97,11 +97,17 @@ directory in the lifespan before the daemon serves, removed at exit, and
 replaced at start when a socket file left by a dead daemon is there. On each connection it reads the peer's user id
 from the socket (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS, both through
 `socket.getsockopt`), refuses any id but its own, and for its own user mints one
-code in process and writes it as the only content of the reply. It is not an
-HTTP route and no TCP listener serves it. `li studio` probes `/health` only to
-tell a daemon from another program, then reads one code over the socket, and
-never stops a running daemon; on a platform without unix sockets it says to
-restart the daemon. A process running as the daemon's own OS user can obtain a
+code in process and writes it, with the channel's port-proof key (256 random
+bits drawn when the channel starts), as the only content of the reply. It is
+not an HTTP route and no TCP listener serves it. `li studio` probes `/health`
+to tell a daemon from another program, reads one code and the key over the
+socket, then sends `/health?challenge=<32 hex digits>` on its port; the daemon
+answers with HMAC-SHA256 under the key over the challenge and the port the
+request arrived on (`port_proof`). Only when that matches does it open a page:
+a second daemon sharing the state directory, or a listener relaying to the
+right daemon from another port, is refused and `li studio` exits 1 without
+printing the code. It never stops a running daemon; on a platform without unix
+sockets it says to restart the daemon. A process running as the daemon's own OS user can obtain a
 code this way, which is outside what the HTTP-only guarantee covers.
 
 **Decision capabilities** (`launch_access.py`) — a page pairs with an admission

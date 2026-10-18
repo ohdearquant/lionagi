@@ -259,43 +259,69 @@ class _PairingRefusedError(Exception):
     """A daemon answers on the port but did not issue a pairing code."""
 
 
-def _is_lionagi_daemon(port: int) -> bool:
-    """Whether a lionagi daemon answers on loopback ``port``."""
+def _daemon_health(port: int, challenge: str | None = None) -> dict[str, Any] | None:
+    """What a lionagi daemon on loopback ``port`` answers at ``/health``, or None."""
+    import urllib.parse
     import urllib.request
 
-    base = f"http://127.0.0.1:{port}"
+    url = f"http://127.0.0.1:{port}/health"
+    if challenge is not None:
+        url += "?" + urllib.parse.urlencode({"challenge": challenge})
     try:
-        with urllib.request.urlopen(f"{base}/health", timeout=2) as resp:  # noqa: S310
+        with urllib.request.urlopen(url, timeout=2) as resp:  # noqa: S310
             health = json.loads(resp.read())
     except (OSError, ValueError):
-        return False
-    return isinstance(health, dict) and health.get("status") == "ok"
+        return None
+    if isinstance(health, dict) and health.get("status") == "ok":
+        return health
+    return None
 
 
 def _code_from_running_daemon(port: int) -> str | None:
-    """A pairing code from a lionagi daemon already listening on ``port``, or None.
+    """A pairing code from the lionagi daemon already listening on ``port``, or None.
 
     None means nothing that answers like a lionagi daemon is there, so this launch
-    starts one. The code comes over the daemon's same-user reconnect socket, never
-    over HTTP: a daemon that answers but issues none raises, since starting a
-    second one on the same port would only fail to bind.
+    starts one. The code comes over the same-user reconnect socket in this state
+    directory, never over HTTP, and is returned only when the daemon on ``port``
+    proves it is the one that socket belongs to. Anything else raises, since
+    starting a second daemon on the same port would only fail to bind.
     """
+    import hmac
+    import secrets
+
     from lionagi.studio.reconnect import (
         default_socket_path,
-        read_reconnect_code,
+        port_proof,
+        read_reconnect_reply,
         unix_sockets_supported,
     )
 
-    if not _is_lionagi_daemon(port):
+    if _daemon_health(port) is None:
         return None
     if not unix_sockets_supported():
         raise _PairingRefusedError(
             "this platform has no reconnect channel; restart the daemon to pair a new page"
         )
-    code = read_reconnect_code(default_socket_path())
-    if code is None:
+    socket_path = default_socket_path()
+    reply = read_reconnect_reply(socket_path)
+    if reply is None:
         raise _PairingRefusedError(
             "it did not answer on its reconnect socket; restart the daemon to pair a new page"
+        )
+    code, key = reply
+    # The socket answers for whichever daemon shares this state directory. Only that
+    # daemon can sign a fresh challenge with the port the request reached, so a second
+    # daemon on this port, or a listener relaying to it from another port, fails here,
+    # and the code just minted is never shown; it expires unused.
+    challenge = secrets.token_hex(16)
+    health = _daemon_health(port, challenge)
+    proof = health.get("proof") if health is not None else None
+    if not isinstance(proof, str) or not hmac.compare_digest(
+        proof, port_proof(key, challenge, port)
+    ):
+        raise _PairingRefusedError(
+            f"the reconnect socket at {socket_path} belongs to another daemon, not the one on "
+            f"port {port}; stop that daemon, or start this one with its own state directory"
         )
     return code
 

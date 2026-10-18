@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import logging
 import os
 import socket
@@ -1223,11 +1224,16 @@ def test_studio_stops_when_a_running_daemon_will_not_pair(monkeypatch, capsys):
 
 
 @contextlib.contextmanager
-def _loopback_server(routes):
-    """A real HTTP server on 127.0.0.1 answering ``routes[(method, path)] -> (status, body)``."""
+def _loopback_server(routes, prove=None):
+    """A real HTTP server on 127.0.0.1 answering ``routes[(method, path)] -> (status, body)``.
+
+    With ``prove``, a request carrying ``?challenge=`` also gets
+    ``proof = prove(challenge, port)``, where ``port`` is this server's own port.
+    """
     import http.server
     import json
     import threading
+    import urllib.parse
 
     seen = []
 
@@ -1237,7 +1243,11 @@ def _loopback_server(routes):
             if length:
                 self.rfile.read(length)
             seen.append((method, self.path, dict(self.headers)))
-            status, body = routes.get((method, self.path), (404, {"detail": "Not Found"}))
+            path, _, query = self.path.partition("?")
+            status, body = routes.get((method, path), (404, {"detail": "Not Found"}))
+            challenge = urllib.parse.parse_qs(query).get("challenge", [None])[0]
+            if prove is not None and challenge is not None and status == 200:
+                body = {**body, "proof": prove(challenge, self.server.server_address[1])}
             payload = json.dumps(body).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
@@ -1279,12 +1289,13 @@ def test_a_running_lionagi_daemon_issues_a_code_over_its_reconnect_socket(
     with tempfile.TemporaryDirectory(prefix="studio-r", dir="/tmp") as directory:
         socket_path = Path(directory) / "r.sock"
         monkeypatch.setattr(reconnect, "default_socket_path", lambda *args: socket_path)
+        codes = iter(["abc"])
+        channel = reconnect.ReconnectChannel(
+            socket_path, lambda: next(codes), _uid_reader=lambda _conn: os.getuid()
+        )
         routes = {("GET", "/health"): (200, {"status": "ok"})}
-        with _loopback_server(routes) as (port, seen):
-            codes = iter(["abc"])
-            channel = reconnect.ReconnectChannel(
-                socket_path, lambda: next(codes), _uid_reader=lambda _conn: os.getuid()
-            )
+        prove = functools.partial(reconnect.port_proof, channel.key)
+        with _loopback_server(routes, prove=prove) as (port, seen):
             launch_access.reset_launch_access()
             channel.start()
             try:
@@ -1293,6 +1304,105 @@ def test_a_running_lionagi_daemon_issues_a_code_over_its_reconnect_socket(
                 channel.stop()
 
     assert all(method == "GET" for method, _, _ in seen)
+    challenges = [path for _, path, _ in seen if "challenge=" in path]
+    assert len(challenges) == 1
+
+
+@contextlib.contextmanager
+def _socket_daemon(monkeypatch, code="code-of-the-socket-daemon"):
+    """A real reconnect channel on a short socket path that ``li studio`` will read."""
+    import lionagi.studio.reconnect as reconnect
+
+    with tempfile.TemporaryDirectory(prefix="studio-r", dir="/tmp") as directory:
+        socket_path = Path(directory) / "r.sock"
+        monkeypatch.setattr(reconnect, "default_socket_path", lambda *args: socket_path)
+        channel = reconnect.ReconnectChannel(
+            socket_path, lambda: code, _uid_reader=lambda _conn: os.getuid()
+        )
+        channel.start()
+        try:
+            yield channel
+        finally:
+            channel.stop()
+
+
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="no unix sockets")
+def test_a_daemon_on_the_port_that_does_not_hold_the_sockets_key_gets_no_code(
+    daemon_probe, monkeypatch
+):
+    """Two daemons share one state directory: the socket answers for the first,
+    and the second, on the port asked for, cannot prove it holds that key."""
+    import secrets
+
+    import lionagi.studio.cli as studio_cli
+    import lionagi.studio.reconnect as reconnect
+
+    other_key = secrets.token_bytes(32)
+    routes = {("GET", "/health"): (200, {"status": "ok"})}
+    with _socket_daemon(monkeypatch) as channel:
+        assert other_key != channel.key
+        prove = functools.partial(reconnect.port_proof, other_key)
+        with _loopback_server(routes, prove=prove) as (port, _):
+            with pytest.raises(studio_cli._PairingRefusedError, match="another daemon") as caught:
+                daemon_probe(port)
+
+    assert f"port {port}" in str(caught.value)
+    assert "code-of-the-socket-daemon" not in str(caught.value)
+
+
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="no unix sockets")
+def test_a_listener_relaying_the_sockets_daemon_from_another_port_gets_no_code(
+    daemon_probe, monkeypatch
+):
+    """A listener that forwards the challenge to the real daemon gets back a proof
+    for the real daemon's own port, which is not the port the launcher asked."""
+    import lionagi.studio.cli as studio_cli
+    import lionagi.studio.reconnect as reconnect
+
+    routes = {("GET", "/health"): (200, {"status": "ok"})}
+    with _socket_daemon(monkeypatch) as channel:
+
+        def relayed(challenge, port):
+            return reconnect.port_proof(channel.key, challenge, port + 1)
+
+        with _loopback_server(routes, prove=relayed) as (port, _):
+            with pytest.raises(studio_cli._PairingRefusedError, match="another daemon"):
+                daemon_probe(port)
+
+
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="no unix sockets")
+def test_a_daemon_that_answers_no_proof_gets_no_code(daemon_probe, monkeypatch):
+    import lionagi.studio.cli as studio_cli
+
+    with _socket_daemon(monkeypatch):
+        with _loopback_server({("GET", "/health"): (200, {"status": "ok"})}) as (port, _):
+            with pytest.raises(studio_cli._PairingRefusedError, match="another daemon"):
+                daemon_probe(port)
+
+
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="no unix sockets")
+def test_li_studio_on_a_port_whose_daemon_does_not_own_the_socket_exits_1_without_a_link(
+    daemon_probe, monkeypatch, capsys
+):
+    import secrets
+
+    import lionagi.studio.cli as studio_cli
+    import lionagi.studio.reconnect as reconnect
+
+    monkeypatch.setattr(studio_cli, "_code_from_running_daemon", daemon_probe)
+    routes = {("GET", "/health"): (200, {"status": "ok"})}
+    prove = functools.partial(reconnect.port_proof, secrets.token_bytes(32))
+    with _socket_daemon(monkeypatch), _loopback_server(routes, prove=prove) as (port, _):
+        with _stubbed_serve() as mock_run, patch("webbrowser.open") as mock_open:
+            from lionagi.cli.main import main
+
+            assert main(["studio", "--port", str(port)]) == 1
+
+    mock_run.assert_not_called()
+    mock_open.assert_not_called()
+    captured = capsys.readouterr()
+    assert "#pair=" not in captured.out
+    assert "another daemon" in captured.err
 
 
 def test_a_running_daemon_without_a_reconnect_socket_refuses(daemon_probe, monkeypatch, tmp_path):

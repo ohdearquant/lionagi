@@ -6545,9 +6545,19 @@
           "content": {
             "application/json": {
               "schema": {
-                "additionalProperties": true,
                 "type": "object",
+                "additionalProperties": true,
                 "title": "Response Health Health Get"
+              }
+            }
+          }
+        },
+        "422": {
+          "description": "Validation Error",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HTTPValidationError"
               }
             }
           }
@@ -13154,15 +13164,43 @@
       "/health": {
         "get": {
           "summary": "Health",
+          "parameters": [
+            {
+              "name": "challenge",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Challenge"
+              }
+            }
+          ],
           "responses": {
             "200": {
               "description": "Successful Response",
               "content": {
                 "application/json": {
                   "schema": {
-                    "additionalProperties": true,
                     "type": "object",
+                    "additionalProperties": true,
                     "title": "Response Health Health Get"
+                  }
+                }
+              }
+            },
+            "422": {
+              "description": "Validation Error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/HTTPValidationError"
                   }
                 }
               }

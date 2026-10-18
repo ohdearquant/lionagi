@@ -29,15 +29,19 @@ from .launch_access import (
     launch_bearer,
     mint_pairing_code,
 )
-from .reconnect import ReconnectChannel, default_socket_path, unix_sockets_supported
+from .reconnect import ReconnectChannel, default_socket_path, port_proof, unix_sockets_supported
 from .registry import iter_studio_routes, load_studio_route_modules
 from .services._db import StoreNotAddressableError
 
 _log = logging.getLogger(__name__)
 
 # Reachable without a bearer token regardless of LIONAGI_STUDIO_AUTH_TOKEN;
-# deliberately just pure liveness probes with no application state.
+# deliberately just liveness probes. /health also signs a reconnect challenge,
+# which proves which daemon answers and reveals nothing else.
 _PUBLIC_PATHS = frozenset({"/health"})
+
+# A challenge is 32 lowercase hex digits, the form ``li studio`` sends.
+_RECONNECT_CHALLENGE = re.compile(r"[0-9a-f]{32}")
 
 # FastAPI built-in schema/docs routes that are NOT under /api but expose API
 # shape and must be bearer-guarded in token mode, just like /api/*.
@@ -378,6 +382,7 @@ async def lifespan(app_instance):
     # just before starting this daemon in the same process.
     begin_serving()
     reconnect = _start_reconnect_channel()
+    app_instance.state.reconnect_key = reconnect.key if reconnect is not None else None
     mirror_stop, mirror_task = _start_claude_mirror()
     # Pure maintenance; deferred so readiness isn't gated on it.
     warmup_task = asyncio.create_task(_startup_warmup(), name="studio-startup-warmup")
@@ -385,6 +390,7 @@ async def lifespan(app_instance):
     from .services.launches import shutdown_launches
 
     disarm_traceback_dump()
+    app_instance.state.reconnect_key = None
     if reconnect is not None:
         await asyncio.to_thread(reconnect.stop)
     await _finalize_warmup(warmup_task)
@@ -640,8 +646,23 @@ def create_app() -> FastAPI:
     _mount_studio_routes(application)
 
     @application.get("/health")
-    async def health() -> dict[str, Any]:
-        return {"status": "ok"}
+    async def health(request: Request, challenge: str | None = None) -> dict[str, Any]:
+        body: dict[str, Any] = {"status": "ok"}
+        # A later `li studio` learns this start's key over the reconnect socket and checks
+        # that the daemon on the port it was given is the one holding it. The proof covers the
+        # port this request arrived on, so a listener relaying to this daemon from another
+        # port cannot pass it on.
+        key = getattr(request.app.state, "reconnect_key", None)
+        server = request.scope.get("server")
+        port = server[1] if server else None
+        if (
+            key is not None
+            and challenge is not None
+            and _RECONNECT_CHALLENGE.fullmatch(challenge)
+            and isinstance(port, int)
+        ):
+            body["proof"] = port_proof(key, challenge, port)
+        return body
 
     # Mount SPA before CORSMiddleware so _collect_cors_methods sees the Mount entry.
     dist = _resolve_frontend_dist()
