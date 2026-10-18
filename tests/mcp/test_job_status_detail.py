@@ -375,3 +375,40 @@ async def test_detail_true_is_soft_when_the_studio_extra_is_absent(isolated_stat
 
     result = await job_status_async(run_id, detail=True)
     assert result["detail"] == {"detail_unavailable": "studio_extra_not_installed"}
+
+
+async def test_detail_true_reads_stall_activity_past_the_message_page(isolated_state):
+    """The stall signal describes the whole history, not the newest page.
+
+    A running node whose newest message has aged out of the display window
+    still has activity; reporting "none" there would read as a stalled worker
+    that never started, which is the opposite of the truth.
+    """
+    db_path = isolated_state
+    run_id = "20260101T000000-pag456"
+    session_id = "66666666-6666-6666-6666-666666666666"
+    meta = {
+        "agents": [{"id": "a1", "name": "writer"}],
+        "operations": [{"id": "write", "agent_id": "a1", "depends_on": []}],
+    }
+    # More messages than one page holds, so the newest ones fall outside it.
+    from lionagi.studio.services.sessions import DEFAULT_MESSAGE_LIMIT
+
+    msg_ids = [f"m{i}" for i in range(DEFAULT_MESSAGE_LIMIT + 1)]
+    await seed_session(db_path, session_id=session_id, run_id=run_id, node_metadata=meta)
+    await seed_branch(
+        db_path,
+        branch_id=f"{session_id}-br1",
+        session_id=session_id,
+        name="write",
+        status="running",
+        started_at=1000.0,
+        msg_ids=msg_ids,
+    )
+    for index, msg_id in enumerate(msg_ids):
+        await seed_message(db_path, msg_id=msg_id, created_at=1000.0 + index)
+
+    result = await job_status_async(run_id, detail=True)
+    stall = result["detail"]["stalls"][0]
+    assert stall["idle_source"] == "last_message_at"
+    assert stall["last_activity"] == 1000.0 + DEFAULT_MESSAGE_LIMIT

@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -291,6 +292,7 @@ _JSON_TYPE_CHECK = {
     "boolean": lambda v: isinstance(v, bool),
     "array": lambda v: isinstance(v, list),
     "object": lambda v: isinstance(v, dict),
+    "null": lambda v: v is None,
 }
 
 
@@ -325,7 +327,19 @@ def _check_value(name: str, spec: dict[str, Any], value: Any) -> list[str]:
     if check is not None and not check(value):
         problems.append(f"{name!r} expects {expected}, got {type(value).__name__}")
         return problems
-    if expected == "array":
+    if expected in {"integer", "number"}:
+        if "minimum" in spec and value < spec["minimum"]:
+            problems.append(f"{name!r} must be at least {spec['minimum']}, got {value!r}")
+        if "maximum" in spec and value > spec["maximum"]:
+            problems.append(f"{name!r} must be at most {spec['maximum']}, got {value!r}")
+    elif expected == "string":
+        if "minLength" in spec and len(value) < spec["minLength"]:
+            problems.append(f"{name!r} needs at least {spec['minLength']} character(s)")
+        if "maxLength" in spec and len(value) > spec["maxLength"]:
+            problems.append(f"{name!r} takes at most {spec['maxLength']} character(s)")
+        if "pattern" in spec and re.search(spec["pattern"], value) is None:
+            problems.append(f"{name!r} does not match the required pattern")
+    elif expected == "array":
         item = spec.get("items", {})
         item_check = _JSON_TYPE_CHECK.get(item.get("type", ""))
         for index, element in enumerate(value):
@@ -339,7 +353,10 @@ def _check_value(name: str, spec: dict[str, Any], value: Any) -> list[str]:
             problems.append(f"{name!r} needs at least {spec['minItems']} value(s)")
         if "maxItems" in spec and len(value) > spec["maxItems"]:
             problems.append(f"{name!r} takes at most {spec['maxItems']} value(s)")
-    elif "enum" in spec and value not in spec["enum"]:
+    # Membership is independent of the value's JSON type and its type-specific
+    # checks. Kept in the ``elif`` chain it was skipped for every scalar whose
+    # declared type was handled above -- notably strings.
+    if "enum" in spec and value not in spec["enum"]:
         problems.append(f"{name!r} must be one of {spec['enum']}, got {value!r}")
     return problems
 
@@ -979,6 +996,48 @@ def _op_error(op: str, exc: OpError, schema: dict[str, Any] | None) -> dict[str,
     return {"ok": False, "op": op, "error": error}
 
 
+def _dedupe_error_schemas(results: list[dict[str, Any]]) -> None:
+    """Keep one inline copy of each judged-against schema per response.
+
+    The first refusal judged against a schema carries it whole, so one mistake
+    still costs one request/reply cycle; every later refusal against the same schema
+    carries ``schema_ref`` — the ``op_index`` of the entry holding the copy and
+    the schema's fingerprint — instead of repeating it, so a batch of N
+    identical mistakes does not carry N copies of an identical multi-kilobyte
+    schema.
+    """
+    carriers: list[tuple[int, dict[str, Any]]] = []
+    for index, entry in enumerate(results):
+        error = entry.get("error")
+        if isinstance(error, dict) and isinstance(error.get("schema"), dict):
+            carriers.append((index, error))
+    if len(carriers) < 2:
+        # Fingerprints exist here to compare copies; with at most one carrier
+        # there is nothing to compare, so nothing gets hashed.
+        return
+    seen: dict[str, int] = {}
+    for index, error in carriers:
+        fingerprint = _error_schema_fingerprint(error)
+        first = seen.setdefault(fingerprint, index)
+        if first != index:
+            del error["schema"]
+            error["schema_ref"] = {"op_index": first, "schema_fingerprint": fingerprint}
+
+
+def _error_schema_fingerprint(error: dict[str, Any]) -> str:
+    # A stale_schema refusal's remedy already carries the fingerprint of the
+    # exact schema attached to the error, computed once at the gate; hashing
+    # the same content again here would double the cost of the batch this
+    # pass exists to shrink.
+    if error.get("kind") == "stale_schema":
+        detail = error.get("detail")
+        if isinstance(detail, dict):
+            fingerprint = detail.get("schema_fingerprint")
+            if isinstance(fingerprint, str):
+                return fingerprint
+    return schema_fingerprint(error["schema"])
+
+
 async def _run_one(entry: Any) -> dict[str, Any]:
     if not isinstance(entry, dict):
         return _op_error(
@@ -1086,6 +1145,7 @@ async def request(ops: list[dict[str, Any]] | None = None, help: Any = None) -> 
         raise ValueError(f"ops carries {len(ops)} entries, over the maximum of {MAX_OPS}")
 
     results = [await _run_one(entry) for entry in ops]
+    _dedupe_error_schemas(results)
     return {
         "status": "success" if all(r["ok"] for r in results) else "partial",
         "ops": results,

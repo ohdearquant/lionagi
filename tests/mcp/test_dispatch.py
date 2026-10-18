@@ -1202,3 +1202,140 @@ def test_job_list_carries_the_delivery_state_out_to_the_caller(monkeypatch, tmp_
     listed = answer["ops"][0]["result"]["jobs"]
     assert [j["run_id"] for j in listed] == [rid]
     assert listed[0]["notify_delivery_state"] == "failed"
+
+
+# ── schema keywords checked beyond the type ──────────────────────────────────
+#
+# A schema that advertises a range or a set of choices is a promise about what
+# will run. Validation that checks only the type keeps that promise in the
+# schema and breaks it in the process that receives the value.
+
+
+def _judged(schema: dict, args: dict) -> list[str]:
+    """The problems ``_validate`` reports for *args* under *schema*."""
+    return dispatch._check_value("value", schema, args["value"])
+
+
+def test_an_enum_is_checked_whatever_the_value_s_type():
+    """A string enum was skipped entirely because only arrays read their enum.
+
+    ``team send`` names the kind of message with choices; a value outside them
+    reached argv and the child was the first to reject it.
+    """
+    schema = call(help="team.send")["schema"]
+    kind = schema["properties"]["kind"]
+    assert kind["enum"], "the fixture needs a scalar enum to test"
+    answer = call(ops=[{"op": "team.send", "args": {"team": "t", "to": "a", "kind": "note"}}])
+    assert answer["ops"][0]["ok"] is False
+    assert "must be one of" in answer["ops"][0]["error"]["message"]
+
+
+def test_a_scalar_enum_admits_its_members():
+    assert _judged({"type": "string", "enum": ["a", "b"]}, {"value": "b"}) == []
+
+
+@pytest.mark.parametrize(
+    ("schema", "value", "message"),
+    [
+        ({"type": "integer", "minimum": 2}, 1, "must be at least 2"),
+        ({"type": "number", "maximum": 2.5}, 3, "must be at most 2.5"),
+        ({"type": "string", "minLength": 3}, "ab", "at least 3 character(s)"),
+        ({"type": "string", "maxLength": 3}, "abcd", "at most 3 character(s)"),
+        ({"type": "string", "pattern": r"^[a-z]+$"}, "AB", "does not match the required pattern"),
+    ],
+    ids=["minimum", "maximum", "minLength", "maxLength", "pattern"],
+)
+def test_a_bound_or_pattern_is_checked(schema, value, message):
+    problems = _judged(schema, {"value": value})
+    assert len(problems) == 1
+    assert message in problems[0]
+
+
+@pytest.mark.parametrize(
+    ("schema", "value"),
+    [
+        ({"type": "integer", "minimum": 2}, 2),
+        ({"type": "number", "maximum": 2.5}, 2.5),
+        ({"type": "string", "minLength": 3}, "abc"),
+        ({"type": "string", "maxLength": 3}, "abc"),
+        ({"type": "string", "pattern": r"^[a-z]+$"}, "abc"),
+    ],
+    ids=["minimum", "maximum", "minLength", "maxLength", "pattern"],
+)
+def test_a_bound_or_pattern_admits_its_edge(schema, value):
+    assert _judged(schema, {"value": value}) == []
+
+
+def test_null_is_a_checked_type_not_an_absent_check():
+    """`{"type": "null"}` used to describe nothing, so every value was admitted."""
+    assert _judged({"type": "null"}, {"value": None}) == []
+    assert _judged({"type": "null"}, {"value": 0}) == ["'value' expects null, got int"]
+
+
+def test_agent_submit_advertises_and_checks_the_idle_timeout(submitted):
+    """The watchdog bound is advertised from the parser and enforced before a
+    job exists, so an out-of-range value never reaches a worker."""
+    schema = call(help="agent.submit")["schema"]
+    idle = schema["properties"]["idle_timeout"]
+    assert idle["type"] == "integer"
+    assert idle["minimum"] == 1
+
+    answer = call(ops=[spawn_op("agent.submit", {"model": "m/p", "prompt": "x", "idle_timeout": 0})])
+    assert answer["ops"][0]["ok"] is False
+    assert "must be at least 1" in answer["ops"][0]["error"]["message"]
+    assert submitted == {}
+
+    accepted = call(
+        ops=[spawn_op("agent.submit", {"query": ["m/p"], "prompt": "x", "idle_timeout": 90})]
+    )
+    assert accepted["ops"][0]["ok"] is True, accepted
+    assert "--idle-timeout=90" in submitted["flags"]
+
+
+# ── one copy of a schema per response ───────────────────────────────────────
+
+
+def test_a_repeated_error_schema_is_carried_once(submitted):
+    """A batch of identical mistakes should not carry the schema N times.
+
+    The first refusal keeps it whole, so one mistake still costs one
+    request and reply; every later one points at that copy instead.
+    """
+    answer = call(
+        ops=[
+            spawn_op("agent.submit", {"nope": 1}),
+            spawn_op("agent.submit", {"nope": 2}),
+            spawn_op("agent.submit", {"nope": 3}),
+        ]
+    )
+
+    ops = answer["ops"]
+    assert [op["ok"] for op in ops] == [False, False, False]
+    assert isinstance(ops[0]["error"]["schema"], dict)
+    for later in ops[1:]:
+        assert "schema" not in later["error"]
+        assert later["error"]["schema_ref"] == {
+            "op_index": 0,
+            "schema_fingerprint": dispatch.schema_fingerprint(ops[0]["error"]["schema"]),
+        }
+    assert "schema_ref" not in ops[0]["error"]
+
+
+def test_distinct_error_schemas_each_keep_their_copy(submitted):
+    answer = call(
+        ops=[
+            spawn_op("agent.submit", {"nope": 1}),
+            spawn_op("flow.submit", {"query": ["m", "x"], "nope": 2}),
+        ]
+    )
+
+    first, second = answer["ops"]
+    assert isinstance(first["error"]["schema"], dict)
+    assert isinstance(second["error"]["schema"], dict)
+    assert "schema_ref" not in first["error"] and "schema_ref" not in second["error"]
+
+
+def test_one_refused_op_carries_no_reference():
+    answer = call(ops=[spawn_op("agent.submit", {"nope": 1})])
+    assert "schema" in answer["ops"][0]["error"]
+    assert "schema_ref" not in answer["ops"][0]["error"]

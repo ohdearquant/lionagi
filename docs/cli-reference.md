@@ -119,6 +119,7 @@ li agent [model] prompt [flags]
 | `--form SPEC` | none | Validate a YAML/JSON work-form before making any model call, then inject its typed values |
 | `--context-from REF` | none | Inject distilled context from a prior session id, branch id, run id, or file path into the new branch's first instruction (above the prompt). Repeatable — refs concatenate in argv order, sharing one budget. `cli/_context_from.py` |
 | `--context-budget N` | `8000` | Total token budget (~4 chars/token) for `--context-from` content, shared across all refs. |
+| `--idle-timeout SECONDS` | `LIONAGI_WORKER_IDLE_TIMEOUT` (`600`) | Stop the run as stalled (`WorkerLivenessError`) when the worker emits nothing for this long after it has started answering. `1` to `2**53 - 1`; `0` is refused. A profile's `idle_timeout` sets it for a role, and the flag wins over the profile. Raise it for a model that thinks long between outputs. |
 | `--resume-on-timeout` | false | Resume a timed-out agent session once with a bounded continuation |
 
 `-r` and `-c` are mutually exclusive. `--context-from` is rejected together with `-r` / `-c` (resume already carries the source context). Common flags apply.
@@ -1052,6 +1053,7 @@ All frontmatter fields are optional; matching CLI flags override them at invocat
 | `contain_account_integrations` | Codex only. `true` turns the signed-in account's `apps` and `plugins` features off for this role (`--disable apps --disable plugins`). Default `false` |
 | `account_connectors` | Codex only. List of the account's app connectors the role is for. Naming any leaves both features as the account and config set them, even when contained. Never written into run records or branch snapshots |
 | `timeout` | Default hard timeout in seconds |
+| `idle_timeout` | Seconds of silence from an answering worker before the run counts as stalled; defaults to `LIONAGI_WORKER_IDLE_TIMEOUT` (`600`). `--idle-timeout` overrides it |
 | `resume_on_timeout` | Set to `once` for one bounded automatic continuation |
 | `lion_system` | Prepend `LION_SYSTEM_MESSAGE` to the body (default: `true`) |
 | `artifact_defaults` | Expected-artifact defaults; see [ADR-0064](adr/ADR-0064-cli-execution-outcome-and-completion-record.md) |

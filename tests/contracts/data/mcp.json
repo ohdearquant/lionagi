@@ -283,7 +283,7 @@
           },
           "agent": {
             "type": "string",
-            "description": "Load agent profile by name. Resolves .lionagi/agents/<NAME>/<NAME>.md first, then .lionagi/agents/<NAME>.md, then a trusted+enabled plugin's declared profile ('<plugin>/<NAME>', or a bare NAME when only one plugin declares it). Profile provides system prompt, default model, effort, yolo, timeout, resume_on_timeout. CLI flags override profile settings.",
+            "description": "Load agent profile by name. Resolves .lionagi/agents/<NAME>/<NAME>.md first, then .lionagi/agents/<NAME>.md, then a trusted+enabled plugin's declared profile ('<plugin>/<NAME>', or a bare NAME when only one plugin declares it). Profile provides system prompt, default model, effort, yolo, timeout, idle_timeout, resume_on_timeout. CLI flags override profile settings.",
             "x-flag": "--agent",
             "x-aliases": [
               "-a"
@@ -350,6 +350,13 @@
             "type": "string",
             "description": "Read this MCP config and hand its servers to the leg explicitly. By default the nearest .mcp.json at or above the directory this command was run in is used, so the leg's tools come from the submission rather than from `cwd`. The file is read once at spawn.",
             "x-flag": "--mcp-config"
+          },
+          "idle_timeout": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991,
+            "description": "Stop the run as stalled when the worker goes this many seconds without output after it has started answering. Defaults to the LIONAGI_WORKER_IDLE_TIMEOUT setting (600); a profile's 'idle_timeout' sets it for a role. Raise it for a model that thinks long between outputs.",
+            "x-flag": "--idle-timeout"
           },
           "no_mcp_config": {
             "type": "boolean",

@@ -71,7 +71,11 @@ async def request(
     entry per op in the order given, each ``{'ok': true, 'op', 'result'}`` or
     ``{'ok': false, 'op', 'error'}``. A per-op failure never fails the call —
     check each ``ok``. A rejected op carries the schema it was judged against, so
-    a wrong parameter tells you the right shape in the same reply.
+    a wrong parameter tells you the right shape in the same reply. When several
+    ops in one call are rejected against the same schema, only the first carries
+    it inline; each later one carries ``schema_ref`` — the ``op_index`` of the
+    entry holding the copy plus the schema's fingerprint — instead of repeating
+    it.
 
     Argument validation is closed: an unknown or misspelled parameter is refused
     by name rather than ignored. Every value comes back as raw machine JSON — no

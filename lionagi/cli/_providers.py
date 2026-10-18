@@ -41,6 +41,7 @@ __all__ = (
     "BACKENDS",
     "CLI_PROVIDERS",
     "EFFORT_LEVELS",
+    "MAX_TIMEOUT_SECONDS",
     "ModelSpec",
     "PROVIDER_BYPASS_KWARGS",
     "PROVIDER_EFFORT_KWARG",
@@ -482,6 +483,9 @@ class AgentProfile:
     resume_on_timeout: bool = False
     """Auto-resume-once on a timeout terminal status (profile 'resume_on_timeout: once')."""
     extra: dict = field(default_factory=dict)
+    # Last, so a positional construction keeps the meaning it had before the field existed.
+    idle_timeout: int | None = None
+    """Default --idle-timeout (seconds) used when the CLI flag is not given."""
     # Last, so a positional construction keeps the meaning it had before these existed.
     contain_account_integrations: bool = False
     """Run a codex leg of this role with the account's app and plugin integrations turned off."""
@@ -639,7 +643,9 @@ def profile_config(profile: AgentProfile) -> dict[str, Any]:
         "timeout": profile.timeout,
         "resume_on_timeout": profile.resume_on_timeout,
     }
-    # Only when set, so a role that uses neither reports exactly what it did before.
+    # Only when set, so a role that uses none of them reports exactly what it did before.
+    if profile.idle_timeout is not None:
+        config["idle_timeout"] = profile.idle_timeout
     if profile.contain_account_integrations:
         config["contain_account_integrations"] = True
     if profile.account_connectors:
@@ -743,8 +749,14 @@ def load_agent_profile(name: str, *, cwd: Path | None = None) -> AgentProfile:
     raise AgentProfileNotFoundError(msg)
 
 
-def _parse_profile_timeout(name: str, raw: Any) -> int | None:
-    """Validate the profile 'timeout' field; warn and ignore garbage rather than raising.
+#: The largest whole number of seconds a timeout may name: the largest a float holds exactly,
+#: which is what the run's deadline arithmetic and a JSON-number MCP caller both carry.
+MAX_TIMEOUT_SECONDS = 2**53 - 1
+
+
+def _parse_profile_timeout(name: str, raw: Any, field: str = "timeout") -> int | None:
+    """Validate a profile seconds field ('timeout', 'idle_timeout'); warn and ignore garbage
+    rather than raising.
 
     See docs/internals/cli.md for why bool/float are rejected, not coerced.
     """
@@ -753,10 +765,16 @@ def _parse_profile_timeout(name: str, raw: Any) -> int | None:
     from ._logging import warn
 
     if isinstance(raw, bool) or not isinstance(raw, int):
-        warn(f"agent profile {name!r}: ignoring invalid timeout {raw!r} (must be a positive int)")
+        warn(f"agent profile {name!r}: ignoring invalid {field} {raw!r} (must be a positive int)")
         return None
     if raw <= 0:
-        warn(f"agent profile {name!r}: ignoring non-positive timeout {raw!r}")
+        warn(f"agent profile {name!r}: ignoring non-positive {field} {raw!r}")
+        return None
+    if raw > MAX_TIMEOUT_SECONDS:
+        warn(
+            f"agent profile {name!r}: ignoring {field} {raw!r} "
+            f"(must be at most {MAX_TIMEOUT_SECONDS})"
+        )
         return None
     return raw
 
@@ -843,6 +861,9 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
         account_connectors=_parse_profile_account_connectors(
             name, frontmatter.get("account_connectors")
         ),
+        idle_timeout=_parse_profile_timeout(
+            name, frontmatter.get("idle_timeout"), field="idle_timeout"
+        ),
         extra={
             k: v
             for k, v in frontmatter.items()
@@ -858,6 +879,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
                 "artifact_defaults",
                 "timeout",
                 "resume_on_timeout",
+                "idle_timeout",
                 "contain_account_integrations",
                 "account_connectors",
             )

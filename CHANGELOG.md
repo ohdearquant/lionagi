@@ -15,6 +15,19 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Added
 
+- `li agent --idle-timeout SECONDS` stops a run as stalled when the worker emits nothing for
+  that long after it has started answering, and profiles may set the same value as
+  `idle_timeout`. The default stays `LIONAGI_WORKER_IDLE_TIMEOUT` (`600`); the flag or profile
+  value overrides it, `0` is refused, and the bound (`1` to `2**53 - 1`) is published as
+  `minimum`/`maximum` in the `agent.submit` schema.
+- MCP argument validation enforces `minimum`/`maximum`, `minLength`/`maxLength` and `pattern`,
+  checks `enum` whatever the value's type, and treats `null` as a type it checks rather than as
+  an absent check. When several ops in one call are rejected against the same schema, the first
+  carries it inline and each later one carries `schema_ref` (the holding entry's `op_index` and
+  the schema fingerprint) instead of a repeated copy.
+- `profile.list` accepts the optional `mcp`, `mcp_config` and `idle_timeout` keys under
+  `fields`, so a caller can ask for one on a profile that does not declare it and read `null`
+  instead of a refused field name.
 - `lionagi.ln.concurrency.temporary_signal_handlers(handler, signals=(SIGINT, SIGTERM))`, a
   context manager that installs one handler for the length of a block and restores each prior
   handler on exit. Like `run_async`, it installs nothing off the main thread and leaves alone a
