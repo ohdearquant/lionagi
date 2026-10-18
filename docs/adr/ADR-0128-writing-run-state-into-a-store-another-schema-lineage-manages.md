@@ -319,9 +319,10 @@ Public tests use synthetic profiles. A deployment proves its own profile in its 
 Traced at commit `5cab31a2` by reading each entry point down through `StateDB`, the lifecycle
 service and the session observer; the four rows for the default hook handlers and the steer
 tombstone sweep's row were traced at `54132f85`. Entries name functions, not line numbers. The
-traced runs on scratch stores that confirm the manifest (D4) and the tests in the last column (D8)
-land with the implementation; until then this is the reading, and a trace that shows an effect
-missing here is a defect in this appendix.
+implementation's tests on scratch stores (`tests/state/test_compatibility_mode.py`,
+`tests/state/test_compatibility_owner_ops.py`, `tests/state/test_compatibility_teardown_ops.py`)
+are the check on this manifest, and a trace that shows an effect missing here is a defect in this
+appendix.
 
 ### A.0 Today
 
