@@ -37,6 +37,12 @@ else:
     os.environ["LIONAGI_HOME"] = _TEST_LIONAGI_HOME
     atexit.register(_remove_test_home, _TEST_LIONAGI_HOME)
 
+# A store URL exported by the calling shell outranks LIONAGI_HOME, so without this a suite run
+# from that shell would open the caller's real store. The settings loader matches environment
+# names without regard to case, so every spelling goes. Tests that need the setting set their own.
+for _name in [name for name in os.environ if name.upper() == "LIONAGI_STATE_DB_URL"]:
+    del os.environ[_name]
+
 # The provider layer reads $CODEX_HOME (global codex config and config
 # profiles). Tests must never see the developer's real ~/.codex OR an
 # externally exported CODEX_HOME: a machine-local model_reasoning_effort would
@@ -64,6 +70,14 @@ if "lionagi._paths" in sys.modules:
     raise RuntimeError(
         "lionagi._paths was imported before tests/conftest.py could redirect "
         "LIONAGI_HOME; the run directory used by this session is not isolated."
+    )
+
+if "lionagi.config" in sys.modules:
+    # Settings are read once, when lionagi.config is first imported, so a store URL the caller
+    # exported is already bound and removing it above changed nothing.
+    raise RuntimeError(
+        "lionagi.config was imported before tests/conftest.py could remove "
+        "LIONAGI_STATE_DB_URL; this session's settings may name the caller's store."
     )
 
 import inspect
