@@ -39,6 +39,66 @@ class UnhashableStructuralValueError(TypeError):
         )
 
 
+# ``memoryview`` is the one built-in whose hash refusals are ``ValueError`` rather than
+# ``TypeError``: for a writable view, for a view whose format is not a byte format, and
+# for a released view. The messages are the interpreter's own and are stable across
+# supported versions. Recognizing exactly these keeps the promised equality fallback
+# for a value whose hash reaches a memoryview without swallowing any other
+# ``ValueError`` a value's own ``__hash__`` raises.
+_MEMORYVIEW_HASH_REFUSALS = frozenset(
+    {
+        "cannot hash writable memoryview object",
+        "memoryview: hashing is restricted to formats 'B', 'b' or 'c'",
+        "operation forbidden on released memoryview object",
+    }
+)
+# Pydantic's serializer refuses a model that holds itself with a ``ValueError`` whose
+# message starts with this text, whether it finds the repeated object or runs out of depth.
+_CIRCULAR_REFERENCE = "Circular reference detected"
+
+
+def _is_memoryview_hash_refusal(exc: ValueError) -> bool:
+    """Whether *exc* is a ``ValueError`` a ``memoryview``'s own hash raises.
+
+    Hashing a writable, non-byte-format or released ``memoryview`` -- on its own or
+    nested in a container or model whose hash reaches it -- raises one of these. Every
+    other ``ValueError`` from a value's own ``__hash__`` is a defect in that ``__hash__``
+    and must propagate, so a refusal is recognized by its own message rather than by
+    the exception type.
+    """
+    return (
+        len(exc.args) == 1 and type(exc.args[0]) is str and exc.args[0] in _MEMORYVIEW_HASH_REFUSALS
+    )
+
+
+def _is_circular_reference(exc: ValueError) -> bool:
+    """Whether *exc* is the serializer's refusal of a model that holds itself."""
+    return (
+        len(exc.args) == 1
+        and type(exc.args[0]) is str
+        and exc.args[0].startswith(_CIRCULAR_REFERENCE)
+    )
+
+
+def _serialized(value: Any, path: str, build: Callable[[], Any]) -> Any:
+    """Return *build()*, the builtins a model serializes to, or refuse the model.
+
+    Pydantic's ``model_dump`` refuses a model that holds itself with ``ValueError``, and
+    ``msgspec.to_builtins`` reaches the recursion limit on one, before the projection can
+    walk it, so the model is refused with the same error a cycle the projection meets on
+    its own path raises. Any other error from the model's own serializer, a
+    ``ValueError`` included, propagates.
+    """
+    try:
+        return build()
+    except RecursionError as exc:
+        raise UnhashableStructuralValueError(path, type(value)) from exc
+    except ValueError as exc:
+        if not _is_circular_reference(exc):
+            raise
+        raise UnhashableStructuralValueError(path, type(value)) from exc
+
+
 def _forward_collection(
     key_ref: weakref.ref[_IdentityKey], on_collect: Callable[[_IdentityKey], None]
 ) -> Callable[[weakref.ref], None]:
@@ -210,6 +270,7 @@ _PATH = 21
 _UUID = 22
 _ELLIPSIS = 23
 _TYPING_SINGLETON = 24
+_MEMORYVIEW = 25
 
 # Keyed by identity, so a frozen dataclass's key is computed once: its fields are assumed not
 # to change after that. A field written through `object.__setattr__` once the key is cached is
@@ -347,6 +408,85 @@ def _is_msgspec_struct(value: Any) -> bool:
     )
 
 
+def _project_memoryview(
+    view: memoryview, path: str, active: set[int], *, value_semantics: bool
+) -> _StructuralKey:
+    """Key a memoryview by the values it holds, or by identity.
+
+    A memoryview compares equal to another view of the same shape holding equal values,
+    whatever the two formats, and to the bytes holding the same values when it is
+    one-dimensional. Its projection follows that comparison, as the hash representation
+    in ``_hash`` does: a one-dimensional view of whole-number values from 0 to 255 is
+    the ``bytes`` it holds, whatever its format, and any other view is keyed by its
+    shape and by Python's own value equality over the values it unpacks to. Only a
+    read-only view of a ``bytes`` object holds values that cannot change; a writable
+    view, a read-only view of a mutable buffer, a released view, and a view whose
+    format cannot be unpacked are keyed by identity and are unsafe to hash, as a
+    ``bytearray`` is. Never cached, because releasing the view later leaves it equal
+    only to itself.
+    """
+    try:
+        values = view.tolist() if view.readonly and type(view.obj) is bytes else None
+    except (ValueError, NotImplementedError):
+        values = None
+    if values is None:
+        return _StructuralKey(
+            (_OPAQUE_MUTABLE, _IdentityKey(view)),
+            cache_stable=False,
+            hash_safe=False,
+            _sort_token=_frame(b"x", _identity_token(view)),
+            _unsafe_path=path,
+            _unsafe_type=memoryview,
+        )
+    if not _nested_lengths_match(values, view.shape):
+        # The values cannot be read in the shape the view compares, so no projection
+        # represents it; a key that cannot stand for an equal value is refused.
+        raise UnhashableStructuralValueError(path, memoryview)
+    if view.ndim == 1 and all(
+        isinstance(value, int | float) and 0 <= value <= 255 and value == int(value)
+        for value in values
+    ):
+        return _project(
+            bytes(int(value) for value in values), path, active, value_semantics=value_semantics
+        )
+    # The tuples are this call's own copy of the values, so they do not make the key
+    # unsafe.
+    projected = _project(_nested_values(values), path, active, value_semantics=True)
+    return _StructuralKey(
+        (_MEMORYVIEW, view.shape, projected.value),
+        cache_stable=False,
+        hash_safe=True,
+        _sort_token=_frame(
+            b"mv",
+            _frame(b"t", *(_encode_int(size) for size in view.shape)),
+            projected._sort_token,
+        ),
+        _pins=projected._pins,
+    )
+
+
+def _nested_lengths_match(values: Any, shape: tuple[int, ...]) -> bool:
+    """Whether unpacked view values nest exactly to *shape*."""
+    if not shape:
+        return values == []
+    if not isinstance(values, list) or len(values) != shape[0]:
+        return False
+    if len(shape) == 1:
+        return not any(isinstance(value, list) for value in values)
+    return all(_nested_lengths_match(value, shape[1:]) for value in values)
+
+
+def _nested_values(values: Any) -> tuple[Any, ...]:
+    """Unpacked view values as nested tuples whose equality is the view's.
+
+    A ``?`` view compares its values as the integers they hold, so a ``bool`` becomes
+    that integer; every other value is kept as it was unpacked.
+    """
+    if isinstance(values, list):
+        return tuple(_nested_values(value) for value in values)
+    return (values,) if type(values) is not bool else (int(values),)
+
+
 def _project(
     value: Any,
     path: str,
@@ -402,6 +542,8 @@ def _project(
         return _StructuralKey((_STR, value), True, True, _frame(b"s", _encode_text(value)))
     if value_type is bytes:
         return _StructuralKey((_BYTES, value), True, True, _frame(b"y", value))
+    if value_type is memoryview:
+        return _project_memoryview(value, path, active, value_semantics=value_semantics)
 
     sentinel_name = _lion_sentinel_name(value)
     if sentinel_name is not None:
@@ -625,7 +767,9 @@ def _project(
     if _is_pydantic_model(value):
         identity = _enter(value, path, active)
         try:
-            dumped = typing.cast(Any, value).model_dump(mode="python")
+            dumped = _serialized(
+                value, path, lambda: typing.cast(Any, value).model_dump(mode="python")
+            )
             projected = _project(dumped, path, active, value_semantics=value_semantics)
             return _StructuralKey(
                 (_PYDANTIC, _IdentityKey(value_type), projected.value),
@@ -649,7 +793,10 @@ def _project(
             import msgspec
 
             projected = _project(
-                msgspec.to_builtins(value), path, active, value_semantics=value_semantics
+                _serialized(value, path, lambda: msgspec.to_builtins(value)),
+                path,
+                active,
+                value_semantics=value_semantics,
             )
             return _StructuralKey(
                 (_MSGSPEC, _IdentityKey(value_type), projected.value),
@@ -692,11 +839,22 @@ def _project(
 
     if value_semantics:
         type_key = _IdentityKey(value_type)
+        try:
+            value_token = _encode_int(hash(value))
+        except (TypeError, ValueError) as exc:
+            # The value reports itself unhashable, so no content key exists for it and
+            # the base equality that asks for one reads it as an uncomparable state
+            # rather than letting the refusal escape. A TypeError is the ordinary refusal,
+            # and a memoryview the value's hash reaches refuses with ValueError. Every other
+            # error from the value's own __hash__ propagates.
+            if isinstance(exc, ValueError) and not _is_memoryview_hash_refusal(exc):
+                raise
+            raise UnhashableStructuralValueError(path, value_type) from exc
         return _StructuralKey(
             (_OPAQUE, type_key, _ValueEqualityKey(value)),
             cache_stable=False,
             hash_safe=True,
-            _sort_token=_frame(b"o", _identity_token(value_type), _encode_int(hash(value))),
+            _sort_token=_frame(b"o", _identity_token(value_type), value_token),
         )
     identity = _IdentityKey(value)
     return _StructuralKey(

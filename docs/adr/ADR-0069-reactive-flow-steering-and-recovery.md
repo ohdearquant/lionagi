@@ -578,10 +578,10 @@ against the artifact set a node declared, it does not make.
   window a rewrite preserving both leaves (`stale_artifact_markers`,
   `lionagi/state/artifact_verifier.py:299-309`). A byte-level check is delta row 7.
 - **A declared artifact above the hash size limit.** `compute_hash` refuses a payload above
-  `MAX_HASH_INPUT_BYTES = 10 * 1024 * 1024` (`lionagi/ln/_hash.py:153,193-194`), and ADR-0050 records
+  `MAX_HASH_INPUT_BYTES = 10 * 1024 * 1024` (`lionagi/ln/_hash.py:250,290-291`), and ADR-0050 records
   that a caller hashing content larger than 10 MiB must choose a different streaming design rather
   than expect `compute_hash()` to accept it
-  (`docs/adr/ADR-0050-foundational-utility-and-typed-adaptation-strata.md:834-836`).
+  (`docs/adr/ADR-0050-foundational-utility-and-typed-adaptation-strata.md:882-884`).
 
 **Builder notes for the rows.** A check that re-reads the declared set would read it through the
 same verifier a live run uses (`verify_artifact_contract`, `lionagi/state/artifact_verifier.py:215`),
@@ -606,7 +606,7 @@ spawned entry written by `record_spawned`
 BLAKE-family hash the tree already uses for recorded content — `blake2b`
 (`lionagi/cli/orchestrate/_manifest.py:333`; ADR-0110 D1 records a "BLAKE-family content hash",
 `docs/adr/ADR-0110-deterministic-manifest-fanout.md:119`) — not `compute_hash`'s SHA-256 default
-(`lionagi/ln/_hash.py:177-181`). A digest kept in the same file as the entry it describes lives
+(`lionagi/ln/_hash.py:274-278`). A digest kept in the same file as the entry it describes lives
 inside that file's trust boundary: it detects an accidental change — an artifact overwritten or
 truncated with the checkpoint not following — and not a deliberate edit, which can rewrite the
 digest to match.
