@@ -209,20 +209,36 @@ writable native open admits a store by its rows:
   refused with `SchemaTooNewError`; a version that is missing or not a whole number is replaced by
   the stamp, as before the row existed, since the row already says whose store it is.
 - No `lineage` row, and a `schema_meta` table: every store lionagi created before the row holds a
-  version from 1 to `SCHEMA_VERSION`, written in its first transaction. Such a store is adopted and
-  the migration writes the row into it. A version above `SCHEMA_VERSION` is refused as too new; a
-  missing version, or one no release writes (not a whole number, zero, padded, spaced or empty),
-  raises `UnrecognizedStoreError`, since nothing then says what shape a migration would meet.
+  version from 1 to `SCHEMA_VERSION` and the `sessions` table, both created on its first open. Such
+  a store is adopted and the migration writes the row into it; so is one that holds no table a
+  lionagi component never creates, as a first open stopped before it created `sessions` leaves. A
+  version above `SCHEMA_VERSION` is refused as too new; a missing version, or one no release writes
+  (not a whole number, zero, padded, spaced or empty), raises `UnrecognizedStoreError`, since
+  nothing then says what shape a migration would meet, and so does a store holding a table no
+  lionagi component creates and no `sessions` table. A `schema_meta` table without `key` and
+  `value` columns raises `UnrecognizedStoreError`.
 - No `schema_meta` table: a store with no tables is new. A store whose tables are all ones a lionagi
-  component creates in the state file is adopted: the `StateDB` schema's tables, and the Studio
-  Operator store's, which that store creates on its own and can create before any `StateDB` open.
-  A store holding any other table raises `UnrecognizedStoreError`. On SQLite each writable
-  connection reads the table names before its connection settings, with the lineage row, so a
-  refused store keeps its bytes and its journal mode. A server database holds other applications'
-  tables beside lionagi's, so on PostgreSQL a database with no `schema_meta` table is new, as
-  before.
+  component creates in the state file is adopted: the `StateDB` schema's tables, among them Studio's
+  approval ledger, and the Studio Operator store's, which those components create on their own and
+  can create before any `StateDB` open. A store holding any other table raises
+  `UnrecognizedStoreError`. A server database holds other applications' tables beside lionagi's,
+  so on PostgreSQL a database with no `schema_meta` table is new, as before, and a database with
+  one is admitted by its rows alone.
 
-A refused open leaves no engine. `UnrecognizedStoreError` is exported from `lionagi.state`.
+Tables are recognized by name, not by their columns: a table of another application that takes the
+name of one lionagi creates reads as lionagi's, and the migration then meets it as it is.
+
+On SQLite the version, the table names and the shape of `schema_meta` are read with the `lineage` row,
+by the reads before any writable connection exists that the paragraphs below describe, so a store
+refused on any of them keeps its bytes, its journal mode and its write-ahead log. When those reads
+could not read the journal or the log beside the file, the file's own `lineage` row still refuses,
+but its other rows and its tables can be part of a transaction, so they decide nothing there. Each
+connection a handle opens while its open is in progress reads all of them again before its
+connection settings; a connection opened after the open has applied the schema reads only the
+`lineage` row, so `SchemaTooNewError` is raised by an open and never by an ordinary write. The
+pre-rebuild backup reads them again before the checkpoint it takes. A refused open leaves no engine,
+whichever of `ForeignLineageError`, `UnrecognizedStoreError`, `SchemaTooNewError` and the
+compatibility refusal refused it. `UnrecognizedStoreError` is exported from `lionagi.state`.
 
 A store another application manages carries a `lineage` row naming that application. The managing
 application writes it when it creates the store, in the transaction that creates its schema, and the
@@ -348,11 +364,14 @@ missing here is a defect in this appendix.
 ### A.0 Today
 
 A writable open of a store stamped with a higher `schema_meta.version` raises `SchemaTooNewError`
-before any data or DDL statement. Every step `_apply_schema()` runs ahead of its main version check
-(`_reconcile_columns`, the legacy `sessions` rebuild, and the six legacy CHECK rebuilds of
-`schedules`, `invocations`, `schedule_runs` and `definitions`) either finds nothing to do or checks
-the version first inside its own `BEGIN IMMEDIATE`. The connection settings of P2 are applied before
-any of it. Compatibility mode (D1) runs none of these steps.
+before any data or DDL statement; on SQLite the version is read with the `lineage` row, before any
+writable connection exists and again by each connection the open makes before its connection
+settings of P2 (D7), and the refused open leaves no engine. Every step `_apply_schema()` runs ahead
+of its main version check (`_reconcile_columns`, the legacy `sessions` rebuild, and the six legacy
+CHECK rebuilds of `schedules`, `invocations`, `schedule_runs` and `definitions`) either finds
+nothing to do or checks the version first inside its own `BEGIN IMMEDIATE`, and the backup a
+rebuild takes reads it again before its checkpoint. Compatibility mode (D1) runs none of these
+steps.
 
 A writable native `StateDB` open of a store whose `lineage` row names another application raises
 `ForeignLineageError` (D7) before any writable connection exists, leaving the store file, its
@@ -374,9 +393,13 @@ read-only open applies nothing and is not checked, and Studio's `open_db` and ot
 connects to the file natively are not covered.
 
 A writable native open of a store with no `lineage` row raises `UnrecognizedStoreError` (D7) when
-its `schema_meta` version is missing or one no release writes, or, on SQLite, when it has no
-`schema_meta` table and holds a table no lionagi component creates, a case refused before the
-connection settings of P2 so the store keeps its bytes and its journal mode.
+its `schema_meta` version is missing or one no release writes, or, on SQLite, when its
+`schema_meta` table has no `key` and `value` columns, when it has no `schema_meta` table and holds a
+table no lionagi component creates, or when it records a version and holds such a table but no
+`sessions` table. On SQLite each of these is read with the `lineage` row, before any writable
+connection exists, so a store those reads can read keeps its bytes, its journal mode and its log
+when it is refused; otherwise the open's first writable connection refuses it before its connection
+settings.
 
 ### A.1 Entry points
 

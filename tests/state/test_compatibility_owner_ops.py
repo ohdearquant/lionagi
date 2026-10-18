@@ -654,7 +654,7 @@ async def test_a_refused_native_open_leaves_a_hot_journal_that_took_the_row_out_
     store = await _managed_store(tmp_path / "managed.db")
     _execute(store, "PRAGMA journal_mode = delete")
     copy = _hot_copy(store, tmp_path / "copy.db", "DELETE FROM schema_meta WHERE key = 'lineage'")
-    assert _read_lineage(f"{copy.as_uri()}?immutable=1")[1] is None
+    assert _read_lineage(f"{copy.as_uri()}?immutable=1")[1].lineage is None
     before = _snapshot(copy)
     assert set(before) == {"", "-journal"}
     with pytest.raises(ForeignLineageError, match="'manager' as the application"):
@@ -678,7 +678,7 @@ async def test_a_lineage_row_an_interrupted_transaction_wrote_does_not_refuse_th
         tmp_path / "copy.db",
         "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')",
     )
-    assert _read_lineage(f"{copy.as_uri()}?immutable=1")[1] == "manager"
+    assert _read_lineage(f"{copy.as_uri()}?immutable=1")[1].lineage == "manager"
     again = StateDB(copy)
     await again.open()
     await again.close()
@@ -788,22 +788,65 @@ async def test_an_open_whose_connection_never_read_the_store_leaves_no_engine(tm
         await handle.close()
 
 
-async def test_an_open_that_fails_after_its_connection_read_the_store_keeps_its_engine(tmp_path):
-    """Only an open whose connection never read the store is undone; after a later failure the
-    engine stays, as it always has."""
-    from lionagi.state.db import SCHEMA_VERSION, SchemaTooNewError
-
-    path = tmp_path / "newer.db"
-    first = StateDB(path)
-    await first.open()
-    await first.close()
-    newer = str(int(SCHEMA_VERSION) + 1)
-    _execute(path, "UPDATE schema_meta SET value = ? WHERE key = 'version'", (newer,))
+async def test_an_open_that_fails_after_its_connection_read_the_store_keeps_its_engine(
+    tmp_path, monkeypatch
+):
+    """Only an open whose connection never read the store, or one that refuses the store, is
+    undone; after any other later failure the engine stays, as it always has, and the next open
+    completes on it."""
+    path = tmp_path / "state.db"
     handle = StateDB(path)
+
+    async def fail(self):
+        raise RuntimeError("after the connection read the store")
+
+    monkeypatch.setattr(StateDB, "_backfill_session_ended_at_once", fail)
     try:
-        with pytest.raises(SchemaTooNewError):
+        with pytest.raises(RuntimeError, match="after the connection read the store"):
             await handle.open()
         assert handle._engine is not None
+        monkeypatch.undo()
+        await handle.open()
+        assert handle._schema_applied
+    finally:
+        await handle.close()
+
+
+@pytest.mark.parametrize("refusal", ["too-new", "unrecognized"])
+async def test_a_kept_engine_whose_store_is_refused_on_the_next_open_is_disposed(
+    tmp_path, monkeypatch, refusal
+):
+    """The open that completes a kept engine refuses the store as a fresh open does, and the
+    refusal leaves no engine and no registration."""
+    from lionagi.state.db import (
+        _OPEN_NATIVE,
+        SCHEMA_VERSION,
+        SchemaTooNewError,
+        UnrecognizedStoreError,
+    )
+
+    path = tmp_path / "state.db"
+    handle = StateDB(path)
+
+    async def fail(self):
+        raise RuntimeError("after the connection read the store")
+
+    monkeypatch.setattr(StateDB, "_backfill_session_ended_at_once", fail)
+    with pytest.raises(RuntimeError):
+        await handle.open()
+    monkeypatch.undo()
+    assert handle._engine is not None
+    if refusal == "too-new":
+        stamp, expected = str(int(SCHEMA_VERSION) + 1), SchemaTooNewError
+    else:
+        stamp, expected = "not-a-version", UnrecognizedStoreError
+    _execute(path, "DELETE FROM schema_meta WHERE key = 'lineage'")
+    _execute(path, "UPDATE schema_meta SET value = ? WHERE key = 'version'", (stamp,))
+    try:
+        with pytest.raises(expected):
+            await handle.open()
+        assert handle._engine is None
+        assert handle not in _OPEN_NATIVE
     finally:
         await handle.close()
 
@@ -1081,7 +1124,7 @@ async def test_a_row_in_the_log_is_read_whatever_the_files_row_says(tmp_path, in
         shutil.copyfile(Path(f"{store}-wal"), Path(f"{copy}-wal"))
         if index:
             shutil.copyfile(Path(f"{store}-shm"), Path(f"{copy}-shm"))
-    assert _read_lineage(f"{copy.as_uri()}?immutable=1")[1] == "lionagi"
+    assert _read_lineage(f"{copy.as_uri()}?immutable=1")[1].lineage == "lionagi"
     before = _snapshot(copy)
     assert set(before) == ({"", "-wal", "-shm"} if index else {"", "-wal"})
     with pytest.raises(ForeignLineageError, match="'manager' as the application"):
@@ -1163,7 +1206,7 @@ def test_without_the_check_a_checkpoint_between_the_copies_hides_the_row(tmp_pat
     monkeypatch.setattr(db_mod, "_copy_store_file", checkpoint_after_the_copy)
     monkeypatch.setattr(db_mod, "_copy_state", lambda path, suffix: ())
     try:
-        assert db_mod._read_lineage_from_a_copy(str(copy), "-wal") is None
+        assert db_mod._read_lineage_from_a_copy(str(copy), "-wal").lineage is None
     finally:
         for holder in holders:
             holder.close()
@@ -1216,7 +1259,7 @@ def test_the_private_copy_keeps_the_locks_this_process_holds_on_the_store(tmp_pa
         )
         assert Path(f"{store}-journal").exists()
         assert _another_process_reserves(store) == "locked"
-        assert db_mod._read_lineage_from_a_copy(str(store), "-journal") is None
+        assert db_mod._read_lineage_from_a_copy(str(store), "-journal").lineage is None
         assert _another_process_reserves(store) == "locked"
         monkeypatch.setattr(db_mod, "_copy_store_file", shutil.copyfile)
         db_mod._read_lineage_from_a_copy(str(store), "-journal")

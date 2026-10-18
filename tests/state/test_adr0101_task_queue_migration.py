@@ -15,9 +15,12 @@ import aiosqlite
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
+from sqlalchemy.dialects import sqlite
+from sqlalchemy.schema import CreateTable
 
 from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
+from lionagi.state.schema_meta import metadata
 from lionagi.state.transitions import (
     Actor,
     StateReason,
@@ -257,9 +260,13 @@ async def test_migration_preserves_triggers(tmp_path):
             """
         )
         # A table of the user's own beside lionagi's, in a store lionagi created, so it carries
-        # the schema_meta version every lionagi store has had from its first transaction.
+        # the schema_meta version and the sessions table every lionagi store has had from its
+        # first open.
         await raw.execute("CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         await raw.execute("INSERT INTO schema_meta (key, value) VALUES ('version', '1')")
+        await raw.execute(
+            str(CreateTable(metadata.tables["sessions"]).compile(dialect=sqlite.dialect()))
+        )
         await raw.execute("CREATE TABLE trigger_log (run_id TEXT)")
         await raw.execute(
             """

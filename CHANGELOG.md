@@ -45,7 +45,7 @@ project those rows ran under. To keep the project, name it in those members.
   row when it creates the store, and compatibility mode admits only a store that has it, so a
   native open in another process cannot migrate a store being written in compatibility mode;
   compatibility mode in turn refuses a store this process has open natively. A store without the
-  row opens and migrates natively as before. Studio's own store opener is not covered yet.
+  row is admitted by its other rows (see Changed). Studio's own store opener is not covered yet.
 - `RunEnd` and the run usage totals report cache writes by lifetime, `cache_write_5m_tokens` and
   `cache_write_1h_tokens`, read from Anthropic's `usage.cache_creation`; `cache_write_tokens` stays
   the total. The lifetimes are reported only when they cover the whole `cache_write_tokens` total
@@ -62,12 +62,17 @@ project those rows ran under. To keep the project, name it in those members.
 - A writable native `StateDB` open writes `lineage = 'lionagi'` into `schema_meta` when it applies
   its schema, and admits a store by its rows (ADR-0128 D7). A store whose lineage names lionagi
   opens as before. A store without the row is adopted, and the row written, when it records a
-  version from 1 to the current one, or when it has no `schema_meta` table and every table in it is
-  one lionagi creates (the Studio Operator store can create its tables first). Any other store
-  raises `UnrecognizedStoreError` (exported from `lionagi.state`): a missing version, one no
-  release writes, or a table lionagi never creates, the last refused on SQLite before the
-  connection's settings change the file. On PostgreSQL a database with no `schema_meta` table is
-  still new.
+  version from 1 to the current one and holds the `sessions` table or no table lionagi never
+  creates, or when it has no `schema_meta` table and every table in it is one lionagi creates (the
+  Studio Operator store and Studio's approval ledger can create their tables first). Tables are
+  recognized by name. Any other store raises `UnrecognizedStoreError` (exported from
+  `lionagi.state`): a missing version, one no release writes, a `schema_meta` table without `key`
+  and `value` columns, or a table lionagi never creates. On SQLite these rows and the version are
+  read with the lineage row before any writable connection exists, so a store refused on them,
+  `SchemaTooNewError` included, keeps its bytes, its journal mode and its write-ahead log whenever
+  those reads can read them, and the pre-rebuild backup reads them again before its checkpoint. An open refused with
+  `SchemaTooNewError` now leaves no engine, as the other refusals do. On PostgreSQL a database with
+  no `schema_meta` table is still new.
 
 - `li studio --docker` publishes the daemon's port on the address `--host` names, loopback
   (`127.0.0.1`) by default, where it published on every host interface, so with
