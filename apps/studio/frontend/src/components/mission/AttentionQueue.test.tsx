@@ -62,9 +62,7 @@ function row(item: AttentionItem) {
 }
 
 function undoButton(el: HTMLElement) {
-  return [...el.querySelectorAll("button")].find((button) =>
-    button.textContent?.includes("Undo"),
-  );
+  return [...el.querySelectorAll("button")].find((button) => button.textContent?.includes("Undo"));
 }
 
 describe("AttentionQueue.tsx — source contract", () => {

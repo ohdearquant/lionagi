@@ -53,6 +53,11 @@ export function useLiveBoard(): BoardState {
         // the hysteresis here would gate the very first render behind a run of
         // consecutive successes.
         if (!everSucceeded) return;
+        // A board whose last fetch failed is already showing the error, which
+        // a stale mark does not replace. Arming the hysteresis there would hold
+        // back the first success after the failure, and the error would stay
+        // on screen with fresh data in hand.
+        if (successStreak.current === 0) return;
         // Deliberately does NOT reset successStreak. Silence means the current
         // fetch has not come back yet, which is what a slow backend looks
         // like, not a failure — the catch path owns that. Clearing the streak
@@ -99,12 +104,15 @@ export function useLiveBoard(): BoardState {
 
         lastSuccessAt = Date.now();
         everSucceeded = true;
-        staleDispatched = false;
         successStreak.current += 1;
 
         // Hysteresis: if we were stale, only clear after STABLE_RESUMPTION_COUNT
         if (!wasStaleRef.current || successStreak.current >= STABLE_RESUMPTION_COUNT) {
           wasStaleRef.current = false;
+          // Re-armed only once the board has resumed. A success the
+          // hysteresis holds back has not resumed it, so a silence after that
+          // success is no new transition to report.
+          staleDispatched = false;
           dispatch({
             type: "DATA_OK",
             runs: runsResp.runs,

@@ -528,11 +528,12 @@ describe("Operator stream cursor", () => {
         const after = new URL(url, "http://studio.test").searchParams.get("after_sequence");
         // First connection: text, the retention notice, then the turn's done.
         // A reconnect must never be needed for a valid stream.
-        const body = (after ?? "0") === "0"
-          ? [frame(1), truncationFrame(2), doneFrame(3)]
-              .map((value) => `data: ${JSON.stringify(value)}\n\n`)
-              .join("")
-          : "";
+        const body =
+          (after ?? "0") === "0"
+            ? [frame(1), truncationFrame(2), doneFrame(3)]
+                .map((value) => `data: ${JSON.stringify(value)}\n\n`)
+                .join("")
+            : "";
         // The daemon keeps the subscription open after the terminal frame.
         // A body that closes would only exercise the reconnect loop.
         const stream = new ReadableStream({
@@ -674,5 +675,23 @@ describe("Operator SSE framing", () => {
         payload: { ...notice.payload, firstElidedAt: Number.NaN },
       }),
     ).toBe(false);
+    // Per-type counts are a map from frame type to count: a list, whatever it
+    // holds, is not one.
+    expect(
+      isOperatorFrame({
+        ...notice,
+        payload: { ...notice.payload, elidedFrameTypes: [-1, "not-an-int", null] },
+      }),
+    ).toBe(false);
+    expect(
+      isOperatorFrame({ ...notice, payload: { ...notice.payload, elidedFrameTypes: [] } }),
+    ).toBe(false);
+  });
+
+  it("refuses a frame whose creation time is not a finite number", () => {
+    for (const createdAt of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(isOperatorFrame({ ...frame(1), createdAt })).toBe(false);
+      expect(isOperatorFrame({ ...truncationFrame(1), createdAt })).toBe(false);
+    }
   });
 });

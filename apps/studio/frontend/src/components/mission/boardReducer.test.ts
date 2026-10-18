@@ -807,15 +807,89 @@ describe("boardReducer — disposition join and active/discharged split", () => 
     expect(s.attentionItems).toHaveLength(2);
     // The rows are still keyed on their session ids, and finding the shared
     // string under the old key is what must not happen.
-    expect(s.attentionItems.map((item) => item.id)).toEqual([
-      "run:session-a",
-      "run:session-b",
-    ]);
+    expect(s.attentionItems.map((item) => item.id)).toEqual(["run:session-a", "run:session-b"]);
     expect(
       s.attentionItems.every(
         (item) => item.legacyId === undefined || item.legacyId !== "run:shared",
       ),
     ).toBe(true);
+  });
+
+  it("never claims a legacy key a run outside the queue also holds", () => {
+    // session-a finished and needs no attention, so it is not a row, but it
+    // shares the CLI-run id: the disposition under that string may be its.
+    const nowSec = 1_000_000;
+    const s = dispatchOk(
+      initialBoardState(),
+      [
+        makeRun({
+          id: "session-a",
+          run_id: "shared",
+          status: "completed",
+          started_at: nowSec - 900,
+          ended_at: nowSec - 800,
+        }),
+        makeRun({ id: "session-b", run_id: "shared", status: "failed", started_at: nowSec - 600 }),
+      ],
+      [],
+      nowSec,
+      null,
+      { "run:shared": makeDisposition({ item_id: "run:shared", state: "resolved" }) },
+    );
+    expect(s.dischargedAttentionItems).toHaveLength(0);
+    expect(s.attentionItems.map((item) => item.id)).toEqual(["run:session-b"]);
+    expect(s.attentionItems[0].legacyId).toBeUndefined();
+  });
+
+  it("never claims as a legacy key the current key of a run, in the queue or out of it", () => {
+    const nowSec = 1_000_000;
+    const dispositions = {
+      "run:shared": makeDisposition({ item_id: "run:shared", state: "resolved" }),
+    };
+    const sessionB = makeRun({
+      id: "session-b",
+      run_id: "shared",
+      status: "failed",
+      started_at: nowSec - 600,
+    });
+    // The run whose session id is the shared string owns that key: its own
+    // disposition discharges it, and session-b does not inherit it.
+    const both = dispatchOk(
+      initialBoardState(),
+      [
+        makeRun({ id: "shared", run_id: "shared", status: "failed", started_at: nowSec - 600 }),
+        sessionB,
+      ],
+      [],
+      nowSec,
+      null,
+      dispositions,
+    );
+    expect(both.dischargedAttentionItems.map((item) => item.id)).toEqual(["run:shared"]);
+    expect(both.attentionItems.map((item) => item.id)).toEqual(["run:session-b"]);
+    expect(both.attentionItems[0].legacyId).toBeUndefined();
+    // Once that run leaves the queue it still owns the key, so session-b stays
+    // in the queue instead of being discharged by another run's decision.
+    const ownerFinished = dispatchOk(
+      initialBoardState(),
+      [
+        makeRun({
+          id: "shared",
+          run_id: "shared",
+          status: "completed",
+          started_at: nowSec - 900,
+          ended_at: nowSec - 800,
+        }),
+        sessionB,
+      ],
+      [],
+      nowSec,
+      null,
+      dispositions,
+    );
+    expect(ownerFinished.dischargedAttentionItems).toHaveLength(0);
+    expect(ownerFinished.attentionItems.map((item) => item.id)).toEqual(["run:session-b"]);
+    expect(ownerFinished.attentionItems[0].legacyId).toBeUndefined();
   });
 
   it("a gated run carrying a stale resolved/expected/snoozed disposition from before gate-awareness stays active, never permanently discharged", () => {

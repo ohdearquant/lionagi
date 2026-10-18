@@ -323,7 +323,9 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 // studio endpoints: unnamed `data: <json>\n\n` frames, auto-reconnect after
 // 2s unless closed. Callers parse the JSON and call the returned closer on
 // their terminal "done" frame.
-export type StreamConnectionState = "connecting" | "open" | "disconnected";
+// "closed" is a stream the server ended with that frame: unlike "disconnected",
+// it does not reconnect.
+export type StreamConnectionState = "connecting" | "open" | "disconnected" | "closed";
 
 function sseSubscribe(
   path: string | (() => string),
@@ -472,7 +474,8 @@ export function isOperatorFrame(value: unknown): value is OperatorFrame {
     typeof raw.type === "string" &&
     OPERATOR_FRAME_TYPES.has(raw.type as OperatorFrameType) &&
     isOperatorPayload(raw.type, raw.payload) &&
-    typeof raw.createdAt === "number"
+    typeof raw.createdAt === "number" &&
+    Number.isFinite(raw.createdAt)
   );
 }
 
@@ -497,6 +500,7 @@ function isOperatorTruncationPayload(payload: RawRecord): boolean {
     isNonNegativeInteger(payload.elidedBytes) &&
     byType != null &&
     typeof byType === "object" &&
+    !Array.isArray(byType) &&
     Object.values(elidedFrameTypes).every(isNonNegativeInteger) &&
     typeof payload.firstElidedAt === "number" &&
     Number.isFinite(payload.firstElidedAt) &&
@@ -1572,6 +1576,7 @@ export function streamSession(
       }
       if (event.type === "done") {
         close();
+        onConnectionState?.("closed");
       }
       onEvent(event);
       // Advance only after the consumer accepted this frame. If the callback
@@ -1630,7 +1635,10 @@ export function streamSignals(
         return;
       }
       if ("type" in event) {
-        if (event.type === "done") close();
+        if (event.type === "done") {
+          close();
+          onConnectionState?.("closed");
+        }
         onEvent(event);
         return;
       }

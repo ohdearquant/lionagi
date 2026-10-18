@@ -2051,10 +2051,8 @@ export default function RunDetail({ id }: RunDetailProps) {
   // reconversation reload instead of a dead retry loop.
   const [olderLoadFailed, setOlderLoadFailed] = useState(false);
   const [resumeWatch, setResumeWatch] = useState<RunResumeResponse | null>(null);
-  const [sessionStreamState, setSessionStreamState] =
-    useState<StreamConnectionState>("connecting");
-  const [signalStreamState, setSignalStreamState] =
-    useState<StreamConnectionState>("connecting");
+  const [sessionStreamState, setSessionStreamState] = useState<StreamConnectionState>("connecting");
+  const [signalStreamState, setSignalStreamState] = useState<StreamConnectionState>("connecting");
   // State rather than a ref because the affordance for loading older history
   // is rendered from it: a cursor the server stopped handing back means there
   // is nothing older left to ask for, and the reader has to see that.
@@ -2078,6 +2076,27 @@ export default function RunDetail({ id }: RunDetailProps) {
   // instead re-creates the handler once per visit, so the copy it closes over
   // is the visit it belongs to.
   const [visitToken, setVisitToken] = useState(0);
+  // The one detail read that follows a run's end, whichever source saw the end
+  // first: the session stream's terminal frame or the resume fallback's
+  // lifecycle check. A read already in flight for this visit is not repeated,
+  // and one that lands after the reader has moved to another visit is dropped.
+  const terminalReadRef = useRef<number | null>(null);
+  const readTerminalDetail = useCallback((runId: string) => {
+    const visit = visitTokenRef.current;
+    if (terminalReadRef.current === visit) return;
+    terminalReadRef.current = visit;
+    getSession(runId)
+      .then((fresh) => {
+        if (visitTokenRef.current !== visit) return;
+        setSession((prev) =>
+          prev && prev.id === fresh.id ? mergeCompletedSession(prev, fresh) : prev,
+        );
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (terminalReadRef.current === visit) terminalReadRef.current = null;
+      });
+  }, []);
 
   useEffect(() => {
     if (!id) return;
@@ -2196,8 +2215,11 @@ export default function RunDetail({ id }: RunDetailProps) {
   // accepted continuation is live, so the detail read below would only repeat
   // what they already deliver. A stream that drops out makes the fallback the
   // only source of freshness until it reconnects.
-  const resumeStreamsHealthy =
-    sessionStreamState === "open" && signalStreamState === "open";
+  const resumeStreamsHealthy = sessionStreamState === "open" && signalStreamState === "open";
+  // A stream the server ended with its terminal frame does not reconnect, unlike
+  // one that dropped. A run resumed after that has nothing else carrying its
+  // messages, so the fallback reads the detail as well while it is active.
+  const sessionStreamEnded = sessionStreamState === "closed";
   useEffect(() => {
     if (!id || !resumeWatch || resumeWatch.run_id !== id || resumeStreamsHealthy) return;
     let cancelled = false;
@@ -2218,24 +2240,33 @@ export default function RunDetail({ id }: RunDetailProps) {
         if (isEffectivelyActive(invocation)) {
           setDone(false);
           setLive(true);
-          delayMs = RESUME_FALLBACK_INITIAL_MS;
+          if (sessionStreamEnded) {
+            try {
+              const fresh = await getSession(id);
+              if (cancelled) return;
+              setSession((previous) =>
+                previous && previous.id === fresh.id
+                  ? mergeCompletedSession(previous, fresh)
+                  : previous,
+              );
+            } catch {
+              // The next lifecycle check reads again.
+            }
+            // Each detail read waits longer than the last, up to the cap.
+            delayMs = Math.min(delayMs * 2, RESUME_FALLBACK_MAX_MS);
+          } else {
+            delayMs = RESUME_FALLBACK_INITIAL_MS;
+          }
           schedule();
         } else {
           setDone(true);
           setLive(false);
-          try {
-            const fresh = await getSession(id);
-            if (cancelled) return;
-            setSession((previous) =>
-              previous && previous.id === fresh.id
-                ? mergeCompletedSession(previous, fresh)
-                : previous,
-            );
-          } catch {
-            // Terminal lifecycle is already authoritative. The one final
-            // detail refresh is best-effort and must not restart polling.
-          }
-          if (!cancelled) setResumeWatch(null);
+          // Terminal lifecycle is authoritative. The watch is cleared before the
+          // final detail read rather than after it: a stream that reconnects and
+          // drops again while the read is in flight must not restart polling for
+          // a run that has ended. The read itself is best-effort.
+          setResumeWatch(null);
+          readTerminalDetail(id);
         }
       } catch {
         // A just-created invocation can race its first detail read, and a
@@ -2252,11 +2283,10 @@ export default function RunDetail({ id }: RunDetailProps) {
       cancelled = true;
       if (timer != null) window.clearTimeout(timer);
     };
-  }, [id, resumeStreamsHealthy, resumeWatch]);
+  }, [id, readTerminalDetail, resumeStreamsHealthy, resumeWatch, sessionStreamEnded]);
 
   useEffect(() => {
     if (!id) return;
-    let cancelled = false;
     const stop = streamSession(
       id,
       (event) => {
@@ -2270,16 +2300,10 @@ export default function RunDetail({ id }: RunDetailProps) {
           // The initial fetch's status/reason fields are now stale (the run
           // just finished) — refetch so the terminal status/verdict derivation
           // reflects the real outcome instead of the pre-completion snapshot.
-          // Guarded on id: if the viewer navigates to a different run before
-          // this resolves, it must not clobber that run's freshly-fetched state.
-          getSession(id)
-            .then((fresh) => {
-              if (cancelled) return;
-              setSession((prev) =>
-                prev && prev.id === fresh.id ? mergeCompletedSession(prev, fresh) : prev,
-              );
-            })
-            .catch(() => {});
+          // The read is the visit's one terminal read: if the viewer navigates
+          // to a different run before it resolves, it must not clobber that
+          // run's freshly-fetched state.
+          readTerminalDetail(id);
           return;
         }
         setLive(true);
@@ -2295,10 +2319,9 @@ export default function RunDetail({ id }: RunDetailProps) {
       (state) => setSessionStreamState(state),
     );
     return () => {
-      cancelled = true;
       stop();
     };
-  }, [id]);
+  }, [id, readTerminalDetail]);
 
   useEffect(() => {
     if (!id) return;

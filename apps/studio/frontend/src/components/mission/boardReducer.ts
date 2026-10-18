@@ -310,15 +310,20 @@ function buildAttentionItems(
 
   // Two sessions can share one CLI-run id. A disposition stored under that
   // string cannot be attributed to either of them, so a row may claim it as
-  // its older key only when no other row presents it as its current identity
+  // its older key only when no other run presents it as its current identity
   // and only when it is the row's sole claimant. Counting current keys too
-  // matters: a row whose two names are equal has no older key of its own
-  // while still occupying that string.
+  // matters: a run whose two names are equal has no older key of its own
+  // while still occupying that string. Both counts cover every run the board
+  // holds, not only the rows in the queue: a run that needs no attention still
+  // owns its strings, and a row leaving the queue must not hand its key to
+  // another.
   const currentKeys = new Set(deduped.map((item) => item.id));
   const legacyClaimants = new Map<string, number>();
-  for (const item of deduped) {
-    if (item.legacyId) {
-      legacyClaimants.set(item.legacyId, (legacyClaimants.get(item.legacyId) ?? 0) + 1);
+  for (const run of runs) {
+    currentKeys.add(`run:${run.id}`);
+    if (run.run_id && run.run_id !== run.id) {
+      const key = `run:${run.run_id}`;
+      legacyClaimants.set(key, (legacyClaimants.get(key) ?? 0) + 1);
     }
   }
   for (const item of deduped) {
