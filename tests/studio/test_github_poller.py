@@ -831,6 +831,66 @@ def test_github_poll_merged_mode_pagination_error_defers_unsafe_boundary_items(m
     assert len(client.requests) == 2
     assert [i.event["pr_number"] for i in result.items] == [1410]
     assert result.items[0].dispatchable is True
+    # The poll was blind past page 1, so it is not a healthy poll.
+    assert result.poll_status == "error"
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected"),
+    [(401, "auth_error"), (403, "error"), (429, "error"), (502, "error")],
+)
+def test_github_poll_merged_mode_pagination_status_error_is_not_a_healthy_poll(
+    monkeypatch, status_code, expected
+):
+    """A page after the first that comes back non-200 leaves the poll blind past it.
+    The events fetched before it still dispatch, and the poll reports the failure so the
+    engine does not stamp it as a healthy poll."""
+    page0 = _closed_page(
+        11,
+        1400,
+        merges={5: "2026-07-06T11:44:00Z", 10: "2020-01-01T00:00:00Z"},
+    )
+
+    class _Page2StatusClient:
+        def __init__(self):
+            self.requests: list[dict] = []
+
+        async def get(self, url, headers=None, params=None):
+            self.requests.append({"url": url, "params": params})
+            if len(self.requests) == 1:
+                next_url = "https://api.github.com/repos/owner/name/pulls?page=2"
+                return _FakeResp(page0, link=f'<{next_url}>; rel="next"')
+            resp = _FakeResp([])
+            resp.status_code = status_code
+            return resp
+
+    async def _fake_token():
+        return "faketoken"
+
+    client = _Page2StatusClient()
+    monkeypatch.setattr(gh_mod, "_get_gh_token", _fake_token)
+    monkeypatch.setattr(gh_mod, "_get_client", lambda: client)
+    result = _poll_result(
+        {"id": "s1", "github_repo": "owner/name", "github_filter": {"event": "pr_merged"}}
+    )
+
+    assert len(client.requests) == 2
+    assert result.scan_complete is False
+    assert [i.event["pr_number"] for i in result.items] == [1410]
+    assert result.poll_status == expected
+
+
+def test_github_poll_merged_mode_cap_truncation_is_still_a_healthy_poll(monkeypatch):
+    """Stopping at the page cap is a deliberate bound, not a failed fetch: every page the
+    poll asked for came back, so it stays a healthy poll."""
+    pages = [_closed_page(15 - n, 1000 + 100 * n) for n in range(6)]
+    _install_paginated(monkeypatch, pages)
+    result = _poll_result(
+        {"id": "s1", "github_repo": "owner/name", "github_filter": {"event": "pr_merged"}}
+    )
+
+    assert result.scan_complete is False
+    assert result.poll_status == "ok"
 
 
 class _FakeStatusClient:

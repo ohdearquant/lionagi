@@ -461,7 +461,9 @@ a newer schema migrates it on open, as an upgrade does.
   `last_fired_at` watermark), `no-evidence` (enabled, but the table can't
   tell whether the schedule genuinely never ran or its run history was
   pruned by retention after firing), `overdue` (enabled, cadence known, no
-  execution evidence within grace of the expected cadence), `failing` (the
+  liveness evidence within grace of the expected cadence: an executed run, a
+  threshold schedule's last evaluation, or a GitHub poll schedule's last healthy
+  poll), `failing` (the
   latest executed run's outcome was failed/timed_out), `healthy`
   (otherwise). `schedules.last_fired_at` is a retained per-schedule column
   that survives `schedule_runs` retention pruning even after every run row

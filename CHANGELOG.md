@@ -366,6 +366,14 @@ behaviour, including accepting a write-capable submission without `cwd`.
 
 ### Fixed
 
+- A GitHub poll schedule on a quiet repository read `overdue` in schedule health: a poll that finds
+  no new event creates no run, so its last fire aged past the cadence while the poller was working.
+  Health now counts the schedule's last healthy poll as liveness, as it counts a threshold
+  schedule's last evaluation; a poller whose polls stopped still reads `overdue`. A merged-PR
+  poll whose later page fails (a network error or a non-200 answer) is no longer recorded as a
+  healthy poll, and a 401 there counts as an authorization failure; the events fetched before the
+  failure still dispatch.
+
 - Skipped schedule runs expose their recorded `reason_code` and `reason_summary`
   through run reads and the CLI; `outcome.summary` uses that reason while
   `outcome.code` stays `skipped`. A run whose outcome is its own skip serves
