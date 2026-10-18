@@ -645,8 +645,8 @@ status, preventing a universal object from becoming a bag of unrelated optional 
 amendment adds one managed entity; it does not supersede the accepted base or change Run,
 schedule occurrence, dispatch, or execution terminal-callback authority. Its implementation
 and acceptance are tracked separately from the shipped baseline described above. It answers
-issue #3134, "Schedule enable/disable has no audit trail, so a silent monitoring fleet cannot
-be explained".
+issue #3134: enabling or disabling a schedule left no audit trail, so a schedule that stopped
+running could not be explained.
 
 **Entity and storage.** Register entity type `schedule`, table `schedules`, initial states
 `enabled` and `disabled`, and terminal audit state `deleted`. The edges are enabled → disabled,
