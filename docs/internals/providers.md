@@ -282,7 +282,11 @@ The non-streaming path (`_call()`) drives the same generator and then raises
 a classified provider error when the session ended with `is_error`. The call
 is therefore recorded as `FAILED` with no response, and `Branch.chat` raises
 `ExecutionError` with that provider error as its cause, matching an API
-provider's failed call. Not covered by this contract: ReAct's final-answer
+provider's failed call. The error is classified on the failure's own text
+(Claude Code's result event; the last error event for codex, gemini and pi),
+never on assistant text the turn produced before it failed, and the endpoint
+keeps the failed call's provider session id, as it does for a returned or
+streamed call. Not covered by this contract: ReAct's final-answer
 turn (catches broadly and substitutes the last response), and per-tool error
 carriers (`tool_result.is_error` is a separate signal — gemini's wire format
 has no per-tool events to carry it at all).
@@ -397,8 +401,10 @@ either module constructs one, so the guard is presently vacuous but is kept
 as the natural place a future real error chunk would need it.
 
 `_call()` drives the same generator and, after the session is complete,
-raises `classify_provider_error(session.result, status=session.error_status)`
-when `session.is_error` is set. The one-shot (non-streaming) helpers built on
+raises `classify_provider_error(..., status=session.error_status)` when
+`session.is_error` is set, on Claude Code's `session.result` and on codex's
+last error chunk: for codex the stream end fills an empty `session.result`
+with the turn's assistant text, which is not the failure. The one-shot (non-streaming) helpers built on
 `_call()` therefore fail the same way an API provider does instead of
 returning the error text as an answer. Per-tool failures already have their
 own carriers and are outside this concern entirely; this is about the
