@@ -8,6 +8,7 @@ import copy as _copy
 import importlib
 import importlib.util
 import math
+import re
 import types
 import uuid
 import warnings
@@ -92,18 +93,24 @@ def parse_duration(
         multiplier = 1
     else:
         raise ValueError("duration requires a lowercase unit: s, m, h or d")
+    if value != value.strip():
+        raise ValueError("duration cannot contain whitespace before its unit")
+    if max_seconds is not None:
+        if isinstance(max_seconds, bool) or not math.isfinite(max_seconds) or max_seconds <= 0:
+            raise ValueError("max_seconds must be positive and finite")
     try:
         number = float(value) if allow_float else int(value)
-        seconds = float(number * multiplier)
+        scaled = number * multiplier
     except (ValueError, OverflowError) as exc:
+        raise ValueError(f"invalid duration {spec!r}") from exc
+    if max_seconds is not None and scaled > max_seconds:
+        raise ValueError(f"duration exceeds maximum of {max_seconds} seconds")
+    try:
+        seconds = float(scaled)
+    except OverflowError as exc:
         raise ValueError(f"invalid duration {spec!r}") from exc
     if not math.isfinite(seconds) or seconds <= 0:
         raise ValueError("duration must be positive and finite")
-    if max_seconds is not None:
-        if not math.isfinite(max_seconds) or max_seconds <= 0:
-            raise ValueError("max_seconds must be positive and finite")
-        if seconds > max_seconds:
-            raise ValueError(f"duration exceeds maximum of {max_seconds} seconds")
     return seconds
 
 
@@ -425,10 +432,18 @@ def coerce_created_at(v: Any) -> datetime:
         return datetime.fromtimestamp(v, tz=timezone.utc)
 
     if isinstance(v, str):
-        with contextlib.suppress(ValueError):
+        with contextlib.suppress(ValueError, OverflowError, OSError):
             return datetime.fromtimestamp(float(v), tz=timezone.utc)
         with contextlib.suppress(ValueError):
-            parsed = datetime.fromisoformat(v[:-1] + "+00:00" if v.endswith("Z") else v)
+            iso = v[:-1] + "+00:00" if v.endswith(("Z", "z")) else v
+            # Python 3.10 accepts only 3 or 6 fractional digits. Match newer
+            # parsers by padding or truncating seconds to microsecond precision.
+            iso = re.sub(
+                r"(\d{2}:\d{2}:\d{2})\.(\d+)",
+                lambda match: match[1] + "." + (match[2] + "000000")[:6],
+                iso,
+            )
+            parsed = datetime.fromisoformat(iso)
             return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
         raise ValueError(f"String '{v}' is neither timestamp nor ISO format")
 

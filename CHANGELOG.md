@@ -19,6 +19,8 @@ project those rows ran under. To keep the project, name it in those members.
   integer length from 1 to 32; boolean and out-of-range lengths raise `ValueError`.
 - `lionagi.ln.parse_duration` parses positive finite durations in lowercase `s`, `m`,
   `h` and `d`, with optional fractional values, bare seconds and an inclusive maximum.
+  Boolean maxima and whitespace before a unit are rejected; integer bounds are
+  checked before conversion to float.
 - `lionagi.ln.concurrency.temporary_signal_handlers(handler, signals=(SIGINT, SIGTERM))`, a
   context manager that installs one handler for the length of a block and restores each prior
   handler on exit. Like `run_async`, it installs nothing off the main thread and leaves alone a
@@ -70,8 +72,9 @@ project those rows ran under. To keep the project, name it in those members.
   as UTC and accept numeric epoch strings. Out-of-range timestamp values keep
   each importer's existing filesystem-time or missing-value fallback.
 - `lionagi.ln.coerce_created_at` rejects booleans, interprets naive ISO strings as
-  UTC, and accepts a trailing `Z` on Python 3.10. Numeric strings still parse as
-  epoch seconds before ISO dates, including compact strings such as `"20250101"`.
+  UTC, and accepts trailing `Z`/`z` and microsecond-normalized fractions on Python
+  3.10. Numeric strings still parse as epoch seconds before ISO dates, including
+  compact strings such as `"20250101"`; out-of-range strings raise `ValueError`.
 - `assert_eventually` uses a monotonic clock for its timeout, so wall-clock changes
   no longer shorten or extend the polling deadline.
 - CLI stream result parsers measure elapsed time with the active async backend's

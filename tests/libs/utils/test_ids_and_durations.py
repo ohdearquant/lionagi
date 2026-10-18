@@ -93,7 +93,7 @@ def test_duration_maximum_includes_boundary():
         ln.parse_duration("31d", max_seconds=2592000)
 
 
-@pytest.mark.parametrize("maximum", [float("nan"), float("inf"), -1, 0])
+@pytest.mark.parametrize("maximum", [float("nan"), float("inf"), -1, 0, True, False])
 def test_duration_rejects_invalid_maximum(maximum):
     with pytest.raises(ValueError, match="max_seconds"):
         ln.parse_duration("1s", max_seconds=maximum)
@@ -102,3 +102,17 @@ def test_duration_rejects_invalid_maximum(maximum):
 def test_duration_rejects_unrepresentable_integer():
     with pytest.raises(ValueError):
         ln.parse_duration("9" * 400 + "d")
+
+
+def test_integer_duration_bound_is_checked_before_float_rounding():
+    maximum = 2**53
+    assert ln.parse_duration(f"{maximum}s", max_seconds=maximum) == float(maximum)
+    with pytest.raises(ValueError, match="maximum"):
+        ln.parse_duration(f"{maximum + 1}s", max_seconds=maximum)
+
+
+@pytest.mark.parametrize("spec", ["10 s", "10\tm", "10\nh", "10 d"])
+@pytest.mark.parametrize("allow_float", [False, True])
+def test_duration_rejects_whitespace_before_unit(spec, allow_float):
+    with pytest.raises(ValueError):
+        ln.parse_duration(spec, allow_float=allow_float)

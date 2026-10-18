@@ -104,3 +104,11 @@ def test_monitor_since_empty_window_has_value_error(window: str):
 def test_monitor_since_keeps_integer_unit_grammar(window: str):
     with pytest.raises(ValueError, match="--since"):
         _since_timestamp(window)
+
+
+@pytest.mark.parametrize("window", ["10 s", "10\tm", "10\nh"])
+def test_cli_duration_callers_reject_internal_whitespace(window):
+    with pytest.raises(ValueError):
+        _parse_window(window)
+    with pytest.raises(ValueError):
+        _since_timestamp(window)
