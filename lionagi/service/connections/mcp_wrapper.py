@@ -15,6 +15,7 @@ from typing import Any, Literal, TypeAlias
 from urllib.parse import urlparse
 
 from lionagi.ln._hash import compute_hash
+from lionagi.ln._proc import env_without_state_db_url
 from lionagi.ln.concurrency import Lock
 
 # Suppress MCP server logging by default
@@ -1815,7 +1816,8 @@ class MCPConnectionPool:
             if not isinstance(args, list):
                 raise ValueError("Config 'args' must be a list")
 
-            env = os.environ.copy()
+            # A configured server is any program; it names its own store if it needs one.
+            env = env_without_state_db_url()
             env.update(config.get("env", {}))
 
             env = _filter_env(env, effective_security)
