@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -34,9 +35,9 @@ SUBMITTER_CONFIG = """\
 
 # -- Actor identity --------------------------------------------------------
 [actor]
-id = "lambda:x"
-display_name = "lambda:x"
-visible_namespaces = ["lambda:x:a", "lambda:x:b"]
+id = "agent:x"
+display_name = "agent:x"
+visible_namespaces = ["agent:x:a", "agent:x:b"]
 
 # -- Embedding engines -----------------------------------------------------
 [[engines]]
@@ -96,8 +97,8 @@ def test_the_mint_copies_every_table_and_rewrites_only_the_actor(trees):
     minted = mint_child_actor_config(str(submitter), str(child), ":worker")
 
     target = child / ".khive" / "config.toml"
-    assert minted.actor == "lambda:x:worker"
-    assert minted.submitting_actor == "lambda:x"
+    assert minted.actor == "agent:x:worker"
+    assert minted.submitting_actor == "agent:x"
     assert minted.config_path == str(target)
     assert minted.source_path == str(submitter / ".khive" / "config.toml")
     assert minted.reused is False
@@ -105,16 +106,16 @@ def test_the_mint_copies_every_table_and_rewrites_only_the_actor(trees):
     source = _parsed(submitter / ".khive" / "config.toml")
     result = _parsed(target)
     assert result.pop("actor") == {
-        "id": "lambda:x:worker",
-        "display_name": "lambda:x:worker",
-        "visible_namespaces": ["lambda:x"],
+        "id": "agent:x:worker",
+        "display_name": "agent:x:worker",
+        "visible_namespaces": ["agent:x"],
     }
     source.pop("actor")
     assert result == source
 
     first = target.read_text().split("\n", 1)[0]
     assert re.fullmatch(
-        r"# CHILD ACTOR CONFIG — lambda:x:worker, minted by lionagi at spawn from "
+        r"# CHILD ACTOR CONFIG — agent:x:worker, minted by lionagi at spawn from "
         + re.escape(str(submitter / ".khive" / "config.toml"))
         + r" \(source sha256 prefix [0-9a-f]{8}\); only \[actor\] differs\.",
         first,
@@ -136,12 +137,40 @@ def test_a_second_mint_for_the_same_submitter_reuses_the_child_config(trees):
 
 def test_a_child_config_naming_another_actor_is_never_overwritten(tmp_path):
     submitter = _submitting_dir(tmp_path / "submitter")
-    child = _submitting_dir(tmp_path / "child", '[actor]\nid = "lambda:someone-else"\n')
+    child = _submitting_dir(tmp_path / "child", '[actor]\nid = "agent:someone-else"\n')
 
     with pytest.raises(ChildActorError, match="refusing to overwrite"):
         mint_child_actor_config(str(submitter), str(child), ":worker")
 
-    assert _parsed(child / ".khive" / "config.toml")["actor"]["id"] == "lambda:someone-else"
+    assert _parsed(child / ".khive" / "config.toml")["actor"]["id"] == "agent:someone-else"
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFOs are POSIX-only")
+def test_a_fifo_where_the_child_config_would_be_is_refused_without_blocking(trees):
+    submitter, child = trees
+    (child / ".khive").mkdir()
+    fifo = child / ".khive" / "config.toml"
+    os.mkfifo(fifo)
+    outcome: list[BaseException | None] = []
+
+    def mint() -> None:
+        try:
+            mint_child_actor_config(str(submitter), str(child), ":worker")
+        except BaseException as exc:
+            outcome.append(exc)
+        else:
+            outcome.append(None)
+
+    worker = threading.Thread(target=mint, daemon=True)
+    worker.start()
+    worker.join(timeout=5)
+    if worker.is_alive():
+        # Release the reader blocked on the FIFO so the thread can end.
+        os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+        worker.join(timeout=5)
+        pytest.fail("the mint blocked opening a FIFO at the child config path")
+    assert isinstance(outcome[0], ChildActorError)
+    assert "is not a regular file" in str(outcome[0])
 
 
 def test_a_child_tree_that_is_the_submitter_is_refused(tmp_path):
@@ -164,7 +193,7 @@ def test_a_submitter_without_a_config_is_refused(tmp_path):
 
 def test_a_submitter_that_is_already_a_child_actor_is_refused(tmp_path):
     submitter = _submitting_dir(
-        tmp_path / "submitter", SUBMITTER_CONFIG.replace('id = "lambda:x"', 'id = "lambda:x:child"')
+        tmp_path / "submitter", SUBMITTER_CONFIG.replace('id = "agent:x"', 'id = "agent:x:child"')
     )
     child = tmp_path / "child"
     child.mkdir()
@@ -173,20 +202,20 @@ def test_a_submitter_that_is_already_a_child_actor_is_refused(tmp_path):
         mint_child_actor_config(str(submitter), str(child), ":child")
 
 
-@pytest.mark.parametrize("submitter_actor", ["", "  ", "local", "lambda:x:child"])
+@pytest.mark.parametrize("submitter_actor", ["", "  ", "local", "agent:x:child"])
 def test_a_child_actor_is_derived_only_from_a_named_submitting_actor(submitter_actor):
     with pytest.raises(ChildActorError):
         child_actor_for(submitter_actor, ":child")
 
 
 def test_child_actor_for_appends_the_suffix():
-    assert child_actor_for("lambda:x", ":child") == "lambda:x:child"
+    assert child_actor_for("agent:x", ":child") == "agent:x:child"
 
 
 @pytest.mark.parametrize(
     "text, reason",
     [
-        (SUBMITTER_CONFIG.replace('[actor]\nid = "lambda:x"\n', ""), "names no \\[actor\\].id"),
+        (SUBMITTER_CONFIG.replace('[actor]\nid = "agent:x"\n', ""), "names no \\[actor\\].id"),
         ("[actor\nid = ", "cannot be read or parsed"),
         (
             SUBMITTER_CONFIG.replace("[actor]\n", "[actor]  # inline\n"),
@@ -265,9 +294,9 @@ def test_a_write_capable_submit_mints_before_the_spawn_and_records_it(submit_san
 
     assert spawned == [{"cwd": str(child), "minted": True}]
     expected = (
-        "lambda:x:worker",
+        "agent:x:worker",
         str(child / ".khive" / "config.toml"),
-        "lambda:x",
+        "agent:x",
     )
     assert (
         handle["child_actor"],
@@ -367,13 +396,13 @@ def test_a_declared_sender_is_judged_against_the_minted_child_actor(
         prompt="work",
         cwd=str(child),
         no_mcp_config=True,
-        notify_sender="lambda:x:worker",
+        notify_sender="agent:x:worker",
         write_capable=True,
     )
 
     assert asked == [os.path.abspath(child)]
     assert len(spawned) == 1
-    assert jobs._read_job(handle["run_id"])["notify_sender"] == "lambda:x:worker"
+    assert jobs._read_job(handle["run_id"])["notify_sender"] == "agent:x:worker"
 
     with pytest.raises(jobs.NotifySenderMismatchError) as caught:
         jobs.submit(
@@ -382,10 +411,10 @@ def test_a_declared_sender_is_judged_against_the_minted_child_actor(
             prompt="work",
             cwd=str(child),
             no_mcp_config=True,
-            notify_sender="lambda:x",
+            notify_sender="agent:x",
             write_capable=True,
         )
-    assert "'lambda:x:worker'" in str(caught.value)
+    assert "'agent:x:worker'" in str(caught.value)
     assert len(spawned) == 1
 
 
@@ -457,8 +486,8 @@ def test_a_write_capable_profile_with_a_cwd_is_minted(profiles):
 
     assert answer["ok"] is True, answer
     assert spawned == [{"cwd": str(child.resolve()), "minted": True}]
-    assert _parsed(child / ".khive" / "config.toml")["actor"]["id"] == "lambda:x:worker"
-    assert jobs._read_job(answer["result"]["run_id"])["child_actor"] == "lambda:x:worker"
+    assert _parsed(child / ".khive" / "config.toml")["actor"]["id"] == "agent:x:worker"
+    assert jobs._read_job(answer["result"]["run_id"])["child_actor"] == "agent:x:worker"
 
 
 def test_a_read_shaped_profile_is_not_minted(profiles):
@@ -507,5 +536,5 @@ def test_the_configured_suffix_is_the_one_minted(submit_sandbox, monkeypatch):
     )
 
     assert spawned == [{"cwd": str(child), "minted": True}]
-    assert _parsed(child / ".khive" / "config.toml")["actor"]["id"] == "lambda:x:worker"
-    assert handle["child_actor"] == "lambda:x:worker"
+    assert _parsed(child / ".khive" / "config.toml")["actor"]["id"] == "agent:x:worker"
+    assert handle["child_actor"] == "agent:x:worker"

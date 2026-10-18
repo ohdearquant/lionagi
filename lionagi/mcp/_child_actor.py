@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import tempfile
 from dataclasses import dataclass
 from typing import Any
@@ -77,6 +78,18 @@ def _without_actor(parsed: dict[str, Any]) -> dict[str, Any]:
     return rest
 
 
+def _read_regular_file(path: str) -> bytes:
+    """The bytes of ``path``, refused with ``OSError`` unless it is a regular file.
+
+    The open does not block, so a FIFO at ``path`` is refused instead of waiting for a writer.
+    """
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            raise OSError(f"{path!r} is not a regular file")
+        return f.read()
+
+
 def mint_child_actor_config(submitting_dir: str, child_dir: str, suffix: str) -> MintedChildActor:
     """Write ``<child_dir>/.khive/config.toml`` naming the derived child actor, or refuse.
 
@@ -124,8 +137,7 @@ def mint_child_actor_config(submitting_dir: str, child_dir: str, suffix: str) ->
     remaining_tables = _without_actor(source_parsed)
     if os.path.lexists(target):
         try:
-            with open(target, "rb") as f:
-                existing = _toml.loads(f.read().decode("utf-8"))
+            existing = _toml.loads(_read_regular_file(target).decode("utf-8"))
         except Exception as exc:
             raise ChildActorError(
                 f"the child directory already holds a config that cannot be read or parsed: {exc} "
