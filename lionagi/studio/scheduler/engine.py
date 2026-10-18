@@ -1455,8 +1455,12 @@ class SchedulerEngine:
             # Start them after timed rows have had their admission checks in oldest-due order.
             if schedule.get("trigger_type") == "github_poll":
                 return 1, 0.0
+            # The sort runs outside the per-row guard below, so a value that is not a number sorts
+            # last instead of raising here; that row then fails alone in its own evaluation.
             next_at = schedule.get("next_fire_at")
-            return 0, next_at if next_at is not None else float("inf")
+            if isinstance(next_at, int | float):
+                return 0, float(next_at)
+            return 0, float("inf")
 
         failed_schedules = 0
         last_schedule_error: Exception | None = None
@@ -1565,10 +1569,20 @@ class SchedulerEngine:
         last = schedule.get("last_fired_at") or 0
         if now - last < poll_interval:
             return
+        deferred = False
+        try:
+            deferred = await self._github_due_pass(schedule, now)
+        finally:
+            # Any outcome of a due pass but a capacity deferral, a raise included, ends the
+            # schedule's deferral episode, so the next deferral logs and records as a new one.
+            if not deferred:
+                self._deferred_log_counts.pop(schedule["id"], None)
 
+    async def _github_due_pass(self, schedule: dict, now: float) -> bool:
+        """Run one due poll-and-fire pass; True only when the fire cap deferred it."""
         if await self._check_budget(schedule):
             await self._disable_for_budget_exhausted(schedule, now)
-            return
+            return False
 
         rate_allowed, pre_rate_claim = await self._reserve_rate_limit(schedule, now=now)
         if not rate_allowed:
@@ -1579,7 +1593,7 @@ class SchedulerEngine:
                 schedule["id"],
                 schedule.get("rate_limit"),
             )
-            return
+            return False
 
         # The poll is a trigger check, not a fire, so it holds no global slot while it fetches: a
         # slow or rate-limited poll would otherwise keep a slot from every other schedule for its
@@ -1592,7 +1606,7 @@ class SchedulerEngine:
             if pre_rate_claim is not None:
                 pre_rate_claim.release()
             await self._maybe_record_deferred(schedule, now)
-            return
+            return True
 
         from .github import github_poll
 
@@ -1629,7 +1643,7 @@ class SchedulerEngine:
                 )
 
             if not polled:
-                return
+                return False
 
             cursor = schedule.get("github_cursor")
             drop_reason: str | None = None
@@ -1789,6 +1803,7 @@ class SchedulerEngine:
         finally:
             if pre_rate_claim is not None:
                 pre_rate_claim.release()
+        return False
 
     async def _record_predispatch_refusal(self, schedule: dict, event_cursor: str) -> int:
         """Count one pre-dispatch refusal of the event at *event_cursor*; returns the new total."""
@@ -1914,7 +1929,6 @@ class SchedulerEngine:
         from lionagi.studio.config import MAX_SCHEDULED_CONCURRENT
 
         if MAX_SCHEDULED_CONCURRENT <= 0:
-            self._deferred_log_counts.pop(schedule_id, None)
             return True, None
         async with self._global_slot_lock:
             if self._global_inflight >= MAX_SCHEDULED_CONCURRENT:
@@ -1922,7 +1936,6 @@ class SchedulerEngine:
             claim = _GlobalSlotClaim(self, schedule_id, path=path, acquired_at=time.time())
             self._global_slot_claims.add(claim)
             self._global_inflight += 1
-            self._deferred_log_counts.pop(schedule_id, None)
             return True, claim
 
     def _release_global_slot(self, claim: _GlobalSlotClaim) -> None:
@@ -2100,13 +2113,25 @@ class SchedulerEngine:
         await self._svc.update_schedule(schedule["id"], last_evaluated_at=now)
 
     async def _maybe_fire(self, schedule: dict, now: float) -> None:
+        deferred = False
+        try:
+            deferred = await self._evaluate_due_fire(schedule, now)
+        finally:
+            # Any outcome of a due evaluation but a capacity deferral, a raise included, ends the
+            # schedule's deferral episode, so the next deferral logs and records as a new one. A
+            # manual trigger is not a due evaluation and leaves the episode where it is.
+            if not deferred:
+                self._deferred_log_counts.pop(schedule["id"], None)
+
+    async def _evaluate_due_fire(self, schedule: dict, now: float) -> bool:
+        """Run one due evaluation; True only when the fire cap deferred it."""
         threshold_extra: dict[str, Any] | None = None
         threshold_claim: _ThresholdCooldownClaim | None = None
         if schedule.get("threshold_config"):
             breach = await self._evaluate_threshold_breach(schedule, now)
             if breach is None:
                 await self._record_evaluation_without_firing(schedule, now)
-                return
+                return False
             # Cooldown: suppress refiring while still within the metric's own window of the last
             # alert, so a sustained breach does not fire every tick. The cadence advances
             # underneath, so the next tick re-checks once it lapses.
@@ -2120,7 +2145,7 @@ class SchedulerEngine:
             # them.
             if in_cooldown or sid in self._threshold_pending:
                 await self._record_evaluation_without_firing(schedule, now)
-                return
+                return False
             self._threshold_pending.add(sid)
             threshold_claim = _ThresholdCooldownClaim(self, sid)
             threshold_extra = breach
@@ -2158,11 +2183,11 @@ class SchedulerEngine:
                 fields = self._next_fire_field(schedule, next_at)
                 if fields:
                     await self._svc.update_schedule(schedule["id"], **fields)
-                return
+                return False
 
             if await self._check_budget(schedule):
                 await self._disable_for_budget_exhausted(schedule, now)
-                return
+                return False
 
             rate_allowed, rate_claim = await self._reserve_rate_limit(schedule, now=now)
             if not rate_allowed:
@@ -2173,7 +2198,7 @@ class SchedulerEngine:
                     schedule["id"],
                     schedule.get("rate_limit"),
                 )
-                return
+                return False
 
             allowed, claim = await self._reserve_max_runs_budget(schedule)
             if not allowed:
@@ -2196,7 +2221,7 @@ class SchedulerEngine:
                         },
                     ),
                 )
-                return
+                return False
 
             slot_allowed, slot_claim = await self._reserve_global_slot(
                 schedule["id"], path="scheduled"
@@ -2206,7 +2231,7 @@ class SchedulerEngine:
                 # Leave next_fire_at untouched so the next tick retries this schedule rather than
                 # skipping it. The claims are given back by the finally below: this defers the fire,
                 # it does not consume a run or abandon the cooldown.
-                return
+                return True
 
             run_id = short_id(12)
             ctx = {
@@ -2245,6 +2270,7 @@ class SchedulerEngine:
                     slot_claim.release()
                 if threshold_claim is not None:
                     threshold_claim.release()
+        return False
 
     async def _guarded_terminal_status(
         self,

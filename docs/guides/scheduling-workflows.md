@@ -249,8 +249,10 @@ When the global concurrent-fire cap is full, a due schedule stays due and retrie
 on the next scheduler tick. Its recorded reason is `schedule.deferred.capacity`.
 The daemon logs one INFO line at the start of each deferral episode with the
 schedule name and ID, in-flight count, and cap. A skipped run is recorded on
-the first deferral, then on the 11th, 21st, and so on. Acquiring a slot resets
-the episode, so the next episode starts with a new log line and skipped run.
+the first deferral, then on the 11th, 21st, and so on. The episode ends at the
+schedule's first due evaluation the cap does not defer, whether that evaluation
+fires or not; a manual trigger does not end it. The next episode starts with a
+new log line and skipped run.
 
 `li schedule limits` and the schedules limits API expose `current_holders`
 alongside `current_inflight`. Each holder contains:

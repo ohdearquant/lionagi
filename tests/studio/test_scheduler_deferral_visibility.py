@@ -119,16 +119,176 @@ async def test_capacity_episode_logs_once_and_records_first_and_eleventh(monkeyp
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cap", [0, 2])
 @pytest.mark.parametrize("path", ["scheduled", "missed_fire", "manual", "github_event"])
-async def test_successful_admission_ends_only_its_schedule_episode(monkeypatch, cap, path):
+async def test_reserving_a_slot_leaves_every_deferral_count_alone(monkeypatch, cap, path):
     monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", cap)
     engine = SchedulerEngine(svc=_make_svc())
     engine._deferred_log_counts = {"target": 4, "other": 3}
     allowed, claim = await engine._reserve_global_slot("target", path=path)
     assert allowed
-    assert engine._deferred_log_counts == {"other": 3}
+    assert engine._deferred_log_counts == {"target": 4, "other": 3}
     if claim is not None:
         claim.release()
     assert engine._global_inflight == 0
+
+
+def _deferral_logs(caplog):
+    return [r for r in caplog.records if "deferred: global concurrent-fire cap" in r.getMessage()]
+
+
+@pytest.mark.asyncio
+async def test_a_manual_trigger_does_not_end_a_deferral_episode(monkeypatch, caplog):
+    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
+    svc = _make_svc()
+    engine = SchedulerEngine(svc=svc)
+    schedule = _minimal_schedule(id="waiting", next_fire_at=100.0)
+    svc.get_schedule.return_value = schedule
+    held = []
+    monkeypatch.setattr(
+        engine, "_tracked_fire", lambda schedule, run_id, **kw: held.append(kw["global_slot_claim"])
+    )
+    _, blocker = await engine._reserve_global_slot("blocker", path="manual")
+    with caplog.at_level(logging.INFO, logger="lionagi.studio.scheduler.engine"):
+        await engine._maybe_fire(schedule, now=100.0)
+        blocker.release()
+        # The manual run takes the freed slot, so the still-due occurrence is deferred again.
+        assert await engine.fire_now("waiting") is not None
+        await engine._maybe_fire(schedule, now=101.0)
+    held.pop().release()
+    assert engine._deferred_log_counts == {"waiting": 2}
+    assert len(_deferral_logs(caplog)) == 1
+    assert svc.create_schedule_run.await_count == 1
+    assert engine._global_inflight == 0
+
+
+_DUE_OUTCOMES = [
+    "fired",
+    "overlap_skip",
+    "threshold_not_breached",
+    "budget_exhausted",
+    "rate_limited",
+    "max_runs_reached",
+    "raised",
+    "deferred",
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", _DUE_OUTCOMES)
+async def test_a_due_evaluation_ends_the_episode_unless_the_cap_defers_it(monkeypatch, outcome):
+    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
+    engine = SchedulerEngine(svc=_make_svc())
+    schedule = _minimal_schedule(id="target", next_fire_at=100.0)
+    engine._deferred_log_counts = {"target": 2, "other": 3}
+    held = []
+    monkeypatch.setattr(
+        engine, "_tracked_fire", lambda schedule, run_id, **kw: held.append(kw["global_slot_claim"])
+    )
+    if outcome == "overlap_skip":
+        engine._running["target"] = "earlier-run"
+    elif outcome == "threshold_not_breached":
+        schedule["threshold_config"] = {"metric": "failure_rate"}
+        monkeypatch.setattr(engine, "_evaluate_threshold_breach", AsyncMock(return_value=None))
+        monkeypatch.setattr(engine, "_record_evaluation_without_firing", AsyncMock())
+    elif outcome == "budget_exhausted":
+        monkeypatch.setattr(engine, "_check_budget", AsyncMock(return_value=True))
+        monkeypatch.setattr(engine, "_disable_for_budget_exhausted", AsyncMock())
+    elif outcome == "rate_limited":
+        monkeypatch.setattr(engine, "_reserve_rate_limit", AsyncMock(return_value=(False, None)))
+    elif outcome == "max_runs_reached":
+        monkeypatch.setattr(
+            engine, "_reserve_max_runs_budget", AsyncMock(return_value=(False, None))
+        )
+    elif outcome == "raised":
+        monkeypatch.setattr(
+            engine, "_check_budget", AsyncMock(side_effect=RuntimeError("store unavailable"))
+        )
+    blocker = None
+    if outcome == "deferred":
+        _, blocker = await engine._reserve_global_slot("blocker", path="manual")
+    try:
+        if outcome == "raised":
+            with pytest.raises(RuntimeError, match="store unavailable"):
+                await engine._maybe_fire(schedule, now=100.0)
+        else:
+            await engine._maybe_fire(schedule, now=100.0)
+    finally:
+        if blocker is not None:
+            blocker.release()
+        for claim in held:
+            claim.release()
+    if outcome == "deferred":
+        assert engine._deferred_log_counts == {"target": 3, "other": 3}
+    else:
+        assert engine._deferred_log_counts == {"other": 3}
+    assert len(held) == (1 if outcome == "fired" else 0)
+    assert engine._global_inflight == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["not_due", "deferred", "empty_poll", "poll_raised"])
+async def test_a_github_due_pass_ends_the_episode_unless_the_cap_defers_it(monkeypatch, outcome):
+    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
+    engine = SchedulerEngine(svc=_make_svc())
+    schedule = _minimal_schedule(
+        id="poller",
+        trigger_type="github_poll",
+        github_repo="acme/widgets",
+        last_fired_at=10_000.0 if outcome == "not_due" else 0,
+    )
+    engine._deferred_log_counts = {"poller": 2, "other": 3}
+
+    async def poll(*args, **kwargs):
+        if outcome == "poll_raised":
+            raise RuntimeError("poll failed")
+        return GithubPollResult(items=[], scan_complete=True)
+
+    monkeypatch.setattr("lionagi.studio.scheduler.github.github_poll", poll)
+    blocker = None
+    if outcome == "deferred":
+        _, blocker = await engine._reserve_global_slot("blocker", path="manual")
+    try:
+        if outcome == "poll_raised":
+            with pytest.raises(RuntimeError, match="poll failed"):
+                await engine._tick_github(schedule, now=10_000.0)
+        else:
+            await engine._tick_github(schedule, now=10_000.0)
+    finally:
+        if blocker is not None:
+            blocker.release()
+    expected = {
+        "not_due": {"poller": 2, "other": 3},
+        "deferred": {"poller": 3, "other": 3},
+    }.get(outcome, {"other": 3})
+    assert engine._deferred_log_counts == expected
+    assert engine._global_inflight == 0
+
+
+@pytest.mark.asyncio
+async def test_a_next_fire_at_that_is_not_a_number_fails_only_its_own_row(monkeypatch, caplog):
+    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 2)
+    svc = _make_svc()
+    svc.list_schedules.return_value = [
+        _minimal_schedule(id="bad", name="bad row", next_fire_at="not-a-time"),
+        _minimal_schedule(id="unset", name="unset row", next_fire_at=None),
+        _minimal_schedule(id="good", name="good row", next_fire_at=90.0),
+    ]
+    engine = SchedulerEngine(svc=svc)
+    _quiet_tick(engine)
+    fired = []
+
+    def launch(schedule, run_id, *, global_slot_claim, **kwargs):
+        fired.append(schedule["id"])
+        global_slot_claim.release()
+
+    monkeypatch.setattr(engine, "_tracked_fire", launch)
+    with (
+        caplog.at_level(logging.ERROR, logger="lionagi.studio.scheduler.engine"),
+        patch("lionagi.studio.scheduler.engine.time.time", return_value=100.0),
+    ):
+        await engine._tick()
+    assert fired == ["good"]
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert errors == ["Error evaluating schedule bad row"]
 
 
 @pytest.mark.asyncio
