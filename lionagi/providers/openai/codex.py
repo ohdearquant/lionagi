@@ -47,6 +47,7 @@ from lionagi.providers._cli_subprocess import (
 from lionagi.providers._cli_subprocess import (
     make_cli_flag as _cli,
 )
+from lionagi.providers._provider_errors import classify_provider_error
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.types.cli_session import CLISession
@@ -2857,5 +2858,11 @@ class CodexCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
         session.populate_activity()
         if request.cli_include_summary:
             session.populate_summary()
+
+        if session.is_error:
+            raise classify_provider_error(
+                session.result or "Codex session failed",
+                status=session.error_status,
+            )
 
         return to_dict(session, recursive=True)

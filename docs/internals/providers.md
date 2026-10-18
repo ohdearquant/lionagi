@@ -278,11 +278,14 @@ healthy fixtures use `turn.completed` so the two cases never collide. A
 consumer keying on chunk type alone still can't distinguish this from a
 failure, but the discriminator fields exist for one that reads them.
 
-Not covered by this contract: the non-streaming path (`_call()` drives the
-same generator and returns the session as a dict, nothing branches on the
-flag), ReAct's final-answer turn (catches broadly and substitutes the last
-response), and per-tool error carriers (`tool_result.is_error` is a separate
-signal — gemini's wire format has no per-tool events to carry it at all).
+The non-streaming path (`_call()`) drives the same generator and then raises
+a classified provider error when the session ended with `is_error`. The call
+is therefore recorded as `FAILED` with no response, and `Branch.chat` raises
+`ExecutionError` with that provider error as its cause, matching an API
+provider's failed call. Not covered by this contract: ReAct's final-answer
+turn (catches broadly and substitutes the last response), and per-tool error
+carriers (`tool_result.is_error` is a separate signal — gemini's wire format
+has no per-tool events to carry it at all).
 
 Fixtures are labelled `RECORDED` or `AUTHORED`; the label matters. An
 authored event dict is written from what the parser reads, so it agrees
@@ -308,8 +311,8 @@ text and the run stopped before it ran) and emits an error `StreamChunk` whose
 metadata carries `call_markup_in_text: True`. When the turn ends with
 `turn.completed`, the usage `result` chunk for that turn is still emitted
 beside it; the stream-end path has no turn to report usage for. A streamed run
-raises on that error chunk; a non-streamed call returns the session marked
-failed, as it does for any failed turn, and does not raise.
+raises on that error chunk; a non-streamed call raises the classified provider
+error for the failed session, as it does for any failed turn.
 
 Only the turn's last text is read: markup in an earlier message was superseded
 by a later one, a completed call after the message clears it, and a message
@@ -393,12 +396,13 @@ double-reported, not because one currently occurs; today nothing else in
 either module constructs one, so the guard is presently vacuous but is kept
 as the natural place a future real error chunk would need it.
 
-The fix is scoped to `stream()` only. `_call()` drives the same generator
-and returns the session as a dict without branching on `is_error`, so the
-one-shot (non-streaming) helpers built on `_call()` still return an ordinary
-answer for a failed session — a separate gap, not closed by this. Per-tool
-failures already have their own carriers and are outside this concern
-entirely; this is about the session-terminal verdict only.
+`_call()` drives the same generator and, after the session is complete,
+raises `classify_provider_error(session.result, status=session.error_status)`
+when `session.is_error` is set. The one-shot (non-streaming) helpers built on
+`_call()` therefore fail the same way an API provider does instead of
+returning the error text as an answer. Per-tool failures already have their
+own carriers and are outside this concern entirely; this is about the
+session-terminal verdict only.
 
 ## CLI subprocess lifecycle
 

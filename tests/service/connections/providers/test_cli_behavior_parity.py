@@ -13,6 +13,115 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from lionagi._errors import ExecutionError
+from lionagi.protocols.generic.event import EventStatus
+from lionagi.providers._provider_errors import ProviderError
+from lionagi.service.imodel import iModel
+from lionagi.session.branch import Branch
+
+
+def _chat_model(provider: str, model: str | None = None) -> iModel:
+    kwargs = {"provider": provider, "api_key": "test-key"}
+    if model is not None:
+        kwargs["model"] = model
+    return iModel(**kwargs)
+
+
+async def _failed_chat(branch: Branch, provider: str, events: list[dict], seam: str):
+    async def fake_events(_request):
+        for event in events:
+            yield event
+
+    with patch(seam, side_effect=fake_events):
+        with pytest.raises(ExecutionError) as info:
+            await branch.chat("go on")
+
+    return info.value
+
+
+def _assert_failed_call(branch: Branch, error: ExecutionError, expected: str) -> None:
+    assert isinstance(error.__cause__, Exception)
+    assert expected in str(error.__cause__)
+    assert len(branch.logs) == 1
+    execution = branch.logs[-1].content["execution"]
+    assert execution["status"] == EventStatus.FAILED.value
+    assert execution["response"] is None
+    assert expected in str(execution["error"])
+
+
+@pytest.mark.asyncio
+async def test_an_api_provider_failed_call_records_failure_and_raises():
+    """Characterizes the path every CLI endpoint's non-streamed call must match."""
+    model = _chat_model("openai", "gpt-4.1-mini")
+    branch = Branch(chat_model=model)
+
+    with patch.object(
+        model.endpoint,
+        "call",
+        side_effect=RuntimeError("the provider said no"),
+    ):
+        with pytest.raises(ExecutionError) as info:
+            await branch.chat("go on")
+
+    _assert_failed_call(branch, info.value, "the provider said no")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider", "model", "events", "seam"),
+    [
+        (
+            "codex",
+            "gpt-5.1-codex",
+            [{"type": "turn.failed", "error": {"message": "rate limit exceeded"}}],
+            "lionagi.providers.openai.codex.stream_codex_cli_events",
+        ),
+        (
+            "claude_code",
+            "sonnet",
+            [
+                {
+                    "type": "result",
+                    "result": "rate limit exceeded",
+                    "is_error": True,
+                    "api_error_status": 429,
+                }
+            ],
+            "lionagi.providers.anthropic.claude_code.stream_cc_cli_events",
+        ),
+        (
+            "gemini_code",
+            "gemini-4-argon",
+            [
+                {
+                    "conversation_id": "conv-1",
+                    "status": "ERROR",
+                    "response": "rate limit exceeded",
+                }
+            ],
+            "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+        ),
+        (
+            "pi",
+            "gemini-2.5-flash",
+            [{"type": "error", "error": {"message": "rate limit exceeded"}}],
+            "lionagi.providers.pi.cli.stream_pi_cli_events",
+        ),
+    ],
+    ids=["codex", "claude_code", "gemini_code", "pi"],
+)
+async def test_a_cli_failed_non_streamed_call_matches_the_api_path(
+    provider,
+    model,
+    events,
+    seam,
+):
+    branch = Branch(chat_model=_chat_model(provider, model))
+    error = await _failed_chat(branch, provider, events, seam)
+
+    assert isinstance(error.__cause__, ProviderError)
+    _assert_failed_call(branch, error, "rate limit exceeded")
+
 
 @pytest.mark.asyncio
 async def test_ndjson_from_cli_tail_repair_yields_repaired_object():

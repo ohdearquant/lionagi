@@ -29,7 +29,10 @@ from lionagi.providers._cli_subprocess import (
     resolve_cli_workspace,
     validate_message_prompt,
 )
-from lionagi.providers._provider_errors import ProviderTeardownError
+from lionagi.providers._provider_errors import (
+    ProviderTeardownError,
+    classify_provider_error,
+)
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.providers import _clamp_gemini_effort
@@ -784,5 +787,11 @@ class GeminiCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
         session.populate_activity()
         if request.cli_include_summary:
             session.populate_summary()
+
+        if session.is_error:
+            raise classify_provider_error(
+                session.result or "Antigravity session failed",
+                status=session.error_status,
+            )
 
         return to_dict(session, recursive=True)

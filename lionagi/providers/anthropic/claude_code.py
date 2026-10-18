@@ -1134,4 +1134,10 @@ class ClaudeCodeCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
         if request.cli_include_summary:
             session.populate_summary()
 
+        if session.is_error:
+            raise classify_provider_error(
+                session.result or "Claude Code session failed",
+                status=session.error_status,
+            )
+
         return to_dict(session, recursive=True)
