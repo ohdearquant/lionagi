@@ -1059,9 +1059,12 @@ class TestPairingWithToken:
         assert body["token"] == "studio-test-token"
         assert fresh_launch.resolve_decision_capability(body["decision_token"], origin=_HOSTED)
 
-    def test_the_configured_token_neither_mints_nor_decides(self, make_client):
+    def test_the_configured_token_issues_no_code_and_is_not_a_decision_capability(
+        self, make_client
+    ):
         """``LIONAGI_STUDIO_AUTH_TOKEN`` admits requests as today; it issues no
-        code and is not a decision capability."""
+        code and is not a decision capability. A decision it admits is still
+        accepted, unattributed (``test_operator_protocol``)."""
         client = make_client()
         bearer = {**_LOOPBACK, "Authorization": "Bearer studio-test-token"}
 

@@ -165,8 +165,10 @@ behaviour, including accepting a write-capable submission without `cwd`.
   and it is the capability's own (Operator store schema version 2; rows from before stay
   unattributed). Decisions themselves are admitted as before: a request without the
   header is still accepted, it is recorded unattributed, and the decision contract is still
-  version 1. `LIONAGI_STUDIO_AUTH_TOKEN` neither issues a code nor carries decision authority.
-  Every other route's admission is unchanged.
+  version 1. `LIONAGI_STUDIO_AUTH_TOKEN` no longer issues a code and is not a decision
+  capability, but this release does not require one: a decision request that carries only that
+  bearer is still accepted, and recorded unattributed. Every other route's admission is
+  unchanged.
 - MCP argument validation now enforces `minimum`/`maximum`, `minLength`/`maxLength` and
   `pattern`, checks `enum` whatever the value's type, and treats `null` as a type it checks
   rather than as an absent check, so a value outside a published bound or choice is refused

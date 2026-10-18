@@ -4064,9 +4064,16 @@ async def test_a_decision_with_the_capability_header_records_its_principal(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_a_decision_without_the_header_is_still_accepted_and_unattributed(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    "headers",
+    [{}, {"authorization": "Bearer studio-test-token"}],
+    ids=["no-credential", "bearer-only"],
+)
+async def test_a_decision_without_a_capability_is_still_accepted_and_unattributed(
+    tmp_path, monkeypatch, headers
 ):
+    """This release does not yet require a decision capability: a decision that carries none,
+    or only the admission bearer, is accepted and recorded with no principal."""
     from lionagi.studio.launch_access import reset_launch_access
     from lionagi.studio.services.operator import decide_operator_proposal
 
@@ -4085,7 +4092,7 @@ async def test_a_decision_without_the_header_is_still_accepted_and_unattributed(
         accepted["conversationId"],
         proposal["id"],
         _decide_body("deny", proposal),
-        _request(headers={}),
+        _request(headers=headers),
     )
     await asyncio.wait_for(task, timeout=2)
     await coordinator.shutdown()
