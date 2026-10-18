@@ -137,7 +137,15 @@ CREATE TABLE IF NOT EXISTS studio_operator_proposals (
   completed_at       REAL,
   result_json        TEXT,
   error_code         TEXT,
-  created_at         REAL NOT NULL
+  created_at         REAL NOT NULL,
+  -- Who decided, when the decision carried a verified principal. NULL means
+  -- the request carried no decision capability; rows written before these
+  -- columns existed stay NULL.
+  decision_principal_id TEXT,
+  decision_epoch     TEXT,
+  decision_method    TEXT,
+  decision_origin    TEXT,
+  decision_scope     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_operator_proposals_request
   ON studio_operator_proposals(request_id, created_at);
@@ -165,6 +173,9 @@ MAX_TURN_PAYLOAD_BYTES = 8 * 1024 * 1024
 # so this bounds what a long-lived conversation accumulates.
 MAX_REPORTING_VIEWS_PER_CONVERSATION = 8
 TRUNCATION_FRAME_TYPE = "truncation"
+# Shape of the Operator's own tables, recorded in the store file's
+# ``PRAGMA user_version``. Version 2 added the decision principal columns.
+OPERATOR_STORE_VERSION = 2
 
 # Returned by ``_append_frame_in_tx`` when the frame was folded into the turn's
 # truncation summary: a row was written, but there is no frame to return, which
@@ -266,9 +277,36 @@ class OperatorStore:
                     "studio_operator_turns",
                     {"effort": "TEXT"},
                 )
+                # Operator store schema 2 adds the decision principal columns.
+                # A pre-existing proposal table gains them as NULL, which is
+                # what a decision without a capability records.
+                await self._add_missing_columns(
+                    db,
+                    "studio_operator_proposals",
+                    {
+                        "decision_principal_id": "TEXT",
+                        "decision_epoch": "TEXT",
+                        "decision_method": "TEXT",
+                        "decision_origin": "TEXT",
+                        "decision_scope": "TEXT",
+                    },
+                )
+                await self._set_store_version(db)
                 await db.commit()
             stat = path.stat()
             self._schema_ready = (path, stat.st_dev, stat.st_ino)
+
+    @staticmethod
+    async def _set_store_version(db: Any) -> None:
+        """Record the Operator store's own shape version in ``PRAGMA user_version``.
+
+        The StateDB schema version covers the tables StateDB itself manages;
+        these tables ship with the Operator and are migrated here, so their
+        version lives on the file for this layer alone.
+        """
+        row = await (await db.execute("PRAGMA user_version")).fetchone()
+        if row is None or int(row[0]) < OPERATOR_STORE_VERSION:
+            await db.execute(f"PRAGMA user_version = {OPERATOR_STORE_VERSION}")
 
     @staticmethod
     async def _add_missing_columns(db: Any, table: str, columns: dict[str, str]) -> None:
@@ -416,6 +454,32 @@ class OperatorStore:
         }
 
     @staticmethod
+    def _decision_columns(principal: Any) -> tuple[Any, ...]:
+        """The proposal row's principal columns for *principal*, NULL when there is none."""
+        if principal is None:
+            return (None, None, None, None, None)
+        return (
+            principal.id,
+            principal.epoch,
+            principal.method,
+            principal.origin,
+            principal.scope,
+        )
+
+    @staticmethod
+    def _decision_principal_detail(principal: Any) -> dict[str, Any] | None:
+        """The audit view of the principal a decision carried, or None for an unattributed one."""
+        if principal is None:
+            return None
+        return {
+            "id": principal.id,
+            "epoch": principal.epoch,
+            "method": principal.method,
+            "origin": principal.origin,
+            "scope": principal.scope,
+        }
+
+    @staticmethod
     def _outcome_frames(
         *,
         proposal_id: str,
@@ -454,14 +518,21 @@ class OperatorStore:
         error_code: str | None = None,
         confirmed_at: float | None = None,
         completed_at: float | None = None,
+        principal: Any = None,
     ) -> dict[str, Any]:
-        """Build the exact ADR-0083 audit envelope from a proposal row."""
+        """Build the exact ADR-0083 audit envelope from a proposal row.
+
+        ``principal`` is the verified decision principal, absent when the
+        decision request carried no capability. The envelope's keys only grow,
+        so a reader of a decision made without one sees exactly the shape it
+        always had.
+        """
         target = cls._proposal_target(
             row["command_type"],
             json.loads(row["command_json"]),
             row["target_version"],
         )
-        return {
+        details = {
             "conversation_id": row["conversation_id"],
             "request_id": row["request_id"],
             "proposal_id": row["id"],
@@ -476,6 +547,10 @@ class OperatorStore:
             "confirmed_at": confirmed_at,
             "completed_at": completed_at,
         }
+        principal_detail = cls._decision_principal_detail(principal)
+        if principal_detail is not None:
+            details["principal"] = principal_detail
+        return details
 
     async def create_conversation(
         self, *, project: str | None = None, title: str | None = None
@@ -2016,7 +2091,17 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
         expected_target_version: str | None,
         audit: bool = False,
         claim_execution: bool = False,
+        principal: Any = None,
     ) -> dict[str, Any]:
+        """Claim a pending proposal, recording its decision and audit row together.
+
+        *principal* is the verified decision principal the calling route resolved
+        from a decision capability. It is written on the proposal row, and into
+        the audit envelope, inside the same transaction as the status change; a
+        decision made without a capability leaves those columns NULL. It is
+        never an identity string a caller supplies: the route builds it from the
+        capability store.
+        """
         await self.ensure_schema()
         now = time.time()
         claimed_execution = False
@@ -2115,6 +2200,7 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                         error_code=None if allow else "denied",
                         confirmed_at=now,
                         completed_at=now if not allow else None,
+                        principal=principal,
                     )
                     await db.execute(
                         "INSERT INTO admin_events "
@@ -2130,9 +2216,19 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                 await db.execute(
                     "UPDATE studio_operator_proposals SET status=?, confirmed_at=?, "
                     "completed_at=CASE WHEN ?='cancelled' THEN ? ELSE completed_at END, "
-                    "error_code=CASE WHEN ?='cancelled' THEN 'denied' ELSE error_code END "
+                    "error_code=CASE WHEN ?='cancelled' THEN 'denied' ELSE error_code END, "
+                    "decision_principal_id=?, decision_epoch=?, decision_method=?, "
+                    "decision_origin=?, decision_scope=? "
                     "WHERE id=? AND status='pending'",
-                    (status, now, status, now, status, proposal_id),
+                    (
+                        status,
+                        now,
+                        status,
+                        now,
+                        status,
+                        *(self._decision_columns(principal)),
+                        proposal_id,
+                    ),
                 )
                 await db.execute(
                     "UPDATE studio_operator_turns SET status='running' "

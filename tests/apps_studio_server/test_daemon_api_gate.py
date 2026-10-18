@@ -186,6 +186,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/api/schedules/{schedule_id}/trigger"),
     ("POST", "/api/sessions/{session_id}/tags"),
     ("POST", "/api/shows/import"),
+    ("POST", "/api/studio/disconnect"),
     ("POST", "/api/studio/pair"),
     ("POST", "/api/studio/pairing-codes"),
     ("POST", "/api/workflow-defs/"),
@@ -277,7 +278,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 139
+    assert len(_GOLDEN_ROUTES) == 140
 
 
 def _compiled_match_shape(path_template: str) -> str:

@@ -63,10 +63,13 @@ origin that is neither loopback nor its own unless they carry the bearer of its 
 which it keeps in memory only. `li studio` opens the hosted page with a one-time
 pairing code in the URL fragment (`#pair=<code>`, single use, 120 seconds); the
 page removes the code from the address bar on load, exchanges it for that bearer
-at `POST /api/studio/pair`, and keeps the bearer in memory. A reload loses it, and
-the page then asks for `li studio` again;
-with the daemon already running, that opens a freshly paired page without starting a
-second daemon.
+and a decision capability at `POST /api/studio/pair`, and keeps the bearer in
+memory. The capability is kept in `sessionStorage` for that tab and sent in
+`X-Studio-Decision-Token` on the two Operator decision requests only. A reload
+loses the bearer, and the page then asks for `li studio` again;
+with the daemon already running, that opens a freshly paired page over the
+daemon's same-user reconnect socket without starting a second daemon. No HTTP
+route issues a code.
 
 For **any non-loopback backend** — an SSH/Cloudflare tunnel, a LAN bind (`--host 0.0.0.0`),
 or a reverse proxy in front of the daemon — token auth is a hard **MUST**, not a

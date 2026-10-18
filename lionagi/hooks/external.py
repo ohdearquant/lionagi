@@ -40,6 +40,7 @@ from lionagi.ln import (
     observe_process_group_leader,
     prepare_process_group_env,
 )
+from lionagi.ln._proc import env_without_state_db_url
 from lionagi.protocols.action.tool_hooks import ToolPostDecision, ToolPreDecision
 
 logger = logging.getLogger(__name__)
@@ -560,7 +561,8 @@ async def _run_hook_process(
     envelope_bytes: bytes,
     timeout: float,
 ) -> tuple[int, _CappedRead, _CappedRead]:
-    child_env, group_marker = prepare_process_group_env()
+    # A hook is a configured command: it names its own store if it needs one.
+    child_env, group_marker = prepare_process_group_env(env_without_state_db_url())
     proc = await _spawn(argv, bound, cwd, env=child_env)
     leader_created = observe_process_group_leader(
         getattr(proc, "pid", None),

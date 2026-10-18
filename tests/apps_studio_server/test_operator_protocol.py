@@ -2330,6 +2330,7 @@ async def test_confirm_route_threads_the_rendered_target_version(monkeypatch):
         "conversation",
         "proposal",
         body,
+        _request(headers={}),
     )
 
     assert result == {"status": "succeeded"}
@@ -2339,6 +2340,7 @@ async def test_confirm_route_threads_the_rendered_target_version(monkeypatch):
         allow=True,
         expected_command_hash=command_hash,
         expected_target_version=target_version,
+        principal=None,
     )
 
 
@@ -3060,9 +3062,11 @@ async def test_stdio_permission_bridge_never_reuses_approval_for_changed_input(
 def _request(
     *,
     client: str = "127.0.0.1",
-    headers: dict[str, str] | None = None,
+    headers: dict[str, str] | list[tuple[str, str]] | None = None,
 ) -> Request:
-    raw_headers = [(key.lower().encode(), value.encode()) for key, value in (headers or {}).items()]
+    # A list of pairs can repeat a header name; a dict cannot.
+    pairs = headers.items() if isinstance(headers, dict) else (headers or [])
+    raw_headers = [(key.lower().encode(), value.encode()) for key, value in pairs]
     if not any(key == b"host" for key, _ in raw_headers):
         raw_headers.append((b"host", b"127.0.0.1:8765"))
     return Request(
@@ -3950,6 +3954,398 @@ def test_rename_session_input_still_rejects_empty_whitespace_and_over_length(nam
 
     with pytest.raises(ValidationError):
         RenameSessionInput.model_validate({"run": "some-run", "name": name})
+
+
+async def _state_db_with_admin_events(path: Path) -> None:
+    """Apply the StateDB schema this daemon writes its audit trail into."""
+    from lionagi.state.db import StateDB
+
+    async with StateDB(str(path)):
+        pass
+
+
+async def _audit_rows(path: Path, proposal_id: str) -> list[dict]:
+    from lionagi.state.db import StateDB
+
+    async with StateDB(str(path)) as db:
+        events = await db.list_admin_events(target_id=proposal_id)
+    return [
+        json.loads(event["details"]) if isinstance(event["details"], str) else event["details"]
+        for event in events
+    ]
+
+
+async def _proposal_row(db_path: Path, proposal_id: str) -> dict:
+    import aiosqlite
+
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        row = await (
+            await db.execute("SELECT * FROM studio_operator_proposals WHERE id=?", (proposal_id,))
+        ).fetchone()
+    return dict(row)
+
+
+async def _pending_permission_proposal(tmp_path, monkeypatch, coordinator):
+    """A running turn waiting on a permission proposal, ready to be decided.
+
+    The coordinator is also made the one the HTTP routes reach, already started,
+    so a route call does not start a fresh one over the same store.
+    """
+    from lionagi.studio.operator.coordinator import reset_operator_coordinator_for_testing
+
+    await reset_operator_coordinator_for_testing(coordinator)
+    cid = (await coordinator.create_conversation())["conversation"]["id"]
+    accepted = await coordinator.store.submit_turn(
+        cid,
+        instruction="native tool",
+        context={"space": "mission", "route": "/", "filters": {}},
+        expected_last_sequence=0,
+    )
+    await coordinator.store.mark_running(accepted["requestId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(tmp_path / "state.db"))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", accepted["conversationId"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", accepted["requestId"])
+    task = asyncio.create_task(
+        mcp_permission(
+            {
+                "tool_name": "Write",
+                "input": {"file_path": "notes.txt", "content": "hello"},
+                "tool_use_id": "native-1",
+            }
+        )
+    )
+    proposal = await _wait_proposal(coordinator.store, accepted["requestId"])
+    return accepted, proposal, task
+
+
+@pytest.mark.asyncio
+async def test_a_decision_with_the_capability_header_records_its_principal(tmp_path, monkeypatch):
+    """The decision route resolves ``X-Studio-Decision-Token`` and the decision
+    row and its audit row carry that principal, committed with the decision."""
+    from lionagi.studio.launch_access import (
+        mint_decision_capability,
+        reset_launch_access,
+    )
+    from lionagi.studio.services.operator import decide_operator_proposal
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    await _state_db_with_admin_events(path)
+    reset_launch_access()
+    origin = "http://localhost:5173"
+    capability = mint_decision_capability(origin)
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(store=store, engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    accepted, proposal, task = await _pending_permission_proposal(
+        tmp_path, monkeypatch, coordinator
+    )
+
+    result = await decide_operator_proposal(
+        accepted["conversationId"],
+        proposal["id"],
+        _decide_body("allow", proposal),
+        _request(headers={"origin": origin, "x-studio-decision-token": capability}),
+    )
+    await asyncio.wait_for(task, timeout=2)
+    await coordinator.shutdown()
+
+    row = await _proposal_row(path, proposal["id"])
+    details = (await _audit_rows(path, proposal["id"]))[-1]
+    assert result["status"] == "executing"
+    assert row["decision_principal_id"]
+    assert row["decision_epoch"]
+    assert row["decision_method"] == "pairing"
+    assert row["decision_origin"] == origin
+    assert row["decision_scope"] == "operator:decide"
+    assert details["principal"]["id"] == row["decision_principal_id"]
+    assert details["principal"]["epoch"] == row["decision_epoch"]
+
+
+@pytest.mark.asyncio
+async def test_a_decision_without_a_capability_is_still_accepted_and_unattributed(
+    tmp_path, monkeypatch
+):
+    """This release does not yet require a decision capability: a decision that carries none is
+    accepted and recorded with no principal."""
+    from lionagi.studio.launch_access import reset_launch_access
+    from lionagi.studio.services.operator import decide_operator_proposal
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    await _state_db_with_admin_events(path)
+    reset_launch_access()
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(store=store, engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    accepted, proposal, task = await _pending_permission_proposal(
+        tmp_path, monkeypatch, coordinator
+    )
+
+    result = await decide_operator_proposal(
+        accepted["conversationId"],
+        proposal["id"],
+        _decide_body("deny", proposal),
+        _request(headers={}),
+    )
+    await asyncio.wait_for(task, timeout=2)
+    await coordinator.shutdown()
+
+    row = await _proposal_row(path, proposal["id"])
+    details = (await _audit_rows(path, proposal["id"]))[-1]
+    # The wire status for a denied proposal is ``failed``.
+    assert result["status"] == "failed"
+    assert row["decision_principal_id"] is None
+    assert row["decision_epoch"] is None
+    assert details["decision"] == "denied"
+    assert "principal" not in details
+
+
+@pytest.mark.asyncio
+async def test_the_admission_bearer_alone_still_decides_over_http(tmp_path, monkeypatch):
+    """With an admission token set, a decision carrying only that bearer passes the daemon's
+    admission and is accepted unattributed: this release does not yet require a decision
+    capability."""
+    httpx = pytest.importorskip("httpx")
+    from lionagi.studio.app import create_app
+    from lionagi.studio.launch_access import reset_launch_access
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    await _state_db_with_admin_events(path)
+    reset_launch_access()
+    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "studio-test-token")
+    app = create_app()
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(store=store, engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    accepted, proposal, task = await _pending_permission_proposal(
+        tmp_path, monkeypatch, coordinator
+    )
+    body = _decide_body("deny", proposal).model_dump(by_alias=True)
+    url = (
+        f"/api/operator/conversations/{accepted['conversationId']}"
+        f"/proposals/{proposal['id']}/decision"
+    )
+
+    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 54321))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8765") as client:
+        refused = await client.post(url, json=body)
+        answered = await client.post(
+            url, json=body, headers={"authorization": "Bearer studio-test-token"}
+        )
+    await asyncio.wait_for(task, timeout=2)
+    await coordinator.shutdown()
+
+    # Control: the token is in force, so a request without the bearer never reaches the route.
+    assert refused.status_code == 401
+    assert answered.status_code == 200, answered.text
+    # The wire status for a denied proposal is ``failed``.
+    assert answered.json()["status"] == "failed"
+    row = await _proposal_row(path, proposal["id"])
+    assert row["decision_principal_id"] is None
+    assert row["decision_epoch"] is None
+    assert "principal" not in (await _audit_rows(path, proposal["id"]))[-1]
+
+
+@pytest.mark.asyncio
+async def test_a_capability_from_another_origin_is_not_attributed(tmp_path, monkeypatch):
+    from lionagi.studio.launch_access import mint_decision_capability, reset_launch_access
+    from lionagi.studio.services.operator import decide_operator_proposal
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    await _state_db_with_admin_events(path)
+    reset_launch_access()
+    capability = mint_decision_capability("http://localhost:5173")
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(store=store, engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    accepted, proposal, task = await _pending_permission_proposal(
+        tmp_path, monkeypatch, coordinator
+    )
+
+    await decide_operator_proposal(
+        accepted["conversationId"],
+        proposal["id"],
+        _decide_body("deny", proposal),
+        _request(headers={"origin": "https://evil.example", "x-studio-decision-token": capability}),
+    )
+    await asyncio.wait_for(task, timeout=2)
+    await coordinator.shutdown()
+
+    assert (await _proposal_row(path, proposal["id"]))["decision_principal_id"] is None
+
+
+_PAGE = "http://localhost:5173"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["confirm", "decide"])
+@pytest.mark.parametrize(
+    ("origins", "attributed"),
+    [
+        pytest.param([_PAGE], True, id="its-own-origin"),
+        pytest.param([], False, id="no-origin"),
+        pytest.param([_PAGE, _PAGE], False, id="its-origin-twice"),
+        pytest.param(["https://evil.example", _PAGE], False, id="another-origin-first"),
+        pytest.param([_PAGE, "https://evil.example"], False, id="another-origin-second"),
+    ],
+)
+async def test_a_capability_is_attributed_only_with_exactly_its_own_origin(
+    monkeypatch, route, origins, attributed
+):
+    """Both decision routes resolve the capability against the request's one
+    ``Origin``; a request with none or with several is not attributed, whatever
+    the values, so a capability cannot be used from a context that omits or
+    repeats the header."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from lionagi.studio.launch_access import (
+        mint_decision_capability,
+        reset_launch_access,
+        resolve_decision_capability,
+    )
+    from lionagi.studio.operator.types import ConfirmProposalRequest
+    from lionagi.studio.services import operator as operator_svc
+
+    reset_launch_access()
+    capability = mint_decision_capability(_PAGE)
+    coordinator = MagicMock()
+    coordinator.decide = AsyncMock(return_value={"status": "executing"})
+    monkeypatch.setattr(operator_svc, "get_operator_coordinator", lambda: coordinator)
+    request = _request(
+        headers=[("origin", value) for value in origins] + [("x-studio-decision-token", capability)]
+    )
+    proposal = {"commandHash": "a" * 64}
+
+    if route == "confirm":
+        body = ConfirmProposalRequest.model_validate({"expectedCommandHash": "a" * 64})
+        await operator_svc.confirm_operator_proposal("conversation", "proposal", body, request)
+    else:
+        await operator_svc.decide_operator_proposal(
+            "conversation", "proposal", _decide_body("allow", proposal), request
+        )
+
+    principal = coordinator.decide.await_args.kwargs["principal"]
+    if attributed:
+        assert principal == resolve_decision_capability(capability, origin=_PAGE)
+        assert principal is not None
+    else:
+        assert principal is None
+
+
+@pytest.mark.asyncio
+async def test_the_decision_principal_is_written_with_the_decision_or_not_at_all(
+    tmp_path, monkeypatch
+):
+    """A failure inside the decision's transaction, after the proposal row and
+    its audit row are written and before the commit, leaves neither of them,
+    so no principal is recorded for a decision that did not happen."""
+    from fastapi import HTTPException
+
+    from lionagi.studio.launch_access import (
+        mint_decision_capability,
+        reset_launch_access,
+        resolve_decision_capability,
+    )
+    from lionagi.studio.services.operator import decide_operator_proposal
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    await _state_db_with_admin_events(path)
+    reset_launch_access()
+    capability = mint_decision_capability(_PAGE)
+    principal = resolve_decision_capability(capability, origin=_PAGE)
+    assert principal is not None
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(store=store, engine_factory=ScriptedEngine)
+    await coordinator.startup()
+    accepted, proposal, task = await _pending_permission_proposal(
+        tmp_path, monkeypatch, coordinator
+    )
+
+    original = store._append_frame_in_tx
+
+    async def failing_before_commit(db, **kwargs):
+        # The decision's confirmation frame is written after the audit INSERT
+        # and the proposal UPDATE, inside the same transaction.
+        if (
+            kwargs.get("frame_type") == "confirmation"
+            and kwargs.get("payload", {}).get("proposalId") == proposal["id"]
+        ):
+            raise RuntimeError("store is unavailable")
+        return await original(db, **kwargs)
+
+    monkeypatch.setattr(store, "_append_frame_in_tx", failing_before_commit)
+    with pytest.raises(HTTPException) as raised:
+        await decide_operator_proposal(
+            accepted["conversationId"],
+            proposal["id"],
+            _decide_body("deny", proposal),
+            _request(headers={"origin": _PAGE, "x-studio-decision-token": capability}),
+        )
+    assert raised.value.status_code == 503
+    monkeypatch.setattr(store, "_append_frame_in_tx", original)
+    await coordinator.shutdown()
+
+    row = await _proposal_row(path, proposal["id"])
+    assert row["status"] == "pending"
+    assert row["decision_principal_id"] is None
+    assert row["decision_epoch"] is None
+    assert principal.id not in json.dumps(await _audit_rows(path, proposal["id"]))
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+def _decide_body(decision: str, proposal: dict) -> dict:
+    from lionagi.studio.operator.types import DecideProposalRequest
+
+    return DecideProposalRequest(
+        decision=decision,
+        expected_command_hash=proposal["commandHash"],
+        expected_target_version=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_preexisting_proposal_table_gains_null_principal_columns(tmp_path):
+    """A store written before the principal columns existed migrates to them,
+    and its rows stay unattributed."""
+    import aiosqlite
+
+    db_path = tmp_path / "state.db"
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "CREATE TABLE studio_operator_proposals ("
+            "id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, request_id TEXT NOT NULL, "
+            "command_type TEXT NOT NULL, command_json TEXT NOT NULL, "
+            "command_hash TEXT NOT NULL, target_version TEXT, risk TEXT NOT NULL, "
+            "summary TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, "
+            "status TEXT NOT NULL, expires_at REAL NOT NULL, confirmed_at REAL, "
+            "completed_at REAL, result_json TEXT, error_code TEXT, created_at REAL NOT NULL)"
+        )
+        await db.execute(
+            "INSERT INTO studio_operator_proposals "
+            "(id, conversation_id, request_id, command_type, command_json, command_hash, "
+            "risk, summary, idempotency_key, status, expires_at, created_at) "
+            "VALUES ('p-old', 'c-old', 'r-old', 'provider_permission', '{}', 'h', "
+            "'mutate', 'old', 'k-old', 'confirmed', 0, 0)"
+        )
+        await db.commit()
+
+    store = OperatorStore(db_path)
+    await store.ensure_schema()
+
+    row = await _proposal_row(db_path, "p-old")
+    assert row["decision_principal_id"] is None
+    async with aiosqlite.connect(db_path) as db:
+        version = (await (await db.execute("PRAGMA user_version")).fetchone())[0]
+    from lionagi.studio.operator.store import OPERATOR_STORE_VERSION
+
+    assert version == OPERATOR_STORE_VERSION
 
 
 async def _start_proposal_turn(

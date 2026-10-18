@@ -8,6 +8,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Upgrading from 0.35.5
 
+Pair `li studio` and the daemon from the same release. Updating only the daemon leaves an older
+`li studio` asking the retired `POST /api/studio/pairing-codes`, which now answers 410, so a page
+opened against an already-running daemon is not paired; updating only `li studio` leaves it
+asking an older daemon over a reconnect socket that daemon does not have, and it says to restart
+the daemon rather than issuing a code.
+
 `li schedule apply` now reads a member's `execution.project` written as YAML null as no
 project (see Changed). A project-scoped document applied with an earlier release whose
 members write their project as null plans an `UPDATE` on its next apply that removes the
@@ -142,6 +148,33 @@ behaviour, including accepting a write-capable submission without `cwd`.
 
 ### Changed
 
+- `POST /api/studio/pairing-codes` now answers 410 for every admitted request, whatever its
+  headers or the admission token. `li studio` mints a pairing code in process before it starts
+  the daemon, or, against a daemon already running, obtains one over the daemon's new
+  same-user reconnect socket (a 0600 unix socket in a 0700 `studio/` directory beside its
+  state database, created before it serves and removed at exit); the command line no longer asks any route for a code and never
+  stops a running daemon. The socket also hands over a key drawn when the daemon starts, and
+  `li studio --port P` pairs only when the daemon on port P answers a fresh challenge at
+  `GET /health?challenge=` with an HMAC under that key covering port P; when another daemon
+  shares the state directory, or a listener on P relays `/health` from another port, it exits 1
+  without a link. P must be the port the daemon binds, so a forwarded or mapped port is refused
+  the same way. `li studio` reads the socket only when the kernel reports that the process
+  serving it runs as the same user. On a platform without unix sockets, `li studio` against a running
+  daemon says to restart it. Redeeming a code at `POST /api/studio/pair` now also returns a
+  decision capability (`decision_token`) bound to the page's origin; the hosted page keeps it in
+  `sessionStorage` for its tab and sends it in `X-Studio-Decision-Token` on the two Operator
+  decision requests only, with redirects refused so it cannot follow a 3xx elsewhere. A
+  capability is kept as a hash, expires eight hours after redemption, is revoked by
+  `POST /api/studio/disconnect`, and is invalidated by a daemon restart. The two Operator decision
+  routes now record the decision's principal id, epoch, method, origin and
+  scope on the proposal row and in its audit row when the request carries exactly one `Origin`
+  and it is the capability's own (Operator store schema version 2; rows from before stay
+  unattributed). Decisions themselves are admitted as before: a request without the
+  header is still accepted, it is recorded unattributed, and the decision contract is still
+  version 1. `LIONAGI_STUDIO_AUTH_TOKEN` no longer issues a code and is not a decision
+  capability, but this release does not require one: a decision request that carries only that
+  bearer is still accepted, and recorded unattributed. Every other route's admission is
+  unchanged.
 - MCP argument validation now enforces `minimum`/`maximum`, `minLength`/`maxLength` and
   `pattern`, checks `enum` whatever the value's type, and treats `null` as a type it checks
   rather than as an absent check, so a value outside a published bound or choice is refused
@@ -347,6 +380,17 @@ behaviour, including accepting a write-capable submission without `cwd`.
   `current_holders` with each holder's `schedule_id`, `path`, and `acquired_at`
   in epoch seconds. Timed schedules are considered oldest due first, before
   GitHub poll passes, whose cadence is separate and asynchronous.
+- A scheduled `command` child inherited the daemon's `LIONAGI_STATE_DB_URL`. When the command ran
+  an interpreter with a different lionagi, that lionagi opened the daemon's store, and one on a
+  newer schema migrated the file, after which the daemon could no longer open it. A command child
+  now starts without the variable in any letter case, and so do notify commands, external hooks,
+  MCP terminal notices, secrets lookup commands, configured stdio MCP servers, tool hooks, outbox
+  delivery commands and the commands an agent runs through lionagi's shell tool; a command that
+  needs the store names it itself, and an environment a caller passes explicitly is used as given.
+  Agent, flow, fanout, play, flow_yaml and engine children still inherit it. A command
+  running in the daemon's working directory still reads the dotenv files there, and a child
+  without the variable falls back to `$LIONAGI_HOME/state.db`, so a daemon whose store is at that
+  path shares it with its commands' lionagi as before.
 - A `github_poll` schedule held one of the scheduler's global concurrent-fire slots for the whole
   of its GitHub poll, before it had any event to run. A slow or rate-limited poll kept that slot
   from every other schedule for as long as it ran, so under the default cap of four, two slow

@@ -1,8 +1,8 @@
 # ADR-0131: Operator decisions require a launcher-issued decision capability
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Aspirational
-- **Implementation-status**: not-started
+- **Implementation-status**: partial
 - **Area**: studio
 - **Date**: 2026-10-17
 - **Relations**: changes the Studio daemon's route contract for the two Operator decision routes and
@@ -15,6 +15,13 @@ allow or deny an Operator proposal, so a run whose automatically allowed tool ca
 to the daemon can approve its own proposals. This record makes a decision require a capability that
 only the daemon mints, handed to a page by its launcher or, for a reconnect, over a channel only the
 daemon's own OS user can open, and that no HTTP request can obtain.
+
+Landing steps 1, 2 and 2b are in: the decision-capability store and the decision rows that record
+its principal, minting at launch, the retired HTTP mint route, redemption returning the capability,
+the page's use of it, and the same-user reconnect channel the CLI pairs over. Step 3's remaining
+launch adapters and step 4's principal check and refusals are not; decisions are still admitted under
+contract version 1, every decision request accepted today is still accepted, and a request without
+the capability is recorded unattributed.
 
 ## Context
 
@@ -66,8 +73,14 @@ removed at exit (a socket file left by a daemon that no longer runs is replaced 
 connection the daemon reads the peer's user id from the socket (`SO_PEERCRED` on Linux,
 `LOCAL_PEERCRED` on macOS, each read with `getsockopt` from the standard `socket` module) and
 refuses any id other than its own; for its own user it mints one code in process, under every code
-rule above, and returns it on the socket, which carries nothing else. The CLI opens a page with that
-code as a launch does, and never stops a running daemon itself. The channel is not an HTTP route and
+rule above, and returns it on the socket with the channel's port-proof key, a random 256-bit value
+drawn when the channel starts; the socket carries nothing else. The socket answers for whichever
+daemon uses the state directory, which need not be the daemon on the port the CLI was given, so the
+CLI then sends `/health` on that port a fresh challenge, and the daemon there answers with
+HMAC-SHA256 under the key over the challenge and the TCP port the request arrived on. A second
+daemon on that port, or a listener relaying to the right daemon from another port, cannot produce
+it; the CLI then exits non-zero without showing the code, which expires unused. Otherwise it opens
+a page with that code as a launch does. It never stops a running daemon itself. The channel is not an HTTP route and
 no TCP listener serves it. Any process running as the daemon's own OS user can obtain a code through
 it, which D6 already places outside the guarantee. On a platform without unix sockets there is no
 reconnect, and the CLI says to restart the daemon.
