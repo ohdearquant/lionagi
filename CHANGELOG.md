@@ -174,6 +174,15 @@ project those rows ran under. To keep the project, name it in those members.
   already did. They used to resolve a full id on such a turn with no project check, so the turn
   could propose changing a run in another project, and the found or not-found answer told it
   whether that id existed. The read tools still resolve a full id on such a turn.
+- `li agent` warns when it hands a leg no MCP servers because no `.mcp.json` was found at or
+  above its directory and none was named. That path skipped the warning, so the leg started
+  without the servers its instructions assumed and nothing said so. `--no-mcp-config`, and a
+  named config listing no servers, start a leg with no servers silently; the named empty config
+  used to be reported as a set not carried to the provider.
+- On `li o flow` and `li o fanout`, the built-in orchestrator, casts-role workers and the fanout
+  synthesis branch are handed the server set the run resolved, including no set at all when the
+  run found no config. A run that found none used to leave those branches to discover a config of
+  their own, so the home `~/.lionagi/.mcp.json` reached them.
 - A dispatch notify command that ran past its timeout was killed as a single process, so anything
   it started kept running, and nothing waited for the command to exit. On Python 3.10, where the timeout
   raises `asyncio.TimeoutError` rather than the builtin `TimeoutError`, it was not killed at all
@@ -243,6 +252,12 @@ project those rows ran under. To keep the project, name it in those members.
   and a `ReActStream` caller that passes its own `"sequential"` action parameters keeps them on
   every round. Through `ReAct()`, the first round used to run concurrently whatever it declared,
   and each extension round used to run under the strategy the round before it declared.
+- A conflicting guarded transition no longer returns a generated `transition_id`. No
+  `status_transitions` row is written for a conflict, so the returned id referenced nothing;
+  it is now `None`. An applied transition's id is unchanged and still names the row written.
+- A tool call that succeeds and returns `None` now leaves its `ActionResponse` in the branch's
+  messages, linked from its `ActionRequest`, as a call that returns any other value does. It
+  used to leave only the request.
 
 ### Security
 
