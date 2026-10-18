@@ -62,6 +62,17 @@ behaviour, including accepting a write-capable submission without `cwd`.
   an API-model leg's turn is bounded by `--timeout` instead.
 - `profile.list` accepts the optional `idle_timeout` key under `fields`, so a caller can ask
   for it on a profile that does not declare it and read `null` instead of a refused field name.
+- Schedule definitions now retain create, enable, disable and delete events in the existing
+  lifecycle history, separately from execution occurrences. Changes made through `StateDB`,
+  atomic ScheduleSet applies and scheduler limits commit together with their history. The
+  detail response includes `lifecycle.available` and the latest recorded definition event;
+  `StateDB.get_schedule_history` can read retained events after deletion. Untouched legacy
+  definitions have no invented history, and read-only stores missing the ledger report it as
+  unavailable. Existing callers temporarily remain compatible without a reason or submitter
+  context, explicitly recording unavailable attribution, origin and source. A definition id
+  that already has recorded history, including one whose definition was deleted, cannot be
+  created again: `StateDB` refuses it with `LifecycleValidationError`. Required manual disable
+  reasons, client provenance transport and the browser history display are not yet implemented.
 - An API-model `li agent` leg can run batched LNDL rounds in place of ReAct: a profile that
   declares `api_tools: read` may set `api_loop: lndl` (default `react`). A round either declares
   up to 16 tool calls, which run together, or writes the answer as text; the turn ends when an

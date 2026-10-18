@@ -105,9 +105,9 @@ def test_team_round_batches_pending_targets_per_completion() -> None:
 
 
 def test_signal_rows_and_schedule_cursor_citations_point_at_their_code() -> None:
-    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 5188)
-    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 7001)
-    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 7026)
+    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 5342)
+    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 7181)
+    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 7206)
 
 
 # -- what the amendment now says ---------------------------------------------
@@ -127,8 +127,8 @@ def test_durable_subscriber_source_is_a_confirmed_session_signals_row() -> None:
     assert "never the in-memory emit" in flat
     assert "reaches `best_effort` subscribers only" in flat
     assert "lionagi/state/schema.sql:797-801" in flat
-    assert "lionagi/state/db.py:7001-7009" in flat
-    assert "lionagi/state/db.py:7026-7041" in flat
+    assert "lionagi/state/db.py:7181-7191" in flat
+    assert "lionagi/state/db.py:7206-7223" in flat
     assert "the cursor is a position in that sequence, read forward with `after_seq`" in flat
     assert "is not a committed row and is no durable subscriber's source" in flat
     assert "whose forward read defaults to 500 rows" in flat
@@ -250,8 +250,14 @@ def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are
     flat = _flat()
     assert "lionagi/cli/orchestrate/_orchestration.py:1378" in flat
     assert "lionagi/state/schema.sql:463" in flat
-    assert "lionagi/state/db.py:5188-5190" in flat
-    assert "the store advances it only forward, so a stale write cannot move it back" in flat
+    assert "lionagi/state/db.py:5342-5344" in flat
+    assert (
+        "The poller's writes advance it only forward, so a stale poll cannot move it back" in flat
+    )
+    assert (
+        "a direct `update_schedule` or `apply_schedule_set` write sets it to the value given"
+        in flat
+    )
     assert "ADR-0070, Accepted" in flat
     assert "per-completion batch of targets, not a per-subscriber position" in flat
     assert "lionagi/cli/orchestrate/flow.py:1986-2031" in flat
