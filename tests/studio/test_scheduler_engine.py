@@ -1684,7 +1684,7 @@ async def test_recovery_refusal_leaves_at_row_due_not_stranded(monkeypatch):
         next_fire_at=time.time() - 60,
     )
 
-    async def _no_slot():
+    async def _no_slot(*args, **kwargs):
         return False, None
 
     monkeypatch.setattr(engine, "_reserve_global_slot", _no_slot)
@@ -3364,7 +3364,7 @@ async def test_fire_deadline_records_one_timed_out_terminal_and_releases_slot(
     schedule = _minimal_schedule()
     await _seed_schedule(state_db, schedule)
     run_id = "run-deadline"
-    _, slot_claim = await engine._reserve_global_slot()
+    _, slot_claim = await engine._reserve_global_slot("test-holder", path="scheduled")
     assert engine._global_inflight == 1
 
     async def _deadline(*_args, on_launched=None, **_kwargs):

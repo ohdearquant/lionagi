@@ -68,7 +68,7 @@ async def test_reserve_global_slot_allows_under_cap(monkeypatch):
     monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 2)
     engine = SchedulerEngine(svc=_make_svc())
 
-    allowed, claim = await engine._reserve_global_slot()
+    allowed, claim = await engine._reserve_global_slot("test-holder", path="scheduled")
 
     assert allowed is True
     assert claim is not None
@@ -83,11 +83,11 @@ async def test_reserve_global_slot_refuses_at_cap(monkeypatch):
     monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 1)
     engine = SchedulerEngine(svc=_make_svc())
 
-    allowed_a, claim_a = await engine._reserve_global_slot()
+    allowed_a, claim_a = await engine._reserve_global_slot("test-holder", path="scheduled")
     assert allowed_a is True
     assert claim_a is not None
 
-    allowed_b, claim_b = await engine._reserve_global_slot()
+    allowed_b, claim_b = await engine._reserve_global_slot("test-holder", path="scheduled")
     assert allowed_b is False
     assert claim_b is None
     assert engine._global_inflight == 1
@@ -102,7 +102,7 @@ async def test_reserve_global_slot_unlimited_when_cap_zero(monkeypatch):
     engine = SchedulerEngine(svc=_make_svc())
 
     for _ in range(5):
-        allowed, claim = await engine._reserve_global_slot()
+        allowed, claim = await engine._reserve_global_slot("test-holder", path="scheduled")
         assert allowed is True
         assert claim is None
 
@@ -117,7 +117,7 @@ async def test_release_global_slot_decrements_and_floors_at_zero(monkeypatch):
     monkeypatch.setattr(studio_config, "MAX_SCHEDULED_CONCURRENT", 3)
     engine = SchedulerEngine(svc=_make_svc())
 
-    _, claim = await engine._reserve_global_slot()
+    _, claim = await engine._reserve_global_slot("test-holder", path="scheduled")
     assert engine._global_inflight == 1
     claim.release()
     assert engine._global_inflight == 0
@@ -127,7 +127,7 @@ async def test_release_global_slot_decrements_and_floors_at_zero(monkeypatch):
     assert engine._global_inflight == 0
 
     # Direct floor check independent of the claim wrapper.
-    engine._release_global_slot()
+    engine._release_global_slot(claim)
     assert engine._global_inflight == 0
 
 
@@ -145,7 +145,7 @@ async def test_maybe_fire_defers_when_no_slot_available(monkeypatch):
     schedule = _minimal_schedule(next_fire_at=1000.0)
 
     # Saturate the single slot before _maybe_fire runs.
-    _, holder_claim = await engine._reserve_global_slot()
+    _, holder_claim = await engine._reserve_global_slot("test-holder", path="scheduled")
     assert holder_claim is not None
 
     with patch.object(engine, "_tracked_fire") as mock_tracked:
@@ -180,7 +180,7 @@ async def test_maybe_fire_defer_releases_max_runs_claim(monkeypatch):
     engine = SchedulerEngine(svc=svc)
     schedule = _minimal_schedule(max_runs=5, next_fire_at=1000.0)
 
-    _, holder_claim = await engine._reserve_global_slot()
+    _, holder_claim = await engine._reserve_global_slot("test-holder", path="scheduled")
     assert holder_claim is not None
 
     with patch.object(engine, "_tracked_fire") as mock_tracked:
@@ -222,7 +222,7 @@ async def test_tick_github_defers_before_fetch_when_no_slot(monkeypatch):
         trigger_type="github_poll", github_repo="acme/widgets", last_fired_at=0
     )
 
-    _, holder_claim = await engine._reserve_global_slot()
+    _, holder_claim = await engine._reserve_global_slot("test-holder", path="scheduled")
     assert holder_claim is not None
 
     with patch("lionagi.studio.scheduler.github.github_poll", new=AsyncMock()) as mock_poll:
@@ -499,7 +499,7 @@ async def test_a_github_event_that_finds_the_cap_taken_during_the_poll_stays_ahe
     other_fire = []
 
     async def _poll_while_another_fire_takes_the_slot(_schedule):
-        allowed, claim = await engine._reserve_global_slot()
+        allowed, claim = await engine._reserve_global_slot("other-schedule", path="scheduled")
         assert allowed is True, "the poll must not be holding the only slot itself"
         other_fire.append(claim)
         return GithubPollResult(items=[item], scan_complete=True)
@@ -541,7 +541,7 @@ async def test_fire_now_raises_at_capacity_and_releases_max_runs_claim(monkeypat
     svc.count_schedule_runs = AsyncMock(return_value=0)
     engine = SchedulerEngine(svc=svc)
 
-    _, holder_claim = await engine._reserve_global_slot()
+    _, holder_claim = await engine._reserve_global_slot("test-holder", path="scheduled")
     assert holder_claim is not None
 
     with pytest.raises(ValueError, match="capacity"):
@@ -582,7 +582,7 @@ async def test_fire_releases_global_slot_on_completion(monkeypatch):
     engine = SchedulerEngine(svc=svc)
     schedule = _minimal_schedule()
 
-    _, slot_claim = await engine._reserve_global_slot()
+    _, slot_claim = await engine._reserve_global_slot("test-holder", path="scheduled")
     assert engine._global_inflight == 1
 
     with (
@@ -616,7 +616,7 @@ async def test_fire_releases_global_slot_on_exception(monkeypatch):
     engine = SchedulerEngine(svc=svc)
     schedule = _minimal_schedule()
 
-    _, slot_claim = await engine._reserve_global_slot()
+    _, slot_claim = await engine._reserve_global_slot("test-holder", path="scheduled")
     assert engine._global_inflight == 1
 
     with patch(
@@ -779,7 +779,9 @@ async def test_adhoc_lane_admits_under_continuously_saturated_scheduled_cap(monk
             # then releases and immediately reacquires it before the next
             # tick -- the same "continuously replenished stream" shape that
             # exposed the starvation.
-            allowed, scheduled_claim = await engine._reserve_global_slot()
+            allowed, scheduled_claim = await engine._reserve_global_slot(
+                "test-holder", path="scheduled"
+            )
             assert allowed is True
             await engine._run_task_worker_tick(1_000.0 + tick)
             scheduled_claim.release()
