@@ -251,6 +251,181 @@ async def test_a_gemini_teardown_failure_is_reported_as_one():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("provider", "model", "events", "seam", "said"),
+    [
+        (
+            "gemini_code",
+            "gemini-4-argon",
+            [
+                {
+                    "conversation_id": "conv-1",
+                    "status": "ERROR",
+                    "response": _ASSISTANT_TEXT,
+                    "error": "",
+                }
+            ],
+            "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+            "agy returned status=ERROR",
+        ),
+        (
+            "pi",
+            "gemini-2.5-flash",
+            [
+                {
+                    "type": "message_update",
+                    "assistantMessageEvent": {
+                        "type": "error",
+                        "reason": "aborted",
+                        "error": {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": _ASSISTANT_TEXT}],
+                            "stopReason": "aborted",
+                        },
+                    },
+                }
+            ],
+            "lionagi.providers.pi.cli.stream_pi_cli_events",
+            "aborted",
+        ),
+        (
+            "pi",
+            "gemini-2.5-flash",
+            [
+                {"type": "error", "error": {"message": "rate limit exceeded"}},
+                {"type": "error", "error": ""},
+            ],
+            "lionagi.providers.pi.cli.stream_pi_cli_events",
+            "rate limit exceeded",
+        ),
+        (
+            "claude_code",
+            "sonnet",
+            [
+                {
+                    "type": "result",
+                    "subtype": "error_during_execution",
+                    "is_error": True,
+                    "errors": ["API Error: 429 rate limit exceeded"],
+                }
+            ],
+            "lionagi.providers.anthropic.claude_code.stream_cc_cli_events",
+            "API Error: 429 rate limit exceeded",
+        ),
+        (
+            "claude_code",
+            "sonnet",
+            [
+                {
+                    "type": "result",
+                    "subtype": "error_during_execution",
+                    "is_error": True,
+                    "result": None,
+                    "errors": ["API Error: 429 rate limit exceeded"],
+                }
+            ],
+            "lionagi.providers.anthropic.claude_code.stream_cc_cli_events",
+            "API Error: 429 rate limit exceeded",
+        ),
+        (
+            "codex",
+            "gpt-5.1-codex",
+            [
+                {"type": "error", "message": "rate limit exceeded"},
+                {"type": "turn.failed", "error": {}},
+            ],
+            "lionagi.providers.openai.codex.stream_codex_cli_events",
+            "rate limit exceeded",
+        ),
+        (
+            "codex",
+            "gpt-5.1-codex",
+            [
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": _ASSISTANT_TEXT},
+                },
+                {"type": "result", "result": "rate limit exceeded", "is_error": True},
+            ],
+            "lionagi.providers.openai.codex.stream_codex_cli_events",
+            "rate limit exceeded",
+        ),
+    ],
+    ids=[
+        "gemini-status-without-error",
+        "pi-aborted-turn",
+        "pi-empty-error-after-a-message",
+        "claude-errors-list",
+        "claude-null-result",
+        "codex-empty-payload-after-a-message",
+        "codex-terminal-result-event",
+    ],
+)
+async def test_a_cli_failure_is_classified_on_the_text_that_names_it(
+    provider,
+    model,
+    events,
+    seam,
+    said,
+):
+    """The failure's own text decides the class: not the response or assistant
+    message the turn produced, and not a later event that names nothing."""
+    from lionagi.providers._provider_errors import classify_provider_error
+
+    branch = Branch(chat_model=_chat_model(provider, model))
+    error = await _failed_chat(branch, provider, events, seam)
+
+    assert type(error.__cause__) is type(classify_provider_error(said))
+    assert _ASSISTANT_TEXT not in str(error.__cause__)
+    _assert_failed_call(branch, error, said)
+
+
+@pytest.mark.asyncio
+async def test_a_gemini_error_is_reported_over_the_teardown_failure_after_it():
+    from lionagi.providers._provider_errors import classify_provider_error
+
+    async def events(_request):
+        yield {
+            "conversation_id": "conv-1",
+            "status": "ERROR",
+            "response": "",
+            "error": "Invalid API key",
+        }
+        raise RuntimeError("Event loop is closed")
+
+    branch = Branch(chat_model=_chat_model("gemini_code", "gemini-4-argon"))
+    with patch(
+        "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+        side_effect=events,
+    ):
+        with pytest.raises(ExecutionError) as info:
+            await branch.chat("go on")
+
+    assert type(info.value.__cause__) is type(classify_provider_error("Invalid API key"))
+    _assert_failed_call(branch, info.value, "Invalid API key")
+
+
+@pytest.mark.asyncio
+async def test_a_codex_result_event_failure_with_no_text_is_not_the_assistant_text():
+    from lionagi.providers._provider_errors import classify_provider_error
+
+    branch = Branch(chat_model=_chat_model("codex", "gpt-5.1-codex"))
+    error = await _failed_chat(
+        branch,
+        "codex",
+        [
+            {"type": "item.completed", "item": {"type": "agent_message", "text": _ASSISTANT_TEXT}},
+            {"type": "result", "is_error": True},
+        ],
+        "lionagi.providers.openai.codex.stream_codex_cli_events",
+    )
+
+    assert type(error.__cause__) is type(classify_provider_error("Codex session failed"))
+    assert _ASSISTANT_TEXT not in str(error.__cause__)
+    _assert_failed_call(branch, error, "Codex session failed")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("provider", "model", "events", "seam", "session_id"),
     [
         (

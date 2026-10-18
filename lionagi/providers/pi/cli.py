@@ -676,8 +676,11 @@ class PiCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
 
         pi_log.info(f"Session finished with {len(responses)} chunks")
         if session.is_error:
-            # Classified on the last error event's own text: an assistant message
-            # that arrives after the error replaces the result.
+            # Classified on the last error event that names its failure: an
+            # assistant message that arrives after the error replaces the result,
+            # and an aborted turn's error carries the assistant message it cut
+            # off, which is not the failure. Its reason stands in when it gives
+            # no message.
             said = None
             for c in session.chunks:
                 event = (
@@ -686,7 +689,15 @@ class PiCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
                 if c.type == "error" or (
                     c.type == "message_update" and event.get("type") == "error"
                 ):
-                    said = _error_message_from_event(event)
+                    error = event.get("error")
+                    if isinstance(error, dict):
+                        text = error.get("errorMessage") or error.get("message")
+                    else:
+                        text = error if isinstance(error, str) else None
+                    text = text or event.get("errorMessage") or event.get("message")
+                    text = str(text or event.get("reason") or "").strip()
+                    if text:
+                        said = text
             if session.session_id:
                 self.session_id = session.session_id
             raise classify_provider_error(

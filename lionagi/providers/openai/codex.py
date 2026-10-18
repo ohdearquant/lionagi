@@ -131,6 +131,9 @@ _TOML_BARE_KEY_RE = re.compile(r"[A-Za-z0-9_-]+")
 # trailing "(" is load-bearing: it excludes terminal messages that merely
 # begin with the retry prefix, e.g. "Reconnecting... 5/5 failed".
 _RECONNECT_NOTICE_RE = re.compile(r"^\s*Reconnecting\.\.\.\s*\d+/\d+\s*\(")
+# How an error event with no message is reported; a message from an earlier
+# event of the same failure says more.
+_EMPTY_ERROR_PAYLOAD = "CLI failure (empty error payload"
 
 # Models served through the CLI can write a tool call into their reply as text
 # in their own call markup instead of emitting a real call. The CLI takes that
@@ -2547,7 +2550,7 @@ async def stream_codex_cli(
                         err.get("message")
                         or obj.get("message")
                         or (
-                            f"CLI failure (empty error payload; event type={typ!r})"
+                            f"{_EMPTY_ERROR_PAYLOAD}; event type={typ!r})"
                             if err == {}
                             else str(err)
                         )
@@ -2852,10 +2855,20 @@ class CodexCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
         if session.is_error:
             # Classified on the failure's own error text: when the failure carries
             # none, the stream fills the result with the turn's assistant text.
+            # An event with an empty error payload says less than an earlier one
+            # that named the failure. A failure only a terminal result event
+            # reports has no error chunk: its result is that event's text unless
+            # the stream end filled it with the joined assistant text.
+            failures = [c.content for c in session.chunks if c.is_error and c.content]
             said = next(
-                (c.content for c in reversed(session.chunks) if c.is_error and c.content),
-                None,
+                (t for t in reversed(failures) if not t.startswith(_EMPTY_ERROR_PAYLOAD)),
+                failures[-1] if failures else None,
             )
+            if not any(c.is_error for c in session.chunks):
+                joined = "\n".join(
+                    c.content for c in session.chunks if c.type == "text" and c.content
+                )
+                said = session.result if session.result and session.result != joined else None
             if session.session_id:
                 self.session_id = session.session_id
             raise classify_provider_error(

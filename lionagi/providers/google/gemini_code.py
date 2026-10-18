@@ -779,13 +779,24 @@ class GeminiCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
 
         log.info("Antigravity session %s finished (%d chunks)", session.session_id, len(responses))
         if session.is_error:
-            # Classified on the failure's own error text: the result keeps the
-            # turn's response, which a failure in teardown follows. A failed turn
+            # Classified on what agy itself reported: its error text, or its
+            # status when it gave none, never the turn's response. A teardown
+            # failure decides only when agy reported nothing. A failed turn
             # keeps the provider session it ran in, as a returned one does.
-            said = next(
-                (c.content for c in reversed(session.chunks) if c.is_error and c.content),
-                None,
-            )
+            reported = [c for c in session.chunks if c.is_error and c.metadata]
+            if reported:
+                obj = reported[-1].metadata
+                status = str(obj.get("status", "")).upper()
+                said = str(obj.get("error") or "").strip() or (
+                    reported[-1].content
+                    if status in ("SUCCESS", "")
+                    else f"agy returned status={status}"
+                )
+            else:
+                said = next(
+                    (c.content for c in reversed(session.chunks) if c.is_error and c.content),
+                    None,
+                )
             if session.session_id:
                 self.session_id = session.session_id
             raise classify_provider_error(
