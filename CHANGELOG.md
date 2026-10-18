@@ -333,6 +333,12 @@ behaviour, including accepting a write-capable submission without `cwd`.
 
 ### Fixed
 
+- A `github_poll` schedule held one of the scheduler's global concurrent-fire slots for the whole
+  of its GitHub poll, before it had any event to run. A slow or rate-limited poll kept that slot
+  from every other schedule for as long as it ran, so under the default cap of four, two slow
+  polls left due cron and interval schedules two slots to share. The poll now holds no slot: it skips the fetch when the cap is already
+  full, and each event it finds reserves its own slot; an event that finds the cap full stays
+  ahead of the cursor and is offered again by the next poll.
 - `extract_lndl_blocks` read only unindented three-character fences with LF line ends, so an
   indented block, a block fenced with four backticks, or CRLF output was not read at all; it now
   reads all three. A block closes only on the fence it opened with, at the same indentation, so
