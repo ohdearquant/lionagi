@@ -100,7 +100,6 @@ test-python() {
   junit="$(_junit_report_path)"
   local rc=0
   uv run pytest \
-    --asyncio-mode=auto \
     --maxfail="${MAXFAIL:-3}" \
     --max-worker-restart="${MAX_WORKER_RESTART:-4}" \
     -m "$markexpr" \
@@ -122,7 +121,6 @@ test-python-cov() {
   junit="$(_junit_report_path)"
   local rc=0
   uv run pytest \
-    --asyncio-mode=auto \
     --maxfail="${MAXFAIL:-1}" \
     --max-worker-restart="${MAX_WORKER_RESTART:-4}" \
     -m "$markexpr" \
@@ -149,7 +147,6 @@ test-python-quarantine() {
   junit="$(_junit_report_path)"
   local rc=0
   uv run pytest \
-    --asyncio-mode=auto \
     --maxfail="${MAXFAIL:-0}" \
     --max-worker-restart="${MAX_WORKER_RESTART:-4}" \
     -m flaky_quarantine \

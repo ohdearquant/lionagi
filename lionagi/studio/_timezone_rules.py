@@ -10,7 +10,6 @@ import os
 import stat
 import struct
 import zoneinfo
-from datetime import datetime, timezone
 from pathlib import Path
 
 __all__ = ()
@@ -113,9 +112,11 @@ def _footer_points(left: tuple, right: tuple) -> range:
 
 def _behaviour(zone: zoneinfo.ZoneInfo, when: int, cache: dict[int, tuple | None]) -> tuple | None:
     """The UTC offset, daylight offset and name *zone* reads at *when*, kept once read."""
+    from lionagi.ln import coerce_created_at
+
     if when not in cache:
         try:
-            moment = datetime.fromtimestamp(when, tz=timezone.utc)
+            moment = coerce_created_at(when)
         except (OSError, OverflowError, ValueError):
             cache[when] = None
         else:

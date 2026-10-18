@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import functools
 import html.entities
@@ -28,6 +27,7 @@ from lionagi._errors import CLIInputRefusedError, ContainmentRefusedError
 from lionagi.libs.path_safety import check_add_dirs_safe as check_add_dir_entries_safe
 from lionagi.libs.path_safety import check_path_safe, check_paths_safe
 from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
+from lionagi.ln.concurrency import current_time
 from lionagi.ln.concurrency.utils import maybe_await
 from lionagi.providers._agentic_handlers import AgenticHandlersMixin
 from lionagi.providers._cli_subprocess import (
@@ -2284,7 +2284,7 @@ async def stream_codex_cli(
     if session is None:
         session = CLISession()
     theme = request.cli_display_theme or "light"
-    _start_monotonic = asyncio.get_running_loop().time()
+    _start_monotonic = current_time()
 
     # turn.completed reports usage/cost as a running total-to-date, not a
     # per-turn delta; track the last-seen cumulative values so only the
@@ -2745,7 +2745,7 @@ async def stream_codex_cli(
     if session.num_turns is None and session.messages:
         session.num_turns = len(session.messages)
     if session.duration_ms is None:
-        session.duration_ms = int((asyncio.get_running_loop().time() - _start_monotonic) * 1000)
+        session.duration_ms = int((current_time() - _start_monotonic) * 1000)
 
     if on_final:
         await maybe_await(on_final(session))

@@ -166,7 +166,7 @@ def test_quick_create_playbook_every_trigger(temp_db_path, agent_profile):
             "--playbook",
             "health-audit",
             "--arg",
-            "project=lionagi",
+            "repo=lionagi",
         ],
     )
     assert rc == 0
@@ -175,7 +175,18 @@ def test_quick_create_playbook_every_trigger(temp_db_path, agent_profile):
     assert row["action_playbook"] == "health-audit"
     assert row["trigger_type"] == "interval"
     assert row["interval_sec"] == 6 * 3600
-    assert row["resolved_target"]["target"]["args"] == {"project": "lionagi"}
+    assert row["resolved_target"]["target"]["args"] == {"repo": "lionagi"}
+
+
+def test_quick_create_refuses_a_playbook_arg_that_shadows_a_flow_flag(temp_db_path, agent_profile):
+    """`li play` passes each arg as a flag of `li o flow`, so `project` would set the run's
+    project instead of reaching the playbook; the schedule is refused and not created."""
+    rc = _run(
+        "playbook",
+        ["shadowed", "--every", "6h", "--playbook", "health-audit", "--arg", "project=lionagi"],
+    )
+    assert rc != 0
+    assert asyncio.run(_get_or_none("shadowed")) is None
 
 
 def test_quick_create_command_argv_form(temp_db_path, agent_profile, monkeypatch):

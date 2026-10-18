@@ -7,13 +7,13 @@ from __future__ import annotations
 import re
 import sqlite3
 import time
-import uuid
 from typing import Any
 
 from fastapi import HTTPException, Query
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
+from lionagi.ln import short_id
 from lionagi.state.db import StateDB, state_db_known_absent
 
 from ..registry import studio_route
@@ -142,7 +142,7 @@ async def create_engine_def(data: dict[str, Any]) -> dict[str, Any]:
     _validate_options(data.get("options"))
     _validate_kind_options(kind, data.get("options"))
 
-    def_id = uuid.uuid4().hex[:12]
+    def_id = short_id(12)
     now = time.time()
     defn = {
         "id": def_id,

@@ -24,7 +24,6 @@ from __future__ import annotations
 import json
 import logging
 import time
-import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -32,6 +31,7 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.types import JSON
 
 from lionagi.dispatch.outbox import enqueue_dispatch
+from lionagi.ln import short_id
 from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
 from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
@@ -253,7 +253,7 @@ async def default_execute(row: dict[str, Any]) -> tuple[int, str]:
         argv, tmp_path = _subprocess.build_argv(schedule_like, {}, executable_prefix=li_prefix)
     except Exception as exc:  # noqa: BLE001
         return 1, f"{type(exc).__name__}: {exc}"
-    invocation_id = uuid.uuid4().hex[:12]
+    invocation_id = short_id(12)
     return await _subprocess.spawn_and_wait(
         argv, invocation_id, tmp_path=tmp_path, action_kind=schedule_like.get("action_kind")
     )
