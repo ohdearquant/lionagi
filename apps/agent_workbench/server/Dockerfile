@@ -78,7 +78,8 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Set PYTHONPATH so imports work correctly
 ENV PYTHONPATH="/app/env:$PYTHONPATH"
 
-# Agent code runs as `nobody` with the system interpreter; the server's code and venv stay unreadable to it.
+# Agent code runs under a per-episode uid with the system interpreter; the server's code and venv stay
+# unreadable to it.
 ENV WORKBENCH_SANDBOX_PYTHON=/usr/local/bin/python3
 RUN chmod 0700 /app
 

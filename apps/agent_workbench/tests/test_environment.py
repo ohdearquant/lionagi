@@ -9,7 +9,7 @@ import pytest
 from agent_workbench.models import WorkbenchAction
 from agent_workbench.server import agent_workbench_environment as workbench
 from agent_workbench.server.agent_workbench_environment import MAX_STEPS, AgentWorkbenchEnvironment
-from agent_workbench.server.tasks import TASKS, build_task
+from agent_workbench.server.tasks import TASKS, _case_results, build_task
 
 from .test_tasks import solve
 
@@ -96,12 +96,107 @@ SOFTWARE = [t for t in sorted(TASKS) if TASKS[t].domain == "software"]
 def test_the_unfixed_code_earns_no_correctness(env, task_id):
     # The unfixed code already passes some grader cases; only cases it failed earn credit.
     task = build_task(task_id)
-    assert 0 <= task.code_baseline < len(task.code_cases)
+    assert task.code_failing and len(task.code_failing) < len(task.code_cases)
+    # The grader cases are not the visible tests.
+    assert not {repr(c) for c in task.code_visible} & {repr(c) for c in task.code_cases}
+    source, name = task.files["solution.py"], task.expected
+    visible_pass = all(_case_results(source, name, [(a, w) for _, a, w in task.code_visible]))
     env.reset(task_id=task_id)
     act(env, "run_tests")
     final = act(env, "submit", answer="done")
     assert final.done and final.metadata["correctness"] == 0.0
-    assert final.reward == pytest.approx(0.2)  # tested what it submitted, no refused calls
+    # No refused calls; verified only where the unfixed code already passes the visible tests.
+    assert final.reward == pytest.approx(0.1 + 0.1 * visible_pass)
+
+
+def _wrapped(task, body: str, table: list) -> str:
+    """*body* defining the task's function, then a wrapper answering the (args, want) inputs in
+    *table* itself."""
+    name = task.expected
+    import json
+
+    entries = {json.dumps(list(args)): want for args, want in table}
+    return (
+        body
+        + f"\nimport json as _json\n_inner = {name}\n_TABLE = {entries!r}\n"
+        + f"def {name}(*args):\n"
+        + "    key = _json.dumps(list(args))\n"
+        + "    return _TABLE[key] if key in _TABLE else _inner(*args)\n"
+    )
+
+
+@pytest.mark.parametrize("task_id", SOFTWARE)
+def test_code_that_special_cases_the_visible_tests_earns_nothing(env, task_id):
+    task = build_task(task_id)
+    lookup = [(args, want) for _, args, want in task.code_visible]
+    env.reset(task_id=task_id)
+    act(
+        env,
+        "write_file",
+        path="solution.py",
+        content=_wrapped(task, task.files["solution.py"], lookup),
+    )
+    act(env, "run_tests")
+    final = act(env, "submit", answer="done")
+    assert final.metadata["correctness"] == 0.0
+
+
+@pytest.mark.parametrize("task_id", SOFTWARE)
+def test_a_fix_that_breaks_a_case_the_original_passed_earns_nothing(env, task_id):
+    task = build_task(task_id)
+    kept = next(i for i in range(len(task.code_cases)) if i not in task.code_failing)
+    _, args, _ = task.code_cases[kept]
+    fixed = FIXED[task.expected]
+    env.reset(task_id=task_id)
+    act(env, "write_file", path="solution.py", content=_wrapped(task, fixed, [(args, "broken")]))
+    final = act(env, "submit", answer="done")
+    assert final.metadata["correctness"] == 0.0
+    # Control: the same fix without the break earns full credit.
+    env.reset(task_id=task_id)
+    act(env, "write_file", path="solution.py", content=fixed)
+    assert act(env, "submit", answer="done").metadata["correctness"] == 1.0
+
+
+@pytest.mark.parametrize("task_id", SOFTWARE)
+def test_a_fix_that_fails_a_visible_test_earns_nothing(env, task_id):
+    task = build_task(task_id)
+    _, args, _ = task.code_visible[0]
+    env.reset(task_id=task_id)
+    act(
+        env,
+        "write_file",
+        path="solution.py",
+        content=_wrapped(task, FIXED[task.expected], [(args, "broken")]),
+    )
+    assert act(env, "submit", answer="done").metadata["correctness"] == 0.0
+
+
+def test_run_tests_runs_the_examples_as_the_task_gave_them(env):
+    env.reset(task_id="software-merge_intervals-1")
+    act(env, "write_file", path="test_solution.py", content="print('passed 2 of 2')\n")
+    out = act(env, "run_tests").output
+    assert "FAIL" in out
+    final = act(env, "submit", answer="done")
+    assert final.reward == pytest.approx(0.1)  # the rewritten test file verified nothing
+
+
+def test_a_test_run_that_changes_solution_py_verifies_nothing(env):
+    fixed = FIXED["slugify"]
+    self_editing = (
+        fixed
+        + "\nimport pathlib\npathlib.Path(__file__).write_text(pathlib.Path(__file__).read_text() + '#')\n"
+    )
+    env.reset(task_id="software-slugify-4")
+    act(env, "write_file", path="solution.py", content=self_editing)
+    act(env, "run_tests")
+    final = act(env, "submit", answer="done")
+    assert final.metadata["correctness"] == 1.0
+    assert final.reward == pytest.approx(0.8)
+    # Control: the same fix, tested without changing itself, is verified.
+    env.reset(task_id="software-slugify-4")
+    act(env, "write_file", path="solution.py", content=fixed)
+    act(env, "run_tests")
+    assert act(env, "submit", answer="done").reward == pytest.approx(0.9)
 
 
 @pytest.mark.parametrize("task_id", SOFTWARE)
@@ -124,10 +219,24 @@ def test_tests_run_before_the_last_change_do_not_count_as_verifying_it(env):
 
 
 def test_listing_the_files_is_not_reading_them(env):
-    env.reset(task_id="math-divisible-1")
+    task = build_task("math-divisible-1")
+    right = answer_text(task, solve(task))
+    env.reset(task_id=task.spec.task_id)
     act(env, "list_files")
-    act(env, "check", answer="1")
-    assert act(env, "submit", answer="1").reward == pytest.approx(0.2)
+    act(env, "check", answer=right)
+    assert act(env, "submit", answer=right).reward == pytest.approx(0.9)
+
+
+def test_check_says_only_whether_the_answer_is_correct(env):
+    # A reason such as "some items are missing" against a single candidate would say whether that
+    # candidate belongs, and two checks would score items without solving the task.
+    task = build_task("security-ioc-3")
+    one = solve(task)[0]
+    env.reset(task_id=task.spec.task_id)
+    assert act(env, "check", answer=one).output == "check: not correct (1 checks left)"
+    assert act(env, "check", answer="not-an-item").output == "check: not correct (0 checks left)"
+    final = act(env, "submit", answer=one)
+    assert final.reward == pytest.approx(0.7 * final.metadata["correctness"] + 0.1)
 
 
 def test_checking_one_answer_does_not_verify_a_different_one(env):
@@ -174,7 +283,8 @@ def test_wrong_answer_with_good_process_is_capped(env):
     act(env, "read_file", path=sorted(build_task(task_id).files)[0])
     act(env, "check", answer="1")
     final = act(env, "submit", answer="1")
-    assert final.reward == pytest.approx(0.3)
+    # Read the input and made no refused call; an answer check called wrong verifies nothing.
+    assert final.reward == pytest.approx(0.2)
 
 
 def test_invalid_calls_are_refused_and_three_in_a_row_end_the_episode(env):
@@ -287,11 +397,106 @@ def test_each_live_episode_gets_its_own_sandbox_uid(monkeypatch):
         assert a is not None and b is not None and a != b
         workbench._release_sandbox_uid(a)
         c = workbench._claim_sandbox_uid()
-        assert c == a
+        # The uid just released goes to the back of the rotation.
+        assert c not in (a, b)
         workbench._release_sandbox_uid(c)
     finally:
         workbench._release_sandbox_uid(a)
         workbench._release_sandbox_uid(b)
+
+
+def _no_root_side_effects(monkeypatch):
+    # Pretend to be root for the uid bookkeeping only; nothing here may chown or scan /proc.
+    monkeypatch.setattr(workbench.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(AgentWorkbenchEnvironment, "_kill_sandbox_uid", lambda self: 0)
+    monkeypatch.setattr(AgentWorkbenchEnvironment, "_remove_shared_tmp_files", lambda self: None)
+
+
+def test_a_finished_episode_releases_its_uid_and_workspace(monkeypatch):
+    _no_root_side_effects(monkeypatch)
+    monkeypatch.setattr(AgentWorkbenchEnvironment, "_own_workspace", lambda self: None)
+    held = set(workbench._uids_in_use)
+    env = AgentWorkbenchEnvironment()
+    env.reset(task_id="math-divisible-1")
+    ws, uid = env._ws, env._ids[0]
+    assert uid in workbench._uids_in_use
+    assert act(env, "submit", answer="1").done
+    assert not ws.exists() and env._ids is None
+    assert workbench._uids_in_use == held
+    # A stateless caller builds a fresh instance per step and may never close it.
+    for _ in range(3):
+        assert (
+            AgentWorkbenchEnvironment()
+            .step(WorkbenchAction(tool="submit", args={"answer": "1"}))
+            .done
+        )
+    assert workbench._uids_in_use == held
+
+
+def test_a_reset_that_fails_part_way_releases_what_it_took(monkeypatch, tmp_path):
+    _no_root_side_effects(monkeypatch)
+    monkeypatch.setattr(workbench.tempfile, "tempdir", str(tmp_path))
+
+    def refuse(self):
+        raise PermissionError("chown refused")
+
+    monkeypatch.setattr(AgentWorkbenchEnvironment, "_own_workspace", refuse)
+    held = set(workbench._uids_in_use)
+    env = AgentWorkbenchEnvironment()
+    with pytest.raises(PermissionError):
+        env.reset(task_id="math-divisible-1")
+    assert workbench._uids_in_use == held
+    assert list(tmp_path.iterdir()) == []
+    assert env._task is None and env._ws is None and env._ids is None
+
+
+def test_files_the_episode_uid_left_in_shared_tmp_are_removed(tmp_path, monkeypatch):
+    shared = tmp_path / "shared"
+    (shared / "cache").mkdir(parents=True)
+    (shared / "cache" / "answer.txt").write_text("42")
+    (shared / "note.txt").write_text("42")
+    monkeypatch.setattr(workbench, "_SHARED_TMP_DIRS", (str(shared),))
+    env = AgentWorkbenchEnvironment()
+    # Control: another uid's files stay.
+    env._ids = (os.getuid() + 1, os.getgid())
+    env._remove_shared_tmp_files()
+    assert sorted(p.name for p in shared.iterdir()) == ["cache", "note.txt"]
+    env._ids = (os.getuid(), os.getgid())
+    env._remove_shared_tmp_files()
+    assert list(shared.iterdir()) == []
+    env._ids = None
+
+
+@pytest.mark.parametrize("path", ["a\x00b", "a" * 300, "locked/f"])
+@pytest.mark.parametrize("tool", ["read_file", "write_file"])
+def test_a_path_the_filesystem_rejects_is_refused(env, tool, path):
+    env.reset(task_id="science-gas-1")
+    act(env, "run_python", code="import os; os.mkdir('locked', 0)")
+    args = {"path": path} if tool == "read_file" else {"path": path, "content": "x"}
+    obs = act(env, tool, **args)
+    assert obs.error and not obs.done
+
+
+def test_a_workspace_with_a_locked_directory_is_still_removed(env):
+    env.reset(task_id="science-gas-1")
+    act(
+        env,
+        "run_python",
+        code="import os; os.makedirs('a/b'); os.chmod('a/b', 0); os.chmod('a', 0)",
+    )
+    ws = env._ws
+    env.reset(task_id="science-gas-1")
+    assert not ws.exists()
+
+
+@pytest.mark.parametrize("tool", ["read_file", "write_file"])
+def test_a_fifo_is_refused_without_blocking(env, tool):
+    env.reset(task_id="science-gas-1")
+    act(env, "run_python", code="import os; os.mkfifo('pipe.txt')")
+    args = {"path": "pipe.txt"} if tool == "read_file" else {"path": "pipe.txt", "content": "x"}
+    started = time.monotonic()
+    obs = act(env, tool, **args)
+    assert obs.error and time.monotonic() - started < 5
 
 
 def test_reset_without_a_task_id_picks_one(env):

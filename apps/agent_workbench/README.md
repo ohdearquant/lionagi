@@ -19,8 +19,8 @@ Habits that carry over to unfamiliar agent tasks:
   Python module). The instruction says which ones matter; some files hold distractors.
 - **Compute instead of guessing.** `run_python` runs a script in the workspace, so totals, rates, hashes and
   counts can be computed exactly.
-- **Verify before finishing.** `check` says whether a candidate answer is right (at most twice per episode);
-  code tasks have `run_tests`.
+- **Verify before finishing.** `check` says whether a candidate answer is right, and nothing more (at most
+  twice per episode); code tasks have `run_tests`.
 - **Exact answer formats.** Each instruction states the format: a number with N decimals, a name, a sorted
   comma-separated list, a timestamp as written in the file.
 
@@ -32,8 +32,8 @@ Habits that carry over to unfamiliar agent tasks:
 | `read_file` | `path`, optional `start`, `end` | up to 60 numbered lines |
 | `run_python` | `code` | run a script in the workspace (10 s limit) |
 | `write_file` | `path`, `content` | create or replace a file |
-| `run_tests` | none | code tasks: run the visible tests |
-| `check` | `answer` | is this answer correct? (twice per episode) |
+| `run_tests` | none | code tasks: run the visible tests as the task gave them |
+| `check` | `answer` | correct or not correct, no reason (twice per episode) |
 | `submit` | `answer` | final answer; ends the episode |
 
 An episode allows 20 tool calls. `finish` is not offered to the agent: a trainer sends it to close an episode that
@@ -46,8 +46,9 @@ Only the final observation carries a reward, in [0, 1]:
 ```text
 reward = 0.7 x correctness
        + 0.1 if the agent read a file or ran code before submitting
-       + 0.1 if it verified what it submitted: checked that exact answer, or, for code
-         tasks, ran the tests after its last change to the files
+       + 0.1 if it verified what it submitted: check confirmed that exact answer, or, for
+         code tasks, the visible tests passed after its last change to the files and the
+         test run left solution.py as it was
        + 0.1 if it made no refused calls
 ```
 
@@ -63,9 +64,12 @@ no answer is stored anywhere.
 - Lists: 1.0 for the exact sorted list; 0.8 for the right items in another order; half the share found when
   some are missing and none is wrong; 0 for a list with any item that does not belong, since crediting overlap
   would reward listing every candidate.
-- Code: the share of further cases, beyond the visible tests, that the original code fails and the fixed function
-  passes, each in its own process. Submitting the code unchanged, or with an edit that fixes nothing, earns 0.
-- Headline (media): 1.0 when every rule in the brief holds; partial credit only once the required words are present.
+- Code: every visible test must pass and every further case the original code passed must still pass; the
+  credit is then the share of the further cases the original code fails that the fixed function passes, each
+  in its own process. The further cases are not the visible tests, so code that special-cases the visible
+  inputs earns nothing. Submitting the code unchanged, or with an edit that fixes nothing, earns 0.
+- Headline (media): 1.0 when every rule in the brief holds; 0 when the headline is over the length limit;
+  otherwise partial credit only once the required words are present.
 
 Tasks are generated from their ids with a seeded generator, so every reset of a task is identical.
 
@@ -73,9 +77,12 @@ Tasks are generated from their ids with a seeded generator, so every reset of a 
 
 In the image the server runs as root, and each episode runs its agent code under a uid of its own with the
 system interpreter, in a workspace the episode creates and removes. Concurrent episodes cannot read each other's
-workspaces, and a call's cleanup kills only its own episode's processes. The server's code and its virtual
-environment are not readable from agent code. Paths given to the file tools are relative, stay inside the
-workspace and may not pass through a symlink, and the listing neither follows nor shows symlinks.
+workspaces, and a call's cleanup kills only its own episode's processes. When an episode ends, its processes
+are killed, the files its uid left in `/tmp`, `/var/tmp` and `/dev/shm` are removed with its workspace, and its
+uid goes to the back of the rotation. The server's code and its virtual environment are not readable from agent
+code. Paths given to the file tools are relative, stay inside the
+workspace and may not pass through a symlink; they read and write regular files only, and the listing neither
+follows nor shows symlinks.
 
 Outside the image (the server not running as root) there is no separate uid: agent code runs as the server's
 user, and a process that starts its own session can outlive its call. Train against the image.

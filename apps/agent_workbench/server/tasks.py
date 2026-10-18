@@ -39,8 +39,11 @@ class BuiltTask:
     decimals: int = 2
     rel_tol: float = 0.0
     abs_tol: float = 0.0
+    # Grader cases beyond the visible tests, the visible tests themselves, and which grader cases the
+    # unfixed solution.py fails (indices into code_cases).
     code_cases: list[tuple[str, tuple, Any]] = field(default_factory=list)
-    code_baseline: int = 0  # grader cases the unfixed solution.py already passes
+    code_visible: list[tuple[str, tuple, Any]] = field(default_factory=list)
+    code_failing: tuple[int, ...] = ()
     constraints: list[tuple[str, Callable[[str], bool]]] = field(default_factory=list)
 
 
@@ -983,21 +986,23 @@ def _json_equal(a: Any, b: Any) -> bool:
     return json.loads(json.dumps(a)) == json.loads(json.dumps(b))
 
 
-def _cases_passed(source: str, name: str, cases: list[tuple[tuple, Any]]) -> int:
+def _case_results(source: str, name: str, cases: list[tuple[tuple, Any]]) -> list[bool]:
     namespace: dict[str, Any] = {}
     # The task's own unfixed source, defined in this file; never agent code.
     exec(compile(source, "solution.py", "exec"), namespace)  # noqa: S102
-    passed = 0
+    results = []
     for args, want in cases:
         try:
-            passed += _json_equal(namespace[name](*args), want)
-        except Exception:  # noqa: BLE001, S112 - a crashing case is a failing case
-            continue
-    return passed
+            results.append(_json_equal(namespace[name](*args), want))
+        except Exception:  # noqa: BLE001 - a crashing case is a failing case
+            results.append(False)
+    return results
 
 
 def _swe(name: str) -> Callable[[random.Random], BuiltTask]:
     source, visible, hidden = _SWE[name]
+    # Graded apart from the visible tests, so code that special-cases the visible inputs earns nothing.
+    grader = [case for case in hidden if case not in visible]
 
     def build(rng: random.Random) -> BuiltTask:
         tests = ["from solution import " + name, "", "CASES = ["]
@@ -1026,8 +1031,11 @@ def _swe(name: str) -> Callable[[random.Random], BuiltTask]:
             files={"solution.py": source, "test_solution.py": "\n".join(tests)},
             answer_kind="code",
             expected=name,
-            code_cases=[(name, args, want) for args, want in hidden],
-            code_baseline=_cases_passed(source, name, hidden),
+            code_cases=[(name, args, want) for args, want in grader],
+            code_visible=[(name, args, want) for args, want in visible],
+            code_failing=tuple(
+                i for i, ok in enumerate(_case_results(source, name, grader)) if not ok
+            ),
         )
 
     return build
@@ -1127,6 +1135,10 @@ def _score_constraints(task: BuiltTask, answer: str) -> tuple[float, str]:
     failed = [name for name, ok in task.constraints if not ok(text)]
     if not failed:
         return 1.0, "every rule is met"
+    # A headline over the length limit earns nothing: without the limit, text listing every word a
+    # brief could ask for would meet most of the other rules.
+    if "length" in failed:
+        return 0.0, "the headline is too long"
     # Rules such as "no exclamation mark" hold for almost any text, so they earn credit only once
     # the headline contains every required word.
     required = [name for name, _ in task.constraints if name not in _FREE_RULES]
@@ -1141,21 +1153,30 @@ def _score_constraints(task: BuiltTask, answer: str) -> tuple[float, str]:
 
 
 def score_answer(
-    task: BuiltTask, answer: str, code_runner: Callable[[BuiltTask], int] | None = None
+    task: BuiltTask,
+    answer: str,
+    code_runner: Callable[[list[tuple[str, tuple, Any]]], list[bool]] | None = None,
 ) -> tuple[float, str]:
     """Correctness in [0, 1] and a short reason.
 
-    ``code_runner`` returns how many of a code task's grader cases pass. Credit counts only the cases
-    the unfixed code failed, so submitting it unchanged, or with an edit that fixes nothing, earns 0.
+    ``code_runner`` returns, per case, whether the submitted code passes it. A code task earns credit
+    only when every visible test passes and every grader case the unfixed code passed still passes;
+    the credit is the share of the grader cases the unfixed code failed that now pass. Submitting the
+    code unchanged, or with an edit that fixes nothing, earns 0.
     """
     if task.answer_kind == "code":
         if code_runner is None:
             return 0.0, "no code runner"
-        passed, total, base = code_runner(task), len(task.code_cases), task.code_baseline
-        fixed = max(0, passed - base)
-        return fixed / (
-            total - base
-        ), f"{fixed} of the {total - base} cases the original code fails now pass"
+        if not all(code_runner(task.code_visible)):
+            return 0.0, "a test in test_solution.py fails"
+        results = code_runner(task.code_cases)
+        failing = set(task.code_failing)
+        if any(not ok for i, ok in enumerate(results) if i not in failing):
+            return 0.0, "a case the original code passed now fails"
+        fixed = sum(results[i] for i in failing)
+        return fixed / len(
+            failing
+        ), f"{fixed} of the {len(failing)} cases the original code fails now pass"
     if not isinstance(answer, str) or not answer.strip():
         return 0.0, "empty answer"
     if task.answer_kind == "number":

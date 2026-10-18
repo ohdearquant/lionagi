@@ -323,6 +323,19 @@ def test_listing_every_candidate_earns_nothing():
         assert score_answer(task, ", ".join(everything))[0] == 0.0, task_id
 
 
+@pytest.mark.parametrize("task_id", [t for t in NON_CODE if TASKS[t].template == "headline"])
+def test_a_headline_over_the_length_limit_earns_nothing(task_id):
+    # Every word any brief could ask for: it holds the required words and breaks no other rule
+    # except the length.
+    from agent_workbench.server.tasks import _HEADLINE_WORDS
+
+    task = build_task(task_id)
+    dump = " ".join(_HEADLINE_WORDS).capitalize()
+    failed = [name for name, ok in task.constraints if not ok(dump)]
+    assert failed == ["length"]
+    assert score_answer(task, dump)[0] == 0.0
+
+
 def test_headline_words_vary_from_task_to_task():
     import random
 

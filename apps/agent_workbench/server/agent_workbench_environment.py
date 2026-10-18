@@ -7,17 +7,19 @@ three invalid calls in a row, or the trainer ends it. Only the final observation
 and an episode that ends without a submitted answer earns 0.
 
 Reward (0..1) = 0.7 x correctness + 0.1 x read a file or ran code before submitting
-              + 0.1 x verified what it submitted (checked that exact answer, or ran the tests
-                      after its last change for code tasks)
+              + 0.1 x verified what it submitted (check confirmed that exact answer, or, for code
+                      tasks, the tests passed after its last change)
               + 0.1 x made no invalid tool calls.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import tempfile
 import threading
@@ -52,7 +54,7 @@ TOOLS_TEXT = (
     'run_python {"code": str} - run a Python 3 script in your workspace (cwd) and show its output; '
     f"{PY_TIMEOUT_S} s limit, no network needed.\n"
     'write_file {"path": str, "content": str} - create or replace a file in your workspace.\n'
-    "run_tests {} - code tasks only: run test_solution.py.\n"
+    "run_tests {} - code tasks only: run the examples of test_solution.py as given.\n"
     f'check {{"answer": str}} - ask whether an answer is correct before you submit (at most {MAX_CHECKS} times).\n'
     'submit {"answer": str} - give your final answer and end the episode.\n'
     f"You have {MAX_STEPS} tool calls. Read the inputs before answering, and verify before you submit."
@@ -64,16 +66,25 @@ _SANDBOX_UID_BASE = 20000
 _SANDBOX_UID_SLOTS = 1024
 _uids_in_use: set[int] = set()
 _uids_lock = threading.Lock()
+_next_uid_slot = 0
+# World-writable places agent code can leave files in outside its workspace.
+_SHARED_TMP_DIRS = ("/tmp", "/var/tmp", "/dev/shm")  # noqa: S108
 
 
 def _claim_sandbox_uid() -> int | None:
-    """A uid no other live episode holds, or None when the server is not root (no sandbox)."""
+    """A uid no other live episode holds, or None when the server is not root (no sandbox).
+
+    Slots are handed out in rotation, so a uid an episode just released is the last to be reused.
+    """
+    global _next_uid_slot
     if os.geteuid() != 0:
         return None
     with _uids_lock:
-        for uid in range(_SANDBOX_UID_BASE, _SANDBOX_UID_BASE + _SANDBOX_UID_SLOTS):
+        for step in range(_SANDBOX_UID_SLOTS):
+            uid = _SANDBOX_UID_BASE + (_next_uid_slot + step) % _SANDBOX_UID_SLOTS
             if uid not in _uids_in_use:
                 _uids_in_use.add(uid)
+                _next_uid_slot = (uid - _SANDBOX_UID_BASE + 1) % _SANDBOX_UID_SLOTS
                 return uid
     raise RuntimeError("no free sandbox uid: too many live episodes")
 
@@ -82,6 +93,20 @@ def _release_sandbox_uid(uid: int | None) -> None:
     if uid is not None:
         with _uids_lock:
             _uids_in_use.discard(uid)
+
+
+def _remove_tree(root: Path) -> None:
+    """Remove a workspace even after its agent took the permissions away from its own directories."""
+    stack = [root]
+    while stack:
+        top = stack.pop()
+        try:
+            os.chmod(top, 0o700)
+            with os.scandir(top) as entries:
+                stack.extend(Path(e.path) for e in entries if e.is_dir(follow_symlinks=False))
+        except OSError:
+            continue
+    shutil.rmtree(root, ignore_errors=True)
 
 
 def _clip(text: str, limit: int = OUTPUT_CHARS) -> str:
@@ -127,14 +152,20 @@ class AgentWorkbenchEnvironment(Environment):
         self._checked: set[str] = set()
         self._tested_last_change = False
         self._checks = 0
-        uid = _claim_sandbox_uid()
-        self._ids = None if uid is None else (uid, uid)
-        self._ws = Path(tempfile.mkdtemp(prefix="wb-")).resolve()
-        for rel, content in self._task.files.items():
-            path = self._ws / rel
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content)
-        self._own_workspace()
+        try:
+            uid = _claim_sandbox_uid()
+            self._ids = None if uid is None else (uid, uid)
+            self._ws = Path(tempfile.mkdtemp(prefix="wb-")).resolve()
+            for rel, content in self._task.files.items():
+                path = self._ws / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content)
+            self._own_workspace()
+        except BaseException:
+            # A half-built episode holds a uid and a directory nothing else would release.
+            self._cleanup()
+            self._task = None
+            raise
         return WorkbenchObservation(
             task=self._task.instruction,
             tools=TOOLS_TEXT,
@@ -187,13 +218,8 @@ class AgentWorkbenchEnvironment(Environment):
     def _tool_read_file(self, args: dict) -> WorkbenchObservation:
         self._only(args, {"path", "start", "end"})
         path = self._path(args.get("path"))
-        if not path.is_file():
-            raise _RefusalError(f"no such file: {args.get('path')!r}")
         start = self._int(args.get("start", 1), "start")
-        try:
-            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-        except OSError as exc:
-            raise _RefusalError(f"cannot read {args.get('path')!r}: {exc.strerror}") from None
+        fd = self._open_regular(path, os.O_RDONLY, args.get("path"))
         with os.fdopen(fd, encoding="utf-8", errors="replace") as fh:
             lines = fh.read().splitlines()
         end = self._int(args.get("end", start + READ_LINES - 1), "end")
@@ -221,16 +247,18 @@ class AgentWorkbenchEnvironment(Environment):
                 f"write_file needs a string 'content' of at most {WRITE_CHARS} characters"
             )
         path = self._path(args.get("path"))
-        if path.is_dir():
-            raise _RefusalError(f"{args.get('path')!r} is a directory")
-        missing = [d for d in reversed(path.parents) if self._ws in d.parents and not d.exists()]
         try:
+            missing = [
+                d for d in reversed(path.parents) if self._ws in d.parents and not d.exists()
+            ]
             for d in missing:
                 d.mkdir()
                 self._chown(d)
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
         except OSError as exc:
             raise _RefusalError(f"cannot write {args.get('path')!r}: {exc.strerror}") from None
+        fd = self._open_regular(path, os.O_WRONLY | os.O_CREAT, args.get("path"))
+        # Truncated only once the target is known to be a regular file.
+        os.ftruncate(fd, 0)
         with os.fdopen(fd, "w") as fh:
             fh.write(content)
         self._chown(path)
@@ -241,8 +269,17 @@ class AgentWorkbenchEnvironment(Environment):
         self._only(args, set())
         if self._task.answer_kind != "code":
             raise _RefusalError("run_tests is only for code tasks; use check to test an answer")
-        self._tested_last_change = True
-        return self._obs(self._run([SANDBOX_PYTHON, "-E", "-s", "test_solution.py"]))
+        # The examples as the task gave them, whatever the workspace's copy now says.
+        before = self._solution_digest()
+        self._write_private(".grade_tests.py", self._task.files["test_solution.py"])
+        output = self._run([SANDBOX_PYTHON, "-E", "-s", ".grade_tests.py"])
+        passed = all(self._grade_cases(self._task.code_visible))
+        # Verified only when the tests pass on the code as it stands: a run that changes
+        # solution.py tested something other than what would be submitted.
+        self._tested_last_change = (
+            passed and before is not None and self._solution_digest() == before
+        )
+        return self._obs(output)
 
     def _tool_check(self, args: dict) -> WorkbenchObservation:
         self._only(args, {"answer"})
@@ -252,9 +289,12 @@ class AgentWorkbenchEnvironment(Environment):
             raise _RefusalError(f"check can be used at most {MAX_CHECKS} times")
         answer = self._answer(args)
         self._checks += 1
-        self._checked.add(answer.strip())
-        credit, why = score_answer(self._task, answer)
-        verdict = "correct" if credit >= 1.0 else f"not fully correct: {why}"
+        credit, _why = score_answer(self._task, answer)
+        # The reason is withheld: "some items are missing" against a single candidate would say
+        # whether that candidate belongs, and two checks would then score items without solving.
+        if credit >= 1.0:
+            self._checked.add(answer.strip())
+        verdict = "correct" if credit >= 1.0 else "not correct"
         return self._obs(f"check: {verdict} ({MAX_CHECKS - self._checks} checks left)")
 
     def _tool_submit(self, args: dict) -> WorkbenchObservation:
@@ -273,7 +313,7 @@ class AgentWorkbenchEnvironment(Environment):
         correctness, why = (
             (0.0, "no answer was submitted")
             if answer is None
-            else score_answer(self._task, answer, code_runner=self._grade_code)
+            else score_answer(self._task, answer, code_runner=self._grade_cases)
         )
         if self._task.answer_kind == "code":
             verified = self._tested_last_change
@@ -285,12 +325,14 @@ class AgentWorkbenchEnvironment(Environment):
         reward += 0.1 * (self._invalid_total == 0 and answer is not None)
         self._final_reward = round(min(1.0, max(0.0, reward)), 4)
         self._done = True
+        # Nothing of a finished episode is needed again, and a stateless caller may never close it.
+        self._cleanup()
         text = note or f"Submitted. Result: {why}."
         return self._obs(text, done=True, correctness=correctness)
 
-    def _grade_code(self, task: BuiltTask) -> int:
-        passed = 0
-        for name, call_args, want in task.code_cases:
+    def _grade_cases(self, cases: list[tuple[str, tuple, Any]]) -> list[bool]:
+        results = []
+        for name, call_args, want in cases:
             probe = (
                 "import json, sys\n"
                 "sys.path.insert(0, '.')\n"
@@ -306,9 +348,16 @@ class AgentWorkbenchEnvironment(Environment):
                 got = json.loads(lines[-1]) if lines else None
             except ValueError:
                 got = None
-            if got == json.loads(json.dumps(want)):
-                passed += 1
-        return passed
+            results.append(got == json.loads(json.dumps(want)))
+        return results
+
+    def _solution_digest(self) -> str | None:
+        try:
+            fd = self._open_regular(self._ws / "solution.py", os.O_RDONLY, "solution.py")
+        except _RefusalError:
+            return None
+        with os.fdopen(fd, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()
 
     # ------------------------------------------------------------------ helpers
 
@@ -368,8 +417,8 @@ class AgentWorkbenchEnvironment(Environment):
     def _path(self, rel: Any) -> Path:
         # A path names a file inside the workspace without passing through a symlink, so the
         # server, which runs as root, never reads or writes through a link the agent planted.
-        if not isinstance(rel, str) or not rel.strip():
-            raise _RefusalError("'path' must be a non-empty string")
+        if not isinstance(rel, str) or not rel.strip() or "\x00" in rel:
+            raise _RefusalError("'path' must be a non-empty string without NUL characters")
         parts = Path(rel).parts
         if Path(rel).is_absolute() or ".." in parts:
             raise _RefusalError("paths must stay inside the workspace (relative, no '..')")
@@ -378,13 +427,39 @@ class AgentWorkbenchEnvironment(Environment):
         target = self._ws
         for part in parts:
             target = target / part
-            if target.is_symlink():
+            try:
+                is_link = stat.S_ISLNK(os.lstat(target).st_mode)
+            except FileNotFoundError:
+                break  # nothing further down can exist yet
+            except OSError as exc:
+                raise _RefusalError(f"cannot use the path {rel!r}: {exc.strerror}") from None
+            if is_link:
                 raise _RefusalError(
                     "paths must stay inside the workspace and may not pass through a symlink"
                 )
+        target = self._ws.joinpath(*parts)
         if target.name.startswith(".run") or target.name.startswith(".grade"):
             raise _RefusalError("that file is reserved")
         return target
+
+    @staticmethod
+    def _open_regular(path: Path, flags: int, shown: Any) -> int:
+        """An open descriptor for *path* when it is a regular file, else a refusal.
+
+        O_NONBLOCK keeps a FIFO from blocking the open; the type is read from the open descriptor,
+        so nothing can swap the file between the check and the use.
+        """
+        try:
+            fd = os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK, 0o644)
+        except FileNotFoundError:
+            raise _RefusalError(f"no such file: {shown!r}") from None
+        except OSError as exc:
+            raise _RefusalError(f"cannot open {shown!r}: {exc.strerror}") from None
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            raise _RefusalError(f"{shown!r} is not a regular file")
+        os.set_blocking(fd, True)
+        return fd
 
     def _listing(self) -> str:
         # Symlinks are neither followed nor listed: the size of a link's target is not the agent's to see.
@@ -468,26 +543,54 @@ class AgentWorkbenchEnvironment(Environment):
             pass
         self._kill_sandbox_uid()
 
-    def _kill_sandbox_uid(self) -> None:
+    def _kill_sandbox_uid(self) -> int:
+        """Send SIGKILL to every process of this episode's uid; return how many were found."""
         if self._ids is None:
-            return
+            return 0
         # In the image, every process of this episode's uid is the agent's, including any that left the
         # process group with setsid(). No other episode runs under this uid.
+        found = 0
         for entry in Path("/proc").iterdir():
             if not entry.name.isdigit():
                 continue
             try:
                 if entry.stat().st_uid == self._ids[0]:
+                    found += 1
                     os.kill(int(entry.name), signal.SIGKILL)
             except (FileNotFoundError, ProcessLookupError, PermissionError):
                 continue
+        return found
+
+    def _remove_shared_tmp_files(self) -> None:
+        # A file the agent left in /tmp would otherwise be there for the next episode under this uid.
+        for root in _SHARED_TMP_DIRS:
+            try:
+                entries = list(os.scandir(root))
+            except OSError:
+                continue
+            for entry in entries:
+                try:
+                    if entry.stat(follow_symlinks=False).st_uid != self._ids[0]:
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        _remove_tree(Path(entry.path))
+                    else:
+                        os.unlink(entry.path)
+                except OSError:
+                    continue
 
     def _cleanup(self) -> None:
+        if self._ids is not None:
+            # Processes first, until none is left, so nothing writes into a tree being removed or
+            # forks past a single scan of /proc.
+            for _ in range(10):
+                if not self._kill_sandbox_uid():
+                    break
+            self._remove_shared_tmp_files()
         if self._ws is not None:
-            shutil.rmtree(self._ws, ignore_errors=True)
+            _remove_tree(self._ws)
             self._ws = None
         if self._ids is not None:
-            self._kill_sandbox_uid()
             _release_sandbox_uid(self._ids[0])
             self._ids = None
 
