@@ -467,10 +467,16 @@ def test_every_suite_lane_keeps_the_project_asyncio_mode() -> None:
     lanes = {name: body for name, body in functions.items() if name.startswith("test-python")}
 
     assert len(lanes) >= 3, f"parsed {sorted(functions)} out of the wrapper; it has no suite lanes"
-    for name, body in lanes.items():
-        assert "uv run pytest" in body, f"{name} is not a pytest lane"
+    # Every wrapper function that runs pytest, not only the suite lanes: a
+    # narrower lane carrying the flag still collects its tests in the other mode.
+    pytest_runs = {name: body for name, body in functions.items() if "uv run pytest" in body}
+    assert set(lanes) <= set(pytest_runs), f"{sorted(set(lanes) - set(pytest_runs))} run no pytest"
+    for name, body in pytest_runs.items():
         assert "--asyncio-mode" not in body, name
-    for workflow in sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml")):
+    workflow_dir = REPO_ROOT / ".github" / "workflows"
+    workflows = sorted([*workflow_dir.glob("*.yml"), *workflow_dir.glob("*.yaml")])
+    assert workflows, f"no workflow files under {workflow_dir}"
+    for workflow in workflows:
         assert "--asyncio-mode" not in workflow.read_text(encoding="utf-8"), workflow.name
 
 
