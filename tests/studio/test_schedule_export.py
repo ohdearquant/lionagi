@@ -1223,3 +1223,99 @@ def test_cli_export_distinct_sibling_tokens_write_all_files(temp_db_path, agent_
     assert rc == 0
     names = sorted(p.name for p in (tmp_path / "out").glob("*.yaml"))
     assert names == ["schedules.alpha.yaml", "schedules.beta.yaml"]
+
+
+# The columns adopting a legacy row writes: the owner and the declaration it adopted.
+ADOPTION_COLUMNS = {
+    "authored_spec",
+    "managed_by",
+    "owner_key",
+    "resolved_digest",
+    "resolved_target",
+    "resolved_timezone",
+    "spec_version",
+    "updated_at",
+}
+
+
+def test_legacy_export_reapplies_unchanged_as_its_own_set(temp_db_path, agent_profile, monkeypatch):
+    """A row created before schedule sets existed, exported with --legacy, must
+    re-apply to itself without changing: adopted as the set its document names,
+    it keeps every column it ran with and gains only the adoption record, then
+    applies again as that set's own row with no difference and no change."""
+    import asyncio
+
+    from lionagi.studio.cli import _cmd_apply_set, _cmd_export
+
+    # The zone the row was recorded firing in; adoption confirms it only when
+    # the scheduler runs in that zone.
+    monkeypatch.setattr("lionagi.studio.config.SCHEDULER_TZ", "America/New_York")
+
+    async def _seed():
+        async with StateDB() as db:
+            await db.create_schedule(
+                _legacy_row(
+                    "rt1",
+                    "demo/nightly",
+                    cwd=agent_profile,
+                    action_project=None,
+                    # Not the profile's own model, so a dropped model would show.
+                    action_model="openai/gpt-5",
+                )
+            )
+
+    asyncio.run(_seed())
+
+    output_path = agent_profile / "export" / "schedules.yaml"
+    assert _cmd_export(_export_args(legacy=True, output=str(output_path))) == 0
+    doc = parse_schedule_set(output_path.read_text(), source=str(output_path))
+    assert (doc.metadata.project, doc.metadata.name) == ("demo", "legacy-export")
+
+    async def _rows():
+        async with StateDB() as db:
+            return {row["id"]: row for row in await db.list_schedules()}
+
+    async def _plan(adopt: bool):
+        async with StateDB() as db:
+            return (await build_plan(db, doc, output_path.parent, adopt=adopt))[0]
+
+    before = asyncio.run(_rows())
+    plan = asyncio.run(_plan(adopt=True))
+    assert [(entry.qualified_name, entry.action) for entry in plan] == [
+        ("demo/nightly", "ADOPT")
+    ], [entry.detail for entry in plan]
+    assert (
+        _cmd_apply_set(
+            types.SimpleNamespace(file=str(output_path), dry_run=False, adopt=True, as_json=False)
+        )
+        == 0
+    )
+
+    after = asyncio.run(_rows())
+    assert set(after) == set(before)
+    was, stored = before["rt1"], after["rt1"]
+    assert stored["name"] == "demo/nightly"
+    assert stored["action_model"] == "openai/gpt-5"
+    assert stored["action_project"] is None
+    # Adoption writes the ownership and the declaration it adopted, and nothing else.
+    assert stored["owner_key"] == "demo/legacy-export"
+    assert stored["managed_by"] == "declaration"
+    assert stored["spec_version"] == doc.apiVersion
+    assert stored["resolved_digest"]
+    assert stored["authored_spec"]
+    assert stored["resolved_target"]
+    assert stored["resolved_timezone"] == was["effective_timezone"]
+    changed = {key for key in set(was) | set(stored) if was.get(key) != stored.get(key)}
+    assert changed == ADOPTION_COLUMNS, sorted(changed)
+
+    plan = asyncio.run(_plan(adopt=False))
+    assert [(entry.qualified_name, entry.action) for entry in plan] == [
+        ("demo/nightly", "UNCHANGED")
+    ], [entry.detail for entry in plan]
+    assert (
+        _cmd_apply_set(
+            types.SimpleNamespace(file=str(output_path), dry_run=False, adopt=False, as_json=False)
+        )
+        == 0
+    )
+    assert asyncio.run(_rows()) == after
