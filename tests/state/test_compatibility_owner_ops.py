@@ -1248,14 +1248,20 @@ def test_the_private_copy_keeps_the_locks_this_process_holds_on_the_store(tmp_pa
     with closing(sqlite3.connect(store)) as conn:
         conn.execute("PRAGMA journal_mode = delete")
         conn.execute("CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute("CREATE TABLE filler (v TEXT)")
         conn.commit()
     writer = sqlite3.connect(store, isolation_level=None)
     try:
+        # A transaction larger than the page cache spills into the file, so SQLite syncs the
+        # journal and writes its header first: the journal looks hot.
+        writer.execute("PRAGMA cache_size = -64")
         writer.execute("BEGIN IMMEDIATE")
         writer.execute(
             "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')"
         )
-        assert Path(f"{store}-journal").exists()
+        for _ in range(2000):
+            writer.execute("INSERT INTO filler (v) VALUES (?)", ("x" * 4000,))
+        assert db_mod._journal_has_a_header(str(store))
         assert _another_process_reserves(store) == "locked"
         assert db_mod._read_lineage_from_a_copy(str(store), "-journal").lineage is None
         assert _another_process_reserves(store) == "locked"

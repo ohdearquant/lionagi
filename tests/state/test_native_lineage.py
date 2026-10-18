@@ -4,6 +4,7 @@ its shape is one lionagi produced (ADR-0128 D7)."""
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import sqlite3
@@ -45,7 +46,7 @@ def _files(path: Path) -> dict[str, tuple[bytes, int]]:
     return {
         p.name: (p.read_bytes(), p.stat().st_mtime_ns)
         for p in path.parent.iterdir()
-        if p.name.startswith(path.name)
+        if p.name.startswith(path.name) and p.is_file()
     }
 
 
@@ -494,6 +495,68 @@ async def test_a_log_a_closing_writer_removes_while_the_store_is_copied_reads_th
         await _open_and_close(path)
     finally:
         writer.close()
+
+
+@pytest.mark.parametrize("journal", ["unreadable", "directory"])
+async def test_a_journal_that_is_there_and_cannot_be_opened_is_refused_as_unreadable(
+    tmp_path, journal
+):
+    """A rollback journal this user cannot read, or a directory where the journal goes, can stand
+    for an unfinished transaction whose rows are in the file, so the open refuses the store as
+    unreadable before any writable connection rather than reading the file's own rows."""
+    if journal == "unreadable" and os.geteuid() == 0:
+        pytest.skip("root reads a file whatever its mode")
+    path = tmp_path / "store.db"
+    await _open_and_close(path)
+    sidecar = Path(f"{path}-journal")
+    if journal == "unreadable":
+        _lineage_store(path, journal=True)
+    else:
+        sidecar.mkdir()
+    before = _files(path)
+    if journal == "unreadable":
+        sidecar.chmod(0o000)
+    db = StateDB(path)
+    try:
+        with pytest.raises(UnreadableStoreError, match="could not be read"):
+            await db.open()
+    finally:
+        if journal == "unreadable":
+            sidecar.chmod(0o644)
+    assert db._engine is None
+    assert _files(path) == before
+
+
+@pytest.mark.parametrize("journal", ["zeroed", "truncated"])
+async def test_a_journal_a_commit_zeroes_or_truncates_is_read_again_not_matched(
+    tmp_path, monkeypatch, journal
+):
+    """In PERSIST and TRUNCATE journal modes a commit zeroes or truncates the journal instead of
+    removing it, and such a journal has no nonce, so two reads of it match across a transaction that
+    began and ended between them. The copy of the file taken meanwhile holds that transaction's
+    uncommitted row; the open reads the store again rather than taking the row from the copy."""
+    from lionagi.state import db as db_mod
+
+    path = tmp_path / "store.db"
+    await _open_and_close(path)
+    Path(f"{path}-journal").write_bytes(db_mod._JOURNAL_HEADER + os.urandom(24) + bytes(480))
+    real_check = db_mod._journal_has_a_header
+
+    def committed_after_the_check(opened: str) -> bool:
+        seen = real_check(opened)
+        Path(f"{opened}-journal").write_bytes(bytes(512) if journal == "zeroed" else b"")
+        return seen
+
+    real_copy = db_mod._copy_store_file
+
+    def copied_inside_a_transaction(source: str, copy: str) -> None:
+        real_copy(source, copy)
+        _execute(Path(copy), "UPDATE schema_meta SET value = 'manager' WHERE key = 'lineage'")
+
+    monkeypatch.setattr(db_mod, "_journal_has_a_header", committed_after_the_check)
+    monkeypatch.setattr(db_mod, "_copy_store_file", copied_inside_a_transaction)
+    await _open_and_close(path)
+    assert _rows(path, "SELECT value FROM schema_meta WHERE key = 'lineage'") == [("lionagi",)]
 
 
 def _wal_reopened(path: Path, script: str) -> None:

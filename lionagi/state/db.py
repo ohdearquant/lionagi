@@ -7932,23 +7932,33 @@ _MOVED = object()
 _COPY_ATTEMPTS = 3
 # The first eight bytes of a rollback journal's header. A commit deletes, truncates or zeroes it.
 _JOURNAL_HEADER = bytes.fromhex("d9d505f920a163d7")
+# The first four bytes of a write-ahead log's header, in its two checksum byte orders.
+_LOG_MAGIC = (bytes.fromhex("377f0682"), bytes.fromhex("377f0683"))
 
 
 def _journal_has_a_header(path: str) -> bool:
     """Whether the rollback journal beside *path* begins with a journal header: an interrupted
-    transaction's does, and so does a transaction's still in progress."""
+    transaction's does, and so does a transaction's still in progress. A journal that is there and
+    cannot be opened (a directory, or one this user cannot read) may hold one, so it counts as one
+    and its copy decides."""
     try:
         with open(f"{path}-journal", "rb") as journal:
             return journal.read(len(_JOURNAL_HEADER)) == _JOURNAL_HEADER
-    except OSError:
+    except FileNotFoundError:
         return False
+    except OSError:
+        return True
 
 
 def _log_has_frames(path: str) -> bool:
+    """Whether a write-ahead log beside *path* has anything in it; one that is there and cannot be
+    measured counts as having frames, so its copy decides."""
     try:
         return os.path.getsize(f"{path}-wal") > 0
-    except OSError:
+    except FileNotFoundError:
         return False
+    except OSError:
+        return True
 
 
 def _read_lineage_from_a_copy(path: str, suffix: str) -> Any:
@@ -7984,7 +7994,9 @@ def _copy_state(path: str, suffix: str) -> tuple | None:
     copy of its journal or log: the file's inode, the journal's or log's inode, and the log's header
     (a checkpoint that resets or truncates the log rewrites it) or the journal header's magic and
     nonce (a commit removes, truncates or zeroes the journal, and a new transaction writes a new
-    header). None when the journal or log cannot be read."""
+    header). None when the journal or log cannot be read, and when it does not begin with a journal
+    header or a log header: a truncated or zeroed one has no nonce or salt, so two reads of it
+    would match across a transaction that began and ended between them."""
     side = f"{path}{suffix}"
     try:
         with open(side, "rb") as handle:
@@ -7992,7 +8004,9 @@ def _copy_state(path: str, suffix: str) -> tuple | None:
             inodes = (os.stat(path).st_ino, os.fstat(handle.fileno()).st_ino)
     except OSError:
         return None
-    return inodes, header if suffix == "-wal" else header[:8] + header[12:16]
+    if suffix == "-wal":
+        return (inodes, header) if header[:4] in _LOG_MAGIC else None
+    return (inodes, header[:8] + header[12:16]) if header[:8] == _JOURNAL_HEADER else None
 
 
 # Descriptors this process opened on a store's file to copy it, one per file, never closed: closing
