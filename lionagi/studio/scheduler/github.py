@@ -124,8 +124,10 @@ class GithubPollResult(NamedTuple):
     only. ``poll_status`` distinguishes healthy-but-empty from blind (a 401 or
     network failure also returns no items): ``"ok"`` = 2xx/304,
     ``"auth_error"`` = 401 surviving the gh-CLI-token fallback, ``"error"`` =
-    anything else. Used by ``SchedulerEngine._tick_github`` to stamp the
-    schedule's observer-self-health columns.
+    anything else. A merged-mode page after the first that fails sets the
+    status the same way (401 = ``"auth_error"``) while the events fetched
+    before it are still returned. Used by ``SchedulerEngine._tick_github`` to
+    stamp the schedule's observer-self-health columns.
     """
 
     items: list[GithubPollItem]
@@ -399,6 +401,9 @@ async def github_poll(schedule: dict) -> GithubPollResult:
     # True once the scan reached a boundary that proves no unfetched page
     # could hold an event this poll needs (see GithubPollResult.scan_complete).
     scan_complete = True
+    # A page after the first that fails leaves the poll blind past it, whatever the
+    # first page returned, so the poll reports that failure and is not a healthy one.
+    poll_status: Literal["ok", "auth_error", "error"] = "ok"
 
     if merged_mode:
         # Page forward while the last page was full and its oldest PR (API
@@ -437,6 +442,7 @@ async def github_poll(schedule: dict) -> GithubPollResult:
                     len(prs),
                 )
                 scan_complete = False
+                poll_status = "error"
                 break
             if resp.status_code != 200:
                 if resp.status_code in (401, 403):
@@ -451,6 +457,7 @@ async def github_poll(schedule: dict) -> GithubPollResult:
                     len(prs),
                 )
                 scan_complete = False
+                poll_status = "auth_error" if resp.status_code == 401 else "error"
                 break
             page = resp.json()
             prs.extend(page)
@@ -564,4 +571,4 @@ async def github_poll(schedule: dict) -> GithubPollResult:
     # monotone in both modes. By the stored value rather than the timestamp,
     # so events sharing a second advance in a defined order too.
     items.sort(key=lambda it: it.cursor)
-    return GithubPollResult(items=items, scan_complete=scan_complete, poll_status="ok")
+    return GithubPollResult(items=items, scan_complete=scan_complete, poll_status=poll_status)

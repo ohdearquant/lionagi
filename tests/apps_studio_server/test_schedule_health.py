@@ -548,6 +548,16 @@ def test_github_poll_whose_polls_stopped_is_overdue():
     )
 
 
+def test_a_healthy_poll_does_not_clear_a_failed_run():
+    """Poll liveness says the poller is working; it says nothing about the last run it
+    started, so a failed latest run still reads failing."""
+    now = time.time()
+    row = _github_poll_row(now, last_fired_at=now - 50_000, last_healthy_poll_at=now - 60)
+    evidence = {**_evidence(now - 50_000), "last_executed_status": "failed"}
+
+    assert compute_schedule_health(row, evidence, now=now)["health_state"] == "failing"
+
+
 def test_a_poll_stamp_on_another_trigger_type_is_not_liveness():
     now = time.time()
     row = _github_poll_row(
