@@ -1559,11 +1559,14 @@ class SchedulerEngine:
             )
             return
 
-        # Reserve one global slot before polling, so a no-slot poll does not fetch, advance the
-        # cursor and discard. This slot goes to whichever event fires first; later ones reserve
-        # their own.
-        slot_allowed, pre_slot_claim = await self._reserve_global_slot()
-        if not slot_allowed:
+        # The poll is a trigger check, not a fire, so it holds no global slot while it fetches: a
+        # slow or rate-limited poll would otherwise keep a slot from every other schedule for its
+        # whole duration. A full cap is read here only to spare a fetch whose events could not
+        # run; the read takes nothing. Each event below reserves its own slot, and one that finds
+        # none stays ahead of the cursor for the next poll.
+        from lionagi.studio.config import MAX_SCHEDULED_CONCURRENT
+
+        if 0 < MAX_SCHEDULED_CONCURRENT <= self._global_inflight:
             if pre_rate_claim is not None:
                 pre_rate_claim.release()
             await self._maybe_record_deferred(schedule, now)
@@ -1572,8 +1575,8 @@ class SchedulerEngine:
         from .github import github_poll
 
         sid = schedule["id"]
-        # Every await between reserving pre_slot_claim and handing it to the first dispatched
-        # _fire() must release it on failure, or a transient error mid-poll leaks the slot
+        # Every await between reserving pre_rate_claim and handing it to the first dispatched
+        # _fire() must release it on failure, or a transient error mid-poll leaks the claim
         # permanently. It is nulled the moment it is handed off or released inline, so this finally
         # only fires for the untouched case.
         try:
@@ -1644,16 +1647,13 @@ class SchedulerEngine:
                             ]
                             break
 
-                    if pre_slot_claim is not None:
-                        slot_claim, pre_slot_claim = pre_slot_claim, None
-                    else:
-                        slot_allowed, slot_claim = await self._reserve_global_slot()
-                        if not slot_allowed:
-                            drop_reason = "global concurrent-fire cap reached"
-                            dropped_prs = [
-                                e.event.get("pr_number") for e in polled[idx:] if e.dispatchable
-                            ]
-                            break
+                    slot_allowed, slot_claim = await self._reserve_global_slot()
+                    if not slot_allowed:
+                        drop_reason = "global concurrent-fire cap reached"
+                        dropped_prs = [
+                            e.event.get("pr_number") for e in polled[idx:] if e.dispatchable
+                        ]
+                        break
 
                     allowed, max_runs_claim = await self._reserve_max_runs_budget(schedule)
                     if not allowed:
@@ -1765,8 +1765,6 @@ class SchedulerEngine:
         finally:
             if pre_rate_claim is not None:
                 pre_rate_claim.release()
-            if pre_slot_claim is not None:
-                pre_slot_claim.release()
 
     async def _record_predispatch_refusal(self, schedule: dict, event_cursor: str) -> int:
         """Count one pre-dispatch refusal of the event at *event_cursor*; returns the new total."""
