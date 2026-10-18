@@ -86,7 +86,8 @@ jobs:
 
     # The checks a trainer's admission runs: the server answers /health, passes
     # `openenv validate`, and every task ends with a reward in [0, 1] after the
-    # example action. The trainer's finish action must end an episode with 0.
+    # example action. The trainer's finish action must end an episode with 0, and
+    # a request the episode's own code sends to the server must be refused.
     - name: Check the running image
       working-directory: apps/agent_workbench
       run: |
@@ -114,7 +115,18 @@ jobs:
                 env.step(WorkbenchAction(tool="list_files", args={}))
                 result = env.step(WorkbenchAction(tool="finish", args={}))
                 assert result.done and result.reward == 0.0, (task_id, result)
-        print(f"{len(TASKS)} tasks: example action terminal, finish scores 0")
+            # Episode code reaches the server's port inside the container; the server refuses it.
+            env.reset(task_id=sorted(TASKS)[0])
+            probe = (
+                "import urllib.error, urllib.request\n"
+                "try:\n"
+                "    print('status', urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).status)\n"
+                "except urllib.error.HTTPError as exc:\n"
+                "    print('status', exc.code)\n"
+            )
+            output = env.step(WorkbenchAction(tool="run_python", args={"code": probe})).observation.output
+            assert "status 403" in output, output
+        print(f"{len(TASKS)} tasks: example action terminal, finish scores 0; episode code refused by the server")
         PY
     - name: Container log
       if: always()

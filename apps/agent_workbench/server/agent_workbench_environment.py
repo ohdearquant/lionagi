@@ -15,6 +15,7 @@ Reward (0..1) = 0.7 x correctness + 0.1 x read a file or ran code before submitt
 from __future__ import annotations
 
 import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -69,6 +70,11 @@ _SANDBOX_UID_SLOTS = 1024
 _uids_in_use: set[int] = set()
 _uids_lock = threading.Lock()
 _next_uid_slot = 0
+# A uid is held by an exclusive lock on its own file here, so server processes that share the
+# container (uvicorn --workers N) never hand out the same uid. The lock goes when its holder closes
+# the file or exits, so a worker that dies frees its uids.
+_UID_LOCK_DIR = Path(os.environ.get("WORKBENCH_UID_LOCK_DIR") or "/run/agent-workbench/uids")
+_uid_lock_fds: dict[int, int] = {}
 # World-writable places agent code can leave files in outside its workspace.
 _SHARED_TMP_DIRS = ("/tmp", "/var/tmp", "/dev/shm")  # noqa: S108
 # The files the server itself writes into a workspace, to run the agent's code and to grade it.
@@ -79,6 +85,8 @@ _DIGEST_BYTES = 64 * 1024 * 1024
 # Directories a walk holds open at once; a deeper tree is moved up to be removed (see _remove_entries).
 _WALK_DEPTH = 128
 _MAX_PASSES = 1 << 16
+# What a graded case reads when the probe printed no JSON value, distinct from a JSON null.
+_NO_VALUE = object()
 
 
 def _claim_sandbox_uid() -> int | None:
@@ -90,12 +98,27 @@ def _claim_sandbox_uid() -> int | None:
     if os.geteuid() != 0:
         return None
     with _uids_lock:
+        lock_dir = _uid_lock_dir()
         for step in range(_SANDBOX_UID_SLOTS):
             uid = _SANDBOX_UID_BASE + (_next_uid_slot + step) % _SANDBOX_UID_SLOTS
-            if uid not in _uids_in_use:
-                _uids_in_use.add(uid)
-                _next_uid_slot = (uid - _SANDBOX_UID_BASE + 1) % _SANDBOX_UID_SLOTS
-                return uid
+            if uid in _uids_in_use:
+                continue
+            fd = os.open(
+                lock_dir / str(uid), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600
+            )
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                # Another server process holds it.
+                os.close(fd)
+                continue
+            except BaseException:
+                os.close(fd)
+                raise
+            _uids_in_use.add(uid)
+            _uid_lock_fds[uid] = fd
+            _next_uid_slot = (uid - _SANDBOX_UID_BASE + 1) % _SANDBOX_UID_SLOTS
+            return uid
     raise RuntimeError("no free sandbox uid: too many live episodes")
 
 
@@ -103,6 +126,18 @@ def _release_sandbox_uid(uid: int | None) -> None:
     if uid is not None:
         with _uids_lock:
             _uids_in_use.discard(uid)
+            fd = _uid_lock_fds.pop(uid, None)
+            if fd is not None:
+                os.close(fd)
+
+
+def _uid_lock_dir() -> Path:
+    """The directory of uid lock files, made if missing; refused unless only this user can write it."""
+    _UID_LOCK_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    st = os.lstat(_UID_LOCK_DIR)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o022:
+        raise RuntimeError(f"{_UID_LOCK_DIR} must be a directory only the server's user can write")
+    return _UID_LOCK_DIR
 
 
 def _walk_tree(
@@ -448,12 +483,14 @@ class AgentWorkbenchEnvironment(Environment):
         before = self._workspace_digest()
         self._write_private(".grade_tests.py", self._task.files["test_solution.py"])
         output = self._run([SANDBOX_PYTHON, "-E", "-s", "-B", ".grade_tests.py"])
-        passed = all(self._grade_cases(self._task.code_visible))
+        results = self._grade_cases(self._task.code_visible)
+        passed = all(results)
         # Verified only when the tests pass on the files as they stand: submit compares the files
         # with these, so a run that changes any of them tested something other than what is graded.
         self._tested_digest = before if passed else None
         self._tested_last_change = self._tested_digest is not None
-        return self._obs(output)
+        # The grader's own verdict on the same examples, so what the agent is shown is what counts.
+        return self._obs(f"{output}\ngraded: {sum(results)} of {len(results)} examples pass")
 
     def _tool_check(self, args: dict) -> WorkbenchObservation:
         self._only(args, {"answer"})
@@ -514,11 +551,22 @@ class AgentWorkbenchEnvironment(Environment):
         results = []
         for name, call_args, want in cases:
             self._clear_agent_state()
+            # The workspace joins the import path only after json is imported, so no file of the
+            # agent's stands in for it. A return value JSON would change (a tuple, a dict with
+            # non-string keys) is not printed, so it fails here as it fails the test file's ==.
+            # This process runs the agent's code, so what it prints can be forged; the cases whose
+            # expected values the agent sees only gate the credit, and the credit itself comes from
+            # cases whose expected values never enter the workspace.
             probe = (
-                "import json, sys\n"
-                "sys.path.insert(0, '.')\n"
+                "import os, sys\n"
+                "here = os.path.realpath(os.getcwd())\n"
+                "sys.path[:] = [p for p in sys.path if os.path.realpath(p or '.') != here]\n"
+                "import json\n"
+                "sys.path.insert(0, here)\n"
                 f"from solution import {name}\n"
-                f"print(json.dumps({name}(*json.loads(sys.argv[1]))))\n"
+                f"value = {name}(*json.loads(sys.argv[1]))\n"
+                "text = json.dumps(value)\n"
+                "print(text if json.loads(text) == value else 'not a JSON value')\n"
             )
             self._write_private(".grade.py", probe)
             out = self._run(
@@ -527,11 +575,12 @@ class AgentWorkbenchEnvironment(Environment):
             )
             lines = [ln for ln in out.strip().splitlines() if ln.strip()]
             try:
-                got = json.loads(lines[-1]) if lines else None
+                got = json.loads(lines[-1]) if lines else _NO_VALUE
             except ValueError:
-                got = None
+                got = _NO_VALUE
             results.append(
                 before is not None
+                and got is not _NO_VALUE
                 and got == json.loads(json.dumps(want))
                 and self._workspace_digest() == before
             )

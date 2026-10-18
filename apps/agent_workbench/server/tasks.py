@@ -982,8 +982,10 @@ _SWE = {
 }
 
 
-def _json_equal(a: Any, b: Any) -> bool:
-    return json.loads(json.dumps(a)) == json.loads(json.dumps(b))
+def _json_equal(got: Any, want: Any) -> bool:
+    """Whether got equals want as the grader compares them: got must come through JSON unchanged."""
+    text = json.dumps(got)
+    return json.loads(text) == got and json.loads(text) == json.loads(json.dumps(want))
 
 
 def _case_results(source: str, name: str, cases: list[tuple[tuple, Any]]) -> list[bool]:

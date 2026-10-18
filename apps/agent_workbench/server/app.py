@@ -17,12 +17,20 @@ Usage:
     # Development (with auto-reload):
     uvicorn server.app:app --reload --host 0.0.0.0 --port 8000
 
-    # Production:
-    uvicorn server.app:app --host 0.0.0.0 --port 8000 --workers 4
+    # Production (the image's command):
+    uvicorn server.app:app --host 0.0.0.0 --port 8000 --no-proxy-headers
 
     # Or run directly:
     python -m server.app
+
+Episode code runs inside this server's container and can reach its port, so a connection opened by
+an episode's sandbox user is refused (see _RefuseEpisodeClients). The check reads the connecting
+socket's owner, so the server must see the real peer address: run uvicorn without proxy headers,
+which would let a loopback client name any address it likes.
 """
+
+import os
+from pathlib import Path
 
 try:
     from openenv.core.env_server.http_server import create_app
@@ -33,10 +41,86 @@ except Exception as e:  # pragma: no cover
 
 try:
     from ..models import WorkbenchAction, WorkbenchObservation
-    from .agent_workbench_environment import AgentWorkbenchEnvironment
+    from .agent_workbench_environment import (
+        _SANDBOX_UID_BASE,
+        _SANDBOX_UID_SLOTS,
+        AgentWorkbenchEnvironment,
+    )
 except ImportError:
     from models import WorkbenchAction, WorkbenchObservation
-    from server.agent_workbench_environment import AgentWorkbenchEnvironment
+    from server.agent_workbench_environment import (
+        _SANDBOX_UID_BASE,
+        _SANDBOX_UID_SLOTS,
+        AgentWorkbenchEnvironment,
+    )
+
+_PROC_NET = (Path("/proc/net/tcp"), Path("/proc/net/tcp6"))
+
+
+def _socket_owner(client_port: int, server_port: int) -> int | None:
+    """The uid owning the local socket from client_port to server_port, or None if there is none.
+
+    Only a client inside this network namespace has such a socket; a remote client's end is not here.
+    """
+    for table in _PROC_NET:
+        try:
+            rows = table.read_text().splitlines()[1:]
+        except OSError:
+            continue
+        for row in rows:
+            fields = row.split()
+            if len(fields) < 8:
+                continue
+            try:
+                local = int(fields[1].rsplit(":", 1)[1], 16)
+                remote = int(fields[2].rsplit(":", 1)[1], 16)
+                uid = int(fields[7])
+            except (IndexError, ValueError):
+                continue
+            if local == client_port and remote == server_port:
+                return uid
+    return None
+
+
+class _RefuseEpisodeClients:
+    """Refuses HTTP requests and WebSocket sessions opened by an episode's own code.
+
+    Episode code could otherwise open fresh episodes of its own task and read each answer's grade
+    back, which turns submit and check into an answer oracle. Only a server running the uid
+    sandbox (as root) has sandbox users to refuse.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in ("http", "websocket") and self._from_episode(scope):
+            if scope["type"] == "http":
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 403,
+                        "headers": [(b"content-type", b"text/plain; charset=utf-8")],
+                    }
+                )
+                await send(
+                    {"type": "http.response.body", "body": b"episode code cannot use this server\n"}
+                )
+            else:
+                await receive()
+                await send({"type": "websocket.close", "code": 1008})
+            return
+        await self.app(scope, receive, send)
+
+    @staticmethod
+    def _from_episode(scope) -> bool:
+        if os.geteuid() != 0:
+            return False
+        client, server = scope.get("client"), scope.get("server")
+        if not client or not server or server[1] is None:
+            return False
+        uid = _socket_owner(client[1], server[1])
+        return uid is not None and _SANDBOX_UID_BASE <= uid < _SANDBOX_UID_BASE + _SANDBOX_UID_SLOTS
 
 
 # Create the app with web interface and README integration
@@ -47,6 +131,7 @@ app = create_app(
     env_name="agent_workbench",
     max_concurrent_envs=8,
 )
+app.add_middleware(_RefuseEpisodeClients)
 
 
 def main(host: str = "0.0.0.0", port: int = 8000):  # noqa: S104 - the server runs in a container
@@ -62,13 +147,11 @@ def main(host: str = "0.0.0.0", port: int = 8000):  # noqa: S104 - the server ru
         host: Host address to bind to (default: "0.0.0.0")
         port: Port number to listen on (default: 8000)
 
-    For production deployments, consider using uvicorn directly with
-    multiple workers:
-        uvicorn agent_workbench.server.app:app --workers 4
+    Proxy headers stay off so the episode-client check sees the real peer (see the module docstring).
     """
     import uvicorn
 
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(app, host=host, port=port, proxy_headers=False)
 
 
 if __name__ == "__main__":

@@ -1001,3 +1001,97 @@ def test_a_leftover_process_holding_the_output_cannot_hang_the_call(env, monkeyp
     out = act(env, "run_python", code=code).output
     assert time.monotonic() - started < 10
     assert "timed out" in out
+
+
+def test_a_value_json_would_change_fails_the_grader_as_it_fails_the_tests(env):
+    task_id = "software-merge_intervals-1"
+    n = len(build_task(task_id).code_visible)
+    as_tuple = FIXED["merge_intervals"].replace("    return result\n", "    return tuple(result)\n")
+    assert as_tuple != FIXED["merge_intervals"]
+    env.reset(task_id=task_id)
+    act(env, "write_file", path="solution.py", content=as_tuple)
+    out = act(env, "run_tests").output
+    assert "FAIL" in out and f"graded: 0 of {n} examples pass" in out
+    assert act(env, "submit", answer="done").metadata["correctness"] == 0.0
+    # Control: the same fix returning a list passes the tests and the grader alike.
+    env.reset(task_id=task_id)
+    act(env, "write_file", path="solution.py", content=FIXED["merge_intervals"])
+    out = act(env, "run_tests").output
+    assert "FAIL" not in out and f"graded: {n} of {n} examples pass" in out
+    assert act(env, "submit", answer="done").metadata["correctness"] == 1.0
+
+
+def test_a_json_module_in_the_workspace_does_not_stand_in_for_the_graders(env):
+    import json
+
+    task_id = "software-merge_intervals-1"
+    task = build_task(task_id)
+    n = len(task.code_visible)
+    _, args, _ = task.code_visible[0]
+    broken = _wrapped(task, FIXED[task.expected], [(args, "broken")])
+    # Prints each visible example's expected value for the grader's call and exits before the
+    # function runs.
+    table = {json.dumps(list(a)): json.dumps(w) for _, a, w in task.code_visible}
+    shim = (
+        "import os, sys\n"
+        f"_TABLE = {table!r}\n"
+        "if len(sys.argv) > 1 and sys.argv[1] in _TABLE:\n"
+        "    print(_TABLE[sys.argv[1]], flush=True)\n"
+        "    os._exit(0)\n"
+    )
+    env.reset(task_id=task_id)
+    act(env, "write_file", path="solution.py", content=broken)
+    act(env, "write_file", path="json.py", content=shim)
+    out = act(env, "run_tests").output
+    assert f"graded: {n - 1} of {n} examples pass" in out
+    assert act(env, "submit", answer="done").metadata["correctness"] == 0.0
+
+
+def test_a_case_that_prints_no_value_never_matches_an_expected_null(env):
+    env.reset(task_id="software-merge_intervals-1")
+    act(env, "write_file", path="solution.py", content="def quiet():\n    raise SystemExit(0)\n")
+    assert env._grade_cases([("quiet", (), None)]) == [False]
+    # Control: a function that does return None matches it.
+    act(env, "write_file", path="solution.py", content="def quiet():\n    return None\n")
+    assert env._grade_cases([("quiet", (), None)]) == [True]
+
+
+def test_the_unfixed_codes_cases_are_judged_by_the_graders_rule():
+    from agent_workbench.server.tasks import _json_equal
+
+    assert _json_equal([1, 2], [1, 2]) and _json_equal(1.0, 1) and _json_equal("a", "a")
+    assert not _json_equal((1, 2), [1, 2])
+    assert not _json_equal({1: "a"}, {"1": "a"})
+
+
+def test_a_uid_another_server_process_holds_is_not_handed_out(monkeypatch):
+    monkeypatch.setattr(workbench.os, "geteuid", lambda: 0)
+    a = workbench._claim_sandbox_uid()
+    saved = (workbench._uids_in_use, workbench._uid_lock_fds, workbench._next_uid_slot)
+    try:
+        # A second worker process starts with an empty pool at the same place in the rotation; only
+        # the lock file tells it that a is taken.
+        workbench._uids_in_use, workbench._uid_lock_fds = set(), {}
+        workbench._next_uid_slot = a - workbench._SANDBOX_UID_BASE
+        b = workbench._claim_sandbox_uid()
+        assert b is not None and b != a
+        workbench._release_sandbox_uid(b)
+        # Released, b's lock is free for the next claim.
+        workbench._next_uid_slot = b - workbench._SANDBOX_UID_BASE
+        assert workbench._claim_sandbox_uid() == b
+        workbench._release_sandbox_uid(b)
+    finally:
+        workbench._uids_in_use, workbench._uid_lock_fds, workbench._next_uid_slot = saved
+        workbench._release_sandbox_uid(a)
+
+
+def test_a_uid_lock_directory_others_can_write_is_refused(monkeypatch, tmp_path):
+    monkeypatch.setattr(workbench.os, "geteuid", lambda: 0)
+    shared = tmp_path / "uids"
+    shared.mkdir()
+    shared.chmod(0o777)
+    monkeypatch.setattr(workbench, "_UID_LOCK_DIR", shared)
+    held = set(workbench._uids_in_use)
+    with pytest.raises(RuntimeError, match="only the server's user"):
+        workbench._claim_sandbox_uid()
+    assert workbench._uids_in_use == held and list(shared.iterdir()) == []

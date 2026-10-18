@@ -68,6 +68,10 @@ no answer is stored anywhere.
   credit is then the share of the further cases the original code fails that the fixed function passes, each
   in its own process. The further cases are not the visible tests, so code that special-cases the visible
   inputs earns nothing. Submitting the code unchanged, or with an edit that fixes nothing, earns 0.
+  A return value counts only when JSON carries it unchanged, so a tuple where the tests expect a list fails
+  the grader as it fails the tests' `==`; `run_tests` ends with the grader's own count of passing examples.
+  The process that runs a case runs the agent's code, so what it prints could be forged: the visible tests
+  only gate the credit, and the credit comes from cases whose expected values never enter the workspace.
   Each case starts with none of the agent's processes running and none of its files in the shared tmp
   directories, and a case that changes any file in the workspace (its bytes, mode or modification time) fails,
   as does every case after it, so code cannot carry a count or an answer from one call to the next.
@@ -93,6 +97,13 @@ before the next call. The server walks agent-made trees through directory descri
 a path longer than `PATH_MAX` or a tree deeper than the interpreter's recursion limit neither escapes a call as an
 error nor outlives the episode. Text the tools send back is valid UTF-8 whatever bytes the agent wrote; text the
 agent sends in must be text UTF-8 can encode.
+
+Agent code shares the server's network, so a connection it opens to the server itself is refused: the server
+reads which user owns the connecting socket and turns away any episode's uid (HTTP 403, WebSocket close 1008).
+Otherwise agent code could open episodes of its own task and read each guess's grade back. The check needs the
+real peer address, so the server runs without proxy headers (`--no-proxy-headers`). Server processes that share
+a container (`uvicorn --workers N`) claim uids through lock files under `/run/agent-workbench/uids`
+(`WORKBENCH_UID_LOCK_DIR`), so no two live episodes in any of them hold the same uid.
 
 Outside the image (the server not running as root) there is no separate uid: agent code runs as the server's
 user, and a process that starts its own session can outlive its call. Train against the image.
