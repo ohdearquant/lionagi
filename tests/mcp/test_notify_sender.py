@@ -415,7 +415,7 @@ def test_environment_sender_fills_a_template_without_a_submit_sender(monkeypatch
 def _signing_dir(path):
     """A directory khive can resolve an actor from: the one file its resolver reads."""
     (path / ".khive").mkdir(parents=True, exist_ok=True)
-    (path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:test"\n')
+    (path / ".khive" / "config.toml").write_text('[actor]\nid = "agent:test"\n')
     return path
 
 
@@ -435,7 +435,7 @@ def test_a_sender_is_judged_at_the_run_directory_the_submission_names(monkeypatc
 
     def resolve(cwd):
         asked.append(cwd)
-        return "lambda:signer"
+        return "agent:signer"
 
     monkeypatch.setattr(jobs, "_resolve_submitter_identity", resolve)
     monkeypatch.setattr(jobs.subprocess, "Popen", lambda *args, **kwargs: Spawned())
@@ -445,7 +445,7 @@ def test_a_sender_is_judged_at_the_run_directory_the_submission_names(monkeypatc
         [],
         prompt="work",
         cwd=str(signer),
-        notify_sender="lambda:signer",
+        notify_sender="agent:signer",
         no_mcp_config=True,
     )
     record = jobs._read_job(handle["run_id"])
@@ -468,7 +468,7 @@ def test_without_configured_roots_a_declared_sender_is_judged_at_the_submitting_
 
     def resolve(cwd):
         asked.append(cwd)
-        return "lambda:submitter"
+        return "agent:submitter"
 
     monkeypatch.setattr(jobs, "_resolve_submitter_identity", resolve)
     monkeypatch.setattr(jobs.subprocess, "Popen", lambda *args, **kwargs: Spawned())
@@ -478,7 +478,7 @@ def test_without_configured_roots_a_declared_sender_is_judged_at_the_submitting_
         [],
         prompt="work",
         cwd=str(elsewhere),
-        notify_sender="lambda:submitter",
+        notify_sender="agent:submitter",
         no_mcp_config=True,
     )
     record = jobs._read_job(handle["run_id"])
@@ -500,14 +500,14 @@ def test_without_configured_roots_the_server_directory_need_not_hold_an_actor_co
     monkeypatch.setattr(jobs, "_submit_cwd", lambda: str(submit_dir))
     monkeypatch.setattr(jobs, "_read_lifecycle", lambda _run_id: None)
     monkeypatch.delenv(config.SENDER_ROOTS_ENV_VAR, raising=False)
-    monkeypatch.setattr(jobs, "_resolve_submitter_identity", lambda _cwd: "lambda:submitter")
+    monkeypatch.setattr(jobs, "_resolve_submitter_identity", lambda _cwd: "agent:submitter")
 
     class Spawned:
         pid = 999_999
 
     monkeypatch.setattr(jobs.subprocess, "Popen", lambda *args, **kwargs: Spawned())
 
-    jobs.submit("agent", [], prompt="work", notify_sender="lambda:submitter", no_mcp_config=True)
+    jobs.submit("agent", [], prompt="work", notify_sender="agent:submitter", no_mcp_config=True)
 
 
 def test_a_submission_without_a_sender_records_no_signing_directory(monkeypatch, tmp_path):
@@ -529,24 +529,24 @@ def test_a_caller_named_anchor_outside_the_configured_roots_is_refused(monkeypat
     allowed = _signing_dir(tmp_path / "allowed" / "signer")
     elsewhere = _signing_dir(tmp_path / "elsewhere" / "signer")
     monkeypatch.setenv(config.SENDER_ROOTS_ENV_VAR, str(tmp_path / "allowed"))
-    monkeypatch.setattr(jobs, "_resolve_submitter_identity", lambda _cwd: "lambda:signer")
+    monkeypatch.setattr(jobs, "_resolve_submitter_identity", lambda _cwd: "agent:signer")
 
     with pytest.raises(jobs.NotifySenderResolutionError) as caught:
-        jobs._validate_notify_sender("lambda:signer", str(elsewhere), caller_named=True)
+        jobs._validate_notify_sender("agent:signer", str(elsewhere), caller_named=True)
     message = str(caught.value)
     assert str(tmp_path / "allowed") in message
     assert str(elsewhere) in message
 
     # the control: inside the root, the same claim passes
-    jobs._validate_notify_sender("lambda:signer", str(allowed), caller_named=True)
+    jobs._validate_notify_sender("agent:signer", str(allowed), caller_named=True)
 
 
 def test_the_server_s_own_directory_is_not_bounded_by_the_roots(monkeypatch, tmp_path):
     """The list bounds a caller's choice; the server's own directory is nobody's to pick."""
     monkeypatch.setenv(config.SENDER_ROOTS_ENV_VAR, str(tmp_path / "somewhere-else"))
-    monkeypatch.setattr(jobs, "_resolve_submitter_identity", lambda _cwd: "lambda:signer")
+    monkeypatch.setattr(jobs, "_resolve_submitter_identity", lambda _cwd: "agent:signer")
 
-    jobs._validate_notify_sender("lambda:signer", str(_signing_dir(tmp_path / "server")))
+    jobs._validate_notify_sender("agent:signer", str(_signing_dir(tmp_path / "server")))
 
 
 def test_a_link_under_an_allowed_root_that_points_out_of_it_is_refused(monkeypatch, tmp_path):
@@ -556,10 +556,10 @@ def test_a_link_under_an_allowed_root_that_points_out_of_it_is_refused(monkeypat
     link = tmp_path / "allowed" / "signer"
     link.symlink_to(outside, target_is_directory=True)
     monkeypatch.setenv(config.SENDER_ROOTS_ENV_VAR, str(tmp_path / "allowed"))
-    monkeypatch.setattr(jobs, "_resolve_submitter_identity", lambda _cwd: "lambda:signer")
+    monkeypatch.setattr(jobs, "_resolve_submitter_identity", lambda _cwd: "agent:signer")
 
     with pytest.raises(jobs.NotifySenderResolutionError):
-        jobs._validate_notify_sender("lambda:signer", str(link), caller_named=True)
+        jobs._validate_notify_sender("agent:signer", str(link), caller_named=True)
 
 
 def test_a_relative_sender_root_is_refused_by_name(monkeypatch, tmp_path):
@@ -567,7 +567,7 @@ def test_a_relative_sender_root_is_refused_by_name(monkeypatch, tmp_path):
     monkeypatch.setenv(config.SENDER_ROOTS_ENV_VAR, "signers")
 
     with pytest.raises(jobs.NotifySenderResolutionError) as caught:
-        jobs._validate_notify_sender("lambda:signer", str(tmp_path), caller_named=True)
+        jobs._validate_notify_sender("agent:signer", str(tmp_path), caller_named=True)
     assert "'signers'" in str(caught.value) and "absolute" in str(caught.value)
 
 
@@ -584,7 +584,7 @@ def test_a_caller_named_directory_without_an_actor_config_cannot_sign_for_anyone
     monkeypatch.setattr(jobs, "_resolve_submitter_identity", should_not_resolve)
 
     with pytest.raises(jobs.NotifySenderResolutionError) as caught:
-        jobs._validate_notify_sender("lambda:someone", str(tmp_path / "bare"), caller_named=True)
+        jobs._validate_notify_sender("agent:someone", str(tmp_path / "bare"), caller_named=True)
 
     message = str(caught.value)
     assert ".khive/config.toml" in message
