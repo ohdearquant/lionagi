@@ -5,11 +5,14 @@
 
 import re
 
+# A fence may be indented, may be longer than three characters (so a block can
+# quote a shorter fence), and may end its lines with CRLF; it closes on a line
+# holding the same fence it opened with.
 _FENCE_PATTERN = re.compile(
-    r"^(?P<fence>```|~~~)[ \t]*"
-    r"(?P<lang>[\w+-]*)[ \t]*\n"
+    r"^[ \t]*(?P<fence>`{3,}|~{3,})[ \t]*"
+    r"(?P<lang>[\w+-]*)[ \t]*\r?\n"
     r"(?P<code>.*?)(?<=\n)"
-    r"^(?P=fence)[ \t]*$",
+    r"^[ \t]*(?P=fence)[ \t]*\r?$",
     re.MULTILINE | re.DOTALL,
 )
 

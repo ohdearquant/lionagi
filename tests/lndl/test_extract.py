@@ -1,6 +1,7 @@
 # Copyright (c) 2025 - 2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
+import pytest
 
 from lionagi.lndl.extract import extract_lndl_blocks
 from lionagi.lndl.prompt import get_lndl_system_prompt
@@ -51,12 +52,39 @@ def test_extract_tilde_fence():
 
 
 def test_extract_empty_block():
-    text = "```lndl\n```"
-    # Empty blocks with no content (empty string code group) may not match
-    # depending on the regex — test what actually happens
-    blocks = extract_lndl_blocks(text)
-    # Either empty or not found — both are valid implementations
-    assert isinstance(blocks, list)
+    assert extract_lndl_blocks("```lndl\n```") == [""]
+
+
+@pytest.mark.parametrize(
+    ("text", "code"),
+    [
+        ("```lndl\r\n<lvar x>v</lvar>\r\n```", "<lvar x>v</lvar>\r\n"),
+        ("```lndl\r\n<lvar x>v</lvar>\r\n```\r\n", "<lvar x>v</lvar>\r\n"),
+        ("  ```lndl\n  <lvar x>v</lvar>\n  ```", "  <lvar x>v</lvar>\n"),
+        ("\t~~~lndl\n<lvar x>v</lvar>\n\t~~~", "<lvar x>v</lvar>\n"),
+        ("````lndl\n<lvar x>v</lvar>\n````", "<lvar x>v</lvar>\n"),
+    ],
+    ids=["crlf", "crlf-trailing-newline", "indented", "indented-tildes", "four-backticks"],
+)
+def test_extract_reads_crlf_indented_and_longer_fences(text, code):
+    assert extract_lndl_blocks(text) == [code]
+
+
+def test_a_longer_fence_holds_a_shorter_one_as_content():
+    text = "````lndl\n<lvar x>```\nquoted\n```</lvar>\n````"
+    assert extract_lndl_blocks(text) == ["<lvar x>```\nquoted\n```</lvar>\n"]
+
+
+def test_a_block_closes_only_on_its_own_fence():
+    # A shorter or different fence inside the block is content, and a block whose
+    # own fence never comes back is not a block.
+    assert extract_lndl_blocks("````lndl\n<lvar x>v</lvar>\n```") == []
+    assert extract_lndl_blocks("```lndl\n<lvar x>v</lvar>\n~~~") == []
+
+
+def test_a_block_quoted_inside_another_fence_is_not_extracted():
+    text = "```markdown\n```lndl\n<lvar x>v</lvar>\n```\n```"
+    assert extract_lndl_blocks(text) == []
 
 
 def test_extract_preserves_content():

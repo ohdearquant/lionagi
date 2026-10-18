@@ -1148,8 +1148,9 @@ before plus a pointer to the opt-in:
   max_actions=16, lacts_with_out=False))` with the same tools, guards and timeout, and guidance
   that keeps calls and the answer in separate rounds. A round either declares tool calls as
   `<lact>` aliases, at most 16, which run through `act()` when it ends, or writes the answer
-  as `OUT{}`; a round that declares more than 16, or declares calls beside its `OUT{}`, is a
-  repair round and none of its calls runs. The answer model (`_LndlAnswer`) takes only text the
+  as `OUT{}`; a round that declares more than 16, declares calls beside its `OUT{}`, or has
+  neither a `<lact>` nor an `OUT{}` in an `lndl` block (a call written as an `<invoke>` tag
+  included), is a repair round and none of its calls runs. The answer model (`_LndlAnswer`) takes only text the
   model wrote, so an `OUT{}` that binds a call's result is refused. A refusal is shown to the
   next round only, and the last round's notice says it is the last. A turn that spends its
   rounds without an accepted answer raises the Middle's `LNDLError`, which ends the turn as any

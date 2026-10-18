@@ -1000,22 +1000,58 @@ class TestSeparateAnswerRounds:
         '<parameter name="path">lionagi/work/form.py</parameter>\n</invoke>\n'
     )
 
-    @pytest.mark.parametrize(
-        "text",
-        [_INVOKE, '<lact q a>lookup(query="x")</lact>', "", "Let me read the file first."],
-        ids=["invoke-markup", "unfenced-lact", "empty", "prose"],
-    )
-    def test_a_round_with_no_lndl_block_is_refused(self, text):
+    _NEITHER = [
+        _INVOKE,
+        '<lact q a>lookup(query="x")</lact>',
+        "",
+        "Let me read the file first.",
+        f"```lndl\n{_INVOKE}```",
+        "```lndl\n<lvar a>draft</lvar>\n```",
+        "```lndl\n```",
+        # A block quoted inside another fence is quoted text, not the round's own block.
+        '```markdown\n```lndl\n<lact q a>lookup(query="x")</lact>\n```\n```',
+    ]
+    _NEITHER_IDS = [
+        "invoke-markup",
+        "unfenced-lact",
+        "empty",
+        "prose",
+        "fenced-invoke",
+        "fenced-lvar-only",
+        "fenced-empty",
+        "block-quoted-in-another-fence",
+    ]
+
+    @pytest.mark.parametrize("text", _NEITHER, ids=_NEITHER_IDS)
+    def test_a_round_that_neither_calls_nor_answers_is_refused(self, text):
         outcome, pending, assembled = _classify_round(text, AnswerModel, {}, lacts_with_out=False)
         assert isinstance(outcome, Retry)
-        assert "no ```lndl block, so nothing in it ran" in outcome.error
-        assert "<invoke>" in outcome.error
+        assert outcome.error.startswith("nothing in this round ran: it has no <lact> call")
+        assert "such as an <invoke> tag, is not run" in outcome.error
+        assert "declare calls as <lact> or write the answer as OUT{}" in outcome.error
         assert pending == [] and assembled is None
 
-    def test_the_default_still_continues_a_round_with_no_lndl_block(self):
-        outcome, pending, assembled = _classify_round(self._INVOKE, AnswerModel, {})
+    @pytest.mark.parametrize("text", _NEITHER, ids=_NEITHER_IDS)
+    def test_the_default_still_continues_a_round_that_neither_calls_nor_answers(self, text):
+        outcome, pending, assembled = _classify_round(text, AnswerModel, {})
         assert isinstance(outcome, Continue)
         assert pending == [] and assembled is None
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            '```lndl\r\n<lact q a>lookup(query="x")</lact>\r\n```',
+            '  ```lndl\n  <lact q a>lookup(query="x")</lact>\n  ```',
+            '````lndl\n<lact q a>lookup(query="x")</lact>\n````',
+            '~~~lndl\n<lact q a>lookup(query="x")</lact>\n~~~',
+        ],
+        ids=["crlf", "indented", "four-backticks", "tildes"],
+    )
+    def test_a_call_in_any_fence_shape_runs(self, text):
+        outcome, pending, assembled = _classify_round(text, AnswerModel, {}, lacts_with_out=False)
+        assert isinstance(outcome, Continue)
+        assert [call.function for call in pending] == ["lookup"]
+        assert assembled is None
 
     @pytest.mark.asyncio
     async def test_the_next_round_is_told_its_unfenced_call_did_not_run(self):
@@ -1040,7 +1076,7 @@ class TestSeparateAnswerRounds:
         assert result.answer == "read"
         assert calls_made == ["y"]
         calls = TestBranch.calls(branch)
-        assert "Error from your previous round: this round has no ```lndl block" in (
+        assert "Error from your previous round: nothing in this round ran" in (
             calls[1].last_user_message
         )
         assert "Error from your previous round" not in calls[2].last_user_message
@@ -1049,7 +1085,7 @@ class TestSeparateAnswerRounds:
     async def test_a_turn_of_unfenced_calls_fails_naming_the_missing_block(self):
         middle = build_lndl_middle(round_budget=2, lacts_with_out=False)
         branch = TestBranch.from_text([self._INVOKE, self._INVOKE])
-        with pytest.raises(LNDLError, match="no ```lndl block"):
+        with pytest.raises(LNDLError, match="nothing in this round ran: it has no <lact> call"):
             await middle(branch, "look it up", ChatParam(response_format=AnswerModel))
 
     @pytest.mark.asyncio

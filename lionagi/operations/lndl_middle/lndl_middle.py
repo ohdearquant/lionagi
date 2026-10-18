@@ -155,10 +155,11 @@ _CALLS_BESIDE_ANSWER = (
     "write OUT{} in a later round that declares no <lact>."
 )
 
-_NO_BLOCK = (
-    "this round has no ```lndl block, so nothing in it ran: no call and no answer. Only <lact> "
-    "calls inside a ```lndl block run; a call written any other way, such as an <invoke> tag, "
-    "is not run. Declare calls as <lact> in a ```lndl block, or write the answer in OUT{} in one."
+_NOTHING_RAN = (
+    "nothing in this round ran: it has no <lact> call and no OUT{} answer inside a ```lndl "
+    "block, and a call written any other way, such as an <invoke> tag, is not run. Open a "
+    "block with a line ```lndl, close it with a line ```, and inside it declare calls as "
+    "<lact> or write the answer as OUT{}."
 )
 
 
@@ -239,12 +240,13 @@ def _classify_round(
     A round declaring more than ``max_actions`` ``<lact>`` calls is a repair round: none of its calls runs.
     With ``lacts_with_out=False``, so is a round that declares ``<lact>`` calls beside its ``OUT{}``, one
     that leaves a tag or its ``OUT{}`` open, one whose calls the parser reads differently from its
-    tags (``_scan_round``), and one with no ``lndl`` block: every round there must call or answer, so a
-    round that does neither is told so instead of continuing as if its calls had run.
+    tags (``_scan_round``), and one with neither a ``<lact>`` nor an ``OUT{}`` in an ``lndl`` block,
+    including one with no block at all: every round there must call or answer, so a round that does
+    neither is told so instead of continuing as if its calls had run.
     """
     if not extract_lndl_blocks(text):
         if not lacts_with_out:
-            return Retry(error=_NO_BLOCK), [], None
+            return Retry(error=_NOTHING_RAN), [], None
         return Continue(), [], None
 
     try:
@@ -307,6 +309,9 @@ def _classify_round(
             )
 
         if program.out_block is None:
+            if scanned is not None and not program.lacts:
+                # The scan and the parser agree the block neither calls nor answers.
+                return Retry(error=_NOTHING_RAN), [], None
             pending = [build_action_call(la.alias, la) for la in program.lacts]
             return Continue(), pending, None
 
@@ -327,7 +332,8 @@ def build_lndl_middle(
 
     ``max_actions`` bounds the ``<lact>`` calls one round may declare; None leaves them unbounded.
     ``lacts_with_out=False`` keeps calls and the answer in separate rounds: a round that declares
-    ``<lact>`` calls beside its ``OUT{}`` is a repair round and none of its calls runs.
+    ``<lact>`` calls beside its ``OUT{}`` is a repair round and none of its calls runs, and so is
+    a round with neither a ``<lact>`` nor an ``OUT{}`` in an ``lndl`` block.
     """
     if max_actions is not None and (
         isinstance(max_actions, bool) or not isinstance(max_actions, int) or max_actions < 1
