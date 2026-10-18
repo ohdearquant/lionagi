@@ -3945,3 +3945,63 @@ async def test_a_run_cannot_update_a_branch_another_run_created(store):
         await second.close()
 
     assert _rows(store, "SELECT model FROM branches WHERE id = 'b1'") == [(None,)]
+
+
+class _ExtendsAProgression(StateDB):
+    """Drive the batched progression append the way its own operation would."""
+
+    @_operation("insert_message")
+    async def extend_progression(self, progression_id: str, message_ids: list[str]) -> None:
+        async with self._tx() as conn:
+            await self._extend_progression_in_tx(conn, progression_id, message_ids)
+
+
+async def test_the_batched_progression_append_keeps_the_owner_predicate(store):
+    """The batched rewrite (behind insert_messages) applies the same owner predicate on
+    its read and its rewrite as the per-message append: this run's own progression is
+    extended, and a progression another owner's run owns is read as absent, not rewritten.
+    """
+    from sqlalchemy import event
+
+    _execute(
+        store,
+        f"INSERT INTO progressions (id, created_at, collection, {OWNER}) "
+        "VALUES ('p-other', 0, '[]', 'principal:b')",
+    )
+
+    handle = _ExtendsAProgression(store, compatibility=_profile(store), owner="principal:a")
+    await handle.open()
+    try:
+        await handle.create_progression("p-mine")
+        await handle.extend_progression("p-mine", ["m1", "m2"])
+        statements = []
+
+        def spy(conn, cursor, statement, parameters, context, executemany):
+            statements.append(statement)
+
+        event.listen(handle._engine.sync_engine, "before_cursor_execute", spy)
+        try:
+            await handle.extend_progression("p-other", ["m-other"])
+        finally:
+            event.remove(handle._engine.sync_engine, "before_cursor_execute", spy)
+    finally:
+        await handle.close()
+
+    # Read as absent: the read carries the predicate, so no rewrite is even attempted.
+    assert any(s.lstrip().startswith("SELECT collection FROM progressions") for s in statements)
+    assert not [s for s in statements if s.lstrip().upper().startswith("UPDATE PROGRESSIONS")]
+
+    assert _rows(store, "SELECT collection FROM progressions WHERE id = 'p-mine'") == [
+        ('["m1","m2"]',)
+    ]
+    assert _rows(store, "SELECT collection FROM progressions WHERE id = 'p-other'") == [("[]",)]
+
+
+@pytest.mark.parametrize("dialect", ["sqlite", "postgresql"])
+def test_the_progression_read_puts_the_owner_conjunct_inside_the_where_clause(dialect):
+    """The owner conjunct joins the WHERE clause; on a dialect that row-locks the read it
+    comes before FOR UPDATE, never after it."""
+    clause = ' AND "owner_principal_id" = :_compat_owner'
+    sql = StateDB._progression_collection_for_update_sql(dialect, clause)
+    head = "SELECT collection FROM progressions WHERE id = :id" + clause
+    assert sql == (head if dialect == "sqlite" else head + " FOR UPDATE")
