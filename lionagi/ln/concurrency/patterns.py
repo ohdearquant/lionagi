@@ -180,20 +180,8 @@ class CompletionStream:
                         res = exc  # type: ignore[assignment]
                     else:
                         raise
-                try:
-                    assert self._send is not None
-                    await self._send.send((i, res))  # type: ignore[arg-type]
-                except anyio.ClosedResourceError:
-                    # Guard for a send after the send end itself was closed. No
-                    # runner reaches this in normal use: the buffer is sized to
-                    # the awaitable count, so a send never blocks on a consumer,
-                    # and __aexit__ closes the ends only after the task group has
-                    # returned. A consumer that stops iterating early closes
-                    # neither end, so it does not trigger this; a closed receive
-                    # end raises BrokenResourceError instead, which is not
-                    # caught here. The branch is kept so a send racing a close
-                    # by other means is discarded rather than surfacing.
-                    pass
+                assert self._send is not None
+                await self._send.send((i, res))  # type: ignore[arg-type]
             finally:
                 if limiter:
                     limiter.release()

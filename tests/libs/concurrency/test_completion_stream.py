@@ -161,6 +161,39 @@ async def test_completion_stream_leaving_early_waits_for_remaining_tasks(anyio_b
     assert sorted(finished) == list(range(NUM_TASKS))
 
 
+async def test_completion_stream_early_break_cancels_nothing(anyio_backend):
+    """An early break leaves every remaining awaitable running to completion.
+
+    Recording cancellation explicitly separates ``__aexit__`` waiting for the
+    tasks from it cancelling them: a cancelled task would settle without
+    reaching the completion append, and would be listed in ``cancelled``.
+    """
+    cancelled_exc = anyio.get_cancelled_exc_class()
+    started = []
+    finished = []
+    cancelled = []
+    NUM_TASKS = 12
+
+    async def task(x):
+        started.append(x)
+        try:
+            await anyio.sleep(0.001 if x == 0 else 0.02)
+            finished.append(x)
+            return x
+        except cancelled_exc:
+            cancelled.append(x)
+            raise
+
+    with anyio.fail_after(5):
+        async with CompletionStream([task(i) for i in range(NUM_TASKS)], limit=4) as stream:
+            async for _idx, _result in stream:
+                break
+
+    assert cancelled == [], f"leaving early cancelled tasks: {cancelled}"
+    assert sorted(started) == list(range(NUM_TASKS))
+    assert sorted(finished) == list(range(NUM_TASKS))
+
+
 async def test_completion_stream_cancelling_an_enclosing_scope_stops_remaining_tasks(anyio_backend):
     """Cancelling an enclosing scope before the block exits stops the remaining awaitables.
 

@@ -33,6 +33,7 @@ from lionagi.providers._cli_subprocess import (
 from lionagi.providers._cli_subprocess import (
     make_cli_flag as _cli,
 )
+from lionagi.providers._provider_errors import classify_provider_error
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.types.cli_session import CLISession
@@ -674,6 +675,38 @@ class PiCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
                 responses.append(chunk)
 
         pi_log.info(f"Session finished with {len(responses)} chunks")
+        if session.is_error:
+            # Classified on every error event's message, in order: an assistant
+            # message that arrives after the error replaces the result, and an
+            # aborted turn's error carries the assistant message it cut off,
+            # which is not the failure. An event's reason counts only when no
+            # event gave a message.
+            named: list[str] = []
+            reasons: list[str] = []
+            for c in session.chunks:
+                event = (
+                    c.raw.get("assistantMessageEvent", {}) if c.type == "message_update" else c.raw
+                )
+                if c.type == "error" or (
+                    c.type == "message_update" and event.get("type") == "error"
+                ):
+                    error = event.get("error")
+                    if isinstance(error, dict):
+                        text = error.get("errorMessage") or error.get("message")
+                    else:
+                        text = error if isinstance(error, str) else None
+                    text = text or event.get("errorMessage") or event.get("message")
+                    if isinstance(text, str) and text.strip():
+                        named.append(text.strip())
+                    elif isinstance(event.get("reason"), str) and event["reason"].strip():
+                        reasons.append(event["reason"].strip())
+            said = list(dict.fromkeys(named or reasons))
+            if session.session_id:
+                self.session_id = session.session_id
+            raise classify_provider_error(
+                "\n".join(said) or "Pi session failed",
+                status=session.error_status,
+            )
         if not session.result:
             texts = [c.text for c in session.chunks if c.text is not None]
             session.result = "\n".join(texts)
