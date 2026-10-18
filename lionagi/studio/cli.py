@@ -346,6 +346,18 @@ def _hosted_launch_url(port: int, code: str) -> str:
     return f"{_HOSTED_URL}/{query}#pair={code}"
 
 
+def _ignore_sigpipe() -> None:
+    """Let a write to a peer that already closed raise BrokenPipeError in the daemon.
+
+    `li` sets SIGPIPE to its default action so `li ... | head` stops quietly; a server running in
+    that process would then be killed by the first client that disconnects mid-write.
+    """
+    import signal
+
+    if hasattr(signal, "SIGPIPE"):
+        signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+
+
 def _start_hosted(host: str, port: int, no_open: bool) -> int:
     from lionagi.studio.launch_access import PAIRING_CODE_TTL_S, mint_pairing_code
 
@@ -393,6 +405,7 @@ def _start_backend_only(host: str, port: int) -> int:
     print(f"Lion Studio API: http://{host}:{port}")
     # Set before uvicorn.run: the app is loaded via import string and reads this from env.
     os.environ["LIONAGI_STUDIO_HOST"] = host
+    _ignore_sigpipe()
     uvicorn.run("lionagi.studio.app:app", host=host, port=port)
     return 0
 
@@ -645,6 +658,7 @@ def _start_local(
 
     # Set before uvicorn.run: the app is loaded via import string and reads this from env.
     os.environ["LIONAGI_STUDIO_HOST"] = host
+    _ignore_sigpipe()
     try:
         uvicorn.run("lionagi.studio.app:app", host=host, port=port)
     except KeyboardInterrupt:

@@ -226,7 +226,11 @@ class ReconnectChannel:
         # sends nothing still gets them, and no other content is accepted.
         try:
             code = self._mint_code()
-            conn.sendall(f"{code} {self.key.hex()}\n".encode("ascii"))
+            # A peer that closed first must not raise SIGPIPE in whatever process hosts the
+            # channel; MSG_NOSIGNAL turns it into the OSError handled below.
+            conn.sendall(
+                f"{code} {self.key.hex()}\n".encode("ascii"), getattr(socket, "MSG_NOSIGNAL", 0)
+            )
         except OSError:
             return
 

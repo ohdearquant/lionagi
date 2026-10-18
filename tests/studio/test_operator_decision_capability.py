@@ -281,6 +281,35 @@ def test_a_socket_another_user_serves_is_not_read(short_dir, served_by):
         assert f"user {other_uid}" in str(caught.value)
 
 
+_ANSWER_A_CLOSED_PEER = """
+import os, signal, socket
+import lionagi.studio.reconnect as reconnect
+
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+channel = reconnect.ReconnectChannel("unused.sock", lambda: "code", _uid_reader=lambda _c: os.getuid())
+ours, peer = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+peer.close()
+channel._answer(ours)
+print("answered")
+"""
+
+
+@pytest.mark.skipif(not reconnect.unix_sockets_supported(), reason="no unix sockets")
+def test_a_peer_that_closes_before_the_reply_does_not_kill_the_host_process():
+    """The channel runs inside whatever process hosts it, with whatever SIGPIPE action that process
+    set; `li` sets the default action, under which a reply to a peer that already closed (a stale
+    socket probe, a client that refused the server) would end the process. Run in a child process
+    so a regression shows as its exit status rather than ending the test run."""
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-c", _ANSWER_A_CLOSED_PEER], capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, (result.returncode, result.stderr[-2000:])
+    assert result.stdout.strip() == "answered"
+
+
 @pytest.mark.skipif(not reconnect.unix_sockets_supported(), reason="no unix sockets")
 def test_a_stale_socket_file_is_replaced_at_start(short_dir):
     socket_path = short_dir / "reconnect.sock"

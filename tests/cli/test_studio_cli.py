@@ -9,6 +9,7 @@ import contextlib
 import functools
 import logging
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -75,6 +76,34 @@ def _stubbed_serve():
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGPIPE"), reason="no SIGPIPE")
+@pytest.mark.parametrize("mode", ["backend", "dev"])
+def test_the_daemon_serves_with_sigpipe_ignored(mode, tmp_path, monkeypatch):
+    """`li` sets SIGPIPE to its default action for piped output; a daemon serving in that process
+    would be killed by the first client that closes before a write reaches it. Both places that
+    serve check it: the backend every hosted or `--no-frontend` start ends in, and `--dev`."""
+    import lionagi.studio.cli as studio_mod
+
+    seen = []
+    saved = signal.getsignal(signal.SIGPIPE)
+    try:
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+        with _stubbed_serve() as mock_run:
+            mock_run.side_effect = lambda *a, **k: seen.append(signal.getsignal(signal.SIGPIPE))
+            if mode == "backend":
+                from lionagi.cli.main import main
+
+                assert main(["studio", "--no-open"]) == 0
+            else:
+                monkeypatch.setattr(studio_mod.shutil, "which", lambda name: "/usr/bin/node")
+                monkeypatch.setattr(studio_mod, "_ensure_apps_importable", lambda: True)
+                with patch.object(studio_mod, "_launch_vite_dev", return_value=None):
+                    assert studio_mod._start_local("127.0.0.1", 45241, 4000, tmp_path, True) == 0
+    finally:
+        signal.signal(signal.SIGPIPE, saved)
+    assert seen == [signal.SIG_IGN]
 
 
 def test_studio_bare_invocation_does_not_raise(monkeypatch):
