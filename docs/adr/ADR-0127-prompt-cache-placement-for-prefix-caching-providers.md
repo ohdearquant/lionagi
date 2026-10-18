@@ -193,7 +193,7 @@ responses, which today's parser does not do (`protocols/messages/assistant_respo
 the `ResponseSchema` of the request operative: it includes the fields lionagi adds on top of the
 caller's model — `reason` when the call asks for it (`operations/operate/step.py:102-104`) and
 `action_required`, `action_requests` and `action_responses` when the call passes actions
-(`operations/operate/step.py:106-109`), which `operations/operate/operate.py:218-224` requests
+(`operations/operate/step.py:96-99`), which `operations/operate/operate.py:218-224` requests
 through `Step.request_operative`. It renders there as part of the instruction that asks for it, and
 it renders the same bytes whether it is current or history, instead of appearing in the one request
 and vanishing from the next. A format that changes between turns therefore renders in the turn
