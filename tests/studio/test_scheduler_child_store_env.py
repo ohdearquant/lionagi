@@ -154,6 +154,31 @@ async def test_a_configured_stdio_mcp_server_does_not_see_the_store(probe, tmp_p
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("name", [STATE_DB_URL_ENV, LOWER])
+async def test_a_store_url_a_configured_mcp_server_names_is_passed_as_given(probe, tmp_path, name):
+    """A server's own ``env`` entry is configuration, not inheritance: the URL it names arrives,
+    and the other spelling, inherited, is still gone."""
+    pytest.importorskip("fastmcp")
+    from lionagi.service.connections.mcp_wrapper import MCPConnectionPool, MCPSecurityConfig
+    from lionagi.studio.services.mcp_servers import _attempt_connection
+
+    chosen = "sqlite:////chosen/store.db"
+    expected = [chosen, "<absent>"] if name == STATE_DB_URL_ENV else ["<absent>", chosen]
+    checked, pooled = tmp_path / "mcp-check-env.txt", tmp_path / "mcp-pool-env.txt"
+    result = await _attempt_connection(
+        {"command": str(probe), "args": [str(checked)], "env": {name: chosen}}
+    )
+    assert result["ok"] is False
+    with pytest.raises(Exception):
+        await MCPConnectionPool._create_client(
+            {"command": str(probe), "args": [str(pooled)], "env": {name: chosen}},
+            security=MCPSecurityConfig.trusted(),
+        )
+    for out in (checked, pooled):
+        assert out.read_text().splitlines()[:2] == expected
+
+
+@pytest.mark.asyncio
 async def test_an_environment_a_caller_names_is_passed_as_given(probe, tmp_path):
     """Only what a command would inherit is scrubbed: a store URL its caller names is the
     caller's choice."""
