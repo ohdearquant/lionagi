@@ -321,6 +321,7 @@ async def test_occurrence_service_forwards_definition_audit_and_both_claims(monk
 async def test_non_disable_scheduler_work_adds_no_definition_event(tmp_path, monkeypatch, control):
     async with _backed_engine(tmp_path, monkeypatch, runs=1) as (db, svc, engine, schedule):
         before = await _events(db)
+        assert len(before) == 1
         if control == "cursor_only":
             assert await svc.update_schedule("audited", next_fire_at=2000.0)
         else:
