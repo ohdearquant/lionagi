@@ -239,7 +239,7 @@ _ALLOWLIST: dict[str, str] = {
     # An attribute assignment whose owner is an item of a list, not a name or a
     # dotted attribute; the scan refuses that owner shape, and here it writes an
     # edge's label on an already-built edge:
-    "lionagi.operations.flow:1547:21": "an edge label on a list item, not a class attribute",
+    "lionagi.operations.flow:1545:21": "an edge label on a list item, not a class attribute",
     # A class built at runtime by a factory from a parameter; it is outside what the
     # scan proves, and it declares no hash authority:
     "lionagi.protocols.graph.node_factory:144:11": "a node class built by a factory",
@@ -250,7 +250,7 @@ _ALLOWLIST: dict[str, str] = {
     # A class whose base is a function parameter: the scan cannot see the class the
     # parameter holds, and each declares no hash authority of its own:
     "lionagi.state.engine:176:30": "a subclass of a caller-supplied connection class",
-    "lionagi.testing.helpers:227:22": "a subclass of the class a classmethod is called on",
+    "lionagi.testing.helpers:228:22": "a subclass of the class a classmethod is called on",
     # A ``model_config`` the scan cannot read in full: ``SettingsConfigDict`` is the
     # settings analogue of ``ConfigDict``, and the entry below passes a callable rather
     # than a constant. Neither sets a frozen configuration, so neither class hashes:

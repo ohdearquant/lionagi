@@ -6,13 +6,13 @@ from __future__ import annotations
 
 import sqlite3
 import time
-import uuid
 from typing import Any
 
 from fastapi import HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
+from lionagi.ln import short_id
 from lionagi.state.db import StateDB, state_db_known_absent
 
 from ..registry import studio_route
@@ -157,7 +157,7 @@ async def create_workflow_def(data: dict[str, Any]) -> dict[str, Any]:
     _validate_name(name)
     _validate_spec(data.get("spec_json"))
 
-    def_id = uuid.uuid4().hex[:12]
+    def_id = short_id(12)
     now = time.time()
     defn = {
         "id": def_id,

@@ -14,7 +14,7 @@ result are pinned here:
 The snapshot is keyed by table and holds every table the run leaves rows in,
 apart from ``schema_meta`` and ``message_types``: those are seeded when the
 schema is applied (``message_types`` by an ``ON CONFLICT DO NOTHING`` insert at
-``lionagi/state/db.py:1781-1792``), not written by the inputs above, so a schema
+``lionagi/state/db.py:1782-1793``), not written by the inputs above, so a schema
 bookkeeping change is not a row this fixture is about.
 
 Normalization is deliberately lossy, and the loss is the limit of what this

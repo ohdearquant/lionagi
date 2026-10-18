@@ -9,6 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from lionagi import json_dumps
+from lionagi.ln import short_id
 from lionagi.ln._utils import now_utc
 
 from .. import team as _team_module
@@ -349,9 +350,8 @@ def _create_fanout_team(
     team_name: str,
     worker_names: list[str],
 ) -> dict:
-    from uuid import uuid4
 
-    team_id = uuid4().hex[:12]
+    team_id = short_id(12)
     members = ["orchestrator"] + worker_names
     teams_dir = _team_module._teams_dir()
     path = teams_dir / f"{team_id}.json"
@@ -374,14 +374,13 @@ def _post_results_to_team(
     synthesis_result: dict | None = None,
 ) -> None:
     """Post worker results + optional synthesis to the team inbox under a lock."""
-    from uuid import uuid4
 
     with _locked_team(team_data["id"]) as data:
         messages = data.setdefault("messages", [])
         for wr, name in zip(worker_results, worker_names, strict=False):
             messages.append(
                 {
-                    "id": uuid4().hex[:12],
+                    "id": short_id(12),
                     "from": name,
                     "from_op": wr.get("id"),
                     "to": ["*"],
@@ -394,7 +393,7 @@ def _post_results_to_team(
         if synthesis_result:
             messages.append(
                 {
-                    "id": uuid4().hex[:12],
+                    "id": short_id(12),
                     "from": "orchestrator",
                     "from_op": "synthesis",
                     "to": ["*"],

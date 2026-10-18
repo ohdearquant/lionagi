@@ -3,7 +3,11 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
 import enMessages from "@/messages/en.json";
-import type { OperatorFrame, OperatorModelCatalogEntry } from "@/lib/types";
+import type {
+  OperatorFrame,
+  OperatorModelCatalogEntry,
+  OperatorTruncationPayload,
+} from "@/lib/types";
 
 type StreamHandlers = {
   onFrame: (frame: OperatorFrame) => void;
@@ -55,6 +59,32 @@ function textFrame(sequence: number, role: "user" | "assistant", content: string
     type: "text",
     payload: { content, format: "plain", role },
     createdAt: sequence,
+  };
+}
+
+function truncationFrame(sequence: number): OperatorFrame<OperatorTruncationPayload> {
+  return {
+    version: 1,
+    conversationId: "conversation-1",
+    requestId: "request-1",
+    sequence,
+    type: "truncation",
+    payload: {
+      reason: "frames_per_turn",
+      limits: {
+        maxFramesPerTurn: 2000,
+        maxTurnPayloadBytes: 8388608,
+        maxFramePayloadBytes: 65536,
+      },
+      elidedFrames: 4,
+      elidedBytes: 2048,
+      elidedFrameTypes: { text: 4 },
+      firstElidedAt: 1_700_000_000,
+      lastElidedAt: 1_700_000_020,
+      message:
+        "This turn reached its durable retention limit; frames after this point were not stored and are counted here.",
+    },
+    createdAt: 1_700_000_020,
   };
 }
 
@@ -179,6 +209,52 @@ describe("OperatorPanel", () => {
     expect(
       [...Array(window.localStorage.length)].map((_, index) => window.localStorage.key(index)),
     ).not.toContain("studio:operator-token");
+  });
+
+  it("shows a retained turn's truncation notice and its terminal outcome together", async () => {
+    window.localStorage.setItem("studio:operator-conversation", "conversation-1");
+    api.listOperatorConversations.mockResolvedValue([
+      {
+        id: "conversation-1",
+        title: "Long turn",
+        status: "active",
+        activeRequestId: null,
+        updatedAt: 3,
+      },
+    ]);
+    api.getOperatorConversation.mockResolvedValue({
+      conversation: {
+        id: "conversation-1",
+        status: "active",
+        activeRequestId: null,
+      },
+      frames: [
+        textFrame(1, "assistant", "Retained before the limit."),
+        truncationFrame(2),
+        {
+          version: 1,
+          conversationId: "conversation-1",
+          requestId: "request-1",
+          sequence: 3,
+          type: "done",
+          payload: { outcome: "completed", lastSequence: 3 },
+          createdAt: 3,
+        },
+      ],
+    });
+
+    await mount();
+
+    // The notice states what was not retained, in frames and bytes, and says
+    // the retained transcript is not the whole turn.
+    expect(container.textContent).toContain("Retained before the limit.");
+    expect(container.textContent).toContain("4 frames not retained");
+    expect(container.textContent).toContain("2 KB");
+    expect(container.textContent).toContain("frames_per_turn");
+    // The transcript did not continue: the notice must not read as an
+    // ordinary message between two pieces of the same turn.
+    expect(container.textContent).not.toContain("This turn reached its durable retention limit");
+    expect(container.textContent).toMatch(/Turn completed/);
   });
 
   it("links a run result using its session identity when CLI provenance is present", async () => {

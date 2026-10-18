@@ -7,12 +7,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-import uuid
 from typing import Any
 
 from fastapi import HTTPException
 from pydantic import BaseModel
 
+from lionagi.ln import short_id
 from lionagi.state.db import StateDB
 
 from .. import config
@@ -206,7 +206,7 @@ async def launch_detached_argv(
         )
     await sem.acquire()
 
-    inv_id = uuid.uuid4().hex[:12]
+    inv_id = short_id(12)
     now = time.time()
 
     try:
