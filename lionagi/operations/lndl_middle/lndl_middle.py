@@ -19,7 +19,6 @@ from lionagi.lndl import (
     Retry,
     RoundOutcome,
     Success,
-    TokenType,
     assemble,
     build_action_call,
     collect_actions,
@@ -171,28 +170,22 @@ def _classify_round(
     A round declaring more than ``max_actions`` ``<lact>`` calls is a repair round: none of its calls runs.
     With ``lacts_with_out=False``, so is a round that declares ``<lact>`` calls beside its ``OUT{}``.
     """
-    blocks = extract_lndl_blocks(text)
-    if not blocks:
+    if not extract_lndl_blocks(text):
         return Continue(), [], None
 
     try:
-        normalized = normalize_lndl_text("\n\n".join(blocks))
+        # normalize_lndl_text extracts the fenced blocks itself; extracting
+        # first would run that pass again on a block's own text and could pick
+        # up a fenced example quoted inside it instead of the round's content.
+        normalized = normalize_lndl_text(text)
         tokens = Lexer(normalized).tokenize()
         parser = Parser(tokens, source_text=normalized)
-        program = parser.parse()
-
-        # Parser stops at OUT{}, so its lacts are only those before it. When calls
-        # and the answer must stay apart, every call the text declares counts,
-        # wherever it sits and in however many blocks. Calls before OUT{} are the
-        # parser's own; later ones are counted from the tokens, where quoted answer
-        # text is a string and so cannot pass for a call.
-        parsed_calls = len(program.lacts)
-        if lacts_with_out:
-            declared_calls = parsed_calls
-        else:
-            declared_calls = parsed_calls + sum(
-                1 for token in tokens[parser.pos :] if token.type is TokenType.LACT_OPEN
-            )
+        # When calls and the answer must stay apart, every call the round
+        # declares counts, wherever it sits: the parser then reads past OUT{}
+        # and skips the bodies of lvars and lacts, so quoted text cannot pass
+        # for a call. Otherwise it stops at OUT{}, as it always has.
+        program = parser.parse(read_past_out=not lacts_with_out)
+        declared_calls = len(program.lacts)
 
         if max_actions is not None and declared_calls > max_actions:
             return (

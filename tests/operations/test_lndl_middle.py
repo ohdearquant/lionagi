@@ -81,6 +81,16 @@ class TestClassifyRound:
         assert pending == []
         assert assembled is None
 
+    def test_a_round_reads_up_to_its_first_out_and_ignores_what_follows(self):
+        text = (
+            "```lndl\n<lvar a>first</lvar>\nOUT{answer: [a]}\n"
+            '<lact q r>lookup(query="x")</lact>\nOUT{answer: "second"}\n```'
+        )
+        outcome, pending, assembled = _classify_round(text, AnswerModel, {})
+        assert isinstance(outcome, Success)
+        assert pending == []
+        assert assembled == {"answer": "first"}
+
     def test_continue_round_with_lact_returns_pending_call(self):
         text = '```lndl\n<lact q a>lookup(query="x")</lact>\n```'
         outcome, pending, assembled = _classify_round(text, AnswerModel, {})
@@ -732,6 +742,69 @@ class TestSeparateAnswerRounds:
         )
         assert isinstance(outcome, Success)
         assert assembled == {"answer": 'The tag <lact q r>lookup(query="x")</lact> is the syntax.'}
+
+    def test_a_lvar_after_the_answer_may_quote_a_call(self):
+        text = (
+            "```lndl\n<lvar a>Here is the answer.</lvar>\nOUT{answer: [a]}\n"
+            '<lvar note.draft n>The tag <lact q r>lookup(query="x")</lact> is syntax.</lvar>\n'
+            "```"
+        )
+        outcome, pending, assembled = _classify_round(
+            text, AnswerModel, {}, max_actions=1, lacts_with_out=False
+        )
+        assert isinstance(outcome, Success)
+        assert pending == []
+        assert assembled == {"answer": "Here is the answer."}
+
+    def test_a_call_after_an_unclosed_duplicate_out_is_refused(self):
+        text = (
+            "```lndl\n<lvar a>guess</lvar>\nOUT{answer: [a]}\n"
+            'OUT{answer: "unclosed\n'
+            '<lact r>reader(action="read", path="notes.txt")</lact>\n'
+            "```"
+        )
+        outcome, pending, assembled = _classify_round(
+            text, AnswerModel, {}, max_actions=1, lacts_with_out=False
+        )
+        assert isinstance(outcome, Retry)
+        assert pending == []
+        assert assembled is None
+
+    def test_a_call_after_the_answer_with_lact_text_in_its_argument(self):
+        text = (
+            "```lndl\n<lvar a>guess</lvar>\nOUT{answer: [a]}\n"
+            '<lact q r>lookup(query="<lact")</lact>\n```'
+        )
+        outcome, pending, _ = _classify_round(
+            text, AnswerModel, {}, max_actions=1, lacts_with_out=False
+        )
+        assert isinstance(outcome, Retry)
+        assert "declares <lact> calls and also writes OUT{}" in outcome.error
+        assert pending == []
+
+    def test_a_lact_that_quotes_and_writes_out_after_it_is_counted_once(self):
+        text = (
+            "```lndl\n<lvar a>guess</lvar>\nOUT{answer: [a]}\n"
+            '<lact q r>lookup(query="x")</lact>\n```'
+        )
+        outcome, _, _ = _classify_round(text, AnswerModel, {}, max_actions=2, lacts_with_out=False)
+        assert isinstance(outcome, Retry)
+        assert "declares <lact> calls and also writes OUT{}" in outcome.error
+
+    def test_a_tilde_block_holding_a_fenced_example_keeps_its_outer_call(self):
+        text = (
+            "~~~lndl\n<lvar a>\nExample:\n```lndl\n<lvar a>inner</lvar>\n"
+            "OUT{answer: [a]}\n```\n</lvar>\nOUT{answer: [a]}\n"
+            '<lact r>lookup(query="x")</lact>\n~~~'
+        )
+        outcome, pending, assembled = _classify_round(
+            text, AnswerModel, {}, max_actions=16, lacts_with_out=False
+        )
+        # The quoted example is not taken for the round's own answer, and the
+        # round is refused: a second OUT{} makes the answer ambiguous.
+        assert isinstance(outcome, Retry)
+        assert pending == []
+        assert assembled is None
 
     def test_the_default_still_answer_and_call_as_it_did(self):
         text = (
