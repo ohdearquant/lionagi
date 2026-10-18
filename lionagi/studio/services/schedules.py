@@ -552,8 +552,21 @@ def _error_class_for(row: dict[str, Any]) -> str | None:
     falls through to the occurrence's own error text, which is empty exactly when
     there was no error. Suppressing the class there instead would leave a genuinely
     failed run with no classification and no path to its detail.
+
+    A run whose outcome is its own skip did not fail, so it has no class whatever
+    text explains the skip: the recorded reason is caller-reported outcome text, and
+    classifying it would serve a failure class (``unclassified`` for every fixed
+    scheduler explanation) on a run that never started. A skipped run whose outcome
+    a linked session or invocation reports keeps that layer's class.
     """
-    reported = _reported_summary_class(row.get("outcome"))
+    outcome = row.get("outcome")
+    if (
+        isinstance(outcome, dict)
+        and outcome.get("source") == "occurrence"
+        and outcome.get("code") == "skipped"
+    ):
+        return None
+    reported = _reported_summary_class(outcome)
     if reported is not None:
         return reported
     return _error_class(row.get("error_detail"))

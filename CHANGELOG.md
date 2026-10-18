@@ -335,7 +335,8 @@ behaviour, including accepting a write-capable submission without `cwd`.
 
 - Skipped schedule runs expose their recorded `reason_code` and `reason_summary`
   through run reads and the CLI; `outcome.summary` uses that reason while
-  `outcome.code` stays `skipped`. Capacity deferrals log once at INFO when an
+  `outcome.code` stays `skipped`. A run whose outcome is its own skip serves
+  `error_class: null`. Capacity deferrals log once at INFO when an
   episode starts and reset after slot acquisition. Schedule limits list
   `current_holders` with each holder's `schedule_id`, `path`, and `acquired_at`
   in epoch seconds. Timed schedules are considered oldest due first, before

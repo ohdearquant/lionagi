@@ -116,6 +116,41 @@ async def test_skipped_reason_survives_service_and_wire_views(
     assert "trigger_context" not in wire_detail
 
 
+# Every reason a skipped row can record: the fixed scheduler explanations, the
+# admission rejection's own text, and text that names a failure.
+_EVERY_SKIP_REASON = (
+    *_SKIP_REASONS,
+    (
+        "run.skipped.waiter_cap_exceeded",
+        "waiter cap (2) exceeded for concurrency_key='nightly': 2 job(s) already waiting "
+        "behind the running holder",
+    ),
+    (_CAPACITY_REASON, "Connection refused: private endpoint token=secret-value"),
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("reason_code", "reason_summary"), _EVERY_SKIP_REASON)
+async def test_a_skipped_run_has_no_error_class_on_any_route(
+    isolated_db: Path, reason_code: str, reason_summary: str
+) -> None:
+    """A skip is not a failure, so no route classifies the text that explains it."""
+    await _seed_skipped_run(reason_code, reason_summary)
+
+    listed = await schedules.list_schedule_runs_route("nightly", status=None, limit=20, offset=0)
+    status = await schedules.get_schedule_status_route("nightly")
+    detail = await schedules.get_schedule_run_route("deferred")
+
+    for surface, view in (
+        ("list", listed["runs"][0]),
+        ("status", status["latest_run"]),
+        ("detail", detail),
+    ):
+        assert view["status"] == "skipped", surface
+        assert view["reason_code"] == reason_code, surface
+        assert view["error_class"] is None, surface
+
+
 @pytest.mark.asyncio
 async def test_latest_recorded_skip_reason_wins(isolated_db: Path) -> None:
     await _seed_skipped_run(*_SKIP_REASONS[1])
