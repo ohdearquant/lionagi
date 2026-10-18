@@ -321,8 +321,9 @@ service and the session observer; the four rows for the default hook handlers an
 tombstone sweep's row were traced at `54132f85`. Entries name functions, not line numbers. The
 implementation's tests on scratch stores (`tests/state/test_compatibility_mode.py`,
 `tests/state/test_compatibility_owner_ops.py`, `tests/state/test_compatibility_teardown_ops.py`)
-are the check on this manifest, and a trace that shows an effect missing here is a defect in this
-appendix.
+check the rows below that write to the store through the run's handle. Two rows have no test there:
+the terminal callbacks issue no store statement, and the steer tombstone sweep does not run on a
+store in compatibility mode. A trace that shows an effect missing here is a defect in this appendix.
 
 ### A.0 Today
 
@@ -392,7 +393,7 @@ the previous one committed.
 | `persist_branch_provenance` (the default `BRANCH_CREATE` handler) | nothing when the run hands its handle to the emit (the agent setup does: the branch row it created carries these columns); otherwise `UPDATE branches SET model, provider, agent_name WHERE id`, each as the event carries it, a missing one as `NULL` | by id only | one | only this run's branch |
 | `persist_branch_end` (the default `BRANCH_END` handler, through `finalize_branch`) | for a terminal status only: `UPDATE branches SET status, ended_at WHERE id AND (status IS NULL OR status = 'running')` | by id, guarded on a status that is not yet terminal; with the owner predicate in compatibility mode | one | only this run's branch; the guard kept; in compatibility mode the branch must be one this run created and the UPDATE carries the owner predicate (D5) |
 | `persist_session_end` (the default `SESSION_END` handler) | a `get_session` read; when the session is not terminal: the `update_status` transition to the event's status as above, carrying `ended_at`, `duration_ms` and, when the event has an error, `node_metadata` read, merged with `error` in Python and written whole; then `UPDATE sessions SET` the usage columns the event carries (`input_tokens`, `output_tokens`, `total_cost_usd`, `num_turns`) and `updated_at`; when the teardown handed its handle to the emit, only `UPDATE sessions SET` those usage columns (the teardown owns the terminal status and writes it once the emits have run); when the session is already terminal and no handle was handed over, the same usage-only `UPDATE` | by id; no owner predicate | the transition in one, the `UPDATE` after its commit | only this run's session; `node_metadata` written by key merge, never whole; the owner on the transition (D5) |
-| steer tombstone sweep (`li agent`, after teardown) | `list_pending_session_controls` for the session, then for each control no consumer claimed `UPDATE session_controls SET applied_at, result WHERE id AND result IS NULL` | by id, guarded on an unclaimed control | one per control | only this run's session's controls; the guard kept |
+| steer tombstone sweep (`li agent`, after teardown) | `list_pending_session_controls` for the session, then for each control no consumer claimed `UPDATE session_controls SET applied_at, result WHERE id AND result IS NULL` | by id, guarded on an unclaimed control | one per control | not run on a store in compatibility mode: its controls are not rows this run created (D4) |
 
 The four default hook handlers take their store from `_db()` in `lionagi/hooks/builtins.py`. When a
 run emits a lifecycle event it hands its own open handle to the handler on the event, so the handler
@@ -405,7 +406,7 @@ handlers never open or reach a second handle for that run, and a branch row anot
 is left untouched. A handler that does fall back to a URL lookup whose store the process holds in
 compatibility mode meets A.0's refusal before any statement. The steer tombstone sweep is a
 different class: it opens its own native `StateDB()` on the store instead of taking the run's
-handle, so its row is admitted on the same terms.
+handle, so `li agent` does not run it on a store in compatibility mode.
 
 ### A.3 Reader invariants the profile keeps
 
