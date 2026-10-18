@@ -471,11 +471,11 @@ stays two values.
 Generic mapping, Pydantic, and msgspec deduplication retains its existing transient hash buckets
 and confirms equality inside each bucket; a value whose contents give no structural hash (a
 cycle, which the content key reports as `TypeError` whether the value is a container or a
-struct or model whose own serializer detects it, or state that will not serialize, or an
-acyclic value nested past the recursion limit, which the keying catches) is compared with
-every kept value of those kinds, bucketed ones included, and each bucketed value is also
-compared with those. Mutable operation outputs may be opaque values whose equality does not
-match their representation, so that boundary cannot use a content hash.
+struct or model whose own serializer detects it, or an acyclic value nested past the recursion
+limit, which the keying catches) is compared with every kept value of those kinds, bucketed
+ones included, and each bucketed value is also compared with those, while a serializer's other
+`ValueError` propagates. Mutable operation outputs may be opaque values whose equality
+does not match their representation, so that boundary cannot use a content hash.
 Arbitrary default-field declarations remain fresh, validator functions have stable identities, and
 the six named lazy field constants retain singleton identity. Container keys must instead be stable
 identifiers; changing a mutable value after admission cannot repair container membership.

@@ -411,16 +411,19 @@ def _is_msgspec_struct(value: Any) -> bool:
 def _project_memoryview(
     view: memoryview, path: str, active: set[int], *, value_semantics: bool
 ) -> _StructuralKey:
-    """Key a memoryview by the shape and values it holds, or by identity.
+    """Key a memoryview by the values it holds, or by identity.
 
-    Only a read-only view of a ``bytes`` object holds values that cannot change. A
-    writable view, a read-only view of a mutable buffer, a released view, and a view
-    whose format cannot be unpacked are keyed by identity and are unsafe to hash, as a
-    ``bytearray`` is. A fixed view is keyed by its shape and the values it unpacks to,
-    which is what memoryview equality compares, so views of different formats holding
-    equal values are one value; under value equality a one-dimensional view of byte
-    values is the ``bytes`` it equals. Its key is not cached, because releasing the view
-    later leaves it equal only to itself.
+    A memoryview compares equal to another view of the same shape holding equal values,
+    whatever the two formats, and to the bytes holding the same values when it is
+    one-dimensional. Its projection follows that comparison, as the hash representation
+    in ``_hash`` does: a one-dimensional view of whole-number values from 0 to 255 is
+    the ``bytes`` it holds, whatever its format, and any other view is keyed by its
+    shape and by Python's own value equality over the values it unpacks to. Only a
+    read-only view of a ``bytes`` object holds values that cannot change; a writable
+    view, a read-only view of a mutable buffer, a released view, and a view whose
+    format cannot be unpacked are keyed by identity and are unsafe to hash, as a
+    ``bytearray`` is. Never cached, because releasing the view later leaves it equal
+    only to itself.
     """
     try:
         values = view.tolist() if view.readonly and type(view.obj) is bytes else None
@@ -435,14 +438,20 @@ def _project_memoryview(
             _unsafe_path=path,
             _unsafe_type=memoryview,
         )
-    if (
-        value_semantics
-        and view.ndim == 1
-        and all(type(item) is int and 0 <= item <= 255 for item in values)
+    if not _nested_lengths_match(values, view.shape):
+        # The values cannot be read in the shape the view compares, so no projection
+        # represents it; a key that cannot stand for an equal value is refused.
+        raise UnhashableStructuralValueError(path, memoryview)
+    if view.ndim == 1 and all(
+        isinstance(value, int | float) and 0 <= value <= 255 and value == int(value)
+        for value in values
     ):
-        return _project(bytes(values), path, active, value_semantics=True)
-    # The list is this call's own copy of the values, so it does not make the key unsafe.
-    projected = _project(values, path, active, value_semantics=value_semantics)
+        return _project(
+            bytes(int(value) for value in values), path, active, value_semantics=value_semantics
+        )
+    # The tuples are this call's own copy of the values, so they do not make the key
+    # unsafe.
+    projected = _project(_nested_values(values), path, active, value_semantics=True)
     return _StructuralKey(
         (_MEMORYVIEW, view.shape, projected.value),
         cache_stable=False,
@@ -454,6 +463,28 @@ def _project_memoryview(
         ),
         _pins=projected._pins,
     )
+
+
+def _nested_lengths_match(values: Any, shape: tuple[int, ...]) -> bool:
+    """Whether unpacked view values nest exactly to *shape*."""
+    if not shape:
+        return values == []
+    if not isinstance(values, list) or len(values) != shape[0]:
+        return False
+    if len(shape) == 1:
+        return not any(isinstance(value, list) for value in values)
+    return all(_nested_lengths_match(value, shape[1:]) for value in values)
+
+
+def _nested_values(values: Any) -> tuple[Any, ...]:
+    """Unpacked view values as nested tuples whose equality is the view's.
+
+    A ``?`` view compares its values as the integers they hold, so a ``bool`` becomes
+    that integer; every other value is kept as it was unpacked.
+    """
+    if isinstance(values, list):
+        return tuple(_nested_values(value) for value in values)
+    return (values,) if type(values) is not bool else (int(values),)
 
 
 def _project(

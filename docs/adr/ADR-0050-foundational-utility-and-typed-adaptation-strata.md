@@ -285,16 +285,16 @@ class Note(BaseModel):
   n*(n-1)/2 comparisons. Generic mappings, Pydantic models, and msgspec structs retain
   transient hash buckets with equality confirmation; one whose contents give no
   structural hash (a cycle, which the content key reports as `TypeError` whether the value
-  is a container or a struct or model whose own serializer detects it, or state that will
-  not serialize, or an acyclic value nested past the recursion limit, which the keying
-  catches) is compared with every kept value of those kinds, bucketed ones included, and
-  each bucketed value is also compared with those. The operation DTO listable-field
-  validator keys each value it can and compares it inside its key's group, and compares a
-  value it cannot key with every kept value; opaque outputs whose equality differs from
-  their representation dedupe by equality, and a pair whose equality gives no single
-  truth value (an array, a data frame, a request whose arguments hold one) or raises
-  `AttributeError`, `RecursionError`, `TypeError`, `ValueError` or an
-  unhashable-structural error stays two values.
+  is a container or a struct or model whose own serializer detects it, or an acyclic value
+  nested past the recursion limit, which the keying catches) is compared with every kept
+  value of those kinds, bucketed ones included, and each bucketed value is also compared
+  with those, while a serializer's other `ValueError` propagates in every deduplication
+  path. The operation DTO listable-field validator keys each value it can and compares it
+  inside its key's group, and compares a value it cannot key with every kept value; opaque
+  outputs whose equality differs from their representation dedupe by equality, and a pair
+  whose equality gives no single truth value (an array, a data frame, or a request whose
+  arguments hold one) or raises `AttributeError`, `RecursionError`, `TypeError`,
+  `ValueError` or an unhashable-structural error stays two values.
 - `Note.to_dict()` recursively removes sentinel values from dictionaries and lists.
   `exclude_none` and `exclude_empty` extend that recursive omission policy. The
   returned structure is a deep copy; JSON mode additionally runs recursive model

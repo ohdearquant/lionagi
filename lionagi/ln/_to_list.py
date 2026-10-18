@@ -352,11 +352,12 @@ def to_list(
                 ) from None
             try:
                 key = hash_dict(i)
-            except (AttributeError, RecursionError, TypeError, ValueError):
+            except (AttributeError, RecursionError, TypeError):
                 # The contents give no key -- a cycle the content hash reports as
-                # ``TypeError``, a value that will not serialize, or an acyclic value
-                # deep enough to exhaust the recursion limit -- so this value is
-                # compared against every kept value.
+                # ``TypeError``, or an acyclic value deep enough to exhaust the
+                # recursion limit -- so this value is compared against every kept
+                # value. A serializer's ``ValueError`` is a defect in the value and
+                # propagates, as it does from the structural key.
                 bucket = keyless
                 compared: Iterable = chain(chain.from_iterable(keyed.values()), keyless)
             else:

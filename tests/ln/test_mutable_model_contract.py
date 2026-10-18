@@ -354,6 +354,13 @@ class _UnserializableMapping(dict):
     """A mapping whose contents cannot be read for a structural key."""
 
     def items(self):
+        raise TypeError("contents cannot be read")
+
+
+class _ValueErrorMapping(dict):
+    """A mapping whose contents report a defect with ``ValueError``."""
+
+    def items(self):
         raise ValueError("contents cannot be read")
 
 
@@ -380,6 +387,15 @@ def test_mapping_dedup_compares_a_keyless_mapping_with_a_keyable_equal_one(keyed
     result = to_list([first, second], flatten=True, unique=True)
     assert len(result) == 1
     assert result[0] is first
+
+
+def test_a_mapping_whose_contents_raise_valueerror_propagates():
+    """A mapping's contents raising ``ValueError`` is a defect in that mapping, not an
+    unkeyable value: the error propagates from deduplication instead of the mapping
+    being compared only by equality."""
+    broken = _ValueErrorMapping(a=1)
+    with pytest.raises(ValueError, match="contents cannot be read"):
+        to_list([broken, dict(broken)], flatten=True, unique=True)
 
 
 @pytest.mark.parametrize("keyed_first", [False, True], ids=["keyed-first", "keyless-first"])
@@ -1043,6 +1059,88 @@ def test_a_model_serializer_error_propagates_instead_of_reading_as_unhashable():
         _ = MutableContext([FailingSerializer()]) == MutableContext([FailingSerializer()])
     with pytest.raises(ValueError, match="a broken serializer"):
         hash_dict({"v": FailingSerializer()})
+
+
+def _view_pairs():
+    """Read-only views of ``bytes`` that compare equal across formats, and views that
+    hold equal values in another shape or other values and so compare unequal."""
+    doubles = memoryview(array("d", [1.0, 2.0]).tobytes()).cast("d")
+    corners = b"\x01\x00\x01\x01"
+    return (
+        (doubles, memoryview(b"\x01\x02")),
+        (memoryview(b"\x01\x00").cast("?"), memoryview(b"\x01\x00")),
+        (
+            memoryview(array("f", [1.5]).tobytes()).cast("f"),
+            memoryview(array("d", [1.5]).tobytes()).cast("d"),
+        ),
+        (memoryview(corners).cast("?", (2, 2)), memoryview(corners).cast("B", (2, 2))),
+        (memoryview(corners), memoryview(corners).cast("B", (1, 4))),
+        (memoryview(corners).cast("B", (2, 2)), memoryview(b"\x01\x01\x01\x00").cast("B", (2, 2))),
+        (memoryview(corners).cast("B", (2, 2)), memoryview(b"\x01\x00\x01\x01")),
+    )
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    _view_pairs(),
+    ids=[
+        "doubles-vs-bytes",
+        "bool-vs-byte",
+        "float-vs-double",
+        "bool-corners-vs-bytes",
+        "flat-vs-row",
+        "reordered-corners",
+        "corners-vs-flat-bytes",
+    ],
+)
+def test_a_memoryview_field_follows_memoryview_equality(left, right):
+    """A view compares equal to every view of the same shape holding equal values,
+    whatever their formats, and to the bytes it holds when one-dimensional, so a value
+    holding it has the same equality and hash as one holding any view it equals. Views
+    that compare unequal compare unequal, have other hashes, and are two values under
+    deduplication."""
+    from lionagi.ln import hash_dict
+
+    if left != right:
+        assert Meta("k", left) != Meta("k", right)
+        assert hash(Meta("k", left)) != hash(Meta("k", right))
+        assert hash_dict({"v": left}) != hash_dict({"v": right})
+        assert len(to_list([Meta("k", left), Meta("k", right)], flatten=True, unique=True)) == 2
+        return
+    assert Meta("k", left) == Meta("k", right)
+    assert hash(Meta("k", left)) == hash(Meta("k", right))
+    assert hash_dict({"v": left}) == hash_dict({"v": right})
+    assert MutableContext([left]) == MutableContext([right])
+    assert len(to_list([Meta("k", left), Meta("k", right)], flatten=True, unique=True)) == 1
+    assert (
+        len(
+            to_list(
+                [MutableContext([left]), MutableContext([right])],
+                flatten=True,
+                unique=True,
+            )
+        )
+        == 1
+    )
+
+
+def test_a_model_serializer_error_propagates_from_deduplication():
+    """Deduplicating models takes a content key, and a field serializer's ``ValueError``
+    is a defect in the model, not an unhashable value: it propagates instead of leaving
+    the models in the keyless bucket to be compared only by equality."""
+    with pytest.raises(ValueError, match="a broken serializer"):
+        to_list([FailingSerializer(), FailingSerializer()], flatten=True, unique=True)
+    with pytest.raises(ValueError, match="a broken serializer"):
+        to_list([{"v": FailingSerializer()}, {"v": FailingSerializer()}], flatten=True, unique=True)
+
+
+def test_a_model_serializer_error_propagates_from_the_stable_cache_key():
+    """A model whose serializer reports a defect is not a value whose key says it is
+    unfit for caching; the ``ValueError`` propagates rather than becoming a refusal."""
+    from lionagi.ln import _structural
+
+    with pytest.raises(ValueError, match="a broken serializer"):
+        _structural._try_stable_cache_key(FailingSerializer())
 
 
 @pytest.mark.parametrize("kind", ["mapping", "pydantic", "msgspec"])
