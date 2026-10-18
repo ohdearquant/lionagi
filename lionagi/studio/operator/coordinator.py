@@ -7,10 +7,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-import uuid
 from contextlib import suppress
 from dataclasses import replace
 from typing import Any
+
+from lionagi.ln import short_id
 
 from ..config import (
     OperatorExecutionRootResolution,
@@ -535,7 +536,7 @@ class OperatorCoordinator:
             engine_turn = replace(engine_turn, runtime_branch=run_branch)
             from lionagi.cli import _runs as cli_runs
 
-            file_run_id = f"operator-{uuid.uuid4().hex[:12]}"
+            file_run_id = f"operator-{short_id(12)}"
             run_dir = cli_runs.RunDir(
                 run_id=file_run_id,
                 state_root=cli_runs.RUNS_ROOT / file_run_id,

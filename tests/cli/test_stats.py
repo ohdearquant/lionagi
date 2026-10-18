@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
+from lionagi.cli.monitor import _since_timestamp
 from lionagi.cli.stats import (
     GROUP_BY_COLUMNS,
     _format_stats_table,
-    _reject_non_positive_since,
     _rows_for_json,
     _run_stats_runs,
     _validate_group_by,
@@ -355,26 +355,25 @@ def test_run_stats_nonexistent_db_path_does_not_create_file(temp_db_path: Path, 
 # --since must reject non-positive windows (0d, -1d, ...)
 
 
-def test_reject_non_positive_since_rejects_zero():
+def test_stats_shared_since_parser_rejects_zero():
     with pytest.raises(ValueError, match="must be positive"):
-        _reject_non_positive_since("0d")
+        _since_timestamp("0d")
 
 
-def test_reject_non_positive_since_rejects_negative():
+def test_stats_shared_since_parser_rejects_negative():
     with pytest.raises(ValueError, match="must be positive"):
-        _reject_non_positive_since("-1d")
+        _since_timestamp("-1d")
 
 
-def test_reject_non_positive_since_accepts_positive():
-    _reject_non_positive_since("7d")  # must not raise
-    _reject_non_positive_since("1h")
-    _reject_non_positive_since("30m")
+@pytest.mark.parametrize(("window", "seconds"), [("7d", 604800), ("1h", 3600), ("30m", 1800)])
+def test_stats_shared_since_parser_accepts_positive(monkeypatch, window, seconds):
+    monkeypatch.setattr("lionagi.cli.monitor.time.time", lambda: 1_000_000.0)
+    assert _since_timestamp(window) == 1_000_000.0 - seconds
 
 
-def test_reject_non_positive_since_defers_malformed_to_since_timestamp():
-    # Not this function's job to reject a bad unit/non-numeric value —
-    # _since_timestamp raises its own clear error for those.
-    _reject_non_positive_since("not-a-window")
+def test_stats_shared_since_parser_rejects_malformed():
+    with pytest.raises(ValueError, match="--since"):
+        _since_timestamp("not-a-window")
 
 
 def test_run_stats_since_zero_days_exits_nonzero(
@@ -393,3 +392,30 @@ def test_run_stats_since_negative_days_exits_nonzero(
         rc = run_stats(_stats_args(since="-1d"))
     assert rc != 0
     assert "positive" in caplog.text
+
+
+@pytest.mark.parametrize("window", ["", "1H"], ids=["empty", "uppercase"])
+def test_run_stats_since_invalid_window_reports_error(
+    temp_db_path: Path, caplog: pytest.LogCaptureFixture, window: str
+):
+    with caplog.at_level(logging.ERROR, logger="lionagi.cli.error"):
+        rc = run_stats(_stats_args(since=window))
+    assert rc == 2
+    assert "--since" in caplog.text
+    assert "positive" in caplog.text
+    assert not temp_db_path.exists()
+
+
+@pytest.mark.parametrize(
+    "window", ["", "1H", "0d", "-1d"], ids=["empty", "uppercase", "zero", "negative"]
+)
+def test_machine_stats_since_invalid_window_reports_input_error(temp_db_path: Path, window: str):
+    from lionagi.cli.machine import MachineError
+    from lionagi.cli.stats import machine_result
+
+    with pytest.raises(MachineError) as exc:
+        machine_result(["runs", "--since=" + window])
+    assert exc.value.kind == "invalid_input"
+    assert "--since" in str(exc.value)
+    assert "positive" in str(exc.value)
+    assert not temp_db_path.exists()

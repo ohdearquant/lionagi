@@ -7,11 +7,11 @@ from __future__ import annotations
 import argparse
 import json
 import time
-import uuid
 from dataclasses import dataclass
 from typing import Any
 
 from lionagi._auto import CliDeclaration, auto_register
+from lionagi.ln import short_id
 
 from ._logging import hint, log_error
 
@@ -27,7 +27,7 @@ async def _start_invocation(
 ) -> str:
     from lionagi.state.db import StateDB
 
-    inv_id = uuid.uuid4().hex[:12]
+    inv_id = short_id(12)
     # No pid markers here — invocation is a PID-less umbrella; see
     # docs/internals/cli.md for the recycled-PID hazard this avoids.
     async with StateDB() as db:

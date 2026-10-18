@@ -458,6 +458,28 @@ def test_every_suite_lane_replaces_a_crashed_worker_and_checks_its_own_coverage(
         assert all(line.endswith("|| rc=1") for line in coverage_lines), name
 
 
+def test_every_suite_lane_keeps_the_project_asyncio_mode() -> None:
+    # pyproject.toml runs pytest-asyncio in strict mode so that a test written
+    # for anyio runs on each backend it is parametrized with. A lane that passes
+    # --asyncio-mode on the command line overrides that, and in auto mode every
+    # trio case runs on asyncio while its test id still names trio.
+    functions = _wrapper_functions()
+    lanes = {name: body for name, body in functions.items() if name.startswith("test-python")}
+
+    assert len(lanes) >= 3, f"parsed {sorted(functions)} out of the wrapper; it has no suite lanes"
+    # Every wrapper function that runs pytest, not only the suite lanes: a
+    # narrower lane carrying the flag still collects its tests in the other mode.
+    pytest_runs = {name: body for name, body in functions.items() if "uv run pytest" in body}
+    assert set(lanes) <= set(pytest_runs), f"{sorted(set(lanes) - set(pytest_runs))} run no pytest"
+    for name, body in pytest_runs.items():
+        assert "--asyncio-mode" not in body, name
+    workflow_dir = REPO_ROOT / ".github" / "workflows"
+    workflows = sorted([*workflow_dir.glob("*.yml"), *workflow_dir.glob("*.yaml")])
+    assert workflows, f"no workflow files under {workflow_dir}"
+    for workflow in workflows:
+        assert "--asyncio-mode" not in workflow.read_text(encoding="utf-8"), workflow.name
+
+
 def test_project_config_allows_xdist_worker_restarts(
     request: pytest.FixtureRequest,
 ) -> None:

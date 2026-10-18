@@ -16,6 +16,7 @@ from typing import Any
 
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
+from lionagi.ln import parse_duration
 from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.state.session_naming import sanitize_prompt_name
 from lionagi.studio.config import MIRROR_PREVIEW_CHARS
@@ -320,22 +321,18 @@ def _needs_status_reconciliation(
     return bool(state.session_uid and (advanced or not state.status_settled_until_append))
 
 
-_WINDOW_UNITS = {"m": 60, "h": 3600, "d": 86400}
-
-
 def _parse_window(spec: str) -> float | None:
     """Seconds for a window like '30m'/'12h'/'7d', or bare seconds; None if empty.
     Raises ValueError (not a silent unbounded-scan fallback) on a bad spec."""
-    spec = spec.strip().lower()
+    spec = spec.strip()
     if not spec:
         return None
     try:
-        if spec[-1] in _WINDOW_UNITS:
-            return float(spec[:-1]) * _WINDOW_UNITS[spec[-1]]
-        return float(spec)
-    except ValueError:
+        return parse_duration(spec, allow_bare_seconds=True, allow_float=True)
+    except ValueError as exc:
         raise ValueError(
-            f"unrecognized --since window {spec!r} (expected e.g. 30m, 12h, 7d, or seconds)"
+            f"unrecognized --since window {spec!r}; expected a positive finite duration "
+            f"like 30m, 12h, 7d, or seconds ({exc})"
         ) from None
 
 

@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING, Any, Protocol, get_args
 
 from sqlalchemy import JSON, bindparam, text
 
+from lionagi.ln import short_id
+
 from ..compat import _quote
 from ..reasons import VALID_REASON_CODES
 from . import LifecycleNotFoundError, LifecycleValidationError
@@ -492,7 +494,7 @@ class SQLAlchemyLifecycleService:
                     ).bindparams(bindparam("details", type_=JSON)),
                     {
                         **owner_values,
-                        "id": uuid.uuid4().hex[:12],
+                        "id": short_id(12),
                         "created_at": now,
                         "action": "status_transition_rejected",
                         "target_id": command.entity_id,
@@ -639,7 +641,7 @@ class SQLAlchemyLifecycleService:
                     ).bindparams(bindparam("details", type_=JSON)),
                     {
                         **owner_values,
-                        "id": uuid.uuid4().hex[:12],
+                        "id": short_id(12),
                         "created_at": now,
                         "action": "status_transition_override",
                         "target_id": command.entity_id,

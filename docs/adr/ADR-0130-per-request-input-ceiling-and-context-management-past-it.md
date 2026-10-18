@@ -44,9 +44,9 @@ keeps growing its request until the provider refuses it or bills it at the next 
 
 **P3 — a dependent spawned child inherits its emitter's whole conversation.** A reactively spawned
 child with no branch of its own is built from its emitter's branch
-(`lionagi/operations/flow.py:1614-1645`, `_assign_injected_branch`), as `base.clone(...)`; the
+(`lionagi/operations/flow.py:1612-1640`, `_assign_injected_branch`), as `base.clone(...)`; the
 clone copies every message and maps the emitter's active view onto the copies
-(`lionagi/session/branch.py:523`). Branch setup runs after the clone (`flow.py:1635`, `:1639-1640`). A child
+(`lionagi/session/branch.py:523`). Branch setup runs after the clone (`flow.py:1633`, `:1637-1638`). A child
 cloned from a long emitter starts at the emitter's size, before it has done anything. Observed: a
 child whose inherited history rendered to 3,477,964 characters was started on a CLI provider whose
 turn input is limited to 1,048,576 characters, and died at turn start.
@@ -54,7 +54,7 @@ turn input is limited to 1,048,576 characters, and died at turn start.
 **P4 — what one "request" is differs by provider.** API providers send the message list each turn.
 The Codex and fresh Gemini CLI paths flatten the non-system messages into one turn input
 (`lionagi/providers/_cli_subprocess.py:1036-1059`), and Codex carries the system text as a separate
-argument (`lionagi/providers/openai/codex.py:731-733`). A provider that resumes a session it holds
+argument (`lionagi/providers/openai/codex.py:1700-1706`). A provider that resumes a session it holds
 sends only the new turn and keeps the history remotely, where nothing on this side can fold it.
 
 ## Decision
@@ -99,11 +99,14 @@ The reported count is the provider's input count for one request; a provider tha
 only a total over several requests, and a resumed session with no reported count on record, cannot
 be measured, and under a ceiling are refused with that reason, never sent unmeasured. Whether a
 provider holds the history remotely, and whether a count it reports is for one request, is that
-provider adapter's statement, not an inference from a `resume` argument (the Codex path is handed one
-and still sends the whole history, `lionagi/providers/openai/codex.py:902-903`). Today no resuming adapter
-makes that statement: the Claude Code adapter yields only its terminal `result` usage, a total
-whenever the session ran more than one request, and the run records usage only when the turn
-produced text (`lionagi/operations/run/run.py:489-501`, `:660-665`); the Gemini CLI path reports one
+provider adapter's statement, not an inference from a `resume` argument. The Codex adapter
+renders branch history for every turn and does not resume a Codex thread
+(`lionagi/providers/openai/codex.py:1921-1926`). Today no resuming adapter makes
+that statement: the Claude Code adapter yields only its terminal `result` usage, a total
+whenever the session ran more than one request. The run attaches that metadata to an
+`AssistantResponse` only when the turn produced text (`lionagi/operations/run/run.py:526-545`),
+although it separately accumulates usage and passes it to `API_POST_CALL` even without a text
+response (`lionagi/operations/run/run.py:697-702,807-815`). The Gemini CLI path reports one
 summary per invocation. Landing step 2 makes the Claude Code adapter report the input count of the
 session's last request from that request's own event, and the run keep it when the turn produced no
 text; a Gemini CLI summary for more than one turn, or one with no turn count, counts as a total.
