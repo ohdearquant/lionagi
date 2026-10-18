@@ -39,8 +39,8 @@ written down in these hand-maintained forms:
 4. `MIGRATION_COLUMNS` / `MIGRATION_INDEXES` in `state/schema_migrations.py`: a per-table
    ledger of additive columns (the `sessions` list alone carries ~30 entries) and a per-dialect
    index list, both re-stating what 1 and 2 already declare.
-5. Five `_*_COLUMNS` frozensets in `state/db.py` (`_SESSION_COLUMNS` 257, `_INVOCATION_COLUMNS`
-   314, `_SHOW_COLUMNS` 328, `_PLAY_COLUMNS` 342, `_BRANCH_COLUMNS` 365) guarding the dynamic
+5. Five `_*_COLUMNS` frozensets in `state/db.py` (`_SESSION_COLUMNS` 258, `_INVOCATION_COLUMNS`
+   315, `_SHOW_COLUMNS` 329, `_PLAY_COLUMNS` 343, `_BRANCH_COLUMNS` 366) guarding the dynamic
    UPDATE builders, plus the hand-written column lists inside each `_build_*_insert_stmt`.
    The file also holds `_MIGRATION_COLUMNS` and `_SPEND_ROLLUP_COLUMNS`, which are a different
    thing and are not part of this five.
