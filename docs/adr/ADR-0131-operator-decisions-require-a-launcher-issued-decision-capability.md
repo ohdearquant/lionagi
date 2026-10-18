@@ -1,8 +1,8 @@
 # ADR-0131: Operator decisions require a launcher-issued decision capability
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Aspirational
-- **Implementation-status**: not-started
+- **Implementation-status**: partial
 - **Area**: studio
 - **Date**: 2026-10-17
 - **Relations**: changes the Studio daemon's route contract for the two Operator decision routes and
@@ -15,6 +15,13 @@ allow or deny an Operator proposal, so a run whose automatically allowed tool ca
 to the daemon can approve its own proposals. This record makes a decision require a capability that
 only the daemon mints, handed to a page by its launcher or, for a reconnect, over a channel only the
 daemon's own OS user can open, and that no HTTP request can obtain.
+
+Landing steps 1, 2 and 2b are in: the decision-capability store and the decision rows that record
+its principal, minting at launch, the retired HTTP mint route, redemption returning the capability,
+the page's use of it, and the same-user reconnect channel the CLI pairs over. Step 3's remaining
+launch adapters and step 4's principal check and refusals are not; decisions are still admitted under
+contract version 1, every decision request accepted today is still accepted, and a request without
+the capability is recorded unattributed.
 
 ## Context
 

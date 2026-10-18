@@ -255,17 +255,11 @@ def _studio_start(args: argparse.Namespace) -> int:
 
 
 class _PairingRefusedError(Exception):
-    """A daemon answers on the port but would not issue a pairing code."""
+    """A daemon answers on the port but did not issue a pairing code."""
 
 
-def _code_from_running_daemon(port: int) -> str | None:
-    """A pairing code from a lionagi daemon already listening on ``port``, or None.
-
-    None means nothing that answers like a lionagi daemon is there, so this launch
-    starts one. A daemon that answers but refuses to pair raises, since starting a
-    second one on the same port would only fail to bind.
-    """
-    import urllib.error
+def _is_lionagi_daemon(port: int) -> bool:
+    """Whether a lionagi daemon answers on loopback ``port``."""
     import urllib.request
 
     base = f"http://127.0.0.1:{port}"
@@ -273,24 +267,35 @@ def _code_from_running_daemon(port: int) -> str | None:
         with urllib.request.urlopen(f"{base}/health", timeout=2) as resp:  # noqa: S310
             health = json.loads(resp.read())
     except (OSError, ValueError):
-        return None
-    if not isinstance(health, dict) or health.get("status") != "ok":
-        return None
-    headers = {"Content-Type": "application/json"}
-    if token := os.environ.get("LIONAGI_STUDIO_AUTH_TOKEN"):
-        headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(  # noqa: S310
-        f"{base}/api/studio/pairing-codes", data=b"{}", method="POST", headers=headers
+        return False
+    return isinstance(health, dict) and health.get("status") == "ok"
+
+
+def _code_from_running_daemon(port: int) -> str | None:
+    """A pairing code from a lionagi daemon already listening on ``port``, or None.
+
+    None means nothing that answers like a lionagi daemon is there, so this launch
+    starts one. The code comes over the daemon's same-user reconnect socket, never
+    over HTTP: a daemon that answers but issues none raises, since starting a
+    second one on the same port would only fail to bind.
+    """
+    from lionagi.studio.reconnect import (
+        default_socket_path,
+        read_reconnect_code,
+        unix_sockets_supported,
     )
-    try:
-        with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310
-            code = json.loads(resp.read()).get("code")
-    except urllib.error.HTTPError as exc:
-        raise _PairingRefusedError(f"HTTP {exc.code}") from exc
-    except (OSError, ValueError, AttributeError) as exc:
-        raise _PairingRefusedError(str(exc) or type(exc).__name__) from exc
-    if not isinstance(code, str) or not code:
-        raise _PairingRefusedError("no code in the response")
+
+    if not _is_lionagi_daemon(port):
+        return None
+    if not unix_sockets_supported():
+        raise _PairingRefusedError(
+            "this platform has no reconnect channel; restart the daemon to pair a new page"
+        )
+    code = read_reconnect_code(default_socket_path())
+    if code is None:
+        raise _PairingRefusedError(
+            "it did not answer on its reconnect socket; restart the daemon to pair a new page"
+        )
     return code
 
 
@@ -313,12 +318,12 @@ def _start_hosted(host: str, port: int, no_open: bool) -> int:
     except _PairingRefusedError as exc:
         log_error(
             f"A Studio daemon is already running at {daemon_url}, but it would not pair "
-            f"a page ({exc}). Stop it and run `li studio` again."
+            f"a page ({exc})."
         )
         return 1
     already_running = code is not None
     if code is None:
-        code = mint_pairing_code()
+        code = mint_pairing_code(for_launch=True)
     url = _hosted_launch_url(port, code)
     print(f"Lion Studio: {_HOSTED_URL}")
     print(f"  connects to your local daemon at {daemon_url}")

@@ -11,6 +11,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -1264,31 +1265,54 @@ def _loopback_server(routes):
         thread.join(timeout=5)
 
 
-def test_a_running_lionagi_daemon_issues_a_code(daemon_probe, monkeypatch):
+def test_a_running_lionagi_daemon_issues_a_code_over_its_reconnect_socket(
+    daemon_probe, monkeypatch
+):
+    """The launcher asks a running daemon for a code over the same-user socket,
+    never over HTTP: a program that can only speak HTTP cannot get one."""
+    import lionagi.studio.launch_access as launch_access
+    import lionagi.studio.reconnect as reconnect
+
     monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
-    routes = {
-        ("GET", "/health"): (200, {"status": "ok"}),
-        ("POST", "/api/studio/pairing-codes"): (201, {"code": "abc", "expires_in": 120}),
-    }
-    with _loopback_server(routes) as (port, seen):
-        assert daemon_probe(port) == "abc"
+    # A unix socket path is bounded at about 100 bytes, shorter than some test
+    # temporary directories.
+    with tempfile.TemporaryDirectory(prefix="studio-r", dir="/tmp") as directory:
+        socket_path = Path(directory) / "r.sock"
+        monkeypatch.setattr(reconnect, "default_socket_path", lambda *args: socket_path)
+        routes = {("GET", "/health"): (200, {"status": "ok"})}
+        with _loopback_server(routes) as (port, seen):
+            codes = iter(["abc"])
+            channel = reconnect.ReconnectChannel(
+                socket_path, lambda: next(codes), _uid_reader=lambda _conn: os.getuid()
+            )
+            launch_access.reset_launch_access()
+            channel.start()
+            try:
+                assert daemon_probe(port) == "abc"
+            finally:
+                channel.stop()
 
-    post = next(headers for method, _, headers in seen if method == "POST")
-    assert "Origin" not in post
-    assert "Authorization" not in post
+    assert all(method == "GET" for method, _, _ in seen)
 
 
-def test_a_running_daemon_in_token_mode_is_asked_with_the_token(daemon_probe, monkeypatch):
-    monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "studio-test-token")
-    routes = {
-        ("GET", "/health"): (200, {"status": "ok"}),
-        ("POST", "/api/studio/pairing-codes"): (201, {"code": "abc"}),
-    }
-    with _loopback_server(routes) as (port, seen):
-        assert daemon_probe(port) == "abc"
+def test_a_running_daemon_without_a_reconnect_socket_refuses(daemon_probe, monkeypatch, tmp_path):
+    import lionagi.studio.cli as studio_cli
+    import lionagi.studio.reconnect as reconnect
 
-    post = next(headers for method, _, headers in seen if method == "POST")
-    assert post.get("Authorization") == "Bearer studio-test-token"
+    monkeypatch.setattr(reconnect, "default_socket_path", lambda *args: tmp_path / "absent.sock")
+    with _loopback_server({("GET", "/health"): (200, {"status": "ok"})}) as (port, _):
+        with pytest.raises(studio_cli._PairingRefusedError, match="restart the daemon"):
+            daemon_probe(port)
+
+
+def test_a_platform_without_unix_sockets_says_to_restart_the_daemon(daemon_probe, monkeypatch):
+    import lionagi.studio.cli as studio_cli
+    import lionagi.studio.reconnect as reconnect
+
+    monkeypatch.setattr(reconnect, "unix_sockets_supported", lambda: False)
+    with _loopback_server({("GET", "/health"): (200, {"status": "ok"})}) as (port, _):
+        with pytest.raises(studio_cli._PairingRefusedError, match="restart the daemon"):
+            daemon_probe(port)
 
 
 def test_another_program_on_the_port_is_not_a_daemon(daemon_probe):
@@ -1306,9 +1330,11 @@ def test_nothing_listening_is_not_a_daemon(daemon_probe):
     assert daemon_probe(port) is None
 
 
-def test_an_older_daemon_without_pairing_refuses(daemon_probe):
+def test_an_older_daemon_without_a_reconnect_socket_refuses(daemon_probe, monkeypatch, tmp_path):
     import lionagi.studio.cli as studio_cli
+    import lionagi.studio.reconnect as reconnect
 
+    monkeypatch.setattr(reconnect, "default_socket_path", lambda *args: tmp_path / "absent.sock")
     with _loopback_server({("GET", "/health"): (200, {"status": "ok"})}) as (port, _):
-        with pytest.raises(studio_cli._PairingRefusedError, match="404"):
+        with pytest.raises(studio_cli._PairingRefusedError, match="reconnect socket"):
             daemon_probe(port)

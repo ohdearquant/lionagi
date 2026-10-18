@@ -23,7 +23,13 @@ from lionagi.version import __version__
 from ._host import normalize_host
 from ._traceback_dump import arm_traceback_dump, disarm_traceback_dump
 from .config import CORS_ORIGINS, HOST
-from .launch_access import PAIRING_REDEEM_PATH, launch_bearer
+from .launch_access import (
+    PAIRING_REDEEM_PATH,
+    begin_serving,
+    launch_bearer,
+    mint_pairing_code,
+)
+from .reconnect import ReconnectChannel, default_socket_path, unix_sockets_supported
 from .registry import iter_studio_routes, load_studio_route_modules
 from .services._db import StoreNotAddressableError
 
@@ -290,6 +296,24 @@ async def _stop_claude_mirror(stop: asyncio.Event | None, task: asyncio.Task | N
         _log.warning("Claude mirror tail ended with error", exc_info=True)
 
 
+def _start_reconnect_channel() -> ReconnectChannel | None:
+    """Start the same-user reconnect socket before this daemon serves.
+
+    A platform without unix sockets has no reconnect; the CLI then says to
+    restart the daemon. A socket that cannot be created is logged and does not
+    stop the daemon from serving: every HTTP route is unaffected.
+    """
+    if not unix_sockets_supported():
+        return None
+    channel = ReconnectChannel(default_socket_path(), mint_pairing_code)
+    try:
+        channel.start()
+    except OSError as exc:
+        _log.warning("Studio reconnect channel unavailable: %s", exc)
+        return None
+    return channel
+
+
 async def _startup_warmup() -> None:
     """Deferred WAL checkpoint, off the critical path so /health serves as
     soon as reconciliation completes."""
@@ -349,6 +373,11 @@ async def lifespan(app_instance):
     # Recover any accepted Operator turn that was interrupted by a prior daemon
     # exit before accepting new submissions.
     await operator_startup()
+    # Codes and decision capabilities belong to the daemon that issued them.
+    # Serving starts a new epoch unless a launcher minted this launch's code
+    # just before starting this daemon in the same process.
+    begin_serving()
+    reconnect = _start_reconnect_channel()
     mirror_stop, mirror_task = _start_claude_mirror()
     # Pure maintenance; deferred so readiness isn't gated on it.
     warmup_task = asyncio.create_task(_startup_warmup(), name="studio-startup-warmup")
@@ -356,6 +385,8 @@ async def lifespan(app_instance):
     from .services.launches import shutdown_launches
 
     disarm_traceback_dump()
+    if reconnect is not None:
+        await asyncio.to_thread(reconnect.stop)
     await _finalize_warmup(warmup_task)
     await _stop_claude_mirror(mirror_stop, mirror_task)
     await operator_shutdown()

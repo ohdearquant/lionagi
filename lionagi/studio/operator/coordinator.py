@@ -16,6 +16,7 @@ from ..config import (
     OperatorExecutionRootResolution,
     resolve_operator_execution_root_config,
 )
+from ..launch_access import DecisionPrincipal
 from .catalog import OperatorSelectionError, resolve_selection
 from .engine import (
     BranchOperatorEngine,
@@ -1023,7 +1024,13 @@ class OperatorCoordinator:
         allow: bool,
         expected_command_hash: str | None,
         expected_target_version: str | None,
+        principal: DecisionPrincipal | None = None,
     ) -> dict[str, Any]:
+        """Decide a proposal, recording the verified *principal* when one is given.
+
+        *principal* comes from the decision-capability store, never from a caller's
+        identity string. The store writes it with the decision in one transaction.
+        """
         await self.ensure_started()
         before = await self.store.get_proposal(proposal_id)
         if before["conversationId"] != conversation_id:
@@ -1041,6 +1048,7 @@ class OperatorCoordinator:
                 expected_target_version=expected_target_version,
                 audit=True,
                 claim_execution=True,
+                principal=principal,
             )
         except Exception as exc:  # noqa: BLE001
             if isinstance(exc, OperatorConflictError):

@@ -8,8 +8,10 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
 import {
+  clearDecisionToken,
   hasPendingPairingCode,
   pairedBearer,
+  pairedDecisionToken,
   redeemPairingCode,
   resetPairingForTests,
   takePairingCodeFromLocation,
@@ -104,10 +106,77 @@ describe("redeemPairingCode", () => {
     expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
     expect(pairedBearer(BASE)).toBe("launch-bearer");
     expect(pairedBearer("http://127.0.0.1:8766")).toBeUndefined();
+    // The bearer is still memory-only: no response field is stored, and this
+    // daemon issued no decision capability to store either.
+    expect(sessionWrites).not.toHaveBeenCalled();
     expect(hasPendingPairingCode()).toBe(false);
     expect(localWrites).not.toHaveBeenCalled();
-    expect(sessionWrites).not.toHaveBeenCalled();
     expect(document.cookie).not.toContain("launch-bearer");
+  });
+
+  it("keeps the decision capability in sessionStorage for that daemon only", async () => {
+    fetchMock.mockResolvedValue(
+      respond(200, { token: "launch-bearer", decision_token: "decision-capability" }),
+    );
+    let stored: string | null = null;
+    vi.stubGlobal("sessionStorage", {
+      getItem: (key: string) => (key === "studio.decisionToken" ? stored : null),
+      setItem: (key: string, value: string) => {
+        if (key === "studio.decisionToken") stored = value;
+      },
+      removeItem: (key: string) => {
+        if (key === "studio.decisionToken") stored = null;
+      },
+      clear: () => {
+        stored = null;
+      },
+      key: () => null,
+      length: 0,
+    } as Storage);
+
+    expect(await redeemPairingCode(BASE)).toBe("paired");
+
+    expect(JSON.parse(String(stored))).toEqual({
+      base: BASE,
+      token: "decision-capability",
+    });
+    expect(pairedDecisionToken(BASE)).toBe("decision-capability");
+    expect(pairedDecisionToken("http://127.0.0.1:8766")).toBeUndefined();
+    expect(pairedBearer(BASE)).toBe("launch-bearer");
+    expect(localWrites).not.toHaveBeenCalled();
+  });
+
+  it("survives a reload: the capability is read back from sessionStorage", async () => {
+    vi.stubGlobal("sessionStorage", {
+      getItem: () => JSON.stringify({ base: BASE, token: "decision-capability" }),
+      setItem: () => {},
+      removeItem: () => {},
+      clear: () => {},
+      key: () => null,
+      length: 1,
+    } as Storage);
+
+    expect(pairedDecisionToken(BASE)).toBe("decision-capability");
+  });
+
+  it("forgets the capability on disconnect", async () => {
+    fetchMock.mockResolvedValue(
+      respond(200, { token: "launch-bearer", decision_token: "decision-capability" }),
+    );
+    await redeemPairingCode(BASE);
+    expect(pairedDecisionToken(BASE)).toBe("decision-capability");
+
+    clearDecisionToken();
+
+    expect(pairedDecisionToken(BASE)).toBeUndefined();
+  });
+
+  it("pairs without a decision capability when the daemon issues none", async () => {
+    fetchMock.mockResolvedValue(respond(200, { token: "launch-bearer" }));
+
+    expect(await redeemPairingCode(BASE)).toBe("paired");
+    expect(pairedBearer(BASE)).toBe("launch-bearer");
+    expect(pairedDecisionToken(BASE)).toBeUndefined();
   });
 
   it("spends the code once: a second redeem sends nothing", async () => {

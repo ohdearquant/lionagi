@@ -11,6 +11,11 @@ from typing import Any, Literal
 
 from fastapi import HTTPException, Query, Request
 
+from ..launch_access import (
+    DECISION_TOKEN_HEADER,
+    DecisionPrincipal,
+    resolve_decision_capability,
+)
 from ..operator.coordinator import get_operator_coordinator
 from ..operator.store import (
     OperatorConflictError,
@@ -300,6 +305,23 @@ async def stream_operator_conversation(
     return sse_response(events())
 
 
+def _decision_principal(request: Request) -> DecisionPrincipal | None:
+    """The principal a decision request's capability resolves to, or None.
+
+    None covers a request without the header, which is still accepted today,
+    and a capability this daemon cannot verify from the request's own origin
+    (unknown, expired, revoked, from another start, another origin or another
+    scope). Nothing here admits or refuses the request: API admission is the
+    middleware's, unchanged.
+    """
+    presented = request.headers.get(DECISION_TOKEN_HEADER)
+    if not presented:
+        return None
+    origins = request.headers.getlist("origin")
+    origin = origins[0] if len(origins) == 1 else None
+    return resolve_decision_capability(presented, origin=origin)
+
+
 @studio_route(
     "/operator/conversations/{conversation_id}/proposals/{proposal_id}/confirm",
     method="POST",
@@ -309,6 +331,7 @@ async def confirm_operator_proposal(
     conversation_id: str,
     proposal_id: str,
     body: ConfirmProposalRequest,
+    request: Request,
 ) -> dict[str, Any]:
     """Allow a pending Operator proposal.
 
@@ -316,6 +339,10 @@ async def confirm_operator_proposal(
     listener, including programs run by other local accounts, can allow or deny
     Operator proposals. The permission prompt is a workflow safeguard, not
     isolation from local programs; set a token on a shared machine.
+
+    A request may carry the decision capability ``li studio`` paired its page
+    with in ``X-Studio-Decision-Token``; the decision then records the principal
+    it resolves to. A request without it is recorded unattributed.
     """
     try:
         return await get_operator_coordinator().decide(
@@ -324,6 +351,7 @@ async def confirm_operator_proposal(
             allow=True,
             expected_command_hash=body.expected_command_hash,
             expected_target_version=body.expected_target_version,
+            principal=_decision_principal(request),
         )
     except OperatorStoreError as exc:
         raise _http_error(exc) from exc
@@ -338,6 +366,7 @@ async def decide_operator_proposal(
     conversation_id: str,
     proposal_id: str,
     body: DecideProposalRequest,
+    request: Request,
 ) -> dict[str, Any]:
     """Allow or deny a pending Operator proposal.
 
@@ -345,6 +374,10 @@ async def decide_operator_proposal(
     listener, including programs run by other local accounts, can allow or deny
     Operator proposals. The permission prompt is a workflow safeguard, not
     isolation from local programs; set a token on a shared machine.
+
+    A request may carry the decision capability ``li studio`` paired its page
+    with in ``X-Studio-Decision-Token``; the decision then records the principal
+    it resolves to. A request without it is recorded unattributed.
     """
     try:
         return await get_operator_coordinator().decide(
@@ -353,6 +386,7 @@ async def decide_operator_proposal(
             allow=body.decision == "allow",
             expected_command_hash=body.expected_command_hash,
             expected_target_version=body.expected_target_version,
+            principal=_decision_principal(request),
         )
     except OperatorStoreError as exc:
         raise _http_error(exc) from exc

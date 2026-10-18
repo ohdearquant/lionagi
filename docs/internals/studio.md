@@ -74,19 +74,50 @@ admission rule and the schemas are unchanged.
 A refused origin, or a request without one refused by its `Sec-Fetch-Site`, is
 admitted only with the launch bearer (`launch_access.py`),
 minted per process and held in memory, never put in the environment or written
-anywhere. A page receives it by pairing. `li studio` mints a one-time code, or
-asks a daemon already running on the port for one over
-`POST /api/studio/pairing-codes` (refused to any request carrying an Origin, and
-behind the bearer gate, so a daemon with a token needs it), then opens the
-hosted page with `#pair=<code>`. A browser never sends the fragment to a server.
-The page reads it once before the router starts, removes it with
-`history.replaceState`, and redeems it at `POST /api/studio/pair`, the one API
-path the gate lets through without a bearer. That route requires an Origin in
-`CORS_ORIGINS` (checked before the code is spent); a code works once and
+anywhere. A page receives it by pairing. `li studio` mints a one-time code in
+process before it starts the daemon, or asks a daemon already running on the
+port for one over the daemon's reconnect socket, then opens the hosted page with
+`#pair=<code>`. No HTTP route issues a code: `POST /api/studio/pairing-codes`
+answers 410 after admission, whatever the headers or token. A browser never
+sends the fragment to a server. The page reads it once before the router
+starts, removes it with `history.replaceState`, and redeems it at
+`POST /api/studio/pair`, the one API path the gate lets through without a
+bearer. That route requires an Origin in `CORS_ORIGINS` (checked before the code
+is spent); a code is bound to the origins the launcher named, works once, and
 expires after 120 seconds. The answer is the configured token when one is set,
-else the launch bearer, and the page keeps it in memory only: a reload loses
-it, and the page then shows the access-required screen with `li studio` as the
-remedy.
+else the launch bearer, plus a decision capability bound to the page's origin
+(see below). The page keeps the bearer in memory only, so a reload loses it and
+the page then shows the access-required screen with `li studio` as the remedy;
+the capability is kept in `sessionStorage` for that tab, so it survives the
+reload and is gone with the tab.
+
+**The reconnect socket** (`reconnect.py`) — a unix socket in a `studio/`
+directory beside the StateDB file, created with mode 0600 inside a 0700
+directory in the lifespan before the daemon serves, removed at exit, and
+replaced at start when a socket file left by a dead daemon is there. On each connection it reads the peer's user id
+from the socket (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS, both through
+`socket.getsockopt`), refuses any id but its own, and for its own user mints one
+code in process and writes it as the only content of the reply. It is not an
+HTTP route and no TCP listener serves it. `li studio` probes `/health` only to
+tell a daemon from another program, then reads one code over the socket, and
+never stops a running daemon; on a platform without unix sockets it says to
+restart the daemon. A process running as the daemon's own OS user can obtain a
+code this way, which is outside what the HTTP-only guarantee covers.
+
+**Decision capabilities** (`launch_access.py`) — a page pairs with an admission
+bearer and, separately, a decision capability: a random 256-bit secret the
+daemon keeps only as its hash, bound to a random principal id, this start's
+epoch, the frontend origin it was redeemed from and the scope `operator:decide`,
+expiring eight hours after redemption and revoked by
+`POST /api/studio/disconnect` on an explicit disconnect. A daemon restart
+invalidates every code and capability, and `LIONAGI_STUDIO_AUTH_TOKEN` neither
+mints one nor decides. The two Operator decision routes read it from
+`X-Studio-Decision-Token` when it is there, resolve it to its principal and pass
+that to `decide()`, whose store transaction records the principal id, epoch,
+method, origin and scope on the proposal row and in the audit row; a request
+without the header is still accepted and records no principal. Nothing refuses a
+decision yet: the router contract stays version 1, and the no-token admission
+rule above is unchanged for every route.
 
 **`require_json_content_type`** — rejects every state-changing `/api`
 request that does not declare `application/json`, including bodyless action

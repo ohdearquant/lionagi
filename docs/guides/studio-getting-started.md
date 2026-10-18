@@ -61,6 +61,12 @@ daemon already running, that opens a newly paired page without starting a
 second daemon. Use `--no-open` when you do not want LionAGI to open a browser;
 `li studio` then prints the one-time link instead.
 
+Pairing also hands the page a decision capability, which the page keeps for its
+tab and sends only on the two Operator decision requests. It expires eight hours
+after pairing, and a daemon restart invalidates it; pair the page again to
+restore decisions. A code is never issued over HTTP, so an API request, with any
+headers or the token, cannot obtain one.
+
 ### Authentication and browser trust
 
 By default, `LIONAGI_STUDIO_AUTH_TOKEN` is unset and the daemon requires no
@@ -94,8 +100,11 @@ Set `LIONAGI_STUDIO_AUTH_TOKEN` in the daemon's environment before starting it
 to require `Authorization: Bearer <token>` for API requests and the
 schema/docs endpoints. `/health`, CORS preflight, and the `POST /api/studio/pair`
 exchange remain unauthenticated; the pairing route needs no bearer because the
-one-time code is its credential. The daemon also serves the single-page app shell
-and its hashed assets without a bearer. Pairing hands a page the configured
+one-time code is its credential. The token admits requests; it neither issues a
+pairing code nor decides an Operator proposal, and
+`POST /api/studio/pairing-codes` answers 410 whether or not it is presented.
+The daemon also serves the single-page app shell and its hashed assets without
+a bearer. Pairing hands a page the configured
 token, so the hosted page keeps working once it is paired, and every other
 client must supply the matching bearer. The
 bundled UI in `--docker` mode has no token-entry field either, so with a token
