@@ -710,7 +710,7 @@ def _refuse_without_prompt(verb: Verb, args: dict[str, Any], prompt: str | None)
     )
 
 
-def _refuse_unknown_profile(args: dict[str, Any], cwd: str | None) -> None:
+def _refuse_unknown_profile(args: dict[str, Any], cwd: str | None) -> Any:
     """Refuse a submission naming an agent profile nothing declares.
 
     Checked with the exact resolver a spawned run itself would use (same
@@ -719,10 +719,13 @@ def _refuse_unknown_profile(args: dict[str, Any], cwd: str | None) -> None:
     surface only inside the spawned process — after the job record already
     existed with nothing on it to say why — leaving a caller to poll a run
     that died silently on start.
+
+    Returns the loaded profile, or None when the submission names none, so a
+    caller can read the authority that profile grants.
     """
     name = args.get("agent")
     if not name:
-        return
+        return None
     from lionagi.cli._providers import (
         AgentProfileNotFoundError,
         AmbiguousProfileNameError,
@@ -731,7 +734,7 @@ def _refuse_unknown_profile(args: dict[str, Any], cwd: str | None) -> None:
 
     with roster._resolving_under(cwd):
         try:
-            load_agent_profile(name)
+            return load_agent_profile(name)
         except (AgentProfileNotFoundError, AmbiguousProfileNameError) as exc:
             raise OpError("invalid_input", str(exc)) from exc
 
@@ -779,7 +782,9 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
     _refuse_without_model(verb, schema, args, prompt)
     _refuse_without_prompt(verb, args, prompt)
     cwd = _resolve_cwd(args)
-    _refuse_unknown_profile(args, cwd)
+    profile = _refuse_unknown_profile(args, cwd)
+    # A profile that runs the child with write authority gets its own khive actor.
+    write_capable = bool(getattr(profile, "yolo", False) or getattr(profile, "bypass", False))
     flags = render_argv(schema, args)
     assert verb.job_kind is not None
     try:
@@ -794,11 +799,19 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
             notify_sender=args.get("notify_sender"),
             mcp_config=args.get("mcp_config"),
             no_mcp_config=bool(args.get("no_mcp_config")),
+            exclude_mcp_servers=args.get("exclude_mcp_servers"),
+            write_capable=write_capable,
         )
+    except jobs.ChildActorError as exc:
+        raise OpError("invalid_input", str(exc)) from exc
     except jobs.NotifySenderMismatchError as exc:
         raise OpError("invalid_input", str(exc)) from exc
     except jobs.NotifySenderResolutionError as exc:
         raise OpError("unavailable", str(exc)) from exc
+    except jobs.SubmitInputError as exc:
+        # A submission this spawn refuses on its own terms (an exclusion it
+        # cannot honour) is the caller's input to correct, not a server outage.
+        raise OpError("invalid_input", str(exc)) from exc
     fingerprint = schema.get("x-playbook-fingerprint")
     if fingerprint is not None:
         result["playbook"] = schema.get("x-playbook")

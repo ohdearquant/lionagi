@@ -943,6 +943,22 @@ def test_notify_sender_admission_failure_is_reported_to_the_caller(
     assert submitted == {}
 
 
+def test_an_internal_value_error_from_submit_is_not_reported_as_caller_input(
+    submitted, monkeypatch
+):
+    """A server fault must not tell the caller to rewrite an accepted request."""
+
+    def reject(*_args, **_kwargs):
+        raise ValueError("unknown job kind 'not-a-kind'")
+
+    monkeypatch.setattr(jobs, "submit", reject)
+    answer = call(ops=[spawn_op("agent.submit", {"query": ["codex"], "prompt": "work"})])["ops"][0]
+
+    assert answer["ok"] is False
+    assert answer["error"]["kind"] == "internal", answer
+    assert "unknown job kind" in answer["error"]["message"]
+
+
 @pytest.mark.parametrize(
     ("op", "args"),
     [

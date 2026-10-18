@@ -39,6 +39,8 @@ from lionagi.ln._proc import (
 from lionagi.ln.concurrency import current_time, sleep
 
 from . import config
+from ._child_actor import ChildActorError, mint_child_actor_config
+from ._errors import SubmitInputError
 
 _log = logging.getLogger(__name__)
 
@@ -111,6 +113,16 @@ LOST_REASON = "process_gone_without_outcome"
 # assigned from the *absence* of that file: retention prunes run directories,
 # and an absent file is exactly what true silence also looks like.
 LOST_REASON_NOTICE_RECORDED_UNDELIVERED = "process_gone_notice_recorded_undelivered"
+
+# Two more siblings, read from the run's own run.json. The run decided a
+# terminal status and its store refused the write (``terminal_write_lost``), or
+# its signal persistence stopped waiting on a store that refused the writer
+# lock (``signal_persistence_degraded_at``). Neither is a recorded status, so
+# both stay OUTCOME_INDETERMINATE, and neither is ever assigned from the
+# absence of a field: retention prunes run directories, and an absent field is
+# also what an older run and a silent one look like.
+REASON_DETAIL_TERMINAL_WRITE_LOST = "terminal_write_lost"
+REASON_DETAIL_PERSISTENCE_DEGRADED = "persistence_degraded"
 
 # Outcome values valid to report back from a job record.
 _OUTCOMES = frozenset({"succeeded", "failed", "cancelled", OUTCOME_INDETERMINATE})
@@ -194,6 +206,14 @@ LIFECYCLE_TIMEOUT_SECONDS = 20.0
 # The most the lifecycle command may write on its result channel.
 _LIFECYCLE_OUTPUT_LIMIT = 1_000_000
 _PERSISTENCE_DEGRADED_REASON_FIELD = "persistence_degraded_reason"
+_SIGNAL_PERSIST_DROPPED_FIELD = "signal_persist_dropped"
+_TERMINAL_WRITE_LOST_FIELD = "terminal_write_lost"
+_SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD = "signal_persistence_degraded_at"
+
+# The most of a run.json the reaper reads to pick a reason code. An agent run's
+# file is a few kilobytes (its largest field is free-text error), so a larger
+# one is not that file, and the reaper reads it under the job lock on a poll.
+_MAX_RUN_MANIFEST_BYTES = 1_048_576
 
 # Admission resolves an explicit notification sender through khive before a
 # run is reserved. This is a local identity query, so it gets the same bounded
@@ -1058,6 +1078,33 @@ def _submit_cwd() -> str | None:
         return None
 
 
+_ACTOR_CONFIG = os.path.join(".khive", "config.toml")
+
+
+def _sender_anchor(run_cwd: str | None, submit_cwd: str | None) -> tuple[str | None, bool]:
+    """The directory a declared sender is judged against, and where its notice is signed.
+
+    The default is the submitting directory, as it was before run-directory
+    anchoring existed: served over stdio, one client spawns one server, so the
+    server's own directory is often the caller's too. A deployment that serves
+    several callers from one declared directory does not have that agreement,
+    and there the server's directory answers for nobody. Such a deployment opts
+    into run-directory anchoring by configuring ``LIONAGI_MCP_SENDER_ROOTS``;
+    only then is a submission's own directory the anchor when it names one.
+
+    What keeps this from being attribution by assertion: the same directory
+    becomes the delivery anchor, so a caller cannot claim an actor without also
+    running its job from that actor's directory; the config naming the actor
+    must exist there; and a caller-named anchor must sit under a configured
+    root. The second element says whether run-directory anchoring applied,
+    because only that path requires a config at the chosen directory.
+    """
+    if run_cwd and config.sender_roots():
+        # the child spawns with this cwd, so resolve it the way the spawn will
+        return os.path.abspath(run_cwd), True
+    return submit_cwd, False
+
+
 def _resolve_submitter_identity(cwd: str) -> str:
     """Resolve the actor that *cwd* can sign as through khive's canonical resolver."""
     binary = shutil.which("kkernel")
@@ -1112,37 +1159,74 @@ def _resolve_submitter_identity(cwd: str) -> str:
     return actor
 
 
-# Used when an explicit sender cannot be resolved from an available submitting directory.
-# Omitting the sender skips this validation only; submission and notice delivery can still fail
-# for other reasons. A mismatch names the resolved actor because that is the sender to use.
+# Said by both unresolvable paths below, and only by those. A caller who cannot
+# be validated is one step from a submission that works; without this the
+# refusal reads as "spawning is down" when only the attested form is.
+#
+# The mismatch message keeps its own wording: there the caller still has a
+# signed option, so what helps is the actor to use. The clause about notices is
+# conditional because delivery is configuration this refusal cannot see.
 _NOTIFY_SENDER_FALLBACK = (
-    "omit notify_sender to continue without an explicit sender; "
-    "the submission carries no explicit sender"
+    "omit notify_sender to submit without sender attestation; whatever notice this "
+    "run's configuration sends then goes unsigned, or is not sent at all if that "
+    "command interpolates {sender} and LIONAGI_MCP_NOTIFY_SENDER supplies none"
 )
 
 
-def _validate_notify_sender(sender: str | None, submit_cwd: str | None) -> None:
-    """Refuse an explicit sender that the submitting directory cannot sign as."""
+def _refuse_anchor_outside_the_configured_roots(sender: str, anchor: str) -> None:
+    """Refuse a caller-named anchor the server was not configured to accept.
+
+    Both sides are symlink-resolved before the comparison: a link under an
+    allowed root pointing out of it would otherwise satisfy a containment test
+    that only reads the path as written.
+    """
+    try:
+        roots = config.sender_roots()
+    except ValueError as exc:
+        raise NotifySenderResolutionError(
+            f"cannot validate notify_sender {sender!r}: {exc}; {_NOTIFY_SENDER_FALLBACK}"
+        ) from exc
+    resolved = Path(os.path.realpath(anchor))
+    if any(resolved == root or resolved.is_relative_to(root) for root in map(Path, roots)):
+        return
+    named = ", ".join(roots) if roots else f"none are configured in {config.SENDER_ROOTS_ENV_VAR}"
+    raise NotifySenderResolutionError(
+        f"cannot validate notify_sender {sender!r}: the run directory {anchor!r} is outside the "
+        f"roots a declared sender may anchor under ({named}); {_NOTIFY_SENDER_FALLBACK}"
+    )
+
+
+def _validate_notify_sender(
+    sender: str | None, anchor: str | None, *, caller_named: bool = False
+) -> None:
+    """Refuse an explicit sender that the anchoring directory cannot sign as."""
     if not sender:
         return
-    if submit_cwd is None:
+    if anchor is None:
         raise NotifySenderResolutionError(
             f"cannot validate notify_sender {sender!r}: the submitting directory is "
-            "unavailable; this server cannot submit with an explicit sender from a removed "
-            "directory, and a terminal notice is not sent unless "
-            "LIONAGI_MCP_NOTIFY_CWD names a directory"
+            f"unavailable; {_NOTIFY_SENDER_FALLBACK}"
+        )
+    if caller_named:
+        _refuse_anchor_outside_the_configured_roots(sender, anchor)
+    # Without configured roots the anchor is the server's own directory, as on
+    # main: it is judged by resolution alone and does not need to hold a config.
+    if caller_named and not os.path.isfile(os.path.join(anchor, _ACTOR_CONFIG)):
+        raise NotifySenderResolutionError(
+            f"cannot validate notify_sender {sender!r}: {anchor!r} holds no {_ACTOR_CONFIG}, so it "
+            f"signs as the unattributed pool rather than as an actor; {_NOTIFY_SENDER_FALLBACK}"
         )
     try:
-        actual = _resolve_submitter_identity(submit_cwd)
+        actual = _resolve_submitter_identity(anchor)
     except NotifySenderResolutionError as exc:
         raise NotifySenderResolutionError(
-            f"cannot validate notify_sender {sender!r} from submitting directory "
-            f"{submit_cwd!r}: {exc}; {_NOTIFY_SENDER_FALLBACK}"
+            f"cannot validate notify_sender {sender!r} from signing directory "
+            f"{anchor!r}: {exc}; {_NOTIFY_SENDER_FALLBACK}"
         ) from exc
     if actual != sender:
         raise NotifySenderMismatchError(
             f"notify_sender {sender!r} does not match actor {actual!r} resolved from "
-            f"submitting directory {submit_cwd!r}; use {actual!r} or omit notify_sender"
+            f"signing directory {anchor!r}; use {actual!r} or omit notify_sender"
         )
 
 
@@ -1158,6 +1242,8 @@ def submit(
     notify_sender: str | None = None,
     mcp_config: str | None = None,
     no_mcp_config: bool = False,
+    exclude_mcp_servers: list[str] | None = None,
+    write_capable: bool = False,
 ) -> dict[str, Any]:
     """Spawn a ``li`` run in the background and return its handle immediately.
 
@@ -1172,15 +1258,58 @@ def submit(
     configured default, the run simply records its status and delivers nothing.
 
     *mcp_config* and *no_mcp_config* are the caller's own answer to where the
-    child's MCP servers come from, passed as values (not re-parsed out of
-    *flags*, which are already rendered in `--flag=value` form) since this
-    function must decide whether to resolve its own server set.
+    child's MCP servers come from. *exclude_mcp_servers* removes named servers
+    from a config this submission resolves before the snapshot is written; it
+    is incompatible with both caller-owned answers. These are passed as values
+    (not re-parsed out of *flags*, which are already rendered in
+    `--flag=value` form) since this function must decide whether to resolve its
+    own server set.
     """
     if kind not in _KIND_ARGV:
         raise ValueError(f"unknown job kind {kind!r}; expected one of {sorted(_KIND_ARGV)}")
 
+    exclusions = [] if exclude_mcp_servers is None else exclude_mcp_servers
+    if not isinstance(exclusions, list) or any(
+        not isinstance(name, str) or not name for name in exclusions
+    ):
+        raise SubmitInputError("exclude_mcp_servers must be a list of non-empty server names")
+    if len(exclusions) != len(set(exclusions)):
+        raise SubmitInputError("exclude_mcp_servers contains duplicate server names")
+    excluded_mcp_servers = sorted(exclusions)
+    if excluded_mcp_servers and mcp_config is not None:
+        raise SubmitInputError(
+            "exclude_mcp_servers cannot be combined with mcp_config because the caller-owned "
+            "config is not inspected or rewritten"
+        )
+    if excluded_mcp_servers and no_mcp_config:
+        raise SubmitInputError(
+            "exclude_mcp_servers cannot be combined with no_mcp_config because no server set "
+            "will be resolved"
+        )
+
     submit_cwd = _submit_cwd()
-    _validate_notify_sender(notify_sender, submit_cwd)
+    minted = None
+    child_actor_suffix = config.child_actor_suffix() if write_capable else None
+    if child_actor_suffix:
+        if cwd is None:
+            raise ChildActorError(
+                "a write-capable run needs its own tree: pass cwd; its actor config is minted there"
+            )
+        if submit_cwd is None:
+            raise ChildActorError(
+                "the submitting directory is unavailable, so no submitting actor exists to "
+                "derive a child actor from"
+            )
+        # before the sender check, so a declared sender is judged against the
+        # minted child actor
+        minted = mint_child_actor_config(submit_cwd, cwd, child_actor_suffix)
+    # Captured once and used for the check, the record and the delivery, so
+    # the run cannot be attested against one directory and delivered from
+    # another.
+    sender_cwd, caller_named_anchor = _sender_anchor(cwd, submit_cwd)
+    if not notify_sender:
+        sender_cwd = None
+    _validate_notify_sender(notify_sender, sender_cwd, caller_named=caller_named_anchor)
 
     run_id, d = _reserve_run_dir()
     log_path = d / "console.log"
@@ -1256,9 +1385,25 @@ def submit(
                     mcp_config_source = str(resolution.source) if resolution.source else None
             else:
                 mcp_servers = resolution.servers
+                unknown_exclusions = sorted(set(excluded_mcp_servers) - set(mcp_servers))
+                if unknown_exclusions:
+                    raise SubmitInputError(
+                        "exclude_mcp_servers names servers not declared by the resolved config: "
+                        + ", ".join(unknown_exclusions)
+                    )
+                mcp_servers = {
+                    name: server
+                    for name, server in mcp_servers.items()
+                    if name not in excluded_mcp_servers
+                }
                 mcp_config_source = str(resolution.source) if resolution.source else None
                 mcp_config_searched_from = resolution.searched_from
-                mcp_config_path = str(d / _MCP_SNAPSHOT_FILENAME)
+                # Absolute: the child resolves --mcp-config from its own cwd,
+                # which is the submission's directory, not this server's. A
+                # relative jobs root would otherwise name a file the child
+                # cannot open. Symlinks are kept, so an absolute root reports
+                # the path it always did.
+                mcp_config_path = os.path.abspath(d / _MCP_SNAPSHOT_FILENAME)
                 declared_mcp_servers = sorted(
                     mcp_servers
                 )  # readable order; child reads the snapshot file, not this list
@@ -1327,14 +1472,25 @@ def submit(
         # anchored notifier must sign as the submitter, not the run, so delivery
         # resolves identity from submit_cwd. See docs/internals/mcp.md#deliver-terminal-notice-two-callers.
         "submit_cwd": submit_cwd,
+        # Set only when a sender was attested, and then it is the directory the
+        # attestation was checked against. Delivery prefers it, because the
+        # identity the notice claims and the directory it is signed from have
+        # to be the same one.
+        "sender_cwd": sender_cwd,
         "label": label,
         "notify_command": notify_command,
         "notify_target": notify_target,
         "notify_sender": notify_sender,
+        # The actor a write-capable run signs as, the config minted for it, and
+        # the submitting actor it was derived from. None for every other submit.
+        "child_actor": minted.actor if minted else None,
+        "child_actor_config": minted.config_path if minted else None,
+        "submitting_actor": minted.submitting_actor if minted else None,
         "mcp_config": mcp_config_path,
         "mcp_config_source": mcp_config_source,
         "mcp_config_reason": mcp_config_reason,
         "declared_mcp_servers": declared_mcp_servers,
+        "excluded_mcp_servers": excluded_mcp_servers,
         # Deprecated response/record alias; keep equal to the truthful name.
         "mcp_config_servers": declared_mcp_servers,
         "submitted_at": _now_iso(),
@@ -1413,8 +1569,12 @@ def submit(
         "mcp_config_source": mcp_config_source,
         "mcp_config_reason": mcp_config_reason,
         "declared_mcp_servers": declared_mcp_servers,
+        "excluded_mcp_servers": excluded_mcp_servers,
         "mcp_config_servers": declared_mcp_servers,
         "notify_sender": notify_sender,
+        "child_actor": minted.actor if minted else None,
+        "child_actor_config": minted.config_path if minted else None,
+        "submitting_actor": minted.submitting_actor if minted else None,
     }
 
 
@@ -1747,6 +1907,72 @@ def _notice_recorded_undelivered(run_id: str) -> bool:
     return isinstance(outcome, dict) and outcome.get("ok") is False
 
 
+def _read_run_json_bounded(run_id: str) -> dict[str, Any] | None:
+    """*run_id*'s run.json as an object, or None when nothing trustworthy is in it.
+
+    Fail-closed: absent, unreadable, larger than ``_MAX_RUN_MANIFEST_BYTES``,
+    not JSON, or not an object are one outcome, so a damaged file never assigns
+    a code. The read takes at most one byte past the cap, so a file that grows
+    while it is read is refused as well.
+    """
+    try:
+        with config.run_manifest(run_id).open("rb") as handle:
+            raw = handle.read(_MAX_RUN_MANIFEST_BYTES + 1)
+        if len(raw) > _MAX_RUN_MANIFEST_BYTES:
+            return None
+        loaded = json.loads(raw)
+    except Exception:  # noqa: BLE001 — absent, unreadable, oversize and malformed are one outcome
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
+def _terminal_write_lost_record(value: Any) -> dict[str, Any] | None:
+    """The ``terminal_write_lost`` record of a run.json, or None unless every field has its shape.
+
+    The status must be a terminal session status, the reason code a non-empty
+    short string and the time a finite number. A record is taken whole or not
+    at all, so a malformed one reads as absent and assigns nothing.
+    """
+    if not isinstance(value, dict):
+        return None
+    from lionagi.state.lifecycle.policy import DEFAULT_REGISTRY
+
+    status = value.get("status")
+    code = value.get("reason_code")
+    at = value.get("at")
+    if (
+        not isinstance(status, str)
+        or status not in DEFAULT_REGISTRY.get("session").terminal_statuses
+    ):
+        return None
+    if not isinstance(code, str) or not code or len(code) > 256:
+        return None
+    if not _is_plain_number(at):
+        return None
+    return {"status": status, "reason_code": code, "at": at}
+
+
+def _orphan_reason(run_id: str) -> tuple[str, str | None, str | None]:
+    """The reason code, finer detail, and decided status for a conclusively gone run.
+
+    In order: its run.json records a terminal write its store refused; its
+    directory records a terminal notice it never delivered; its run.json records
+    that signal persistence stopped waiting on a refusing store; otherwise
+    silence. Each step reads only what the run wrote, never an absence. The
+    reason code keeps the value main reported for every case; the returned detail
+    carries the new distinction beside it.
+    """
+    run_json = _read_run_json_bounded(run_id) or {}
+    lost = _terminal_write_lost_record(run_json.get(_TERMINAL_WRITE_LOST_FIELD))
+    if _notice_recorded_undelivered(run_id):
+        return LOST_REASON_NOTICE_RECORDED_UNDELIVERED, None, None
+    if lost is not None:
+        return LOST_REASON, REASON_DETAIL_TERMINAL_WRITE_LOST, lost["status"]
+    if _is_plain_number(run_json.get(_SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD)):
+        return LOST_REASON, REASON_DETAIL_PERSISTENCE_DEGRADED, None
+    return LOST_REASON, None, None
+
+
 # Per-key type check for `evidence=` on `reap_orphan`: this is a record any
 # caller may read back, so an unbounded `dict.update` would let a caller stamp
 # arbitrary keys (including an override of `kind`/`finding` themselves) onto a
@@ -1895,18 +2121,19 @@ def reap_orphan(
             return ReapResult(False, job, "spawn_state_is_not_started")
         if job.get("finished_at") is not None:
             return ReapResult(False, job, "already_ended")
-        reason_code = (
-            LOST_REASON_NOTICE_RECORDED_UNDELIVERED
-            if _notice_recorded_undelivered(run_id)
-            else LOST_REASON
-        )
+        reason_code, reason_detail, decided_status = _orphan_reason(run_id)
         terminal_evidence = {"kind": EVIDENCE_PROCESS_GONE, "finding": finding}
         terminal_evidence.update(validated_evidence)
+        if decided_status is not None:
+            # The status the run decided, copied from its run.json; the outcome
+            # stays indeterminate, since it is not a recorded status.
+            terminal_evidence["decided_status"] = decided_status
         job.update(
             {
                 "status": "exited",
                 "outcome": OUTCOME_INDETERMINATE,
                 "reason_code": reason_code,
+                "reason_detail": reason_detail,
                 "finished_at": observed_at,
                 "finished_at_precision": FINISHED_AT_UPPER_BOUND,
                 "terminal_source": TERMINAL_SOURCE_ORPHAN_REAPER,
@@ -1964,6 +2191,8 @@ def _deliver_reap_notice(run_id: str, record: dict[str, Any]) -> dict[str, Any] 
             target=record.get("notify_target"),
             command=record.get("notify_command"),
             sender=record.get("notify_sender"),
+            reason_code=record.get("reason_code"),
+            reason_detail=record.get("reason_detail"),
         )
     except Exception:  # noqa: BLE001 — the end is published; delivery may not undo it
         return started.record
@@ -2076,6 +2305,7 @@ def status(run_id: str) -> dict[str, Any]:
         "terminal": derived["terminal"],
         "outcome": derived["outcome"],
         "reason_code": derived["reason_code"],
+        "reason_detail": (job or {}).get("reason_detail"),
         "spawn_state": derived["spawn_state"],
         "possibly_orphaned": derived["possibly_orphaned"],
         "terminal_source": (job or {}).get("terminal_source"),
@@ -2093,11 +2323,15 @@ def status(run_id: str) -> dict[str, Any]:
         # written before the field existed, which is not the same as "observed".
         "finished_at_precision": (job or {}).get("finished_at_precision"),
         "notify_delivery": notify_delivery,
+        "child_actor": (job or {}).get("child_actor"),
+        "child_actor_config": (job or {}).get("child_actor_config"),
+        "submitting_actor": (job or {}).get("submitting_actor"),
         "mcp_config": (job or {}).get("mcp_config"),
         "mcp_config_source": (job or {}).get("mcp_config_source"),
         "mcp_config_reason": (job or {}).get("mcp_config_reason"),
         "declared_mcp_servers": declared_mcp_servers,
         "mcp_config_servers": declared_mcp_servers,
+        "excluded_mcp_servers": (job or {}).get("excluded_mcp_servers"),
         _PERSISTENCE_DEGRADED_REASON_FIELD: persistence_degraded_reason,
         "run": manifest,
         "log_tail": _tail((job or {}).get("log")),
@@ -2621,6 +2855,7 @@ def list_jobs(limit: int = 50, status_filter: str | None = None) -> list[dict[st
                 "terminal": st["terminal"],
                 "outcome": st["outcome"],
                 "reason_code": st["reason_code"],
+                "reason_detail": st["reason_detail"],
                 "spawn_state": st["spawn_state"],
                 "submitted_at": st["submitted_at"],
                 "finished_at": st["finished_at"],
@@ -2670,6 +2905,7 @@ def _wait_entry(run_id: Any) -> dict[str, Any]:
         "terminal": False,
         "outcome": None,
         "reason_code": None,
+        "reason_detail": None,
         "possibly_orphaned": False,
         "spawn_state": None,
         "submitted_at": None,
@@ -2698,6 +2934,7 @@ def _wait_entry(run_id: Any) -> dict[str, Any]:
             "terminal": st["terminal"],
             "outcome": st["outcome"],
             "reason_code": st["reason_code"],
+            "reason_detail": st["reason_detail"],
             "possibly_orphaned": st["possibly_orphaned"],
             "spawn_state": st["spawn_state"],
             "submitted_at": st["submitted_at"],

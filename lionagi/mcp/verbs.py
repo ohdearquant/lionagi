@@ -167,6 +167,21 @@ _NOTIFY_SENDER = {
     "x-server-owned": True,
 }
 
+_EXCLUDE_MCP_SERVERS = {
+    "type": "array",
+    "items": {"type": "string", "minLength": 1, "maxLength": 200},
+    "maxItems": 64,
+    "uniqueItems": True,
+    "description": (
+        "Server names to remove from the MCP config this submission resolves before "
+        "writing the child's immutable snapshot. Use this to leave the orchestration "
+        "server itself out of that snapshot without rebuilding the rest of the ambient "
+        "config. Every name must exist in the resolved config; incompatible with "
+        "mcp_config and no_mcp_config."
+    ),
+    "x-server-owned": True,
+}
+
 _PLAYBOOK_FINGERPRINT = {
     "type": "string",
     "description": (
@@ -186,6 +201,7 @@ _SPAWN_SERVER_PARAMS: Mapping[str, dict[str, Any]] = {
     "notify_command": _NOTIFY_COMMAND,
     "notify_seat": _NOTIFY_SEAT,
     "notify_sender": _NOTIFY_SENDER,
+    "exclude_mcp_servers": _EXCLUDE_MCP_SERVERS,
 }
 
 _FLOW_SERVER_PARAMS: Mapping[str, dict[str, Any]] = {

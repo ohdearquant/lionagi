@@ -67,13 +67,18 @@ def _child_config(argv: list[str]) -> str | None:
 
 def _spawn_agent(args: dict) -> dict:
     """Drive the real spawn verb, fingerprint fetched the way a caller must."""
-    fingerprint = asyncio.run(dispatch.request(help="agent.submit"))["schema_fingerprint"]
+    return _spawn_verb("agent.submit", args)
+
+
+def _spawn_verb(op: str, args: dict, *, expect_refusal: bool = False) -> dict:
+    """Drive a real spawn verb, fingerprint fetched the way a caller must."""
+    fingerprint = asyncio.run(dispatch.request(help=op))["schema_fingerprint"]
     answer = asyncio.run(
-        dispatch.request(
-            ops=[{"op": "agent.submit", "args": args, "schema_fingerprint": fingerprint}]
-        )
+        dispatch.request(ops=[{"op": op, "args": args, "schema_fingerprint": fingerprint}])
     )
     op = answer["ops"][0]
+    if expect_refusal:
+        return op
     assert op["ok"], op
     return op["result"]
 
@@ -148,6 +153,60 @@ def test_submission_fails_when_the_discovered_config_cannot_be_used(
     # Rejected before anything was written: no half-made job record is left to
     # read back as a run that never finishes.
     assert not (config.JOBS_DIR).exists() or list(config.JOBS_DIR.iterdir()) == []
+
+
+@pytest.mark.parametrize("op", ("agent.submit", "flow.submit", "fanout.submit"))
+def test_every_spawn_verb_accepts_a_server_exclusion(sandbox, submit_dir, monkeypatch, op):
+    """The parameter is part of each spawn verb's surface, not only the agent's."""
+    (submit_dir / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"lion": {"command": "li"}, "khive": {"command": "kk"}}})
+    )
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda *a, **kw: _FakeProc())
+
+    result = _spawn_verb(
+        op,
+        {
+            "query": ["a-model"],
+            "prompt": "hi",
+            "cwd": str(submit_dir),
+            "exclude_mcp_servers": ["lion"],
+        },
+    )
+
+    assert result["declared_mcp_servers"] == ["khive"]
+    assert result["excluded_mcp_servers"] == ["lion"]
+
+
+@pytest.mark.parametrize("op", ("agent.submit", "flow.submit", "fanout.submit", "play.submit"))
+def test_every_spawn_verb_declares_the_server_exclusion_parameter(op):
+    """The parameter belongs to all four spawn surfaces, including the play one."""
+    schema = asyncio.run(dispatch.request(help=op))["schema"]
+    assert "exclude_mcp_servers" in schema["properties"]
+
+
+def test_dispatch_reports_an_unknown_server_exclusion_as_invalid_input(
+    sandbox, submit_dir, monkeypatch
+):
+    (submit_dir / ".mcp.json").write_text(json.dumps({"mcpServers": {"khive": {"command": "kk"}}}))
+    spawned: list = []
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda *a, **kw: spawned.append(a))
+
+    answer = _spawn_verb(
+        "agent.submit",
+        {
+            "query": ["a-model"],
+            "prompt": "hi",
+            "cwd": str(submit_dir),
+            "exclude_mcp_servers": ["missing"],
+        },
+        expect_refusal=True,
+    )
+
+    assert answer["ok"] is False
+    assert answer["error"]["kind"] == "invalid_input"
+    assert "not declared" in answer["error"]["message"] and "missing" in answer["error"]["message"]
+    assert spawned == []
+    assert not config.JOBS_DIR.exists() or list(config.JOBS_DIR.iterdir()) == []
 
 
 def test_no_config_anywhere_is_reported_not_raised(sandbox, submit_dir, monkeypatch):
@@ -246,3 +305,36 @@ def test_a_caller_who_asks_for_no_servers_is_not_handed_a_snapshot(
     assert handle["mcp_config"] is None
     assert handle["mcp_config_source"] is None
     assert not (config.job_dir(handle["run_id"]) / "mcp-servers.json").exists()
+
+
+def test_a_relative_jobs_root_still_hands_the_child_an_absolute_snapshot_path(
+    sandbox, submit_dir, monkeypatch, tmp_path
+):
+    """The child reads ``--mcp-config`` from its own directory, not the server's.
+
+    A jobs root that is relative (or empty, resolving to the process's directory)
+    made the snapshot path relative too, so a run pointed at another checkout was
+    told to read a file that exists only under the server's own directory. The
+    path handed over has to be absolute whatever the root was written as.
+    """
+    from pathlib import Path
+
+    (submit_dir / ".mcp.json").write_text(json.dumps({"mcpServers": {"s1": {"command": "one"}}}))
+    monkeypatch.setattr(config, "JOBS_DIR", Path("relative-jobs"))
+    other = tmp_path / "other"
+    other.mkdir()
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        jobs.subprocess,
+        "Popen",
+        lambda argv, **kw: (captured.update(argv=argv), _FakeProc())[1],
+    )
+
+    handle = jobs.submit("agent", ["-m", "x"], prompt="hi", cwd=str(other))
+
+    handed = _child_config(captured["argv"])
+    assert handed is not None
+    assert Path(handed).is_absolute(), handed
+    assert (other / handed).is_file(), "the child's own directory must be able to read it"
+    assert handle["mcp_config"] == handed

@@ -53,8 +53,10 @@ terminal fact being announced that no reader can find.
 
 #### reap-reason-code-split
 
-Three ways a run can end with nobody around to say what happened, each with
-its own `reason_code` — `_derive()` and `reap_orphan()` (`lionagi/mcp/jobs.py`):
+Five ways a run can end with nobody around to say what happened, as classified
+by `_derive()` and `reap_orphan()` (`lionagi/mcp/jobs.py`). Only the first two
+assign a distinct `reason_code`; the next two keep the pre-existing
+`process_gone_without_outcome` and add a finer `reason_detail` beside it:
 
 - **Spawn never started doing work** — `spawn_state == "failed"`, caught and
   recorded synchronously by `_record_spawn_failure` before this run ever did
@@ -73,9 +75,30 @@ its own `reason_code` — `_derive()` and `reap_orphan()` (`lionagi/mcp/jobs.py`
   checks, only as a refinement of which reason code the reap writes.
   `reason_code=process_gone_notice_recorded_undelivered`
   (`LOST_REASON_NOTICE_RECORDED_UNDELIVERED`).
+- **Terminal write lost** — the run's own `run.json` carries a
+  `terminal_write_lost` record `{status, reason_code, at}`: the run decided a
+  terminal status and its store refused the write. The reap keeps
+  `reason_code=process_gone_without_outcome` (`LOST_REASON`), reports
+  `reason_detail=terminal_write_lost`
+  (`REASON_DETAIL_TERMINAL_WRITE_LOST`), and copies the decided status into
+  `terminal_evidence.decided_status`. The record is read whole or not at all:
+  a malformed one assigns nothing.
+- **Signal persistence degraded** — `run.json` carries a finite
+  `signal_persistence_degraded_at`: the run stopped waiting on a store that
+  refused the writer lock. `reason_code=process_gone_without_outcome`
+  (`LOST_REASON`), with `reason_detail=persistence_degraded`
+  (`REASON_DETAIL_PERSISTENCE_DEGRADED`).
 - **True silence** — no spawn failure, no recorded notice either way, process
   conclusively gone. `reason_code=process_gone_without_outcome` (`LOST_
-  REASON`), unchanged from before.
+  REASON`), with `reason_detail=null`.
+
+`run.json` is read for the detail cases through one bounded reader: absent,
+unreadable, larger than `_MAX_RUN_MANIFEST_BYTES`, not JSON, or not an object
+assigns nothing, so a damaged file never becomes a claim about how the run
+ended. Precedence is the order above — a lost terminal write, then an
+undelivered notice, then degraded persistence, then silence — and each step
+reads only what the run wrote, never an absence. The undelivered-notice case
+keeps its own reason code and outranks the detail-only cases.
 
 The file read for the second case is best-effort and one-directional: found
 and parseable with `ok: false` upgrades the reason code; anything else (file
@@ -400,6 +423,19 @@ is surfaced rather than left for a reader to notice two fields disagree.
   declared servers started successfully. `mcp_config_servers` is retained as a
   deprecated alias with the same value; it must not be read as the effective
   server set.
+- `excluded_mcp_servers` names the servers a submission removed from the
+  snapshot it wrote. `null` means no exclusion was asked for — not that none
+  applied — and every listed name was present in the resolved config, since a
+  name that was not is refused before the run starts.
+- `reason_detail` refines an orphan-reaper `reason_code` without replacing it:
+  `terminal_write_lost` or `persistence_degraded` when the run recorded that
+  cause, null otherwise. It appears beside the same fields on the job record,
+  the notice payload, and a `job.list` row.
+- `child_actor` / `child_actor_config` / `submitting_actor` are set only when a
+  write-capable submission runs under a server configured with
+  `LIONAGI_MCP_CHILD_ACTOR_SUFFIX`. They name the run's own actor (the
+  submitting actor plus that suffix), the config holding it, and the actor it
+  derives from. All three are null otherwise.
 - `known` / `record_state`: only `"absent"` means the run is unknown;
   `"unreadable"`/`"wrong_shape"` mean a file is on disk and damaged — reporting
   either as unknown would send an operator away from a file that exists.
@@ -600,17 +636,37 @@ The working directory is part of "what is configured here", so it is taken
 from the run's record rather than from this process's own cwd. The two
 callers never share a directory (the hook runs in the run's, the observer in
 the server's), so resolving identity from the process's own location would
-sign the same notice with a different seat depending on which caller got
+sign the same notice with a different identity depending on which caller got
 there first, silently — downstream routing acts on that signature. Reading
 it from the record is what makes the two callers agree by construction
 rather than by coincidence.
 
 When a submission explicitly names `notify_sender`, `jobs.submit()` asks
-khive's directory-aware identity resolver which actor that same submitting
-directory can sign as. A mismatch is refused before a run directory is
-reserved, while the caller can still correct the sender. Omitting the sender
-does not require resolution and remains valid. The hook retains its mismatch
-classification for old records and for authority that changes after admission.
+khive's directory-aware identity resolver which actor can sign for that
+submission. By default it asks from the submitting directory, which is where
+the claim was judged before run-directory anchoring existed; the directory
+does not need to hold a config for resolution to answer. A mismatch is refused
+before a run directory is reserved, while the caller can still correct the
+sender.
+
+A deployment that serves several callers from one directory opts into
+run-directory anchoring by naming absolute roots in
+`LIONAGI_MCP_SENDER_ROOTS` (separated by the platform path separator, compared
+after symlink resolution). With roots configured, the anchor is the `cwd` the
+submission names, or the server's own directory when it names none. A
+caller-named anchor must sit under a configured root and must hold
+`.khive/config.toml` before the resolver is asked, since khive answers the
+unattributed pool for one that does not. The run records the anchor as
+`sender_cwd`, and delivery prefers it over `submit_cwd` so the notice is signed
+where it was judged. Omitting the sender does not require resolution and
+remains valid. The hook retains its mismatch classification for old records
+and for authority that changes after admission.
+
+A submission started from a config that merely *happens* to be found is still
+not the caller's own grant, so the snapshot's provenance keys keep that
+distinction readable by the child. The server writes the snapshot path
+absolute: the child resolves `--mcp-config` from its own working directory,
+which is the submission's `cwd`, not the server's.
 
 Nothing in this path raises: the caller is either a terminal path that has
 already finished, or a read that has already published a durable end, and

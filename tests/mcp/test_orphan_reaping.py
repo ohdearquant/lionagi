@@ -1414,3 +1414,302 @@ def test_what_survives_sanitizing_is_serializable_as_strict_json():
     )
 
     json.dumps(kept, allow_nan=False)
+
+
+# --- reap reasons read from the run's own run.json ---------------------------
+
+_LOST = {"status": "completed", "reason_code": "run.completed.ok", "at": 1_700_000_100.0}
+_UNDELIVERED = {"ok": False, "exit_code": None, "stderr_path": None, "reason": "no session"}
+_DEGRADED_AT = 1_700_000_050.0
+
+
+def _run_json(rid: str, **fields: Any) -> None:
+    config.run_dir(rid).mkdir(parents=True, exist_ok=True)
+    config.run_manifest(rid).write_text(json.dumps({"run_id": rid, "status": "running", **fields}))
+
+
+def _run_json_bytes(rid: str, raw: bytes) -> None:
+    config.run_dir(rid).mkdir(parents=True, exist_ok=True)
+    config.run_manifest(rid).write_bytes(raw)
+
+
+def _leave(rid: str, *, lost: bool, notice: bool, degraded: bool) -> None:
+    fields: dict[str, Any] = {}
+    if lost:
+        fields["terminal_write_lost"] = _LOST
+    if degraded:
+        fields["signal_persistence_degraded_at"] = _DEGRADED_AT
+    _run_json(rid, **fields)
+    if notice:
+        config.run_dir(rid).joinpath("notify_outcome.json").write_text(json.dumps(_UNDELIVERED))
+
+
+def _expected_reason(*, lost: bool, notice: bool, degraded: bool) -> str:
+    # An undelivered notice is the pre-existing reason split, and it outranks the
+    # newer detail-only cases; the lost write and degraded persistence stay on
+    # the main reason code with their finer cause in reason_detail.
+    if notice:
+        return jobs.LOST_REASON_NOTICE_RECORDED_UNDELIVERED
+    return jobs.LOST_REASON
+
+
+def _expected_detail(*, lost: bool, notice: bool, degraded: bool) -> str | None:
+    if lost and not notice:
+        return jobs.REASON_DETAIL_TERMINAL_WRITE_LOST
+    if degraded and not notice:
+        return jobs.REASON_DETAIL_PERSISTENCE_DEGRADED
+    return None
+
+
+_RECORDED = [
+    (lost, notice, degraded)
+    for lost in (True, False)
+    for notice in (True, False)
+    for degraded in (True, False)
+]
+
+
+@pytest.mark.parametrize(("lost", "notice", "degraded"), _RECORDED)
+def test_the_reason_code_follows_what_the_run_recorded_in_order(
+    sandbox, monkeypatch, no_delivery, lost, notice, degraded
+):
+    """A lost terminal write, then an undelivered notice, then degraded signal
+    persistence, then silence; each present record wins over every later one,
+    and each absent one falls through. The outcome stays indeterminate."""
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+    _leave(rid, lost=lost, notice=notice, degraded=degraded)
+
+    st = jobs.status(rid)
+
+    assert st["terminal"] is True
+    assert st["outcome"] == jobs.OUTCOME_INDETERMINATE
+    assert st["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
+    assert st["reason_code"] == _expected_reason(lost=lost, notice=notice, degraded=degraded)
+    assert st["reason_detail"] == _expected_detail(lost=lost, notice=notice, degraded=degraded)
+    assert jobs._read_job(rid)["reason_code"] == st["reason_code"]
+    if lost and not notice:
+        assert st["terminal_evidence"]["decided_status"] == "completed"
+    else:
+        assert "decided_status" not in st["terminal_evidence"]
+
+
+def test_the_reason_details_are_distinct_from_the_reason_code():
+    details = {
+        jobs.REASON_DETAIL_TERMINAL_WRITE_LOST,
+        jobs.REASON_DETAIL_PERSISTENCE_DEGRADED,
+    }
+    assert len(details) == 2
+    assert jobs.REASON_DETAIL_TERMINAL_WRITE_LOST == "terminal_write_lost"
+    assert jobs.REASON_DETAIL_PERSISTENCE_DEGRADED == "persistence_degraded"
+
+
+def test_a_lost_terminal_write_keeps_the_existing_reason_code(sandbox, monkeypatch, no_delivery):
+    """The finer cause belongs beside the reason, not in place of it."""
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+    _run_json(rid, terminal_write_lost=_LOST)
+
+    st = jobs.status(rid)
+
+    assert st["reason_code"] == jobs.LOST_REASON
+    assert st["reason_detail"] == jobs.REASON_DETAIL_TERMINAL_WRITE_LOST
+
+
+def test_degraded_signal_persistence_keeps_the_existing_reason_code(
+    sandbox, monkeypatch, no_delivery
+):
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+    _run_json(rid, signal_persistence_degraded_at=_DEGRADED_AT)
+
+    st = jobs.status(rid)
+
+    assert st["reason_code"] == jobs.LOST_REASON
+    assert st["reason_detail"] == jobs.REASON_DETAIL_PERSISTENCE_DEGRADED
+
+
+def test_the_reason_detail_rides_the_notice_payload_without_replacing_the_code(
+    sandbox, monkeypatch, no_delivery
+):
+    seen: list[dict[str, Any]] = []
+
+    def fake(run_id, job, status, **kw):
+        seen.append(kw)
+        return {"attempted": True, "ok": True, "exit_code": 0, "error": None, "command": "notify"}
+
+    monkeypatch.setattr(_notify_hook, "deliver_terminal_notice", fake)
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+    _run_json(rid, terminal_write_lost=_LOST)
+
+    jobs.status(rid)
+
+    assert seen[0]["reason_code"] == jobs.LOST_REASON
+    assert seen[0]["reason_detail"] == jobs.REASON_DETAIL_TERMINAL_WRITE_LOST
+
+
+def test_the_reason_detail_is_visible_on_status_and_the_listing(sandbox, monkeypatch, no_delivery):
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+    _run_json(rid, terminal_write_lost=_LOST)
+
+    row = next(item for item in jobs.list_jobs() if item["run_id"] == rid)
+
+    assert row["reason_code"] == jobs.LOST_REASON
+    assert row["reason_detail"] == jobs.REASON_DETAIL_TERMINAL_WRITE_LOST
+
+
+@pytest.mark.parametrize(("lost", "notice", "degraded"), _RECORDED)
+def test_the_reaper_notice_carries_the_reason_code(sandbox, monkeypatch, lost, notice, degraded):
+    seen: list[dict[str, Any]] = []
+
+    def fake(run_id, job, status, **kw):
+        seen.append(kw)
+        return {"attempted": True, "ok": True, "exit_code": 0, "error": None, "command": "notify"}
+
+    monkeypatch.setattr(_notify_hook, "deliver_terminal_notice", fake)
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+    _leave(rid, lost=lost, notice=notice, degraded=degraded)
+
+    jobs.status(rid)
+
+    assert [kw["reason_code"] for kw in seen] == [
+        _expected_reason(lost=lost, notice=notice, degraded=degraded)
+    ]
+
+
+@pytest.mark.parametrize(
+    "lost",
+    [
+        "completed",
+        ["completed"],
+        {},
+        {"status": "completed"},
+        {"status": "running", "reason_code": "x", "at": 1.0},
+        {"status": "bogus", "reason_code": "x", "at": 1.0},
+        {"status": 5, "reason_code": "x", "at": 1.0},
+        {"status": ["completed"], "reason_code": "x", "at": 1.0},
+        {"status": "completed", "reason_code": 5, "at": 1.0},
+        {"status": "completed", "reason_code": "", "at": 1.0},
+        {"status": "completed", "reason_code": "x" * 257, "at": 1.0},
+        {"status": "completed", "reason_code": "x", "at": "yesterday"},
+        {"status": "completed", "reason_code": "x", "at": True},
+        {"status": "completed", "reason_code": "x", "at": None},
+        {"status": "completed", "reason_code": "x", "at": float("nan")},
+    ],
+    ids=[
+        "string",
+        "list",
+        "empty-object",
+        "status-only",
+        "status-running",
+        "status-unknown-word",
+        "status-int",
+        "status-list",
+        "code-int",
+        "code-empty",
+        "code-too-long",
+        "at-string",
+        "at-bool",
+        "at-null",
+        "at-nan",
+    ],
+)
+def test_a_malformed_terminal_write_lost_record_assigns_nothing(
+    sandbox, monkeypatch, no_delivery, lost
+):
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+    _run_json(rid, terminal_write_lost=lost)
+
+    st = jobs.status(rid)
+
+    assert st["reason_code"] == jobs.LOST_REASON
+    assert st["outcome"] == jobs.OUTCOME_INDETERMINATE
+    assert "decided_status" not in st["terminal_evidence"]
+
+
+@pytest.mark.parametrize(
+    "at",
+    ["yesterday", True, None, [1.0], {"at": 1.0}, float("nan"), float("inf")],
+    ids=["string", "bool", "null", "list", "object", "nan", "inf"],
+)
+def test_a_malformed_degraded_time_assigns_nothing(sandbox, monkeypatch, no_delivery, at):
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+    _run_json(rid, signal_persistence_degraded_at=at)
+
+    assert jobs.status(rid)["reason_code"] == jobs.LOST_REASON
+
+
+def test_a_malformed_lost_write_does_not_hide_a_well_formed_degraded_time(
+    sandbox, monkeypatch, no_delivery
+):
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+    _run_json(
+        rid,
+        terminal_write_lost={"status": "bogus", "reason_code": "x", "at": 1.0},
+        signal_persistence_degraded_at=_DEGRADED_AT,
+    )
+
+    assert jobs.status(rid)["reason_code"] == jobs.LOST_REASON
+    assert jobs.status(rid)["reason_detail"] == jobs.REASON_DETAIL_PERSISTENCE_DEGRADED
+
+
+def _padded_run_json(size: int) -> bytes:
+    """A run.json of exactly *size* bytes holding a well-formed lost terminal write."""
+    payload = {"run_id": "r", "terminal_write_lost": _LOST, "pad": ""}
+    base = len(json.dumps(payload).encode())
+    payload["pad"] = "x" * (size - base)
+    raw = json.dumps(payload).encode()
+    assert len(raw) == size
+    return raw
+
+
+def test_a_run_json_at_the_size_cap_is_read_and_one_byte_over_it_is_not(
+    sandbox, monkeypatch, no_delivery
+):
+    _pid_absent(monkeypatch)
+    at_cap = _stranded()
+    _run_json_bytes(at_cap, _padded_run_json(jobs._MAX_RUN_MANIFEST_BYTES))
+    over_cap = _stranded()
+    _run_json_bytes(over_cap, _padded_run_json(jobs._MAX_RUN_MANIFEST_BYTES) + b"\n")
+
+    assert jobs.status(at_cap)["reason_code"] == jobs.LOST_REASON
+    assert jobs.status(at_cap)["reason_detail"] == jobs.REASON_DETAIL_TERMINAL_WRITE_LOST
+    assert jobs.status(over_cap)["reason_code"] == jobs.LOST_REASON
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"",
+        b"not json",
+        b"\xff\xfe\x00",
+        b'["terminal_write_lost"]',
+        b'"terminal_write_lost"',
+        b"null",
+        b"7",
+        b"[" * 200_000,
+    ],
+    ids=["empty", "text", "not-utf8", "list", "string", "null", "number", "deeply-nested"],
+)
+def test_a_run_json_that_is_not_an_object_assigns_nothing(sandbox, monkeypatch, no_delivery, raw):
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+    _run_json_bytes(rid, raw)
+
+    st = jobs.status(rid)
+
+    assert st["reason_code"] == jobs.LOST_REASON
+    assert st["outcome"] == jobs.OUTCOME_INDETERMINATE
+
+
+def test_a_missing_run_json_assigns_nothing(sandbox, monkeypatch, no_delivery):
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+
+    assert jobs.status(rid)["reason_code"] == jobs.LOST_REASON

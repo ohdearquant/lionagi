@@ -787,6 +787,7 @@ then report it:
 | `terminal` | `true` |
 | `outcome` | `indeterminate` |
 | `reason_code` | `process_gone_without_outcome` |
+| `reason_detail` | `terminal_write_lost`, `persistence_degraded`, or `null` |
 | `terminal_source` | `mcp_orphan_reaper` |
 
 `outcome: "indeterminate"` means the process is conclusively gone and **no authoritative
@@ -826,6 +827,8 @@ failure and kill. Nothing is configured out of the box, so the default is no
 notice. The command is an argv list run directly (never through a shell); the
 placeholders `{run_id}`, `{status}`, `{label}`, and `{target}` are substituted
 into its arguments, and the same fields are offered as a JSON object on stdin.
+`{sender}` names the actor signing the notice and `{reason_code}` carries the
+run's terminal reason when one was recorded.
 
 Configure the command once via lionagi's own `notify.on_terminal` setting
 (`~/.lionagi/settings.yaml` or a project `.lionagi/settings.yaml`):
@@ -840,12 +843,19 @@ notify:
 
 Or per submit: `notify` overrides the delivery command for one run (a JSON argv
 list), `notify_seat` fills the `{target}` placeholder, and `notify_sender` fills
-`{sender}`, naming the actor signing the notice. An explicit sender is accepted
-only when the submitting directory resolves to that actor. The environment
+`{sender}`, naming the actor signing the notice. By default an explicit sender is
+checked against the submitting directory, as before. A deployment that wants
+callers to attest from their run directories sets
+`LIONAGI_MCP_SENDER_ROOTS` to an OS-path-separated list of absolute paths where
+the server is declared; then a declared sender is checked against the run
+directory — the `cwd` the submission names, or the server's own directory when
+it names none — which must sit under one of those roots and hold
+`.khive/config.toml`. The notice is delivered from the directory that was
+checked, so the identity it claims is the one it is signed with. The environment
 variables `LIONAGI_MCP_NOTIFY_COMMAND`, `LIONAGI_MCP_NOTIFY_TARGET` and
 `LIONAGI_MCP_NOTIFY_SENDER` set a process-wide default, and
 `LIONAGI_MCP_NOTIFY_CWD` names the directory delivery runs in instead of the
-submitting one. These are the server operator's settings and are used as given:
+checked (or submitting) one. These are the server operator's settings and are used as given:
 the sender check applies only to a `notify_sender` passed on the submit. With no
 sender from either, a delivery command that takes `{sender}` is not run, and one
 that does not reports whatever identity it resolves from the directory it runs
@@ -859,6 +869,31 @@ result was interrupted or it was stopped for running past its deadline, or
 `none` when no notifier was configured — so a run whose notice never went out
 is spotted while scanning runs, not only when one is looked up. The full `job.status.notify_delivery`
 object is null only for a non-terminal run.
+
+### Spawning and the MCP server set
+
+The four spawn verbs (`agent.submit`, `flow.submit`, `fanout.submit`,
+`play.submit`) accept `exclude_mcp_servers`, a list of server names to remove
+from the MCP config the submission resolves before its immutable snapshot is
+written. Every name must exist in that config — a name it does not declare is
+refused rather than silently ignored — and the parameter cannot be combined
+with `mcp_config` or `no_mcp_config`, since neither leaves a resolved set to
+filter. The removed names are reported as `excluded_mcp_servers` on the handle,
+the job record, and `job.status`.
+
+By default a write-capable agent profile (`yolo` or `bypass`) gets no separate
+khive actor, and a submission without `cwd` is accepted as before. A deployment
+that wants each writable run to have its own identity sets
+`LIONAGI_MCP_CHILD_ACTOR_SUFFIX` to a non-empty suffix. Then a write-capable
+profile submitted with a `cwd` gets the actor `<submitting actor><suffix>`
+(for example, with a suffix of `:child`, `<submitting actor>:child`), minted into
+`<cwd>/.khive/config.toml` before the run starts, so a writable run does not
+sign as the submitting identity. The mint copies the submitting directory's
+config and rewrites only its `[actor]` table; it refuses when the run has no
+own directory, when the submitting directory has no actor config, or when the
+run directory already holds a config for a different actor. `job.status`
+reports the result as `child_actor`, `child_actor_config` and
+`submitting_actor`.
 
 ---
 

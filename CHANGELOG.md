@@ -13,8 +13,44 @@ project (see Changed). A project-scoped document applied with an earlier release
 members write their project as null plans an `UPDATE` on its next apply that removes the
 project those rows ran under. To keep the project, name it in those members.
 
+`notify_sender` on an MCP submission keeps its existing default: it is verified
+against the server's own directory. A deployment that wants callers to attest
+from their run directories sets `LIONAGI_MCP_SENDER_ROOTS` to an OS-path-
+separated list of absolute roots; then a declared sender is verified against
+the run directory, which must hold `.khive/config.toml`, and the notice is
+delivered from that directory. A caller-chosen directory outside those roots is
+refused.
+
+A write-capable run does not get its own khive actor by default. Setting
+`LIONAGI_MCP_CHILD_ACTOR_SUFFIX` to a non-empty suffix enables minting: the run
+gets an actor named `<submitting actor><suffix>`, written to the run
+directory's `.khive/config.toml` before it starts. For example, `:child` produces
+`<submitting actor>:child`. Leaving the setting unset or empty keeps the previous
+behaviour, including accepting a write-capable submission without `cwd`.
+
 ### Added
 
+- The MCP server's `agent.submit`, `flow.submit`, `fanout.submit` and
+  `play.submit` accept `exclude_mcp_servers`, which removes named servers from
+  the MCP config a submission resolves before its snapshot is written. Every
+  name must be declared by that config; the parameter cannot be combined with
+  `mcp_config` or `no_mcp_config`.
+- By default a write-capable agent profile gets no separate khive actor. When
+  `LIONAGI_MCP_CHILD_ACTOR_SUFFIX` is set, one submitted with a `cwd` gets its
+  own khive actor, named by appending that suffix to the submitting actor and
+  minted into the run's directory before it starts. The result is reported as
+  `child_actor`, `child_actor_config` and `submitting_actor`.
+- `job.status` reports `excluded_mcp_servers` for a submission that removed
+  servers. The orphan reaper keeps `process_gone_without_outcome` as the reason
+  code for a lost terminal write and for degraded signal persistence, and adds
+  `reason_detail` (`terminal_write_lost` or `persistence_degraded`) beside it.
+- The `{reason_code}` placeholder is available to a configured terminal-notice
+  command, carrying the run's terminal reason when one was recorded.
+  `{reason_detail}` carries the finer orphan-reaper detail when one was
+  recorded.
+- A submitted run's MCP snapshot path is always absolute, so a child whose
+  working directory differs from the server's can read the `--mcp-config` file
+  it is handed when the jobs root itself is relative.
 - `li agent --idle-timeout SECONDS` stops a run as stalled when the worker emits nothing for
   that long after it has started answering, and profiles may set the same value as
   `idle_timeout`. The default stays `LIONAGI_WORKER_IDLE_TIMEOUT` (`600`); the flag or profile

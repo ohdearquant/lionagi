@@ -232,6 +232,34 @@ def test_command_override_substitutes_and_delivers(job, monkeypatch):
     assert jobs.status(job)["notify_delivery"]["ok"] is True
 
 
+def test_reason_detail_has_its_own_placeholder_and_payload_field(job, monkeypatch):
+    captured: dict = {}
+
+    def fake_popen(argv, **kw):
+        captured["argv"] = argv
+        captured["proc"] = _FakeCompleted(0)
+        return captured["proc"]
+
+    monkeypatch.setattr(_notify_hook.subprocess, "Popen", fake_popen)
+
+    outcome = _notify_hook.deliver_terminal_notice(
+        job,
+        jobs._read_job(job),
+        "exited",
+        command=json.dumps(["notify", "{reason_code}", "{reason_detail}"]),
+        reason_code="process_gone_without_outcome",
+        reason_detail="terminal_write_lost",
+    )
+
+    assert outcome["ok"] is True
+    assert captured["argv"] == [
+        "notify",
+        "process_gone_without_outcome",
+        "terminal_write_lost",
+    ]
+    assert json.loads(captured["proc"].input)["reason_detail"] == "terminal_write_lost"
+
+
 def test_delivery_failure_is_recorded_not_silent(job, monkeypatch):
     """A dead completion notice surfaces on the record, never a silent drop."""
     monkeypatch.setattr(_notify_hook.subprocess, "Popen", lambda *a, **k: _FakeCompleted(7))
