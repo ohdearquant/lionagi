@@ -341,8 +341,8 @@ def test_dataclass_equality_is_structural_not_hash_based(monkeypatch):
     assert first != second
 
 
-def test_equal_dataclasses_hash_equal():
-    """Structural equality keeps the hash contract: equal instances hash equal.
+def test_equal_dataclasses_remain_unhashable():
+    """Structural equality does not grant container admission to mutable values.
 
     The subclass opts out of the generated ``__eq__`` (``eq=False``), which would
     otherwise replace DataClass.__eq__ and set ``__hash__`` to None.
@@ -357,7 +357,9 @@ def test_equal_dataclasses_hash_equal():
     second = Point(name="a", tags=["x"])
     assert first is not second
     assert first == second
-    assert hash(first) == hash(second)
+    for value in (first, second):
+        with pytest.raises(TypeError, match="unhashable type"):
+            hash(value)
     assert first != Point(name="a", tags=["y"])
 
 
@@ -382,7 +384,7 @@ def test_equal_dataclasses_hash_equal():
         pytest.param("list-subclass", _ValueList([1, 2]), _ValueList([1, 2]), id="list-subclass"),
     ],
 )
-def test_equal_dataclass_values_preserve_hash_membership(label, left, right):
+def test_equal_dataclass_values_remain_unhashable(label, left, right):
     @dataclass(slots=True, eq=False)
     class Box(DataClass):
         value: object
@@ -391,8 +393,9 @@ def test_equal_dataclass_values_preserve_hash_membership(label, left, right):
     second = Box(right)
 
     assert first == second, label
-    assert hash(first) == hash(second), label
-    assert second in {first}, label
+    for value in (first, second):
+        with pytest.raises(TypeError, match="unhashable type"):
+            hash(value)
 
 
 def test_dataclass_float_fields_follow_float_equality():
@@ -403,15 +406,17 @@ def test_dataclass_float_fields_follow_float_equality():
     first_nan = Box(float("nan"))
     second_nan = Box(float("nan"))
     assert first_nan != second_nan
-    assert second_nan not in {first_nan}
+    with pytest.raises(TypeError, match="unhashable type"):
+        hash(first_nan)
     shared_nan = float("nan")
     assert Box(shared_nan) != Box(shared_nan)
 
     positive_zero = Box(0.0)
     negative_zero = Box(-0.0)
     assert positive_zero == negative_zero
-    assert hash(positive_zero) == hash(negative_zero)
-    assert negative_zero in {positive_zero}
+    for value in (positive_zero, negative_zero):
+        with pytest.raises(TypeError, match="unhashable type"):
+            hash(value)
 
 
 def test_dataclass_equality_handles_cyclic_list_fields():
