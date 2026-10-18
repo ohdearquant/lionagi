@@ -25,12 +25,9 @@ from lionagi.ln import (
     observe_process_group_leader,
     prepare_process_group_env,
 )
+from lionagi.ln._proc import env_without_state_db_url
 
 _log = logging.getLogger(__name__)
-
-# The daemon's store location. Agent-kind and other `li` children inherit it so their runs
-# record into the daemon's store; command-kind children never do (see spawn_and_wait).
-STORE_URL_ENV = "LIONAGI_STATE_DB_URL"
 
 _TEMPLATE_RE = re.compile(r"\{\{(\w+)\}\}")
 
@@ -785,10 +782,9 @@ async def spawn_and_wait(
     base_env = {**os.environ, "LIONAGI_INVOCATION_ID": invocation_id}
     if action_kind == "command":
         # A command is an arbitrary program, often run by another interpreter with its own
-        # lionagi. Inheriting the daemon's store URL would point that lionagi at the daemon's
-        # store, and a lionagi on a newer schema migrates it on open, leaving a file the
-        # daemon's own code refuses. A command that needs this store names it explicitly.
-        base_env.pop(STORE_URL_ENV, None)
+        # lionagi; see env_without_state_db_url. Every `li` child keeps the URL, so its run
+        # records into the daemon's store.
+        base_env = env_without_state_db_url(base_env)
     env, group_marker = prepare_process_group_env(base_env)
 
     _log.info("Spawning: %s", " ".join(argv))

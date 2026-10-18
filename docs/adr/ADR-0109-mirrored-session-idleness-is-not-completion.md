@@ -62,7 +62,7 @@ before dispatching any subcommand, `li mirror` included
 and Studio service startup calls it as well (`lionagi/studio/app.py:190-192`,
 the same module that starts the in-process mirror); the
 function registers when the setting resolves and unregisters when it does not
-(`lionagi/state/lifecycle/notify_settings.py:648-662`). So with no
+(`lionagi/state/lifecycle/notify_settings.py:650-664`). So with no
 `notify.on_terminal` configured, `emit` is a no-op and this consequence is
 latent; with one configured that permits sessions, an `idle → completed` write
 reaches a live handler.
