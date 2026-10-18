@@ -496,31 +496,34 @@ def _report_mcp_resolution(
     The whole point of resolving here is that a leg starting without the
     servers its instructions assume should be visible when it is launched
     rather than inferred from its output an hour later. Silence is reserved
-    for the one case where it is accurate: servers resolved and handed over.
+    for the two cases where it is accurate: a caller who asked for no servers
+    at all, and a set that was resolved and handed over (which is reported as
+    a hint, not a warning).
 
     ``forwarded`` is the caller's answer to "does this spawn hand the resolved
     set to the leg?", read off the request that spawn built. This function must
     not re-derive it from the provider name: a second list here is what let the
-    message contradict the spawn.
+    message contradict the spawn. It decides what is said about a set that was
+    resolved; it does not decide whether a resolution that produced no set at
+    all is worth a word, since a search that found nothing has nothing to
+    forward and would otherwise be reported by no caller at all.
     """
     from lionagi.cli._logging import warn
 
-    if not forwarded:
-        if resolution.servers is not None:
-            warn(
-                f"MCP servers resolved from {resolution.source} are not carried to "
-                f"provider {provider!r} on this spawn path. This leg gets whatever "
-                "its own provider resolves for itself."
-            )
-        return
+    if resolution.declared_empty:
+        return  # --no-mcp-config or a named config listing no servers: chosen, not degraded
 
     if resolution.servers is not None:
-        names = ", ".join(sorted(resolution.servers))
-        hint(f"[mcp] {len(resolution.servers)} server(s) from {resolution.source}: {names}")
+        if forwarded:
+            names = ", ".join(sorted(resolution.servers))
+            hint(f"[mcp] {len(resolution.servers)} server(s) from {resolution.source}: {names}")
+            return
+        warn(
+            f"MCP servers resolved from {resolution.source} are not carried to "
+            f"provider {provider!r} on this spawn path. This leg gets whatever "
+            "its own provider resolves for itself."
+        )
         return
-
-    if resolution.reason is None:
-        return  # --no-mcp-config: chosen, not degraded
 
     target = cwd or os.getcwd()
     warn(
