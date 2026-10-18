@@ -182,8 +182,9 @@ def mint_child_actor_config(submitting_dir: str, child_dir: str, suffix: str) ->
         if existing_actor != expected_actor or _without_actor(existing) != remaining_tables:
             raise ChildActorError(
                 f"the child directory already holds a config naming {child_actor!r} whose "
-                f"[actor] table or other tables differ from the ones this submission would mint; "
-                f"refusing to overwrite a config it did not write {where}"
+                f"[actor] table or other tables differ from the ones this submission would mint, "
+                f"as when the submitting config changed after it was minted; refusing to "
+                f"overwrite it, remove it to have it minted again {where}"
             )
         return MintedChildActor(child_actor, submitting_actor, target, source, reused=True)
 

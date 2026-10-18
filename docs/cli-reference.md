@@ -899,7 +899,8 @@ sign as the submitting identity. The mint copies the submitting directory's
 config and rewrites only its `[actor]` table; it refuses when the run has no
 own directory, when the submitting directory has no actor config, or when the
 run directory already holds a config other than exactly the one it would mint;
-a config that is exactly that one is reused as it is. `job.status`
+a config that is exactly that one is reused as it is, and one minted before the
+submitting config changed is refused until it is removed. `job.status`
 reports the result as `child_actor`, `child_actor_config` and
 `submitting_actor`.
 

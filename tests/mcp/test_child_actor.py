@@ -733,7 +733,7 @@ def test_a_child_config_with_the_child_id_that_is_not_the_minted_one_is_refused_
     target.write_text(changed)
     before = target.read_bytes()
 
-    with pytest.raises(ChildActorError, match="refusing to overwrite a config it did not write"):
+    with pytest.raises(ChildActorError, match="refusing to overwrite it, remove it"):
         mint_child_actor_config(str(submitter), str(child), ":worker")
 
     assert target.read_bytes() == before
