@@ -258,10 +258,15 @@ function useLibraryData(
   const prevReloadToken = useRef(reloadToken);
   const prevRetryToken = useRef(retryToken);
   const prevInvalidationToken = useRef(invalidation.token);
-  // The latest reload whose requests have all answered. Until it catches up
-  // with the reload token, the cache still holds what the catalog listed
-  // before the reload, so a row a create or clone just added is not in it.
-  const [settledReloadToken, setSettledReloadToken] = useState(reloadToken);
+  // The request version of the newest response each source wrote to the
+  // cache. A response from an older request is dropped, so a written version
+  // above the one requested when something changed means the cache now holds
+  // a list fetched after that change.
+  const [writtenVersion, setWrittenVersion] = useState<Partial<Record<CatalogSource, number>>>({});
+  const requestedVersion = useCallback(
+    (source: CatalogSource) => requestVersion.current[source] ?? 0,
+    [],
+  );
 
   const wants = (kind: LibraryKind) =>
     (tab === kind && (hidden || !UNFINISHED_KINDS.has(kind))) ||
@@ -317,19 +322,7 @@ function useLibraryData(
       // would leave the tab permanently stuck on its error state.
       return cached === undefined || cached === "failed";
     });
-    const settle = () => setSettledReloadToken((settled) => Math.max(settled, reloadToken));
-    if (sources.length === 0) {
-      if (reload) settle();
-      return;
-    }
-    const unanswered = new Set(sources);
-    // A reload settles when every source it requested has answered, whether
-    // or not a newer request has since taken that source's cache entry over.
-    const answered = (source: CatalogSource) => {
-      if (!reload) return;
-      unanswered.delete(source);
-      if (unanswered.size === 0) settle();
-    };
+    if (sources.length === 0) return;
 
     for (const source of sources) {
       // A source being retried is no longer in its failed state: clear the
@@ -347,14 +340,14 @@ function useLibraryData(
       requestVersion.current[source] = version;
       SOURCE_REQUESTS[source]().then(
         (data) => {
-          answered(source);
           if (requestVersion.current[source] !== version) return;
           setCache((prev) => ({ ...prev, [source]: data }));
+          setWrittenVersion((prev) => ({ ...prev, [source]: version }));
         },
         () => {
-          answered(source);
           if (requestVersion.current[source] !== version) return;
           setCache((prev) => ({ ...prev, [source]: "failed" }));
+          setWrittenVersion((prev) => ({ ...prev, [source]: version }));
         },
       );
     }
@@ -384,7 +377,8 @@ function useLibraryData(
     allAgents: agentsEntry && agentsEntry !== "failed" ? (agentsEntry.agents ?? []) : [],
     allEngines: enginesEntry && enginesEntry !== "failed" ? (enginesEntry.engines ?? []) : [],
     kindStatus,
-    settledReloadToken,
+    writtenVersion,
+    requestedVersion,
   };
 }
 
@@ -483,16 +477,6 @@ function LibraryPage() {
   const navigate = useNavigate({ from: "/library" });
   const { tab, sel } = Route.useSearch();
   const kindFilter: LibraryTab = tab ?? "all";
-  // A create, clone, or delete completion can outlive the tab where it began.
-  // What it writes closes or reshapes the detail pane, so those writes are
-  // scoped to that tab the same way its selection write already is: a
-  // completion that resolves after the user moved on must not touch the new
-  // tab's pane.
-  const activeTab = useRef(kindFilter);
-  useEffect(() => {
-    activeTab.current = kindFilter;
-  }, [kindFilter]);
-  const completionOnTab = (captured: LibraryTab) => activeTab.current === captured;
   const parsedSel = parseSel(sel);
   const selectedHiddenKind =
     kindFilter !== "hooks" && parsedSel && UNFINISHED_KINDS.has(parsedSel.kind)
@@ -514,14 +498,7 @@ function LibraryPage() {
   const [invalidation, setInvalidation] = useState<CatalogInvalidation>({ token: 0, kinds: [] });
   // Completion callbacks can outlive the tab where they were created. Refresh
   // the current effects instead of issuing requests for a captured tab.
-  // Returns the token of the reload it starts, so a completion can tell when
-  // that reload has answered.
-  const reloadCount = useRef(0);
-  const reload = useCallback(() => {
-    reloadCount.current += 1;
-    setReloadToken(reloadCount.current);
-    return reloadCount.current;
-  }, []);
+  const reload = useCallback(() => setReloadToken((token) => token + 1), []);
   const invalidate = useCallback(
     (kind: LibraryKind) => setInvalidation((prev) => ({ token: prev.token + 1, kinds: [kind] })),
     [],
@@ -570,14 +547,25 @@ function LibraryPage() {
     if (!pickingTab) return;
     setShowCreate(false);
   }, [kindFilter, tab, sel]);
-  // A selection that appears while a create form is open is a request for that
-  // row — browser Back onto it, or a link — so the form closes and the row's
-  // detail takes the pane, which it opens on its own.
+  // A selection that appears or changes while a create form is open is a
+  // request for that row — browser Back onto it, or a link, even one followed
+  // before the router committed the form's own drop — so the form closes and
+  // the row's detail takes the pane, which it opens on its own.
   const previousSel = useRef(sel);
+  // Each opening of the create form is a session. A create that answers after
+  // its form closed, or after another form opened, refreshes the catalog but
+  // leaves the address and any open form alone.
+  const [createSession, setCreateSession] = useState(0);
+  const openSession = useRef<number | null>(null);
+  useEffect(() => {
+    openSession.current = showCreate ? createSession : null;
+  }, [showCreate, createSession]);
+  const formOpen = (session: number) => openSession.current === session;
   // Opening the create form drops the row the URL names, so the form's pane
   // stays up rather than a selection returning behind it.
   const openCreate = () => {
     openingCreate.current = !!sel;
+    setCreateSession((session) => session + 1);
     setShowCreate(true);
     void navigate({
       search: (prev) => {
@@ -590,18 +578,29 @@ function LibraryPage() {
     });
   };
   useEffect(() => {
-    const selected = !previousSel.current && !!sel;
+    const selected = !!sel && sel !== previousSel.current;
     previousSel.current = sel;
     openingCreate.current = false;
     if (selected) setShowCreate(false);
   }, [sel]);
   const [optimisticWorkflow, setOptimisticWorkflow] = useState<CreatedWorkflowDef | null>(null);
   // A create or clone moves the address to a row the catalog has not fetched
-  // yet, and the reload it starts keeps the previous list on screen until it
-  // answers. Until then, that address is the selection.
-  const [awaitedSel, setAwaitedSel] = useState<{ sel: string; reload: number } | null>(null);
+  // yet. Until a request made after it writes that row's source, the list on
+  // screen predates the row, so on a tab that lists its kind that address is
+  // still the selection.
+  const [awaitedSel, setAwaitedSel] = useState<{
+    sel: string;
+    source: CatalogSource;
+    version: number;
+  } | null>(null);
+  const awaitRow = (selection: string, source: CatalogSource) =>
+    setAwaitedSel({ sel: selection, source, version: visible.requestedVersion(source) });
   const rowAwaited =
-    awaitedSel !== null && awaitedSel.sel === sel && visible.settledReloadToken < awaitedSel.reload;
+    awaitedSel !== null &&
+    awaitedSel.sel === sel &&
+    !!parsedSel &&
+    (kindFilter === "all" || parsedSel.kind === kindFilter) &&
+    (visible.writtenVersion[awaitedSel.source] ?? 0) <= awaitedSel.version;
 
   const ALL_KIND_TABS: Array<{ value: LibraryTab; label: string }> = [
     { value: "all", label: t("filterAll") },
@@ -954,12 +953,16 @@ function LibraryPage() {
         <CreateMcpServerPanel
           onCreated={(name) => {
             if (!mounted.current) return;
-            if (completionOnTab(kindFilter)) setShowCreate(false);
+            const open = formOpen(createSession);
+            if (open) {
+              setShowCreate(false);
+              awaitRow(encodeSel("mcp", name), "mcpServers");
+            }
             invalidate("mcp");
-            setAwaitedSel({ sel: encodeSel("mcp", name), reload: reload() });
+            void reload();
             void navigate({
               search: (prev) =>
-                (prev.tab ?? "all") === kindFilter && prev.sel === sel
+                open && (prev.tab ?? "all") === kindFilter
                   ? { ...prev, sel: encodeSel("mcp", name) }
                   : prev,
               replace: false,
@@ -974,12 +977,16 @@ function LibraryPage() {
       <CreateAgentPanel
         onCreated={(name) => {
           if (!mounted.current) return;
-          if (completionOnTab(kindFilter)) setShowCreate(false);
+          const open = formOpen(createSession);
+          if (open) {
+            setShowCreate(false);
+            awaitRow(encodeSel("agent", name), "agents");
+          }
           invalidate("agent");
-          setAwaitedSel({ sel: encodeSel("agent", name), reload: reload() });
+          void reload();
           void navigate({
             search: (prev) =>
-              (prev.tab ?? "all") === kindFilter && prev.sel === sel
+              open && (prev.tab ?? "all") === kindFilter
                 ? { ...prev, sel: encodeSel("agent", name) }
                 : prev,
             replace: false,
@@ -994,13 +1001,14 @@ function LibraryPage() {
         <CreateWorkflowPanel
           onCreated={(workflow) => {
             if (!mounted.current) return;
+            const open = formOpen(createSession);
             setOptimisticWorkflow(workflow);
-            if (completionOnTab(kindFilter)) setShowCreate(false);
+            if (open) setShowCreate(false);
             invalidate("workflow");
             void reload();
             void navigate({
               search: (prev) =>
-                (prev.tab ?? "all") === kindFilter && prev.sel === sel
+                open && (prev.tab ?? "all") === kindFilter
                   ? { ...prev, sel: encodeSel("workflow", workflow.name) }
                   : prev,
               replace: false,
@@ -1114,11 +1122,9 @@ function LibraryPage() {
         onBack={handleBack}
         onCloned={(clonedName) => {
           if (!mounted.current) return;
+          awaitRow(encodeSel("playbook", clonedName, "custom"), "playbooks");
           invalidate("playbook");
-          setAwaitedSel({
-            sel: encodeSel("playbook", clonedName, "custom"),
-            reload: reload(),
-          });
+          void reload();
           void navigate({
             search: (prev) =>
               (prev.tab ?? "all") === kindFilter && prev.sel === sel

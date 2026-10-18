@@ -1720,4 +1720,251 @@ describe("Library catalog loading", () => {
       "created-agent",
     );
   });
+
+  function buttonLabelled(label: string) {
+    const button = [...container.querySelectorAll("button")].find((candidate) =>
+      candidate.textContent?.includes(label),
+    );
+    expect(button).toBeDefined();
+    return button!;
+  }
+
+  function shownAgent() {
+    return container.querySelector('[data-testid="agent-detail"]')?.textContent;
+  }
+
+  // The router commits each navigation only when the test runs it, as it does
+  // when it loads the route before it updates the address.
+  function queueCommits() {
+    const commits: (() => void)[] = [];
+    router.navigate.mockImplementation(
+      ({ search }: { search: (previous: typeof router.search) => typeof router.search }) => {
+        commits.push(() => {
+          router.search = search(router.search);
+          root.render(<LibraryPage />);
+        });
+        return Promise.resolve();
+      },
+    );
+    return commits;
+  }
+
+  it("keeps a created agent while a reload a later delete superseded answers", async () => {
+    const deletion = deferred<void>();
+    mutations.deleteAgent.mockReturnValue(deletion.promise);
+    const createReload = deferred<{ agents: { name: string }[] }>();
+    const deleteReload = deferred<{ agents: { name: string }[] }>();
+    api.listAgents
+      .mockResolvedValueOnce({ agents: [{ name: "first-agent" }, { name: "second-agent" }] })
+      .mockReturnValueOnce(createReload.promise)
+      .mockReturnValueOnce(deleteReload.promise);
+    await renderLibrary({ tab: "agent", sel: "agent:first-agent" });
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="delete-agent"]')!.click(),
+    );
+    await act(async () => buttonLabelled("newAgent").click());
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="submit-agent"]')!.click(),
+    );
+    await flush();
+    deletion.resolve();
+    await flush();
+    expect(api.listAgents).toHaveBeenCalledTimes(3);
+    expect(router.search).toEqual({ tab: "agent", sel: "agent:created-agent" });
+
+    // The delete's reload superseded the create's, so this answer is dropped
+    // and the list on screen still predates the create.
+    createReload.resolve({ agents: [{ name: "second-agent" }, { name: "created-agent" }] });
+    await flush();
+    expect(detailActiveAttr()).toBe("true");
+    expect(shownAgent()).toBe("created-agent");
+
+    deleteReload.resolve({ agents: [{ name: "second-agent" }, { name: "created-agent" }] });
+    await flush();
+    expect(detailActiveAttr()).toBe("true");
+    expect(shownAgent()).toBe("created-agent");
+  });
+
+  it("keeps a created agent while its reload is pending after another tab's reload answered", async () => {
+    const deletion = deferred<void>();
+    mutations.deleteMcp.mockReturnValue(deletion.promise);
+    api.listMcpServers.mockResolvedValue({ servers: [{ name: "existing-mcp" }] });
+    const createReload = deferred<{ agents: { name: string }[] }>();
+    api.listAgents
+      .mockResolvedValueOnce({ agents: [{ name: "existing-agent" }] })
+      .mockReturnValueOnce(createReload.promise);
+    await renderLibrary({ tab: "mcp", sel: "mcp:existing-mcp" });
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="delete-mcp"]')!.click(),
+    );
+    await act(async () => router.navigate({ search: () => ({ tab: "agent" }) }));
+    await flush();
+    await act(async () => buttonLabelled("newAgent").click());
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="submit-agent"]')!.click(),
+    );
+    await flush();
+    expect(router.search).toEqual({ tab: "agent", sel: "agent:created-agent" });
+    await act(async () => router.navigate({ search: () => ({ tab: "skill" }) }));
+    await flush();
+    deletion.resolve();
+    await flush();
+
+    await act(async () =>
+      router.navigate({ search: () => ({ tab: "agent", sel: "agent:created-agent" }) }),
+    );
+    await flush();
+    expect(detailActiveAttr()).toBe("true");
+    expect(shownAgent()).toBe("created-agent");
+
+    createReload.resolve({ agents: [{ name: "existing-agent" }, { name: "created-agent" }] });
+    await flush();
+    expect(detailActiveAttr()).toBe("true");
+    expect(shownAgent()).toBe("created-agent");
+  });
+
+  it("does not keep a created agent selected on a tab that does not list agents", async () => {
+    const createReload = deferred<{ agents: { name: string }[] }>();
+    api.listAgents
+      .mockResolvedValueOnce({ agents: [{ name: "existing-agent" }] })
+      .mockReturnValueOnce(createReload.promise);
+    api.listSkills.mockResolvedValue({ skills: [{ name: "first-skill" }] });
+    await renderLibrary({ tab: "agent" });
+    await act(async () => buttonLabelled("newAgent").click());
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="submit-agent"]')!.click(),
+    );
+    await flush();
+    expect(detailActiveAttr()).toBe("true");
+
+    await act(async () =>
+      router.navigate({ search: () => ({ tab: "skill", sel: "agent:created-agent" }) }),
+    );
+    await flush();
+    expect(detailActiveAttr()).toBe("false");
+    expect(shownAgent()).toBeUndefined();
+  });
+
+  it("returns to the catalog when the list of custom playbooks answers without the clone", async () => {
+    const builtinReload = deferred<{ playbooks: { name: string }[] }>();
+    api.listBuiltinPlaybooks
+      .mockResolvedValueOnce({ playbooks: [{ name: "bundled" }] })
+      .mockReturnValueOnce(builtinReload.promise);
+    api.listPlaybooks.mockResolvedValue({ playbooks: [] });
+    await renderLibrary({ tab: "playbook", sel: "playbook:builtin:bundled" });
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="clone-playbook"]')!.click(),
+    );
+    await flush();
+    expect(api.listPlaybooks).toHaveBeenCalledTimes(2);
+    expect(router.search).toEqual({ tab: "playbook", sel: "playbook:custom:cloned-playbook" });
+    expect(detailActiveAttr()).toBe("false");
+    expect(container.querySelector('[data-testid="playbook-detail"]')?.textContent).toContain(
+      "bundled",
+    );
+  });
+
+  it("shows a created MCP server while the reload that lists it is in flight", async () => {
+    const reloaded = deferred<{ servers: { name: string }[] }>();
+    api.listMcpServers
+      .mockResolvedValueOnce({ servers: [{ name: "existing-mcp" }] })
+      .mockReturnValueOnce(reloaded.promise);
+    await renderLibrary({ tab: "mcp" });
+    await act(async () => buttonLabelled("newMcpServer").click());
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="submit-mcp"]')!.click(),
+    );
+    await flush();
+    expect(router.search).toEqual({ tab: "mcp", sel: "mcp:created-mcp" });
+    expect(detailActiveAttr()).toBe("true");
+    expect(container.querySelector('[data-testid="mcp-detail"]')?.textContent).toContain(
+      "created-mcp",
+    );
+
+    reloaded.resolve({ servers: [{ name: "existing-mcp" }, { name: "created-mcp" }] });
+    await flush();
+    expect(detailActiveAttr()).toBe("true");
+    expect(container.querySelector('[data-testid="mcp-detail"]')?.textContent).toContain(
+      "created-mcp",
+    );
+  });
+
+  it("leaves the address alone when a create answers after its form was cancelled", async () => {
+    const creation = deferred<void>();
+    mutations.createAgent.mockReturnValue(creation.promise);
+    api.listAgents.mockResolvedValue({ agents: [{ name: "first-agent" }] });
+    await renderLibrary({ tab: "agent" });
+    await act(async () => buttonLabelled("newAgent").click());
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="submit-agent"]')!.click(),
+    );
+    await act(async () => buttonLabelled("Cancel").click());
+    expect(detailActiveAttr()).toBe("false");
+
+    creation.resolve();
+    await flush();
+    expect(router.search).toEqual({ tab: "agent" });
+    expect(detailActiveAttr()).toBe("false");
+    expect(api.listAgents).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a create form opened after an earlier create from a cancelled form answers", async () => {
+    const creation = deferred<void>();
+    mutations.createAgent.mockReturnValueOnce(creation.promise);
+    api.listAgents.mockResolvedValue({ agents: [{ name: "first-agent" }] });
+    await renderLibrary({ tab: "agent" });
+    await act(async () => buttonLabelled("newAgent").click());
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="submit-agent"]')!.click(),
+    );
+    await act(async () => buttonLabelled("Cancel").click());
+    await act(async () => buttonLabelled("newAgent").click());
+
+    creation.resolve();
+    await flush();
+    expect(router.search).toEqual({ tab: "agent" });
+    expect(container.querySelector('[data-testid="submit-agent"]')).not.toBeNull();
+    expect(detailActiveAttr()).toBe("true");
+  });
+
+  it("shows the created agent when its form was submitted before the router committed the form's address", async () => {
+    api.listAgents
+      .mockResolvedValueOnce({ agents: [{ name: "first-agent" }] })
+      .mockResolvedValue({ agents: [{ name: "first-agent" }, { name: "created-agent" }] });
+    await renderLibrary({ tab: "agent", sel: "agent:first-agent" });
+    const commits = queueCommits();
+    await act(async () => buttonLabelled("newAgent").click());
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="submit-agent"]')!.click(),
+    );
+    await flush();
+    expect(commits).toHaveLength(2);
+
+    while (commits.length > 0) {
+      await act(async () => commits.shift()!());
+      await flush();
+    }
+    expect(router.search).toEqual({ tab: "agent", sel: "agent:created-agent" });
+    expect(detailActiveAttr()).toBe("true");
+    expect(shownAgent()).toBe("created-agent");
+  });
+
+  it("closes the create form when another row's address commits before the form's own", async () => {
+    api.listAgents.mockResolvedValue({
+      agents: [{ name: "first-agent" }, { name: "second-agent" }],
+    });
+    await renderLibrary({ tab: "agent", sel: "agent:first-agent" });
+    const commits = queueCommits();
+    await act(async () => buttonLabelled("newAgent").click());
+    expect(container.querySelector('[data-testid="submit-agent"]')).not.toBeNull();
+    expect(commits).toHaveLength(1);
+
+    // A link or browser Back to another row commits ahead of the form's drop.
+    router.search = { tab: "agent", sel: "agent:second-agent" };
+    await act(async () => root.render(<LibraryPage />));
+    await flush();
+    expect(container.querySelector('[data-testid="submit-agent"]')).toBeNull();
+    expect(detailActiveAttr()).toBe("true");
+    expect(shownAgent()).toBe("second-agent");
+  });
 });
