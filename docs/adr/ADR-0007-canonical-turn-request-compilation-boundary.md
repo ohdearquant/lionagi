@@ -347,8 +347,8 @@ The compiler applies each section's declared bound and returns one `SectionBound
 system, instruction, history, context, tool_results — in `CompiledChatRequest.bounds`. A section
 within its bound keeps everything, and its record carries an empty `left_out`. A truncating section
 renders D7's marker inside itself and carries one `left_out` entry per dropped item. A refusing
-section raises `SectionBudgetRefused` before the provider call, and its records travel on that
-error. Bounds measure rendered text and never mutate history.
+section, the system or the instruction section, raises `SectionBudgetRefused` before the provider
+call, and its records travel on that error. Bounds measure rendered text and never mutate history.
 
 The bounds and §2's ReAct step run in one order, so no step reads the result of a later one:
 
@@ -633,8 +633,9 @@ two postures, and a section that keeps none takes a third:
 - **truncate**: the section renders what fits and carries an in-context marker stating that
   material was left out, naming the section, counting what was dropped and naming the reason.
   Only history and tool results truncate; or
-- **refuse**: compilation raises before the provider call, and the bound records travel on that
-  error rather than on a `CompiledChatRequest`, which is never built; or
+- **refuse**: compilation raises `SectionBudgetRefused` before the provider call, and the bound
+  records travel on that error rather than on a `CompiledChatRequest`, which is never built. The
+  system and instruction sections take this posture; or
 - **skip**: the whole unit is left out and never cut, with the marker and a left-out entry. A
   context block takes this posture: it is admitted whole or left out whole, which is the
   no-partial-truncation rule ADR-0008 D3 already fixes.
