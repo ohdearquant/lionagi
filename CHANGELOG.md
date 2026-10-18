@@ -156,10 +156,11 @@ behaviour, including accepting a write-capable submission without `cwd`.
   `sessionStorage` for its tab and sends it in `X-Studio-Decision-Token` on the two Operator
   decision requests only, with redirects refused so it cannot follow a 3xx elsewhere. A
   capability is kept as a hash, expires eight hours after redemption, is revoked by
-  `POST /api/studio/disconnect`, and is invalidated by a daemon restart. The three routes that
-  write the Operator store now record the decision's principal id, epoch, method, origin and
-  scope on the proposal row and in its audit row (Operator store schema version 2; rows from
-  before stay unattributed). Decisions themselves are admitted as before: a request without the
+  `POST /api/studio/disconnect`, and is invalidated by a daemon restart. The two Operator decision
+  routes now record the decision's principal id, epoch, method, origin and
+  scope on the proposal row and in its audit row when the request carries exactly one `Origin`
+  and it is the capability's own (Operator store schema version 2; rows from before stay
+  unattributed). Decisions themselves are admitted as before: a request without the
   header is still accepted, it is recorded unattributed, and the decision contract is still
   version 1. `LIONAGI_STUDIO_AUTH_TOKEN` neither issues a code nor carries decision authority.
   Every other route's admission is unchanged.

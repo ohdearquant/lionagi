@@ -22,6 +22,7 @@ import stat
 import struct
 import sys
 import threading
+import time
 from pathlib import Path
 
 __all__ = (
@@ -41,6 +42,10 @@ _SOCKET_NAME = "studio-reconnect.sock"
 # A code is at most 32 characters; the reply is one of them and a newline.
 _MAX_REPLY_BYTES = 256
 _ACCEPT_TIMEOUT_S = 0.2
+# Connections waiting to be answered. Each answer is one code and no read, so the
+# queue drains quickly; a client that finds it full retries for a short while.
+_BACKLOG = 128
+_CONNECT_RETRY_S = 1.0
 
 
 def unix_sockets_supported() -> bool:
@@ -103,11 +108,17 @@ def peer_uid(sock: socket.socket) -> int | None:
 
 
 def _checked_directory(path: Path) -> None:
-    """Create *path* unless it exists, and keep it private to its owner."""
-    path.mkdir(parents=True, exist_ok=True)
+    """Create *path* unless it exists, and keep it private to this user.
+
+    A directory another user owns is refused rather than adopted: its owner
+    could replace the socket inside it.
+    """
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
     info = path.lstat()
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         raise OSError(f"reconnect directory {path} is not a directory")
+    if info.st_uid != current_uid():
+        raise OSError(f"reconnect directory {path} belongs to another user")
     if info.st_mode & 0o077:
         os.chmod(path, 0o700)
 
@@ -119,14 +130,20 @@ def _replace_stale_socket(path: Path) -> None:
         return
     if not stat.S_ISSOCK(info.st_mode):
         raise OSError(f"reconnect path {path} exists and is not a socket")
-    # A socket file has no liveness of its own. A server that answers means a
-    # daemon is there; anything else is a file a dead process left behind.
+    if info.st_uid != current_uid():
+        raise OSError(f"reconnect socket {path} belongs to another user")
+    # A socket file has no liveness of its own. A refused connection means no
+    # process listens on it, so it is a file a dead daemon left behind; a server
+    # that answers is a daemon. Any other failure (a full queue, a timeout, a
+    # permission error) says nothing about liveness, so the file is kept.
     probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         probe.settimeout(0.5)
         probe.connect(str(path))
-    except OSError:
+    except (ConnectionRefusedError, FileNotFoundError):
         path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise OSError(f"cannot tell whether a daemon answers on {path}: {exc}") from exc
     else:
         raise OSError(f"another daemon already answers on {path}")
     finally:
@@ -152,7 +169,7 @@ class ReconnectChannel:
         try:
             server.bind(str(self.path))
             os.chmod(self.path, 0o600)
-            server.listen(8)
+            server.listen(_BACKLOG)
             server.settimeout(_ACCEPT_TIMEOUT_S)
         except BaseException:
             server.close()
@@ -205,17 +222,39 @@ class ReconnectChannel:
             self.path.unlink(missing_ok=True)
 
 
+def _connect(path: str, timeout: float) -> socket.socket | None:
+    """A connected client, or None when nothing listens at *path*.
+
+    A listener whose queue is full can refuse the connection or report that it
+    would block, and a socket file with no listener refuses it too, so either
+    answer is retried for a short while before it is taken as no daemon.
+    """
+    deadline = time.monotonic() + min(timeout, _CONNECT_RETRY_S)
+    while True:
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.settimeout(timeout)
+        try:
+            client.connect(path)
+        except (ConnectionRefusedError, BlockingIOError):
+            client.close()
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.02)
+        except OSError:
+            client.close()
+            return None
+        else:
+            return client
+
+
 def read_reconnect_code(path: str | Path, *, timeout: float = 5.0) -> str | None:
     """Ask the daemon at *path* for one pairing code; None when nothing answers."""
     if not unix_sockets_supported():
         return None
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client = _connect(str(path), timeout)
+    if client is None:
+        return None
     try:
-        client.settimeout(timeout)
-        try:
-            client.connect(str(path))
-        except OSError:
-            return None
         chunks: list[bytes] = []
         total = 0
         while total < _MAX_REPLY_BYTES:

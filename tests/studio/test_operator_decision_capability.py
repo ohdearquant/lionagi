@@ -268,6 +268,144 @@ def test_a_stale_socket_file_is_replaced_at_start(short_dir):
 
 
 @pytest.mark.skipif(not reconnect.unix_sockets_supported(), reason="no unix sockets")
+def test_many_concurrent_clients_each_get_their_own_code(short_dir):
+    socket_path = short_dir / "reconnect.sock"
+    lock = threading.Lock()
+    minted: list[str] = []
+
+    def mint() -> str:
+        with lock:
+            minted.append(f"code-{len(minted)}")
+            return minted[-1]
+
+    clients = 48
+    ready = threading.Barrier(clients)
+    received: list[str | None] = [None] * clients
+
+    def read(index: int) -> None:
+        ready.wait()
+        received[index] = reconnect.read_reconnect_code(socket_path)
+
+    channel = reconnect.ReconnectChannel(socket_path, mint)
+    channel.start()
+    try:
+        threads = [threading.Thread(target=read, args=(i,)) for i in range(clients)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+    finally:
+        channel.stop()
+
+    assert None not in received
+    assert sorted(received) == sorted(minted)
+    assert len(set(received)) == clients
+
+
+@pytest.mark.skipif(not reconnect.unix_sockets_supported(), reason="no unix sockets")
+def test_a_refused_connection_is_retried_until_the_daemon_listens(short_dir):
+    socket_path = short_dir / "reconnect.sock"
+    # Bound but not yet listening, so connections are refused until listen().
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(socket_path))
+    server.settimeout(5)
+
+    def listen_then_answer() -> None:
+        server.listen(1)
+        conn, _address = server.accept()
+        with conn:
+            conn.sendall(b"code-once-listening\n")
+
+    timer = threading.Timer(0.3, listen_then_answer)
+    timer.start()
+    try:
+        assert reconnect.read_reconnect_code(socket_path) == "code-once-listening"
+    finally:
+        timer.join(timeout=10)
+        server.close()
+
+
+@pytest.mark.skipif(not reconnect.unix_sockets_supported(), reason="no unix sockets")
+def test_a_socket_file_nothing_listens_on_answers_none_promptly(short_dir):
+    import time
+
+    socket_path = short_dir / "reconnect.sock"
+    stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stale.bind(str(socket_path))
+    stale.close()
+
+    started = time.monotonic()
+    assert reconnect.read_reconnect_code(socket_path, timeout=5) is None
+    assert time.monotonic() - started < 3
+
+
+@pytest.mark.skipif(not reconnect.unix_sockets_supported(), reason="no unix sockets")
+def test_a_directory_another_user_owns_is_refused(short_dir, monkeypatch):
+    directory = short_dir / "theirs"
+    directory.mkdir(mode=0o700)
+    monkeypatch.setattr(reconnect, "current_uid", lambda: os.getuid() + 1)
+    channel = reconnect.ReconnectChannel(directory / "reconnect.sock", lambda: "code")
+
+    with pytest.raises(OSError, match="another user"):
+        channel.start()
+    assert list(directory.iterdir()) == []
+
+
+@pytest.mark.skipif(not reconnect.unix_sockets_supported(), reason="no unix sockets")
+def test_the_directory_is_created_private_rather_than_narrowed_after(short_dir, monkeypatch):
+    # With chmod unavailable, only the mode the directory was created with keeps
+    # it private: there is no moment in which it is open to other users.
+    monkeypatch.setattr(os, "chmod", lambda *args, **kwargs: None)
+    previous = os.umask(0o022)
+    try:
+        reconnect._checked_directory(short_dir / "new")
+    finally:
+        os.umask(previous)
+
+    assert stat.S_IMODE((short_dir / "new").stat().st_mode) == 0o700
+
+
+@pytest.mark.skipif(not reconnect.unix_sockets_supported(), reason="no unix sockets")
+def test_a_socket_whose_liveness_cannot_be_read_is_kept(short_dir, monkeypatch):
+    socket_path = short_dir / "reconnect.sock"
+    stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stale.bind(str(socket_path))
+    stale.close()
+
+    class _Unreadable:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def settimeout(self, _timeout) -> None:
+            pass
+
+        def connect(self, _address) -> None:
+            raise PermissionError(13, "Permission denied")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(reconnect.socket, "socket", _Unreadable)
+
+    with pytest.raises(OSError, match="cannot tell whether a daemon answers"):
+        reconnect._replace_stale_socket(socket_path)
+    assert socket_path.exists()
+
+
+@pytest.mark.skipif(not reconnect.unix_sockets_supported(), reason="no unix sockets")
+def test_a_socket_file_another_user_owns_is_kept(short_dir, monkeypatch):
+    socket_path = short_dir / "reconnect.sock"
+    stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stale.bind(str(socket_path))
+    stale.close()
+    monkeypatch.setattr(reconnect, "current_uid", lambda: os.getuid() + 1)
+
+    with pytest.raises(OSError, match="another user"):
+        reconnect._replace_stale_socket(socket_path)
+    assert socket_path.exists()
+
+
+@pytest.mark.skipif(not reconnect.unix_sockets_supported(), reason="no unix sockets")
 def test_the_socket_file_is_the_only_thing_in_the_directory(short_dir):
     directory = short_dir / "private"
     channel = reconnect.ReconnectChannel(directory / "reconnect.sock", lambda: "code")
@@ -332,5 +470,5 @@ def test_serving_clears_what_an_earlier_daemon_issued_in_this_process(fresh):
 
     fresh.begin_serving()
 
-    assert fresh.resolve_decision_capability(first.capability) is None
+    assert fresh.resolve_decision_capability(first.capability, origin=_HOSTED) is None
     assert fresh.redeem_pairing_grant(code, origin=_HOSTED) is None

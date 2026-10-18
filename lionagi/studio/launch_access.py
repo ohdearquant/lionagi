@@ -269,11 +269,13 @@ def mint_decision_capability(origin: str) -> str:
 def resolve_decision_capability(
     presented: str,
     *,
-    origin: str | None = None,
+    origin: str,
     scope: str = DECISION_SCOPE,
 ) -> DecisionPrincipal | None:
     """The principal *presented* was issued to, or None if it cannot decide now.
 
+    *origin* is the origin the request came from; a capability resolves only
+    from the origin it was bound to, so there is no call that skips the check.
     None covers an unknown, expired or revoked secret, a capability from another
     daemon start, another origin or another scope. A resolved principal's
     capability is still live.
@@ -291,7 +293,7 @@ def resolve_decision_capability(
         principal = capability.principal
         if principal.epoch != _epoch or principal.scope != scope:
             return None
-        if origin is not None and origin != principal.origin:
+        if origin != principal.origin:
             return None
         return principal
 

@@ -1068,7 +1068,9 @@ class TestPairingWithToken:
         assert client.post(_MINT, json={}, headers=bearer).status_code == 410
         import lionagi.studio.launch_access as launch_access
 
-        assert launch_access.resolve_decision_capability("studio-test-token") is None
+        assert (
+            launch_access.resolve_decision_capability("studio-test-token", origin=_HOSTED) is None
+        )
 
     def test_the_launch_bearer_is_not_accepted_in_token_mode(self, make_client, fresh_launch):
         client = make_client()

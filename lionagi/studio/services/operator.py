@@ -311,17 +311,19 @@ def _decision_principal(request: Request) -> DecisionPrincipal | None:
     """The principal a decision request's capability resolves to, or None.
 
     None covers a request without the header, which is still accepted today,
-    and a capability this daemon cannot verify from the request's own origin
-    (unknown, expired, revoked, from another start, another origin or another
-    scope). Nothing here admits or refuses the request: API admission is the
-    middleware's, unchanged.
+    a request without exactly one ``Origin`` header, and a capability this
+    daemon cannot verify from the request's own origin (unknown, expired,
+    revoked, from another start, another origin or another scope). Nothing
+    here admits or refuses the request: API admission is the middleware's,
+    unchanged.
     """
     presented = request.headers.get(DECISION_TOKEN_HEADER)
     if not presented:
         return None
     origins = request.headers.getlist("origin")
-    origin = origins[0] if len(origins) == 1 else None
-    return resolve_decision_capability(presented, origin=origin)
+    if len(origins) != 1:
+        return None
+    return resolve_decision_capability(presented, origin=origins[0])
 
 
 @studio_route(

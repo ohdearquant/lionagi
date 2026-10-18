@@ -3062,9 +3062,11 @@ async def test_stdio_permission_bridge_never_reuses_approval_for_changed_input(
 def _request(
     *,
     client: str = "127.0.0.1",
-    headers: dict[str, str] | None = None,
+    headers: dict[str, str] | list[tuple[str, str]] | None = None,
 ) -> Request:
-    raw_headers = [(key.lower().encode(), value.encode()) for key, value in (headers or {}).items()]
+    # A list of pairs can repeat a header name; a dict cannot.
+    pairs = headers.items() if isinstance(headers, dict) else (headers or [])
+    raw_headers = [(key.lower().encode(), value.encode()) for key, value in pairs]
     if not any(key == b"host" for key, _ in raw_headers):
         raw_headers.append((b"host", b"127.0.0.1:8765"))
     return Request(
@@ -4127,16 +4129,77 @@ async def test_a_capability_from_another_origin_is_not_attributed(tmp_path, monk
     assert (await _proposal_row(path, proposal["id"]))["decision_principal_id"] is None
 
 
+_PAGE = "http://localhost:5173"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["confirm", "decide"])
+@pytest.mark.parametrize(
+    ("origins", "attributed"),
+    [
+        pytest.param([_PAGE], True, id="its-own-origin"),
+        pytest.param([], False, id="no-origin"),
+        pytest.param([_PAGE, _PAGE], False, id="its-origin-twice"),
+        pytest.param(["https://evil.example", _PAGE], False, id="another-origin-first"),
+        pytest.param([_PAGE, "https://evil.example"], False, id="another-origin-second"),
+    ],
+)
+async def test_a_capability_is_attributed_only_with_exactly_its_own_origin(
+    monkeypatch, route, origins, attributed
+):
+    """Both decision routes resolve the capability against the request's one
+    ``Origin``; a request with none or with several is not attributed, whatever
+    the values, so a capability cannot be used from a context that omits or
+    repeats the header."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from lionagi.studio.launch_access import (
+        mint_decision_capability,
+        reset_launch_access,
+        resolve_decision_capability,
+    )
+    from lionagi.studio.operator.types import ConfirmProposalRequest
+    from lionagi.studio.services import operator as operator_svc
+
+    reset_launch_access()
+    capability = mint_decision_capability(_PAGE)
+    coordinator = MagicMock()
+    coordinator.decide = AsyncMock(return_value={"status": "executing"})
+    monkeypatch.setattr(operator_svc, "get_operator_coordinator", lambda: coordinator)
+    request = _request(
+        headers=[("origin", value) for value in origins] + [("x-studio-decision-token", capability)]
+    )
+    proposal = {"commandHash": "a" * 64}
+
+    if route == "confirm":
+        body = ConfirmProposalRequest.model_validate({"expectedCommandHash": "a" * 64})
+        await operator_svc.confirm_operator_proposal("conversation", "proposal", body, request)
+    else:
+        await operator_svc.decide_operator_proposal(
+            "conversation", "proposal", _decide_body("allow", proposal), request
+        )
+
+    principal = coordinator.decide.await_args.kwargs["principal"]
+    if attributed:
+        assert principal == resolve_decision_capability(capability, origin=_PAGE)
+        assert principal is not None
+    else:
+        assert principal is None
+
+
 @pytest.mark.asyncio
 async def test_the_decision_principal_is_written_with_the_decision_or_not_at_all(
     tmp_path, monkeypatch
 ):
-    """A store failure before the commit leaves neither the decision nor its
-    audit row, so no principal is recorded for a decision that did not happen."""
+    """A failure inside the decision's transaction, after the proposal row and
+    its audit row are written and before the commit, leaves neither of them,
+    so no principal is recorded for a decision that did not happen."""
+    from fastapi import HTTPException
+
     from lionagi.studio.launch_access import (
-        DecisionPrincipal,
         mint_decision_capability,
         reset_launch_access,
+        resolve_decision_capability,
     )
     from lionagi.studio.services.operator import decide_operator_proposal
 
@@ -4144,10 +4207,9 @@ async def test_the_decision_principal_is_written_with_the_decision_or_not_at_all
     _patch_state_db(monkeypatch, path)
     await _state_db_with_admin_events(path)
     reset_launch_access()
-    capability = mint_decision_capability("http://localhost:5173")
-    principal = DecisionPrincipal(
-        id="p-1", epoch="e-1", method="pairing", origin="http://localhost:5173"
-    )
+    capability = mint_decision_capability(_PAGE)
+    principal = resolve_decision_capability(capability, origin=_PAGE)
+    assert principal is not None
     store = OperatorStore(path)
     coordinator = OperatorCoordinator(store=store, engine_factory=ScriptedEngine)
     await coordinator.startup()
@@ -4155,30 +4217,34 @@ async def test_the_decision_principal_is_written_with_the_decision_or_not_at_all
         tmp_path, monkeypatch, coordinator
     )
 
-    original = store.decide_proposal
+    original = store._append_frame_in_tx
 
-    async def failing(*args, **kwargs):
-        raise RuntimeError("store is unavailable")
+    async def failing_before_commit(db, **kwargs):
+        # The decision's confirmation frame is written after the audit INSERT
+        # and the proposal UPDATE, inside the same transaction.
+        if (
+            kwargs.get("frame_type") == "confirmation"
+            and kwargs.get("payload", {}).get("proposalId") == proposal["id"]
+        ):
+            raise RuntimeError("store is unavailable")
+        return await original(db, **kwargs)
 
-    from fastapi import HTTPException
-
-    monkeypatch.setattr(store, "decide_proposal", failing)
+    monkeypatch.setattr(store, "_append_frame_in_tx", failing_before_commit)
     with pytest.raises(HTTPException) as raised:
         await decide_operator_proposal(
             accepted["conversationId"],
             proposal["id"],
             _decide_body("deny", proposal),
-            _request(
-                headers={"origin": "http://localhost:5173", "x-studio-decision-token": capability}
-            ),
+            _request(headers={"origin": _PAGE, "x-studio-decision-token": capability}),
         )
     assert raised.value.status_code == 503
-    monkeypatch.setattr(store, "decide_proposal", original)
+    monkeypatch.setattr(store, "_append_frame_in_tx", original)
     await coordinator.shutdown()
 
     row = await _proposal_row(path, proposal["id"])
     assert row["status"] == "pending"
     assert row["decision_principal_id"] is None
+    assert row["decision_epoch"] is None
     assert principal.id not in json.dumps(await _audit_rows(path, proposal["id"]))
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
