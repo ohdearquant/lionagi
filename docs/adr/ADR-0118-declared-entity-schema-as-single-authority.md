@@ -22,7 +22,7 @@ written down in these hand-maintained forms:
 1. `lionagi/state/schema_meta.py` (1,224 lines): a SQLAlchemy `MetaData` declaring 32 tables,
    380 columns and 83 `Index(...)` objects. Its own docstring calls it the "single source of
    truth for schema DDL". It is what production actually creates from:
-   `await conn.run_sync(metadata.create_all)` at `state/db.py:1734`.
+   `await conn.run_sync(metadata.create_all)` at `state/db.py:1738`.
 2. `lionagi/state/schema.sql` (1,021 lines): 32 `CREATE TABLE` and 87 `CREATE INDEX`
    statements declaring the same schema in DDL text. Its header line reads
    `-- lionagi state schema v1` while line 22 seeds `version` `'3'`. It is bound to
@@ -39,8 +39,8 @@ written down in these hand-maintained forms:
 4. `MIGRATION_COLUMNS` / `MIGRATION_INDEXES` in `state/schema_migrations.py`: a per-table
    ledger of additive columns (the `sessions` list alone carries ~30 entries) and a per-dialect
    index list, both re-stating what 1 and 2 already declare.
-5. Five `_*_COLUMNS` frozensets in `state/db.py` (`_SESSION_COLUMNS` 229, `_INVOCATION_COLUMNS`
-   299, `_SHOW_COLUMNS` 313, `_PLAY_COLUMNS` 327, `_BRANCH_COLUMNS` 350) guarding the dynamic
+5. Five `_*_COLUMNS` frozensets in `state/db.py` (`_SESSION_COLUMNS` 292, `_INVOCATION_COLUMNS`
+   349, `_SHOW_COLUMNS` 363, `_PLAY_COLUMNS` 377, `_BRANCH_COLUMNS` 400) guarding the dynamic
    UPDATE builders, plus the hand-written column lists inside each `_build_*_insert_stmt`.
    The file also holds `_MIGRATION_COLUMNS` and `_SPEND_ROLLUP_COLUMNS`, which are a different
    thing and are not part of this five.
@@ -108,12 +108,12 @@ they are interpolated into SQL at `state/lifecycle/service.py:129-134` and elsew
 **P5 — migration is an additive ledger, and the version is not a shape identity.** Schema
 evolution uses `MIGRATION_COLUMNS` at startup plus bespoke `*_new` copy-and-rename rebuilds
 for changes SQLite's `ALTER TABLE` cannot express. `_reconcile_columns` inspects table and
-column presence and raises on inspection failures (`state/db.py:1808-1828`); the open
+column presence and raises on inspection failures (`state/db.py:1812-1832`); the open
 sequence runs that reconciliation before writing `SCHEMA_VERSION`
-(`state/db.py:1709-1711,1758-1764`). This hardening does not make the version integer
+(`state/db.py:1713-1715,1762-1768`). This hardening does not make the version integer
 a fingerprint of the complete physical catalog. The schedules rebuilds already derive their
 target table from `schema_meta.py` via `to_metadata`
-(`state/db.py:2320,2408,2492`), so that generated path already exists on SQLite.
+(`state/db.py:2324,2412,2496`), so that generated path already exists on SQLite.
 
 **P6 — the layer is decoupled from the rest of the codebase and oversized for what it does.**
 `state/` (13,677 lines, 25 files) plus `studio/` (37,197 lines, 79 files) together exceed the
@@ -385,7 +385,7 @@ used to bypass ownership.
 
 The current rebuilds do the opposite: they read the live catalog and replay it, assembling the
 copy statement's column list from catalog-read names and re-executing index DDL strings taken from
-`sqlite_master` (`state/db.py:2148-2165,2253-2258`, and the same shape in the six other rebuild paths).
+`sqlite_master` (`state/db.py:2152-2169,2257-2262`, and the same shape in the six other rebuild paths).
 That faithfully preserves whatever the database happens to contain, including objects nothing
 declares, so a rebuild carries drift forward instead of resolving it — a database built from the
 old DDL path keeps its 15 descending indexes through every future migration. It is also the one

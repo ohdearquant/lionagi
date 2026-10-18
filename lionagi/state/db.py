@@ -1006,6 +1006,10 @@ class StateDB:
             # over a store with no schema. A store this process holds in compatibility mode, or
             # one a native migration must not touch, refuses here as the fresh path does, and that
             # refusal disposes the kept engine rather than leaving it open and registered.
+            # This call runs the schema transaction again, so until that transaction commits its
+            # connections read the store as an open's do, whatever an earlier attempt on this
+            # engine committed before it failed.
+            self._schema_committed = False
             try:
                 if self._compat is None:
                     held = _open_in_compatibility_mode(self.url)
@@ -7953,14 +7957,21 @@ def _read_lineage_from_a_copy(path: str, suffix: str) -> Any:
     copy's log and never touches the originals. The copy is made in a new directory under the
     system's temporary directory, which only this user can read, and removed before this returns;
     a process killed while it copies leaves the copy there. ``_MOVED`` when the store committed or
-    checkpointed while it was copied, ``_UNREAD`` when the copy or its read fails."""
+    checkpointed while it was copied, or its journal or log could not be opened or was gone by the
+    time it was copied (a commit or a closing checkpoint removes it), so the caller reads the store
+    again from the start; ``_UNREAD`` when the copy or its read fails otherwise."""
     try:
         with tempfile.TemporaryDirectory(prefix="lionagi-lineage-") as scratch:
             copy = os.path.join(scratch, "store.db")
             before = _copy_state(path, suffix)
+            if before is None:
+                return _MOVED
             _copy_store_file(path, copy)
-            shutil.copyfile(f"{path}{suffix}", f"{copy}{suffix}")
-            if before is None or _copy_state(path, suffix) != before:
+            try:
+                shutil.copyfile(f"{path}{suffix}", f"{copy}{suffix}")
+            except FileNotFoundError:
+                return _MOVED
+            if _copy_state(path, suffix) != before:
                 return _MOVED
             read = _read_lineage(Path(copy).as_uri())
     except (OSError, sqlite3.Error):
@@ -7995,8 +8006,8 @@ def _copy_state(path: str, suffix: str) -> tuple | None:
 # `stat` and the `open`, so the open costs a second descriptor no entry can find. The descriptors
 # count against the process's open-file limit, so a long run that copies very many distinct stores
 # spends one of that limit's slots per store, and an `EMFILE` reached there makes
-# `_read_lineage_from_a_copy` return `_UNREAD`, so the writable connection's own read of the row
-# decides.
+# `_read_lineage_from_a_copy` return `_UNREAD`, so the open is refused with `UnreadableStoreError`
+# before any writable connection opens the store.
 _COPY_DESCRIPTORS: dict[tuple[int, int], int] = {}
 _COPY_DESCRIPTORS_LOCK = threading.Lock()
 

@@ -439,6 +439,63 @@ async def test_a_store_whose_journal_or_log_cannot_be_read_is_refused_before_any
     assert _files(path) == before
 
 
+async def test_a_journal_a_commit_removes_after_it_was_seen_reads_the_store_again(
+    tmp_path, monkeypatch
+):
+    """A commit removes the rollback journal between the open seeing it and copying it. The open
+    reads the store again, now without a journal, rather than refusing it as unreadable."""
+    from lionagi.state import db as db_mod
+
+    path = tmp_path / "store.db"
+    await _open_and_close(path)
+    Path(f"{path}-journal").write_bytes(db_mod._JOURNAL_HEADER + bytes(504))
+    real = db_mod._journal_has_a_header
+
+    def committed_after_the_check(opened: str) -> bool:
+        seen = real(opened)
+        Path(f"{opened}-journal").unlink(missing_ok=True)
+        return seen
+
+    monkeypatch.setattr(db_mod, "_journal_has_a_header", committed_after_the_check)
+    await _open_and_close(path)
+
+
+async def test_a_log_a_closing_writer_removes_while_the_store_is_copied_reads_the_store_again(
+    tmp_path, monkeypatch
+):
+    """Another process's last connection closes while the open copies the store, so SQLite folds
+    the log into the file and removes it before the log is copied. The open reads the store again
+    rather than refusing it as unreadable."""
+    from lionagi.state import db as db_mod
+
+    path = tmp_path / "store.db"
+    await _open_and_close(path)
+    # Closed from the open's worker thread, as another process's close would land at any time.
+    writer = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+    try:
+        writer.execute("PRAGMA wal_autocheckpoint = 0")
+        writer.execute("INSERT INTO schema_meta (key, value) VALUES ('written', '1')")
+        assert Path(f"{path}-wal").stat().st_size > 0
+        # The read-only read of the log through its index fails, so the log is read from a copy.
+        read = db_mod._read_lineage
+        monkeypatch.setattr(
+            db_mod,
+            "_read_lineage",
+            lambda target: None if "readonly_shm" in str(target) else read(target),
+        )
+        real = db_mod._copy_store_file
+
+        def closed_during_the_copy(source: str, copy: str) -> None:
+            real(source, copy)
+            writer.close()
+            Path(f"{source}-wal").unlink(missing_ok=True)
+
+        monkeypatch.setattr(db_mod, "_copy_store_file", closed_during_the_copy)
+        await _open_and_close(path)
+    finally:
+        writer.close()
+
+
 def _wal_reopened(path: Path, script: str) -> None:
     """Run *script* on a store in its log, leaving the log beside the file uncheckpointed: a
     reader holds the store open, so the writer's close does not fold the log into the file."""
@@ -494,6 +551,44 @@ async def test_a_kept_engine_reads_the_store_before_it_reuses_a_connection(tmp_p
 
 async def _raise(exc):
     raise exc
+
+
+async def test_a_kept_engine_whose_schema_committed_reads_a_replaced_store_as_an_open_does(
+    tmp_path, monkeypatch
+):
+    """An open that fails after its schema transaction committed keeps its engine, and its next
+    open runs that transaction again. Until it commits, that open's connections read the store as
+    an open's do, so a store another writer put in its place is refused before a connection's
+    settings change it, and left as it was."""
+    path = tmp_path / "kept.db"
+    db = StateDB(path)
+    monkeypatch.setattr(
+        StateDB,
+        "_backfill_session_ended_at_once",
+        lambda self: _raise(RuntimeError("after the schema")),
+    )
+    with pytest.raises(RuntimeError, match="after the schema"):
+        await db.open()
+    assert db._engine is not None and db._schema_committed and not db._schema_applied
+    monkeypatch.undo()
+    await db._engine.dispose()
+    replaced = {}
+
+    def replaced_after_the_read(self, held) -> None:
+        for name in (path.name, f"{path.name}-wal", f"{path.name}-shm"):
+            (tmp_path / name).unlink(missing_ok=True)
+        with closing(sqlite3.connect(path)) as conn:
+            assert conn.execute("PRAGMA journal_mode = delete").fetchone() == ("delete",)
+            conn.execute("CREATE TABLE app_users (id TEXT PRIMARY KEY)")
+            conn.commit()
+        replaced.update(_files(path))
+
+    monkeypatch.setattr(StateDB, "_read_lineage_without_writing", replaced_after_the_read)
+    with pytest.raises(UnrecognizedStoreError, match="app_users"):
+        await db.open()
+    assert db._engine is None
+    assert _rows(path, "PRAGMA journal_mode") == [("delete",)]
+    assert _files(path) == replaced
 
 
 async def test_a_connection_opened_after_the_schema_is_applied_does_not_refuse_a_newer_version(

@@ -238,8 +238,8 @@ reads all of them again before its connection settings; a connection opened afte
 applied the schema reads only the `schema_meta` `lineage` and `version` rows, so
 `SchemaTooNewError` is raised by an open and never by an ordinary write. The
 pre-rebuild backup reads them again before the checkpoint it takes. A refused open leaves no engine,
-whichever of `ForeignLineageError`, `UnrecognizedStoreError`, `SchemaTooNewError` and the
-compatibility refusal refused it. `UnrecognizedStoreError` and `UnreadableStoreError` are exported
+whichever of `ForeignLineageError`, `UnrecognizedStoreError`, `UnreadableStoreError`,
+`SchemaTooNewError` and the compatibility refusal refused it. `UnrecognizedStoreError` and `UnreadableStoreError` are exported
 from `lionagi.state`.
 
 A store another application manages carries a `lineage` row naming that application. The managing
