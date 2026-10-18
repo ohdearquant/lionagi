@@ -7,7 +7,13 @@ from lionagi.ln import lazy_import
 
 if TYPE_CHECKING:
     from .compat import CompatibilityProfile, StateCompatibilityRefused
-    from .db import ForeignLineageError, SchemaTooNewError, StateDB
+    from .db import (
+        ForeignLineageError,
+        SchemaTooNewError,
+        StateDB,
+        UnreadableStoreError,
+        UnrecognizedStoreError,
+    )
 
 __all__ = (
     "CompatibilityProfile",
@@ -15,6 +21,8 @@ __all__ = (
     "SchemaTooNewError",
     "StateCompatibilityRefused",
     "StateDB",
+    "UnreadableStoreError",
+    "UnrecognizedStoreError",
 )
 
 _MODULES = {
@@ -23,6 +31,8 @@ _MODULES = {
     "SchemaTooNewError": ("db", "SchemaTooNewError"),
     "StateCompatibilityRefused": ("compat", "StateCompatibilityRefused"),
     "StateDB": ("db", "StateDB"),
+    "UnreadableStoreError": ("db", "UnreadableStoreError"),
+    "UnrecognizedStoreError": ("db", "UnrecognizedStoreError"),
 }
 
 

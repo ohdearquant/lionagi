@@ -251,7 +251,7 @@ the difference decides what the mechanism is worth.** It is a check against
 *accident*: code that writes a session's status without meaning to claim it is a
 mirrored transcript. It is not, and at this layer cannot be, a check against
 *impersonation*. `StateDB.update_status` takes `source` and `actor` as ordinary
-caller-supplied strings (`lionagi/state/db.py:4212-4223`) and they arrive at the
+caller-supplied strings (`lionagi/state/db.py:4438-4449`) and they arrive at the
 lifecycle service inside an `ActorRecord` whose `id` is a plain `str`
 (`lionagi/state/lifecycle/models.py:18-21`). Any caller in the process can pass
 `actor="claude-mirror-reconcile"` and satisfy any identity rule built on that
@@ -342,7 +342,7 @@ about, so it is the subject of the change rather than a downstream reader of
 it. That leaves the **11 downstream consumer files** enumerated below. Read
 "11" as a description of the table and not as a count of everything in the tree
 that reads the constant: the reconciler reads it, and `state/db.py` derives a
-second name from it at `lionagi/state/db.py:391`.
+second name from it at `lionagi/state/db.py:431`.
 
 | Site | Reachable from a mirrored row? | Basis |
 | --- | --- | --- |
@@ -354,7 +354,7 @@ second name from it at `lionagi/state/db.py:391`.
 | `cli/monitor.py:1197,1209,1267` | Unverified | not driven |
 | `cli/machine.py:529` | Unverified, display flag | not driven |
 | `cli/_runs.py:918,1178,1370,1666` | **Yes, by construction, and this row was wrong in an earlier draft** | read at the source: `_linked_engine_session` (`:662-688`) resolves `session_db_id(engine_session_uid)`, which is the **Claude**-mirror row and only that one, and `:918` branches on that row's terminal status while `:937` handles it being `running`. An earlier draft wrote "the claude/codex-mirror row" and that is wrong: the resolver imports `session_db_id` from `lionagi.state.claude_mirror` (`lionagi/cli/_runs.py:677`), and the Codex mirror derives its ids from a deliberately different namespace so that the two can never collide (`lionagi/state/codex_mirror.py:79-81`, which says so in a comment). A Codex-mirrored session is therefore not reachable through this consumer at all, which is a **separate gap and not a covered case**: whatever `idle` does to a linked Claude row, the equivalent Codex row is not linked here in the first place. Adding `idle` gives a linked row a third value that matches neither branch, so a session that is merely quiet falls through to the phantom `failed` the `running` branch exists to suppress. See the obligation below. Separately, and unchanged from the earlier draft: the ADR-0105 reopen path at `lionagi/cli/_runs.py:1773-1784` is keyed by a branch id, and a mirror branch id is deterministic, so a hand-typed resume against one remains an open edge case. |
-| `cli/agent.py:933` | Probably not: own run's session | not driven |
+| `cli/agent.py:826,1836` | Probably not: own run's session | not driven |
 | `cli/orchestrate/_orchestration.py:1654` | Probably not: own run's session | not driven |
 | `hooks/builtins.py:55,114` | Probably not: own run's session | not driven |
 

@@ -20,7 +20,7 @@ daemon's own OS user can open, and that no HTTP request can obtain.
 
 **P1 — the decision routes check no principal.** `confirm_operator_proposal` and
 `decide_operator_proposal` (`lionagi/studio/services/operator.py:310-360`) call the coordinator's
-`decide()` (`lionagi/studio/operator/coordinator.py:1009`), which claims the proposal in the store
+`decide()` (`lionagi/studio/operator/coordinator.py:1014`), which claims the proposal in the store
 (`lionagi/studio/operator/store.py:2009`). The proposal's hash and version bind what is decided, not
 who decides. With no token configured, the middleware admits a request that carries no `Origin` and
 no `Sec-Fetch-Site` (`lionagi/studio/app.py:67`, `:113`), so a command-line client, a script and a

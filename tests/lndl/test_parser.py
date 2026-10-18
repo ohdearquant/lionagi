@@ -220,6 +220,24 @@ class TestOutBlockForms:
         prog = _parse("<lvar a>1</lvar>")
         assert prog.out_block is None
 
+    def test_parsing_stops_after_the_first_out_block(self):
+        text = "<lvar a>1</lvar>\nOUT{x: [a]}\n<lact q r>fn(x=1)</lact>\nOUT{y: 2}"
+        prog = _parse(text)
+        assert prog.lacts == []
+        assert [lv.alias for lv in prog.lvars] == ["a"]
+        assert prog.out_block is not None
+
+    def test_declarations_after_out_block_are_parsed_when_reading_past_it(self):
+        text = "<lvar a>1</lvar>\nOUT{x: [a]}\n<lact q r>fn(x=1)</lact>"
+        prog = Parser(Lexer(text).tokenize(), source_text=text).parse(read_past_out=True)
+        assert [la.alias for la in prog.lacts] == ["r"]
+        assert prog.lvars[0].alias == "a"
+
+    def test_second_out_block_raises_when_reading_past_the_first(self):
+        text = "OUT{x: 1}\nOUT{y: 2}"
+        with pytest.raises(ParseError, match="Duplicate OUT"):
+            Parser(Lexer(text).tokenize(), source_text=text).parse(read_past_out=True)
+
 
 class TestParseValue:
     def test_true(self):
