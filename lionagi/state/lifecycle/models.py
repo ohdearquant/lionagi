@@ -30,12 +30,16 @@ ScheduleFailureCategory = Literal[
 
 @dataclass(frozen=True)
 class ScheduleAuditContext:
-    """Observed submitter provenance, independent of execution identity and cwd."""
+    """Observed submitter provenance, independent of execution identity and cwd.
+
+    The defaults describe a write that carried no context: nothing about its entry
+    point was observed, so origin and source are unavailable rather than a guess.
+    """
 
     actor: str | None = None
     submitting_cwd: str | None = None
-    origin: ScheduleOrigin = "programmatic"
-    source: str = "programmatic"
+    origin: ScheduleOrigin = "unavailable"
+    source: str = "unavailable"
     assurance: ScheduleAssurance = "unavailable"
     actor_status: ProvenanceStatus = "unavailable"
     cwd_status: ProvenanceStatus = "unavailable"

@@ -230,9 +230,9 @@ async def test_context_is_preserved_or_explicitly_unavailable(db, unavailable):
     assert metadata["schedule_name"] == "Schedule definition"
     assert "Private execution prompt" not in json.dumps(metadata)
     assert event["actor"] == (None if unavailable else "operator:alice")
-    assert event["source"] == ("programmatic" if unavailable else "cli")
+    assert event["source"] == ("unavailable" if unavailable else "cli")
     assert metadata["provenance"] == {
-        "origin": "programmatic" if unavailable else "cli",
+        "origin": "unavailable" if unavailable else "cli",
         "submitting_cwd": None if unavailable else "/work/submitted-project",
         "actor_status": "unavailable" if unavailable else "available",
         "cwd_status": "unavailable" if unavailable else "available",

@@ -22,8 +22,10 @@ project those rows ran under. To keep the project, name it in those members.
   `StateDB.get_schedule_history` can read retained events after deletion. Untouched legacy
   definitions have no invented history, and read-only stores missing the ledger report it as
   unavailable. Existing callers temporarily remain compatible without a reason or submitter
-  context, explicitly recording unavailable attribution. Required manual disable reasons,
-  client provenance transport and the browser history display are not yet implemented.
+  context, explicitly recording unavailable attribution, origin and source. A definition id
+  that already has recorded history, including one whose definition was deleted, cannot be
+  created again: `StateDB` refuses it with `LifecycleValidationError`. Required manual disable
+  reasons, client provenance transport and the browser history display are not yet implemented.
 - `lionagi.ln.short_id(n=12)` returns a UUID4 hexadecimal prefix with an explicit
   integer length from 1 to 32; boolean and out-of-range lengths raise `ValueError`.
 - `lionagi.ln.parse_duration` parses positive finite durations in lowercase `s`, `m`,
