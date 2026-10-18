@@ -225,7 +225,10 @@ async def test_a_due_evaluation_ends_the_episode_unless_the_cap_defers_it(monkey
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("outcome", ["not_due", "deferred", "empty_poll", "poll_raised"])
+@pytest.mark.parametrize(
+    "outcome",
+    ["not_due", "deferred", "empty_poll", "poll_raised", "event_deferred", "fired_then_deferred"],
+)
 async def test_a_github_due_pass_ends_the_episode_unless_the_cap_defers_it(monkeypatch, outcome):
     monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
     engine = SchedulerEngine(svc=_make_svc())
@@ -236,16 +239,31 @@ async def test_a_github_due_pass_ends_the_episode_unless_the_cap_defers_it(monke
         last_fired_at=10_000.0 if outcome == "not_due" else 0,
     )
     engine._deferred_log_counts = {"poller": 2, "other": 3}
+    held, fired = [], []
 
     async def poll(*args, **kwargs):
         if outcome == "poll_raised":
             raise RuntimeError("poll failed")
+        if outcome == "event_deferred":
+            # The cap fills while the poll fetches, after the pre-poll read found room.
+            held.append((await engine._reserve_global_slot("blocker", path="manual"))[1])
+        if outcome in ("event_deferred", "fired_then_deferred"):
+            return GithubPollResult(
+                items=[_item(1, "2026-01-01T00:00:00Z"), _item(2, "2026-01-01T00:01:00Z")],
+                scan_complete=True,
+            )
         return GithubPollResult(items=[], scan_complete=True)
 
+    async def fire(schedule, run_id, *, global_slot_claim, **kwargs):
+        # The first event keeps its slot, so the second finds the cap full.
+        fired.append(run_id)
+        held.append(global_slot_claim)
+        return True
+
     monkeypatch.setattr("lionagi.studio.scheduler.github.github_poll", poll)
-    blocker = None
+    monkeypatch.setattr(engine, "_fire", fire)
     if outcome == "deferred":
-        _, blocker = await engine._reserve_global_slot("blocker", path="manual")
+        held.append((await engine._reserve_global_slot("blocker", path="manual"))[1])
     try:
         if outcome == "poll_raised":
             with pytest.raises(RuntimeError, match="poll failed"):
@@ -253,13 +271,15 @@ async def test_a_github_due_pass_ends_the_episode_unless_the_cap_defers_it(monke
         else:
             await engine._tick_github(schedule, now=10_000.0)
     finally:
-        if blocker is not None:
-            blocker.release()
+        for claim in held:
+            claim.release()
     expected = {
         "not_due": {"poller": 2, "other": 3},
         "deferred": {"poller": 3, "other": 3},
+        "event_deferred": {"poller": 3, "other": 3},
     }.get(outcome, {"other": 3})
     assert engine._deferred_log_counts == expected
+    assert len(fired) == (1 if outcome == "fired_then_deferred" else 0)
     assert engine._global_inflight == 0
 
 

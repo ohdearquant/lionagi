@@ -1659,6 +1659,7 @@ class SchedulerEngine:
             # event from dispatching a later one this scheduler has not reached yet.
             unclaimed_poll_cycle = True
             claimed_cursor = schedule.get("github_cursor")
+            cap_deferred = False
 
             for idx, item in enumerate(polled):
                 if not item.dispatchable:
@@ -1691,6 +1692,9 @@ class SchedulerEngine:
                         dropped_prs = [
                             e.event.get("pr_number") for e in polled[idx:] if e.dispatchable
                         ]
+                        # Before any event of this pass fired, the cap deferred the whole pass,
+                        # the same as a cap found full before polling.
+                        cap_deferred = unclaimed_poll_cycle
                         break
 
                     allowed, max_runs_claim = await self._reserve_max_runs_budget(schedule)
@@ -1800,6 +1804,9 @@ class SchedulerEngine:
                 await self._svc.update_schedule(
                     sid, github_cursor=cursor, guard_cursor_forward=True
                 )
+            if cap_deferred:
+                await self._maybe_record_deferred(schedule, now)
+                return True
         finally:
             if pre_rate_claim is not None:
                 pre_rate_claim.release()
