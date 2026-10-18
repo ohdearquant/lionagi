@@ -83,6 +83,8 @@ behaviour, including accepting a write-capable submission without `cwd`.
   invocation only) and prints it as `[api] spend: ...` after each turn.
 - `build_lndl_middle(lacts_with_out=False)` keeps tool calls and the answer in separate rounds:
   a round that declares `<lact>` calls beside its `OUT{}` is refused and none of its calls runs.
+  A round with no `lndl` block is refused too, and the next round is told that nothing in it
+  ran, so a call written in other markup is not mistaken for one that returned nothing.
   From the second round on, the last round's notice says it is the last, and a refused round's
   error is shown to the next round only.
 - `lionagi.lndl.Parser.parse(read_past_out=True)` reads declarations on both sides of `OUT{}`

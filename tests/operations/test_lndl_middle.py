@@ -994,6 +994,64 @@ class TestSeparateAnswerRounds:
         assert isinstance(outcome, Success)
         assert assembled == {"answer": "guess"}
 
+    # A call written in a provider's own tool-call markup instead of <lact>.
+    _INVOKE = (
+        '<invoke name="reader">\n<parameter name="action">read</parameter>\n'
+        '<parameter name="path">lionagi/work/form.py</parameter>\n</invoke>\n'
+    )
+
+    @pytest.mark.parametrize(
+        "text",
+        [_INVOKE, '<lact q a>lookup(query="x")</lact>', "", "Let me read the file first."],
+        ids=["invoke-markup", "unfenced-lact", "empty", "prose"],
+    )
+    def test_a_round_with_no_lndl_block_is_refused(self, text):
+        outcome, pending, assembled = _classify_round(text, AnswerModel, {}, lacts_with_out=False)
+        assert isinstance(outcome, Retry)
+        assert "no ```lndl block, so nothing in it ran" in outcome.error
+        assert "<invoke>" in outcome.error
+        assert pending == [] and assembled is None
+
+    def test_the_default_still_continues_a_round_with_no_lndl_block(self):
+        outcome, pending, assembled = _classify_round(self._INVOKE, AnswerModel, {})
+        assert isinstance(outcome, Continue)
+        assert pending == [] and assembled is None
+
+    @pytest.mark.asyncio
+    async def test_the_next_round_is_told_its_unfenced_call_did_not_run(self):
+        calls_made: list[str] = []
+
+        def counted_lookup(query: str) -> str:
+            """Return a canned lookup result for a query."""
+            calls_made.append(query)
+            return f"result for {query}"
+
+        middle = build_lndl_middle(round_budget=3, lacts_with_out=False)
+        branch = TestBranch.from_text(
+            [
+                '<invoke name="counted_lookup">\n<parameter name="query">x</parameter>\n</invoke>',
+                '```lndl\n<lact q a>counted_lookup(query="y")</lact>\n```',
+                "```lndl\n<lvar b>read</lvar>\nOUT{answer: [b]}\n```",
+            ]
+        )
+        branch.register_tools([counted_lookup])
+        result = await middle(branch, "look it up", ChatParam(response_format=AnswerModel))
+
+        assert result.answer == "read"
+        assert calls_made == ["y"]
+        calls = TestBranch.calls(branch)
+        assert "Error from your previous round: this round has no ```lndl block" in (
+            calls[1].last_user_message
+        )
+        assert "Error from your previous round" not in calls[2].last_user_message
+
+    @pytest.mark.asyncio
+    async def test_a_turn_of_unfenced_calls_fails_naming_the_missing_block(self):
+        middle = build_lndl_middle(round_budget=2, lacts_with_out=False)
+        branch = TestBranch.from_text([self._INVOKE, self._INVOKE])
+        with pytest.raises(LNDLError, match="no ```lndl block"):
+            await middle(branch, "look it up", ChatParam(response_format=AnswerModel))
+
     @pytest.mark.asyncio
     async def test_the_refused_round_runs_no_call(self):
         calls_made: list[str] = []

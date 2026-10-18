@@ -26,7 +26,7 @@ The LNDL Middle has no separate answer request. In a round a model declares tool
 aliases and may write its answer as an `OUT{}` block. A round with no `OUT{}` runs every declared
 call, concurrently and through the ordinary `act()` path with its permissions and hooks, and the
 next round sees the results; a round whose `OUT{}` validates ends the turn
-(`lionagi/operations/lndl_middle/lndl_middle.py:366-420`; ADR-0024 D3-D4). The same one-read task
+(`lionagi/operations/lndl_middle/lndl_middle.py:375-429`; ADR-0024 D3-D4). The same one-read task
 takes two requests: the round that declares the read, and the round that reads the result and
 writes the answer. With the same number of rounds, then, the batched loop saves the request ReAct
 makes for the answer, one per turn, a turn with no tool calls included (two requests against one).
@@ -51,7 +51,7 @@ calls and the answer in separate rounds, and its guidance tells the model so: a 
 declares `<lact>` calls, with no `OUT{}`, or writes the answer, with no `<lact>`. A round that does
 both is a repair round, in which none of its calls runs and its answer is not taken. Left to the
 Middle's own rule, such a round would run only the calls its `OUT{}` binds and drop the rest
-(`lndl_middle.py:300-309`), so a model could answer beside a read it never saw. The answer model
+(`lndl_middle.py:309-318`), so a model could answer beside a read it never saw. The answer model
 has one field, `answer: str`, and accepts only text the model wrote: an `OUT{}` that binds a
 call's result from an earlier round (a mapping, a list, or nothing from a failed call) is refused,
 and the refusal tells the model to read the result and write the answer as text. The read tools
@@ -63,7 +63,7 @@ provider's prompt-cache placement. Before this decision the Middle stripped the 
 rounds, and only an endpoint that places the prompt cache rendered the branch's tool set into the
 request (`lionagi/operations/chat/_prepare.py:209-227`), so on any other endpoint the model would
 have been asked to call tools it was never shown. The Middle now passes the branch's tool schemas
-to every round (`lndl_middle.py:354-357`).
+to every round (`lndl_middle.py:363-366`).
 
 The branch records `api_loop` beside the tool set and bound under `metadata["api_launch"]`, and a
 resume runs the recorded loop. A record with no `api_loop` was written before this key existed and
@@ -81,12 +81,19 @@ unknown tool set is.
 - A failed call is a result: `act()` runs with errors suppressed, so the call's output is nothing or
   an error mapping, the next round's request carries it, and the model decides what to do. It never
   becomes the answer (D1).
-- A refused `OUT{}`, an over-limit round and a round that both calls and answers are repair rounds
-  and count against the round budget. A turn that spends the budget without an accepted `OUT{}`
-  ends `failed`: the Middle raises its error, which ends the turn the way any turn failure does,
-  a provider's refusal included. The session records `failed` with the error's message, `li agent`
-  reports the error and exits non-zero, and the run's cause file records a cause that is not a
-  provider error. This differs from ReAct, which on reaching its bound still asks for an answer.
+- A round with no `lndl` block is a repair round. ADR-0024 D3 reads such a round as continued
+  reasoning and starts the next round with no error. Here every round must call or answer, so a
+  round that does neither has dropped whatever it meant to do, and a call written in other markup,
+  such as a provider's own tool-call tags, is one the model believes it made. The refusal tells the
+  model that nothing in the round ran and that only `<lact>` calls inside a `lndl` block run. The
+  round costs what a continued round would have; only what the next round is told changes.
+- A refused `OUT{}`, an over-limit round, a round that both calls and answers and a round with no
+  `lndl` block are repair rounds and count against the round budget. A turn that spends the budget
+  without an accepted `OUT{}` ends `failed`: the Middle raises its error, which ends the turn the
+  way any turn failure does, a provider's refusal included. The session records `failed` with the
+  error's message, `li agent` reports the error and exits non-zero, and the run's cause file records
+  a cause that is not a provider error. This differs from ReAct, which on reaching its bound still
+  asks for an answer.
 - The results a round feeds back count against the request ceiling of ADR-0130 like any other
   message; a round whose results would cross it is handled by that record, not by a second rule here.
 
