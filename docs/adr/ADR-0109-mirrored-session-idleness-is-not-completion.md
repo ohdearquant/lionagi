@@ -253,7 +253,7 @@ mirrored transcript. It is not, and at this layer cannot be, a check against
 *impersonation*. `StateDB.update_status` takes `source` and `actor` as ordinary
 caller-supplied strings (`lionagi/state/db.py:4444-4455`) and they arrive at the
 lifecycle service inside an `ActorRecord` whose `id` is a plain `str`
-(`lionagi/state/lifecycle/models.py:45-48`). Any caller in the process can pass
+(`lionagi/state/lifecycle/models.py:49-52`). Any caller in the process can pass
 `actor="claude-mirror-reconcile"` and satisfy any identity rule built on that
 field. There is no privilege boundary between callers of a Python module, so no
 rule expressed in this layer can create one. Read the restriction accordingly:
@@ -268,7 +268,7 @@ service reject a non-mirror actor. **That is wrong, and the way it is wrong is
 worth recording, because it would have handed an implementer a false premise.**
 Three things block it, each read at the source:
 
-- `EdgePolicy` (`lionagi/state/lifecycle/models.py:96-101`) carries
+- `EdgePolicy` (`lionagi/state/lifecycle/models.py:100-105`) carries
   `actor_types`, not an allow-list of actor identities. Both reconcilers write
   as `system`, so an actor-type rule admits every system writer and restricts
   nothing that matters here.

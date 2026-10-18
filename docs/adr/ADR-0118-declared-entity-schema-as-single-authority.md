@@ -102,7 +102,7 @@ constructed (14 `text(f"…")`, 8 `execute(f"…")`). No injection of a caller-s
 was found: every site is guarded by a nearby allow-list, fixed tuple, or enum check. The
 weakness is that each guard is re-established by hand at each site, and at least one path has
 none: `LifecyclePolicy.table` and `patch_fields` are plain `str`/`frozenset[str]`
-(`state/lifecycle/models.py:104-116`), the registry does not validate them as identifiers, and
+(`state/lifecycle/models.py:108-120`), the registry does not validate them as identifiers, and
 they are interpolated into SQL at `state/lifecycle/service.py:147-152` and elsewhere.
 
 **P5 — migration is an additive ledger, and the version is not a shape identity.** Schema
