@@ -195,7 +195,8 @@ async def _managed_store(
 
 def _manage(path: Path, owner_sql: str = _OWNER_COLUMN, owner_name: str = OWNER) -> Path:
     # The managing application's own columns, principals and version, and the lineage row it writes
-    # when it creates the store (ADR-0128 D7).
+    # when it creates the store (ADR-0128 D7). The store was built by a native open, which wrote
+    # lionagi's own row; the manager's row replaces it.
     with closing(sqlite3.connect(path)) as conn:
         for table in _OWNED:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {owner_name} {owner_sql}")
@@ -205,7 +206,7 @@ def _manage(path: Path, owner_sql: str = _OWNER_COLUMN, owner_name: str = OWNER)
             INSERT INTO principals VALUES
                 ('principal:a', 'human'), ('principal:b', 'human'), ('principal:default', 'human');
             UPDATE schema_meta SET value = '900' WHERE key = 'version';
-            INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager');
+            INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager');
             """
         )
         conn.commit()
@@ -446,7 +447,7 @@ conn.execute("PRAGMA wal_autocheckpoint = 0")
 if sys.argv[2] == "only-in-the-log":
     # Not read again after the write, so the log's index records no reader at its last frame and
     # a read-only reader that records its own would write the index.
-    conn.execute("INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+    conn.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
 else:
     conn.execute("SELECT count(*) FROM schema_meta").fetchone()
 print("holding", flush=True)
@@ -539,7 +540,8 @@ async def test_a_store_whose_lineage_names_this_package_opens_natively(tmp_path)
     first = StateDB(path)
     await first.open()
     await first.close()
-    _execute(path, "INSERT INTO schema_meta (key, value) VALUES ('lineage', 'lionagi')")
+    # Native initialization writes the row itself (ADR-0128 D7).
+    assert _rows(path, "SELECT value FROM schema_meta WHERE key = 'lineage'") == [("lionagi",)]
     again = StateDB(path)
     await again.open()
     await again.close()
@@ -592,7 +594,9 @@ async def test_a_lineage_row_written_just_before_the_writable_open_is_refused(
     make_engine = db_mod.make_engine
 
     def landing(url, **kwargs):
-        _execute(store, "INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+        _execute(
+            store, "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')"
+        )
         return make_engine(url, **kwargs)
 
     monkeypatch.setattr(db_mod, "make_engine", landing)
@@ -659,8 +663,9 @@ async def test_a_refused_native_open_leaves_a_hot_journal_that_took_the_row_out_
 
 
 async def test_a_lineage_row_an_interrupted_transaction_wrote_does_not_refuse_the_open(tmp_path):
-    """The file shows a row the interrupted transaction wrote, which rolling the journal back
-    removes; the store opens natively, and the writable connection rolls the journal back."""
+    """The file shows a row the interrupted transaction wrote over lionagi's own, which rolling the
+    journal back undoes; the store opens natively, and the writable connection rolls the journal
+    back."""
     from lionagi.state.db import _read_lineage
 
     store = tmp_path / "native.db"
@@ -671,13 +676,13 @@ async def test_a_lineage_row_an_interrupted_transaction_wrote_does_not_refuse_th
     copy = _hot_copy(
         store,
         tmp_path / "copy.db",
-        "INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')",
+        "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')",
     )
     assert _read_lineage(f"{copy.as_uri()}?immutable=1")[1] == "manager"
     again = StateDB(copy)
     await again.open()
     await again.close()
-    assert _rows(copy, "SELECT value FROM schema_meta WHERE key = 'lineage'") == []
+    assert _rows(copy, "SELECT value FROM schema_meta WHERE key = 'lineage'") == [("lionagi",)]
 
 
 @pytest.mark.parametrize("spelling", ["dot", "symlink"])
@@ -753,7 +758,9 @@ async def test_a_native_handles_later_connections_read_a_lineage_row_written_aft
     native = StateDB(store)
     await native.open()
     try:
-        _execute(store, "INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+        _execute(
+            store, "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')"
+        )
         await native._engine.dispose()
         with pytest.raises(ForeignLineageError, match="'manager' as the application"):
             async with native._engine.connect() as conn:
@@ -810,7 +817,9 @@ def _wal_copy(store: Path, copy: Path, *, lineage: bool = False, index: bool = F
         conn.execute("CREATE TABLE unfolded (v TEXT)")
         conn.execute("INSERT INTO unfolded (v) VALUES ('kept')")
         if lineage:
-            conn.execute("INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+            conn.execute(
+                "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')"
+            )
         shutil.copyfile(store, copy)
         shutil.copyfile(Path(f"{store}-wal"), Path(f"{copy}-wal"))
         if index:
@@ -873,7 +882,9 @@ async def test_a_refused_native_open_of_a_store_whose_file_was_cut_short_beside_
     copy = tmp_path / "copy.db"
     with closing(sqlite3.connect(store, isolation_level=None)) as conn:
         conn.execute("PRAGMA wal_autocheckpoint = 0")
-        conn.execute("INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')"
+        )
         conn.execute("VACUUM")
         shutil.copyfile(store, copy)
         shutil.copyfile(Path(f"{store}-wal"), Path(f"{copy}-wal"))
@@ -897,7 +908,9 @@ def _first_page_beside_its_log(directory: Path, *, whole: bool = False) -> Path:
         conn.execute("INSERT INTO schema_meta (key, value) VALUES ('version', '900')")
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         conn.execute("PRAGMA wal_autocheckpoint = 0")
-        conn.execute("INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')"
+        )
         copy = directory / "copy.db"
         data = store.read_bytes()
         copy.write_bytes(data if whole else data[:4096])
@@ -927,7 +940,7 @@ conn = sqlite3.connect(sys.argv[1], isolation_level=None)
 conn.execute("PRAGMA journal_mode = delete")
 conn.execute("CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
 conn.execute("CREATE TABLE filler (id INTEGER PRIMARY KEY, x TEXT)")
-conn.execute("INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+conn.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
 conn.execute("BEGIN IMMEDIATE")
 conn.executemany("INSERT INTO filler (x) VALUES (?)", [("y" * 200,)] * 3000)
 conn.execute("COMMIT")
@@ -1059,7 +1072,7 @@ async def test_a_row_in_the_log_is_read_whatever_the_files_row_says(tmp_path, in
     first = StateDB(store)
     await first.open()
     await first.close()
-    _execute(store, "INSERT INTO schema_meta (key, value) VALUES ('lineage', 'lionagi')")
+    assert _rows(store, "SELECT value FROM schema_meta WHERE key = 'lineage'") == [("lionagi",)]
     copy = tmp_path / "copy.db"
     with closing(sqlite3.connect(store, isolation_level=None)) as conn:
         conn.execute("PRAGMA wal_autocheckpoint = 0")
@@ -1090,7 +1103,9 @@ def test_a_checkpoint_between_the_two_copies_takes_the_read_again(tmp_path, monk
     copy = tmp_path / "copy.db"
     with closing(sqlite3.connect(store, isolation_level=None)) as conn:
         conn.execute("PRAGMA wal_autocheckpoint = 0")
-        conn.execute("INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')"
+        )
         shutil.copyfile(store, copy)
         shutil.copyfile(Path(f"{store}-wal"), Path(f"{copy}-wal"))
     holders: list[sqlite3.Connection] = []
@@ -1129,7 +1144,9 @@ def test_without_the_check_a_checkpoint_between_the_copies_hides_the_row(tmp_pat
         conn.commit()
     with closing(sqlite3.connect(store, isolation_level=None)) as conn:
         conn.execute("PRAGMA wal_autocheckpoint = 0")
-        conn.execute("INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')"
+        )
         copy = tmp_path / "copy.db"
         shutil.copyfile(store, copy)
         shutil.copyfile(Path(f"{store}-wal"), Path(f"{copy}-wal"))
@@ -1194,7 +1211,9 @@ def test_the_private_copy_keeps_the_locks_this_process_holds_on_the_store(tmp_pa
     writer = sqlite3.connect(store, isolation_level=None)
     try:
         writer.execute("BEGIN IMMEDIATE")
-        writer.execute("INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+        writer.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')"
+        )
         assert Path(f"{store}-journal").exists()
         assert _another_process_reserves(store) == "locked"
         assert db_mod._read_lineage_from_a_copy(str(store), "-journal") is None
@@ -1268,7 +1287,9 @@ def _row_lands_before_the_writable_engine(monkeypatch, store: Path) -> None:
     make_engine = db_mod.make_engine
 
     def landing(url, **kwargs):
-        _execute(store, "INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+        _execute(
+            store, "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')"
+        )
         return make_engine(url, **kwargs)
 
     monkeypatch.setattr(db_mod, "make_engine", landing)

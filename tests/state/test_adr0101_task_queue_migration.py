@@ -256,6 +256,10 @@ async def test_migration_preserves_triggers(tmp_path):
             )
             """
         )
+        # A table of the user's own beside lionagi's, in a store lionagi created, so it carries
+        # the schema_meta version every lionagi store has had from its first transaction.
+        await raw.execute("CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        await raw.execute("INSERT INTO schema_meta (key, value) VALUES ('version', '1')")
         await raw.execute("CREATE TABLE trigger_log (run_id TEXT)")
         await raw.execute(
             """

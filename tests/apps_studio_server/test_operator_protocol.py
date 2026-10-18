@@ -2529,7 +2529,13 @@ async def test_daemon_shutdown_during_a_store_write_terminalizes_and_can_restart
     await coordinator.startup()
     native = sqlite3.connect(path)
     try:
-        native.execute("CREATE TABLE shutdown_probe (value INTEGER)")
+        # A table of the test's own, in a store carrying the schema_meta version a StateDB open
+        # writes, so a later native open recognizes the store as lionagi's (ADR-0128 D7).
+        native.executescript(
+            "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+            "INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '1');"
+            "CREATE TABLE shutdown_probe (value INTEGER);"
+        )
     finally:
         native.close()
 

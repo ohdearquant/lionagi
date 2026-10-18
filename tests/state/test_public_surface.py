@@ -19,6 +19,7 @@ def test_all_contents():
         "SchemaTooNewError",
         "StateCompatibilityRefused",
         "StateDB",
+        "UnrecognizedStoreError",
     }
 
 
@@ -47,6 +48,12 @@ def test_foreign_lineage_error_importable():
     from lionagi.state.db import ForeignLineageError
 
     assert state_pkg.ForeignLineageError is ForeignLineageError
+
+
+def test_unrecognized_store_error_importable():
+    from lionagi.state.db import UnrecognizedStoreError
+
+    assert state_pkg.UnrecognizedStoreError is UnrecognizedStoreError
 
 
 def test_statedb_lazy_export_supports_import_attribute_and_hasattr():

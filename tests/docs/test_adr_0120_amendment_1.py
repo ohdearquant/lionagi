@@ -105,9 +105,9 @@ def test_team_round_batches_pending_targets_per_completion() -> None:
 
 
 def test_signal_rows_and_schedule_cursor_citations_point_at_their_code() -> None:
-    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 4957)
-    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 6770)
-    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 6795)
+    assert '"github_cursor" = CASE WHEN github_cursor IS NULL' in _line("lionagi/state/db.py", 5057)
+    assert "SELECT COALESCE(MAX(seq), 0) FROM session_signals" in _line("lionagi/state/db.py", 6870)
+    assert "async def get_session_signals_after(" in _line("lionagi/state/db.py", 6895)
 
 
 # -- what the amendment now says ---------------------------------------------
@@ -127,8 +127,8 @@ def test_durable_subscriber_source_is_a_confirmed_session_signals_row() -> None:
     assert "never the in-memory emit" in flat
     assert "reaches `best_effort` subscribers only" in flat
     assert "lionagi/state/schema.sql:797-801" in flat
-    assert "lionagi/state/db.py:6770-6778" in flat
-    assert "lionagi/state/db.py:6795-6810" in flat
+    assert "lionagi/state/db.py:6870-6878" in flat
+    assert "lionagi/state/db.py:6895-6910" in flat
     assert "the cursor is a position in that sequence, read forward with `after_seq`" in flat
     assert "is not a committed row and is no durable subscriber's source" in flat
     assert "whose forward read defaults to 500 rows" in flat
@@ -250,7 +250,7 @@ def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are
     flat = _flat()
     assert "lionagi/cli/orchestrate/_orchestration.py:1378" in flat
     assert "lionagi/state/schema.sql:463" in flat
-    assert "lionagi/state/db.py:4957-4959" in flat
+    assert "lionagi/state/db.py:5057-5059" in flat
     assert "the store advances it only forward, so a stale write cannot move it back" in flat
     assert "ADR-0070, Accepted" in flat
     assert "per-completion batch of targets, not a per-subscriber position" in flat

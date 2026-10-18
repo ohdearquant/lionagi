@@ -42,6 +42,7 @@ from lionagi.ln.concurrency import CancelScope, Lock, get_cancelled_exc_class, r
 from lionagi.ln.types import SingletonType
 from lionagi.state.compat import (
     _LINEAGE_KEY,
+    _NATIVE_LINEAGE,
     CompatibilityProfile,
     StateCompatibilityRefused,
     _names_another_application,
@@ -197,6 +198,23 @@ _ATTENTION_DISPOSITIONS_BACKFILL_KEY = "migration.attention_dispositions_backfil
 _IMPORTED_ROLE_LABEL_BACKFILL_KEY = "migration.imported_role_label_backfill"
 _SESSION_ENDED_AT_BACKFILL_KEY = "migration.session_ended_at_backfill"
 _SESSION_ENDED_AT_BACKFILL_BATCH_SIZE = 500
+# The ``schema_meta.version`` values a lionagi release writes: a whole number, no sign or padding.
+_RECORDED_VERSION = re.compile(r"[1-9][0-9]*")
+# The Studio Operator store keeps its tables in the StateDB file and creates them itself, so they can
+# be there before any StateDB open has written schema_meta (lionagi/studio/operator/store.py).
+_OPERATOR_TABLES = frozenset(
+    {
+        "studio_operator_conversations",
+        "studio_operator_effects",
+        "studio_operator_frames",
+        "studio_operator_proposals",
+        "studio_operator_turns",
+        "studio_operator_views",
+    }
+)
+# Every table a lionagi component creates in a store; a store with no schema_meta table is this
+# package's only when it holds nothing else (ADR-0128 D7).
+_LIONAGI_TABLES = frozenset(metadata.tables) | _OPERATOR_TABLES
 
 
 class SchemaTooNewError(RuntimeError):
@@ -205,6 +223,10 @@ class SchemaTooNewError(RuntimeError):
 
 class ForeignLineageError(RuntimeError):
     """``schema_meta.lineage`` names another application; only a writable native open raises it."""
+
+
+class UnrecognizedStoreError(RuntimeError):
+    """The store is neither new nor one lionagi created; only a writable native open raises it."""
 
 
 class BackupNotTrustworthyError(RuntimeError):
@@ -976,15 +998,16 @@ class StateDB:
             # keeps the object can open it again. After any other failure the engine stays, as
             # before.
             unread = self.dialect == "sqlite" and not self._connection_read
-            if unread or isinstance(exc, (ForeignLineageError, StateCompatibilityRefused)):
+            refused = (ForeignLineageError, UnrecognizedStoreError, StateCompatibilityRefused)
+            if unread or isinstance(exc, refused):
                 with CancelScope(shield=True):
                     await self._close()
             raise
 
     def _refuse_a_managed_store(self, dbapi_conn) -> None:
         """Refuse a writable native connection to a file this process holds in compatibility
-        mode, or whose ``lineage`` row names another application, before its settings change the
-        file. Only reads: a hot rollback journal is rolled back by the first read, as on any
+        mode, whose ``lineage`` row names another application, or that has no ``schema_meta`` table
+        and holds a table lionagi never creates, before its settings change the file. Only reads: a hot rollback journal is rolled back by the first read, as on any
         writable SQLite open."""
         cursor = dbapi_conn.cursor()
         try:
@@ -995,12 +1018,21 @@ class StateDB:
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'"
             )
             lineage = None
+            tables = None
             if cursor.fetchone() is not None:
                 cursor.execute("SELECT value FROM schema_meta WHERE key = ?", (_LINEAGE_KEY,))
                 row = cursor.fetchone()
                 lineage = row[0] if row else None
+            else:
+                cursor.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' "
+                    "AND name NOT LIKE 'sqlite~_%' ESCAPE '~'"
+                )
+                tables = frozenset(row[0] for row in cursor.fetchall())
         finally:
             cursor.close()
+        if tables is not None:
+            self._refuse_unless_native(None, tables=tables)
         self._raise_if_foreign_lineage(lineage)
         self._connection_read = True
         # The file the connection opened, however the URL spells it, so compatibility admission
@@ -1449,6 +1481,54 @@ class StateDB:
             "profile for that application."
         )
 
+    def _refuse_unless_native(
+        self, meta: dict[str, Any] | None, *, tables: frozenset[str] = frozenset()
+    ) -> None:
+        """Refuse a store a native migration must not touch (ADR-0128 D7).
+
+        *meta* holds the store's ``lineage`` and ``version`` rows, or is None when the store has no
+        ``schema_meta`` table; *tables* names the tables of a store without one. Such a store is
+        this package's when every table in it is one a lionagi component creates (none at all: a
+        new store), since the Studio Operator store can create its tables before any StateDB open
+        writes ``schema_meta``. A store whose ``lineage`` names lionagi is this package's: only a version
+        above ``SCHEMA_VERSION`` refuses it. A store with no ``lineage`` row predates the row, and
+        every store lionagi created before it holds ``schema_meta`` with a version from 1 to
+        ``SCHEMA_VERSION``, written in its first transaction; only that store is adopted, and
+        ``_apply_schema`` stamps the row into it. Missing, malformed and higher versions are each
+        refused by name rather than by a failed comparison.
+        """
+        where = self._store_named_for_an_operator()
+        if meta is None:
+            foreign = sorted(tables - _LIONAGI_TABLES)
+            if not foreign:
+                return
+            named = ", ".join(name[:40] for name in foreign[:3])
+            raise UnrecognizedStoreError(
+                f"{where} has no schema_meta table and holds tables lionagi never creates "
+                f"({named}{', ...' if len(foreign) > 3 else ''}), so lionagi did not create it, "
+                "and opening it for writing would add this package's tables to it. Point lionagi "
+                "at a new store, or open this one read-only to inspect it."
+            )
+        lineage = meta.get(_LINEAGE_KEY)
+        self._raise_if_foreign_lineage(lineage)
+        recorded = meta.get("version")
+        if lineage == _NATIVE_LINEAGE:
+            self._raise_if_schema_too_new(recorded)
+            return
+        if recorded is None:
+            raise UnrecognizedStoreError(
+                f"{where} has a schema_meta table with no lineage or version row, which every "
+                "store lionagi creates has, so this code cannot tell what shape it would "
+                "migrate. Open it read-only to inspect it."
+            )
+        if not isinstance(recorded, str) or not _RECORDED_VERSION.fullmatch(recorded):
+            raise UnrecognizedStoreError(
+                f"{where} records schema version {str(recorded)[:40]!r} and no lineage row; no "
+                "lionagi release writes that version, so this code cannot tell what shape it "
+                "would migrate. Open it read-only to inspect it."
+            )
+        self._raise_if_schema_too_new(recorded)
+
     def _raise_if_schema_too_new(self, recorded: str | None) -> None:
         if recorded is None:
             return
@@ -1470,8 +1550,8 @@ class StateDB:
         )
 
     async def _refuse_newer_schema(self, conn) -> None:
-        """Refuse to open a database another application manages or stamped with a version above
-        SCHEMA_VERSION, reading both under the write lock and the lineage first."""
+        """Refuse to open a database a native migration must not touch (``_refuse_unless_native``),
+        reading its rows under the write lock and the lineage first."""
         if self.dialect == "postgresql":
             # The version table may not exist yet, so a row lock cannot serialize first-time schema
             # creation; this database-local lock predates any schema object.
@@ -1480,13 +1560,17 @@ class StateDB:
                 {"key": _SCHEMA_MIGRATION_LOCK_KEY},
             )
         if not await conn.run_sync(lambda c: inspect(c).has_table("schema_meta")):
+            # A server database may hold other applications' tables beside the ones lionagi
+            # creates there; a SQLite file is a store of its own, so its tables are someone's.
+            if self.dialect == "sqlite":
+                names = await conn.run_sync(lambda c: frozenset(inspect(c).get_table_names()))
+                self._refuse_unless_native(None, tables=names)
             return
         query = _SCHEMA_META_GUARD_ROWS
         if self.dialect == "postgresql":
             query += " FOR UPDATE"
         meta = dict((await conn.execute(text(query))).all())
-        self._raise_if_foreign_lineage(meta.get(_LINEAGE_KEY))
-        self._raise_if_schema_too_new(meta.get("version"))
+        self._refuse_unless_native(meta)
 
     async def _refuse_newer_sqlite_schema(self, driver) -> None:
         """Check the version through a raw driver holding BEGIN IMMEDIATE."""
@@ -1496,10 +1580,16 @@ class StateDB:
             )
         ).fetchone()
         if table is None:
+            rows = await (
+                await driver.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' "
+                    "AND name NOT LIKE 'sqlite~_%' ESCAPE '~'"
+                )
+            ).fetchall()
+            self._refuse_unless_native(None, tables=frozenset(row[0] for row in rows))
             return
         meta = dict(await (await driver.execute(_SCHEMA_META_GUARD_ROWS)).fetchall())
-        self._raise_if_foreign_lineage(meta.get(_LINEAGE_KEY))
-        self._raise_if_schema_too_new(meta.get("version"))
+        self._refuse_unless_native(meta)
 
     async def _apply_schema(self) -> None:
         self._refuse_in_compatibility("migration", "the store's schema belongs to its manager")
@@ -1563,6 +1653,16 @@ class StateDB:
                     "ON CONFLICT (key) DO NOTHING"
                 ),
                 {"created_at": str(int(time.time()))},
+            )
+            # ADR-0128 D7: a store this transaction created, or one _refuse_newer_schema
+            # recognized as lionagi's, carries the native lineage; a row naming another
+            # application was refused above, so this never overwrites one.
+            await conn.execute(
+                text(
+                    "INSERT INTO schema_meta (key, value) VALUES (:key, :lineage) "
+                    "ON CONFLICT (key) DO NOTHING"
+                ),
+                {"key": _LINEAGE_KEY, "lineage": _NATIVE_LINEAGE},
             )
             await conn.execute(
                 text(

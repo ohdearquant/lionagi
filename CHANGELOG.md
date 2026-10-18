@@ -59,6 +59,16 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Changed
 
+- A writable native `StateDB` open writes `lineage = 'lionagi'` into `schema_meta` when it applies
+  its schema, and admits a store by its rows (ADR-0128 D7). A store whose lineage names lionagi
+  opens as before. A store without the row is adopted, and the row written, when it records a
+  version from 1 to the current one, or when it has no `schema_meta` table and every table in it is
+  one lionagi creates (the Studio Operator store can create its tables first). Any other store
+  raises `UnrecognizedStoreError` (exported from `lionagi.state`): a missing version, one no
+  release writes, or a table lionagi never creates, the last refused on SQLite before the
+  connection's settings change the file. On PostgreSQL a database with no `schema_meta` table is
+  still new.
+
 - `li studio --docker` publishes the daemon's port on the address `--host` names, loopback
   (`127.0.0.1`) by default, where it published on every host interface, so with
   `LIONAGI_STUDIO_AUTH_TOKEN` unset other machines on the network could reach the API. The

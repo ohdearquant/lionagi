@@ -197,10 +197,29 @@ and by a native migration that has recognized the store. Native migration requir
 version and the expected shape together; a store without the key is adopted only if its shape is one
 lionagi's own history produced. Compatibility mode reads the store's metadata and never writes
 `version`, `lineage` or any backfill key. Non-numeric, missing and equal version values are
-classified explicitly rather than falling through a numeric comparison. Native initialization does
-not write `lineage = 'lionagi'` yet, and native migration does not yet require the key: today a
-store with no `lineage` row opens and migrates natively as before, so the refusal below covers
-only a store whose managing application wrote its row.
+classified explicitly rather than falling through a numeric comparison.
+
+Native initialization writes `lineage = 'lionagi'` in the transaction that applies its schema, and a
+writable native open admits a store by its rows:
+
+- A `lineage` row naming lionagi: the store is this package's. A version above `SCHEMA_VERSION` is
+  refused with `SchemaTooNewError`; a version that is missing or not a whole number is replaced by
+  the stamp, as before the row existed, since the row already says whose store it is.
+- No `lineage` row, and a `schema_meta` table: every store lionagi created before the row holds a
+  version from 1 to `SCHEMA_VERSION`, written in its first transaction. Such a store is adopted and
+  the migration writes the row into it. A version above `SCHEMA_VERSION` is refused as too new; a
+  missing version, or one no release writes (not a whole number, zero, padded, spaced or empty),
+  raises `UnrecognizedStoreError`, since nothing then says what shape a migration would meet.
+- No `schema_meta` table: a store with no tables is new. A store whose tables are all ones a lionagi
+  component creates in the state file is adopted: the `StateDB` schema's tables, and the Studio
+  Operator store's, which that store creates on its own and can create before any `StateDB` open.
+  A store holding any other table raises `UnrecognizedStoreError`. On SQLite each writable
+  connection reads the table names before its connection settings, with the lineage row, so a
+  refused store keeps its bytes and its journal mode. A server database holds other applications'
+  tables beside lionagi's, so on PostgreSQL a database with no `schema_meta` table is new, as
+  before.
+
+A refused open leaves no engine. `UnrecognizedStoreError` is exported from `lionagi.state`.
 
 A store another application manages carries a `lineage` row naming that application. The managing
 application writes it when it creates the store, in the transaction that creates its schema, and the
