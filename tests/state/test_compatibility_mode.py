@@ -1353,8 +1353,12 @@ async def test_a_refused_retry_on_a_kept_engine_leaves_the_handle_ready_for_comp
     from lionagi.state.db import ForeignLineageError
 
     store = _store(tmp_path / "later-managed.db")
+    # Until it is marked, the store reads as one lionagi created before the lineage row: a version
+    # a release writes and the sessions table beside the application's own tables (ADR-0128 D7).
     with closing(sqlite3.connect(store)) as conn:
         conn.execute("DELETE FROM schema_meta WHERE key = 'lineage'")
+        conn.execute("UPDATE schema_meta SET value = '1' WHERE key = 'version'")
+        conn.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY)")
         conn.commit()
 
     real_schema = StateDB._apply_schema
@@ -1381,6 +1385,7 @@ async def test_a_refused_retry_on_a_kept_engine_leaves_the_handle_ready_for_comp
                 "INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager') "
                 "ON CONFLICT (key) DO UPDATE SET value = excluded.value"
             )
+            conn.execute("UPDATE schema_meta SET value = '14' WHERE key = 'version'")
             conn.commit()
 
         with pytest.raises(ForeignLineageError, match="'manager' as the application"):

@@ -770,15 +770,16 @@ async def test_a_refusal_from_the_setup_recovery_is_recorded_not_suppressed(tmp_
     [
         ("SchemaTooNewError", "state.db schema version 900 is newer than this package"),
         ("ForeignLineageError", "state.db names 'manager' as the application that manages it"),
+        ("UnrecognizedStoreError", "state.db holds tables this package does not create: app_users"),
     ],
-    ids=["later-schema", "another-application"],
+    ids=["later-schema", "another-application", "unrecognized-store"],
 )
 async def test_a_setup_recovery_whose_native_open_is_refused_is_a_store_refusal(
     tmp_path, monkeypatch, error_name, message
 ):
-    """The recovery opens the store natively, and a store at a later schema or one another
-    application manages refuses that open; no retry changes that, so the turn records it as the
-    store's refusal."""
+    """The recovery opens the store natively, and a store at a later schema, one another
+    application manages or one holding tables this package never creates refuses that open; no
+    retry changes that, so the turn records it as the store's refusal."""
     from lionagi.state import db as db_mod
 
     monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", tmp_path / "state.db")
