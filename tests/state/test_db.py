@@ -5,7 +5,7 @@
 Comprehensive tests for lionagi.state.db.StateDB.
 
 All tests use in-memory SQLite (:memory:) for speed and isolation.
-asyncio_mode = "auto" in pyproject.toml — no @pytest.mark.asyncio needed.
+tests/conftest.py marks coroutine tests for pytest-asyncio — no @pytest.mark.asyncio needed.
 """
 
 from __future__ import annotations

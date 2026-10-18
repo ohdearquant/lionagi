@@ -11,21 +11,23 @@ import os
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from lionagi.ln.concurrency import ExceptionGroup
+from lionagi.ln import coerce_created_at, short_id
+from lionagi.ln.concurrency import ExceptionGroup, current_time
 from lionagi.state.db import (
     NO_CURSOR_CLAIM,
     SESSION_TERMINAL_STATUSES,
     TERMINAL_RUN_STATUSES,
     CursorClaim,
 )
+from lionagi.state.lifecycle import ReasonRecord, ScheduleAuditContext
 from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS, RunTerminalEnvelope
 from lionagi.state.lifecycle.notify_settings import build_handler, resolve_notify_config
-from lionagi.state.reasons import RunReasons, ScheduleReasons
+from lionagi.state.reasons import RunReasons, ScheduleDefinitionReasons, ScheduleReasons
 from lionagi.studio.scheduler import subprocess as _subprocess
 from lionagi.studio.scheduler import threshold as _threshold
 from lionagi.studio.scheduler.admit import validate_rate_limit
@@ -46,6 +48,25 @@ from lionagi.studio.services.scheduler_state import (
 )
 
 _log = logging.getLogger(__name__)
+
+
+def _scheduler_audit_context(actor: str) -> ScheduleAuditContext:
+    """Attribute an automatic definition change to this process, not its execution target."""
+    try:
+        cwd = str(Path.cwd().resolve())
+    except (OSError, RuntimeError):
+        cwd = None
+    return ScheduleAuditContext(
+        actor=actor,
+        submitting_cwd=cwd,
+        origin="scheduler",
+        source="scheduler",
+        assurance="system",
+        actor_status="available",
+        cwd_status="available" if cwd is not None else "unavailable",
+        failure_category=None if cwd is not None else "cwd_unavailable",
+    )
+
 
 _MAX_CHAIN_DEPTH = 10
 _TICK_INTERVAL = 30  # seconds
@@ -410,7 +431,7 @@ class SchedulerEngine:
         # check cannot.
         self._threshold_pending: set[str] = set()
         # ADR-0071 D4: this daemon process is the one host worker (v1).
-        self._task_worker_id = f"host:{uuid.uuid4().hex[:8]}"
+        self._task_worker_id = f"host:{short_id(8)}"
         # Tick-loop supervision. The loop advancing is the only thing that makes this a
         # scheduler, and the process staying up says nothing about whether it still is.
         self._tick_loop_restarts = 0
@@ -499,16 +520,14 @@ class SchedulerEngine:
             "ready": True,
             "status": "offline",
             "detail": "scheduler was not started in this process",
-            "last_tick_completed_at": (
-                datetime.fromtimestamp(last, tz=timezone.utc).isoformat() if last else None
-            ),
+            "last_tick_completed_at": (coerce_created_at(last).isoformat() if last else None),
             "seconds_since_last_tick": None,
             "stall_after_seconds": _TICK_STALL_AFTER,
             "tick_interval_seconds": _TICK_INTERVAL,
             "tick_loop_restarts": self._tick_loop_restarts,
             "last_tick_loop_failure": (
                 {
-                    "at": datetime.fromtimestamp(failure_at, tz=timezone.utc).isoformat(),
+                    "at": coerce_created_at(failure_at).isoformat(),
                     "reason": failure_reason,
                 }
                 if failure_at is not None
@@ -727,8 +746,8 @@ class SchedulerEngine:
                 "next_fire_at shifted for schedule %s (%s): %s -> %s (tz=%s)",
                 schedule.get("name"),
                 schedule.get("id"),
-                datetime.fromtimestamp(old, tz=timezone.utc).isoformat(),
-                datetime.fromtimestamp(new, tz=timezone.utc).isoformat(),
+                coerce_created_at(old).isoformat(),
+                coerce_created_at(new).isoformat(),
                 SCHEDULER_TZ,
             )
         return new
@@ -813,7 +832,7 @@ class SchedulerEngine:
                     f"Scheduler at capacity ({MAX_SCHEDULED_CONCURRENT} concurrent "
                     "fires); manual trigger refused. Retry shortly."
                 )
-            run_id = uuid.uuid4().hex[:12]
+            run_id = short_id(12)
             self._tracked_fire(
                 schedule,
                 run_id,
@@ -909,9 +928,8 @@ class SchedulerEngine:
                     # A cancel that arrives meanwhile is absorbed here, since it would end
                     # this wait early: stop() is awaiting this task, so a cancel of stop()'s
                     # own caller reaches it.
-                    loop = asyncio.get_running_loop()
-                    deadline = loop.time() + _RECOVERY_UNWIND_SECONDS
-                    while not passes.done() and (left := deadline - loop.time()) > 0:
+                    deadline = current_time() + _RECOVERY_UNWIND_SECONDS
+                    while not passes.done() and (left := deadline - current_time()) > 0:
                         with contextlib.suppress(asyncio.CancelledError):
                             await asyncio.wait({passes}, timeout=left)
                     if not passes.done():
@@ -1034,7 +1052,7 @@ class SchedulerEngine:
                 )
                 continue
 
-            new_run_id = uuid.uuid4().hex[:12]
+            new_run_id = short_id(12)
             _log.info(
                 "Re-firing undispatched schedule_run %s as %s for schedule %s",
                 run_id,
@@ -1213,7 +1231,7 @@ class SchedulerEngine:
                         "chain_from": run_id,
                         "parent_status": run_status,
                     }
-                    chain_run_id = uuid.uuid4().hex[:12]
+                    chain_run_id = short_id(12)
                     self._tracked_fire(
                         chain_schedule,
                         chain_run_id,
@@ -1275,7 +1293,19 @@ class SchedulerEngine:
                 return
             allowed, claim = await self._reserve_max_runs_budget(schedule)
             if not allowed:
-                await self._svc.update_schedule(schedule["id"], enabled=0)
+                await self._svc.update_schedule(
+                    schedule["id"],
+                    enabled=0,
+                    audit_context=_scheduler_audit_context("scheduler:max-runs"),
+                    reason=ReasonRecord(
+                        ScheduleDefinitionReasons.DISABLED_MAX_RUNS,
+                        f"Missed-fire recovery was refused at max_runs={schedule.get('max_runs')}.",
+                        metadata={
+                            "disable_cause": "missed_fire_max_runs",
+                            "max_runs": schedule.get("max_runs"),
+                        },
+                    ),
+                )
                 return
             slot_allowed, slot_claim = await self._reserve_global_slot()
             if not slot_allowed:
@@ -1312,7 +1342,7 @@ class SchedulerEngine:
                     )
                     return
                 claimed = fields.get("next_fire_at", claimed)
-            run_id = uuid.uuid4().hex[:12]
+            run_id = short_id(12)
             _log.info(
                 "Missed fire recovery for schedule %s (%s)",
                 schedule["name"],
@@ -1339,7 +1369,7 @@ class SchedulerEngine:
 
     async def _record_missed_fire_skip(self, schedule: dict, now: float) -> None:
         """Record missed-fire skip and advance next_fire_at."""
-        skipped_run_id = uuid.uuid4().hex[:12]
+        skipped_run_id = short_id(12)
         try:
             await create_skipped_run(
                 self._svc,
@@ -1638,7 +1668,7 @@ class SchedulerEngine:
                         "repo": schedule.get("github_repo"),
                         "fired_at": now,
                     }
-                    run_id = uuid.uuid4().hex[:12]
+                    run_id = short_id(12)
                     admission_handed_off = True
                     fired = await self._fire(
                         schedule,
@@ -1877,7 +1907,7 @@ class SchedulerEngine:
         self._deferred_log_counts[sid] = count
         if count % _DEFERRED_RECORD_EVERY != 1:
             return
-        skipped_run_id = uuid.uuid4().hex[:12]
+        skipped_run_id = short_id(12)
         await create_skipped_run(
             self._svc,
             run_id=skipped_run_id,
@@ -1935,7 +1965,7 @@ class SchedulerEngine:
             schedule.get("budget_usd"),
             schedule.get("budget_tokens"),
         )
-        skipped_run_id = uuid.uuid4().hex[:12]
+        skipped_run_id = short_id(12)
         await create_skipped_run(
             self._svc,
             run_id=skipped_run_id,
@@ -1953,7 +1983,23 @@ class SchedulerEngine:
                 "unreported_sessions": spend.get("unreported_sessions"),
             },
         )
-        await self._svc.update_schedule(schedule["id"], enabled=0)
+        await self._svc.update_schedule(
+            schedule["id"],
+            enabled=0,
+            audit_context=_scheduler_audit_context("scheduler:budget"),
+            reason=ReasonRecord(
+                ScheduleDefinitionReasons.DISABLED_BUDGET_EXHAUSTED,
+                "The configured spend budget was exhausted.",
+                metadata={
+                    "disable_cause": "budget_exhausted",
+                    "budget_usd": schedule.get("budget_usd"),
+                    "budget_tokens": schedule.get("budget_tokens"),
+                    "cost_usd": spend.get("cost_usd"),
+                    "tokens": spend.get("tokens"),
+                    "unreported_sessions": spend.get("unreported_sessions"),
+                },
+            ),
+        )
 
     async def _evaluate_threshold_breach(self, schedule: dict, now: float) -> dict[str, Any] | None:
         """Evaluate ``threshold_config`` against live metrics; None when in bounds."""
@@ -2040,7 +2086,7 @@ class SchedulerEngine:
 
             if schedule.get("overlap_policy") == "skip" and schedule["id"] in self._running:
                 _log.debug("Skipping overlapping fire for %s", schedule["name"])
-                skipped_run_id = uuid.uuid4().hex[:12]
+                skipped_run_id = short_id(12)
                 await create_skipped_run(
                     self._svc,
                     run_id=skipped_run_id,
@@ -2080,7 +2126,19 @@ class SchedulerEngine:
                     schedule["id"],
                     schedule.get("max_runs"),
                 )
-                await self._svc.update_schedule(schedule["id"], enabled=0)
+                await self._svc.update_schedule(
+                    schedule["id"],
+                    enabled=0,
+                    audit_context=_scheduler_audit_context("scheduler:max-runs"),
+                    reason=ReasonRecord(
+                        ScheduleDefinitionReasons.DISABLED_MAX_RUNS,
+                        f"Scheduled fire was refused at max_runs={schedule.get('max_runs')}.",
+                        metadata={
+                            "disable_cause": "scheduled_fire_max_runs",
+                            "max_runs": schedule.get("max_runs"),
+                        },
+                    ),
+                )
                 return
 
             slot_allowed, slot_claim = await self._reserve_global_slot()
@@ -2091,7 +2149,7 @@ class SchedulerEngine:
                 # it does not consume a run or abandon the cooldown.
                 return
 
-            run_id = uuid.uuid4().hex[:12]
+            run_id = short_id(12)
             ctx = {
                 "scheduled": True,
                 "fired_at": now,
@@ -2196,7 +2254,20 @@ class SchedulerEngine:
                 max_runs,
                 count,
             )
-            await self._svc.update_schedule(sid, enabled=0)
+            await self._svc.update_schedule(
+                sid,
+                enabled=0,
+                audit_context=_scheduler_audit_context("scheduler:max-runs"),
+                reason=ReasonRecord(
+                    ScheduleDefinitionReasons.DISABLED_MAX_RUNS,
+                    f"Top-level terminal runs ({count}) reached max_runs={max_runs}.",
+                    metadata={
+                        "disable_cause": "terminal_count_max_runs",
+                        "max_runs": max_runs,
+                        "terminal_runs": count,
+                    },
+                ),
+            )
 
     async def _fire(
         self,
@@ -2366,7 +2437,7 @@ class SchedulerEngine:
         occurrence_committed = False  # set once the occurrence transaction commits
         _tmp_path: str | None = None
 
-        inv_id = uuid.uuid4().hex[:12]
+        inv_id = short_id(12)
         # Registered before the invocation can reach a terminal status and unregistered on every
         # exit path below, so a matching registration never outlives this fire.
         notify_scope = _register_schedule_notify(
@@ -2737,7 +2808,7 @@ class SchedulerEngine:
                         "parent_exit_code": exit_code,
                         "parent_status": status,
                     }
-                    chain_run_id = uuid.uuid4().hex[:12]
+                    chain_run_id = short_id(12)
                     await self._fire(
                         chain_schedule,
                         chain_run_id,

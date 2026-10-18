@@ -296,8 +296,10 @@ async def test_a_benign_sentinel_leaves_the_returned_session_clean():
 
 
 @pytest.mark.asyncio
-async def test_a_non_streamed_call_returns_the_session_failed_without_raising():
-    """The same turn through _call: the call returns, marked failed."""
+async def test_a_non_streamed_call_raises_for_the_failed_session():
+    """The same turn through _call: the failed session raises its provider error."""
+    from lionagi.providers._provider_errors import ProviderError
+
     events = [_agent_message(MARKUP_FIXTURE), _turn_completed()]
 
     async def fake(request):
@@ -308,14 +310,10 @@ async def test_a_non_streamed_call_returns_the_session_failed_without_raising():
         "lionagi.providers.openai.codex.stream_codex_cli_events",
         side_effect=fake,
     ):
-        out = await CodexCLIEndpoint()._call({"request": _request()}, {})
+        with pytest.raises(ProviderError) as info:
+            await CodexCLIEndpoint()._call({"request": _request()}, {})
 
-    assert out["is_error"] is True, (
-        f"the returned session came back marked successful: {out['is_error']!r}"
-    )
-    assert out["result"] and "tool call" in out["result"], (
-        f"the returned session result does not explain the failure: {out['result']!r}"
-    )
+    assert "tool call" in str(info.value)
 
 
 # --- the turn's last non-empty agent text of any shape ---
@@ -807,8 +805,10 @@ async def test_a_clean_message_before_the_sentinel_still_completes():
 
 
 @pytest.mark.asyncio
-async def test_a_non_streamed_call_markup_then_sentinel_is_failed():
-    """The non-streamed path reads the same sentinel turn end and returns failed."""
+async def test_a_non_streamed_call_markup_then_sentinel_raises():
+    """The non-streamed path reads the same sentinel turn end and raises."""
+    from lionagi.providers._provider_errors import ProviderError
+
     events = [_agent_message(MARKUP_FIXTURE), _benign_sentinel()]
 
     async def fake(request):
@@ -819,14 +819,10 @@ async def test_a_non_streamed_call_markup_then_sentinel_is_failed():
         "lionagi.providers.openai.codex.stream_codex_cli_events",
         side_effect=fake,
     ):
-        out = await CodexCLIEndpoint()._call({"request": _request()}, {})
+        with pytest.raises(ProviderError) as info:
+            await CodexCLIEndpoint()._call({"request": _request()}, {})
 
-    assert out["is_error"] is True, (
-        f"the returned session came back marked successful: {out['is_error']!r}"
-    )
-    assert out["result"] and "tool call" in out["result"], (
-        f"the returned session result does not explain the failure: {out['result']!r}"
-    )
+    assert "tool call" in str(info.value)
 
 
 # --- the failure reaches a real run, which stops at the sentinel ---

@@ -159,6 +159,11 @@
     "effect": {
       "requested": "Requested interface action: {kind}"
     },
+    "truncation": {
+      "title": "Часть этого оборота не сохранена",
+      "summary": "Не сохранено кадров: {frames} · {size}",
+      "limit": " · предел: {limit}"
+    },
     "outcome": {
       "completed": "Turn completed",
       "failed": "Turn failed",

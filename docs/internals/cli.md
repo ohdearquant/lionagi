@@ -113,11 +113,12 @@ other value makes the file unusable. The child's own directory stays the one a r
 `McpResolution.declared_empty` separates a set of no servers that the caller gave from one that
 was not found. `--no-mcp-config` and a named config listing no servers are answers: every spawn
 path (plain, `--preset`/role, resumed) hands the leg an exclusive empty set, so its CLI loads
-none of its own servers either. A search that found nothing, or found a config declaring no
-servers, leaves a new leg to what its CLI discovers; a resumed leg keeps the servers its earlier
-run was handed. The one exception is a codex leg whose servers' `env` or `http_headers` went
-through a generated profile: that file is removed when the run that wrote it exits, so the resume
-is refused, naming the profile, rather than handing codex a profile whose file is gone.
+none of its own servers either, and the launch prints nothing about it. A search that found
+nothing, or found a config declaring no servers, leaves a new leg to what its CLI discovers; a
+resumed leg keeps the servers its earlier run was handed. The one exception is a codex leg whose
+servers' `env` or `http_headers` went through a generated profile: that file is removed when the
+run that wrote it exits, so the resume is refused, naming the profile, rather than handing codex
+a profile whose file is gone.
 
 A resumed or continued `li agent` leg that names neither flag replays the MCP choice its branch
 was launched with. A new branch records that choice once, in `branch.metadata` under
@@ -360,13 +361,12 @@ are different requests: `{}` means "apply no servers" and is applied as the
 whole set; `None` means there's nothing to hand over and the model keeps
 whatever it already had. Branches built through `create_agent` get the
 matching set as `resolved_mcp_servers` (the built-in orchestrator the run's
-set; casts-role workers and the fanout synthesis branch the worker set): left
-unset, the factory discovers a config of its own, the home
-`.lionagi/.mcp.json` included, and that replaces the set just handed over.
-Only a run with no set at all leaves it unset, so in such a run the built-in
-orchestrator, a casts-role worker and the fanout synthesis branch each get the
-factory's home `.lionagi/.mcp.json`, which the job-control policy does not
-filter (#3444).
+set; casts-role workers and the fanout synthesis branch the worker set). A run
+passes that key on every one of those calls, so no branch it builds falls back
+on the factory's own discovery, which would pick up a config the run did not
+choose, the home `.lionagi/.mcp.json` included. A run that found no config
+resolves no set and hands each of those branches no set. A worker built from a
+user profile is built without the factory and is handed no servers either.
 
 **`collect_worker_artifacts`** — the worker roster comes from the artifact
 directories the run actually handed out, not a scan for non-empty ones, so a
@@ -919,11 +919,11 @@ that path cannot block the lookup.
 
 ## `stats.py` — aggregate run stats
 
-**`_reject_non_positive_since`** — `li stats --since` positivity tightening vs `li monitor`.
-Monitor's shared `_since_timestamp()` accepts `0d`/`-1d` without complaint (fine for its own
-semantics), but for an aggregate report that would silently produce a false-empty or
-nonsensical result instead of failing loudly — this only tightens `li stats runs`. Malformed
-values (bad unit, non-numeric) are still left to `_since_timestamp` to reject.
+**`_since_timestamp`** — `li stats runs` and `li monitor` share positive integer
+window validation through `ln.parse_duration`. Windows require a lowercase
+`s`, `m`, `h` or `d` unit. The parser rejects invalid or empty windows; stats
+reports these as clear `--since` input errors and needs no separate positivity
+check.
 
 **`_query_run_stats`** — `group_by` validate-before-SQL-interpolation contract. `group_by`
 entries are validated against `GROUP_BY_COLUMNS` before this is ever called, so interpolating
@@ -1143,6 +1143,19 @@ before plus a pointer to the opt-in:
   commands are not offered: they would run with this process's own permissions, and this path
   has no operating-system sandbox. Any other value is refused before a run exists.
 - `max_extensions` — rounds after the first, a whole number from 1 to 100 (default 10).
+- `api_loop` — the tool loop (ADR-0132): `react`, the default, or `lndl`. An `lndl` leg runs
+  `branch.operate(..., middle=build_lndl_middle(round_budget=1 + max_extensions,
+  max_actions=16, lacts_with_out=False))` with the same tools, guards and timeout, and guidance
+  that keeps calls and the answer in separate rounds. A round either declares tool calls as
+  `<lact>` aliases, at most 16, which run through `act()` when it ends, or writes the answer
+  as `OUT{}`; a round that declares more than 16, or declares calls beside its `OUT{}`, is a
+  repair round and none of its calls runs. The answer model (`_LndlAnswer`) takes only text the
+  model wrote, so an `OUT{}` that binds a call's result is refused. A refusal is shown to the
+  next round only, and the last round's notice says it is the last. A turn that spends its
+  rounds without an accepted answer raises the Middle's `LNDLError`, which ends the turn as any
+  other turn failure does: the session records `failed` and the error's message, and `li agent`
+  reports the error and exits non-zero. Any other value, or `api_loop` without `api_tools`, is
+  refused before a run exists.
 
 `--preset coding` and `--image` are refused for an API model. The leg is handed no MCP server.
 A profile's `khive_injection` keeps its recall on the leg, and its writeback is turned off
@@ -1153,14 +1166,23 @@ The Anthropic endpoint requires an output limit, so an API leg on it sets `max_t
 unless the endpoint's settings already carry one. The default role is `reviewer` (a
 declared `role:` key still wins).
 
-The branch records `{"tools", "max_extensions"}` under `metadata["api_launch"]`; the snapshot is
-written to the run's branches dir after every turn, however the turn ends, so `li agent -r`
-finds it and runs the loop again from that record. A stored branch keeps its messages, not its
+The branch records `{"tools", "max_extensions", "loop"}` under `metadata["api_launch"]`. When a
+turn ends, however it ends, `_run_api_turn` adds what the turn spent to the record's `spend`,
+the total for this `li agent` invocation (its turn and any queued messages it drains as further
+turns; a resume is a new invocation and clears the stored total first): `requests` (the
+requests the branch's chat and parse models sent, read from each `iModel.calls_sent` against a
+baseline taken at the turn's start, failed requests included and a request its endpoint retries
+counted once), `tool_calls` (the `ActionResponse` messages the turn added) and `wall_seconds`
+(monotonic, rounded to milliseconds). It prints the total on the hint channel (stderr) as
+`[api] spend: <requests> request(s), <tool_calls> tool call(s), <wall_seconds>s`, with one
+decimal, and then writes the snapshot to the run's branches dir, so `li agent -r` finds both and
+runs the loop again from that record, on the recorded loop; a record written before `loop`
+existed runs `react`. A stored branch keeps its messages, not its
 tools, so the resume binds the read set again, guarded to its own working directory; a profile's
 current `max_extensions` replaces the recorded bound, and a resume without `-a` runs on the
 recorded one. A resume under a profile that no longer declares `api_tools`, or with `--image`,
-or of a record naming a tool set or a bound this version does not run, is refused before a run
-exists, and the display options stay off the resumed model's request too. A non-CLI branch without the record runs the earlier
+or of a record naming a tool set, a bound or a loop this version does not run, is refused before
+a run exists, and the display options stay off the resumed model's request too. A non-CLI branch without the record runs the earlier
 `branch.operate` path unchanged. Queued operator messages drain as further turns of the loop
 (`_drain_pending_steers(run_turn=...)`), on the budget the deadline leaves. Messages persist
 through the same branch-level hooks as a CLI leg; there is no stream dir, since nothing streams

@@ -159,6 +159,11 @@
     "effect": {
       "requested": "Requested interface action: {kind}"
     },
+    "truncation": {
+      "title": "Parte deste turno não foi retida",
+      "summary": "{frames} quadros não retidos · {size}",
+      "limit": " · limite: {limit}"
+    },
     "outcome": {
       "completed": "Turn completed",
       "failed": "Turn failed",

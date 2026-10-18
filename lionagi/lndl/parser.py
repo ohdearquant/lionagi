@@ -124,7 +124,13 @@ class Parser:
         while self.match(TokenType.NEWLINE):
             self.advance()
 
-    def parse(self) -> Program:
+    def parse(self, *, read_past_out: bool = False) -> Program:
+        """Parse the declarations and the first ``OUT{}`` block.
+
+        Parsing stops after the first ``OUT{}`` unless ``read_past_out`` is true; then
+        declarations after it are part of the ``Program`` too, and a second ``OUT{}``
+        raises ``ParseError``.
+        """
         if self.source_text is None:
             raise ParseError(
                 "Parser requires source_text for content extraction",
@@ -164,10 +170,17 @@ class Parser:
                 continue
 
             if self.match(TokenType.OUT_OPEN):
+                if out_block is not None:
+                    raise ParseError(
+                        "Duplicate OUT{} block - a program has one OUT{} block",
+                        self.current_token(),
+                    )
                 self._lvars_so_far = lvars
                 self._lacts_so_far = lacts
                 out_block = self.parse_out_block()
-                break
+                if not read_past_out:
+                    break
+                continue
 
             self.advance()
 

@@ -26,6 +26,7 @@ from lionagi._auto import CliDeclaration, auto_register
 from lionagi._paths import ensure_lionagi_dir
 from lionagi.cli._argtypes import JsonArgument
 from lionagi.cli._logging import log_error, warn
+from lionagi.ln import now_utc
 from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES
 from lionagi.studio._host import normalize_host
 
@@ -1165,9 +1166,8 @@ def _warn_if_cron_far_out(cron_expr: str) -> None:
     except ImportError:
         return
     import time as _time
-    from datetime import datetime, timezone
 
-    now = datetime.now(timezone.utc)
+    now = now_utc()
     try:
         next_fire = croniter(cron_expr, start_time=now).get_next(float)
     except Exception:
@@ -1568,10 +1568,8 @@ def _cmd_validate_set(args: argparse.Namespace) -> int:
             )
         else:
             for name, message in exc.errors:
-                # Plan errors carry the qualified name; resolution errors the member name.
-                prefix = "global" if doc.metadata.scope == "global" else doc.metadata.project
-                label = name if name.startswith(f"{prefix}/") else f"{prefix}/{name}"
-                warn(f"INVALID  {label}  {message}")
+                # Every raise site carries the qualified name, so it prints as it stands.
+                warn(f"INVALID  {name}  {message}")
         return 1
 
     if args.as_json:
@@ -1653,10 +1651,8 @@ def _cmd_apply_set(args: argparse.Namespace) -> int:
             )
         else:
             for name, message in exc.errors:
-                # Plan errors carry the qualified name; resolution errors the member name.
-                prefix = "global" if doc.metadata.scope == "global" else doc.metadata.project
-                label = name if name.startswith(f"{prefix}/") else f"{prefix}/{name}"
-                warn(f"INVALID  {label}  {message}")
+                # Every raise site carries the qualified name, so it prints as it stands.
+                warn(f"INVALID  {name}  {message}")
         return 1
 
     has_errors = any(e.action == "ERROR" for e in plan)

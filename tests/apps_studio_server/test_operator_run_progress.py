@@ -1253,6 +1253,36 @@ async def test_run_progress_no_identity_at_all_stays_unscoped(db_path):
     assert result == {"found": True, "ambiguous": False, "session_id": sid}
 
 
+async def test_resolve_run_denies_the_unscoped_exact_id_arm_when_a_write_asks(db_path, monkeypatch):
+    """`allow_unscoped_exact_id=False` is what a write tool passes: a turn with
+    no declared project then gets the typed refusal for an exact full UUID too,
+    rather than the unscoped lookup. The read default keeps that lookup, so the
+    flag is the only difference between the two callers on the same turn and
+    the same reference."""
+    from lionagi.studio.operator.run_progress import MissingOwnerContextError, resolve_run
+
+    sid = str(uuid.uuid4())
+    await seed_session(db_path, session_id=sid, name="nightly-triage", status="running")
+
+    cid, request_id = await _make_running_turn_with_project(db_path, project=None)
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(db_path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", cid)
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", request_id)
+
+    # The read default resolves the same full id the write path must refuse.
+    assert await resolve_run(sid) == {"found": True, "ambiguous": False, "session_id": sid}
+
+    with pytest.raises(MissingOwnerContextError):
+        await resolve_run(sid, allow_unscoped_exact_id=False)
+    with pytest.raises(MissingOwnerContextError):
+        await resolve_run(sid[:8], allow_unscoped_exact_id=False)
+    # With nothing selected, 'current' is refused the same way before the empty
+    # selection is read; the read default reports the empty selection.
+    with pytest.raises(MissingOwnerContextError):
+        await resolve_run("current", allow_unscoped_exact_id=False)
+    assert (await resolve_run("current"))["found"] is False
+
+
 def test_terminal_safe_health_drops_only_the_vacuous_healthy():
     """Health is a liveness concept: for a terminal run the classifier's
     "healthy" only means "no residue", and projected beside status=failed it

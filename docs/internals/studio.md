@@ -779,7 +779,15 @@ document falls back to the full original name (still unique) so two
 members are never silently merged. `convert_legacy_rows` reports
 `on_success`/`on_fail`, an unsupported action_kind, a legacy-only field
 with no v1 equivalent, or a malformed trigger as `BLOCKED` and omits them,
-never half-emitted.
+never half-emitted. A row that stores no project is written with
+`execution.project: null`, which apply reads as no project. Applying a
+`--legacy` export back as its own set (with `--adopt`, since the row has no
+owner) then adopts a row that stores its working directory and model without
+changing any column it ran with: adoption writes only the owner and the
+declaration it adopted (`owner_key`, `managed_by`, `spec_version`,
+`resolved_digest`, `authored_spec`, `resolved_target`, and `resolved_timezone`,
+the zone the row was recorded firing in, confirmed only when the scheduler runs
+in that zone), and the next plan reports `UNCHANGED`.
 
 ## lionagi/studio/services/playbooks.py
 
@@ -1477,9 +1485,17 @@ filled from that project's rows alone. Foreign rows are excluded from resolved
 ids and ambiguity candidates, and cannot push an in-scope match out of the
 window or hide one behind them. The resolver's failure
 reasons can differ for a foreign id and a nonexistent reference; identical
-not-found responses are not guaranteed. An owned turn with no project can
-still resolve a full 36-character UUID, including one selected by `"current"`;
-prefix and substring lookup require project context. An ambiguous match
+not-found responses are not guaranteed. A turn with an owner but no declared
+project never gets that far: it resolves an exact full-UUID reference (or
+`"current"`) only through the read path, and prefix and substring lookup
+require project context on every path. A read tool that reuses the resolver
+keeps that allowance. The write tools that mutate the run they name —
+`cancel_run`, `rename_session`, `resume_run` — pass
+`allow_unscoped_exact_id=False`, so on such a turn they refuse with
+`missing_owner_context` before resolving anything, for a full id and
+`"current"` included: the same position `run_control` takes, and for the
+same reason, that a mutation must prove it owns the run it names rather
+than rely on an id being un-enumerable. An ambiguous match
 returns candidates rather than choosing one: substring results are capped at
 `MAX_CANDIDATES` (10), and id-prefix candidates — for both the shared resolver
 and cancellation's own resolver — at the CLI helper's own listing size (5),

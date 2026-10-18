@@ -387,6 +387,24 @@ def build_default_registry() -> PolicyRegistry:
         )
     )
 
+    registry.register(
+        LifecyclePolicy(
+            entity_type="schedule",
+            table="schedules",
+            statuses=frozenset({"enabled", "disabled", "deleted"}),
+            initial_statuses=frozenset({"enabled", "disabled"}),
+            terminal_statuses=frozenset({"deleted"}),
+            edges=_edges(
+                ("enabled", _to("disabled", "deleted")),
+                ("disabled", _to("enabled", "deleted")),
+            ),
+            same_status="noop",
+            patch_fields=frozenset(),
+            reason_prefixes=frozenset({"schedule_definition"}),
+            reason_columns=False,
+        )
+    )
+
     registry.seal()
     return registry
 

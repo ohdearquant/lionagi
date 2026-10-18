@@ -268,7 +268,7 @@ def test_since_timestamp_invalid():
 
 
 def test_since_timestamp_bad_unit():
-    with pytest.raises(ValueError, match="Unknown time unit"):
+    with pytest.raises(ValueError, match="--since.*lowercase unit"):
         _since_timestamp("5z")
 
 

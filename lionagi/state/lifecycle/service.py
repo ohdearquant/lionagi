@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING, Any, Protocol, get_args
 
 from sqlalchemy import JSON, bindparam, text
 
+from lionagi.ln import short_id
+
 from ..compat import _quote
 from ..reasons import VALID_REASON_CODES
 from . import LifecycleNotFoundError, LifecycleValidationError
@@ -27,8 +29,15 @@ from .callbacks import (
     RunTerminalEnvelope,
     TerminalCallbackRegistry,
 )
-from .models import ActorType, InitialStateCommand, TransitionCommand, TransitionOutcome
+from .models import (
+    ActorType,
+    InitialStateCommand,
+    ReasonRecord,
+    TransitionCommand,
+    TransitionOutcome,
+)
 from .policy import DEFAULT_REGISTRY, PolicyRegistry
+from .schedules import ScheduleLifecycleAdapter
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncConnection
@@ -104,12 +113,23 @@ class SQLAlchemyLifecycleService:
         self._terminal_callbacks = (
             terminal_callbacks if terminal_callbacks is not None else DEFAULT_TERMINAL_CALLBACKS
         )
+        self._schedule_adapter: ScheduleLifecycleAdapter | None = None
+
+    @property
+    def schedule_adapter(self) -> ScheduleLifecycleAdapter:
+        if self._schedule_adapter is None:
+            self._schedule_adapter = ScheduleLifecycleAdapter(self)
+        return self._schedule_adapter
 
     async def initialize_in_transaction(
         self,
         connection: AsyncConnection,
         command: InitialStateCommand,
     ) -> str:
+        if command.entity_type == "schedule":
+            return await self.schedule_adapter.initialize_in_transaction(connection, command)
+        if command.reason.code.startswith("schedule_definition."):
+            raise LifecycleValidationError("schedule_definition reasons belong only to definitions")
         policy = self._registry.get(command.entity_type)
         if not command.entity_id:
             raise LifecycleValidationError("InitialStateCommand.entity_id must be non-empty")
@@ -160,8 +180,33 @@ class SQLAlchemyLifecycleService:
                 "already has an initial (previous_status=NULL) history row"
             )
 
+        return await self.append_history_in_transaction(
+            connection,
+            entity_type=command.entity_type,
+            entity_id=command.entity_id,
+            previous_status=None,
+            new_status=command.status,
+            reason=command.reason,
+            source=command.actor.type,
+            actor=command.actor.id,
+        )
+
+    async def append_history_in_transaction(
+        self,
+        connection: AsyncConnection,
+        *,
+        entity_type: str,
+        entity_id: str,
+        previous_status: str | None,
+        new_status: str,
+        reason: ReasonRecord,
+        source: str,
+        actor: str | None,
+        created_at: float | None = None,
+    ) -> str:
+        """Append one validated transition on its owning write connection."""
         transition_id = uuid.uuid4().hex
-        now = time.time()
+        now = time.time() if created_at is None else created_at
         owner_columns, owner_params, owner_values = self._owner_insert("status_transitions")
         await connection.execute(
             text(
@@ -169,7 +214,7 @@ class SQLAlchemyLifecycleService:
                 "(id, entity_type, entity_id, previous_status, status, "
                 " reason_code, reason_summary, evidence_refs, "
                 f" source, actor, created_at, metadata{owner_columns}) "
-                "VALUES (:id, :entity_type, :entity_id, NULL, :status, "
+                "VALUES (:id, :entity_type, :entity_id, :previous_status, :status, "
                 " :reason_code, :reason_summary, :evidence_refs, "
                 f" :source, :actor, :created_at, :metadata{owner_params})"
             ).bindparams(
@@ -178,16 +223,17 @@ class SQLAlchemyLifecycleService:
             ),
             {
                 "id": transition_id,
-                "entity_type": command.entity_type,
-                "entity_id": command.entity_id,
-                "status": command.status,
-                "reason_code": command.reason.code,
-                "reason_summary": command.reason.summary,
-                "evidence_refs": _json_list(command.reason.evidence_refs),
-                "source": command.actor.type,
-                "actor": command.actor.id,
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "previous_status": previous_status,
+                "status": new_status,
+                "reason_code": reason.code,
+                "reason_summary": reason.summary,
+                "evidence_refs": _json_list(reason.evidence_refs),
+                "source": source,
+                "actor": actor,
                 "created_at": now,
-                "metadata": dict(command.reason.metadata),
+                "metadata": dict(reason.metadata),
                 **owner_values,
             },
         )
@@ -274,6 +320,12 @@ class SQLAlchemyLifecycleService:
         fill_only_if_absent: frozenset[str] = frozenset(),
         owned_links: tuple[tuple[str, str, str], ...] = (),
     ) -> TransitionOutcome:
+        if command.entity_type == "schedule":
+            if fill_only_if_absent or owned_links:
+                raise LifecycleValidationError("unsupported schedule transition companion fields")
+            return await self.schedule_adapter.transition(command, extra_guard=extra_guard)
+        if command.reason.code.startswith("schedule_definition."):
+            raise LifecycleValidationError("schedule_definition reasons belong only to definitions")
         policy = self._registry.get(command.entity_type)
 
         if not command.entity_id:
@@ -442,7 +494,7 @@ class SQLAlchemyLifecycleService:
                     ).bindparams(bindparam("details", type_=JSON)),
                     {
                         **owner_values,
-                        "id": uuid.uuid4().hex[:12],
+                        "id": short_id(12),
                         "created_at": now,
                         "action": "status_transition_rejected",
                         "target_id": command.entity_id,
@@ -589,7 +641,7 @@ class SQLAlchemyLifecycleService:
                     ).bindparams(bindparam("details", type_=JSON)),
                     {
                         **owner_values,
-                        "id": uuid.uuid4().hex[:12],
+                        "id": short_id(12),
                         "created_at": now,
                         "action": "status_transition_override",
                         "target_id": command.entity_id,
@@ -704,35 +756,14 @@ class SQLAlchemyLifecycleService:
         if result.rowcount == 0:
             return None
 
-        transition_id = uuid.uuid4().hex
-        owner_columns, owner_params, owner_values = self._owner_insert("status_transitions")
-        await conn.execute(
-            text(
-                "INSERT INTO status_transitions "  # noqa: S608 -- the owner column is quoted
-                "(id, entity_type, entity_id, previous_status, status, "
-                " reason_code, reason_summary, evidence_refs, "
-                f" source, actor, created_at, metadata{owner_columns}) "
-                "VALUES (:id, :entity_type, :entity_id, :previous_status, :status, "
-                " :reason_code, :reason_summary, :evidence_refs, "
-                f" :source, :actor, :created_at, :metadata{owner_params})"
-            ).bindparams(
-                bindparam("evidence_refs", type_=JSON),
-                bindparam("metadata", type_=JSON),
-            ),
-            {
-                "id": transition_id,
-                "entity_type": command.entity_type,
-                "entity_id": command.entity_id,
-                "previous_status": previous_status,
-                "status": command.to_status,
-                "reason_code": command.reason.code,
-                "reason_summary": command.reason.summary,
-                "evidence_refs": _json_list(command.reason.evidence_refs),
-                "source": command.actor.type,
-                "actor": command.actor.id,
-                "created_at": now,
-                "metadata": dict(command.reason.metadata),
-                **owner_values,
-            },
+        return await self.append_history_in_transaction(
+            conn,
+            entity_type=command.entity_type,
+            entity_id=command.entity_id,
+            previous_status=previous_status,
+            new_status=command.to_status,
+            reason=command.reason,
+            source=command.actor.type,
+            actor=command.actor.id,
+            created_at=now,
         )
-        return transition_id

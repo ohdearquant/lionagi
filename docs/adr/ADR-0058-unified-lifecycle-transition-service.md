@@ -9,6 +9,8 @@
 - **Date**: 2026-07-09
 - **Relations**: supersedes v0-0033; extends ADR-0057; extended prospectively by ADR-0123
   (canonical Run)
+- **Partial amendment**: the proposed Schedule definition amendment below qualifies D1–D6
+  for `schedule` only; the accepted execution policies and remaining decisions stay in force.
 
 ## Proposed ADR-0123 boundary
 
@@ -249,11 +251,14 @@ lionagi/state/lifecycle/
   into them.
 - `entity_type`, `entity_id`, actor id, reason code, and target status must be non-empty after
   validation. Invalid values raise a documented validation exception before database mutation.
+  The Schedule amendment defines an explicit nullable-provenance compatibility exception;
+  it does not relax actor validation for execution entities.
 - Evidence is an immutable tuple at the command boundary and becomes a JSON list on persistence.
 - `expected_version` is the entity row's `updated_at` float during compatibility. A future integer
   version cannot replace it without an explicit migration because callers may already supply the
   timestamp.
-- `applied` returns the previous status, new current status, and non-null transition id.
+- `applied` returns the previous status, new current status, and non-null transition id,
+  except a policy-selected same-state `noop`, which has `transition_id=None`.
 - `conflict` returns the status observed under lock as both `previous_status` and `current_status`,
   with `transition_id=None` because no history row was written.
 - `rejected` returns the unchanged terminal status and `transition_id=None` after the rejection
@@ -309,7 +314,8 @@ the owning policy's `patch_fields` allowlist, or registration raises
 `ValueError` — a guard field can only be one this policy is already prepared to
 read and write.
 
-The initial registry contains these policies:
+The initial registry contains these policies; the proposed Schedule amendment extends it
+without changing these execution and transport graphs:
 
 | Entity | Initial | Nonterminal edges | Terminal/recovery rule |
 |--------|---------|-------------------|------------------------|
@@ -387,7 +393,7 @@ dispatch:     attempt, next_attempt_at, last_error
   override.
 - Same-status `append` writes a new reason/history row. `noop` would return applied without a row
   change only if a future policy selects it; no initial built-in policy does. `reject` is available
-  but unused initially.
+  but unused initially. The Schedule amendment selects `noop` for its definition policy.
 - Policy objects are frozen after registry construction. Runtime mutation or hot reload is outside
   this ADR.
 
@@ -633,6 +639,127 @@ sequenceDiagram
 current reason, history, and audit. Domain interpretation remains with the domain that owns the
 status, preventing a universal object from becoming a bag of unrelated optional fields.
 
+### Schedule definition amendment — Proposed
+
+**Disposition:** partial amendment of D1–D6 for Schedule definition lifecycle only. This
+amendment adds one managed entity; it does not supersede the accepted base or change Run,
+schedule occurrence, dispatch, or execution terminal-callback authority. Its implementation
+and acceptance are tracked separately from the shipped baseline described above. It answers
+issue #3134: enabling or disabling a schedule left no audit trail, so a schedule that stopped
+running could not be explained.
+
+**Entity and storage.** Register entity type `schedule`, table `schedules`, initial states
+`enabled` and `disabled`, and terminal audit state `deleted`. The edges are enabled → disabled,
+disabled → enabled, and either live state → deleted. `disabled` is reversible. `deleted`
+means the definition was removed; no live row stores that state, and no transition resurrects
+it. Definition ids identify one generation and must not be reused after deletion.
+
+`schedules.enabled` remains the sole live enablement value. A registered Schedule storage
+adapter consumes the same `LifecyclePolicy` registry as other entities, maps the binary field
+to the two live states, and performs hard deletion for the third outcome. It must not execute
+the generic SQL against nonexistent `schedules.status` or denormalized reason columns, add a
+second live status, or create a second policy authority. Managed Schedule dispatch routes to
+this adapter; the existing generic legacy status facade need not admit another entity type.
+
+Create and every committed state edge append to the existing `status_transitions` ledger in
+the same transaction as the definition write. Metadata carries provenance and a small name
+snapshot, not a copy of the schedule prompt. The ledger entity id has no definition foreign
+key, so deletion retains its event and all previous history. No new table or column is needed.
+
+The adapter uses `same_status=noop`: repeated enable/disable adds no event. Configuration,
+cursor, health and firing-time writes also add no state event. A typed same-state transition
+returns applied with no transition id; compatibility methods retain their existing row-match
+results and bookkeeping behavior. New definitions get an actual creation event, including
+initially disabled definitions. Existing rows receive no invented creation events on open or
+migration. A first observed later edge records its actual prior state, without inventing the
+missing past.
+
+**Definition reasons.** Use the disjoint `schedule_definition` namespace. Existing
+`schedule.*` codes belong to occurrences and remain unchanged; neither domain accepts the
+other's reasons. The definition codes are:
+
+| Code | Meaning |
+| --- | --- |
+| `schedule_definition.created.observed` | A new definition was persisted. |
+| `schedule_definition.enabled.observed` | A disabled definition became enabled. |
+| `schedule_definition.deleted.observed` | A live definition was deleted. |
+| `schedule_definition.disabled.unspecified` | A compatibility caller disabled it without an explanation. |
+| `schedule_definition.disabled.max_runs` | The scheduler disabled it because the run limit was reached. |
+| `schedule_definition.disabled.budget_exhausted` | The scheduler disabled it because its budget was exhausted. |
+| `schedule_definition.disabled.declared` | An owned declaration member explicitly became disabled. |
+| `schedule_definition.disabled.omitted` | A previously managed member was omitted from its set. |
+| `schedule_definition.disabled.manual` | A manual caller supplied its disable explanation. |
+
+The code describes the observed action/cause, never an inferred human intention. Declaration
+disables always carry a generated code and factual set/member context; an apply-level free-text
+explanation is optional and retained when supplied. Initial disabled creation remains a
+creation, not a fabricated disable. ADOPT preserves matching enablement and cannot be used to
+silently change it. Manual disable explanation admission is completed in the later client slice.
+
+**Provenance.** The stored projection is explicit:
+
+| Field | Contract |
+| --- | --- |
+| `actor` | Nullable ledger actor id; no fabricated sentinel identity. |
+| `source` | Known entry-point/source category; this is not authenticated actor identity. |
+| `metadata.provenance.origin` | Programmatic, CLI, MCP, HTTP, browser, declaration, scheduler, or explicitly unavailable origin. |
+| `metadata.provenance.submitting_cwd` | Actual resolved submitting process cwd, or null. |
+| `metadata.provenance.actor_status` | `available` or `unavailable`, independently of cwd. |
+| `metadata.provenance.cwd_status` | `available` or `unavailable`, independently of actor. |
+| `metadata.provenance.assurance` | `client_resolved`, `client_reported`, `system`, or `unavailable`. |
+| `metadata.provenance.failure_category` | Null or a bounded category: `not_provided`, `resolver_unavailable`, `resolver_failed`, `cwd_unavailable`, `browser_unavailable`. |
+| `metadata.schedule_name` | Contemporaneous definition-name snapshot. |
+| `metadata.declaration` | Factual set owner/member/cause for a declarative disable. |
+
+CLI/MCP adapters capture the submitting process cwd and resolve identity against that same
+directory when available. Unresolved plain clients record unavailability, not a dependency on
+a particular identity installation. HTTP-supplied actor/cwd is client-reported; bearer access
+alone does not authenticate those claims. Browser actor/cwd is unavailable. An action execution
+cwd, manifest directory, declaration owner or daemon identity cannot substitute for an upstream
+submitter. For an automatic disable, the scheduler itself originates the action: use a named
+component actor (`scheduler:max-runs` or `scheduler:budget`) and its actual process cwd when
+observable, labelled as system provenance.
+
+The Schedule compatibility adapter admits explicit missing provenance without manufacturing
+an `ActorRecord` identity. Existing execution-entity actor validation stays strict. Supplied
+context is validated rather than silently discarded; invalid origins, inconsistent availability,
+nonabsolute supplied cwd, foreign-domain reasons and invalid state targets refuse before a
+definition mutation. Source/assurance describes what was observed, not an authorization grant.
+
+**Atomicity and readers.** D4's lock/read/write steps operate on enabled state for Schedule,
+and on DELETE for deletion. Preserve owner, cursor and version claims. PostgreSQL reads the
+definition under row lock; SQLite uses its existing immediate transaction. All direct CRUD,
+folded ScheduleSet create/update/disable branches, and any enabled edge admitted by occurrence
+advancement use the same connection-owned adapter and history append. A missing row, lost
+claim or failed history append leaves no false event or partial mutation. A late batch failure
+rolls back every earlier definition and event. Ordinary occurrence advancement adds no Schedule
+event. Do not nest a new database transaction inside its owning write.
+
+The bounded history reader selects by both entity type and immutable id, with stable event-time
+and id ordering, independently of whether the definition still exists. Schedule detail explicitly
+projects the latest event. An empty history means no recorded events; an event with unavailable
+provenance means a real action was recorded without that attribution. An old read-only store
+without the ledger reports history unavailable and never migrates during a read. No interval or
+execution-liveness conclusion is inferred from absence of events or mutable `updated_at`.
+
+Schedule remains outside execution terminal callbacks, terminal projection participants and
+delivery reconciliation. Its deletion is not a terminal execution attempt. Schedule occurrences
+continue to own queue/lease/dispatch state; canonical Run continues to own one execution attempt.
+
+**Incremental admission.** The first implementation keeps existing context-less callers working
+and records missing provenance/explanation honestly, covers all storage mutation paths, supplies
+the causes at all four scheduler automatic-disable sites, and exposes the latest stored event. This foundation
+does not claim complete manual attribution or mandatory human reasons. The later client slice
+carries context through CLI/MCP/HTTP and direct declarations, requires nonblank reasons for manual
+disables, and adds the browser reason input and authoritative detail refresh. Declarative free
+text stays optional. The auditability issue remains open until that later acceptance is met.
+
+Acceptance requires retained create/disable/enable/delete history, independently attributable
+ids, truthful legacy/unavailable states, no same-state/cursor events, transaction failure and
+lost-claim proofs, all four automatic-disable sites, post-delete reading and unchanged execution
+callbacks. Execute SQLite coverage; report live PostgreSQL coverage separately without inferring
+it from portable DDL or SQLite behavior.
+
 ## Consequences
 
 - Lifecycle validation, conflict behavior, terminal policy, companion fields, and audit persistence
@@ -721,13 +848,14 @@ migration, making parity defects harder to isolate.
 
 This is a target-state ADR, partially implemented. The first two phases shipped in the proposed
 module layout (`lionagi/state/lifecycle/{models,policy,service,adapters}.py`): the contract types,
-the policy registry covering all seven entity types, the guarded algorithm, and the
+the policy registry covering eight entity types, the guarded algorithm, and the
 facade-preserving wrappers — both `StateDB.update_status()` and the guarded transition adapter now
 route through the service. Creation-path initialization is further along than an earlier revision
 of this note recorded. `initialize_in_transaction` is reached through
-`StateDB._initialize_managed_entity_in_tx` (`lionagi/state/db.py:778`), and that helper has seven
+`StateDB._initialize_managed_entity_in_tx` (`lionagi/state/db.py:887`), and that helper has eight
 call sites in `lionagi/state/db.py` covering `session`, `schedule_run`, `invocation`, `show`, and
-`play`. Two policies are outside it: `team`, which has no creation path in `lionagi/state/db.py`
+`play`. Schedule uses its specialized definition adapter. Two other policies are outside
+the creation helper: `team`, which has no creation path in `lionagi/state/db.py`
 at all, and `dispatch`, whose rows are inserted by a raw statement in
 `lionagi/dispatch/outbox.py:209` that never reaches the lifecycle service. Those two, plus the
 remaining migration phases, are what is still open. Implementation is complete only when the
@@ -742,4 +870,5 @@ service, exercises a fail-closed exit from every terminal status while retaining
 the two declared dispatch recovery edges, and proves that a selected same-status
 append refreshes current reason fields and history. It also pins that status,
 companion fields, and history share the expected-version CAS. Canonical Run is a
-later eighth policy and is not claimed by this baseline slice.
+later additional policy and is not claimed by this baseline slice. The Schedule amendment above
+is also outside that original seven-policy baseline.

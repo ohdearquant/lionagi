@@ -22,7 +22,6 @@ injection the CLI performs and returns a fingerprint of what it resolved.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import re
 from dataclasses import dataclass, field
 from importlib import import_module
@@ -32,6 +31,7 @@ from typing import Any
 
 from lionagi._auto import CliSeed, build_cli_parser, iter_cli_seeds, seed_for
 from lionagi.cli._argtypes import JsonArgument
+from lionagi.ln import hash_file
 
 __all__ = (
     "SchemaProjectionError",
@@ -535,7 +535,7 @@ def playbook_fingerprint(name: str) -> tuple[str, str]:
         raise PlaybookResolutionError(f"playbook:{name}", err or "playbook did not resolve")
     resolved = Path(str(path_obj))
     try:
-        digest = hashlib.sha256(resolved.read_bytes()).hexdigest()
+        digest = hash_file(resolved)
     except OSError as exc:
         raise PlaybookResolutionError(f"playbook:{name}", f"unreadable: {exc}") from exc
     return f"sha256:{digest[:32]}", str(resolved)

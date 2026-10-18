@@ -790,7 +790,7 @@ def test_no_list_surface_serves_the_record_only_schedule_fields(tmp_path, monkey
     # Named here rather than imported: a watch set taken from the constant under test
     # follows that constant, so moving a field out of it moves the field out of the
     # test at the same time and the check reports clean on the change it exists to catch.
-    watched = ("action_prompt", "on_success", "on_fail", "action_cwd")
+    watched = ("action_prompt", "on_success", "on_fail", "action_cwd", "lifecycle")
     assert set(watched) == set(_SCHEDULE_RECORD_FIELDS), (
         "record-only set changed; decide per field whether a list surface may serve it, "
         "then update this literal"

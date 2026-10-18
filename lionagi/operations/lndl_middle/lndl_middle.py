@@ -5,11 +5,12 @@
 
 from __future__ import annotations
 
-import types as _types
-from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
+import re
+from typing import TYPE_CHECKING, Any, get_args, get_origin
 
 from pydantic import JsonValue, ValidationError
 
+from lionagi.ln import unwrap_optional
 from lionagi.lndl import (
     ActionCall,
     Continue,
@@ -51,19 +52,9 @@ _ACTION_PARAM = ActionParam(
 )
 
 
-def _unwrap_optional_type(t: Any) -> Any:
-    """If ``t`` is Optional[X] / X | None, return X. Else return ``t``."""
-    origin = get_origin(t)
-    if origin is Union or origin is _types.UnionType:
-        args = [a for a in get_args(t) if a is not type(None)]
-        if len(args) == 1:
-            return args[0]
-    return t
-
-
 def _render_type(annotation: Any) -> str:
     """Render a field's type the way LNDL_SYSTEM_PROMPT's ``Specs:`` examples do."""
-    annotation = _unwrap_optional_type(annotation)
+    annotation = unwrap_optional(annotation)
     origin = get_origin(annotation)
     if origin is list:
         args = get_args(annotation)
@@ -146,29 +137,165 @@ def _round_instruction(
     prior_error: str | None,
 ) -> JsonValue | Instruction:
     """Round 1 sends the instruction verbatim (LNDL contract rides in
-    ``guidance``); later rounds send a short 'Round N of M.' continuation notice."""
+    ``guidance``); later rounds send a short 'Round N of M.' continuation notice,
+    which on the last round says so and after a refused round carries its error."""
     if round_num == 1:
         return original_instruction
     notice = f"Round {round_num} of {round_budget}."
+    if round_num == round_budget:
+        notice += " This is the last round: write your answer in OUT{} now."
     if prior_error:
-        notice += f"\n\nError from your previous OUT{{}}: {prior_error}\nRepair and try again."
+        notice += f"\n\nError from your previous round: {prior_error}\nRepair and try again."
     return notice
+
+
+_CALLS_BESIDE_ANSWER = (
+    "this round declares <lact> calls and also writes OUT{}; none of its calls ran and the "
+    "answer was not taken. Declare calls in a round without OUT{}, read their results, then "
+    "write OUT{} in a later round that declares no <lact>."
+)
+
+
+def _too_many_calls(calls: int, max_actions: int | None) -> str | None:
+    if max_actions is None or calls <= max_actions:
+        return None
+    return (
+        f"this round declares {calls} <lact> calls and a round may declare at most "
+        f"{max_actions}; none of them ran. Declare at most {max_actions} now and the rest in "
+        "a later round."
+    )
+
+
+# An <lvar>/<lact> tag or an OUT{} block, as the lexer opens them.
+_ROUND_OPENER = re.compile(r"<(lvar|lact)\s|OUT\{")
+
+
+def _scan_round(text: str) -> tuple[int, int, str | None]:
+    """Count one round's ``<lact>`` calls and ``OUT{}`` blocks by the bounds the parser reads.
+
+    An ``<lvar>`` or ``<lact>`` body runs to the first closing tag after it, as the parser
+    extracts it, so a tag quoted inside a body is not counted. An ``OUT{}`` runs to the first
+    ``}`` outside a quoted string, as the lexer reads it. Returns ``(calls, answers, problem)``;
+    ``problem`` names a tag or ``OUT{}`` the round leaves open, a tag or another ``OUT{`` inside
+    an ``OUT{}``, or an ``OUT{`` inside a body: the lexer reads that one as an opened block,
+    quoted or not, and goes on reading the text after the body as the block's.
+    """
+    calls = answers = 0
+    pos = 0
+    while (opened := _ROUND_OPENER.search(text, pos)) is not None:
+        kind = opened.group(1)
+        if kind is None:
+            answers += 1
+            pos, problem = _out_block_end(text, opened.end())
+            if problem is not None:
+                return calls, answers, problem
+            continue
+        close = text.find(f"</{kind}>", opened.end())
+        if close < 0:
+            return calls, answers, f"a <{kind}> is not closed"
+        if "OUT{" in text[opened.end() : close]:
+            return calls, answers, f"a <{kind}> holds OUT{{, which is read as the answer's start"
+        calls += kind == "lact"
+        pos = close + len(kind) + 3
+    return calls, answers, None
+
+
+def _out_block_end(text: str, pos: int) -> tuple[int, str | None]:
+    """The position after the ``}`` closing the ``OUT{}`` whose body starts at *pos*, or the
+    reason the block has none: input ends first, or a tag or another ``OUT{`` opens inside it."""
+    quote: str | None = None
+    while pos < len(text):
+        char = text[pos]
+        if quote is not None:
+            if char == "\\":
+                pos += 1
+            elif char == quote:
+                quote = None
+        elif char in "\"'":
+            quote = char
+        elif char == "}":
+            return pos + 1, None
+        elif _ROUND_OPENER.match(text, pos):
+            return pos, "OUT{} is not closed before the next <lvar>, <lact> or OUT{"
+        pos += 1
+    return pos, "OUT{} is not closed"
 
 
 def _classify_round(
     text: str,
     target: Any,
     action_results: dict[str, Any],
+    max_actions: int | None = None,
+    lacts_with_out: bool = True,
 ) -> tuple[RoundOutcome, list[ActionCall], dict[str, Any] | None]:
-    """Parse and assemble one round's raw text into a RoundOutcome; returns (outcome, pending_action_calls, assembled_dict)."""
-    blocks = extract_lndl_blocks(text)
-    if not blocks:
+    """Parse and assemble one round's raw text into a RoundOutcome; returns (outcome, pending_action_calls, assembled_dict).
+
+    A round declaring more than ``max_actions`` ``<lact>`` calls is a repair round: none of its calls runs.
+    With ``lacts_with_out=False``, so is a round that declares ``<lact>`` calls beside its ``OUT{}``, one
+    that leaves a tag or its ``OUT{}`` open, and one whose calls the parser reads differently from its
+    tags (``_scan_round``).
+    """
+    if not extract_lndl_blocks(text):
         return Continue(), [], None
 
     try:
-        normalized = normalize_lndl_text("\n\n".join(blocks))
+        # normalize_lndl_text extracts the fenced blocks itself; extracting
+        # first would run that pass again on a block's own text and could pick
+        # up a fenced example quoted inside it instead of the round's content.
+        normalized = normalize_lndl_text(text)
+        scanned: tuple[int, int] | None = None
+        if not lacts_with_out:
+            # When calls and the answer must stay apart, every call the round
+            # declares counts, wherever it sits, and the round's tags are counted
+            # before the parser reads it: the lexer takes a quoted OUT{ inside a
+            # body for an opened block, and an unclosed OUT{} runs to the end of
+            # the input, so either could hide a call from the parser.
+            calls, answers, problem = _scan_round(normalized)
+            if problem is not None:
+                return (
+                    Retry(
+                        error=(
+                            f"this round could not be read: {problem}. None of its calls "
+                            "ran and the answer was not taken. Close every tag and OUT{}, "
+                            "and declare calls and the answer in separate rounds."
+                        )
+                    ),
+                    [],
+                    None,
+                )
+            refusal = _too_many_calls(calls, max_actions)
+            if refusal is None and calls and answers:
+                refusal = _CALLS_BESIDE_ANSWER
+            if refusal is None and answers > 1:
+                refusal = (
+                    f"this round writes {answers} OUT{{}} blocks and a round may write one; "
+                    "the answer was not taken. Write the whole answer in one OUT{}."
+                )
+            if refusal is not None:
+                return Retry(error=refusal), [], None
+            scanned = (calls, answers)
+
         tokens = Lexer(normalized).tokenize()
-        program = Parser(tokens, source_text=normalized).parse()
+        parser = Parser(tokens, source_text=normalized)
+        # Without that, the parser stops at OUT{}, as it always has.
+        program = parser.parse(read_past_out=not lacts_with_out)
+
+        if scanned is None:
+            refusal = _too_many_calls(len(program.lacts), max_actions)
+            if refusal is not None:
+                return Retry(error=refusal), [], None
+        elif len(program.lacts) != scanned[0] or (program.out_block is None) == bool(scanned[1]):
+            return (
+                Retry(
+                    error=(
+                        "this round's <lact> and OUT{} tags could not be read unambiguously, "
+                        "so none of its calls ran and the answer was not taken. Keep tags "
+                        "and OUT{} out of quoted text."
+                    )
+                ),
+                [],
+                None,
+            )
 
         if program.out_block is None:
             pending = [build_action_call(la.alias, la) for la in program.lacts]
@@ -182,8 +309,21 @@ def _classify_round(
     return Success(output=assembled), pending, assembled
 
 
-def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET):
-    """Build an LNDL seam Middle (ADR-0024 §1) with a custom round budget; ``lndl_middle`` is the ready-to-use default."""
+def build_lndl_middle(
+    round_budget: int = DEFAULT_ROUND_BUDGET,
+    max_actions: int | None = None,
+    lacts_with_out: bool = True,
+):
+    """Build an LNDL seam Middle (ADR-0024 §1) with a custom round budget; ``lndl_middle`` is the ready-to-use default.
+
+    ``max_actions`` bounds the ``<lact>`` calls one round may declare; None leaves them unbounded.
+    ``lacts_with_out=False`` keeps calls and the answer in separate rounds: a round that declares
+    ``<lact>`` calls beside its ``OUT{}`` is a repair round and none of its calls runs.
+    """
+    if max_actions is not None and (
+        isinstance(max_actions, bool) or not isinstance(max_actions, int) or max_actions < 1
+    ):
+        raise ValueError(f"max_actions must be a positive integer or None, got {max_actions!r}")
 
     async def _lndl_middle(
         branch: Branch,
@@ -207,12 +347,21 @@ def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET):
         if base_guidance:
             guidance_parts.append(base_guidance)
         lndl_guidance = "\n\n".join(guidance_parts)
-        # LNDL uses a free-text <lact>/OUT{} protocol, not native
-        # function-calling, so strip tool schemas and response_format here.
-        stripped_chat_param = chat_param.with_updates(tool_schemas=[], response_format=None)
+        # LNDL replies in free text, so the response format is dropped. The tools stay: a
+        # <lact> names a tool, and an endpoint that does not place the prompt cache shows the
+        # model its tools only in the current instruction. With none passed, every tool the
+        # branch registers is listed, since a <lact> may call any of them.
+        tool_schemas = chat_param.tool_schemas or branch.acts.schema_list
+        stripped_chat_param = chat_param.with_updates(
+            tool_schemas=tool_schemas, response_format=None
+        )
 
         action_results: dict[str, Any] = {}
+        # The most recent refusal, for the exhaustion error, and the one the next round is
+        # asked to repair; a round that only declares calls clears the second, since the
+        # model has already moved past it.
         last_error: str | None = None
+        repair_error: str | None = None
 
         for round_num in range(1, round_budget + 1):
             if round_num == 1:
@@ -224,13 +373,22 @@ def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET):
                 round_chat_param = stripped_chat_param.with_updates(
                     turn_origin=TurnOrigin.no_origin()
                 )
-            round_instruction = _round_instruction(instruction, round_num, round_budget, last_error)
+            round_instruction = _round_instruction(
+                instruction, round_num, round_budget, repair_error
+            )
+            repair_error = None
 
             text = await _run_round_chat(branch, round_instruction, round_chat_param)
-            outcome, pending, assembled = _classify_round(text, target, action_results)
+            outcome, pending, assembled = _classify_round(
+                text,
+                target,
+                action_results,
+                max_actions=max_actions,
+                lacts_with_out=lacts_with_out,
+            )
 
             if isinstance(outcome, Retry):
-                last_error = outcome.error
+                last_error = repair_error = outcome.error
                 continue
 
             if isinstance(outcome, Continue):
@@ -251,7 +409,7 @@ def build_lndl_middle(round_budget: int = DEFAULT_ROUND_BUDGET):
             try:
                 return target.model_validate(assembled)
             except ValidationError as e:
-                last_error = str(e)
+                last_error = repair_error = str(e)
                 continue
 
         # Round budget exhausted without a valid OUT{}: raise rather than

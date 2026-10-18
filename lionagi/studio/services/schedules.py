@@ -10,7 +10,6 @@ import math
 import re
 import sqlite3
 import time
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -20,6 +19,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
 from lionagi._flow_spec import normalize_flow_spec_keys, validate_flow_spec_fields
+from lionagi.ln import short_id
 from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
 
 from ..registry import studio_route
@@ -903,7 +903,7 @@ _SCHEDULE_SUMMARY_FIELDS = (
 # --machine` reads it back from this route to report the execution root that was
 # actually persisted, which it resolves from its own environment when the caller
 # named neither a cwd nor a project.
-_SCHEDULE_RECORD_FIELDS = ("action_prompt", "on_success", "on_fail", "action_cwd")
+_SCHEDULE_RECORD_FIELDS = ("action_prompt", "on_success", "on_fail", "action_cwd", "lifecycle")
 
 
 def _schedule_summary(row: dict[str, Any], *, record: bool = False) -> dict[str, Any]:
@@ -933,6 +933,11 @@ async def get_schedule(schedule_id: str) -> dict[str, Any] | None:
         row = await db.get_schedule(schedule_id)
         if not row:
             return None
+        history = await db.get_schedule_history(schedule_id, limit=1)
+        row["lifecycle"] = {
+            "available": history["available"],
+            "latest": history["events"][0] if history["events"] else None,
+        }
         runs = await db.list_schedule_runs(schedule_id, limit=10)
         # Reconciled here, not in the route: the nested slice is served beside the
         # top-level run lists and would otherwise classify the occurrence row while
@@ -1036,7 +1041,7 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
         if _is_usable_execution_root(project_path):
             action_cwd = project_path
 
-    schedule_id = uuid.uuid4().hex[:12]
+    schedule_id = short_id(12)
     now = time.time()
     schedule = {
         "id": schedule_id,

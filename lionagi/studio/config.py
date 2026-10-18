@@ -9,7 +9,6 @@ import zipfile
 import zlib
 import zoneinfo
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -549,7 +548,9 @@ def _process_started_at() -> float | None:
 def _as_utc_iso(epoch: float | None) -> str | None:
     if epoch is None:
         return None
-    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+    from lionagi.ln import coerce_created_at
+
+    return coerce_created_at(epoch).isoformat()
 
 
 def scheduler_timezone_report() -> dict[str, Any]:

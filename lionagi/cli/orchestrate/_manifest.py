@@ -18,13 +18,13 @@ import os
 import re
 import stat as stat_module
 from dataclasses import dataclass, field
-from hashlib import blake2b
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from lionagi._errors import LionError
+from lionagi.ln import HashAlgorithm, compute_hash
 
 __all__ = (
     "MANIFEST_VERSION",
@@ -330,7 +330,7 @@ def _validate_brief(value: Any, where: str, cache: _BriefCache) -> tuple[Path, b
     else:
         if not data.decode("utf-8", "replace").strip():
             raise ManifestError(f"{where}.brief is empty: {resolved}")
-        digest = blake2b(data).hexdigest()
+        digest = compute_hash(data, algorithm=HashAlgorithm.BLAKE2B, max_bytes=None)
         cache.by_identity[identity] = (data, digest)
     result = (resolved, data, digest)
     cache.by_literal[value] = result

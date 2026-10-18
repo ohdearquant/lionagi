@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
@@ -15,6 +14,8 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from lionagi.ln import compute_hash
 
 from .redact import redact_arguments
 from .types import OperatorEngineEvent, OperatorEngineTurn
@@ -260,7 +261,7 @@ def compile_operator_history(
         for frame in source
         if isinstance(frame.get("sequence"), int)
     ]
-    digest = hashlib.sha256(_canonical_json(compiled_frames).encode("utf-8")).hexdigest()
+    digest = compute_hash(_canonical_json(compiled_frames), max_bytes=None)
     metadata = {
         "version": 1,
         "firstSequence": min(source_sequences) if source_sequences else None,
