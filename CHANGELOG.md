@@ -336,10 +336,13 @@ behaviour, including accepting a write-capable submission without `cwd`.
 - A scheduled `command` child inherited the daemon's `LIONAGI_STATE_DB_URL`. When the command ran
   an interpreter with a different lionagi, that lionagi opened the daemon's store, and one on a
   newer schema migrated the file, after which the daemon could no longer open it. A command child
-  now starts without the variable in any letter case, and so do notify commands, tool hooks and
-  outbox delivery commands; a command that needs the store names it itself. Agent, flow, fanout,
-  play, flow_yaml and engine children still inherit it. A daemon on the default store, with no
-  variable set, shares that default path with its commands' lionagi as before.
+  now starts without the variable in any letter case, and so do notify commands, external hooks,
+  MCP terminal notices, secrets lookup commands, tool hooks, outbox delivery commands and the
+  commands an agent runs through lionagi's shell tool; a command that needs the store names it
+  itself. Agent, flow, fanout, play, flow_yaml and engine children still inherit it. A command
+  running in the daemon's working directory still reads the dotenv files there, and a child
+  without the variable falls back to `$LIONAGI_HOME/state.db`, so a daemon whose store is at that
+  path shares it with its commands' lionagi as before.
 - A `github_poll` schedule held one of the scheduler's global concurrent-fire slots for the whole
   of its GitHub poll, before it had any event to run. A slow or rate-limited poll kept that slot
   from every other schedule for as long as it ran, so under the default cap of four, two slow

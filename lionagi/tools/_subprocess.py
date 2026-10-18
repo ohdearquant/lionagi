@@ -14,6 +14,7 @@ from lionagi.ln import (
     prepare_process_group_env,
     terminate_process_group,
 )
+from lionagi.ln._proc import env_without_state_db_url
 
 _SHELL_CONTROL = re.compile(r"(;|&&|\|\||\||`|\$\(|[<>]|\n)")
 
@@ -55,7 +56,8 @@ def _subprocess_sync(
 ) -> dict:
     """Run ``cmd`` synchronously; ``env=None`` inherits the parent environment,
     an explicit mapping scopes less-trusted commands to a minimal one."""
-    child_env, group_marker = prepare_process_group_env(env)
+    # The command is the agent's, any program at all: it names its own store if it needs one.
+    child_env, group_marker = prepare_process_group_env(env_without_state_db_url(env))
     try:
         proc = subprocess.Popen(  # noqa: S603
             cmd,

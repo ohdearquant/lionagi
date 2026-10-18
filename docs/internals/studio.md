@@ -281,17 +281,24 @@ A command child also gets the daemon's environment without
 `lionagi/ln/_proc.py`). A command often runs another interpreter with its own
 lionagi, and an inherited store URL would open the daemon's store with that
 lionagi: one on a newer schema migrates the file on open, after which the
-daemon's own code refuses it. Notify commands and the commands run through
-`communicate_in_process_group` (tool hooks, outbox delivery) start the same way.
-A command that needs the daemon's store names it itself: in its argv, its own
-environment, or a `.env` file in its working directory, which its lionagi reads.
-Every `li` child (the other action kinds) still inherits the URL, so its run
-records into the daemon's store.
+daemon's own code refuses it. Every other path that runs a configured or
+agent-chosen command starts the same way: notify commands, external hooks, MCP
+terminal notices, secrets lookup commands, the commands run through
+`communicate_in_process_group` (tool hooks, outbox delivery), and the commands
+an agent runs through lionagi's own shell tool. A command that needs the
+daemon's store names it itself, in its argv or its own environment. Every `li`
+child (the other action kinds) still inherits the URL, so its run records into
+the daemon's store.
 
-This covers a store the daemon was pointed at by the variable. A daemon on the
-default store (`$LIONAGI_HOME/state.db`, no variable) shares that default path
-with any lionagi its commands run under the same home directory; what protects
-that store is the other lionagi's own refusal to open a store it did not create.
+Two limits remain. A command that runs in the daemon's working directory (one
+given no `cwd` of its own) reads the `.env`, `.env.local` and `.secrets.env`
+files there as its own settings, so a store URL in those files still reaches
+it: keep the store URL out of the dotenv files in the daemon's working
+directory, or give the command a `cwd`. And a child without the variable falls
+back to the default store, `$LIONAGI_HOME/state.db`: a daemon whose store is at
+that path, by default or through the variable, shares it with any lionagi its
+commands run under the same home directory, and a lionagi of the same line on
+a newer schema migrates it on open, as an upgrade does.
 
 ## lionagi/studio/services/schedules.py
 

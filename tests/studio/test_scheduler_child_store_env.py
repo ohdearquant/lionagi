@@ -83,3 +83,52 @@ async def test_a_notify_command_does_not_see_the_store(probe, tmp_path):
     handler = _make_exec_handler([str(probe), str(out)], payload_fn=lambda envelope: {})
     await handler(object())
     assert out.read_text().splitlines()[:2] == ["<absent>", "<absent>"]
+
+
+@pytest.mark.asyncio
+async def test_an_external_hook_does_not_see_the_store(probe, tmp_path):
+    from lionagi.hooks.external import _run_hook_process
+
+    out = tmp_path / "external-hook.txt"
+    returncode, _, _ = await _run_hook_process(
+        [str(probe), str(out)], None, str(tmp_path), b"{}", 30
+    )
+    assert returncode == 0
+    assert out.read_text().splitlines()[:2] == ["<absent>", "<absent>"]
+
+
+def test_an_mcp_terminal_notice_does_not_see_the_store(probe, tmp_path):
+    from lionagi.mcp._notify_hook import _deliver
+
+    out = tmp_path / "terminal-notice.txt"
+    _deliver([str(probe), str(out)], {}, None, program=PROBE, cwd=str(tmp_path), timeout=30)
+    assert out.read_text().splitlines()[:2] == ["<absent>", "<absent>"]
+
+
+@pytest.mark.asyncio
+async def test_a_secrets_lookup_command_does_not_see_the_store(probe, tmp_path):
+    from lionagi.providers._secret_resolution import (
+        ResolvedSecretLookup,
+        _run_lookup,
+        lookup_one_name,
+    )
+
+    first, second = tmp_path / "lookup.txt", tmp_path / "lookup-one.txt"
+    await _run_lookup(ResolvedSecretLookup(argv=(str(probe), str(first)), names=("KEY",)), "KEY")
+    await lookup_one_name(
+        ResolvedSecretLookup(argv=(str(probe), str(second)), names=("KEY",)),
+        "KEY",
+        env=dict(os.environ),
+        max_bytes=64,
+    )
+    for out in (first, second):
+        assert out.read_text().splitlines()[:2] == ["<absent>", "<absent>"]
+
+
+def test_a_command_an_agent_runs_does_not_see_the_store(probe, tmp_path):
+    from lionagi.tools._subprocess import _subprocess_sync
+
+    out = tmp_path / "agent-command.txt"
+    result = _subprocess_sync([str(probe), str(out)], False, 30, str(tmp_path))
+    assert result["returncode"] == 0, result
+    assert out.read_text().splitlines()[:2] == ["<absent>", "<absent>"]
