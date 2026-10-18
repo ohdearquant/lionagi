@@ -1077,6 +1077,20 @@ def _view_pairs():
         (memoryview(corners), memoryview(corners).cast("B", (1, 4))),
         (memoryview(corners).cast("B", (2, 2)), memoryview(b"\x01\x01\x01\x00").cast("B", (2, 2))),
         (memoryview(corners).cast("B", (2, 2)), memoryview(b"\x01\x00\x01\x01")),
+        (
+            memoryview(b"\x01\x00\x00\x01").cast("B", (2, 2)),
+            memoryview(array("d", [1.0, 0.0, 0.0, 1.0]).tobytes()).cast("d", (2, 2)),
+        ),
+        (
+            memoryview(array("i", [256]).tobytes()).cast("i"),
+            memoryview(array("d", [256.0]).tobytes()).cast("d"),
+        ),
+        (memoryview(b"\x01").cast("B", ()), memoryview(b"\x01").cast("B", ())),
+        (memoryview(b"\x01").cast("B", ()), memoryview(b"\x02").cast("B", ())),
+        (
+            memoryview(b"\x01").cast("B", ()),
+            memoryview(array("d", [1.0]).tobytes()).cast("d", ()),
+        ),
     )
 
 
@@ -1091,6 +1105,11 @@ def _view_pairs():
         "flat-vs-row",
         "reordered-corners",
         "corners-vs-flat-bytes",
+        "byte-grid-vs-whole-double-grid",
+        "int-vs-whole-double-past-a-byte",
+        "zero-dim-equal",
+        "zero-dim-unequal",
+        "zero-dim-byte-vs-double",
     ],
 )
 def test_a_memoryview_field_follows_memoryview_equality(left, right):
@@ -1122,6 +1141,26 @@ def test_a_memoryview_field_follows_memoryview_equality(left, right):
         )
         == 1
     )
+
+
+def test_a_released_view_is_not_answered_from_its_earlier_key():
+    """A one-dimensional byte view keys as the bytes it holds, and that key is never
+    cached: once the view is released it equals only itself, so a holder hashed before
+    the release refuses afterwards, is no longer one value with a live equal view, and
+    is refused by deduplication as a holder of a writable view is, instead of being
+    dropped as a duplicate of the live view."""
+    view = memoryview(b"ab")
+    holder = Meta("k", view)
+    hash(holder)
+    view.release()
+    with pytest.raises(TypeError):
+        hash(holder)
+    assert holder != Meta("k", memoryview(b"ab"))
+    with pytest.raises(ValueError, match="Unhashable"):
+        to_list([holder, Meta("k", memoryview(b"ab"))], flatten=True, unique=True)
+    writable = Meta("k", memoryview(bytearray(b"ab")))
+    with pytest.raises(ValueError, match="Unhashable"):
+        to_list([writable, Meta("k", memoryview(b"ab"))], flatten=True, unique=True)
 
 
 def test_a_model_serializer_error_propagates_from_deduplication():

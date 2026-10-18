@@ -446,8 +446,16 @@ def _project_memoryview(
         isinstance(value, int | float) and 0 <= value <= 255 and value == int(value)
         for value in values
     ):
-        return _project(
-            bytes(int(value) for value in values), path, active, value_semantics=value_semantics
+        # The bytes key is the one a bytes value gets, which may be cached; this one never
+        # is, since a released view no longer equals the bytes it held.
+        return dataclasses.replace(
+            _project(
+                bytes(int(value) for value in values),
+                path,
+                active,
+                value_semantics=value_semantics,
+            ),
+            cache_stable=False,
         )
     # The tuples are this call's own copy of the values, so they do not make the key
     # unsafe.
@@ -468,7 +476,8 @@ def _project_memoryview(
 def _nested_lengths_match(values: Any, shape: tuple[int, ...]) -> bool:
     """Whether unpacked view values nest exactly to *shape*."""
     if not shape:
-        return values == []
+        # A zero-dimensional view unpacks to its one value.
+        return not isinstance(values, list)
     if not isinstance(values, list) or len(values) != shape[0]:
         return False
     if len(shape) == 1:
@@ -480,11 +489,14 @@ def _nested_values(values: Any) -> tuple[Any, ...]:
     """Unpacked view values as nested tuples whose equality is the view's.
 
     A ``?`` view compares its values as the integers they hold, so a ``bool`` becomes
-    that integer; every other value is kept as it was unpacked.
+    that integer, and a whole-number ``float`` equals the integer it holds, so it becomes
+    that integer too; every other value is kept as it was unpacked.
     """
     if isinstance(values, list):
         return tuple(_nested_values(value) for value in values)
-    return (values,) if type(values) is not bool else (int(values),)
+    if type(values) is bool or (type(values) is float and values.is_integer()):
+        return (int(values),)
+    return (values,)
 
 
 def _project(

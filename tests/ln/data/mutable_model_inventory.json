@@ -1,5 +1,5 @@
 {
-  "scope_limits": "Production Python class declarations under lionagi; imports, reexports, lexical aliases and declared inheritance are scanned without executing code. Dynamic factories, arbitrary reflection and runtime set/dict dataflow are not proven by this inventory. Empty key-consumer lists record the source audit, not a whole-program proof. Runtime fixtures separately assert hash/set/dict refusal and the stated mutation mechanism.",
+  "scope_limits": "Production Python class declarations under lionagi; imports, reexports, lexical aliases and declared inheritance are scanned without executing code. Dynamic factories, arbitrary reflection and runtime set/dict dataflow are not proven by this inventory, nor is a form written to evade the scan, such as a class reached through a container, an attribute or a binding the scan does not follow before its hash is written: the scan guards against the declaration forms the framework uses drifting, and the allowlist beside it is as easy to edit as such a form. Empty key-consumer lists record the source audit, not a whole-program proof. Runtime fixtures separately assert hash/set/dict refusal and the stated mutation mechanism.",
   "consumers": {
     "generic_unique": {
       "symbol": "lionagi.ln._to_list.to_list",
