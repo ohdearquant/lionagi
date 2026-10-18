@@ -509,9 +509,12 @@ def _resolve_flow_target(target: FlowTarget, manifest_dir: Path) -> dict[str, An
 
 
 def _resolve_playbook_target(target: PlaybookTarget) -> dict[str, Any]:
-    from lionagi.studio.scheduler.subprocess import _validate_identifier
+    from lionagi.studio.scheduler.subprocess import _validate_identifier, _validate_playbook_args
 
     _validate_identifier(target.name, "target.playbook.name")
+    # The launch passes these args, so they are held to its rules here, where
+    # validate and apply report them, rather than first failing when the row fires.
+    _validate_playbook_args(target.args)
     return {"kind": "playbook", "name": target.name, "args": target.args}
 
 
@@ -802,6 +805,7 @@ def resolve_schedule_set(doc: ScheduleSetDocument, manifest_dir: Path) -> dict[s
     """Resolve every member. Raises ``ScheduleSetError`` aggregating every
     failing member's message -- callers must not write anything on error."""
     is_global = doc.metadata.scope == "global"
+    prefix = "global" if is_global else doc.metadata.project
     resolved: dict[str, ResolvedMember] = {}
     errors: list[tuple[str, str]] = []
     for name, member in doc.schedules.items():
@@ -814,7 +818,11 @@ def resolve_schedule_set(doc: ScheduleSetDocument, manifest_dir: Path) -> dict[s
                 is_global=is_global,
             )
         except ValueError as exc:
-            errors.append((name, str(exc)))
+            # Every raise site carries the qualified name, so a caller reading
+            # ``ScheduleSetError.errors`` (the text lines and the --json payload
+            # alike) sees one naming scheme rather than a bare member key here and
+            # a qualified name from the plan errors.
+            errors.append((f"{prefix}/{name}", str(exc)))
     if errors:
         raise ScheduleSetError(errors)
     return resolved
@@ -1530,8 +1538,6 @@ async def _adopt_plan_entry(
         )
     differences = await _adopt_spec_differences(row, resolved)
     undeclared = _adopt_undeclared_values(row)
-    target = resolved.resolved["target"]
-    play_args = target.get("args") if target.get("kind") == "playbook" else None
     reasons: list[str] = []
     if differences:
         rendered = "; ".join(
@@ -1616,11 +1622,6 @@ async def _adopt_plan_entry(
         reasons.append(
             f"the row sets {rendered}, which a declaration cannot express; clear "
             f"{'it' if len(undeclared) == 1 else 'them'} on the row first."
-        )
-    if play_args:
-        reasons.append(
-            f"the member declares playbook args {play_args!r}, which a scheduled play "
-            "launch does not pass; remove them from the member."
         )
     if reasons:
         return PlanEntry(
