@@ -25,6 +25,7 @@ from lionagi.ln import (
     observe_process_group_leader,
     prepare_process_group_env,
 )
+from lionagi.ln._proc import env_without_state_db_url
 from lionagi.ln.concurrency import CancelScope, get_cancelled_exc_class
 
 from .callbacks import (
@@ -471,7 +472,11 @@ def _make_exec_handler(
     async def _exec_handler(envelope: RunTerminalEnvelope) -> None:
         payload = json.dumps(payload_fn(envelope)).encode()
         launch_argv = tuple(argv_fn(static_argv, envelope)) if argv_fn is not None else static_argv
-        base_env = {**os.environ, **env_fn(envelope)} if env_fn is not None else None
+        # A notify command never inherits the state-store URL (see env_without_state_db_url);
+        # what env_fn names for it is passed as given.
+        base_env = env_without_state_db_url()
+        if env_fn is not None:
+            base_env.update(env_fn(envelope))
         env, group_marker = prepare_process_group_env(base_env)
         proc = None
         leader_created = None

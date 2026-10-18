@@ -25,6 +25,7 @@ from lionagi.ln import (
     observe_process_group_leader,
     prepare_process_group_env,
 )
+from lionagi.ln._proc import env_without_state_db_url
 
 _log = logging.getLogger(__name__)
 
@@ -778,9 +779,13 @@ async def spawn_and_wait(
         _validate_action_command(command)
         _validate_command_allowlisted(command)
 
-    env, group_marker = prepare_process_group_env(
-        {**os.environ, "LIONAGI_INVOCATION_ID": invocation_id}
-    )
+    base_env = {**os.environ, "LIONAGI_INVOCATION_ID": invocation_id}
+    if action_kind == "command":
+        # A command is an arbitrary program, often run by another interpreter with its own
+        # lionagi; see env_without_state_db_url. Every `li` child keeps the URL, so its run
+        # records into the daemon's store.
+        base_env = env_without_state_db_url(base_env)
+    env, group_marker = prepare_process_group_env(base_env)
 
     _log.info("Spawning: %s", " ".join(argv))
     proc = await asyncio.create_subprocess_exec(

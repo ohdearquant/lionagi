@@ -23,6 +23,7 @@ from lionagi.ln import (
     observe_process_group_leader,
     prepare_process_group_env,
 )
+from lionagi.ln._proc import env_without_state_db_url
 from lionagi.ln.concurrency import CancelScope, get_cancelled_exc_class
 
 __all__ = (
@@ -221,7 +222,8 @@ async def _run_lookup(lookup: ResolvedSecretLookup, name: str) -> str | None:
     program = os.path.basename(argv[0])
     proc = None
     leader_created = None
-    child_env, group_marker = prepare_process_group_env()
+    # A configured command: it names its own store if it needs one.
+    child_env, group_marker = prepare_process_group_env(env_without_state_db_url())
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -307,7 +309,7 @@ async def lookup_one_name(
     argv = tuple(arg.replace(_NAME_PLACEHOLDER, name) for arg in lookup.argv)
     proc = None
     leader_created = None
-    child_env, group_marker = prepare_process_group_env(env)
+    child_env, group_marker = prepare_process_group_env(env_without_state_db_url(env))
 
     async def read_bounded(proc: asyncio.subprocess.Process) -> bytes | None:
         out = bytearray()

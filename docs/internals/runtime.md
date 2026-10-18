@@ -1610,6 +1610,7 @@ evicted/compacted by the context tool; otherwise the read-before-edit guard woul
 
 ### `_subprocess.py`
 
-`_subprocess_sync()` — `env=None` inherits the full parent environment; callers pass an
+`_subprocess_sync()` — `env=None` inherits the parent environment without the state-store URL
+(`LIONAGI_STATE_DB_URL`, any letter case); callers pass an
 explicit mapping to scope less-trusted commands (e.g. the ADR-0090 sandbox-backend seam) to a
 minimal environment.
