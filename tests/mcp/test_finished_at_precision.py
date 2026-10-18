@@ -166,7 +166,7 @@ class TestReadingItBack:
     def test_status_reports_a_legacy_record_as_unknown(self, sandbox):
         """The public reader, not just the raw record, must say "unknown".
 
-        `status()` reads `finished_at_precision` with `.get()` (jobs.py:2094), so
+        `status()` reads `finished_at_precision` with `.get()`, so
         a record written before the field existed must still come back through
         the real function with the value None rather than raising or defaulting.
         """
@@ -176,7 +176,7 @@ class TestReadingItBack:
         assert st["finished_at_precision"] is None
 
     def test_list_jobs_reports_a_legacy_record_as_unknown(self, sandbox):
-        """`list_jobs()` copies the field from `status()` (jobs.py:2627) — a
+        """`list_jobs()` copies the field from `status()` — a
         legacy record must flow through without a KeyError and with precision
         None in the row, not just in the underlying `status()` call.
         """

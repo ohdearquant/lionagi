@@ -30,7 +30,7 @@ from types import ModuleType
 from typing import Any
 
 from lionagi._auto import CliSeed, build_cli_parser, iter_cli_seeds, seed_for
-from lionagi.cli._argtypes import JsonArgument
+from lionagi.cli._argtypes import BoundedInt, JsonArgument
 from lionagi.ln import hash_file
 
 __all__ = (
@@ -269,7 +269,14 @@ def _project_action(
                     path, f"JSON-encoded value with nargs={nargs!r}", action=label
                 )
             return _project_json_action(parser, action, action.type)
-        item: dict[str, Any] = {"type": _scalar_type(path, action, label)}
+        if isinstance(action.type, BoundedInt):
+            item: dict[str, Any] = {
+                "type": "integer",
+                "minimum": action.type.minimum,
+                "maximum": action.type.maximum,
+            }
+        else:
+            item = {"type": _scalar_type(path, action, label)}
         enum = _choices_enum(path, action, label)
         if enum is not None:
             item["enum"] = enum

@@ -3,6 +3,9 @@ import { test, expect } from "@playwright/test";
 // Must match tests/e2e_studio/fixtures.py -- the seeded schedule name asserted
 // on below is only ever produced by the seeded daemon's fixtures.
 const SMOKE_SCHEDULE_NAME = "e2e-smoke-nightly-report";
+// Must match SMOKE_AGENT_NAME in tests/e2e_studio/fixtures.py: the seeded agent
+// the library checks below open.
+const SMOKE_AGENT_NAME = "e2e-smoke-reviewer";
 test("app boots, root renders, and the page logs no console errors", async ({ page }) => {
   const errors: string[] = [];
   page.on("console", (msg) => {
@@ -82,10 +85,24 @@ test.describe("narrow Studio shell", () => {
     expect(scheduleBox!.x + scheduleBox!.width).toBeLessThanOrEqual(390);
 
     await page.goto("/library");
+    await expect(page.getByRole("region", { name: "Library catalog", exact: true })).toBeVisible();
+
+    // A selection named by the URL opens the detail pane even though the
+    // collapsed layout would otherwise keep the catalog up.
+    await page.goto(`/library?sel=agent:${SMOKE_AGENT_NAME}`);
     await expect(
       page
         .getByRole("region", { name: "Item detail", exact: true })
-        .getByText("e2e-smoke-reviewer", { exact: true }),
+        .getByText(SMOKE_AGENT_NAME, { exact: true }),
+    ).toBeVisible();
+
+    // A row click opens it from the catalog.
+    await page.goto("/library");
+    await page.getByRole("row", { name: SMOKE_AGENT_NAME }).click();
+    await expect(
+      page
+        .getByRole("region", { name: "Item detail", exact: true })
+        .getByText(SMOKE_AGENT_NAME, { exact: true }),
     ).toBeVisible();
 
     if ((await operatorToggle.getAttribute("aria-pressed")) !== "true") {

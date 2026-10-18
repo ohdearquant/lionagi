@@ -258,6 +258,15 @@ function useLibraryData(
   const prevReloadToken = useRef(reloadToken);
   const prevRetryToken = useRef(retryToken);
   const prevInvalidationToken = useRef(invalidation.token);
+  // The request version of the newest response each source wrote to the
+  // cache. A response from an older request is dropped, so a written version
+  // above the one requested when something changed means the cache now holds
+  // a list fetched after that change.
+  const [writtenVersion, setWrittenVersion] = useState<Partial<Record<CatalogSource, number>>>({});
+  const requestedVersion = useCallback(
+    (source: CatalogSource) => requestVersion.current[source] ?? 0,
+    [],
+  );
 
   const wants = (kind: LibraryKind) =>
     (tab === kind && (hidden || !UNFINISHED_KINDS.has(kind))) ||
@@ -333,10 +342,12 @@ function useLibraryData(
         (data) => {
           if (requestVersion.current[source] !== version) return;
           setCache((prev) => ({ ...prev, [source]: data }));
+          setWrittenVersion((prev) => ({ ...prev, [source]: version }));
         },
         () => {
           if (requestVersion.current[source] !== version) return;
           setCache((prev) => ({ ...prev, [source]: "failed" }));
+          setWrittenVersion((prev) => ({ ...prev, [source]: version }));
         },
       );
     }
@@ -366,6 +377,8 @@ function useLibraryData(
     allAgents: agentsEntry && agentsEntry !== "failed" ? (agentsEntry.agents ?? []) : [],
     allEngines: enginesEntry && enginesEntry !== "failed" ? (enginesEntry.engines ?? []) : [],
     kindStatus,
+    writtenVersion,
+    requestedVersion,
   };
 }
 
@@ -464,19 +477,11 @@ function LibraryPage() {
   const navigate = useNavigate({ from: "/library" });
   const { tab, sel } = Route.useSearch();
   const kindFilter: LibraryTab = tab ?? "all";
-  // A create, clone, or delete completion can outlive the tab where it began.
-  // What it writes closes or reshapes the detail pane, so those writes are
-  // scoped to that tab the same way its selection write already is: a
-  // completion that resolves after the user moved on must not touch the new
-  // tab's pane.
-  const activeTab = useRef(kindFilter);
-  useEffect(() => {
-    activeTab.current = kindFilter;
-  }, [kindFilter]);
-  const completionOnTab = (captured: LibraryTab) => activeTab.current === captured;
-  const parsed = parseSel(sel);
+  const parsedSel = parseSel(sel);
   const selectedHiddenKind =
-    kindFilter !== "hooks" && parsed && UNFINISHED_KINDS.has(parsed.kind) ? parsed.kind : undefined;
+    kindFilter !== "hooks" && parsedSel && UNFINISHED_KINDS.has(parsedSel.kind)
+      ? parsedSel.kind
+      : undefined;
   const mounted = useRef(false);
   useEffect(() => {
     mounted.current = true;
@@ -521,19 +526,81 @@ function LibraryPage() {
 
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
-  // Collapsed split-pane: show detail when a selection exists or create is open.
-  const [detailActive, setDetailActive] = useState(false);
+  // Set while the create form's own navigation drops the row the URL names,
+  // so that drop is not read as a tab link. Only the next address change, the
+  // drop, clears it: the form renders before the router commits that address.
+  const openingCreate = useRef(false);
   // A create form belongs to the tab that opened it, and the detail pane's
   // collapsed state belongs to the selection; switching tabs closes the form
   // and returns to the list rather than leaving the previous tab's pane up.
+  // The All tab has two addresses — `?tab=all` and no `tab` at all — and they
+  // are the same tab. A tab picked while the page already shows it closes the
+  // form too: its link drops the selection, and the All tab's also drops `tab`.
+  const previousTab = useRef({ tab, sel });
   useEffect(() => {
-    /* eslint-disable react-hooks/set-state-in-effect -- a tab change closes the
-       create form and returns the collapsed layout to the list */
+    const prior = previousTab.current;
+    previousTab.current = { tab, sel };
+    const kindChanged = (prior.tab ?? "all") !== kindFilter;
+    const tabChanged = prior.tab !== tab;
+    const selDropped = prior.sel !== undefined && sel === undefined;
+    const pickingTab = kindChanged || tabChanged || (selDropped && !openingCreate.current);
+    if (!pickingTab) return;
     setShowCreate(false);
-    setDetailActive(false);
-    /* eslint-enable react-hooks/set-state-in-effect */
-  }, [kindFilter]);
+  }, [kindFilter, tab, sel]);
+  // A selection that appears or changes while a create form is open is a
+  // request for that row — browser Back onto it, or a link, even one followed
+  // before the router committed the form's own drop — so the form closes and
+  // the row's detail takes the pane, which it opens on its own.
+  const previousSel = useRef(sel);
+  // Each opening of the create form is a session. A create that answers after
+  // its form closed, or after another form opened, refreshes the catalog but
+  // leaves the address and any open form alone.
+  const [createSession, setCreateSession] = useState(0);
+  const openSession = useRef<number | null>(null);
+  useEffect(() => {
+    openSession.current = showCreate ? createSession : null;
+  }, [showCreate, createSession]);
+  const formOpen = (session: number) => openSession.current === session;
+  // Opening the create form drops the row the URL names, so the form's pane
+  // stays up rather than a selection returning behind it.
+  const openCreate = () => {
+    openingCreate.current = !!sel;
+    setCreateSession((session) => session + 1);
+    setShowCreate(true);
+    void navigate({
+      search: (prev) => {
+        if (prev.sel === undefined) return prev;
+        const next = { ...prev };
+        delete next.sel;
+        return next;
+      },
+      replace: false,
+    });
+  };
+  useEffect(() => {
+    const selected = !!sel && sel !== previousSel.current;
+    previousSel.current = sel;
+    openingCreate.current = false;
+    if (selected) setShowCreate(false);
+  }, [sel]);
   const [optimisticWorkflow, setOptimisticWorkflow] = useState<CreatedWorkflowDef | null>(null);
+  // A create or clone moves the address to a row the catalog has not fetched
+  // yet. Until a request made after it writes that row's source, the list on
+  // screen predates the row, so on a tab that lists its kind that address is
+  // still the selection.
+  const [awaitedSel, setAwaitedSel] = useState<{
+    sel: string;
+    source: CatalogSource;
+    version: number;
+  } | null>(null);
+  const awaitRow = (selection: string, source: CatalogSource) =>
+    setAwaitedSel({ sel: selection, source, version: visible.requestedVersion(source) });
+  const rowAwaited =
+    awaitedSel !== null &&
+    awaitedSel.sel === sel &&
+    !!parsedSel &&
+    (kindFilter === "all" || parsedSel.kind === kindFilter) &&
+    (visible.writtenVersion[awaitedSel.source] ?? 0) <= awaitedSel.version;
 
   const ALL_KIND_TABS: Array<{ value: LibraryTab; label: string }> = [
     { value: "all", label: t("filterAll") },
@@ -568,69 +635,71 @@ function LibraryPage() {
       !UNFINISHED_KINDS.has(item.kind) && (kindFilter === "all" || item.kind === kindFilter),
   );
 
-  // Auto-select the first row whenever the tab or loaded items change (and no explicit sel).
-  useEffect(() => {
-    if (kindFilter === "hooks" || loading || selectionLoading) return;
+  // The row the detail pane shows when the URL names no selection: the first
+  // row of the tab, or the first search match.
+  const fallbackItem =
+    kindFilter === "hooks" || loading || selectionLoading ? null : (filtered[0] ?? null);
 
-    // Keep any sel that resolves in the current filtered list — this is what
-    // makes deep links into the Library work. A sel from another tab won't be
-    // in `filtered`, so it falls through to select-first.
-    if (sel) {
-      const parsed = parseSel(sel);
-      const isOptimisticWorkflow =
-        parsed?.kind === "workflow" && optimisticWorkflow?.name === parsed.name;
-      const isHiddenSelection =
-        parsed &&
-        UNFINISHED_KINDS.has(parsed.kind) &&
-        items.some((item) => item.kind === parsed.kind && item.name === parsed.name);
-      if (
-        isOptimisticWorkflow ||
-        isHiddenSelection ||
-        (parsed?.kind === "engine" && hidden.kindStatus.engine === "loaded") ||
-        (parsed && kindStatus[parsed.kind] === "failed") ||
-        (parsed &&
-          filtered.some(
-            (i) =>
-              i.kind === parsed.kind &&
-              i.name === parsed.name &&
-              (parsed.kind !== "playbook" || i.subKind === parsed.subKind),
-          ))
-      ) {
-        return;
-      }
-    }
+  // A workflow's detail loads by id, not by name, so a selection is only a
+  // row while the catalog (or the create that just made it) still has it.
+  const selectedWorkflowId =
+    parsedSel?.kind === "workflow"
+      ? (items.find((i) => i.kind === "workflow" && i.name === parsedSel.name)?.meta ??
+        (optimisticWorkflow?.name === parsedSel.name ? optimisticWorkflow.id : null))
+      : null;
 
-    // Otherwise select first row.
-    const first = filtered[0];
-    if (first) {
-      void navigate({
-        search: (prev) => ({ ...prev, sel: encodeSel(first.kind, first.name, first.subKind) }),
-        replace: true,
-      });
-    } else {
-      void navigate({
-        search: (prev) => {
-          const next = { ...prev };
-          delete next.sel;
-          return next;
-        },
-        replace: true,
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally runs only on tab/items change
-  }, [tab, loading, selectionLoading, items.length]);
+  // A selection belongs to the tab that shows it. A selection whose catalog
+  // can still tell whether the row exists — a kind the tab is still fetching,
+  // a row a create or clone just added, or a source that failed — is kept:
+  // those details render their own loading, error, or not-found state with a
+  // Back control. Any other selection that names no row the tab lists is no
+  // selection, so the tab shows its first row as it does without one instead
+  // of opening a pane that can only hide the catalog. The text search does not
+  // narrow this: a row the search hides still has its detail.
+  const urlSelection =
+    parsedSel &&
+    (selectedHiddenKind
+      ? hidden.loading ||
+        hidden.kindStatus[selectedHiddenKind] === "failed" ||
+        kindStatus[parsedSel.kind] === "failed" ||
+        !!selectedWorkflowId ||
+        // The engine detail renders a not-found state with its Back control.
+        parsedSel.kind === "engine"
+      : scopedItems.some(
+          (item) =>
+            item.kind === parsedSel.kind &&
+            item.name === parsedSel.name &&
+            (parsedSel.kind !== "playbook" || item.subKind === parsedSel.subKind),
+        ) ||
+        kindStatus[parsedSel.kind] === "failed" ||
+        ((kindFilter === "all" || parsedSel.kind === kindFilter) &&
+          kindStatus[parsedSel.kind] === undefined) ||
+        rowAwaited)
+      ? parsedSel
+      : null;
+
+  // An auto-selected row fills the detail pane beside the list when the URL
+  // names no selection, but it is not a detail request: the URL is not
+  // rewritten and `detailPaneActive` does not follow it.
+  const fallbackParsed =
+    !urlSelection && fallbackItem
+      ? parseSel(encodeSel(fallbackItem.kind, fallbackItem.name, fallbackItem.subKind))
+      : null;
 
   const selectItem = useCallback(
     (item: LibraryItem) => {
       setShowCreate(false);
-      setDetailActive(true);
       void navigate({
         search: (prev) => ({ ...prev, sel: encodeSel(item.kind, item.name, item.subKind) }),
         replace: false,
       });
     },
-    [navigate, setShowCreate, setDetailActive],
+    [navigate, setShowCreate],
   );
+
+  // The detail pane shows the selection the URL names on this tab, and the
+  // auto-selected row when it names none.
+  const parsed = urlSelection ?? fallbackParsed;
 
   // Resolve the agent/engine objects from the selection.
   const selectedAgent =
@@ -644,12 +713,6 @@ function LibraryPage() {
 
   const selectedEngine =
     parsed?.kind === "engine" ? allEngines.find((e) => e.name === parsed?.name) : null;
-
-  const selectedWorkflowId =
-    parsed?.kind === "workflow"
-      ? (items.find((i) => i.kind === "workflow" && i.name === parsed.name)?.meta ??
-        (optimisticWorkflow?.name === parsed.name ? optimisticWorkflow.id : null))
-      : null;
 
   const isEmpty = !loading && filtered.length === 0;
   // A search is only responsible for an empty result when clearing it would
@@ -684,7 +747,11 @@ function LibraryPage() {
         ? t("newAgent")
         : t("newWorkflow");
 
-  const detailPaneActive = detailActive || showCreate || !!parsed;
+  // Only the URL, a click, or a create form asks for detail; the row the
+  // catalog fills in on its own does not. A pane opens only with a detail that
+  // offers Back, or with the create form, so the collapsed layout can always
+  // return to the catalog.
+  const detailPaneActive = showCreate || !!urlSelection;
 
   // ── Master pane ────────────────────────────────────────────────────────────
 
@@ -701,22 +768,7 @@ function LibraryPage() {
           className="min-w-0 flex-1 rounded border border-edge bg-surface-overlay px-2 py-1 font-ui text-[length:var(--t-sm)] text-content-primary focus:outline-none"
         />
         {!NO_CREATE_KINDS.has(kindFilter as LibraryKind) && (
-          <Button
-            size="sm"
-            variant="primary"
-            onClick={() => {
-              setShowCreate(true);
-              setDetailActive(true);
-              void navigate({
-                search: (prev) => {
-                  const next = { ...prev };
-                  delete next.sel;
-                  return next;
-                },
-                replace: false,
-              });
-            }}
-          >
+          <Button size="sm" variant="primary" onClick={openCreate}>
             + {createLabel}
           </Button>
         )}
@@ -795,14 +847,7 @@ function LibraryPage() {
                   {t("empty.clearFilters")}
                 </Button>
               ) : !NO_CREATE_KINDS.has(kindFilter as LibraryKind) ? (
-                <Button
-                  size="sm"
-                  variant="primary"
-                  onClick={() => {
-                    setShowCreate(true);
-                    setDetailActive(true);
-                  }}
-                >
+                <Button size="sm" variant="primary" onClick={openCreate}>
                   + {createLabel}
                 </Button>
               ) : undefined
@@ -823,7 +868,10 @@ function LibraryPage() {
             <tbody>
               {filtered.map((item) => {
                 const isSelected =
-                  !showCreate && parsed?.kind === item.kind && parsed.name === item.name;
+                  !showCreate &&
+                  parsed?.kind === item.kind &&
+                  parsed.name === item.name &&
+                  (item.kind !== "playbook" || parsed.subKind === item.subKind);
                 return (
                   <tr
                     key={item.key}
@@ -883,9 +931,18 @@ function LibraryPage() {
 
   // ── Detail pane ────────────────────────────────────────────────────────────
 
+  // Leaving the detail pane drops its selection as well as its state: a URL
+  // still naming the row would reopen the pane.
   function handleBack() {
-    setDetailActive(false);
     setShowCreate(false);
+    void navigate({
+      search: (prev) => {
+        const next = { ...prev };
+        delete next.sel;
+        return next;
+      },
+      replace: false,
+    });
   }
 
   let detailPane: ReactNode;
@@ -896,21 +953,22 @@ function LibraryPage() {
         <CreateMcpServerPanel
           onCreated={(name) => {
             if (!mounted.current) return;
-            if (completionOnTab(kindFilter)) setShowCreate(false);
+            const open = formOpen(createSession);
+            if (open) {
+              setShowCreate(false);
+              awaitRow(encodeSel("mcp", name), "mcpServers");
+            }
             invalidate("mcp");
             void reload();
             void navigate({
               search: (prev) =>
-                (prev.tab ?? "all") === kindFilter && prev.sel === sel
+                open && (prev.tab ?? "all") === kindFilter
                   ? { ...prev, sel: encodeSel("mcp", name) }
                   : prev,
               replace: false,
             });
           }}
-          onCancel={() => {
-            setShowCreate(false);
-            setDetailActive(false);
-          }}
+          onCancel={() => setShowCreate(false)}
         />
       </div>
     );
@@ -919,21 +977,22 @@ function LibraryPage() {
       <CreateAgentPanel
         onCreated={(name) => {
           if (!mounted.current) return;
-          if (completionOnTab(kindFilter)) setShowCreate(false);
+          const open = formOpen(createSession);
+          if (open) {
+            setShowCreate(false);
+            awaitRow(encodeSel("agent", name), "agents");
+          }
           invalidate("agent");
           void reload();
           void navigate({
             search: (prev) =>
-              (prev.tab ?? "all") === kindFilter && prev.sel === sel
+              open && (prev.tab ?? "all") === kindFilter
                 ? { ...prev, sel: encodeSel("agent", name) }
                 : prev,
             replace: false,
           });
         }}
-        onCancel={() => {
-          setShowCreate(false);
-          setDetailActive(false);
-        }}
+        onCancel={() => setShowCreate(false)}
       />
     );
   } else if (showCreate) {
@@ -942,22 +1001,20 @@ function LibraryPage() {
         <CreateWorkflowPanel
           onCreated={(workflow) => {
             if (!mounted.current) return;
+            const open = formOpen(createSession);
             setOptimisticWorkflow(workflow);
-            if (completionOnTab(kindFilter)) setShowCreate(false);
+            if (open) setShowCreate(false);
             invalidate("workflow");
             void reload();
             void navigate({
               search: (prev) =>
-                (prev.tab ?? "all") === kindFilter && prev.sel === sel
+                open && (prev.tab ?? "all") === kindFilter
                   ? { ...prev, sel: encodeSel("workflow", workflow.name) }
                   : prev,
               replace: false,
             });
           }}
-          onCancel={() => {
-            setShowCreate(false);
-            setDetailActive(false);
-          }}
+          onCancel={() => setShowCreate(false)}
         />
       </div>
     );
@@ -994,7 +1051,6 @@ function LibraryPage() {
           const deleted = parsed.name;
           void reload();
           invalidate("mcp");
-          if (completionOnTab(kindFilter)) handleBack();
           void navigate({
             search: (prev) => {
               if ((prev.tab ?? "all") !== kindFilter) return prev;
@@ -1017,7 +1073,6 @@ function LibraryPage() {
         onDeleted={() => {
           if (!mounted.current) return;
           const deleted = parsed.name;
-          if (completionOnTab(kindFilter)) setDetailActive(false);
           invalidate("agent");
           void reload();
           void navigate({
@@ -1042,7 +1097,6 @@ function LibraryPage() {
         onDeleted={() => {
           if (!mounted.current) return;
           const deleted = parsed.name;
-          if (completionOnTab(kindFilter)) setDetailActive(false);
           if (optimisticWorkflow?.name === deleted) setOptimisticWorkflow(null);
           invalidate("workflow");
           void reload();
@@ -1068,6 +1122,7 @@ function LibraryPage() {
         onBack={handleBack}
         onCloned={(clonedName) => {
           if (!mounted.current) return;
+          awaitRow(encodeSel("playbook", clonedName, "custom"), "playbooks");
           invalidate("playbook");
           void reload();
           void navigate({

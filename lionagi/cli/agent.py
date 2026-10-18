@@ -31,6 +31,7 @@ from lionagi.state import provenance as _provenance
 from lionagi.state.artifact_verifier import resolve_artifact_contract
 
 from ._agent_depth import stamp_agent_depth
+from ._argtypes import BoundedInt
 from ._context_from import (
     DEFAULT_CONTEXT_BUDGET_TOKENS,
     ContextFromError,
@@ -46,6 +47,7 @@ from ._mcp_resolve import (
 from ._providers import (
     _CLAUDE_PROVIDER_NAMES,
     BACKENDS,
+    MAX_TIMEOUT_SECONDS,
     PROVIDER_BYPASS_KWARGS,
     PROVIDER_EFFORT_KWARG,
     PROVIDER_FAST_KWARGS,
@@ -883,6 +885,8 @@ async def _run_agent(
     no_mcp_config: bool = False,
     _auto_resumed: bool = False,
     _injection_totals: dict[str, int] | None = None,
+    # Last, so every parameter before it keeps the position it had
+    idle_timeout: int | None = None,
 ) -> tuple[str, str, str, str, str | None]:
     """Execute one agent turn; returns (result, provider, branch_id, terminal_status, session_id).
 
@@ -911,6 +915,15 @@ async def _run_agent(
     )
     if resume and continue_last:
         raise ConfigurationError("--resume / -r and --continue-last / -c are mutually exclusive.")
+    if idle_timeout is not None and idle_timeout <= 0:
+        raise ConfigurationError(
+            f"--idle-timeout must be a positive number of seconds, not {idle_timeout}; "
+            "the LIONAGI_WORKER_IDLE_TIMEOUT setting is the switch that turns the watchdog off."
+        )
+    if idle_timeout is not None and idle_timeout > MAX_TIMEOUT_SECONDS:
+        raise ConfigurationError(
+            f"--idle-timeout must be at most {MAX_TIMEOUT_SECONDS} seconds, not {idle_timeout}."
+        )
     if preset and (resume or continue_last):
         raise ConfigurationError(
             "--preset only applies to new branches; cannot combine with --resume / --continue-last."
@@ -956,6 +969,8 @@ async def _run_agent(
             fast = True
         if profile.timeout and timeout is None:
             timeout = profile.timeout
+        if profile.idle_timeout and idle_timeout is None:
+            idle_timeout = profile.idle_timeout
         if profile.resume_on_timeout and not resume_on_timeout:
             resume_on_timeout = True
         if (getattr(profile, "extra", None) or {}).get("hooks"):
@@ -1688,6 +1703,10 @@ async def _run_agent(
                 loop=api_launch["loop"],
             )
 
+    # Passed only when set: an absent key is what lets the run fall back to
+    # LIONAGI_WORKER_IDLE_TIMEOUT, and an explicit None would switch the
+    # watchdog off instead.
+    _idle = {"idle_timeout": idle_timeout} if idle_timeout is not None else {}
     try:
         if _api_turn is not None:
             res = await _api_turn(prompt, timeout)
@@ -1698,6 +1717,7 @@ async def _run_agent(
                 persist_dir=str(run.stream_dir),
                 snapshot_dir=str(run.branches_dir),
                 timeout=timeout,
+                **_idle,
                 **({"images": images} if images else {}),
                 **({"repo": cwd} if cwd else {}),
             )
@@ -1709,6 +1729,7 @@ async def _run_agent(
                 "persist_dir": str(run.stream_dir),
                 "snapshot_dir": str(run.branches_dir),
                 "timeout": timeout,
+                **_idle,
                 **({"repo": cwd} if cwd else {}),
             },
             deadline=_leg_deadline,
@@ -1942,6 +1963,7 @@ async def _run_agent(
             project=project,
             bypass=bypass,
             resume_on_timeout=resume_on_timeout,
+            idle_timeout=idle_timeout,
             notify=notify,
             mcp_config=mcp_config,
             no_mcp_config=no_mcp_config,
@@ -2012,7 +2034,7 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
             "then a trusted+enabled plugin's declared profile "
             "('<plugin>/<NAME>', or a bare NAME when only one plugin declares it). "
             "Profile provides system prompt, default model, effort, yolo, "
-            "timeout, resume_on_timeout. CLI flags override profile settings."
+            "timeout, idle_timeout, resume_on_timeout. CLI flags override profile settings."
         ),
     )
     agent.add_argument(
@@ -2116,6 +2138,21 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
             "By default the nearest .mcp.json at or above the directory this "
             "command was run in is used, so the leg's tools come from the "
             "submission rather than from --cwd. The file is read once at spawn."
+        ),
+    )
+    agent.add_argument(
+        "--idle-timeout",
+        dest="idle_timeout",
+        metavar="SECONDS",
+        type=BoundedInt(1, MAX_TIMEOUT_SECONDS),
+        default=None,
+        help=(
+            "Stop the run as stalled when the worker goes this many seconds without "
+            "output after it has started answering. Defaults to the "
+            "LIONAGI_WORKER_IDLE_TIMEOUT setting (600); a profile's 'idle_timeout' "
+            "sets it for a role. Raise it for a model that thinks long between outputs. "
+            "It watches a CLI worker's streamed output; an API-model leg's turn is bounded "
+            "by --timeout instead."
         ),
     )
     agent.add_argument(
@@ -2252,6 +2289,7 @@ def run_agent(args: argparse.Namespace) -> int:
                 bypass=getattr(args, "bypass", False),
                 preset=getattr(args, "preset", None),
                 resume_on_timeout=getattr(args, "resume_on_timeout", False),
+                idle_timeout=getattr(args, "idle_timeout", None),
                 context_from=getattr(args, "context_from", None),
                 context_budget=getattr(args, "context_budget", None),
                 notify=getattr(args, "notify", None),

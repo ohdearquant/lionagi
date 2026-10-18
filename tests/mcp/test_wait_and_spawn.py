@@ -9,6 +9,8 @@ because nothing recorded that its spawn failed.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from lionagi.mcp import config, jobs
@@ -250,6 +252,29 @@ async def test_wait_returns_one_entry_per_id_in_input_order(sandbox, monkeypatch
     assert res["all_terminal"] is True
     assert res["timed_out"] is False
     assert res["pending"] == []
+
+
+async def test_wait_reports_the_same_reason_detail_as_status(sandbox, monkeypatch):
+    """The wait entry refines the reason exactly as the single-run read does."""
+    monkeypatch.setattr(jobs, "_pid_alive", lambda pid: False)
+    rid = jobs.new_run_id()
+    _record(rid, pid=999_999)
+    config.run_dir(rid).mkdir(parents=True, exist_ok=True)
+    config.run_manifest(rid).write_text(
+        json.dumps(
+            {
+                "run_id": rid,
+                "persistence_degraded_reason": "OperationalError('database is locked')",
+            }
+        )
+    )
+
+    res = await jobs.wait([rid], max_wait=0, poll_interval=1)
+    entry = res["runs"][0]
+
+    assert entry["reason_code"] == jobs.LOST_REASON
+    assert entry["reason_detail"] == jobs.REASON_DETAIL_PERSISTENCE_DEGRADED
+    assert entry["reason_detail"] == jobs.status(rid)["reason_detail"]
 
 
 async def test_wait_snapshot_with_zero_max_wait(sandbox, monkeypatch):
