@@ -5,7 +5,13 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .compat import CompatibilityProfile, StateCompatibilityRefused
-    from .db import ForeignLineageError, SchemaTooNewError, StateDB, UnrecognizedStoreError
+    from .db import (
+        ForeignLineageError,
+        SchemaTooNewError,
+        StateDB,
+        UnreadableStoreError,
+        UnrecognizedStoreError,
+    )
 
 __all__ = (
     "CompatibilityProfile",
@@ -13,6 +19,7 @@ __all__ = (
     "SchemaTooNewError",
     "StateCompatibilityRefused",
     "StateDB",
+    "UnreadableStoreError",
     "UnrecognizedStoreError",
 )
 
@@ -22,6 +29,7 @@ _MODULES = {
     "SchemaTooNewError": "db",
     "StateCompatibilityRefused": "compat",
     "StateDB": "db",
+    "UnreadableStoreError": "db",
     "UnrecognizedStoreError": "db",
 }
 

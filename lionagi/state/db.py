@@ -230,11 +230,18 @@ class UnrecognizedStoreError(RuntimeError):
     """The store is neither new nor one lionagi created; only a writable native open raises it."""
 
 
+class UnreadableStoreError(RuntimeError):
+    """The store's journal or write-ahead log is present and could not be read, so this code cannot
+    tell whether it holds another application's ``lineage`` row, a newer version or a table
+    lionagi never creates; only a writable native open raises it."""
+
+
 # What a writable native open refuses a store with (ADR-0128 D1, D7). A refused open leaves no
 # engine, and a step of the open that meets one passes it on as it is.
 _NATIVE_OPEN_REFUSALS = (
     ForeignLineageError,
     UnrecognizedStoreError,
+    UnreadableStoreError,
     SchemaTooNewError,
     StateCompatibilityRefused,
 )
@@ -648,16 +655,24 @@ class _StoreRows(NamedTuple):
         return None if self.meta is None else self.meta.get(_LINEAGE_KEY)
 
 
-def _sqlite_store_rows(execute: Callable[[str], Sequence[Any]]) -> _StoreRows:
+def _sqlite_store_rows(
+    execute: Callable[[str], Sequence[Any]], *, tables: bool = True
+) -> _StoreRows:
     """A SQLite store's ``_StoreRows``, read through *execute*, which runs one statement and returns
-    its rows. ``_sqlite_store_rows_async`` reads the same statements through an aiosqlite
-    connection."""
-    tables = frozenset(row[0] for row in execute(_SQLITE_TABLE_NAMES))
-    if "schema_meta" not in tables:
-        return _StoreRows(None, tables)
+    its rows. ``tables`` false reads the ``schema_meta`` rows alone, without the store's table
+    names, for a connection the open makes after it has applied the schema. The async reader
+    always reads both."""
+    if not tables:
+        try:
+            return _StoreRows(dict(execute(_SCHEMA_META_GUARD_ROWS)), None)
+        except sqlite3.OperationalError:
+            return _StoreRows(None, None)
+    names = frozenset(row[0] for row in execute(_SQLITE_TABLE_NAMES))
+    if "schema_meta" not in names:
+        return _StoreRows(None, names)
     if not {"key", "value"} <= {row[0] for row in execute(_SQLITE_SCHEMA_META_COLUMNS)}:
-        return _StoreRows(None, tables)
-    return _StoreRows(dict(execute(_SCHEMA_META_GUARD_ROWS)), tables)
+        return _StoreRows(None, names)
+    return _StoreRows(dict(execute(_SCHEMA_META_GUARD_ROWS)), names)
 
 
 async def _sqlite_store_rows_async(driver) -> _StoreRows:
@@ -815,6 +830,11 @@ class StateDB:
         # its schema, so a later call that finds that engine completes the open instead of
         # returning over a store whose schema never ran.
         self._schema_applied = False
+        # Whether this handle's current engine has committed its schema transaction. A plain open
+        # that fails after that commit, in the session end-time backfill, keeps its engine with
+        # ``_schema_applied`` unset, so a later connection of it reads the store and refuses only
+        # a ``lineage`` row naming another application (ADR-0128 D7).
+        self._schema_committed = False
         # Whether a close() of this handle is in progress. Set on entry to _close(), before the
         # disposal, and cleared only once the engine is gone: a close a second native cancel
         # interrupts leaves the engine set and this flag set, so the next open or close finishes
@@ -994,6 +1014,12 @@ class StateDB:
                             "open would apply this package's schema to it",
                             "open",
                         )
+                    if self.dialect == "sqlite":
+                        # Read before any connection of the kept engine runs a step of the open:
+                        # a store another writer moved to a later version or another table is
+                        # refused here, as a fresh open refuses it, rather than inside the schema
+                        # transaction, whose disposal would fold the store's log into its file.
+                        await run_sync(self._read_lineage_without_writing, _held_files())
                 await self._apply_schema()
             except _NATIVE_OPEN_REFUSALS:
                 with CancelScope(shield=True):
@@ -1044,9 +1070,11 @@ class StateDB:
             await run_sync(self._read_lineage_without_writing, _held_files())
             self._connection_read = False
             self._native_file = None
+            self._schema_committed = False
             self._engine = make_engine(self.url, before_settings=self._refuse_a_managed_store)
             _install_begin_immediate(self._engine.sync_engine)
         else:
+            self._schema_committed = False
             self._engine = make_engine(self.url)
         try:
             await self._apply_schema()
@@ -1068,8 +1096,9 @@ class StateDB:
         touch (``_refuse_unless_native``), before its settings change the file. Once the open has
         applied the schema, a later connection refuses only a ``lineage`` row naming another
         application: a version check there would raise ``SchemaTooNewError`` from an ordinary
-        write, and only an open raises it. Only reads: a hot rollback journal is rolled back by the
-        first read, as on any writable SQLite open."""
+        write, and only an open raises it, and it reads only the ``schema_meta`` rows there. Only
+        reads: a hot rollback journal is rolled back by the first read, as on any writable SQLite
+        open."""
         cursor = dbapi_conn.cursor()
 
         def execute(statement: str) -> Sequence[Any]:
@@ -1081,10 +1110,13 @@ class StateDB:
                 (row[2] for row in execute("PRAGMA database_list") if row[1] == "main"), ""
             )
             self._refuse_a_held_file(opened, _held_files())
-            store = _sqlite_store_rows(execute)
+            # A connection this open makes after its schema transaction has committed reads only
+            # the ``schema_meta`` rows: the tables were read before the schema, and reading them
+            # again would refuse a table another writer adds later from an ordinary call.
+            store = _sqlite_store_rows(execute, tables=not self._schema_committed)
         finally:
             cursor.close()
-        if self._schema_applied:
+        if self._schema_applied or self._schema_committed:
             self._raise_if_foreign_lineage(store.lineage)
         else:
             self._refuse_unless_native(store)
@@ -1098,8 +1130,8 @@ class StateDB:
 
     def _read_lineage_without_writing(self, held: tuple) -> None:
         """Refuse a file this process holds in compatibility mode, or a store a native migration
-        must not touch (``_refuse_unless_native``), before any writable connection opens it
-        (ADR-0128 D7).
+        must not touch (``_refuse_unless_native``), or one whose journal or log cannot be read
+        (``UnreadableStoreError``), before any writable connection opens it (ADR-0128 D7).
 
         No file of the store is written. The file is read immutable first: SQLite takes no lock and
         reads no journal, log or index. Beside a rollback journal that begins with a journal header,
@@ -1109,10 +1141,12 @@ class StateDB:
         the rows are read again read-only with ``readonly_shm``, which reads the log through its
         ``-shm`` index without writing to it, and, when there is no index or that read fails, from
         a private copy of the file and the log. A copy the store committed or checkpointed under is
-        taken again from the start, a bounded number of times. A read that fails decides nothing
-        here: the writable connection reads the rows again before its settings. When the journal
-        or the log could not be read, the file's own ``lineage`` row still refuses, but its other
-        rows and its tables can be part of a transaction, so they decide nothing here.
+        taken again from the start, a bounded number of times. A store beside a journal or a log
+        whose rows could not be read has rows this code cannot know, the file's own ``lineage`` row
+        included, since that row can be part of an unfinished transaction or stale beside a
+        committed log, so such a store is refused by ``UnreadableStoreError`` before any writable
+        connection opens it. A file that cannot be read at all is left to the writable connection,
+        which reads the rows again before its settings and changes no file if it refuses then.
         """
         from sqlalchemy.dialects.sqlite.aiosqlite import SQLiteDialect_aiosqlite
 
@@ -1124,6 +1158,7 @@ class StateDB:
         target = _read_only_uri(filename, uri, immutable=True)
         if target is None:
             return
+        sidecar = False
         for _ in range(_COPY_ATTEMPTS):
             read = _read_lineage(target)
             if read is None:
@@ -1133,27 +1168,36 @@ class StateDB:
             if not opened:
                 return
             if _journal_has_a_header(opened):
+                sidecar = True
                 current = _read_lineage_from_a_copy(opened, "-journal")
             elif _log_has_frames(opened):
                 # The log is read whatever the file shows: a row it holds is the store's row.
+                sidecar = True
                 reread = _read_lineage(_read_only_uri(filename, uri, immutable=False))
                 current = _UNREAD if reread is None else reread[1]
                 if current is _UNREAD:
                     current = _read_lineage_from_a_copy(opened, "-wal")
             else:
                 # No journal and no log: the file holds the whole store.
+                sidecar = False
                 current = in_file
             if current is not _MOVED:
                 break
         else:
-            # Every copy saw the store commit or checkpoint under it. The file's own lineage row
-            # stands, and the writable connection's read decides the rest, as for a copy that
-            # cannot be made or read.
+            # Every copy saw the store commit or checkpoint under it: no read of the file and its
+            # journal or log is of one state.
             current = _UNREAD
         if current is not _UNREAD:
             self._refuse_unless_native(current)
-        elif in_file is not _UNREAD:
-            self._raise_if_foreign_lineage(in_file.lineage)
+        elif sidecar:
+            raise UnreadableStoreError(
+                f"{self._store_named_for_an_operator()} has a rollback journal or write-ahead log "
+                "that could not be read, so the rows they hold, a lineage row naming the "
+                "application that manages the store and a schema version among them, cannot be "
+                "checked. Opening it for writing would roll back or fold that journal or log. "
+                "Close every process using the store and open it again, or open it read-only to "
+                "inspect it."
+            )
 
     @staticmethod
     def _refuse_a_held_file(filename: str, held: tuple) -> None:
@@ -1315,12 +1359,16 @@ class StateDB:
         # leaves the engine set, and this flag is how the next open or close knows to enter the
         # disposal again rather than open over the engine it left.
         self._closing = True
-        self._schema_applied = False
         _OPEN_COMPAT.discard(self)
         _OPEN_NATIVE.discard(self)
         if self._engine is not None:
             await self._engine.dispose()
             self._engine = None
+        # Cleared only once the engine is gone, so a close interrupted before its disposal leaves
+        # both set and the next call enters the disposal again rather than over the engine it left.
+        self._schema_applied = False
+        self._schema_committed = False
+        self._connection_read = False
         self._closing = False
 
     async def __aenter__(self) -> StateDB:
@@ -1742,6 +1790,10 @@ class StateDB:
                     "ON CONFLICT (type_id) DO NOTHING"
                 )
             )
+        # The schema transaction has committed, and with it the native lineage row, so a
+        # connection this handle opens from here on refuses only a lineage row naming another
+        # application, never a version another writer records afterwards (ADR-0128 D7).
+        self._schema_committed = True
 
         # Historical terminal sessions can be numerous, so the repair does not hold the schema
         # transaction or SQLite's writer lock. Each batch commits independently, and a crash leaves

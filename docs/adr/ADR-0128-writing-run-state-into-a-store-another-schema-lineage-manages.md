@@ -231,14 +231,16 @@ name of one lionagi creates reads as lionagi's, and the migration then meets it 
 On SQLite the version, the table names and the shape of `schema_meta` are read with the `lineage` row,
 by the reads before any writable connection exists that the paragraphs below describe, so a store
 refused on any of them keeps its bytes, its journal mode and its write-ahead log. When those reads
-could not read the journal or the log beside the file, the file's own `lineage` row still refuses,
-but its other rows and its tables can be part of a transaction, so they decide nothing there. Each
-connection a handle opens while its open is in progress reads all of them again before its
-connection settings; a connection opened after the open has applied the schema reads only the
-`lineage` row, so `SchemaTooNewError` is raised by an open and never by an ordinary write. The
+could not read a journal or a log beside the file, the file's own `lineage` row decides nothing,
+since it can be part of a transaction or stale beside a committed log, and the store is refused as
+unreadable (`UnreadableStoreError`). Each connection a handle opens while its open is in progress
+reads all of them again before its connection settings; a connection opened after the open has
+applied the schema reads only the `schema_meta` `lineage` and `version` rows, so
+`SchemaTooNewError` is raised by an open and never by an ordinary write. The
 pre-rebuild backup reads them again before the checkpoint it takes. A refused open leaves no engine,
 whichever of `ForeignLineageError`, `UnrecognizedStoreError`, `SchemaTooNewError` and the
-compatibility refusal refused it. `UnrecognizedStoreError` is exported from `lionagi.state`.
+compatibility refusal refused it. `UnrecognizedStoreError` and `UnreadableStoreError` are exported
+from `lionagi.state`.
 
 A store another application manages carries a `lineage` row naming that application. The managing
 application writes it when it creates the store, in the transaction that creates its schema, and the
@@ -271,20 +273,23 @@ each distinct store copied keeps one descriptor open for the life of the process
 after it was copied keeps its disk space allocated until the process exits. On Windows, where a lock
 belongs to the handle that took it, the file is copied as usual. A copy the store committed or
 checkpointed under, seen as a changed journal or log header, is taken again from the first read, a
-bounded number of times; when every copy sees the store move, the file's own row stands and the
-writable connection decides the rest. A copy costs a read of the whole file, and is made only beside
-such a journal or a log without a readable index.
+bounded number of times; when every copy sees the store move, the store is refused as unreadable. A
+copy costs a read of the whole file, and is made only beside such a journal or a log without a
+readable index.
 
-A read that fails decides nothing; the writable connection then decides. Each writable connection
-reads the row again right after its busy timeout, before the connection settings of P2 and before
-any statement of `_apply_schema()`, which refuses a row written between the first reads and the
-writable connection. A connection that refuses is closed. That read is the writable connection's,
+A store beside a journal or a log whose rows could not be read (`UnreadableStoreError`, exported from
+`lionagi.state`) is refused before any writable connection exists, since the file's own row can be
+part of an unfinished transaction or stale beside a committed log; a store that moved under every
+copy counts as one. A file that cannot be read at all decides nothing there, and the writable
+connection decides. Each writable connection reads the rows again right after its busy timeout,
+before the connection settings of P2 and before any statement of `_apply_schema()`, which refuses a
+row written between the first reads and the writable connection. A connection that refuses is
+closed. That read is the writable connection's,
 and it is the case in which a refused open can change a file of the store: by the time it refuses,
 the connection may have rolled back a hot rollback journal, as on any writable open, built the
 `-shm` index or recorded its read in it, and, if no other connection has the store open when it
 closes, SQLite folds the log into the file. It happens only when the row was written after the reads
-before the writable connection, or when those reads could not read it (a file SQLite cannot open
-read-only, a copy that cannot be made or read, or a store that moved under every copy). A refused
+before the writable connection, or when the file itself could not be read. A refused
 open, and an open whose first connection never read the store, leaves no engine. A connection a
 native handle opened before the row was written is not asked again; only its later connections read
 the row. Every transaction of `_apply_schema()` that writes reads the row again under its write
@@ -378,8 +383,9 @@ A writable native `StateDB` open of a store whose `lineage` row names another ap
 journal, its log and its `-shm` index as they were: beside a journal an interrupted transaction left,
 or when the row is only in the log and the log has no readable index, the row is read from a private
 copy in a temporary directory that is removed before the read returns, and otherwise a row only in
-the log is read through the index without writing it. A row written after those reads, or one they
-could not read, is refused by the writable connection's first read, before the connection settings
+the log is read through the index without writing it. A store with such a journal or log whose rows
+could not be read is refused as unreadable before any writable connection exists. A row written
+after those reads is refused by the writable connection's first read, before the connection settings
 of P2 and before any statement of `_apply_schema()`; by then that connection may have rolled back a
 hot journal, written the index, or, closing as the store's last connection, folded the log into the
 file. Wherever the lineage and the version are both read, the lineage is checked
@@ -399,7 +405,10 @@ table no lionagi component creates, or when it records a version and holds such 
 `sessions` table. On SQLite each of these is read with the `lineage` row, before any writable
 connection exists, so a store those reads can read keeps its bytes, its journal mode and its log
 when it is refused; otherwise the open's first writable connection refuses it before its connection
-settings.
+settings. Refused the same way is a store whose hot journal or non-empty log could not be read,
+with no conclusion drawn from the file's own rows. A plain open that fails after it committed its
+schema and kept its engine reads the store again on its next open, before any connection reuses
+that engine.
 
 ### A.1 Entry points
 

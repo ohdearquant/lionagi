@@ -16,7 +16,12 @@ from sqlalchemy.dialects.sqlite import dialect as sqlite_dialect
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.schema import CreateTable
 
-from lionagi.state import SchemaTooNewError, StateDB, UnrecognizedStoreError
+from lionagi.state import (
+    SchemaTooNewError,
+    StateDB,
+    UnreadableStoreError,
+    UnrecognizedStoreError,
+)
 from lionagi.state.db import _LIONAGI_TABLES, _OPERATOR_TABLES, SCHEMA_VERSION
 from lionagi.state.schema_meta import metadata
 
@@ -374,3 +379,194 @@ async def test_the_backup_before_a_rebuild_refuses_a_store_first(tmp_path, monke
     with pytest.raises(UnrecognizedStoreError, match="no lineage or version row"):
         await _open_and_close(path)
     assert sorted(p.name for p in tmp_path.iterdir() if ".bak" in p.name) == []
+
+
+def _lineage_store(path: Path, *, journal: bool) -> None:
+    """A native store whose interrupted rollback-journal transaction wrote another application's
+    lineage row into the file, beside its journal; or a store whose file names that application and
+    whose log has committed lionagi's own row, with no index."""
+    source = path.with_name(f"source-{path.name}")
+    shutil.copyfile(path, source)
+    with closing(sqlite3.connect(source, isolation_level=None)) as conn:
+        if journal:
+            conn.execute("PRAGMA journal_mode = delete")
+            conn.execute("PRAGMA cache_size = -64")
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')"
+            )
+            conn.execute("CREATE TABLE unfinished (v TEXT)")
+            for _ in range(2000):
+                conn.execute("INSERT INTO unfinished (v) VALUES (?)", ("x" * 4000,))
+            shutil.copyfile(source, path)
+            shutil.copyfile(f"{source}-journal", f"{path}-journal")
+            conn.execute("ROLLBACK")
+        else:
+            conn.execute("PRAGMA journal_mode = wal")
+            conn.execute("PRAGMA wal_autocheckpoint = 0")
+            conn.execute(
+                "INSERT OR REPLACE INTO schema_meta (key, value) VALUES "
+                f"('version', '{SCHEMA_VERSION}'), ('lineage', 'manager')"
+            )
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            conn.execute(
+                "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'lionagi')"
+            )
+            shutil.copyfile(source, path)
+            shutil.copyfile(f"{source}-wal", f"{path}-wal")
+            Path(f"{source}-shm").unlink(missing_ok=True)
+    assert (Path(f"{path}-journal") if journal else Path(f"{path}-wal")).stat().st_size
+
+
+@pytest.mark.parametrize("journal", [True, False], ids=["journal", "log"])
+async def test_a_store_whose_journal_or_log_cannot_be_read_is_refused_before_any_connection(
+    tmp_path, monkeypatch, journal
+):
+    """The file's own lineage row can be part of an unfinished transaction, or stale beside a log
+    that holds the committed one, so when that file cannot be read the open refuses the store as
+    unreadable rather than naming the file's row, and leaves every file of the store as it was."""
+    from lionagi.state import db as db_mod
+
+    path = tmp_path / "store.db"
+    await _open_and_close(path)
+    _lineage_store(path, journal=journal)
+    before = _files(path)
+    monkeypatch.setattr(db_mod, "_read_lineage_from_a_copy", lambda p, suffix: db_mod._UNREAD)
+    db = StateDB(path)
+    with pytest.raises(UnreadableStoreError, match="could not be read"):
+        await db.open()
+    assert db._engine is None
+    assert _files(path) == before
+
+
+def _wal_reopened(path: Path, script: str) -> None:
+    """Run *script* on a store in its log, leaving the log beside the file uncheckpointed: a
+    reader holds the store open, so the writer's close does not fold the log into the file."""
+    with closing(sqlite3.connect(path)) as reader:
+        assert reader.execute("PRAGMA journal_mode = wal").fetchone() == ("wal",)
+        with closing(sqlite3.connect(path, isolation_level=None)) as conn:
+            conn.execute("PRAGMA wal_autocheckpoint = 0")
+            conn.execute(script)
+        assert Path(f"{path}-wal").stat().st_size > 0
+
+
+async def test_a_kept_engine_reads_the_store_before_it_reuses_a_connection(tmp_path, monkeypatch):
+    """An open that fails before its schema transaction keeps its engine. Its next open reads the
+    store before it runs any step on a connection, so a store another writer moved to a later
+    version is refused without the schema transaction or a new writable connection."""
+    from lionagi.state import db as db_mod
+
+    path = tmp_path / "kept.db"
+    await _open_and_close(path)
+    db = StateDB(path)
+    monkeypatch.setattr(
+        StateDB,
+        "_refuse_newer_schema",
+        lambda self, conn: _raise(RuntimeError("before the schema")),
+    )
+    with pytest.raises(RuntimeError, match="before the schema"):
+        await db.open()
+    assert db._engine is not None and not db._schema_applied
+    monkeypatch.undo()
+    await db._engine.dispose()
+    _wal_reopened(path, f"UPDATE schema_meta SET value = '{int(SCHEMA_VERSION) + 1}' "
+                        "WHERE key = 'version'")
+    before = _files(path)
+    connections = []
+    reads = []
+    real = StateDB._read_lineage_without_writing
+    monkeypatch.setattr(
+        StateDB, "_refuse_a_managed_store", lambda self, conn: connections.append(conn)
+    )
+    monkeypatch.setattr(
+        StateDB,
+        "_read_lineage_without_writing",
+        lambda self, held: (reads.append(self.url), real(self, held))[1],
+    )
+    with pytest.raises(SchemaTooNewError):
+        await db.open()
+    assert reads, "the open read the store before its schema"
+    assert connections == []
+    assert db._engine is None
+    assert _files(path) == before
+
+
+async def _raise(exc):
+    raise exc
+
+
+async def test_a_connection_opened_after_the_schema_is_applied_does_not_refuse_a_newer_version(
+    tmp_path, monkeypatch
+):
+    """The schema transaction committed and its lineage row is written, so a version another
+    writer records afterwards is refused by an open, never by an ordinary call: a connection this
+    open makes later reads the store and refuses only a lineage row naming another application."""
+    path = tmp_path / "applied.db"
+    db = StateDB(path)
+    monkeypatch.setattr(
+        StateDB, "_backfill_session_ended_at_once", lambda self: _raise(RuntimeError("later"))
+    )
+    with pytest.raises(RuntimeError, match="later"):
+        await db.open()
+    assert db._engine is not None and not db._schema_applied
+    monkeypatch.undo()
+    await db._engine.dispose()
+    _execute(
+        path,
+        f"UPDATE schema_meta SET value = '{int(SCHEMA_VERSION) + 1}' WHERE key = 'version';"
+        "CREATE TABLE app_users (id TEXT PRIMARY KEY);",
+    )
+    rows = await db.fetch_all("SELECT value FROM schema_meta WHERE key = 'lineage'")
+    assert rows == [{"value": "lionagi"}]
+    await db.close()
+
+
+async def test_a_connection_opened_after_the_open_does_not_read_the_store_tables(
+    tmp_path, monkeypatch
+):
+    """A table another writer adds after the open is met by that writer's own connection, not by
+    an ordinary call of this handle: a connection made after the schema is applied reads the
+    ``schema_meta`` rows alone."""
+    from lionagi.state import db as db_mod
+
+    path = tmp_path / "added-later.db"
+    db = StateDB(path)
+    await db.open()
+    try:
+        reads = []
+        real = db_mod._sqlite_store_rows
+
+        def recording(execute, **kwargs):
+            reads.append(kwargs.get("tables", True))
+            return real(execute, **kwargs)
+
+        monkeypatch.setattr(db_mod, "_sqlite_store_rows", recording)
+        await db._engine.dispose()
+        _execute(path, "CREATE TABLE app_users (id INTEGER PRIMARY KEY);")
+        assert await db.fetch_all("SELECT value FROM schema_meta WHERE key = 'lineage'") == [
+            {"value": "lionagi"}
+        ]
+        assert reads == [False]
+    finally:
+        await db.close()
+
+
+async def test_a_connection_opened_after_the_open_refuses_a_foreign_lineage_row(tmp_path):
+    """A lineage row written after the open reaches a connection the open makes later, which
+    refuses it; the store is not migrated to it."""
+    from lionagi.state import ForeignLineageError
+
+    path = tmp_path / "foreign-later.db"
+    db = StateDB(path)
+    await db.open()
+    try:
+        await db._engine.dispose()
+        _execute(
+            path,
+            "UPDATE schema_meta SET value = 'manager' WHERE key = 'lineage';"
+            "CREATE TABLE app_users (id TEXT PRIMARY KEY);",
+        )
+        with pytest.raises(ForeignLineageError, match="'manager' as the application"):
+            await db.fetch_all("SELECT 1")
+    finally:
+        await db.close()

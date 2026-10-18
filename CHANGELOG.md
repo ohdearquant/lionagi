@@ -71,8 +71,11 @@ project those rows ran under. To keep the project, name it in those members.
   read with the lineage row before any writable connection exists, so a store refused on them,
   `SchemaTooNewError` included, keeps its bytes, its journal mode and its write-ahead log whenever
   those reads can read them, and the pre-rebuild backup reads them again before its checkpoint. An open refused with
-  `SchemaTooNewError` now leaves no engine, as the other refusals do. On PostgreSQL a database with
-  no `schema_meta` table is still new.
+  `SchemaTooNewError` now leaves no engine, as the other refusals do. A store whose journal or
+  write-ahead log is present and cannot be read is refused as `UnreadableStoreError` (exported from
+  `lionagi.state`) before any writable connection, rather than opened on the file's own row, which
+  can be part of an unfinished transaction or stale beside a committed log. On PostgreSQL a
+  database with no `schema_meta` table is still new.
 
 - `li studio --docker` publishes the daemon's port on the address `--host` names, loopback
   (`127.0.0.1`) by default, where it published on every host interface, so with

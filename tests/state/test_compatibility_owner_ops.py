@@ -38,7 +38,7 @@ from lionagi.state.compat import (
     _trigger_owner_problems,
     read_closure,
 )
-from lionagi.state.db import ForeignLineageError, StateDB
+from lionagi.state.db import ForeignLineageError, StateDB, UnreadableStoreError
 
 OWNER = "owner_principal_id"
 _OWNED = (
@@ -1020,14 +1020,13 @@ async def test_a_refused_native_open_of_a_store_whose_first_page_a_crash_tore(tm
     assert _snapshot(store) == before
 
 
-async def test_a_store_that_moves_under_every_copy_is_decided_by_the_writable_connection(
+async def test_a_store_that_moves_under_every_copy_is_refused_as_unreadable(
     tmp_path, monkeypatch
 ):
-    """Every copy sees the store commit or checkpoint under it. After the bounded number of copies
-    the early read decides nothing beyond the file's own row, which names no application here, and
-    the writable connection's own read refuses the row in the log. That connection is the store's
-    last one when it closes, so SQLite folds the log into the file first: the row is refused, and
-    the store afterwards has no log and holds the row in its file (ADR-0128 D7)."""
+    """Every copy sees the store commit or checkpoint under it, so no read of the file and its
+    log is of one state. After the bounded number of copies the store is refused before any
+    writable connection exists, leaving the log in place, rather than by a connection that folds
+    the log into the file on closing (ADR-0128 D7)."""
     from lionagi.state import db as db_mod
 
     copy = _first_page_beside_its_log(tmp_path, whole=True)
@@ -1041,14 +1040,15 @@ async def test_a_store_that_moves_under_every_copy_is_decided_by_the_writable_co
 
     monkeypatch.setattr(db_mod, "_copy_store_file", counting)
     monkeypatch.setattr(db_mod, "_copy_state", lambda path, suffix: next(moves))
-    StateDB(copy)._read_lineage_without_writing(())
+    with pytest.raises(UnreadableStoreError, match="could not be read"):
+        StateDB(copy)._read_lineage_without_writing(())
     assert len(copies) == db_mod._COPY_ATTEMPTS
     assert Path(f"{copy}-wal").exists()
-    with pytest.raises(ForeignLineageError, match="'manager' as the application"):
+    before = _snapshot(copy)
+    with pytest.raises(UnreadableStoreError, match="could not be read"):
         await StateDB(copy).open()
     assert len(copies) == 2 * db_mod._COPY_ATTEMPTS
-    assert not Path(f"{copy}-wal").exists(), "the refused connection left its log beside the file"
-    assert _rows(copy, "SELECT value FROM schema_meta WHERE key = 'lineage'") == [("manager",)]
+    assert _snapshot(copy) == before
 
 
 async def test_close_from_another_event_loop_during_an_open_is_refused(tmp_path, monkeypatch):
