@@ -6,12 +6,53 @@
  * launch. `li studio` opens the page with a one-time code in the URL fragment
  * (`#pair=<code>`), which a browser never sends to a server. The code is read
  * once at startup and removed from the address bar, then exchanged with the
- * daemon for the bearer. The bearer is held in memory only: nothing is written
- * to storage, so a reload loses it and `li studio` pairs the page again.
+ * daemon for the bearer and a decision capability. The bearer is held in memory
+ * only: nothing is written to storage, so a reload loses it and `li studio`
+ * pairs the page again. The decision capability is kept in `sessionStorage` for
+ * that tab: it survives a reload of the tab, is gone with the tab, and is not
+ * readable over HTTP. It is sent in `X-Studio-Decision-Token` on the two
+ * Operator decision requests, and to no other request.
  */
 
+const DECISION_STORAGE_KEY = "studio.decisionToken";
+
+type Paired = { base: string; token: string };
+
 let pendingCode: string | undefined;
-let paired: { base: string; token: string } | undefined;
+let paired: Paired | undefined;
+// A storage that refuses writes (private mode) still honours this page load.
+let decisionMemory: Paired | undefined;
+
+function readDecisionCapability(): Paired | undefined {
+  if (typeof window === "undefined") return decisionMemory;
+  try {
+    const raw = window.sessionStorage.getItem(DECISION_STORAGE_KEY);
+    if (raw === null) return decisionMemory;
+    const parsed = JSON.parse(raw) as { base?: unknown; token?: unknown } | null;
+    if (
+      parsed == null ||
+      typeof parsed.base !== "string" ||
+      typeof parsed.token !== "string" ||
+      !parsed.token
+    ) {
+      return undefined;
+    }
+    return { base: parsed.base, token: parsed.token };
+  } catch {
+    return decisionMemory;
+  }
+}
+
+function writeDecisionCapability(value: Paired | undefined): void {
+  decisionMemory = value;
+  if (typeof window === "undefined") return;
+  try {
+    if (value === undefined) window.sessionStorage.removeItem(DECISION_STORAGE_KEY);
+    else window.sessionStorage.setItem(DECISION_STORAGE_KEY, JSON.stringify(value));
+  } catch {
+    // Storage unavailable: the capability lives for this page load only.
+  }
+}
 
 /** Read `pair` from the fragment once and remove it, keeping any other fragment. */
 export function takePairingCodeFromLocation(): void {
@@ -57,13 +98,21 @@ export async function redeemPairingCode(apiBase: string): Promise<PairingResult>
   pendingCode = undefined;
   if (!response.ok) return "refused";
   let token: unknown;
+  let decisionToken: unknown;
   try {
-    token = ((await response.json()) as { token?: unknown } | null)?.token;
+    const body = (await response.json()) as { token?: unknown; decision_token?: unknown } | null;
+    token = body?.token;
+    decisionToken = body?.decision_token;
   } catch {
     return "refused";
   }
   if (typeof token !== "string" || !token) return "refused";
   paired = { base: apiBase, token };
+  writeDecisionCapability(
+    typeof decisionToken === "string" && decisionToken
+      ? { base: apiBase, token: decisionToken }
+      : undefined,
+  );
   return "paired";
 }
 
@@ -72,7 +121,22 @@ export function pairedBearer(apiBase: string): string | undefined {
   return paired !== undefined && paired.base === apiBase ? paired.token : undefined;
 }
 
+/**
+ * The decision capability this page holds, for the API origin it was paired
+ * with only. Another origin receives nothing.
+ */
+export function pairedDecisionToken(apiBase: string): string | undefined {
+  const capability = readDecisionCapability();
+  return capability !== undefined && capability.base === apiBase ? capability.token : undefined;
+}
+
+/** Forget the decision capability: the tab closed, or the page disconnected. */
+export function clearDecisionToken(): void {
+  writeDecisionCapability(undefined);
+}
+
 export function resetPairingForTests(): void {
   pendingCode = undefined;
   paired = undefined;
+  writeDecisionCapability(undefined);
 }

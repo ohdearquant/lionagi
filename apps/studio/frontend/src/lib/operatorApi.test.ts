@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   acknowledgeOperatorEffect,
+  confirmOperatorProposal,
   consumeOperatorSse,
   decideOperatorProposal,
   forkOperatorConversation,
@@ -12,6 +13,7 @@ import {
   submitOperatorTurn,
   updateOperatorConversation,
 } from "./api";
+import { redeemPairingCode, resetPairingForTests, takePairingCodeFromLocation } from "./pairing";
 import type { OperatorFrame, OperatorTruncationPayload } from "./types";
 
 function json(value: unknown, status = 200): Response {
@@ -448,6 +450,51 @@ describe("Operator API v1", () => {
       expectedCommandHash: "sha256",
       expectedTargetVersion: "playbook-fingerprint",
     });
+  });
+
+  it("sends the paired decision capability on the two decision requests only", async () => {
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string, init?: RequestInit) => {
+        calls.push({ url: input, init });
+        if (input.endsWith("/api/studio/pair")) {
+          return Promise.resolve(json({ token: "launch-bearer", decision_token: "capability" }));
+        }
+        if (input.includes("/proposals/proposal-1/")) {
+          return Promise.resolve(json({ proposalId: "proposal-1", status: "executing" }));
+        }
+        return Promise.resolve(json({ conversations: [] }));
+      }),
+    );
+    vi.stubGlobal("sessionStorage", {
+      getItem: () => null,
+      setItem: () => undefined,
+      removeItem: () => undefined,
+      clear: () => undefined,
+      key: () => null,
+      length: 0,
+    } as Storage);
+    resetPairingForTests();
+    window.history.replaceState({}, "", "/#pair=one-time-code");
+    takePairingCodeFromLocation();
+
+    expect(await redeemPairingCode("")).toBe("paired");
+    await confirmOperatorProposal("conversation-1", "proposal-1", "sha256");
+    await decideOperatorProposal("conversation-1", "proposal-1", "allow", "sha256");
+    await listOperatorConversations();
+
+    const header = (call: { init?: RequestInit }) =>
+      new Headers(call.init?.headers).get("X-Studio-Decision-Token");
+    const decisions = calls.filter((call) => call.url.includes("/proposals/proposal-1/"));
+    expect(decisions).toHaveLength(2);
+    expect(decisions.map(header)).toEqual(["capability", "capability"]);
+    expect(decisions.map((call) => call.init?.redirect)).toEqual(["error", "error"]);
+    expect(
+      calls.filter((call) => !call.url.includes("/proposals/proposal-1/")).map(header),
+    ).toEqual([null, null]);
+
+    resetPairingForTests();
   });
 
   it("acknowledges a validated client effect with the resulting route", async () => {

@@ -179,7 +179,10 @@ clients and to pages on a loopback origin or on the daemon's own origin. A page
 on any other origin, the hosted Studio included, is refused with 401 unless it
 sends the bearer of this daemon's launch. `li studio` gives the page that bearer
 when it opens it, through a one-time pairing code in the URL fragment; a page
-opened any other way, or reloaded, says to run `li studio`.
+opened any other way, or reloaded, says to run `li studio`. The code is minted
+in the daemon or over its same-user reconnect socket, never over HTTP, and
+pairing also hands the page a decision capability the two Operator decision
+requests use.
 
 When set, all `/api/*` requests must include:
 

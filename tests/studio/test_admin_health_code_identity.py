@@ -151,7 +151,7 @@ def test_the_daemon_snapshots_its_position_before_it_starts_serving(monkeypatch)
     monkeypatch.setattr(app_mod, "_finalize_warmup", lambda *a: _noop())
 
     async def _drive() -> None:
-        async with app_mod.lifespan(None):
+        async with app_mod.lifespan(app_mod.create_app()):
             seen["snapshot_while_serving"] = ci._SNAPSHOT
 
     import anyio
@@ -190,7 +190,7 @@ def test_startup_snapshot_does_not_block_the_event_loop(monkeypatch):
 
     async def _drive() -> None:
         seen["event_loop_thread"] = threading.get_ident()
-        async with app_mod.lifespan(None):
+        async with app_mod.lifespan(app_mod.create_app()):
             pass
 
     import anyio

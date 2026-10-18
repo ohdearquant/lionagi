@@ -2,11 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Pair a page on another origin with this daemon, through a one-time code.
 
-``li studio`` mints a code (in process at launch, or over the first route when a
-daemon already runs) and opens the hosted page with it in the URL fragment. The
-page exchanges it over the second route for the bearer it then sends: the
-configured ``LIONAGI_STUDIO_AUTH_TOKEN`` when there is one, else this launch's
-in-memory bearer (``lionagi.studio.launch_access``).
+``li studio`` mints a code in process, at launch or over the daemon's same-user
+reconnect socket, and opens the hosted page with it in the URL fragment. The page
+exchanges it for the bearer it then sends: the configured
+``LIONAGI_STUDIO_AUTH_TOKEN`` when there is one, else this launch's in-memory
+bearer (``lionagi.studio.launch_access``); and for a decision capability bound
+to the page's origin, which the two Operator decision routes read.
 """
 
 from __future__ import annotations
@@ -17,7 +18,11 @@ from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ..config import CORS_ORIGINS
-from ..launch_access import PAIRING_CODE_TTL_S, mint_pairing_code, redeem_pairing_code
+from ..launch_access import (
+    DECISION_TOKEN_HEADER,
+    redeem_pairing_grant,
+    revoke_decision_capability,
+)
 from ..registry import studio_route
 
 
@@ -31,23 +36,31 @@ class PairRequest(BaseModel):
     area="pairing",
     tags=[],
     name="create_pairing_code",
-    status_code=201,
+    status_code=410,
 )
 async def create_pairing_code_route(request: Request) -> dict[str, object]:
-    """Mint a one-time code for the command that opens a page; never for a page."""
-    # A page that could mint codes could pair itself. The command line sends no
-    # Origin; every browser request that could reach here does.
-    if request.headers.get("origin") is not None:
-        raise HTTPException(
-            status_code=403,
-            detail="pairing codes are issued to the command line, not to a page",
-        )
-    return {"code": mint_pairing_code(), "expires_in": PAIRING_CODE_TTL_S}
+    """Retired: a code is minted by the daemon, never by an HTTP request.
+
+    ``li studio`` obtains a code in process when it starts the daemon, or over
+    the daemon's same-user reconnect socket when one is already running, and
+    opens the page with it. This route answered any admitted request before
+    that, which made a code — and so a bearer — reachable by a program that can
+    only speak HTTP. It still answers 410 rather than disappearing, so an older
+    launcher learns why it cannot pair.
+    """
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Pairing codes are no longer issued over HTTP. Run `li studio` to open "
+            "Studio with a fresh code."
+        ),
+    )
 
 
 @studio_route("/studio/pair", method="POST", area="pairing", tags=[], name="redeem_pairing_code")
 async def redeem_pairing_code_route(request: Request, body: PairRequest) -> dict[str, str]:
-    """Spend a pairing code for the bearer a page on an allowed origin sends."""
+    """Spend a pairing code for the bearer a page on an allowed origin sends, and a
+    decision capability bound to that origin."""
     # Only a page on an origin CORS admits (by default the hosted app) may pair;
     # any other page that came by a code is refused before the code is spent.
     origin = request.headers.get("origin")
@@ -56,8 +69,8 @@ async def redeem_pairing_code_route(request: Request, body: PairRequest) -> dict
             status_code=403,
             detail="pairing is open only to a page on an origin this daemon allows",
         )
-    bearer = redeem_pairing_code(body.code)
-    if bearer is None:
+    grant = redeem_pairing_grant(body.code, origin=origin)
+    if grant is None:
         raise HTTPException(
             status_code=401,
             detail=(
@@ -65,4 +78,25 @@ async def redeem_pairing_code_route(request: Request, body: PairRequest) -> dict
                 "did not issue it. Run `li studio` again to open Studio."
             ),
         )
-    return {"token": os.getenv("LIONAGI_STUDIO_AUTH_TOKEN") or bearer}
+    return {
+        "token": os.getenv("LIONAGI_STUDIO_AUTH_TOKEN") or grant.bearer,
+        "decision_token": grant.capability,
+    }
+
+
+@studio_route(
+    "/studio/disconnect",
+    method="POST",
+    area="pairing",
+    tags=[],
+    name="disconnect_decision_capability",
+)
+async def disconnect_decision_capability_route(request: Request) -> dict[str, bool]:
+    """Revoke the decision capability a page explicitly disconnects with.
+
+    The page sends it in the same header the decision requests use. An unknown
+    or already revoked capability answers ``revoked: false``; the route admits
+    exactly what it admitted before, so nothing here is a new gate.
+    """
+    revoked = revoke_decision_capability(request.headers.get(DECISION_TOKEN_HEADER) or "")
+    return {"revoked": revoked}
