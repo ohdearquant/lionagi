@@ -701,7 +701,7 @@ def resolve_member(
     project: str | None,
     is_global: bool,
 ) -> ResolvedMember:
-    qualified_name = f"{'global' if is_global else project}/{name}"
+    qualified_name = _qualified_member_name(name, project=project, is_global=is_global)
     resolved_trigger = _resolve_trigger(member.trigger)
     cwd = _resolve_cwd(member.execution, manifest_dir=manifest_dir, is_global=is_global)
     resolved_target = _resolve_target(member.target, manifest_dir, cwd)
@@ -800,9 +800,17 @@ async def create_quick_schedule(
     return schedule_id, resolved
 
 
+def _qualified_member_name(name: str, *, project: str | None, is_global: bool) -> str:
+    """The qualified name a member resolves to, in the one form every error
+    names it by: ``global/<name>`` for a global document, else the document's
+    project and the member name."""
+    return f"{'global' if is_global else project}/{name}"
+
+
 def resolve_schedule_set(doc: ScheduleSetDocument, manifest_dir: Path) -> dict[str, ResolvedMember]:
     """Resolve every member. Raises ``ScheduleSetError`` aggregating every
-    failing member's message -- callers must not write anything on error."""
+    failing member's message under its qualified name -- callers must not
+    write anything on error."""
     is_global = doc.metadata.scope == "global"
     resolved: dict[str, ResolvedMember] = {}
     errors: list[tuple[str, str]] = []
@@ -816,7 +824,14 @@ def resolve_schedule_set(doc: ScheduleSetDocument, manifest_dir: Path) -> dict[s
                 is_global=is_global,
             )
         except ValueError as exc:
-            errors.append((name, str(exc)))
+            errors.append(
+                (
+                    _qualified_member_name(
+                        name, project=doc.metadata.project, is_global=is_global
+                    ),
+                    str(exc),
+                )
+            )
     if errors:
         raise ScheduleSetError(errors)
     return resolved

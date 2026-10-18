@@ -575,6 +575,14 @@ path converts to absolute here instead of consulting
 storage already satisfies that predicate; `Path.resolve()` always returns
 an absolute path even when `manifest_dir` is itself relative.
 
+**Error naming** — `resolve_schedule_set` and the plan both name a failing
+member by the qualified name it resolves to, `global/<member>` under
+`scope: global` and `<metadata.project>/<member>` otherwise, through one
+`_qualified_member_name` helper. `ScheduleSetError.errors` therefore carries
+qualified names for resolution failures just as `apply_schedule_set` does for
+plan failures, and `li schedule validate`/`apply` print them unchanged in both
+human and JSON output.
+
 ## lionagi/studio/services/workflow_run.py
 
 - **Module purpose** — Runs a compiled `WorkflowDef` through lionagi's
@@ -779,7 +787,11 @@ document falls back to the full original name (still unique) so two
 members are never silently merged. `convert_legacy_rows` reports
 `on_success`/`on_fail`, an unsupported action_kind, a legacy-only field
 with no v1 equivalent, or a malformed trigger as `BLOCKED` and omits them,
-never half-emitted.
+never half-emitted. Because a member's `execution.project` is written as an
+explicit `null` when the row stores none, and the document's project supplies
+the namespace, applying a `--legacy` export back as its own set (with
+`--adopt`, the row being unowned) leaves every behavior column untouched and
+the next plan reports `UNCHANGED`.
 
 ## lionagi/studio/services/playbooks.py
 

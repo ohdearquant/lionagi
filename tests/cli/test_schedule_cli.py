@@ -2625,3 +2625,126 @@ def test_schedule_apply_dry_run_prints_a_refused_row_through_the_warning_channel
     # The refused line is not duplicated onto stdout, and the plan summary stays there.
     assert "ERROR      " not in out
     assert "Plan: 0 create, 0 update, 0 unchanged, 0 disable" in out
+
+
+def _unresolvable_manifest(cwd, *, name: str, scope: bool) -> Path:
+    manifest = Path(cwd) / ("global-unresolvable.yaml" if scope else "project-unresolvable.yaml")
+    metadata = "  project: demo\n  scope: global\n" if scope else "  project: demo\n"
+    manifest.write_text(
+        f"""
+apiVersion: lionagi.io/v1alpha1
+kind: ScheduleSet
+metadata:
+  name: automation
+{metadata}schedules:
+  {name}:
+    trigger:
+      every: 15m
+    target:
+      kind: command
+      executable: definitely-not-allowlisted
+    execution:
+      cwd: {cwd}
+"""
+    )
+    return manifest
+
+
+@pytest.mark.parametrize(
+    ("scope", "qualified"),
+    [(False, "demo/nightly-review"), (True, "global/nightly-review")],
+    ids=["project", "global"],
+)
+@pytest.mark.parametrize("verb", ["validate", "apply"])
+@pytest.mark.parametrize("as_json", [False, True], ids=["human", "json"])
+def test_a_resolution_error_names_each_member_qualified_once(
+    agent_profile_cwd, temp_state_db, capsys, scope, qualified, verb, as_json
+):
+    """A member that fails static resolution is named by its qualified name in
+    both commands, in human and JSON output, and exactly once."""
+    from lionagi.studio.cli import run_schedule
+
+    manifest = _unresolvable_manifest(agent_profile_cwd, name="nightly-review", scope=scope)
+    argv = [verb, str(manifest), "--json"] if as_json else [verb, str(manifest)]
+    with _cli_warnings() as warnings:
+        assert run_schedule(_parse_schedule_args(argv)) == 1
+    out = capsys.readouterr().out
+    if as_json:
+        assert [entry["name"] for entry in json.loads(out)["errors"]] == [qualified]
+        assert warnings == []
+    else:
+        assert len(warnings) == 1, warnings
+        assert warnings[0].startswith(f"INVALID  {qualified}  ")
+        assert qualified.count("/") == 1
+
+
+def _owned_by_another_set_manifest(cwd, *, scope: bool) -> Path:
+    manifest = Path(cwd) / ("global-owned.yaml" if scope else "project-owned.yaml")
+    metadata = "  project: demo\n  scope: global\n" if scope else "  project: demo\n"
+    manifest.write_text(
+        f"""
+apiVersion: lionagi.io/v1alpha1
+kind: ScheduleSet
+metadata:
+  name: automation
+{metadata}schedules:
+  nightly-review:
+    trigger:
+      every: 15m
+    target:
+      kind: agent
+      profile: reviewer
+      prompt: "check things"
+    execution:
+      cwd: {cwd}
+"""
+    )
+    return manifest
+
+
+@pytest.mark.parametrize(
+    ("scope", "qualified"),
+    [(False, "demo/nightly-review"), (True, "global/nightly-review")],
+    ids=["project", "global"],
+)
+@pytest.mark.parametrize("as_json", [False, True], ids=["human", "json"])
+def test_an_apply_refusal_names_each_member_qualified_once(
+    agent_profile_cwd, temp_state_db, capsys, scope, qualified, as_json
+):
+    """A row another set owns is refused at apply time under the same qualified
+    name in human and JSON output."""
+    import asyncio
+
+    from lionagi.state.db import StateDB
+    from lionagi.studio.cli import run_schedule
+
+    manifest = _owned_by_another_set_manifest(agent_profile_cwd, scope=scope)
+
+    async def _seed():
+        async with StateDB() as db:
+            await db.create_schedule(
+                {
+                    "id": "owned0000001",
+                    "name": qualified,
+                    "trigger_type": "interval",
+                    "interval_sec": 900,
+                    "action_kind": "agent",
+                    "action_agent": "reviewer",
+                    "action_prompt": "check things",
+                    "action_cwd": str(agent_profile_cwd),
+                    "owner_key": f"{qualified.split('/')[0]}/other-set",
+                    "managed_by": "declaration",
+                }
+            )
+
+    asyncio.run(_seed())
+
+    argv = ["apply", str(manifest), "--json"] if as_json else ["apply", str(manifest)]
+    with _cli_warnings() as warnings:
+        assert run_schedule(_parse_schedule_args(argv)) == 1
+    out = capsys.readouterr().out
+    if as_json:
+        assert [entry["name"] for entry in json.loads(out)["errors"]] == [qualified]
+    else:
+        assert len(warnings) == 1, warnings
+        assert warnings[0].startswith(f"INVALID  {qualified}  ")

@@ -1223,3 +1223,86 @@ def test_cli_export_distinct_sibling_tokens_write_all_files(temp_db_path, agent_
     assert rc == 0
     names = sorted(p.name for p in (tmp_path / "out").glob("*.yaml"))
     assert names == ["schedules.alpha.yaml", "schedules.beta.yaml"]
+
+
+
+
+def test_legacy_export_reapplies_unchanged_as_its_own_set(
+    temp_db_path, agent_profile, tmp_path, monkeypatch
+):
+    """A row created before schedule sets existed, exported with --legacy, must
+    re-apply to itself without changing: adopted as the set its document names,
+    it keeps every behavior column, then applies again as that set's own row
+    with no difference and no change."""
+    import asyncio
+
+    from lionagi.studio.cli import _cmd_apply_set, _cmd_export
+
+    async def _seed():
+        async with StateDB() as db:
+            await db.create_schedule(
+                _legacy_row(
+                    "rt1",
+                    "demo/nightly",
+                    cwd=agent_profile,
+                    action_project=None,
+                    action_model="anthropic/claude-sonnet-5",
+                )
+            )
+
+    asyncio.run(_seed())
+
+    output_path = agent_profile / "export" / "schedules.yaml"
+    assert _cmd_export(_export_args(legacy=True, output=str(output_path))) == 0
+    doc = parse_schedule_set(output_path.read_text(), source=str(output_path))
+    assert doc.metadata.project == "demo"
+
+    async def _rows():
+        async with StateDB() as db:
+            return {row["id"]: row for row in await db.list_schedules()}
+
+    async def _plan(adopt: bool):
+        async with StateDB() as db:
+            return (await build_plan(db, doc, output_path.parent, adopt=adopt))[0]
+
+    before = asyncio.run(_rows())
+    plan = asyncio.run(_plan(adopt=True))
+    assert [(entry.qualified_name, entry.action) for entry in plan] == [
+        ("demo/nightly", "ADOPT")
+    ], [entry.detail for entry in plan]
+    assert _cmd_apply_set(
+        types.SimpleNamespace(file=str(output_path), dry_run=False, adopt=True, as_json=False)
+    ) == 0
+
+    after = asyncio.run(_rows())
+    assert set(after) == set(before)
+    stored = after["rt1"]
+    assert stored["name"] == "demo/nightly"
+    assert stored["owner_key"] == f"{doc.metadata.project}/{doc.metadata.name}"
+    # The row keeps every behavior column it ran with, and the zone it fired in.
+    for column in (
+        "trigger_type",
+        "cron_expr",
+        "action_kind",
+        "action_agent",
+        "action_model",
+        "action_prompt",
+        "action_cwd",
+        "action_project",
+        "enabled",
+        "effective_timezone",
+    ):
+        assert stored[column] == before["rt1"][column], column
+    # Adoption records the declaration it adopted, and the zone the row fired in.
+    assert stored["spec_version"] == doc.apiVersion
+    assert stored["resolved_digest"]
+    assert stored["resolved_timezone"] == before["rt1"]["effective_timezone"]
+
+    plan = asyncio.run(_plan(adopt=False))
+    assert [(entry.qualified_name, entry.action) for entry in plan] == [
+        ("demo/nightly", "UNCHANGED")
+    ], [entry.detail for entry in plan]
+    assert _cmd_apply_set(
+        types.SimpleNamespace(file=str(output_path), dry_run=False, adopt=False, as_json=False)
+    ) == 0
+    assert asyncio.run(_rows()) == after
