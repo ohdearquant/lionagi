@@ -145,6 +145,35 @@ function readStoredConversation(): string | null {
   return value || null;
 }
 
+// Everything that decides what the panel shows (the first list read, a selection, a new
+// conversation, a fork, a conversation created from the composer) takes a claim numbered in the
+// order it started. A claim takes the panel only if no later claim has taken it, so among the
+// choices that succeed the operator's latest is the one shown. A claim that fails takes nothing
+// and leaves the panel to the claim that holds it. A selection or a new conversation takes the
+// panel when it starts; a fork, a create and the first list read take it when they resolve.
+class PanelClaims {
+  private started = 0;
+  private holder = 0;
+
+  next(): number {
+    return ++this.started;
+  }
+
+  take(claim: number): boolean {
+    if (claim < this.holder) return false;
+    this.holder = claim;
+    return true;
+  }
+
+  holds(claim: number): boolean {
+    return this.holder === claim;
+  }
+
+  get current(): number {
+    return this.holder;
+  }
+}
+
 function conversationLabel(conversation: OperatorConversation): string {
   const title = conversation.title?.trim();
   if (title) return title;
@@ -742,7 +771,10 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const [modelCatalog, setModelCatalog] = useState<OperatorModelCatalogEntry[]>([]);
   const [model, setModel] = useState<string>("");
   const [effort, setEffort] = useState<OperatorEffort | "">("");
-  const [sending, setSending] = useState(false);
+  // Sends in flight, by the conversation each was sent from ("" for a draft that has no
+  // conversation yet), so a send in flight locks only its own conversation's composer.
+  const [sendingFrom, setSendingFrom] = useState<ReadonlySet<string>>(() => new Set());
+  const sending = sendingFrom.has(state.conversation?.id ?? "");
   const [streamEpoch, setStreamEpoch] = useState(0);
   const [stopping, setStopping] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -788,15 +820,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const conversationRefreshNeededRef = useRef(false);
   const conversationMutationsRef = useRef<Map<string, number>>(new Map());
   const conversationRowReadsRef = useRef<Map<string, number>>(new Map());
-  const conversationLoadRef = useRef(0);
-  // Forks still in flight, numbered in start order. A fork does not take the
-  // panel until it resolves, so it does not cancel a load in flight; a later
-  // fork still in flight wins over it, and a fork that fails gives up its claim.
-  const forkCountRef = useRef(0);
-  const liveForksRef = useRef<Set<number>>(new Set());
-  // The conversation the first list read would have opened, held while a fork
-  // that may take the panel is still in flight.
-  const deferredInitialRef = useRef<{ conversationId: string; load: number } | null>(null);
+  const claimsRef = useRef(new PanelClaims());
   const selectedConversationIdRef = useRef<string | null>(null);
   const metadataRefreshRef = useRef<{
     conversationId: string;
@@ -831,7 +855,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
   useEffect(
     () => () => {
       ++conversationRevisionRef.current;
-      ++conversationLoadRef.current;
+      // Nothing started before unmount may take the panel afterwards.
+      const claims = claimsRef.current;
+      claims.take(claims.next());
     },
     [],
   );
@@ -969,10 +995,14 @@ export default function OperatorPanel({ open, onClose }: Props) {
   }, [activeRenamingId]);
 
   const loadConversation = useCallback(
-    async (conversationId: string) => {
-      const load = ++conversationLoadRef.current;
+    // With no claim, the load is a new choice and takes the panel now; the first list read and a
+    // stale-context reload pass the claim they already hold.
+    async (conversationId: string, claim?: number) => {
+      const claims = claimsRef.current;
+      const load = claim ?? claims.next();
+      if (!claims.take(load)) return;
       dispatch({ type: "LOAD_START" });
-      while (conversationLoadRef.current === load) {
+      while (claims.holds(load)) {
         const revision = ++conversationRevisionRef.current;
         conversationRowReadsRef.current = new Map(conversationRowReadsRef.current).set(
           conversationId,
@@ -980,7 +1010,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         );
         try {
           const snapshot = await getOperatorConversation(conversationId);
-          if (conversationLoadRef.current !== load) return;
+          if (!claims.holds(load)) return;
           // A local save or list read may have superseded this snapshot. Keep
           // loading the chosen conversation instead of stranding it in loading.
           if (conversationRevisionRef.current !== revision) continue;
@@ -1004,7 +1034,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
           }
           return;
         } catch (error) {
-          if (conversationLoadRef.current !== load) return;
+          if (!claims.holds(load)) return;
           if (conversationRevisionRef.current !== revision) continue;
           dispatch({
             type: "LOAD_ERROR",
@@ -1090,9 +1120,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
     let active = true;
     const stored = readStoredConversation();
     const revision = ++conversationRevisionRef.current;
-    // Read at setup rather than assumed zero: StrictMode runs the unmount
-    // cleanup, which advances the load counter, before setting up again.
-    const initialLoad = conversationLoadRef.current;
+    // Taken at setup, so any choice the operator makes after the panel opens is a later claim.
+    // StrictMode's remount takes a new one after the unmount cleanup took the panel.
+    const initial = claimsRef.current.next();
     void listOperatorConversations()
       .then((available) => {
         if (!active) return;
@@ -1108,23 +1138,12 @@ export default function OperatorPanel({ open, onClose }: Props) {
           // needed to choose one when nothing is open yet.
           return;
         }
-        if (conversationLoadRef.current !== initialLoad) {
-          // A selection, a new-conversation reset, a fork that resolved, or an
-          // earlier load already owns the panel. This list may have been read
-          // before that choice, and choosing from it now would replace the
-          // operator's.
-          return;
-        }
-        if (liveForksRef.current.size > 0) {
-          // A fork in flight takes the panel when it resolves. The remembered
-          // conversation opens only if every fork in flight fails.
-          if (selected) {
-            deferredInitialRef.current = { conversationId: selected.id, load: initialLoad };
-          }
-          return;
-        }
+        // A later choice that already took the panel (a selection, a new conversation, a
+        // resolved fork or create) keeps it: this list may have been read before that choice.
+        // A fork still in flight does not block it; the fork takes the panel if it resolves.
+        if (!claimsRef.current.take(initial)) return;
         if (selected) {
-          void loadConversation(selected.id);
+          void loadConversation(selected.id, initial);
         } else if (stored) {
           window.localStorage.removeItem(STORAGE_KEY);
         }
@@ -1132,7 +1151,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
       .catch(() => {
         if (!active || conversationRevisionRef.current !== revision) return;
         if (stored) {
-          void loadConversation(stored);
+          void loadConversation(stored, initial);
         } else {
           setActionError(t("errors.load"));
         }
@@ -1355,29 +1374,34 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const handleSend = useCallback(async () => {
     const trimmed = instruction.trim();
     if (!trimmed || sending || state.activeRequestId || state.loadState === "loading") return;
-    setSending(true);
+    const claims = claimsRef.current;
+    let from = state.conversation?.id ?? "";
+    setSendingFrom((current) => new Set(current).add(from));
     setActionError(null);
-    let owner = conversationLoadRef.current;
+    let owner = claims.current;
     try {
       let conversation = state.conversation;
       if (!conversation) {
-        const load = ++conversationLoadRef.current;
-        const forksBefore = forkCountRef.current;
+        const create = claims.next();
         conversation = await createOperatorConversation();
         ++conversationRevisionRef.current;
-        if (
-          conversationLoadRef.current !== load ||
-          [...liveForksRef.current].some((fork) => fork > forksBefore)
-        ) {
-          // The operator chose another conversation, or started a fork, while
-          // this one was being created. That choice keeps the panel and the
-          // draft is not sent; the list is read again so the new conversation
-          // appears in it.
+        if (!claims.take(create)) {
+          // The operator opened another conversation, started a new one or a fork took the
+          // panel while this one was being created. That choice keeps the panel and the draft
+          // is not sent; the list is read again so the new conversation appears in it.
           void refreshConversationMetadata().catch((error) => {
             setListActionError(error instanceof Error ? error.message : t("errors.load"));
           });
           return;
         }
+        owner = create;
+        const created = conversation.id;
+        setSendingFrom((current) => {
+          const next = new Set(current);
+          next.delete(from);
+          return next.add(created);
+        });
+        from = created;
         window.localStorage.setItem(STORAGE_KEY, conversation.id);
         setConversations((current) => [
           conversation as OperatorConversation,
@@ -1391,7 +1415,6 @@ export default function OperatorPanel({ open, onClose }: Props) {
           });
         }
       }
-      owner = conversationLoadRef.current;
       const context = operatorContext(
         location.pathname,
         location.search as Record<string, unknown>,
@@ -1410,10 +1433,11 @@ export default function OperatorPanel({ open, onClose }: Props) {
         ...(effectiveEffort ? { effort: effectiveEffort } : {}),
         ...(clearing ? { clearSelection: true } : {}),
       });
-      if (conversationLoadRef.current !== owner) {
-        // The turn went to the conversation it was sent to; the operator has
-        // since opened another, which must not wait on that turn.
-        setInstruction("");
+      if (!claims.holds(owner)) {
+        // The turn went to the conversation it was sent to; the operator has since opened
+        // another, which must not wait on that turn. The composer is cleared only if it still
+        // holds the text that was sent, not anything typed for the conversation now open.
+        setInstruction((current) => (current === instruction ? "" : current));
         return;
       }
       dispatch({ type: "TURN_ACCEPTED", requestId: accepted.requestId });
@@ -1421,19 +1445,27 @@ export default function OperatorPanel({ open, onClose }: Props) {
       setInstruction("");
       nearBottomRef.current = true;
     } catch (error) {
-      const message = error instanceof Error ? error.message : t("errors.send");
-      setActionError(message);
+      // Once the operator has opened something else, this send's error and the reload it asks
+      // for belong to a conversation the panel no longer shows.
+      if (!claims.holds(owner)) return;
+      setActionError(error instanceof Error ? error.message : t("errors.send"));
       if (
         error instanceof ApiError &&
         error.status === 409 &&
         error.code === "stale_context" &&
-        state.conversation &&
-        conversationLoadRef.current === owner
+        state.conversation
       ) {
-        await loadConversation(state.conversation.id);
+        // A reload of the conversation already shown, under the claim that shows it, so it
+        // does not outrank a fork the operator started after sending.
+        await loadConversation(state.conversation.id, owner);
       }
     } finally {
-      setSending(false);
+      const done = from;
+      setSendingFrom((current) => {
+        const next = new Set(current);
+        next.delete(done);
+        return next;
+      });
     }
   }, [
     instruction,
@@ -1510,27 +1542,33 @@ export default function OperatorPanel({ open, onClose }: Props) {
     return () => window.clearTimeout(timer);
   }, [autoAllow, proposals, decidedProposalIds, deciding, handleProposalDecision]);
 
-  const resetConversation = useCallback(() => {
-    ++conversationRevisionRef.current;
-    ++conversationLoadRef.current;
-    window.localStorage.removeItem(STORAGE_KEY);
-    metadataViewRef.current = {
-      ...metadataViewRef.current,
-      conversation: null,
-      loadState: "idle",
-    };
-    dispatch({ type: "RESET" });
-    setActionError(null);
-    setInstruction("");
-    setDecidedProposalIds(new Set());
-    if (conversationRefreshNeededRef.current) {
-      // A save settled after its row update was deferred to a read, and this
-      // reset abandoned that read. The list still owes the saved row.
-      void refreshConversationMetadata().catch((error) => {
-        setListActionError(error instanceof Error ? error.message : t("errors.load"));
-      });
-    }
-  }, [refreshConversationMetadata, t]);
+  // With no claim this is the operator starting a new conversation, which takes the panel now;
+  // a fork that has taken the panel passes its own claim.
+  const resetConversation = useCallback(
+    (claim?: number) => {
+      const claims = claimsRef.current;
+      claims.take(claim ?? claims.next());
+      ++conversationRevisionRef.current;
+      window.localStorage.removeItem(STORAGE_KEY);
+      metadataViewRef.current = {
+        ...metadataViewRef.current,
+        conversation: null,
+        loadState: "idle",
+      };
+      dispatch({ type: "RESET" });
+      setActionError(null);
+      setInstruction("");
+      setDecidedProposalIds(new Set());
+      if (conversationRefreshNeededRef.current) {
+        // A save settled after its row update was deferred to a read, and this
+        // reset abandoned that read. The list still owes the saved row.
+        void refreshConversationMetadata().catch((error) => {
+          setListActionError(error instanceof Error ? error.message : t("errors.load"));
+        });
+      }
+    },
+    [refreshConversationMetadata, t],
+  );
 
   const selectConversation = useCallback(
     (conversationId: string) => {
@@ -1538,7 +1576,13 @@ export default function OperatorPanel({ open, onClose }: Props) {
         resetConversation();
         return;
       }
-      if (conversationId === state.conversation?.id) return;
+      if (conversationId === state.conversation?.id) {
+        // Choosing the open conversation again is still the operator's latest choice: a fork
+        // started before it no longer takes the panel.
+        const claims = claimsRef.current;
+        claims.take(claims.next());
+        return;
+      }
       dispatch({ type: "RESET" });
       setVisibleCount(200);
       setActionError(null);
@@ -1633,26 +1677,19 @@ export default function OperatorPanel({ open, onClose }: Props) {
       const revision = beginConversationMutation(conversation.id);
       if (revision === null) return;
       setListActionError(null);
-      // A fork is slow enough for the operator to select another conversation,
-      // start a new one, or fork another while it runs. That later choice wins.
-      const load = conversationLoadRef.current;
-      const fork = ++forkCountRef.current;
-      liveForksRef.current.add(fork);
+      // A fork is slow enough for the operator to select another conversation, start a new one
+      // or fork another while it runs. It takes the panel when it resolves, unless one of those
+      // later choices already has; one that fails takes nothing.
+      const claims = claimsRef.current;
+      const fork = claims.next();
       try {
         const snapshot = await forkOperatorConversation(conversation.id);
-        liveForksRef.current.delete(fork);
         setConversations((current) => [
           snapshot.conversation,
           ...current.filter((item) => item.id !== snapshot.conversation.id),
         ]);
-        if (
-          conversationLoadRef.current !== load ||
-          [...liveForksRef.current].some((later) => later > fork)
-        ) {
-          return;
-        }
-        deferredInitialRef.current = null;
-        resetConversation();
+        if (!claims.take(fork)) return;
+        resetConversation(fork);
         window.localStorage.setItem(STORAGE_KEY, snapshot.conversation.id);
         setVisibleCount(200);
         nearBottomRef.current = true;
@@ -1663,15 +1700,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         });
         setListPanelOpen(false);
       } catch (error) {
-        liveForksRef.current.delete(fork);
         setListActionError(error instanceof Error ? error.message : t("errors.fork"));
-        const deferredInitial = deferredInitialRef.current;
-        if (deferredInitial && liveForksRef.current.size === 0) {
-          deferredInitialRef.current = null;
-          if (conversationLoadRef.current === deferredInitial.load) {
-            void loadConversation(deferredInitial.conversationId);
-          }
-        }
       } finally {
         if (finishConversationMutation(conversation.id, revision)) {
           conversationRefreshNeededRef.current = true;
@@ -1684,7 +1713,6 @@ export default function OperatorPanel({ open, onClose }: Props) {
     [
       beginConversationMutation,
       finishConversationMutation,
-      loadConversation,
       refreshConversationMetadata,
       resetConversation,
       t,
@@ -2014,7 +2042,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
                 >
                   {t("retry")}
                 </Button>
-                <Button variant="secondary" size="sm" onClick={resetConversation}>
+                <Button variant="secondary" size="sm" onClick={() => resetConversation()}>
                   {t("newConversation")}
                 </Button>
               </div>

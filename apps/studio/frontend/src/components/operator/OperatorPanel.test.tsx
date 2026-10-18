@@ -893,10 +893,12 @@ describe("OperatorPanel", () => {
   describe("conversation list: rename, pin/archive, fork", () => {
     function deferred<T>() {
       let resolve!: (value: T) => void;
-      const promise = new Promise<T>((complete) => {
+      let reject!: (error: Error) => void;
+      const promise = new Promise<T>((complete, fail) => {
         resolve = complete;
+        reject = fail;
       });
-      return { promise, resolve };
+      return { promise, resolve, reject };
     }
 
     async function openList() {
@@ -1903,10 +1905,51 @@ describe("OperatorPanel", () => {
         await selectFilter("Active");
         await act(async () => rowAction("Other conversation", "Fork").click());
         await act(async () => initialList.resolve([conversation, other]));
+        // The fork is still in flight, so the first read opens the remembered conversation.
+        expect(api.getOperatorConversation).toHaveBeenCalledWith("conversation-1");
         await act(async () => fork.resolve(forked("Other conversation")));
 
-        expect(api.getOperatorConversation).not.toHaveBeenCalledWith("conversation-1");
         expect(selectedLabel()).toBe("Conversations: Other conversation (fork)");
+      });
+
+      it("keeps a resolved fork when the first list read and a later failed fork come after it", async () => {
+        const conversation: OperatorConversation = {
+          id: "conversation-1",
+          title: "Scheduler check",
+          status: "active",
+          pinned: false,
+          activeRequestId: null,
+        };
+        const other: OperatorConversation = {
+          id: "conversation-2",
+          title: "Other conversation",
+          status: "active",
+          pinned: false,
+          activeRequestId: null,
+        };
+        window.localStorage.setItem("studio:operator-conversation", "conversation-1");
+        const initialList = deferred<OperatorConversation[]>();
+        const first = deferred<{ conversation: OperatorConversation; frames: [] }>();
+        const second = deferred<{ conversation: OperatorConversation; frames: [] }>();
+        api.listOperatorConversations
+          .mockReturnValueOnce(initialList.promise)
+          .mockResolvedValue([conversation, other]);
+        api.getOperatorConversation.mockResolvedValue({ conversation, frames: [] });
+        api.forkOperatorConversation
+          .mockReturnValueOnce(first.promise)
+          .mockReturnValueOnce(second.promise);
+
+        await mount();
+        await openList();
+        await selectFilter("Active");
+        await act(async () => rowAction("Scheduler check", "Fork").click());
+        await act(async () => rowAction("Other conversation", "Fork").click());
+        await act(async () => first.resolve(forked("Scheduler check")));
+        await act(async () => initialList.resolve([conversation, other]));
+        await act(async () => second.reject(new Error("fork failed")));
+
+        expect(api.getOperatorConversation).not.toHaveBeenCalledWith("conversation-1");
+        expect(selectedLabel()).toBe("Conversations: Scheduler check (fork)");
       });
 
       it.each([
@@ -2017,7 +2060,7 @@ describe("OperatorPanel", () => {
         expect(titleButton("New thread")).toBeDefined();
       });
 
-      it("does not send into a created conversation when a fork started while it was created", async () => {
+      it("does not send into a created conversation when a fork started after it took the panel first", async () => {
         await mountLocalConversation();
         const creation = deferred<OperatorConversation>();
         const fork = deferred<{ conversation: OperatorConversation; frames: [] }>();
@@ -2028,14 +2071,190 @@ describe("OperatorPanel", () => {
         await typeAndSend("check the scheduler");
         await openList();
         await act(async () => rowAction("Other conversation", "Fork").click());
+        await act(async () => fork.resolve(forked("Other conversation")));
+        api.listOperatorConversations.mockClear();
         await act(async () => creation.resolve(created));
 
         expect(api.submitOperatorTurn).not.toHaveBeenCalled();
-        expect((container.querySelector("textarea") as HTMLTextAreaElement).value).toBe(
-          "check the scheduler",
-        );
-        await act(async () => fork.resolve(forked("Other conversation")));
         expect(selectedLabel()).toBe("Conversations: Other conversation (fork)");
+        expect(api.listOperatorConversations).toHaveBeenCalled();
+      });
+
+      it.each([
+        ["resolves", true],
+        ["fails", false],
+      ])(
+        "sends into the created conversation when a fork started during the create %s after it",
+        async (_outcome, forkResolves) => {
+          await mountLocalConversation();
+          const creation = deferred<OperatorConversation>();
+          const fork = deferred<{ conversation: OperatorConversation; frames: [] }>();
+          await startNewConversation();
+          api.createOperatorConversation.mockReturnValueOnce(creation.promise);
+          api.forkOperatorConversation.mockReturnValueOnce(fork.promise);
+          api.submitOperatorTurn.mockClear();
+          api.submitOperatorTurn.mockResolvedValueOnce({
+            conversationId: "conversation-new",
+            requestId: "request-new",
+            acceptedSequence: 1,
+          });
+          await typeAndSend("check the scheduler");
+          await openList();
+          await act(async () => rowAction("Other conversation", "Fork").click());
+          await act(async () => creation.resolve(created));
+
+          expect(api.submitOperatorTurn).toHaveBeenCalledWith(
+            "conversation-new",
+            expect.objectContaining({ instruction: "check the scheduler" }),
+          );
+          expect(selectedLabel()).toBe("Conversations: New thread");
+          const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+          // The accepted turn is the open conversation's: the composer waits on it.
+          expect(textarea.disabled).toBe(true);
+          expect(textarea.value).toBe("");
+
+          if (forkResolves) {
+            await act(async () => fork.resolve(forked("Other conversation")));
+            expect(selectedLabel()).toBe("Conversations: Other conversation (fork)");
+          } else {
+            await act(async () => fork.reject(new Error("fork failed")));
+            expect(selectedLabel()).toBe("Conversations: New thread");
+          }
+        },
+      );
+
+      it("sends nothing from a create that resolves after the panel unmounted", async () => {
+        await mountLocalConversation();
+        await startNewConversation();
+        const creation = deferred<OperatorConversation>();
+        api.createOperatorConversation.mockReturnValueOnce(creation.promise);
+        api.submitOperatorTurn.mockClear();
+        await typeAndSend("check the scheduler");
+        act(() => root?.unmount());
+        root = null;
+        await act(async () => creation.resolve(created));
+
+        expect(api.submitOperatorTurn).not.toHaveBeenCalled();
+        expect(window.localStorage.getItem("studio:operator-conversation")).toBeNull();
+      });
+
+      it("lets a fork take the panel when the create started before it fails", async () => {
+        await mountLocalConversation();
+        const fork = deferred<{ conversation: OperatorConversation; frames: [] }>();
+        await startNewConversation();
+        const creation = deferred<OperatorConversation>();
+        api.createOperatorConversation.mockReturnValueOnce(creation.promise);
+        api.forkOperatorConversation.mockReturnValueOnce(fork.promise);
+        api.submitOperatorTurn.mockClear();
+        await typeAndSend("check the scheduler");
+        await openList();
+        await act(async () => rowAction("Other conversation", "Fork").click());
+        await act(async () => creation.reject(new Error("create failed")));
+        await act(async () => fork.resolve(forked("Other conversation")));
+
+        expect(api.submitOperatorTurn).not.toHaveBeenCalled();
+        expect(selectedLabel()).toBe("Conversations: Other conversation (fork)");
+      });
+
+      it("keeps an earlier fork when a later fork fails after it resolved", async () => {
+        await mountLocalConversation();
+        const first = deferred<{ conversation: OperatorConversation; frames: [] }>();
+        const second = deferred<{ conversation: OperatorConversation; frames: [] }>();
+        api.forkOperatorConversation
+          .mockReturnValueOnce(first.promise)
+          .mockReturnValueOnce(second.promise);
+
+        await act(async () => rowAction("Scheduler check", "Fork").click());
+        await act(async () => rowAction("Other conversation", "Fork").click());
+        await act(async () => first.resolve(forked("Scheduler check")));
+        await act(async () => second.reject(new Error("fork failed")));
+
+        expect(selectedLabel()).toBe("Conversations: Scheduler check (fork)");
+      });
+
+      it("keeps the open conversation when the operator chooses it again while a fork runs", async () => {
+        await mountLocalConversation();
+        const fork = deferred<{ conversation: OperatorConversation; frames: [] }>();
+        api.forkOperatorConversation.mockReturnValueOnce(fork.promise);
+
+        await act(async () => rowAction("Other conversation", "Fork").click());
+        await act(async () => titleButton("Scheduler check").click());
+        await act(async () => fork.resolve(forked("Other conversation")));
+
+        expect(selectedLabel()).toBe("Conversations: Scheduler check");
+        await openList();
+        expect(container.querySelector("ul")?.textContent).toContain("Other conversation (fork)");
+      });
+
+      it("lets a fork started after a send take the panel from the stale-context reload", async () => {
+        await mountLocalConversation();
+        let refuse!: (error: Error) => void;
+        api.submitOperatorTurn.mockReturnValueOnce(
+          new Promise((_resolve, reject) => {
+            refuse = reject;
+          }),
+        );
+        const fork = deferred<{ conversation: OperatorConversation; frames: [] }>();
+        api.forkOperatorConversation.mockReturnValueOnce(fork.promise);
+        await typeAndSend("check the scheduler");
+        await act(async () => rowAction("Other conversation", "Fork").click());
+        api.getOperatorConversation.mockClear();
+        await act(async () =>
+          refuse(new api.ApiError(409, "context moved on", { code: "stale_context" })),
+        );
+        expect(api.getOperatorConversation).toHaveBeenCalledWith("conversation-1");
+        await act(async () => fork.resolve(forked("Other conversation")));
+
+        expect(selectedLabel()).toBe("Conversations: Other conversation (fork)");
+      });
+
+      it("does not lock or message another conversation over a send to the one the operator left", async () => {
+        await mountLocalConversation();
+        let refuse!: (error: Error) => void;
+        api.submitOperatorTurn.mockReturnValueOnce(
+          new Promise((_resolve, reject) => {
+            refuse = reject;
+          }),
+        );
+        await typeAndSend("check the scheduler");
+        expect(sendButton()?.textContent).toBe("Sending…");
+        await act(async () => titleButton("Other conversation").click());
+
+        const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+        expect(textarea.disabled).toBe(false);
+        expect(sendButton()?.textContent).not.toBe("Sending…");
+        await typeDraft("a draft for the other conversation");
+        await act(async () =>
+          refuse(new api.ApiError(409, "context moved on", { code: "stale_context" })),
+        );
+
+        expect(container.textContent).not.toContain("context moved on");
+        expect(textarea.value).toBe("a draft for the other conversation");
+        expect(selectedLabel()).toBe("Conversations: Other conversation");
+      });
+
+      it("keeps a draft typed in another conversation when the turn the operator left is accepted", async () => {
+        await mountLocalConversation();
+        const turn = deferred<{
+          conversationId: string;
+          requestId: string;
+          acceptedSequence: number;
+        }>();
+        api.submitOperatorTurn.mockReturnValueOnce(turn.promise);
+        await typeAndSend("check the scheduler");
+        await act(async () => titleButton("Other conversation").click());
+        await typeDraft("a draft for the other conversation");
+        await act(async () =>
+          turn.resolve({
+            conversationId: "conversation-1",
+            requestId: "request-1",
+            acceptedSequence: 1,
+          }),
+        );
+
+        const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+        expect(textarea.value).toBe("a draft for the other conversation");
+        expect(textarea.disabled).toBe(false);
       });
 
       it("keeps an earlier fork when a later fork fails before it resolves", async () => {
