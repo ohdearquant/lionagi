@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from lionagi._paths import is_account_home
+from lionagi.mcp._errors import SubmitInputError
 
 __all__ = (
     "MCP_CONFIG_FILENAME",
@@ -42,7 +43,7 @@ SNAPSHOT_SOURCE_KEY = "lionagiSnapshotOf"
 SNAPSHOT_SEARCHED_FROM_KEY = "lionagiSnapshotSearchedFrom"
 
 
-class McpConfigError(ValueError):
+class McpConfigError(SubmitInputError):
     """A named MCP config cannot be used. Its own type, so a caller can refuse
     the spawn on it without also catching every other ValueError raised on the
     way there."""

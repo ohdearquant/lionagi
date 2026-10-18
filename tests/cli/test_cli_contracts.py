@@ -111,6 +111,7 @@ AGENT_HELP_FLAGS = [
     "--fast",
     "--form",
     "--help",
+    "--idle-timeout",
     "--image",
     "--invocation",
     "--list-profiles",

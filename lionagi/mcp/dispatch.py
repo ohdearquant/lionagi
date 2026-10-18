@@ -12,16 +12,16 @@ moves here with it.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
 from typing import Any
 
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
-from lionagi.ln import now_utc
+from lionagi.ln import compute_hash, now_utc
 
 from . import config, jobs, projection, roster
 from .verbs import (
@@ -205,7 +205,7 @@ def schema_fingerprint(schema: dict[str, Any]) -> str:
     the build does.
     """
     body = json.dumps(schema, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(body.encode()).hexdigest()[:16]
+    return compute_hash(body, max_bytes=None)[:16]
 
 
 def _describe_fingerprint(
@@ -291,6 +291,7 @@ _JSON_TYPE_CHECK = {
     "boolean": lambda v: isinstance(v, bool),
     "array": lambda v: isinstance(v, list),
     "object": lambda v: isinstance(v, dict),
+    "null": lambda v: v is None,
 }
 
 
@@ -325,7 +326,19 @@ def _check_value(name: str, spec: dict[str, Any], value: Any) -> list[str]:
     if check is not None and not check(value):
         problems.append(f"{name!r} expects {expected}, got {type(value).__name__}")
         return problems
-    if expected == "array":
+    if expected in {"integer", "number"}:
+        if "minimum" in spec and value < spec["minimum"]:
+            problems.append(f"{name!r} must be at least {spec['minimum']}, got {value!r}")
+        if "maximum" in spec and value > spec["maximum"]:
+            problems.append(f"{name!r} must be at most {spec['maximum']}, got {value!r}")
+    elif expected == "string":
+        if "minLength" in spec and len(value) < spec["minLength"]:
+            problems.append(f"{name!r} needs at least {spec['minLength']} character(s)")
+        if "maxLength" in spec and len(value) > spec["maxLength"]:
+            problems.append(f"{name!r} takes at most {spec['maxLength']} character(s)")
+        if "pattern" in spec and re.search(spec["pattern"], value) is None:
+            problems.append(f"{name!r} does not match the required pattern")
+    elif expected == "array":
         item = spec.get("items", {})
         item_check = _JSON_TYPE_CHECK.get(item.get("type", ""))
         for index, element in enumerate(value):
@@ -335,11 +348,26 @@ def _check_value(name: str, spec: dict[str, Any], value: Any) -> list[str]:
                 )
             elif "enum" in item and element not in item["enum"]:
                 problems.append(f"{name}[{index}] must be one of {item['enum']}, got {element!r}")
+            elif isinstance(element, str):
+                if "minLength" in item and len(element) < item["minLength"]:
+                    problems.append(
+                        f"{name}[{index}] needs at least {item['minLength']} character(s)"
+                    )
+                if "maxLength" in item and len(element) > item["maxLength"]:
+                    problems.append(
+                        f"{name}[{index}] takes at most {item['maxLength']} character(s)"
+                    )
+        if spec.get("uniqueItems") and len(
+            {json.dumps(element, sort_keys=True) for element in value}
+        ) < len(value):
+            problems.append(f"{name!r} holds the same value more than once")
         if "minItems" in spec and len(value) < spec["minItems"]:
             problems.append(f"{name!r} needs at least {spec['minItems']} value(s)")
         if "maxItems" in spec and len(value) > spec["maxItems"]:
             problems.append(f"{name!r} takes at most {spec['maxItems']} value(s)")
-    elif "enum" in spec and value not in spec["enum"]:
+    # Membership is independent of the value's JSON type, so it is checked after
+    # the type's own checks rather than as one more branch beside them.
+    if "enum" in spec and value not in spec["enum"]:
         problems.append(f"{name!r} must be one of {spec['enum']}, got {value!r}")
     return problems
 
@@ -693,7 +721,7 @@ def _refuse_without_prompt(verb: Verb, args: dict[str, Any], prompt: str | None)
     )
 
 
-def _refuse_unknown_profile(args: dict[str, Any], cwd: str | None) -> None:
+def _refuse_unknown_profile(args: dict[str, Any], cwd: str | None) -> Any:
     """Refuse a submission naming an agent profile nothing declares.
 
     Checked with the exact resolver a spawned run itself would use (same
@@ -702,10 +730,13 @@ def _refuse_unknown_profile(args: dict[str, Any], cwd: str | None) -> None:
     surface only inside the spawned process — after the job record already
     existed with nothing on it to say why — leaving a caller to poll a run
     that died silently on start.
+
+    Returns the loaded profile, or None when the submission names none, so a
+    caller can read the authority that profile grants.
     """
     name = args.get("agent")
     if not name:
-        return
+        return None
     from lionagi.cli._providers import (
         AgentProfileNotFoundError,
         AmbiguousProfileNameError,
@@ -714,8 +745,9 @@ def _refuse_unknown_profile(args: dict[str, Any], cwd: str | None) -> None:
 
     with roster._resolving_under(cwd):
         try:
-            load_agent_profile(name)
-        except (AgentProfileNotFoundError, AmbiguousProfileNameError) as exc:
+            return load_agent_profile(name)
+        # ValueError covers a name the resolver refuses outright, such as one with a path in it
+        except (AgentProfileNotFoundError, AmbiguousProfileNameError, ValueError) as exc:
             raise OpError("invalid_input", str(exc)) from exc
 
 
@@ -755,6 +787,25 @@ def _refuse_invalid_playbook_spec(schema: dict[str, Any]) -> None:
         raise OpError("invalid_input", f"playbook {name!r} has an invalid spec: {error}")
 
 
+def _write_capable(verb: Verb, args: dict[str, Any], profile: Any) -> bool:
+    """Whether the run can act with write authority, which gives it its own khive actor.
+
+    An agent run has it when its own ``yolo`` or ``bypass`` argument or its profile sets one; the
+    argument reaches the child's argv whatever the profile says. A run that resumes or continues a
+    branch reloads the provider settings that branch persisted, ``yolo`` and ``bypass`` included,
+    so it counts whatever its arguments say. A flow, fanout or playbook run casts its workers onto
+    profiles while it executes, so nothing known at submit time bounds what they may write, and
+    such a run always counts.
+    """
+    if verb.job_kind != "agent":
+        return True
+    if args.get("resume") or args.get("continue_last"):
+        return True
+    return any(
+        bool(args.get(flag)) or bool(getattr(profile, flag, False)) for flag in ("yolo", "bypass")
+    )
+
+
 def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
     _refuse_invalid_playbook_spec(schema)
     prompt = _resolve_prompt(args)
@@ -762,7 +813,8 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
     _refuse_without_model(verb, schema, args, prompt)
     _refuse_without_prompt(verb, args, prompt)
     cwd = _resolve_cwd(args)
-    _refuse_unknown_profile(args, cwd)
+    profile = _refuse_unknown_profile(args, cwd)
+    write_capable = _write_capable(verb, args, profile)
     flags = render_argv(schema, args)
     assert verb.job_kind is not None
     try:
@@ -777,11 +829,21 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
             notify_sender=args.get("notify_sender"),
             mcp_config=args.get("mcp_config"),
             no_mcp_config=bool(args.get("no_mcp_config")),
+            exclude_mcp_servers=args.get("exclude_mcp_servers"),
+            write_capable=write_capable,
         )
+    except jobs.SubmittingActorError as exc:
+        raise OpError("unavailable", str(exc)) from exc
+    except jobs.ChildActorError as exc:
+        raise OpError("invalid_input", str(exc)) from exc
     except jobs.NotifySenderMismatchError as exc:
         raise OpError("invalid_input", str(exc)) from exc
     except jobs.NotifySenderResolutionError as exc:
         raise OpError("unavailable", str(exc)) from exc
+    except jobs.SubmitInputError as exc:
+        # A submission this spawn refuses on its own terms (an exclusion it
+        # cannot honour) is the caller's input to correct, not a server outage.
+        raise OpError("invalid_input", str(exc)) from exc
     fingerprint = schema.get("x-playbook-fingerprint")
     if fingerprint is not None:
         result["playbook"] = schema.get("x-playbook")
@@ -979,6 +1041,48 @@ def _op_error(op: str, exc: OpError, schema: dict[str, Any] | None) -> dict[str,
     return {"ok": False, "op": op, "error": error}
 
 
+def _dedupe_error_schemas(results: list[dict[str, Any]]) -> None:
+    """Keep one inline copy of each judged-against schema per response.
+
+    The first refusal judged against a schema carries it whole, so one mistake
+    still costs one request/reply cycle; every later refusal against the same schema
+    carries ``schema_ref`` — the ``op_index`` of the entry holding the copy and
+    the schema's fingerprint — instead of repeating it, so a batch of N
+    identical mistakes does not carry N copies of an identical multi-kilobyte
+    schema.
+    """
+    carriers: list[tuple[int, dict[str, Any]]] = []
+    for index, entry in enumerate(results):
+        error = entry.get("error")
+        if isinstance(error, dict) and isinstance(error.get("schema"), dict):
+            carriers.append((index, error))
+    if len(carriers) < 2:
+        # Fingerprints exist here to compare copies; with at most one carrier
+        # there is nothing to compare, so nothing gets hashed.
+        return
+    seen: dict[str, int] = {}
+    for index, error in carriers:
+        fingerprint = _error_schema_fingerprint(error)
+        first = seen.setdefault(fingerprint, index)
+        if first != index:
+            del error["schema"]
+            error["schema_ref"] = {"op_index": first, "schema_fingerprint": fingerprint}
+
+
+def _error_schema_fingerprint(error: dict[str, Any]) -> str:
+    # A stale_schema refusal's remedy already carries the fingerprint of the
+    # exact schema attached to the error, computed once at the gate; hashing
+    # the same content again here would double the cost of the batch this
+    # pass exists to shrink.
+    if error.get("kind") == "stale_schema":
+        detail = error.get("detail")
+        if isinstance(detail, dict):
+            fingerprint = detail.get("schema_fingerprint")
+            if isinstance(fingerprint, str):
+                return fingerprint
+    return schema_fingerprint(error["schema"])
+
+
 async def _run_one(entry: Any) -> dict[str, Any]:
     if not isinstance(entry, dict):
         return _op_error(
@@ -1086,6 +1190,7 @@ async def request(ops: list[dict[str, Any]] | None = None, help: Any = None) -> 
         raise ValueError(f"ops carries {len(ops)} entries, over the maximum of {MAX_OPS}")
 
     results = [await _run_one(entry) for entry in ops]
+    _dedupe_error_schemas(results)
     return {
         "status": "success" if all(r["ok"] for r in results) else "partial",
         "ops": results,

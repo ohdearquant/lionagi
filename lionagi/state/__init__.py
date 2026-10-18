@@ -3,9 +3,17 @@
 
 from typing import TYPE_CHECKING
 
+from lionagi.ln import lazy_import
+
 if TYPE_CHECKING:
     from .compat import CompatibilityProfile, StateCompatibilityRefused
-    from .db import ForeignLineageError, SchemaTooNewError, StateDB
+    from .db import (
+        ForeignLineageError,
+        SchemaTooNewError,
+        StateDB,
+        UnreadableStoreError,
+        UnrecognizedStoreError,
+    )
 
 __all__ = (
     "CompatibilityProfile",
@@ -13,24 +21,24 @@ __all__ = (
     "SchemaTooNewError",
     "StateCompatibilityRefused",
     "StateDB",
+    "UnreadableStoreError",
+    "UnrecognizedStoreError",
 )
 
 _MODULES = {
-    "CompatibilityProfile": "compat",
-    "ForeignLineageError": "db",
-    "SchemaTooNewError": "db",
-    "StateCompatibilityRefused": "compat",
-    "StateDB": "db",
+    "CompatibilityProfile": ("compat", "CompatibilityProfile"),
+    "ForeignLineageError": ("db", "ForeignLineageError"),
+    "SchemaTooNewError": ("db", "SchemaTooNewError"),
+    "StateCompatibilityRefused": ("compat", "StateCompatibilityRefused"),
+    "StateDB": ("db", "StateDB"),
+    "UnreadableStoreError": ("db", "UnreadableStoreError"),
+    "UnrecognizedStoreError": ("db", "UnrecognizedStoreError"),
 }
 
 
 def __getattr__(name: str):
     if name in __all__:
-        from importlib import import_module
-
-        value = getattr(import_module(f".{_MODULES[name]}", __name__), name)
-        globals()[name] = value
-        return value
+        return lazy_import(name, _MODULES, __name__, globals())
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

@@ -276,6 +276,8 @@ _ACTIVE_SNAPSHOT_CHILD_INDEX = (
 
 MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
     "sqlite": (
+        "CREATE INDEX IF NOT EXISTS idx_sessions_status_updated "
+        "ON sessions(status, updated_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_sessions_cc_session "
         "ON sessions(cc_session_id) WHERE cc_session_id IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_schedules_owner_key "
@@ -301,6 +303,8 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         *_ACTIVE_SNAPSHOT_CHILD_INDEX,
     ),
     "postgresql": (
+        "CREATE INDEX IF NOT EXISTS idx_sessions_status_updated "
+        "ON sessions(status, updated_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_sessions_cc_session "
         "ON sessions(cc_session_id) WHERE cc_session_id IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_schedules_owner_key "

@@ -22,7 +22,6 @@ injection the CLI performs and returns a fingerprint of what it resolved.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import re
 from dataclasses import dataclass, field
 from importlib import import_module
@@ -31,7 +30,8 @@ from types import ModuleType
 from typing import Any
 
 from lionagi._auto import CliSeed, build_cli_parser, iter_cli_seeds, seed_for
-from lionagi.cli._argtypes import JsonArgument
+from lionagi.cli._argtypes import BoundedInt, JsonArgument
+from lionagi.ln import hash_file
 
 __all__ = (
     "SchemaProjectionError",
@@ -269,7 +269,14 @@ def _project_action(
                     path, f"JSON-encoded value with nargs={nargs!r}", action=label
                 )
             return _project_json_action(parser, action, action.type)
-        item: dict[str, Any] = {"type": _scalar_type(path, action, label)}
+        if isinstance(action.type, BoundedInt):
+            item: dict[str, Any] = {
+                "type": "integer",
+                "minimum": action.type.minimum,
+                "maximum": action.type.maximum,
+            }
+        else:
+            item = {"type": _scalar_type(path, action, label)}
         enum = _choices_enum(path, action, label)
         if enum is not None:
             item["enum"] = enum
@@ -535,7 +542,7 @@ def playbook_fingerprint(name: str) -> tuple[str, str]:
         raise PlaybookResolutionError(f"playbook:{name}", err or "playbook did not resolve")
     resolved = Path(str(path_obj))
     try:
-        digest = hashlib.sha256(resolved.read_bytes()).hexdigest()
+        digest = hash_file(resolved)
     except OSError as exc:
         raise PlaybookResolutionError(f"playbook:{name}", f"unreadable: {exc}") from exc
     return f"sha256:{digest[:32]}", str(resolved)

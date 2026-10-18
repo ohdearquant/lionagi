@@ -19,8 +19,88 @@ project (see Changed). A project-scoped document applied with an earlier release
 members write their project as null plans an `UPDATE` on its next apply that removes the
 project those rows ran under. To keep the project, name it in those members.
 
+`notify_sender` on an MCP submission keeps its existing default: it is verified
+against the server's own directory. A deployment that wants callers to attest
+from their run directories sets `LIONAGI_MCP_SENDER_ROOTS` to an OS-path-
+separated list of absolute roots; then a declared sender is verified against
+the run directory, which must hold `.khive/config.toml`, and the notice is
+delivered from that directory. A caller-chosen directory outside those roots is
+refused.
+
+A write-capable run does not get its own khive actor by default. Setting
+`LIONAGI_MCP_CHILD_ACTOR_SUFFIX` to a non-empty suffix enables minting: the run
+gets an actor named `<submitting actor><suffix>`, written to the run
+directory's `.khive/config.toml` before it starts. For example, `:child` produces
+`<submitting actor>:child`. Leaving the setting unset or empty keeps the previous
+behaviour, including accepting a write-capable submission without `cwd`.
+
 ### Added
 
+- The MCP server's `agent.submit`, `flow.submit`, `fanout.submit` and
+  `play.submit` accept `exclude_mcp_servers`, which removes named servers from
+  the MCP config a submission resolves before its snapshot is written. Every
+  name must be declared by that config; the parameter cannot be combined with
+  `mcp_config` or `no_mcp_config`.
+- By default a write-capable run (an agent submission whose arguments or profile
+  set `yolo` or `bypass` or that resumes or continues a branch, or any flow,
+  fanout or playbook submission) gets no separate khive actor. When
+  `LIONAGI_MCP_CHILD_ACTOR_SUFFIX` is set, one
+  submitted with a `cwd` gets its own khive actor, named by appending that
+  suffix to the submitting actor and minted into the run's directory before it
+  starts. The result is reported as
+  `child_actor`, `child_actor_config` and `submitting_actor`.
+- `job.status` reports `excluded_mcp_servers` for a submission that removed
+  servers. The orphan reaper keeps `process_gone_without_outcome` as the reason
+  code for a run that turned its persistence off, and adds
+  `reason_detail: persistence_degraded` beside it.
+- The `{reason_code}` placeholder is available to a configured terminal-notice
+  command, carrying the run's terminal reason when one was recorded.
+  `{reason_detail}` carries the finer orphan-reaper detail when one was
+  recorded.
+- A submitted run's MCP snapshot path is always absolute, so a child whose
+  working directory differs from the server's can read the `--mcp-config` file
+  it is handed when the jobs root itself is relative.
+- `li agent --idle-timeout SECONDS` stops a run as stalled when the worker emits nothing for
+  that long after it has started answering, and profiles may set the same value as
+  `idle_timeout`. The default stays `LIONAGI_WORKER_IDLE_TIMEOUT` (`600`); the flag or profile
+  value overrides it, `0` is refused, and the bound (`1` to `2**53 - 1`) is published as
+  `minimum`/`maximum` in the `agent.submit` schema. It watches a CLI worker's streamed output;
+  an API-model leg's turn is bounded by `--timeout` instead.
+- `profile.list` accepts the optional `idle_timeout` key under `fields`, so a caller can ask
+  for it on a profile that does not declare it and read `null` instead of a refused field name.
+- Schedule definitions now retain create, enable, disable and delete events in the existing
+  lifecycle history, separately from execution occurrences. Changes made through `StateDB`,
+  atomic ScheduleSet applies and scheduler limits commit together with their history. The
+  detail response includes `lifecycle.available` and the latest recorded definition event;
+  `StateDB.get_schedule_history` can read retained events after deletion. Untouched legacy
+  definitions have no invented history, and read-only stores missing the ledger report it as
+  unavailable. Existing callers temporarily remain compatible without a reason or submitter
+  context, explicitly recording unavailable attribution, origin and source. A definition id
+  that already has recorded history, including one whose definition was deleted, cannot be
+  created again: `StateDB` refuses it with `LifecycleValidationError`. Required manual disable
+  reasons, client provenance transport and the browser history display are not yet implemented.
+- An API-model `li agent` leg can run batched LNDL rounds in place of ReAct: a profile that
+  declares `api_tools: read` may set `api_loop: lndl` (default `react`). A round either declares
+  up to 16 tool calls, which run together, or writes the answer as text; the turn ends when an
+  answer is accepted. A turn that uses up its rounds without an answer ends `failed` with the
+  error recorded. The loop is recorded on the branch and a resume runs the recorded one.
+- Every API-model `li agent` invocation records what it spent under
+  `metadata["api_launch"]["spend"]` (`requests`, `tool_calls`, `wall_seconds`, for that
+  invocation only) and prints it as `[api] spend: ...` after each turn.
+- `build_lndl_middle(lacts_with_out=False)` keeps tool calls and the answer in separate rounds:
+  a round that declares `<lact>` calls beside its `OUT{}` is refused and none of its calls runs.
+  From the second round on, the last round's notice says it is the last, and a refused round's
+  error is shown to the next round only.
+- `lionagi.lndl.Parser.parse(read_past_out=True)` reads declarations on both sides of `OUT{}`
+  and raises `ParseError` on a second `OUT{}`; without it, parsing still stops at the first
+  `OUT{}`.
+
+- `lionagi.ln.short_id(n=12)` returns a UUID4 hexadecimal prefix with an explicit
+  integer length from 1 to 32; boolean and out-of-range lengths raise `ValueError`.
+- `lionagi.ln.parse_duration` parses positive finite durations in lowercase `s`, `m`,
+  `h` and `d`, with optional fractional values, bare seconds and an inclusive maximum.
+  Boolean maxima and whitespace before a unit are rejected; integer bounds are
+  checked before conversion to float.
 - `lionagi.ln.concurrency.temporary_signal_handlers(handler, signals=(SIGINT, SIGTERM))`, a
   context manager that installs one handler for the length of a block and restores each prior
   handler on exit. Like `run_async`, it installs nothing off the main thread and leaves alone a
@@ -51,7 +131,7 @@ project those rows ran under. To keep the project, name it in those members.
   row when it creates the store, and compatibility mode admits only a store that has it, so a
   native open in another process cannot migrate a store being written in compatibility mode;
   compatibility mode in turn refuses a store this process has open natively. A store without the
-  row opens and migrates natively as before. Studio's own store opener is not covered yet.
+  row is admitted by its other rows (see Changed). Studio's own store opener is not covered yet.
 - `RunEnd` and the run usage totals report cache writes by lifetime, `cache_write_5m_tokens` and
   `cache_write_1h_tokens`, read from Anthropic's `usage.cache_creation`; `cache_write_tokens` stays
   the total. The lifetimes are reported only when they cover the whole `cache_write_tokens` total
@@ -83,6 +163,46 @@ project those rows ran under. To keep the project, name it in those members.
   header is still accepted, it is recorded unattributed, and the decision contract is still
   version 1. `LIONAGI_STUDIO_AUTH_TOKEN` neither issues a code nor carries decision authority.
   Every other route's admission is unchanged.
+- MCP argument validation now enforces `minimum`/`maximum`, `minLength`/`maxLength` and
+  `pattern`, checks `enum` whatever the value's type, and treats `null` as a type it checks
+  rather than as an absent check, so a value outside a published bound or choice is refused
+  before a run is spawned instead of reaching the child. When several ops in one call are
+  rejected against the same schema, the first carries it inline and each later one carries
+  `schema_ref` (the holding entry's `op_index` and the schema fingerprint) instead of a repeated
+  copy.
+- A writable native `StateDB` open writes `lineage = 'lionagi'` into `schema_meta` when it applies
+  its schema, and admits a store by its rows (ADR-0128 D7). A store whose lineage names lionagi
+  opens as before. A store without the row is adopted, and the row written, when it records a
+  version from 1 to the current one and holds the `sessions` table or no table lionagi never
+  creates, or when it has no `schema_meta` table and every table in it is one lionagi creates (the
+  Studio Operator store and Studio's approval ledger can create their tables first). Tables are
+  recognized by name. Any other store raises `UnrecognizedStoreError` (exported from
+  `lionagi.state`): a missing version, one no release writes, a `schema_meta` table without `key`
+  and `value` columns, or a table lionagi never creates. On SQLite these rows and the version are
+  read with the lineage row before any writable connection exists, so a store refused on them,
+  `SchemaTooNewError` included, keeps its bytes, its journal mode and its write-ahead log whenever
+  those reads can read them, and the pre-rebuild backup reads them again before its checkpoint. An open refused with
+  `SchemaTooNewError` now leaves no engine, as the other refusals do. A store whose journal or
+  write-ahead log is present and cannot be read is refused as `UnreadableStoreError` (exported from
+  `lionagi.state`) before any writable connection, rather than opened on the file's own row, which
+  can be part of an unfinished transaction or stale beside a committed log. On PostgreSQL a
+  database with no `schema_meta` table is still new.
+
+- Mirror and monitor time windows reject zero, negative, non-finite values and
+  uppercase units, trim surrounding whitespace, and accept explicit seconds (`s`)
+  in mirror windows. Invalid stats windows report a clear input error.
+- Run, team and show imports and transcript mirrors interpret naive ISO timestamps
+  as UTC and accept numeric epoch strings. Out-of-range timestamp values keep
+  each importer's existing filesystem-time or missing-value fallback.
+- `lionagi.ln.coerce_created_at` rejects booleans, interprets naive ISO strings as
+  UTC, and accepts trailing `Z`/`z` and microsecond-normalized fractions on Python
+  3.10. Numeric strings still parse as epoch seconds before ISO dates, including
+  compact strings such as `"20250101"`; out-of-range strings raise `ValueError`.
+- `assert_eventually` uses a monotonic clock for its timeout, so wall-clock changes
+  no longer shorten or extend the polling deadline.
+- CLI stream result parsers measure elapsed time with the active async backend's
+  clock, so the Gemini, Codex and Pi parsers can finish under Trio. Operator
+  heartbeat deadlines and scheduler recovery deadlines use the same clock helper.
 - `li studio --docker` publishes the daemon's port on the address `--host` names, loopback
   (`127.0.0.1`) by default, where it published on every host interface, so with
   `LIONAGI_STUDIO_AUTH_TOKEN` unset other machines on the network could reach the API. The
@@ -98,6 +218,54 @@ project those rows ran under. To keep the project, name it in those members.
   address, so the bearer token is the access control. When `LIONAGI_STUDIO_AUTH_TOKEN` is set in
   the environment, the container now receives it (by name, so the value stays out of the argument
   list).
+- Deduplicating operation fields keeps the first of equal values. A value that can be keyed is
+  grouped by its own hash and compared only inside that group, so two action outputs that
+  compare equal are one value even when they print differently; a mapping or model value has no
+  key and is compared pairwise with every kept value. An output whose `==` gives no single truth
+  value, such as an array or a data frame, is kept as a separate value instead of raising, and so
+  is an action request whose arguments hold one; an `AttributeError`, `RecursionError`,
+  `TypeError`, `ValueError` or unhashable-structural error from a value's own `__eq__` reads as
+  unequal the same way.
+  `to_list(..., unique=True)` keeps the first of equal `DataClass` values. It groups values that
+  keep the base equality by a transient hash of their declared field state, taken during
+  deduplication and not stored, groups a value whose class defines its own equality by its own
+  hash, and compares each value with its group and with the kept values of the other kind that
+  could not be keyed, asking each pair in both directions, so a pair either side's equality
+  calls equal is one value whichever value arrived first. Two values whose hashes differ are
+  never compared, so equal values of a type whose `__eq__` crosses kinds without a matching
+  `__hash__` are both kept, exactly as a `set` would keep them; a non-transitive `__eq__` can
+  still make the result depend on the order the values arrive in. A value whose key cannot be
+  taken falls back to the equality path rather than raising: a `DataClass` value whose field
+  state cannot be hashed, such as one nested past the recursion limit, is compared with the
+  kept values that define their own equality and is kept as a separate value unless it is the
+  same object or a kept value's own equality calls it equal; a value whose own hash reports
+  itself unhashable with `TypeError`, or with a `ValueError` a `memoryview` it reaches raises
+  because the view is writable, holds a non-byte format or has been released, has no key and
+  is compared by identity and equality. A mapping or model value in the plain
+  `unique=True` branch that cannot be keyed is compared against every kept value, the keyed
+  ones included, and a keyed one is compared against the keyless ones too, so a keyless and a
+  keyable value that are equal are one value in either order. A mapping or model whose
+  contents give no key -- a cycle a container, struct or model holds, which the content key
+  reports as `TypeError`, or a value nested past the recursion limit -- is compared the same
+  way, so a struct or model that holds itself no longer escapes as a serializer error. A
+  `memoryview` in a mapping or model is keyed by the shape and values it compares by, because
+  its string is its address: a one-dimensional view of byte values has the key of the bytes it
+  equals, whatever its format, and a released view, which equals only itself, is keyed by its
+  string; `hash_obj` reads it the same way. A frozen value holding a read-only view of `bytes`
+  is hashable and equals one holding a view of the same shape and values; one holding a
+  writable view, a read-only view of a mutable buffer or a released view refuses its hash, as
+  one holding a `bytearray` does, and the base `DataClass` equality reads a one-dimensional
+  view of byte values as the bytes it equals. Under the base `DataClass` equality, a field
+  holding a Pydantic model or msgspec struct that holds itself compares unequal, as other
+  cyclic values do, rather than raising the serializer's error; any other error from a
+  model's own serializer propagates. A `DataClass` value is never compared with a plain
+  mapping: the two are deduplicated in separate branches, so a pair that only the `DataClass`
+  equality would join across the two stays two values. Equality-only values are compared
+  pairwise, so a list of n such values costs up to n*(n-1)/2 comparisons. A value's own
+  `__hash__` is read exactly as a `set` reads it: only `TypeError`, or a `ValueError` a
+  `memoryview` raises refusing its hash, means the value is unhashable and takes the equality
+  path, and any other error from it, such as one that reads a field the value no longer
+  carries, is a bug in that `__hash__` and propagates.
 - The Antigravity (`gemini_code` / `gemini-code` / `gemini-cli`) backend knows the Gemini 4 Argon
   family that `agy models` now lists: `gemini-4-argon` (and `gemini-4`, `argon`) resolves to
   `Gemini 4 Argon (High)`, the `-low` / `-medium` / `-high` suffixes and `--effort` pick the tier,
@@ -172,8 +340,44 @@ project those rows ran under. To keep the project, name it in those members.
   `StateDB.close()`. `register_shared_db()` raises any error the displaced handle's close raised,
   a refusal included, rather than replacing the entry over a handle that is still open.
 
+### Removed
+
+- A mutable `HashableModel` or `DataClass` value, the operation field models included, now
+  raises `TypeError` from `hash()`, so it can no longer be put in a set or used as a dictionary
+  key. Its hash was computed from its content, which can change after the value is stored, and
+  the container then fails to find it. Use a stable identifier as the key. `HashableModel`
+  keeps its name, imports, value equality and serialization. The `MessageContent` types
+  already raised. A frozen `HashableModel` subclass now gets pydantic's hash of its field
+  values: it hashes when every field value does, so a subclass with a list or dict field now
+  raises `TypeError` where it used to hash by content. Declare such fields as tuples to keep
+  hashing.
+
 ### Fixed
 
+- `li schedule validate` and `li schedule apply` name every invalid schedule as `<project>/<name>`
+  (`global/<name>` for a global set), in the text lines and in `--json` alike. A resolution error
+  used to carry the bare member name, so `--json` reported it unqualified while plan errors were
+  qualified.
+- A scheduled playbook launch passes the args its schedule declares (`action_playbook_args`, or
+  the args of the resolved playbook target), as in `li play audit --depth 2`. It used to launch the
+  bare playbook, and adopting a declared playbook schedule with args was refused for that reason.
+  An arg the launch cannot pass (a name that is one of `li play`'s own flags, such as `project`, or a
+  value starting with `-`) is now refused when the set is validated or applied, rather than on every
+  fire, and stored args that are not an object are refused at launch rather than dropped.
+- Session health finds a stale `finalize.lock` in a run's directory and a stale `job.lock` in its
+  MCP job directory. Both sit beside the `artifacts` directory a session records, which is the only
+  tree the check walked, so for most runs a stale lock was never seen and the session was classified
+  by its process alone.
+- The Studio operator stores a proposal's outcome frame (the `confirmation`, `error` or
+  `tool_result` the conversation shows for it) in the same transaction that decides, expires or
+  completes the proposal. The frame used to be appended after that commit, so a turn that finished
+  in between kept the decision with no record of its outcome in its frame history.
+- The Studio operator's `cancel_run`, `rename_session` and `resume_run` tools refuse with
+  `missing_owner_context` on a turn that has an owner but no declared project, before resolving the
+  reference, a full run id and `"current"` included, as `run_control` (pause, resume, message)
+  already did. They used to resolve a full id on such a turn with no project check, so the turn
+  could propose changing a run in another project, and the found or not-found answer told it
+  whether that id existed. The read tools still resolve a full id on such a turn.
 - `li agent` warns when it hands a leg no MCP servers because no `.mcp.json` was found at or
   above its directory and none was named. That path skipped the warning, so the leg started
   without the servers its instructions assumed and nothing said so. `--no-mcp-config`, and a
@@ -252,6 +456,12 @@ project those rows ran under. To keep the project, name it in those members.
   and a `ReActStream` caller that passes its own `"sequential"` action parameters keeps them on
   every round. Through `ReAct()`, the first round used to run concurrently whatever it declared,
   and each extension round used to run under the strategy the round before it declared.
+- A conflicting guarded transition no longer returns a generated `transition_id`. No
+  `status_transitions` row is written for a conflict, so the returned id referenced nothing;
+  it is now `None`. An applied transition's id is unchanged and still names the row written.
+- A tool call that succeeds and returns `None` now leaves its `ActionResponse` in the branch's
+  messages, linked from its `ActionRequest`, as a call that returns any other value does. It
+  used to leave only the request.
 
 ### Security
 

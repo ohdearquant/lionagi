@@ -2409,7 +2409,8 @@ def test_one_oversized_argument_is_refused_where_the_platform_caps_one(sandbox, 
     one_arg = "x" * 131073
     assert len(one_arg) < limit, "must fit the aggregate limit, or this tests the wrong thing"
 
-    with pytest.raises(ValueError, match="single argument"):
+    # the caller's own input, so the MCP surface reports it as invalid_input
+    with pytest.raises(jobs.SubmitInputError, match="single argument"):
         jobs.submit("flow", [], prompt=one_arg)
 
     assert jobs.list_jobs() == []

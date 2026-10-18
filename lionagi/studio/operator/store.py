@@ -20,13 +20,13 @@ always be closed.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
+from lionagi.ln import compute_hash, short_id
 from lionagi.ln.types import Unset, UnsetType
 from lionagi.state import db as state_db_mod
 
@@ -176,6 +176,12 @@ TRUNCATION_FRAME_TYPE = "truncation"
 # Shape of the Operator's own tables, recorded in the store file's
 # ``PRAGMA user_version``. Version 2 added the decision principal columns.
 OPERATOR_STORE_VERSION = 2
+
+# Returned by ``_append_frame_in_tx`` when the frame was folded into the turn's
+# truncation summary: a row was written, but there is no frame to return, which
+# is not the same as a refusal. Distinct from ``None`` so a caller inside its
+# own transaction commits the summary it just recorded.
+_ELIDED: Any = object()
 
 
 class OperatorStoreError(RuntimeError):
@@ -363,7 +369,7 @@ class OperatorStore:
 
     @staticmethod
     def canonical_hash(value: Any) -> str:
-        return hashlib.sha256(OperatorStore._json(value).encode("utf-8")).hexdigest()
+        return compute_hash(OperatorStore._json(value), max_bytes=None)
 
     @staticmethod
     def _conversation(row: Any) -> dict[str, Any]:
@@ -472,6 +478,35 @@ class OperatorStore:
             "origin": principal.origin,
             "scope": principal.scope,
         }
+
+    @staticmethod
+    def _outcome_frames(
+        *,
+        proposal_id: str,
+        status: str,
+        result: dict[str, Any] | None,
+        error_code: str | None,
+    ) -> list[tuple[str, dict[str, Any]]]:
+        """The stream frames one terminalized application command produces.
+
+        A successful command is acknowledged with its result; a failed or
+        refused one reports why. These are the frames that must be durable
+        before the status that produced them is visible. A decided command's
+        result is matched to its proposal, so the call id is the proposal id.
+        """
+        if status == "succeeded":
+            return [
+                ("confirmation", {"proposalId": proposal_id, "state": "executed"}),
+                ("tool_result", {"callId": proposal_id, "ok": True, "result": result}),
+            ]
+        error: dict[str, Any] = {
+            "code": error_code,
+            "message": (result or {}).get("message"),
+            "retryable": False,
+        }
+        if isinstance(result, dict) and result.get("details") is not None:
+            error["details"] = result["details"]
+        return [("tool_result", {"callId": proposal_id, "ok": False, "error": error})]
 
     @classmethod
     def _proposal_audit_details(
@@ -1374,6 +1409,97 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
             return "turn_payload_bytes"
         return None
 
+    async def _append_frame_in_tx(
+        self,
+        db: Any,
+        *,
+        conversation_id: str,
+        request_id: str,
+        frame_type: str,
+        payload: dict[str, Any],
+        now: float,
+    ) -> dict[str, Any] | None:
+        """Write one frame inside the caller's already-open transaction.
+
+        The caller holds ``BEGIN IMMEDIATE``; this appends the row and advances
+        the conversation sequence without committing. A decision that must not
+        lose its confirmation writes that frame in the same transaction that
+        exposes the proposal's new status, so the permission poller cannot
+        observe the status and finalize the turn in the gap between the two
+        writes. The guard is the same one ``append_frame`` applies: ``None``
+        when a ``done`` frame already exists or the request is no longer the
+        conversation's active one, so no arbitrary frame lands after ``done``.
+        """
+        terminal = await (
+            await db.execute(
+                "SELECT 1 FROM studio_operator_frames "
+                "WHERE request_id=? AND frame_type='done' LIMIT 1",
+                (request_id,),
+            )
+        ).fetchone()
+        if terminal is not None:
+            return None
+        row = await (
+            await db.execute(
+                "SELECT next_sequence FROM studio_operator_conversations "
+                "WHERE id=? AND active_request_id=?",
+                (conversation_id, request_id),
+            )
+        ).fetchone()
+        if row is None:
+            return None
+        sequence = int(row["next_sequence"])
+        stored_payload = self._cap_frame_payload(dict(payload))
+        if frame_type == "done":
+            stored_payload["lastSequence"] = sequence
+        else:
+            over_budget = await self._turn_budget_exceeded(
+                db,
+                request_id,
+                self._byte_len(self._json(stored_payload)),
+            )
+            if over_budget is not None:
+                return (
+                    await self._record_elided_frame(
+                        db,
+                        conversation_id=conversation_id,
+                        request_id=request_id,
+                        frame_type=frame_type,
+                        payload_bytes=self._byte_len(self._json(stored_payload)),
+                        sequence=sequence,
+                        reason=over_budget,
+                        now=now,
+                        commit=False,
+                    )
+                    or _ELIDED
+                )
+        await db.execute(
+            "UPDATE studio_operator_conversations SET next_sequence=?, updated_at=? WHERE id=?",
+            (sequence + 1, now, conversation_id),
+        )
+        await db.execute(
+            "INSERT INTO studio_operator_frames "
+            "(conversation_id, sequence, request_id, frame_type, payload_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                conversation_id,
+                sequence,
+                request_id,
+                frame_type,
+                self._json(stored_payload),
+                now,
+            ),
+        )
+        return {
+            "version": 1,
+            "conversationId": conversation_id,
+            "requestId": request_id,
+            "sequence": sequence,
+            "type": frame_type,
+            "payload": stored_payload,
+            "createdAt": now,
+        }
+
     async def _record_elided_frame(
         self,
         db: Any,
@@ -1385,8 +1511,14 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
         sequence: int,
         reason: str,
         now: float,
+        commit: bool = True,
     ) -> dict[str, Any] | None:
-        """Fold one refused frame into the turn's single truncation summary frame."""
+        """Fold one refused frame into the turn's single truncation summary frame.
+
+        Commits by default; a caller already inside its own transaction
+        (``_append_frame_in_tx``) passes ``commit=False`` so the summary lands
+        with that transaction instead of ending it early.
+        """
         existing = await (
             await db.execute(
                 "SELECT sequence, payload_json FROM studio_operator_frames "
@@ -1407,7 +1539,8 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                 "WHERE request_id=? AND sequence=?",
                 (self._json(summary), request_id, existing["sequence"]),
             )
-            await db.commit()
+            if commit:
+                await db.commit()
             return None
         summary = {
             "reason": reason,
@@ -1443,7 +1576,8 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                 now,
             ),
         )
-        await db.commit()
+        if commit:
+            await db.commit()
         return {
             "version": 1,
             "conversationId": conversation_id,
@@ -1463,82 +1597,28 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
     ) -> dict[str, Any] | None:
         """Insert before returning; returned frames are therefore safe to yield.
 
-        Enforces the per-turn retention contract: an oversized payload is stored
-        truncated, and once the turn's frame or byte budget is spent the frame is
-        folded into a single durable ``truncation`` summary instead of a new row.
+        Enforces the per-turn retention contract (see ``_append_frame_in_tx``,
+        which does the work): an oversized payload is stored truncated, and
+        once the turn's frame or byte budget is spent the frame is folded into
+        a single durable ``truncation`` summary instead of a new row.
         """
         await self.ensure_schema()
         now = time.time()
         async with open_db(str(self.path())) as db:
             await db.execute("BEGIN IMMEDIATE")
-            terminal = await (
-                await db.execute(
-                    "SELECT 1 FROM studio_operator_frames "
-                    "WHERE request_id=? AND frame_type='done' LIMIT 1",
-                    (request_id,),
-                )
-            ).fetchone()
-            if terminal is not None:
+            frame = await self._append_frame_in_tx(
+                db,
+                conversation_id=conversation_id,
+                request_id=request_id,
+                frame_type=frame_type,
+                payload=payload,
+                now=now,
+            )
+            if frame is None:
                 await db.rollback()
                 return None
-            row = await (
-                await db.execute(
-                    "SELECT next_sequence FROM studio_operator_conversations "
-                    "WHERE id=? AND active_request_id=?",
-                    (conversation_id, request_id),
-                )
-            ).fetchone()
-            if row is None:
-                await db.rollback()
-                return None
-            sequence = int(row["next_sequence"])
-            stored_payload = self._cap_frame_payload(dict(payload))
-            if frame_type == "done":
-                stored_payload["lastSequence"] = sequence
-            else:
-                over_budget = await self._turn_budget_exceeded(
-                    db,
-                    request_id,
-                    self._byte_len(self._json(stored_payload)),
-                )
-                if over_budget is not None:
-                    return await self._record_elided_frame(
-                        db,
-                        conversation_id=conversation_id,
-                        request_id=request_id,
-                        frame_type=frame_type,
-                        payload_bytes=self._byte_len(self._json(stored_payload)),
-                        sequence=sequence,
-                        reason=over_budget,
-                        now=now,
-                    )
-            await db.execute(
-                "UPDATE studio_operator_conversations SET next_sequence=?, updated_at=? WHERE id=?",
-                (sequence + 1, now, conversation_id),
-            )
-            await db.execute(
-                "INSERT INTO studio_operator_frames "
-                "(conversation_id, sequence, request_id, frame_type, payload_json, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    conversation_id,
-                    sequence,
-                    request_id,
-                    frame_type,
-                    self._json(stored_payload),
-                    now,
-                ),
-            )
             await db.commit()
-        return {
-            "version": 1,
-            "conversationId": conversation_id,
-            "requestId": request_id,
-            "sequence": sequence,
-            "type": frame_type,
-            "payload": stored_payload,
-            "createdAt": now,
-        }
+        return None if frame is _ELIDED else frame
 
     async def append_effect(
         self,
@@ -1791,7 +1871,7 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                     "(id, created_at, action, target_id, details, actor) "
                     "VALUES (?, ?, 'studio.operator.command', ?, ?, 'studio_operator')",
                     (
-                        uuid.uuid4().hex[:12],
+                        short_id(12),
                         now,
                         proposal["id"],
                         self._json(details),
@@ -2024,7 +2104,6 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
         """
         await self.ensure_schema()
         now = time.time()
-        transitioned = False
         claimed_execution = False
         async with open_db(str(self.path())) as db:
             await db.execute("BEGIN IMMEDIATE")
@@ -2069,7 +2148,7 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                         "(id, created_at, action, target_id, details, actor) "
                         "VALUES (?, ?, 'studio.operator.command', ?, ?, 'studio_operator')",
                         (
-                            uuid.uuid4().hex[:12],
+                            short_id(12),
                             now,
                             proposal_id,
                             self._json(details),
@@ -2085,8 +2164,15 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                     "WHERE request_id=? AND status='awaiting_confirmation'",
                     (row["request_id"],),
                 )
+                await self._append_frame_in_tx(
+                    db,
+                    conversation_id=conversation_id,
+                    request_id=row["request_id"],
+                    frame_type="confirmation",
+                    payload={"proposalId": proposal_id, "state": "expired"},
+                    now=now,
+                )
                 await db.commit()
-                transitioned = True
                 expired = True
             else:
                 expired = False
@@ -2121,7 +2207,7 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                         "(id, created_at, action, target_id, details, actor) "
                         "VALUES (?, ?, 'studio.operator.command', ?, ?, 'studio_operator')",
                         (
-                            uuid.uuid4().hex[:12],
+                            short_id(12),
                             now,
                             proposal_id,
                             self._json(audit_details),
@@ -2149,44 +2235,36 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                     "WHERE request_id=? AND status='awaiting_confirmation'",
                     (row["request_id"],),
                 )
+                await self._append_frame_in_tx(
+                    db,
+                    conversation_id=conversation_id,
+                    request_id=row["request_id"],
+                    frame_type="confirmation",
+                    payload={
+                        "proposalId": proposal_id,
+                        "state": "confirmed" if allow else "cancelled",
+                    },
+                    now=now,
+                )
+                if not allow:
+                    await self._append_frame_in_tx(
+                        db,
+                        conversation_id=conversation_id,
+                        request_id=row["request_id"],
+                        frame_type="error",
+                        payload={
+                            "error": {
+                                "code": "denied",
+                                "message": (
+                                    "The human at the Studio permission prompt denied this request"
+                                ),
+                                "retryable": False,
+                            }
+                        },
+                        now=now,
+                    )
                 await db.commit()
-                transitioned = True
                 claimed_execution = status == "executing"
-        if expired:
-            await self.append_frame(
-                conversation_id,
-                row["request_id"],
-                "confirmation",
-                {"proposalId": proposal_id, "state": "expired"},
-            )
-        elif transitioned and allow:
-            await self.append_frame(
-                conversation_id,
-                row["request_id"],
-                "confirmation",
-                {"proposalId": proposal_id, "state": "confirmed"},
-            )
-        elif transitioned:
-            await self.append_frame(
-                conversation_id,
-                row["request_id"],
-                "confirmation",
-                {"proposalId": proposal_id, "state": "cancelled"},
-            )
-            await self.append_frame(
-                conversation_id,
-                row["request_id"],
-                "error",
-                {
-                    "error": {
-                        "code": "denied",
-                        "message": (
-                            "The human at the Studio permission prompt denied this request"
-                        ),
-                        "retryable": False,
-                    }
-                },
-            )
         proposal = await self.get_proposal(proposal_id)
         proposal["_claimedExecution"] = claimed_execution
         return proposal
@@ -2200,6 +2278,14 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
         error_code: str | None = None,
         audit: bool = False,
     ) -> dict[str, Any]:
+        """Terminalize one confirmed or executing proposal.
+
+        The outcome frames -- the ``executed`` confirmation for a success and
+        the command's tool result or reported failure -- are written inside the
+        same transaction that makes the terminal status visible. Nothing can
+        then observe the status and finish the turn before the outcome it
+        carries is durable; the transition and its frames commit together.
+        """
         await self.ensure_schema()
         now = time.time()
         async with open_db(str(self.path())) as db:
@@ -2239,12 +2325,27 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                     "(id, created_at, action, target_id, details, actor) "
                     "VALUES (?, ?, 'studio.operator.command', ?, ?, 'studio_operator')",
                     (
-                        uuid.uuid4().hex[:12],
+                        short_id(12),
                         now,
                         proposal_id,
                         self._json(details),
                     ),
                 )
+            if cur.rowcount:
+                for frame_type, payload in self._outcome_frames(
+                    proposal_id=proposal_id,
+                    status=status,
+                    result=result,
+                    error_code=error_code,
+                ):
+                    await self._append_frame_in_tx(
+                        db,
+                        conversation_id=row["conversation_id"],
+                        request_id=row["request_id"],
+                        frame_type=frame_type,
+                        payload=payload,
+                        now=now,
+                    )
             await db.commit()
         return await self.get_proposal(proposal_id)
 
@@ -2255,7 +2356,12 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
         *,
         ok: bool,
     ) -> dict[str, Any] | None:
-        """Terminalize the confirmed provider proposal for one native tool result."""
+        """Terminalize the confirmed provider proposal for one native tool result.
+
+        The executed confirmation is written inside the same transaction that
+        makes the terminal status visible, so nothing can observe that status
+        and finish the turn before the confirmation is durable.
+        """
         if not tool_use_id:
             return None
         await self.ensure_schema()
@@ -2313,11 +2419,19 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                 "(id, created_at, action, target_id, details, actor) "
                 "VALUES (?, ?, 'studio.operator.command', ?, ?, 'studio_operator')",
                 (
-                    uuid.uuid4().hex[:12],
+                    short_id(12),
                     now,
                     matched_id,
                     self._json(details),
                 ),
+            )
+            await self._append_frame_in_tx(
+                db,
+                conversation_id=row["conversation_id"],
+                request_id=request_id,
+                frame_type="confirmation",
+                payload={"proposalId": matched_id, "state": "executed"},
+                now=now,
             )
             await db.commit()
         return await self.get_proposal(matched_id)
@@ -2356,7 +2470,7 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                     "(id, created_at, action, target_id, details, actor) "
                     "VALUES (?, ?, 'studio.operator.command', ?, ?, 'studio_operator')",
                     (
-                        uuid.uuid4().hex[:12],
+                        short_id(12),
                         now,
                         proposal_id,
                         self._json(details),
@@ -2367,14 +2481,16 @@ WHERE request_id IN ({placeholders}) ORDER BY sequence ASC
                     "WHERE request_id=? AND status='awaiting_confirmation'",
                     (row["request_id"],),
                 )
+            if cur.rowcount:
+                await self._append_frame_in_tx(
+                    db,
+                    conversation_id=row["conversation_id"],
+                    request_id=row["request_id"],
+                    frame_type="confirmation",
+                    payload={"proposalId": proposal_id, "state": "expired"},
+                    now=now,
+                )
             await db.commit()
-        if cur.rowcount:
-            await self.append_frame(
-                row["conversation_id"],
-                row["request_id"],
-                "confirmation",
-                {"proposalId": proposal_id, "state": "expired"},
-            )
         return await self.get_proposal(proposal_id)
 
     async def recover_interrupted_turns(self) -> list[str]:

@@ -38,7 +38,7 @@ from lionagi.state.compat import (
     _trigger_owner_problems,
     read_closure,
 )
-from lionagi.state.db import ForeignLineageError, StateDB
+from lionagi.state.db import ForeignLineageError, StateDB, UnreadableStoreError
 
 OWNER = "owner_principal_id"
 _OWNED = (
@@ -195,7 +195,8 @@ async def _managed_store(
 
 def _manage(path: Path, owner_sql: str = _OWNER_COLUMN, owner_name: str = OWNER) -> Path:
     # The managing application's own columns, principals and version, and the lineage row it writes
-    # when it creates the store (ADR-0128 D7).
+    # when it creates the store (ADR-0128 D7). The store was built by a native open, which wrote
+    # lionagi's own row; the manager's row replaces it.
     with closing(sqlite3.connect(path)) as conn:
         for table in _OWNED:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {owner_name} {owner_sql}")
@@ -205,7 +206,7 @@ def _manage(path: Path, owner_sql: str = _OWNER_COLUMN, owner_name: str = OWNER)
             INSERT INTO principals VALUES
                 ('principal:a', 'human'), ('principal:b', 'human'), ('principal:default', 'human');
             UPDATE schema_meta SET value = '900' WHERE key = 'version';
-            INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager');
+            INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager');
             """
         )
         conn.commit()
@@ -446,7 +447,7 @@ conn.execute("PRAGMA wal_autocheckpoint = 0")
 if sys.argv[2] == "only-in-the-log":
     # Not read again after the write, so the log's index records no reader at its last frame and
     # a read-only reader that records its own would write the index.
-    conn.execute("INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+    conn.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
 else:
     conn.execute("SELECT count(*) FROM schema_meta").fetchone()
 print("holding", flush=True)
@@ -539,7 +540,8 @@ async def test_a_store_whose_lineage_names_this_package_opens_natively(tmp_path)
     first = StateDB(path)
     await first.open()
     await first.close()
-    _execute(path, "INSERT INTO schema_meta (key, value) VALUES ('lineage', 'lionagi')")
+    # Native initialization writes the row itself (ADR-0128 D7).
+    assert _rows(path, "SELECT value FROM schema_meta WHERE key = 'lineage'") == [("lionagi",)]
     again = StateDB(path)
     await again.open()
     await again.close()
@@ -592,7 +594,9 @@ async def test_a_lineage_row_written_just_before_the_writable_open_is_refused(
     make_engine = db_mod.make_engine
 
     def landing(url, **kwargs):
-        _execute(store, "INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+        _execute(
+            store, "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')"
+        )
         return make_engine(url, **kwargs)
 
     monkeypatch.setattr(db_mod, "make_engine", landing)
@@ -650,7 +654,7 @@ async def test_a_refused_native_open_leaves_a_hot_journal_that_took_the_row_out_
     store = await _managed_store(tmp_path / "managed.db")
     _execute(store, "PRAGMA journal_mode = delete")
     copy = _hot_copy(store, tmp_path / "copy.db", "DELETE FROM schema_meta WHERE key = 'lineage'")
-    assert _read_lineage(f"{copy.as_uri()}?immutable=1")[1] is None
+    assert _read_lineage(f"{copy.as_uri()}?immutable=1")[1].lineage is None
     before = _snapshot(copy)
     assert set(before) == {"", "-journal"}
     with pytest.raises(ForeignLineageError, match="'manager' as the application"):
@@ -659,8 +663,9 @@ async def test_a_refused_native_open_leaves_a_hot_journal_that_took_the_row_out_
 
 
 async def test_a_lineage_row_an_interrupted_transaction_wrote_does_not_refuse_the_open(tmp_path):
-    """The file shows a row the interrupted transaction wrote, which rolling the journal back
-    removes; the store opens natively, and the writable connection rolls the journal back."""
+    """The file shows a row the interrupted transaction wrote over lionagi's own, which rolling the
+    journal back undoes; the store opens natively, and the writable connection rolls the journal
+    back."""
     from lionagi.state.db import _read_lineage
 
     store = tmp_path / "native.db"
@@ -671,13 +676,13 @@ async def test_a_lineage_row_an_interrupted_transaction_wrote_does_not_refuse_th
     copy = _hot_copy(
         store,
         tmp_path / "copy.db",
-        "INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')",
+        "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')",
     )
-    assert _read_lineage(f"{copy.as_uri()}?immutable=1")[1] == "manager"
+    assert _read_lineage(f"{copy.as_uri()}?immutable=1")[1].lineage == "manager"
     again = StateDB(copy)
     await again.open()
     await again.close()
-    assert _rows(copy, "SELECT value FROM schema_meta WHERE key = 'lineage'") == []
+    assert _rows(copy, "SELECT value FROM schema_meta WHERE key = 'lineage'") == [("lionagi",)]
 
 
 @pytest.mark.parametrize("spelling", ["dot", "symlink"])
@@ -753,7 +758,9 @@ async def test_a_native_handles_later_connections_read_a_lineage_row_written_aft
     native = StateDB(store)
     await native.open()
     try:
-        _execute(store, "INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+        _execute(
+            store, "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')"
+        )
         await native._engine.dispose()
         with pytest.raises(ForeignLineageError, match="'manager' as the application"):
             async with native._engine.connect() as conn:
@@ -781,22 +788,65 @@ async def test_an_open_whose_connection_never_read_the_store_leaves_no_engine(tm
         await handle.close()
 
 
-async def test_an_open_that_fails_after_its_connection_read_the_store_keeps_its_engine(tmp_path):
-    """Only an open whose connection never read the store is undone; after a later failure the
-    engine stays, as it always has."""
-    from lionagi.state.db import SCHEMA_VERSION, SchemaTooNewError
-
-    path = tmp_path / "newer.db"
-    first = StateDB(path)
-    await first.open()
-    await first.close()
-    newer = str(int(SCHEMA_VERSION) + 1)
-    _execute(path, "UPDATE schema_meta SET value = ? WHERE key = 'version'", (newer,))
+async def test_an_open_that_fails_after_its_connection_read_the_store_keeps_its_engine(
+    tmp_path, monkeypatch
+):
+    """Only an open whose connection never read the store, or one that refuses the store, is
+    undone; after any other later failure the engine stays, as it always has, and the next open
+    completes on it."""
+    path = tmp_path / "state.db"
     handle = StateDB(path)
+
+    async def fail(self):
+        raise RuntimeError("after the connection read the store")
+
+    monkeypatch.setattr(StateDB, "_backfill_session_ended_at_once", fail)
     try:
-        with pytest.raises(SchemaTooNewError):
+        with pytest.raises(RuntimeError, match="after the connection read the store"):
             await handle.open()
         assert handle._engine is not None
+        monkeypatch.undo()
+        await handle.open()
+        assert handle._schema_applied
+    finally:
+        await handle.close()
+
+
+@pytest.mark.parametrize("refusal", ["too-new", "unrecognized"])
+async def test_a_kept_engine_whose_store_is_refused_on_the_next_open_is_disposed(
+    tmp_path, monkeypatch, refusal
+):
+    """The open that completes a kept engine refuses the store as a fresh open does, and the
+    refusal leaves no engine and no registration."""
+    from lionagi.state.db import (
+        _OPEN_NATIVE,
+        SCHEMA_VERSION,
+        SchemaTooNewError,
+        UnrecognizedStoreError,
+    )
+
+    path = tmp_path / "state.db"
+    handle = StateDB(path)
+
+    async def fail(self):
+        raise RuntimeError("after the connection read the store")
+
+    monkeypatch.setattr(StateDB, "_backfill_session_ended_at_once", fail)
+    with pytest.raises(RuntimeError):
+        await handle.open()
+    monkeypatch.undo()
+    assert handle._engine is not None
+    if refusal == "too-new":
+        stamp, expected = str(int(SCHEMA_VERSION) + 1), SchemaTooNewError
+    else:
+        stamp, expected = "not-a-version", UnrecognizedStoreError
+    _execute(path, "DELETE FROM schema_meta WHERE key = 'lineage'")
+    _execute(path, "UPDATE schema_meta SET value = ? WHERE key = 'version'", (stamp,))
+    try:
+        with pytest.raises(expected):
+            await handle.open()
+        assert handle._engine is None
+        assert handle not in _OPEN_NATIVE
     finally:
         await handle.close()
 
@@ -810,7 +860,9 @@ def _wal_copy(store: Path, copy: Path, *, lineage: bool = False, index: bool = F
         conn.execute("CREATE TABLE unfolded (v TEXT)")
         conn.execute("INSERT INTO unfolded (v) VALUES ('kept')")
         if lineage:
-            conn.execute("INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+            conn.execute(
+                "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')"
+            )
         shutil.copyfile(store, copy)
         shutil.copyfile(Path(f"{store}-wal"), Path(f"{copy}-wal"))
         if index:
@@ -873,7 +925,9 @@ async def test_a_refused_native_open_of_a_store_whose_file_was_cut_short_beside_
     copy = tmp_path / "copy.db"
     with closing(sqlite3.connect(store, isolation_level=None)) as conn:
         conn.execute("PRAGMA wal_autocheckpoint = 0")
-        conn.execute("INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')"
+        )
         conn.execute("VACUUM")
         shutil.copyfile(store, copy)
         shutil.copyfile(Path(f"{store}-wal"), Path(f"{copy}-wal"))
@@ -897,7 +951,9 @@ def _first_page_beside_its_log(directory: Path, *, whole: bool = False) -> Path:
         conn.execute("INSERT INTO schema_meta (key, value) VALUES ('version', '900')")
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         conn.execute("PRAGMA wal_autocheckpoint = 0")
-        conn.execute("INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')"
+        )
         copy = directory / "copy.db"
         data = store.read_bytes()
         copy.write_bytes(data if whole else data[:4096])
@@ -927,7 +983,7 @@ conn = sqlite3.connect(sys.argv[1], isolation_level=None)
 conn.execute("PRAGMA journal_mode = delete")
 conn.execute("CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
 conn.execute("CREATE TABLE filler (id INTEGER PRIMARY KEY, x TEXT)")
-conn.execute("INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+conn.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
 conn.execute("BEGIN IMMEDIATE")
 conn.executemany("INSERT INTO filler (x) VALUES (?)", [("y" * 200,)] * 3000)
 conn.execute("COMMIT")
@@ -964,14 +1020,11 @@ async def test_a_refused_native_open_of_a_store_whose_first_page_a_crash_tore(tm
     assert _snapshot(store) == before
 
 
-async def test_a_store_that_moves_under_every_copy_is_decided_by_the_writable_connection(
-    tmp_path, monkeypatch
-):
-    """Every copy sees the store commit or checkpoint under it. After the bounded number of copies
-    the early read decides nothing beyond the file's own row, which names no application here, and
-    the writable connection's own read refuses the row in the log. That connection is the store's
-    last one when it closes, so SQLite folds the log into the file first: the row is refused, and
-    the store afterwards has no log and holds the row in its file (ADR-0128 D7)."""
+async def test_a_store_that_moves_under_every_copy_is_refused_as_unreadable(tmp_path, monkeypatch):
+    """Every copy sees the store commit or checkpoint under it, so no read of the file and its
+    log is of one state. After the bounded number of copies the store is refused before any
+    writable connection exists, leaving the log in place, rather than by a connection that folds
+    the log into the file on closing (ADR-0128 D7)."""
     from lionagi.state import db as db_mod
 
     copy = _first_page_beside_its_log(tmp_path, whole=True)
@@ -985,14 +1038,15 @@ async def test_a_store_that_moves_under_every_copy_is_decided_by_the_writable_co
 
     monkeypatch.setattr(db_mod, "_copy_store_file", counting)
     monkeypatch.setattr(db_mod, "_copy_state", lambda path, suffix: next(moves))
-    StateDB(copy)._read_lineage_without_writing(())
+    with pytest.raises(UnreadableStoreError, match="could not be read"):
+        StateDB(copy)._read_lineage_without_writing(())
     assert len(copies) == db_mod._COPY_ATTEMPTS
     assert Path(f"{copy}-wal").exists()
-    with pytest.raises(ForeignLineageError, match="'manager' as the application"):
+    before = _snapshot(copy)
+    with pytest.raises(UnreadableStoreError, match="could not be read"):
         await StateDB(copy).open()
     assert len(copies) == 2 * db_mod._COPY_ATTEMPTS
-    assert not Path(f"{copy}-wal").exists(), "the refused connection left its log beside the file"
-    assert _rows(copy, "SELECT value FROM schema_meta WHERE key = 'lineage'") == [("manager",)]
+    assert _snapshot(copy) == before
 
 
 async def test_close_from_another_event_loop_during_an_open_is_refused(tmp_path, monkeypatch):
@@ -1059,7 +1113,7 @@ async def test_a_row_in_the_log_is_read_whatever_the_files_row_says(tmp_path, in
     first = StateDB(store)
     await first.open()
     await first.close()
-    _execute(store, "INSERT INTO schema_meta (key, value) VALUES ('lineage', 'lionagi')")
+    assert _rows(store, "SELECT value FROM schema_meta WHERE key = 'lineage'") == [("lionagi",)]
     copy = tmp_path / "copy.db"
     with closing(sqlite3.connect(store, isolation_level=None)) as conn:
         conn.execute("PRAGMA wal_autocheckpoint = 0")
@@ -1068,7 +1122,7 @@ async def test_a_row_in_the_log_is_read_whatever_the_files_row_says(tmp_path, in
         shutil.copyfile(Path(f"{store}-wal"), Path(f"{copy}-wal"))
         if index:
             shutil.copyfile(Path(f"{store}-shm"), Path(f"{copy}-shm"))
-    assert _read_lineage(f"{copy.as_uri()}?immutable=1")[1] == "lionagi"
+    assert _read_lineage(f"{copy.as_uri()}?immutable=1")[1].lineage == "lionagi"
     before = _snapshot(copy)
     assert set(before) == ({"", "-wal", "-shm"} if index else {"", "-wal"})
     with pytest.raises(ForeignLineageError, match="'manager' as the application"):
@@ -1090,7 +1144,9 @@ def test_a_checkpoint_between_the_two_copies_takes_the_read_again(tmp_path, monk
     copy = tmp_path / "copy.db"
     with closing(sqlite3.connect(store, isolation_level=None)) as conn:
         conn.execute("PRAGMA wal_autocheckpoint = 0")
-        conn.execute("INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')"
+        )
         shutil.copyfile(store, copy)
         shutil.copyfile(Path(f"{store}-wal"), Path(f"{copy}-wal"))
     holders: list[sqlite3.Connection] = []
@@ -1129,7 +1185,9 @@ def test_without_the_check_a_checkpoint_between_the_copies_hides_the_row(tmp_pat
         conn.commit()
     with closing(sqlite3.connect(store, isolation_level=None)) as conn:
         conn.execute("PRAGMA wal_autocheckpoint = 0")
-        conn.execute("INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')"
+        )
         copy = tmp_path / "copy.db"
         shutil.copyfile(store, copy)
         shutil.copyfile(Path(f"{store}-wal"), Path(f"{copy}-wal"))
@@ -1146,7 +1204,7 @@ def test_without_the_check_a_checkpoint_between_the_copies_hides_the_row(tmp_pat
     monkeypatch.setattr(db_mod, "_copy_store_file", checkpoint_after_the_copy)
     monkeypatch.setattr(db_mod, "_copy_state", lambda path, suffix: ())
     try:
-        assert db_mod._read_lineage_from_a_copy(str(copy), "-wal") is None
+        assert db_mod._read_lineage_from_a_copy(str(copy), "-wal").lineage is None
     finally:
         for holder in holders:
             holder.close()
@@ -1190,14 +1248,22 @@ def test_the_private_copy_keeps_the_locks_this_process_holds_on_the_store(tmp_pa
     with closing(sqlite3.connect(store)) as conn:
         conn.execute("PRAGMA journal_mode = delete")
         conn.execute("CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute("CREATE TABLE filler (v TEXT)")
         conn.commit()
     writer = sqlite3.connect(store, isolation_level=None)
     try:
+        # A transaction larger than the page cache spills into the file, so SQLite syncs the
+        # journal and writes its header first: the journal looks hot.
+        writer.execute("PRAGMA cache_size = -64")
         writer.execute("BEGIN IMMEDIATE")
-        writer.execute("INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
-        assert Path(f"{store}-journal").exists()
+        writer.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')"
+        )
+        for _ in range(2000):
+            writer.execute("INSERT INTO filler (v) VALUES (?)", ("x" * 4000,))
+        assert db_mod._journal_has_a_header(str(store))
         assert _another_process_reserves(store) == "locked"
-        assert db_mod._read_lineage_from_a_copy(str(store), "-journal") is None
+        assert db_mod._read_lineage_from_a_copy(str(store), "-journal").lineage is None
         assert _another_process_reserves(store) == "locked"
         monkeypatch.setattr(db_mod, "_copy_store_file", shutil.copyfile)
         db_mod._read_lineage_from_a_copy(str(store), "-journal")
@@ -1268,7 +1334,9 @@ def _row_lands_before_the_writable_engine(monkeypatch, store: Path) -> None:
     make_engine = db_mod.make_engine
 
     def landing(url, **kwargs):
-        _execute(store, "INSERT INTO schema_meta (key, value) VALUES ('lineage', 'manager')")
+        _execute(
+            store, "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('lineage', 'manager')"
+        )
         return make_engine(url, **kwargs)
 
     monkeypatch.setattr(db_mod, "make_engine", landing)
@@ -3924,3 +3992,63 @@ async def test_a_run_cannot_update_a_branch_another_run_created(store):
         await second.close()
 
     assert _rows(store, "SELECT model FROM branches WHERE id = 'b1'") == [(None,)]
+
+
+class _ExtendsAProgression(StateDB):
+    """Drive the batched progression append the way its own operation would."""
+
+    @_operation("insert_message")
+    async def extend_progression(self, progression_id: str, message_ids: list[str]) -> None:
+        async with self._tx() as conn:
+            await self._extend_progression_in_tx(conn, progression_id, message_ids)
+
+
+async def test_the_batched_progression_append_keeps_the_owner_predicate(store):
+    """The batched rewrite (behind insert_messages) applies the same owner predicate on
+    its read and its rewrite as the per-message append: this run's own progression is
+    extended, and a progression another owner's run owns is read as absent, not rewritten.
+    """
+    from sqlalchemy import event
+
+    _execute(
+        store,
+        f"INSERT INTO progressions (id, created_at, collection, {OWNER}) "
+        "VALUES ('p-other', 0, '[]', 'principal:b')",
+    )
+
+    handle = _ExtendsAProgression(store, compatibility=_profile(store), owner="principal:a")
+    await handle.open()
+    try:
+        await handle.create_progression("p-mine")
+        await handle.extend_progression("p-mine", ["m1", "m2"])
+        statements = []
+
+        def spy(conn, cursor, statement, parameters, context, executemany):
+            statements.append(statement)
+
+        event.listen(handle._engine.sync_engine, "before_cursor_execute", spy)
+        try:
+            await handle.extend_progression("p-other", ["m-other"])
+        finally:
+            event.remove(handle._engine.sync_engine, "before_cursor_execute", spy)
+    finally:
+        await handle.close()
+
+    # Read as absent: the read carries the predicate, so no rewrite is even attempted.
+    assert any(s.lstrip().startswith("SELECT collection FROM progressions") for s in statements)
+    assert not [s for s in statements if s.lstrip().upper().startswith("UPDATE PROGRESSIONS")]
+
+    assert _rows(store, "SELECT collection FROM progressions WHERE id = 'p-mine'") == [
+        ('["m1","m2"]',)
+    ]
+    assert _rows(store, "SELECT collection FROM progressions WHERE id = 'p-other'") == [("[]",)]
+
+
+@pytest.mark.parametrize("dialect", ["sqlite", "postgresql"])
+def test_the_progression_read_puts_the_owner_conjunct_inside_the_where_clause(dialect):
+    """The owner conjunct joins the WHERE clause; on a dialect that row-locks the read it
+    comes before FOR UPDATE, never after it."""
+    clause = ' AND "owner_principal_id" = :_compat_owner'
+    sql = StateDB._progression_collection_for_update_sql(dialect, clause)
+    head = "SELECT collection FROM progressions WHERE id = :id" + clause
+    assert sql == (head if dialect == "sqlite" else head + " FOR UPDATE")

@@ -44,7 +44,7 @@ with `prog.append(uid)` and change the collection's order without touching the c
 
 **P4 — every collection type carries locks its holder cannot see the cost of.** `Pile` owns an RLock
 and an AnyIO lock (`pile.py:208-209`) and reaches them through three shapes: `@synchronized`
-(`lionagi/ln/_utils.py:384-393`) takes the RLock alone, `@async_synchronized` (`:396-425`) takes the
+(`lionagi/ln/_utils.py:458-467`) takes the RLock alone, `@async_synchronized` (`:470-499`) takes the
 AnyIO lock and then spins on the RLock with a non-blocking acquire and a 0.5 ms sleep, and the
 `_both_locks` context manager (`pile.py:555-564`) does the same for an unscoped region. The two
 locks therefore do exclude each other: an async method and a `@synchronized` method on the same
@@ -195,7 +195,7 @@ holder's, exercised where the holder lives.
   (`session.py:279-284`), whose callee `Branch.aclone` additionally takes the message pile lock
   (`branch.py:519-521`), and `Pile.adapt_to_async` (`pile.py:902-903`). Both move onto the holder
   rule or onto the snapshot, as does `DependencyAwareExecutor._preallocate_all_branches`
-  (`lionagi/operations/flow.py:307`), which holds `branches.async_lock` around synchronous work
+  (`lionagi/operations/flow.py:344-362`), which holds `branches.async_lock` around synchronous work
   today.
 - **Accepted records this changes.**
   - ADR-0006 D4 (`Accepted`) is the message-added observer contract. Its async path reads "lock pile

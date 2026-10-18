@@ -26,9 +26,9 @@ the capability is recorded unattributed.
 ## Context
 
 **P1 — the decision routes check no principal.** `confirm_operator_proposal` and
-`decide_operator_proposal` (`lionagi/studio/services/operator.py:308-358`) call the coordinator's
-`decide()` (`lionagi/studio/operator/coordinator.py:1018`), which claims the proposal in the store
-(`lionagi/studio/operator/store.py:1929`). The proposal's hash and version bind what is decided, not
+`decide_operator_proposal` (`lionagi/studio/services/operator.py:310-360`) call the coordinator's
+`decide()` (`lionagi/studio/operator/coordinator.py:1014`), which claims the proposal in the store
+(`lionagi/studio/operator/store.py:2009`). The proposal's hash and version bind what is decided, not
 who decides. With no token configured, the middleware admits a request that carries no `Origin` and
 no `Sec-Fetch-Site` (`lionagi/studio/app.py:67`, `:113`), so a command-line client, a script and a
 tool's HTTP request are all admitted.
@@ -39,7 +39,7 @@ tool's HTTP request are all admitted.
 /api/studio/pair` (`pairing.py:48`) redeems it for the daemon's one process-wide bearer
 (`launch_access.py:43`, `:63`). A test pins that the command line can mint and that the minted code
 redeems (`tests/studio/test_hosted_hardening.py:967`). The CLI uses that route to pair a page with a
-daemon that is already running (`lionagi/studio/cli.py:261`). So pairing is not a boundary: a tool
+daemon that is already running (`lionagi/studio/cli.py:262`). So pairing is not a boundary: a tool
 that can send HTTP can mint, redeem with a forged `Origin`, and decide.
 
 **P3 — the page keeps its bearer in memory only.** The frontend holds the paired bearer in a module

@@ -159,6 +159,11 @@
     "effect": {
       "requested": "请求界面操作：{kind}"
     },
+    "truncation": {
+      "title": "本轮部分内容未保留",
+      "summary": "未保留 {frames} 帧 · {size}",
+      "limit": " · 上限：{limit}"
+    },
     "outcome": {
       "completed": "回合已完成",
       "failed": "回合失败",

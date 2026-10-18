@@ -590,3 +590,22 @@ def test_names_and_fields_narrow_the_same_reply_together(roots):
     assert result["profiles"] == [{"name": "builder", "resolved": {"model": "b"}}]
     # The roots are still named: they explain a name that came back missing.
     assert [r["scope"] for r in result["roots"]] == ["project", "global"]
+
+
+def test_fields_can_ask_for_settings_a_profile_need_not_declare(roots):
+    """An optional setting is part of the surface on every profile.
+
+    A caller narrowing one reply to `resolved.idle_timeout` asks a question
+    every profile can answer; refusing the field on a profile that leaves it
+    out would make the field's availability depend on which file happens to be
+    read.
+    """
+    write_profile(roots.proj, "builder", "---\nmodel: m\nidle_timeout: 300\n---\nbody\n")
+    write_profile(roots.proj, "plain", "---\nmodel: m\n---\nbody\n")
+
+    result = op("profile.list", {"fields": ["resolved.idle_timeout"]})
+
+    assert result["ok"] is True, result
+    profiles = {p["name"]: p["resolved"] for p in result["result"]["profiles"]}
+    assert profiles["builder"] == {"idle_timeout": 300}
+    assert profiles["plain"] == {"idle_timeout": None}

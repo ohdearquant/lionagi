@@ -7,10 +7,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-import uuid
 from contextlib import suppress
 from dataclasses import replace
 from typing import Any
+
+from lionagi.ln import short_id
 
 from ..config import (
     OperatorExecutionRootResolution,
@@ -536,7 +537,7 @@ class OperatorCoordinator:
             engine_turn = replace(engine_turn, runtime_branch=run_branch)
             from lionagi.cli import _runs as cli_runs
 
-            file_run_id = f"operator-{uuid.uuid4().hex[:12]}"
+            file_run_id = f"operator-{short_id(12)}"
             run_dir = cli_runs.RunDir(
                 run_id=file_run_id,
                 state_root=cli_runs.RUNS_ROOT / file_run_id,
@@ -659,21 +660,11 @@ class OperatorCoordinator:
                     if event.type == "tool_result":
                         call_id = event.payload.get("callId")
                         if isinstance(call_id, str):
-                            completed = await self.store.complete_provider_permission(
+                            await self.store.complete_provider_permission(
                                 request_id,
                                 call_id,
                                 ok=bool(event.payload.get("ok")),
                             )
-                            if completed is not None:
-                                await self.store.append_frame(
-                                    conversation_id,
-                                    request_id,
-                                    "confirmation",
-                                    {
-                                        "proposalId": completed["id"],
-                                        "state": "executed",
-                                    },
-                                )
                     await self.store.append_frame(
                         conversation_id, request_id, event.type, event.payload
                     )
@@ -735,15 +726,20 @@ class OperatorCoordinator:
                         run_dir.run_id
                     )
                 except Exception as recovery_exc:  # noqa: BLE001
-                    from lionagi.state.db import ForeignLineageError, SchemaTooNewError
+                    from lionagi.state.db import (
+                        ForeignLineageError,
+                        SchemaTooNewError,
+                        UnrecognizedStoreError,
+                    )
 
                     refusal = refusal_in(recovery_exc)
                     if refusal is None and isinstance(
-                        recovery_exc, (ForeignLineageError, SchemaTooNewError)
+                        recovery_exc,
+                        (ForeignLineageError, SchemaTooNewError, UnrecognizedStoreError),
                     ):
                         # The recovery opens the store natively, and a store another application
-                        # manages or at a later schema than this package refuses that open: no
-                        # retry would change it.
+                        # manages, one at a later schema than this package, or one holding tables
+                        # this package never creates refuses that open: no retry would change it.
                         refusal = recovery_exc
             if live is not None:
                 run_id = live["session_id"]
@@ -1082,20 +1078,6 @@ class OperatorCoordinator:
                 raise OperatorAuditUnavailableError(
                     "Target conflict outcome is indeterminate; reconciliation is required"
                 ) from persist_exc
-            await self.store.append_frame(
-                conversation_id,
-                proposal["requestId"],
-                "tool_result",
-                {
-                    "callId": proposal_id,
-                    "ok": False,
-                    "error": {
-                        "code": "stale_context",
-                        "message": str(exc),
-                        "retryable": False,
-                    },
-                },
-            )
             return self._proposal_result(proposal)
 
         try:
@@ -1135,26 +1117,14 @@ class OperatorCoordinator:
                 raise OperatorAuditUnavailableError(
                     "Command outcome is indeterminate; reconciliation is required"
                 ) from persist_exc
-            await self.store.append_frame(
-                conversation_id,
-                proposal["requestId"],
-                "tool_result",
-                {
-                    "callId": proposal_id,
-                    "ok": False,
-                    "error": {
-                        "code": "service_failure",
-                        "message": public_message,
-                        "retryable": False,
-                        "details": details,
-                    },
-                },
-            )
             return self._proposal_result(proposal)
 
         try:
             proposal = await self.store.complete_proposal(
-                proposal_id, status="succeeded", result=result, audit=True
+                proposal_id,
+                status="succeeded",
+                result=result,
+                audit=True,
             )
         except Exception as exc:  # noqa: BLE001
             # Execution happened. Never rewrite this as a safe failure or run
@@ -1164,22 +1134,6 @@ class OperatorCoordinator:
             raise OperatorAuditUnavailableError(
                 "Command outcome is indeterminate; reconciliation is required"
             ) from exc
-        await self.store.append_frame(
-            conversation_id,
-            proposal["requestId"],
-            "confirmation",
-            {"proposalId": proposal_id, "state": "executed"},
-        )
-        await self.store.append_frame(
-            conversation_id,
-            proposal["requestId"],
-            "tool_result",
-            {
-                "callId": proposal_id,
-                "ok": True,
-                "result": result,
-            },
-        )
         href = result.get("href")
         if isinstance(href, str):
             label = "Open run" if result.get("run_id") else "Open launch invocation"

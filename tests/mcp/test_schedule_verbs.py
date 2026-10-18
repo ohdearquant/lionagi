@@ -266,7 +266,7 @@ def test_validate_reports_a_bad_document_as_an_answer_not_a_refusal(declared):
     assert data["valid"] is False
     # Named, so that the profile going missing cannot make this pass for a
     # reason that has nothing to do with the cron expression under test.
-    assert [e["name"] for e in data["errors"]] == ["nightly"]
+    assert [e["name"] for e in data["errors"]] == ["lionagi/nightly"]
     assert "nope" in data["errors"][0]["message"]
 
 

@@ -159,6 +159,11 @@
     "effect": {
       "requested": "Requested interface action: {kind}"
     },
+    "truncation": {
+      "title": "이 턴의 일부가 보관되지 않았습니다",
+      "summary": "{frames}개 프레임 미보관 · {size}",
+      "limit": " · 한도: {limit}"
+    },
     "outcome": {
       "completed": "Turn completed",
       "failed": "Turn failed",

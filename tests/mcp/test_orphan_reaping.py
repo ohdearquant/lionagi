@@ -1414,3 +1414,228 @@ def test_what_survives_sanitizing_is_serializable_as_strict_json():
     )
 
     json.dumps(kept, allow_nan=False)
+
+
+# --- reap reasons read from the run's own run.json ---------------------------
+
+_UNDELIVERED = {"ok": False, "exit_code": None, "stderr_path": None, "reason": "no session"}
+_DEGRADED_REASON = "OperationalError('database is locked')"
+
+
+def _run_json(rid: str, **fields: Any) -> None:
+    config.run_dir(rid).mkdir(parents=True, exist_ok=True)
+    config.run_manifest(rid).write_text(json.dumps({"run_id": rid, "status": "running", **fields}))
+
+
+def _run_json_bytes(rid: str, raw: bytes) -> None:
+    config.run_dir(rid).mkdir(parents=True, exist_ok=True)
+    config.run_manifest(rid).write_bytes(raw)
+
+
+def _leave(rid: str, *, notice: bool, degraded: bool) -> None:
+    fields: dict[str, Any] = {}
+    if degraded:
+        fields["persistence_degraded_reason"] = _DEGRADED_REASON
+    _run_json(rid, **fields)
+    if notice:
+        config.run_dir(rid).joinpath("notify_outcome.json").write_text(json.dumps(_UNDELIVERED))
+
+
+def _expected_reason(*, notice: bool, degraded: bool) -> str:
+    # An undelivered notice is the pre-existing reason split, and it outranks the
+    # detail-only case; degraded persistence stays on the main reason code with
+    # its finer cause in reason_detail.
+    if notice:
+        return jobs.LOST_REASON_NOTICE_RECORDED_UNDELIVERED
+    return jobs.LOST_REASON
+
+
+def _expected_detail(*, notice: bool, degraded: bool) -> str | None:
+    if degraded and not notice:
+        return jobs.REASON_DETAIL_PERSISTENCE_DEGRADED
+    return None
+
+
+_RECORDED = [(notice, degraded) for notice in (True, False) for degraded in (True, False)]
+
+
+@pytest.mark.parametrize(("notice", "degraded"), _RECORDED)
+def test_the_reason_code_follows_what_the_run_recorded_in_order(
+    sandbox, monkeypatch, no_delivery, notice, degraded
+):
+    """An undelivered notice, then persistence turned off, then silence; a
+    present record wins over the later one, and an absent one falls through.
+    The outcome stays indeterminate."""
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+    _leave(rid, notice=notice, degraded=degraded)
+
+    st = jobs.status(rid)
+
+    assert st["terminal"] is True
+    assert st["outcome"] == jobs.OUTCOME_INDETERMINATE
+    assert st["terminal_source"] == jobs.TERMINAL_SOURCE_ORPHAN_REAPER
+    assert st["reason_code"] == _expected_reason(notice=notice, degraded=degraded)
+    assert st["reason_detail"] == _expected_detail(notice=notice, degraded=degraded)
+    assert jobs._read_job(rid)["reason_code"] == st["reason_code"]
+
+
+def test_the_reason_detail_is_distinct_from_every_reason_code():
+    assert jobs.REASON_DETAIL_PERSISTENCE_DEGRADED == "persistence_degraded"
+    assert jobs.REASON_DETAIL_PERSISTENCE_DEGRADED not in {
+        jobs.LOST_REASON,
+        jobs.LOST_REASON_NOTICE_RECORDED_UNDELIVERED,
+    }
+
+
+def test_degraded_persistence_keeps_the_existing_reason_code(sandbox, monkeypatch, no_delivery):
+    """The finer cause belongs beside the reason, not in place of it."""
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+    _run_json(rid, persistence_degraded_reason=_DEGRADED_REASON)
+
+    st = jobs.status(rid)
+
+    assert st["reason_code"] == jobs.LOST_REASON
+    assert st["reason_detail"] == jobs.REASON_DETAIL_PERSISTENCE_DEGRADED
+
+
+def test_the_reason_detail_rides_the_notice_payload_without_replacing_the_code(
+    sandbox, monkeypatch, no_delivery
+):
+    seen: list[dict[str, Any]] = []
+
+    def fake(run_id, job, status, **kw):
+        seen.append(kw)
+        return {"attempted": True, "ok": True, "exit_code": 0, "error": None, "command": "notify"}
+
+    monkeypatch.setattr(_notify_hook, "deliver_terminal_notice", fake)
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+    _run_json(rid, persistence_degraded_reason=_DEGRADED_REASON)
+
+    jobs.status(rid)
+
+    assert seen[0]["reason_code"] == jobs.LOST_REASON
+    assert seen[0]["reason_detail"] == jobs.REASON_DETAIL_PERSISTENCE_DEGRADED
+
+
+def test_the_reason_detail_is_visible_on_status_and_the_listing(sandbox, monkeypatch, no_delivery):
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+    _run_json(rid, persistence_degraded_reason=_DEGRADED_REASON)
+
+    row = next(item for item in jobs.list_jobs() if item["run_id"] == rid)
+
+    assert row["reason_code"] == jobs.LOST_REASON
+    assert row["reason_detail"] == jobs.REASON_DETAIL_PERSISTENCE_DEGRADED
+
+
+@pytest.mark.parametrize(("notice", "degraded"), _RECORDED)
+def test_the_reaper_notice_carries_the_reason_code(sandbox, monkeypatch, notice, degraded):
+    seen: list[dict[str, Any]] = []
+
+    def fake(run_id, job, status, **kw):
+        seen.append(kw)
+        return {"attempted": True, "ok": True, "exit_code": 0, "error": None, "command": "notify"}
+
+    monkeypatch.setattr(_notify_hook, "deliver_terminal_notice", fake)
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+    _leave(rid, notice=notice, degraded=degraded)
+
+    jobs.status(rid)
+
+    assert [kw["reason_code"] for kw in seen] == [
+        _expected_reason(notice=notice, degraded=degraded)
+    ]
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ["", True, None, 5, ["locked"], {"reason": "locked"}],
+    ids=["empty", "bool", "null", "number", "list", "object"],
+)
+def test_a_malformed_degraded_reason_assigns_nothing(sandbox, monkeypatch, no_delivery, reason):
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+    _run_json(rid, persistence_degraded_reason=reason)
+
+    assert jobs.status(rid)["reason_code"] == jobs.LOST_REASON
+    assert jobs.status(rid)["reason_detail"] is None
+
+
+def test_a_run_json_naming_another_run_assigns_nothing(sandbox, monkeypatch, no_delivery):
+    """A run.json is the run's own only when it names the run it sits under."""
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+    _run_json_bytes(
+        rid,
+        json.dumps(
+            {"run_id": "another-run", "persistence_degraded_reason": _DEGRADED_REASON}
+        ).encode(),
+    )
+
+    assert jobs.status(rid)["reason_code"] == jobs.LOST_REASON
+    assert jobs.status(rid)["reason_detail"] is None
+
+
+def _padded_run_json(rid: str, size: int) -> bytes:
+    """*rid*'s run.json of exactly *size* bytes, recording degraded persistence."""
+    payload = {"run_id": rid, "persistence_degraded_reason": _DEGRADED_REASON, "pad": ""}
+    base = len(json.dumps(payload).encode())
+    payload["pad"] = "x" * (size - base)
+    raw = json.dumps(payload).encode()
+    assert len(raw) == size
+    return raw
+
+
+def test_a_run_json_at_the_size_cap_is_read_and_one_byte_over_it_is_not(
+    sandbox, monkeypatch, no_delivery
+):
+    _pid_absent(monkeypatch)
+    at_cap = _stranded()
+    _run_json_bytes(at_cap, _padded_run_json(at_cap, jobs._MAX_RUN_MANIFEST_BYTES))
+    over_cap = _stranded()
+    _run_json_bytes(over_cap, _padded_run_json(over_cap, jobs._MAX_RUN_MANIFEST_BYTES) + b"\n")
+
+    assert jobs.status(at_cap)["reason_code"] == jobs.LOST_REASON
+    assert jobs.status(at_cap)["reason_detail"] == jobs.REASON_DETAIL_PERSISTENCE_DEGRADED
+    assert jobs.status(over_cap)["reason_code"] == jobs.LOST_REASON
+    assert jobs.status(over_cap)["reason_detail"] is None
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"",
+        b"not json",
+        b"\xff\xfe\x00",
+        b'["persistence_degraded_reason"]',
+        b'"persistence_degraded_reason"',
+        b"null",
+        b"7",
+        b"[" * 200_000,
+    ],
+    ids=["empty", "text", "not-utf8", "list", "string", "null", "number", "deeply-nested"],
+)
+def test_a_run_json_that_is_not_an_object_assigns_nothing(sandbox, monkeypatch, no_delivery, raw):
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+    _run_json_bytes(rid, raw)
+
+    st = jobs.status(rid)
+
+    assert st["reason_code"] == jobs.LOST_REASON
+    assert st["reason_detail"] is None
+    assert st["outcome"] == jobs.OUTCOME_INDETERMINATE
+
+
+def test_a_missing_run_json_assigns_nothing(sandbox, monkeypatch, no_delivery):
+    _pid_absent(monkeypatch)
+    rid = _stranded()
+
+    st = jobs.status(rid)
+
+    assert st["reason_code"] == jobs.LOST_REASON
+    assert st["reason_detail"] is None

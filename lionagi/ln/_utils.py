@@ -1,7 +1,14 @@
+# Copyright (c) 2025 - 2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
 import contextlib
 import copy as _copy
 import importlib
 import importlib.util
+import math
+import re
 import types
 import uuid
 import warnings
@@ -38,19 +45,75 @@ __all__ = (
     "get_bins",
     "import_module",
     "is_import_installed",
+    "is_pydantic_model_class",
     "is_same_dtype",
     "is_union_type",
     "load_type_from_string",
     "now_utc",
+    "parse_duration",
     "register_type_prefix",
+    "short_id",
     "synchronized",
     "to_uuid",
     "union_members",
+    "unwrap_optional",
 )
 
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def short_id(n: int = 12) -> str:
+    """Return the first ``n`` hex digits of a random UUID4, for ``1 <= n <= 32``."""
+    if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= 32:
+        raise ValueError("short_id length must be an integer from 1 to 32")
+    return uuid.uuid4().hex[:n]
+
+
+def parse_duration(
+    spec: str,
+    *,
+    allow_bare_seconds: bool = False,
+    allow_float: bool = False,
+    max_seconds: float | None = None,
+) -> float:
+    """Parse a positive, finite duration with lowercase ``s``, ``m``, ``h`` or ``d``.
+
+    Numeric values use integer syntax unless ``allow_float`` is enabled. Bare
+    seconds require ``allow_bare_seconds``. Surrounding whitespace is ignored;
+    the optional positive, finite maximum is inclusive. Invalid input raises
+    ``ValueError``.
+    """
+    if not isinstance(spec, str) or not (value := spec.strip()):
+        raise ValueError("duration must be a non-empty string")
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    if value[-1] in units:
+        multiplier = units[value[-1]]
+        value = value[:-1]
+    elif allow_bare_seconds:
+        multiplier = 1
+    else:
+        raise ValueError("duration requires a lowercase unit: s, m, h or d")
+    if value != value.strip():
+        raise ValueError("duration cannot contain whitespace before its unit")
+    if max_seconds is not None:
+        if isinstance(max_seconds, bool) or not math.isfinite(max_seconds) or max_seconds <= 0:
+            raise ValueError("max_seconds must be positive and finite")
+    try:
+        number = float(value) if allow_float else int(value)
+        scaled = number * multiplier
+    except (ValueError, OverflowError) as exc:
+        raise ValueError(f"invalid duration {spec!r}") from exc
+    if max_seconds is not None and scaled > max_seconds:
+        raise ValueError(f"duration exceeds maximum of {max_seconds} seconds")
+    try:
+        seconds = float(scaled)
+    except OverflowError as exc:
+        raise ValueError(f"invalid duration {spec!r}") from exc
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError("duration must be positive and finite")
+    return seconds
 
 
 class _SafePath(NamedTuple):
@@ -362,6 +425,8 @@ def to_uuid(value: Any) -> UUID:
 
 def coerce_created_at(v: Any) -> datetime:
     """Coerce value to UTC-aware datetime (datetime, timestamp, or ISO string)."""
+    if isinstance(v, bool):
+        raise ValueError("Expected datetime/timestamp/string, got bool")
     if isinstance(v, datetime):
         return v.replace(tzinfo=timezone.utc) if v.tzinfo is None else v
 
@@ -369,10 +434,19 @@ def coerce_created_at(v: Any) -> datetime:
         return datetime.fromtimestamp(v, tz=timezone.utc)
 
     if isinstance(v, str):
-        with contextlib.suppress(ValueError):
+        with contextlib.suppress(ValueError, OverflowError, OSError):
             return datetime.fromtimestamp(float(v), tz=timezone.utc)
         with contextlib.suppress(ValueError):
-            return datetime.fromisoformat(v)
+            iso = v[:-1] + "+00:00" if v.endswith(("Z", "z")) else v
+            # Python 3.10 accepts only 3 or 6 fractional digits. Match newer
+            # parsers by padding or truncating seconds to microsecond precision.
+            iso = re.sub(
+                r"(\d{2}:\d{2}:\d{2})\.(\d+)",
+                lambda match: match[1] + "." + (match[2] + "000000")[:6],
+                iso,
+            )
+            parsed = datetime.fromisoformat(iso)
+            return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
         raise ValueError(f"String '{v}' is neither timestamp nor ISO format")
 
     raise ValueError(f"Expected datetime/timestamp/string, got {type(v).__name__}")
@@ -457,6 +531,18 @@ def is_same_dtype(
     return (result, dtype) if return_dtype else result
 
 
+def is_pydantic_model_class(tp: Any) -> bool:
+    """Return whether tp is a Pydantic model class, rather than an instance."""
+    try:
+        if not isinstance(tp, type):
+            return False
+        from pydantic import BaseModel
+
+        return issubclass(tp, BaseModel)
+    except TypeError:
+        return False
+
+
 def is_union_type(tp) -> bool:
     """True for typing.Union[...] and PEP 604 unions (A | B)."""
     origin = get_origin(tp)
@@ -487,6 +573,15 @@ def union_members(
     if drop_none:
         members = tuple(m for m in members if m is not _NoneType)
     return members
+
+
+def unwrap_optional(tp: Any) -> Any:
+    """Unwrap Optional[X] or X | None; leave other annotations unchanged."""
+    members = union_members(tp, unwrap_annotated=False)
+    non_none = tuple(member for member in members if member is not _NoneType)
+    if len(non_none) == 1 and len(non_none) < len(members):
+        return non_none[0]
+    return tp
 
 
 def create_path(

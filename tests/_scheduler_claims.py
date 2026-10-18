@@ -68,6 +68,8 @@ def persisting_update_schedule(schedule: dict):
         *,
         guard_cursor_forward: bool = False,
         expect_next_fire_at: Any = NO_CURSOR_CLAIM,
+        audit_context: Any = None,
+        reason: Any = None,
         **fields: Any,
     ) -> bool:
         if schedule_id != schedule["id"]:

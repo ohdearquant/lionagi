@@ -16,6 +16,7 @@ import * as React from "react";
 import { boardReducer, initialBoardState } from "./boardReducer";
 import type { BoardState } from "./boardReducer";
 import { useLiveBoard } from "./useLiveBoard";
+import * as boardReducerModule from "./boardReducer";
 
 vi.mock("@/lib/api", () => ({
   listRuns: vi.fn(),
@@ -467,5 +468,256 @@ describe("useLiveBoard — a poll slower than the interval does not stack", () =
     // successes the gate asks for, so the board stays on its loading skeleton
     // forever while fetch after fetch succeeds.
     expect(latestState?.dataState).not.toBe("loading");
+  });
+});
+
+// ─── The stale badge settles ─────────────────────────────────────────────────
+// The watchdog writes the state it reads. Re-dispatching MARK_STALE on every
+// tick after the badge is already stale keeps the board committing forever,
+// which is the shape that ends in React's "Maximum update depth exceeded".
+// This mounts the real hook, lets the board settle into stale, and counts the
+// actions over a long silence.
+
+describe("useLiveBoard — a settled stale board stops dispatching", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let latestState: BoardState | null;
+
+  function Harness() {
+    latestState = useLiveBoard();
+    return null;
+  }
+
+  beforeEach(() => {
+    vi.mocked(listRuns).mockReset();
+    vi.mocked(listInvocations).mockReset();
+    vi.mocked(listSchedules).mockReset();
+    // The first two polls succeed; after that the backend goes silent so the
+    // watchdog is the only writer left.
+    vi.mocked(listRuns)
+      .mockResolvedValueOnce({ runs: [] } as never)
+      .mockResolvedValueOnce({ runs: [] } as never)
+      .mockReturnValue(new Promise<never>(() => {}));
+    vi.mocked(listInvocations).mockResolvedValue({ invocations: [] } as never);
+    vi.mocked(listSchedules).mockResolvedValue({ schedules: [] } as never);
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    latestState = null;
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("dispatches MARK_STALE once for one silence, not once per watchdog tick", async () => {
+    vi.useFakeTimers();
+    // Re-renders do not prove the dispatch stopped: the reducer returns the
+    // same state for a repeated MARK_STALE, so React bails out while the hook
+    // still dispatches every tick. Count the actions at the reducer instead.
+    const dispatched: string[] = [];
+    const original = boardReducerModule.boardReducer;
+    const spy = vi.spyOn(boardReducerModule, "boardReducer").mockImplementation((state, action) => {
+      dispatched.push(action.type);
+      return original(state, action);
+    });
+    try {
+      await act(async () => {
+        root = createRoot(container);
+        root.render(React.createElement(Harness));
+      });
+      // Two consecutive successes: live, and hysteresis satisfied.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3_000);
+      });
+      expect(latestState?.dataState).toBe("live");
+
+      // Silence past the 5s threshold arms the badge.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8_000);
+      });
+      expect(latestState?.dataState).toBe("stale");
+
+      // Twelve more seconds of silence is twelve watchdog ticks. Only the
+      // per-second duration tick may commit, and only when the second changes;
+      // the stale transition itself must not be repeated.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(12_000);
+      });
+      expect(latestState?.dataState).toBe("stale");
+      // A settled board may commit for the duration tick, but the stale
+      // transition itself must not be dispatched again.
+      expect(dispatched.filter((type) => type === "MARK_STALE")).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+// ─── A failure between stale and recovery ────────────────────────────────────
+// Each poll's runs request is held open until the test settles it, so the
+// order of successes, failures and silences is exact.
+
+describe("useLiveBoard — a failed poll around the stale badge", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let latestState: BoardState | null;
+  let runsRequests: Array<{ resolve: (v: unknown) => void; reject: (e: unknown) => void }>;
+
+  function Harness() {
+    latestState = useLiveBoard();
+    return null;
+  }
+
+  beforeEach(() => {
+    runsRequests = [];
+    vi.mocked(listRuns).mockReset();
+    vi.mocked(listInvocations).mockReset();
+    vi.mocked(listSchedules).mockReset();
+    vi.mocked(listRuns).mockImplementation(
+      () =>
+        new Promise((resolve, reject) => {
+          runsRequests.push({ resolve, reject });
+        }) as never,
+    );
+    vi.mocked(listInvocations).mockResolvedValue({ invocations: [] } as never);
+    vi.mocked(listSchedules).mockResolvedValue({ schedules: [] } as never);
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    latestState = null;
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  async function settle(index: number, outcome: "ok" | "fail") {
+    expect(runsRequests).toHaveLength(index + 1);
+    await act(async () => {
+      if (outcome === "ok") runsRequests[index].resolve({ runs: [] });
+      else runsRequests[index].reject(new Error("backend down"));
+    });
+  }
+
+  async function advance(ms: number) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  it("does not mark stale again after a success the hysteresis held back", async () => {
+    vi.useFakeTimers();
+    const dispatched: string[] = [];
+    const original = boardReducerModule.boardReducer;
+    const spy = vi.spyOn(boardReducerModule, "boardReducer").mockImplementation((state, action) => {
+      dispatched.push(action.type);
+      return original(state, action);
+    });
+    try {
+      await act(async () => {
+        root = createRoot(container);
+        root.render(React.createElement(Harness));
+      });
+      await settle(0, "ok");
+      await advance(3_000);
+      await settle(1, "ok");
+      expect(latestState?.dataState).toBe("live");
+
+      // Poll 3 goes silent past the threshold: the badge turns stale once.
+      await advance(7_000);
+      expect(latestState?.dataState).toBe("stale");
+      expect(dispatched.filter((type) => type === "MARK_STALE")).toHaveLength(1);
+
+      // Poll 3 comes back once. One success after a stale badge is held back,
+      // so the board has not resumed.
+      const dataOkBeforeSuccess = dispatched.filter((type) => type === "DATA_OK").length;
+      await settle(2, "ok");
+      expect(latestState?.dataState).toBe("stale");
+      expect(dispatched.filter((type) => type === "DATA_OK")).toHaveLength(dataOkBeforeSuccess);
+
+      // Six seconds of silence. The board has not resumed since the badge was
+      // set, so this silence is no new transition.
+      await advance(6_000);
+      expect(dispatched.filter((type) => type === "DATA_OK")).toHaveLength(dataOkBeforeSuccess);
+      expect(dispatched.filter((type) => type === "MARK_STALE")).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("shows the first success after a failure, instead of holding it back behind the stale hysteresis", async () => {
+    vi.useFakeTimers();
+    await act(async () => {
+      root = createRoot(container);
+      root.render(React.createElement(Harness));
+    });
+    await settle(0, "ok");
+    expect(latestState?.dataState).toBe("live");
+
+    // Poll 2 fails, and the watchdog passes the threshold while the error shows.
+    await advance(3_000);
+    await settle(1, "fail");
+    expect(latestState?.dataState).toBe("error");
+    await advance(3_000);
+
+    // Poll 3 succeeds once: the error gives way to the fresh data.
+    await settle(2, "ok");
+    expect(latestState?.dataState).toBe("live");
+
+    // Silence after it is an ordinary stale transition.
+    await advance(10_000);
+    expect(latestState?.dataState).toBe("stale");
+  });
+
+  it("counts resumption from the first success after the silence, not from a success before it", async () => {
+    vi.useFakeTimers();
+    await act(async () => {
+      root = createRoot(container);
+      root.render(React.createElement(Harness));
+    });
+    // One success, then poll 2 goes silent past the threshold.
+    await settle(0, "ok");
+    await advance(3_000);
+    await advance(6_000);
+    expect(latestState?.dataState).toBe("stale");
+
+    // Poll 2 comes back. With the success before the silence counted, this
+    // would be the second in a row and clear the badge on one frame.
+    await settle(1, "ok");
+    expect(latestState?.dataState).toBe("stale");
+
+    // A second success after the silence resumes the board.
+    await advance(3_000);
+    await settle(2, "ok");
+    expect(latestState?.dataState).toBe("live");
+  });
+
+  it("shows the first success after a stale badge gave way to an error", async () => {
+    vi.useFakeTimers();
+    await act(async () => {
+      root = createRoot(container);
+      root.render(React.createElement(Harness));
+    });
+    await settle(0, "ok");
+    await advance(3_000);
+    await advance(6_000);
+    expect(latestState?.dataState).toBe("stale");
+
+    // Poll 2 fails after the badge was set: the error replaces it.
+    await settle(1, "fail");
+    expect(latestState?.dataState).toBe("error");
+
+    // Poll 3 succeeds once: the error gives way to the fresh data, as it does
+    // when no stale badge came before the failure.
+    await advance(3_000);
+    await settle(2, "ok");
+    expect(latestState?.dataState).toBe("live");
   });
 });

@@ -139,6 +139,8 @@ its area block.
   operation-graph execution kernel
 - [ADR-0024](ADR-0024-lndl-operate-integration-adapter.md) — LNDL operate integration adapter
 - 0025-0026 — unused (intentional gaps)
+- [ADR-0132](ADR-0132-batched-lndl-rounds-for-api-model-legs.md) — Batched LNDL rounds for
+  API-model legs (sequential number; see Numbering)
 
 ### service-providers (0027-0032)
 
@@ -214,7 +216,7 @@ its area block.
 - [ADR-0057](ADR-0057-operational-lifecycle-and-transition-audit.md) — Operational lifecycle and
   transition audit
 - [ADR-0058](ADR-0058-unified-lifecycle-transition-service.md) — Unified lifecycle transition
-  service
+  service; proposed scoped Schedule definition amendment
 - [ADR-0059](ADR-0059-durable-dispatch-outbox.md) — Durable dispatch outbox
 - [ADR-0060](ADR-0060-run-supervision-terminal-callback-and-orphan-detection.md) — Run
   supervision: generic terminal callback and two-stage orphan detection (superseded by ADR-0095)

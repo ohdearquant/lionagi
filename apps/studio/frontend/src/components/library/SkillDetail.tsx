@@ -184,23 +184,35 @@ export function SkillDetail({ name, pluginName, onBack }: SkillDetailProps) {
     [name],
   );
 
+  // In the collapsed layout this pane replaces the list, so Back is offered
+  // while it loads or after it failed as well.
+  const back = onBack && <DrawerBackButton onClick={onBack}>{t("back")}</DrawerBackButton>;
+
   if (loading) {
     return (
-      <div className="flex h-full items-center justify-center text-meta text-content-muted">
-        {t("loading")}
+      <div className="flex h-full flex-col overflow-hidden">
+        {back}
+        <div className="flex flex-1 items-center justify-center text-meta text-content-muted">
+          {t("loading")}
+        </div>
       </div>
     );
   }
 
   if (error || !summary) {
-    return <div className="p-4 text-meta text-status-failure">{error ?? t("notFound")}</div>;
+    return (
+      <div className="flex h-full flex-col overflow-hidden">
+        {back}
+        <div className="p-4 text-meta text-status-failure">{error ?? t("notFound")}</div>
+      </div>
+    );
   }
 
   const displayBody = previewVer ? previewVer.content : summary.content;
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      {onBack && <DrawerBackButton onClick={onBack}>{t("back")}</DrawerBackButton>}
+      {back}
 
       <DrawerHeader
         name={summary.name}
