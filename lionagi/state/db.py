@@ -7936,6 +7936,14 @@ _JOURNAL_HEADER = bytes.fromhex("d9d505f920a163d7")
 _LOG_MAGIC = (bytes.fromhex("377f0682"), bytes.fromhex("377f0683"))
 
 
+def _no_sidecar(exc: OSError) -> bool:
+    """Whether *exc* says no journal or log can be beside the store: it is not there, or the
+    store's name leaves no room for the suffix, so SQLite cannot create one either."""
+    import errno
+
+    return exc.errno in (errno.ENOENT, errno.ENAMETOOLONG)
+
+
 def _journal_has_a_header(path: str) -> bool:
     """Whether the rollback journal beside *path* begins with a journal header: an interrupted
     transaction's does, and so does a transaction's still in progress. A journal that is there and
@@ -7944,10 +7952,8 @@ def _journal_has_a_header(path: str) -> bool:
     try:
         with open(f"{path}-journal", "rb") as journal:
             return journal.read(len(_JOURNAL_HEADER)) == _JOURNAL_HEADER
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return True
+    except OSError as exc:
+        return not _no_sidecar(exc)
 
 
 def _log_has_frames(path: str) -> bool:
@@ -7955,10 +7961,8 @@ def _log_has_frames(path: str) -> bool:
     measured counts as having frames, so its copy decides."""
     try:
         return os.path.getsize(f"{path}-wal") > 0
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return True
+    except OSError as exc:
+        return not _no_sidecar(exc)
 
 
 def _read_lineage_from_a_copy(path: str, suffix: str) -> Any:

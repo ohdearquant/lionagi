@@ -527,6 +527,21 @@ async def test_a_journal_that_is_there_and_cannot_be_opened_is_refused_as_unread
     assert _files(path) == before
 
 
+async def test_a_store_whose_name_leaves_no_room_for_a_journal_opens(tmp_path):
+    """With a 251-byte file name the store's `-journal` name passes the file system's 255-byte
+    limit, so no journal can be beside it, while its `-wal` and `-shm` still fit and a store in
+    write-ahead-log mode opens. The open reads no journal there, rather than refusing the store as
+    one whose journal it cannot open. (Creating a store under that name needs a journal, so SQLite
+    itself refuses that.)"""
+    seed = tmp_path / "seed.db"
+    await _open_and_close(seed)
+    path = tmp_path / ("a" * 248 + ".db")
+    shutil.copyfile(seed, path)
+    await _open_and_close(path)
+    await _open_and_close(path)
+    assert _rows(path, "SELECT value FROM schema_meta WHERE key = 'lineage'") == [("lionagi",)]
+
+
 @pytest.mark.parametrize("journal", ["zeroed", "truncated"])
 async def test_a_journal_a_commit_zeroes_or_truncates_is_read_again_not_matched(
     tmp_path, monkeypatch, journal
