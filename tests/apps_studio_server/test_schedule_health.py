@@ -3,8 +3,9 @@
 """Tests for the schedule health verdict
 (healthy/failing/overdue/never-fired/no-evidence/disabled).
 
-Health is derived from cadence + recorded schedule_runs rows and the threshold
-evaluation watermark, never from next_fire_at -- these tests plant fixture
+Health is derived from cadence + recorded schedule_runs rows, the threshold
+evaluation watermark and a GitHub poll schedule's last healthy poll, never from
+next_fire_at -- these tests plant fixture
 rows for each state and assert the verdict lands where it should, including
 the shapes next_fire_at cannot represent: a schedule that has never recorded a
 row, one whose recorded rows never became a real execution

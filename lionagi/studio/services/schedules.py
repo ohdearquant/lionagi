@@ -332,7 +332,8 @@ def _validate_flow_yaml_spec(yaml_text: str) -> str | None:
 
 
 # Health severity is computed from cadence + observed schedule_runs rows and,
-# for threshold alerts, the completed-evaluation watermark. It is never based
+# for threshold alerts, the completed-evaluation watermark, and for GitHub poll
+# schedules the last healthy poll. It is never based
 # on next_fire_at -- next_fire_at is a promise the scheduler made, not evidence
 # that anything happened. A missed-fire/overlap/capacity skip advances the
 # cursor while recording no execution, so silence hidden behind a pile of skips
@@ -424,20 +425,20 @@ def compute_schedule_health(
     last_recorded_at = evidence.get("last_recorded_run_at")
     last_fired_at = row.get("last_fired_at")
     last_evaluated_at = row.get("last_evaluated_at") if row.get("threshold_config") else None
-    last_polled_at = (
+    last_healthy_poll_at = (
         row.get("last_healthy_poll_at") if row.get("trigger_type") == "github_poll" else None
     )
 
     if not row.get("enabled"):
         state = "disabled"
-    elif last_executed_at is None and last_evaluated_at is None and last_polled_at is None:
+    elif last_executed_at is None and last_evaluated_at is None and last_healthy_poll_at is None:
         state = (
             "never-fired" if last_recorded_at is None and last_fired_at is None else "no-evidence"
         )
     else:
         liveness_at = max(
             timestamp
-            for timestamp in (last_executed_at, last_evaluated_at, last_polled_at)
+            for timestamp in (last_executed_at, last_evaluated_at, last_healthy_poll_at)
             if timestamp is not None
         )
         cadence_seconds = _schedule_cadence_seconds(row, reference_at=liveness_at)
