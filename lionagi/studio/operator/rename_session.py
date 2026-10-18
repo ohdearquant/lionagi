@@ -30,7 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from lionagi.state.session_naming import resolve_display_name, validate_name_characters
 
 from .redact import public_project
-from .run_progress import resolve_run
+from .run_progress import MissingOwnerContextError, resolve_run
 from .store import OperatorStore
 
 RENAME_SESSION_COMMAND_TYPE = "rename_session"
@@ -119,7 +119,13 @@ async def rename_session(arguments: dict[str, Any]) -> dict[str, Any]:
     args = RenameSessionInput.model_validate(arguments)
     store, conversation_id, request_id = _identity()
 
-    resolution = await resolve_run(args.run)
+    # A turn that declares no project cannot prove it owns the run it names,
+    # and a rename mutates that run: report the refusal as a reason code
+    # rather than resolving. Mirrors ``run_control``'s refusal shape.
+    try:
+        resolution = await resolve_run(args.run, allow_unscoped_exact_id=False)
+    except MissingOwnerContextError:
+        return {"renamed": False, "reason": "missing_owner_context"}
     if not resolution["found"]:
         return {
             "renamed": False,

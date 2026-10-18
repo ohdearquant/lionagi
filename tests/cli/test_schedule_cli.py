@@ -2567,6 +2567,45 @@ def test_schedule_apply_adopt_refusal_reports_the_changed_column(
     assert "17 4 * * *" in joined and "0 2 * * *" in joined
 
 
+def test_schedule_validate_json_names_a_resolution_error_qualified_once(
+    agent_profile_cwd, temp_state_db, capsys
+):
+    """`--json` names every error the same way the text output labels it.
+
+    A resolution error reports the member key while a plan error reports the
+    qualified name, so the same refusal read as JSON carried an unqualified name
+    for one kind and a qualified one for the other. Both forms are the qualified
+    name now, so a caller reading `errors[].name` sees one naming scheme.
+    """
+    from lionagi.studio.cli import run_schedule
+
+    manifest = _write_manifest(agent_profile_cwd)
+    manifest.write_text(manifest.read_text().replace("reviewer", "ghost-profile"))
+    with _cli_warnings():
+        result = run_schedule(_parse_schedule_args(["validate", str(manifest), "--json"]))
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 1
+    assert [error["name"] for error in payload["errors"]] == ["demo/nightly-review"]
+    assert "does not exist" in payload["errors"][0]["message"]
+
+
+@pytest.mark.parametrize("verb", ["validate", "apply"])
+def test_schedule_json_names_a_resolution_error_with_no_project_twice(
+    agent_profile_cwd, temp_state_db, capsys, verb
+):
+    """A refusal is labeled with its own prefix once, in both channels."""
+    from lionagi.studio.cli import run_schedule
+
+    manifest = _write_manifest(agent_profile_cwd)
+    manifest.write_text(manifest.read_text().replace("reviewer", "ghost-profile"))
+    with _cli_warnings() as warnings:
+        result = run_schedule(_parse_schedule_args([verb, str(manifest), "--json"]))
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 1
+    assert [error["name"] for error in payload["errors"]] == ["demo/nightly-review"]
+    assert all("demo/demo/" not in message for message in warnings)
+
+
 def test_schedule_apply_json_output_shape(agent_profile_cwd, temp_state_db, capsys):
     from lionagi.studio.cli import run_schedule
 

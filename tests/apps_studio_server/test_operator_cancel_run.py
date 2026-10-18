@@ -785,11 +785,14 @@ async def test_cancel_run_text_search_is_scoped_to_the_turns_project(tmp_path, m
     }
 
 
-async def test_cancel_run_text_search_without_project_context_fails_closed(tmp_path, monkeypatch):
-    """No turn/project context (e.g. a caller that never named a project)
-    must never fall back to unscoped resolution -- a turn with no owner
-    mapping is refused with a typed error before either same-named run in a
-    different project is ever read back, let alone offered as a candidate."""
+async def test_cancel_run_unscoped_turn_is_refused_for_every_reference_form(tmp_path, monkeypatch):
+    """Cancellation mutates the run it names, so a turn that declares no
+    project is refused before anything is resolved -- the same position
+    ``run_control`` takes for pause/resume/steer, and for the same two
+    reasons: the turn cannot prove it owns the run, and refusing before
+    resolution keeps the answer from becoming an oracle for which run ids
+    exist in projects it cannot see. Every reference form gets the one
+    refusal, including an exact full UUID, and no proposal is created."""
     from lionagi.state.db import StateDB
 
     path = tmp_path / "state.db"
@@ -799,35 +802,54 @@ async def test_cancel_run_text_search_without_project_context_fails_closed(tmp_p
         await db.update_session(first, project="/Users/admin/acme-research")
         second = await _seed_session(db, status="completed", name="nightly-triage")
         await db.update_session(second, project="/Users/admin/acme-ops")
+        running = await _seed_session(db, status="running", pid=None)
 
     store = OperatorStore(path)
     cid, request_id = await _make_running_turn(
-        store, context={"space": "mission", "route": "/", "filters": {}}
+        store,
+        context={
+            "space": "history",
+            "route": "/fleet",
+            "filters": {},
+            "selection": {"s": first},
+        },
     )
     _set_identity(monkeypatch, path, cid, request_id)
 
-    with pytest.raises(MissingOwnerContextError):
-        await cancel_run({"run": "nightly-triage"})
+    refusal = {"cancelled": False, "reason": "missing_owner_context", "run_untouched": True}
 
-    # A short id prefix is fenced the same way -- prefixes enumerate.
-    with pytest.raises(MissingOwnerContextError):
-        await cancel_run({"run": first[:8]})
+    # A name, an id prefix, and an exact full id of a row this turn cannot
+    # prove it owns.
+    assert await cancel_run({"run": "nightly-triage"}) == refusal
+    assert await cancel_run({"run": first[:8]}) == refusal
+    assert await cancel_run({"run": running}) == refusal
+    # The same answer for an id that does not exist at all: a not-found
+    # answer here would tell the turn that the previous id exists.
+    assert await cancel_run({"run": str(uuid.uuid4())}) == refusal
+    # And the run the human has open -- 'current' is a write target here,
+    # not a read.
+    assert await cancel_run({"run": "current"}) == refusal
 
     assert await store.list_proposals_for_request(request_id) == []
+    async with StateDB() as db:
+        row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (running,))
+        assert row["status"] == "running"
 
 
-async def test_cancel_run_exact_id_resolves_on_a_turn_with_no_project(tmp_path, monkeypatch):
-    """A turn with an owner but no declared project may still target one run
-    by its full id -- an exact 36-character UUID identifies at most one row
-    and cannot enumerate, so it passes the fence that keeps refusing prefix
-    and name resolution. The already-terminal outcome proves resolution
-    succeeded without any proposal machinery."""
+async def test_cancel_run_resolver_refuses_an_unscoped_turn_with_a_typed_error(
+    tmp_path, monkeypatch
+):
+    """The tool reports the refusal as a structured reason, but the resolver
+    beneath it still raises the typed error -- a caller that goes through the
+    resolver instead of the tool handler gets a refusal too, never a silent
+    unscoped lookup."""
     from lionagi.state.db import StateDB
+    from lionagi.studio.operator.cancel_run import _resolve_reference
 
     path = tmp_path / "state.db"
     _patch_state_db(monkeypatch, path)
     async with StateDB() as db:
-        run_id = await _seed_session(db, status="completed", pid=None)
+        run_id = await _seed_session(db, status="running", pid=None)
 
     store = OperatorStore(path)
     cid, request_id = await _make_running_turn(
@@ -835,22 +857,22 @@ async def test_cancel_run_exact_id_resolves_on_a_turn_with_no_project(tmp_path, 
     )
     _set_identity(monkeypatch, path, cid, request_id)
 
-    result = await cancel_run({"run": run_id})
+    with pytest.raises(MissingOwnerContextError):
+        await _resolve_reference(store, request_id, run_id)
+    # Nothing is selected on this turn, so 'current' would read as not-found if it
+    # were resolved before the refusal.
+    with pytest.raises(MissingOwnerContextError):
+        await _resolve_reference(store, request_id, "current")
+    assert await store.list_proposals_for_request(request_id) == []
 
-    assert result == {
-        "cancelled": False,
-        "status": "already_terminal",
-        "id": run_id,
-        "run_untouched": True,
-    }
 
-
-async def test_cancel_run_allow_path_cancels_a_projectless_row_by_exact_id(tmp_path, monkeypatch):
-    """A running row with no project of its own (Operator-launched runs have
-    none today) resolves through the exact-id arm and goes through the full
-    proposal flow: the human's approval is the authority, and the command
-    carries the row's own empty project so the executor can hold it to
-    still-projectless at execute time."""
+async def test_cancel_run_scoped_turn_cannot_reach_a_projectless_row_by_exact_id(
+    tmp_path, monkeypatch
+):
+    """A turn that declares a project and names a running row that carries no
+    project of its own gets the same not-found answer it gets for another
+    project's row: ownership is an equality check, and an unscoped row is not
+    a wildcard. No proposal is created and the row keeps running."""
     from lionagi.state.db import StateDB
 
     path = tmp_path / "state.db"
@@ -862,68 +884,21 @@ async def test_cancel_run_allow_path_cancels_a_projectless_row_by_exact_id(tmp_p
     calls: list = []
     coordinator = OperatorCoordinator(store=store, command_executor=_command_executor(calls))
     await coordinator.startup()
-    cid, request_id = await _make_running_turn(
-        store, context={"space": "mission", "route": "/", "filters": {}}
-    )
+    cid, request_id = await _make_running_turn(store)
     _set_identity(monkeypatch, path, cid, request_id)
 
-    task = asyncio.create_task(cancel_run({"run": run_id}))
-    proposal = await _wait_proposal(store, request_id)
-    assert proposal["command"] == {"session_id": run_id, "reason": "", "project": None}
+    # A correctly-scoped resolution returns "not_found" immediately -- it
+    # never creates a proposal to wait on. Bound the wait so a regression
+    # that resumes creating a proposal fails the test instead of hanging.
+    result = await asyncio.wait_for(cancel_run({"run": run_id}), timeout=5)
 
-    await coordinator.decide(
-        cid,
-        proposal["id"],
-        allow=True,
-        expected_command_hash=proposal["commandHash"],
-        expected_target_version=proposal["targetVersion"],
-    )
-    result = await asyncio.wait_for(task, timeout=2)
-
-    assert result == {
-        "cancelled": True,
-        "status": "terminal",
-        "id": run_id,
-        "signal": "no_pid",
-        "run_untouched": False,
-    }
+    assert result == {"cancelled": False, "reason": "not_found", "run_untouched": True}
+    assert await store.list_proposals_for_request(request_id) == []
+    assert calls == []
     async with StateDB() as db:
         row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (run_id,))
-        assert row["status"] == "cancelled"
+        assert row["status"] == "running"
     await coordinator.shutdown()
-
-
-async def test_cancel_run_current_resolves_via_the_exact_id_arm(tmp_path, monkeypatch):
-    """'Cancel the run the human is looking at' must work from any view:
-    the frozen selection is a full id the human's own browser reported, so
-    it rides the exact-id arm through the project fence."""
-    from lionagi.state.db import StateDB
-
-    path = tmp_path / "state.db"
-    _patch_state_db(monkeypatch, path)
-    async with StateDB() as db:
-        run_id = await _seed_session(db, status="completed", pid=None)
-
-    store = OperatorStore(path)
-    cid, request_id = await _make_running_turn(
-        store,
-        context={
-            "space": "history",
-            "route": "/fleet",
-            "filters": {},
-            "selection": {"s": run_id},
-        },
-    )
-    _set_identity(monkeypatch, path, cid, request_id)
-
-    result = await cancel_run({"run": "current"})
-
-    assert result == {
-        "cancelled": False,
-        "status": "already_terminal",
-        "id": run_id,
-        "run_untouched": True,
-    }
 
 
 async def test_execute_cancel_command_without_project_cannot_touch_an_owned_row(
