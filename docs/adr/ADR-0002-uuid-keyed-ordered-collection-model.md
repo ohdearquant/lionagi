@@ -20,10 +20,11 @@ lookup linear and cannot by itself enforce that a UUID has a resident object.
 invalid if its dictionary contains an item absent from the order, if the order names an absent
 item, or if the default order contains duplicate UUIDs that address only one dictionary entry.
 
-**P3 — Item admission has both nominal and structural definitions in the repository.** Pile uses
-the nominal `Observable` base and optional runtime classes. The public contracts module separately
-exports a runtime-checkable structural protocol requiring only an `id` property. Those are not the
-same contract today.
+**P3 — Item admission had both nominal and structural definitions in the repository.** Pile used
+a nominal `Observable` base and optional runtime classes, while the public contracts module
+separately exported a runtime-checkable structural protocol requiring only an `id` property. The
+D3 amendment of 2026-07-25 resolved this: there is one structural `Observable`, and Pile admission
+uses it.
 
 **P4 — A reusable ordering and a Pile-owned ordering do not share one multiplicity rule.** A
 standalone Progression is a sequence and several mutators preserve repeated UUIDs. A Pile's default
@@ -47,7 +48,7 @@ The implementation anchors are `lionagi/protocols/generic/pile.py`,
 |---|---|
 | Pile storage and order | D1: A Pile owns one UUID-to-item dictionary and one unique default Progression containing exactly the same UUIDs. |
 | Addressing and mutation | D2: UUID/Element references address identity; integers and slices address positions; mutators update store and order together. |
-| Item admission and wire shape | D3: Pile admission is nominal and optionally class-restricted; serialized collections are polymorphic item lists plus a serialized Progression. |
+| Item admission and wire shape | D3: Pile admission is structural (any object exposing an `id`, per the 2026-07-25 amendment) and optionally class-restricted; serialized collections are polymorphic item lists plus a serialized Progression. |
 | Reusable ordering | D4: Progression stores an ordered UUID deque with set-backed membership, while duplicate behavior remains method-dependent. **Superseded 2026-10-16 by ADR-0129 D1**, which fixes multiplicity in the ordering type. |
 | Named views | D5: Flow owns one item Pile and a Pile of named Progressions, validating that every view refers only to resident items. |
 | Synchronization | D6: Pile and Flow provide method-level cooperative locks, not a general cross-context linearizability or snapshot contract. **Superseded 2026-10-16 by ADR-0129 D2**, which removes the collection locks in favour of the holder. |
@@ -95,8 +96,8 @@ len(pile.collections) == len(pile.progression.order)
 
 **Exact construction semantics**:
 
-- Missing or falsey `collections` produces an empty dictionary, except that a falsey nominal
-  Observable such as an empty Pile or Progression is retained as one candidate item.
+- Missing or falsey `collections` produces an empty dictionary, except that a falsey
+  `Observable` such as an empty Pile or Progression is retained as one candidate item.
 - A dictionary item is reconstructed with `Element.from_dict` before admission. Other input values
   pass through the `to_list_type` normalization helper.
 - Items are keyed by `item.id`. Repeated input items with the same UUID overwrite the earlier
@@ -174,7 +175,7 @@ def append(self, item, /) -> None: ...
   one-item list; construction/order and non-positional assignment paths that use this helper are
   therefore inconsistent and are retained as delta 1.
 
-### D3 — Pile admission is nominal and its serialized constraint is not durable
+### D3 — Pile admission is structural and its serialized constraint is not durable
 
 > **Amendment (2026-07-25) — supersedes the 2026-07-20 note below**: Pile admission is
 > **structural**. `Observable` is a single runtime-checkable `Protocol` in
@@ -463,8 +464,9 @@ The design also carries concrete maintenance costs:
 - contributors must choose the correct identity or positional access domain and account for scalar
   versus list/Pile return shapes;
 - Progression multiplicity depends on the mutator and owner;
-- Pile's nominal admission rule differs from the exported structural protocol and is not fully
-  preserved in its wire payload;
+- ~~Pile's nominal admission rule differs from the exported structural protocol and is not fully
+  preserved in its wire payload;~~ superseded by the D3 amendment of 2026-07-25, which leaves one
+  structural `Observable`; the class restriction is still not preserved in the wire payload;
 - valid UUID strings do not normalize consistently on every Pile path;
 - Flow can mutate a Progression instance that is not one of its owned named views;
 - synchronous dump-and-clear behavior differs by selected file format; and
@@ -483,7 +485,7 @@ code work.
 | # | Delta | Size | Issue |
 |---|---|---|---|
 | 1 | Fix Pile UUID-string reference normalization in `to_list_type`; acceptance requires valid UUID strings to work as one-item references on the paths that fail today — `__getitem__`, `__setitem__`, `exclude`, and `order=` at construction — with regression coverage (`get` and `pop` already route through `validate_order` and work). | S | #2012 |
-| 2 | ~~Define one public Pile-item contract and align the exported Observable protocol with it~~ — **Resolved 2026-07-20**: the structural protocol is deleted, the nominal ABC is the sole contract, exported as `Observable`, enforced by item-type validation, with extension tests in `tests/protocols/test_observable_protocol.py`. | M | #2017 |
+| 2 | ~~Define one public Pile-item contract and align the exported Observable protocol with it~~ — **Resolved 2026-07-20**: the structural protocol is deleted, the nominal ABC is the sole contract, exported as `Observable`, enforced by item-type validation, with extension tests in `tests/protocols/test_observable_protocol.py`. **Superseded 2026-07-25 by the D3 amendment**: the one `Observable` is structural, and Pile admits any object exposing an `id`. | M | #2017 |
 | 3 | ~~Decide and enforce Progression multiplicity semantics for standalone Progressions, Pile default order, and Flow named views; acceptance requires append, extend, insert, serialization, and membership behavior to match the documented rule~~ — **Narrowed 2026-10-16; the rule is decided in ADR-0129 D1**: split the one ordering type into a unique order and a repeated order, with Pile's default order, standalone sequences, and serialization following the rule their type names. Acceptance requires the unique order to reject a resident id from construction and from `append`, `extend`, `insert`, `+=`, and positional assignment with the error the Pile raises today (construction is named because `Progression(order=[uid, uid])` keeps the duplicate today, `progression.py:186-188`), while the repeated order stores a second position for each; `include` to stay set-like and `exclude` to remove every occurrence on both; `Pile(order=<order instance>)` to build its own order, so a test that appends to the caller's instance observes `pile.progression` unchanged; and an ordering and Pile/Flow round trip to reconstruct each type with its own multiplicity intact. | M | (filled at issue-open time) |
 | 4 | ~~Publish and enforce Pile synchronization and snapshot semantics; acceptance requires every public mutator and read API to be audited against a stated sync, async, and mixed-context contract, with stable snapshot APIs where live traversal is unsafe~~ — **Narrowed 2026-10-16; the design is decided in ADR-0129 D2**: remove the Pile and Flow locks, add the snapshot value, and move each affected holder onto the holder rule. Acceptance requires `Pile` to expose no lock (no `lock` or `async_lock` attribute and no lock private field), and `Pile.snapshot()` to return a tuple of ids equal to the order at call time and unchanged by later mutation; each named holder — `Session` over `branches`, `MessageManager` over `messages`, `Exchange` over `flows`, `DataLogger` over `logs`, `Executor` over its event pile, `InMemoryStore` over its item `Pile`, and `Flow` over its named views — to pass a test that exercises its concurrent path without a collection lock, including the two sites that await while holding one today (`Session.asplit`, `Pile.adapt_to_async`). | M | (filled at issue-open time) |
 | 5 | Define and enforce Progression ownership in `Flow.add_item`; acceptance requires instance, UUID, and name references to follow one documented residency rule, reject invalid ownership before item insertion, and never mutate an external view accidentally. | S | (filled at issue-open time) |
@@ -521,9 +523,10 @@ objects once and sequences only UUIDs.
 
 Accepting `ObservableProto` would make lightweight third-party objects easy to store. Pile also
 serializes every item with `to_dict` and reconstructs dictionaries through Element, so an `id`
-property alone is not the full operational contract. The current code retains nominal admission;
+property alone is not the full operational contract. ~~The current code retains nominal admission;
 delta 2 requires choosing and documenting the complete extension surface rather than pretending the
-structural alias is sufficient.
+structural alias is sufficient.~~ Superseded: the D3 amendment of 2026-07-25 adopted structural
+admission, and serializing a Pile remains the one Element-shaped boundary.
 
 ### Unique Progressions everywhere
 
