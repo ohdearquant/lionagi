@@ -1,3 +1,6 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
 import logging
@@ -11,6 +14,7 @@ if TYPE_CHECKING:
     from lionagi.models.field_model import FieldModel
 
 from lionagi.ln import extract_json, to_dict, to_list
+from lionagi.ln._to_list import _dedupe_operation_fields
 from lionagi.ln.types import Spec, Unset
 from lionagi.ln.types._sentinel import _compat_not_sentinel
 from lionagi.models import HashableModel
@@ -389,7 +393,7 @@ def _get_default_fields(
 def _validate_listable_field(cls: Any, value: Any) -> list[Any]:
     """Normalize one listable operation field, through one stable validator identity."""
     del cls  # Pydantic recognizes the validator class argument by this exact name.
-    return to_list(value, dropna=True, flatten=True, unique=True)
+    return _dedupe_operation_fields(to_list(value, dropna=True, flatten=True))
 
 
 def _validate_action_required_field(cls: Any, value: Any) -> bool | None:
