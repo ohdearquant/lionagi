@@ -210,6 +210,30 @@ project those rows ran under. To keep the project, name it in those members.
 
 ### Fixed
 
+- `li schedule validate` and `li schedule apply` name every invalid schedule as `<project>/<name>`
+  (`global/<name>` for a global set), in the text lines and in `--json` alike. A resolution error
+  used to carry the bare member name, so `--json` reported it unqualified while plan errors were
+  qualified.
+- A scheduled playbook launch passes the args its schedule declares (`action_playbook_args`, or
+  the args of the resolved playbook target), as in `li play audit --depth 2`. It used to launch the
+  bare playbook, and adopting a declared playbook schedule with args was refused for that reason.
+  An arg the launch cannot pass (a name that is one of `li play`'s own flags, such as `project`, or a
+  value starting with `-`) is now refused when the set is validated or applied, rather than on every
+  fire, and stored args that are not an object are refused at launch rather than dropped.
+- Session health finds a stale `finalize.lock` in a run's directory and a stale `job.lock` in its
+  MCP job directory. Both sit beside the `artifacts` directory a session records, which is the only
+  tree the check walked, so for most runs a stale lock was never seen and the session was classified
+  by its process alone.
+- The Studio operator stores a proposal's outcome frame (the `confirmation`, `error` or
+  `tool_result` the conversation shows for it) in the same transaction that decides, expires or
+  completes the proposal. The frame used to be appended after that commit, so a turn that finished
+  in between kept the decision with no record of its outcome in its frame history.
+- The Studio operator's `cancel_run`, `rename_session` and `resume_run` tools refuse with
+  `missing_owner_context` on a turn that has an owner but no declared project, before resolving the
+  reference, a full run id and `"current"` included, as `run_control` (pause, resume, message)
+  already did. They used to resolve a full id on such a turn with no project check, so the turn
+  could propose changing a run in another project, and the found or not-found answer told it
+  whether that id existed. The read tools still resolve a full id on such a turn.
 - `li agent` warns when it hands a leg no MCP servers because no `.mcp.json` was found at or
   above its directory and none was named. That path skipped the warning, so the leg started
   without the servers its instructions assumed and nothing said so. `--no-mcp-config`, and a
