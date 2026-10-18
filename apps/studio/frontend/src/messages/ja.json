@@ -159,6 +159,11 @@
     "effect": {
       "requested": "Requested interface action: {kind}"
     },
+    "truncation": {
+      "title": "このターンの一部は保持されていません",
+      "summary": "{frames} フレーム未保持 · {size}",
+      "limit": " · 上限: {limit}"
+    },
     "outcome": {
       "completed": "Turn completed",
       "failed": "Turn failed",
