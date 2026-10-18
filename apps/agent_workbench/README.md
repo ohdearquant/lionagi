@@ -45,10 +45,13 @@ Only the final observation carries a reward, in [0, 1]:
 
 ```text
 reward = 0.7 x correctness
-       + 0.1 if the agent inspected the workspace before submitting
-       + 0.1 if it verified before submitting (check, or run_tests for code tasks)
+       + 0.1 if the agent read a file or ran code before submitting
+       + 0.1 if it verified what it submitted: checked that exact answer, or, for code
+         tasks, ran the tests after its last change to the files
        + 0.1 if it made no refused calls
 ```
+
+Listing the files does not count as reading them: reset already shows the listing.
 
 An episode that ends without `submit` scores 0. Correctness is computed from the task's own data at grading time;
 no answer is stored anywhere.
@@ -57,19 +60,25 @@ no answer is stored anywhere.
   is right but wrapped in other text.
 - Names, addresses and timestamps: 1.0 for the value alone (case-insensitive); 0 for anything else, since
   crediting text that merely contains the value would reward listing every candidate.
-- Lists: 1.0 for the exact sorted list; 0.8 for the right items in another order; otherwise half the overlap.
-- Code: the share of further cases, beyond the visible tests, that the fixed function passes, each in its own
-  process.
+- Lists: 1.0 for the exact sorted list; 0.8 for the right items in another order; half the share found when
+  some are missing and none is wrong; 0 for a list with any item that does not belong, since crediting overlap
+  would reward listing every candidate.
+- Code: the share of further cases, beyond the visible tests, that the original code fails and the fixed function
+  passes, each in its own process. Submitting the code unchanged, or with an edit that fixes nothing, earns 0.
 - Headline (media): 1.0 when every rule in the brief holds; partial credit only once the required words are present.
 
 Tasks are generated from their ids with a seeded generator, so every reset of a task is identical.
 
 ## Sandbox
 
-In the image the server runs as root and agent code runs as `nobody` with the system interpreter, in a workspace
-the episode creates and removes; the server's code and its virtual environment are not readable from it. Paths given
-to the file tools are resolved and must stay inside the workspace, and the server never follows a symlink the agent
-planted at a name it writes.
+In the image the server runs as root, and each episode runs its agent code under a uid of its own with the
+system interpreter, in a workspace the episode creates and removes. Concurrent episodes cannot read each other's
+workspaces, and a call's cleanup kills only its own episode's processes. The server's code and its virtual
+environment are not readable from agent code. Paths given to the file tools are relative, stay inside the
+workspace and may not pass through a symlink, and the listing neither follows nor shows symlinks.
+
+Outside the image (the server not running as root) there is no separate uid: agent code runs as the server's
+user, and a process that starts its own session can outlive its call. Train against the image.
 
 ## Run it
 

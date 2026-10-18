@@ -89,11 +89,55 @@ def test_a_careful_episode_earns_full_reward(env, task_id):
     assert act(env, "list_files").done
 
 
-@pytest.mark.parametrize("task_id", [t for t in sorted(TASKS) if TASKS[t].domain == "software"])
-def test_submitting_the_buggy_code_scores_below_a_fix(env, task_id):
+SOFTWARE = [t for t in sorted(TASKS) if TASKS[t].domain == "software"]
+
+
+@pytest.mark.parametrize("task_id", SOFTWARE)
+def test_the_unfixed_code_earns_no_correctness(env, task_id):
+    # The unfixed code already passes some grader cases; only cases it failed earn credit.
+    task = build_task(task_id)
+    assert 0 <= task.code_baseline < len(task.code_cases)
     env.reset(task_id=task_id)
-    final = act(env, "submit", answer="")
-    assert final.done and final.reward < 0.7
+    act(env, "run_tests")
+    final = act(env, "submit", answer="done")
+    assert final.done and final.metadata["correctness"] == 0.0
+    assert final.reward == pytest.approx(0.2)  # tested what it submitted, no refused calls
+
+
+@pytest.mark.parametrize("task_id", SOFTWARE)
+def test_an_edit_that_fixes_nothing_earns_no_correctness(env, task_id):
+    env.reset(task_id=task_id)
+    source = build_task(task_id).files["solution.py"]
+    act(env, "write_file", path="solution.py", content=source + "\n# reviewed\n")
+    final = act(env, "submit", answer="done")
+    assert final.metadata["correctness"] == 0.0
+
+
+def test_tests_run_before_the_last_change_do_not_count_as_verifying_it(env):
+    env.reset(task_id="software-slugify-4")
+    act(env, "read_file", path="solution.py")
+    act(env, "run_tests")
+    act(env, "write_file", path="solution.py", content=FIXED["slugify"])
+    final = act(env, "submit", answer="done")
+    assert final.metadata["correctness"] == 1.0
+    assert final.reward == pytest.approx(0.9)
+
+
+def test_listing_the_files_is_not_reading_them(env):
+    env.reset(task_id="math-divisible-1")
+    act(env, "list_files")
+    act(env, "check", answer="1")
+    assert act(env, "submit", answer="1").reward == pytest.approx(0.2)
+
+
+def test_checking_one_answer_does_not_verify_a_different_one(env):
+    task = build_task("math-divisible-1")
+    env.reset(task_id=task.spec.task_id)
+    act(env, "read_file", path=sorted(task.files)[0])
+    act(env, "check", answer="x")
+    final = act(env, "submit", answer=answer_text(task, solve(task)))
+    assert final.metadata["correctness"] == 1.0
+    assert final.reward == pytest.approx(0.9)
 
 
 def test_example_action_ends_every_task_with_a_reward_in_range(env):
@@ -127,7 +171,7 @@ def test_a_blank_answer_is_refused_and_the_episode_goes_on(env):
 def test_wrong_answer_with_good_process_is_capped(env):
     task_id = "math-divisible-1"
     env.reset(task_id=task_id)
-    act(env, "list_files")
+    act(env, "read_file", path=sorted(build_task(task_id).files)[0])
     act(env, "check", answer="1")
     final = act(env, "submit", answer="1")
     assert final.reward == pytest.approx(0.3)
@@ -194,6 +238,60 @@ def test_symlink_escape_is_refused(env, tmp_path):
 def test_reset_rejects_an_unknown_task(env):
     with pytest.raises(ValueError):
         env.reset(task_id="nope")
+
+
+def test_a_refused_reset_leaves_the_running_episode_intact(env):
+    env.reset(task_id="science-gas-1")
+    ws = env._ws
+    with pytest.raises(ValueError):
+        env.reset(task_id="nope")
+    assert env._ws == ws and ws.exists()
+    assert "lab_notes.txt" in act(env, "list_files").output
+
+
+@pytest.mark.parametrize("path", [".", "./", "", "/etc/hosts", "a/../lab_notes.txt"])
+def test_a_write_that_names_no_workspace_file_is_refused(env, path):
+    env.reset(task_id="science-gas-1")
+    obs = act(env, "write_file", path=path, content="x")
+    assert obs.error and not obs.done
+
+
+def test_writing_over_a_directory_is_refused(env):
+    env.reset(task_id="science-gas-1")
+    act(env, "run_python", code="import os; os.mkdir('notes')")
+    assert "directory" in act(env, "write_file", path="notes", content="x").error
+
+
+def test_a_symlink_inside_the_workspace_is_neither_followed_nor_listed(env, tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret" * 1000)
+    env.reset(task_id="science-gas-1")
+    before = (env._ws / "lab_notes.txt").read_text()
+    act(
+        env,
+        "run_python",
+        code=f"import os; os.symlink('lab_notes.txt', 'alias.txt'); os.symlink({str(outside)!r}, 'leak.txt')",
+    )
+    listing = act(env, "list_files").output
+    assert "alias.txt" not in listing and "leak.txt" not in listing and "6000" not in listing
+    assert "symlink" in act(env, "write_file", path="alias.txt", content="overwritten").error
+    assert "symlink" in act(env, "read_file", path="alias.txt").error
+    assert (env._ws / "lab_notes.txt").read_text() == before
+    assert outside.read_text() == "secret" * 1000
+
+
+def test_each_live_episode_gets_its_own_sandbox_uid(monkeypatch):
+    monkeypatch.setattr(workbench.os, "geteuid", lambda: 0)
+    a, b = workbench._claim_sandbox_uid(), workbench._claim_sandbox_uid()
+    try:
+        assert a is not None and b is not None and a != b
+        workbench._release_sandbox_uid(a)
+        c = workbench._claim_sandbox_uid()
+        assert c == a
+        workbench._release_sandbox_uid(c)
+    finally:
+        workbench._release_sandbox_uid(a)
+        workbench._release_sandbox_uid(b)
 
 
 def test_reset_without_a_task_id_picks_one(env):

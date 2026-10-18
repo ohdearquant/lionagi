@@ -303,6 +303,36 @@ def test_a_text_answer_earns_credit_only_as_the_value_alone(task_id):
     assert score_answer(task, f"{want}, {want}x, other")[0] == 0.0
 
 
+@pytest.mark.parametrize("task_id", [t for t in NON_CODE if build_task(t).answer_kind == "list"])
+def test_a_list_earns_partial_credit_only_with_nothing_wrong_in_it(task_id):
+    task = build_task(task_id)
+    want = list(task.expected)
+    assert score_answer(task, ", ".join(want + ["not-an-item"]))[0] == 0.0
+    assert score_answer(task, want[0])[0] == pytest.approx(0.5 / len(want))
+    assert score_answer(task, ", ".join(reversed(want)))[0] == (1.0 if len(want) == 1 else 0.8)
+
+
+def test_listing_every_candidate_earns_nothing():
+    # An agent that submits every file name, or every employee, without working out which belong.
+    for task_id in [t for t in NON_CODE if TASKS[t].template in ("ioc", "reports")]:
+        task = build_task(task_id)
+        if TASKS[task_id].template == "ioc":
+            everything = sorted(n for n in task.files if n.startswith("samples/"))
+        else:
+            everything = sorted(r["name"] for r in rows(task.files["employees.csv"]))
+        assert score_answer(task, ", ".join(everything))[0] == 0.0, task_id
+
+
+def test_headline_words_vary_from_task_to_task():
+    import random
+
+    from agent_workbench.server.tasks import _media_headline
+
+    briefs = {_media_headline(random.Random(seed)).files["brief.txt"] for seed in range(40)}  # noqa: S311
+    triples = {tuple(re.findall(r"'(\w+)'", b)) for b in briefs}
+    assert len(triples) >= 35
+
+
 def test_number_format_partial_credit():
     task = build_task(
         next(

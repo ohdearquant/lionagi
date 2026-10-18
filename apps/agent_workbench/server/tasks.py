@@ -9,6 +9,7 @@ is built and are never written into the agent's workspace.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import random
 import re
@@ -39,6 +40,7 @@ class BuiltTask:
     rel_tol: float = 0.0
     abs_tol: float = 0.0
     code_cases: list[tuple[str, tuple, Any]] = field(default_factory=list)
+    code_baseline: int = 0  # grader cases the unfixed solution.py already passes
     constraints: list[tuple[str, Callable[[str], bool]]] = field(default_factory=list)
 
 
@@ -705,16 +707,23 @@ def _media_edl(rng: random.Random) -> BuiltTask:
     )
 
 
+_HEADLINE_WORDS = (
+    "solar farm village river cleanup volunteers library robot students bakery bread night harbor "
+    "ferry museum garden council budget bridge market festival orchard school bus clinic nurses "
+    "airport runway storm shelter theater choir stadium league factory workers forest trail "
+    "canal lock bicycle lane recycling plant reservoir drought vineyard harvest tram depot"
+).split()
+_HEADLINE_BANNED = (
+    "cheap miracle shocking disaster amazing epic best secret insane unbelievable stunning "
+    "ultimate incredible tragic viral huge"
+).split()
+
+
 def _media_headline(rng: random.Random) -> BuiltTask:
-    topic = rng.choice(
-        [
-            ("solar", "farm", "village", ["cheap", "miracle"]),
-            ("river", "cleanup", "volunteers", ["shocking", "disaster"]),
-            ("library", "robot", "students", ["amazing", "epic"]),
-            ("bakery", "bread", "night", ["best", "secret"]),
-        ]
-    )
-    w1, w2, w3, banned = topic
+    # Words drawn per task from a wide pool, so the required words are learnt from brief.txt, never
+    # guessed from a short list of topics.
+    w1, w2, w3 = rng.sample(_HEADLINE_WORDS, 3)
+    banned = rng.sample(_HEADLINE_BANNED, 2)
     max_len = rng.choice([48, 55, 60])
     brief = (
         "Headline brief\n"
@@ -970,6 +979,23 @@ _SWE = {
 }
 
 
+def _json_equal(a: Any, b: Any) -> bool:
+    return json.loads(json.dumps(a)) == json.loads(json.dumps(b))
+
+
+def _cases_passed(source: str, name: str, cases: list[tuple[tuple, Any]]) -> int:
+    namespace: dict[str, Any] = {}
+    # The task's own unfixed source, defined in this file; never agent code.
+    exec(compile(source, "solution.py", "exec"), namespace)  # noqa: S102
+    passed = 0
+    for args, want in cases:
+        try:
+            passed += _json_equal(namespace[name](*args), want)
+        except Exception:  # noqa: BLE001, S112 - a crashing case is a failing case
+            continue
+    return passed
+
+
 def _swe(name: str) -> Callable[[random.Random], BuiltTask]:
     source, visible, hidden = _SWE[name]
 
@@ -994,13 +1020,14 @@ def _swe(name: str) -> Callable[[random.Random], BuiltTask]:
             instruction=(
                 f"solution.py has a bug in {name}: it does not do what its docstring says. Fix it with write_file "
                 "(keep the function name and signature). run_tests runs the examples in test_solution.py; the "
-                "grader also runs further cases from the docstring's behaviour. Submit when you are done; the "
-                "answer text is ignored for this task."
+                "grader also runs further cases from the docstring's behaviour. Submit when you are done, with a "
+                "one-line note as the answer; the note is not graded."
             ),
             files={"solution.py": source, "test_solution.py": "\n".join(tests)},
             answer_kind="code",
             expected=name,
             code_cases=[(name, args, want) for args, want in hidden],
+            code_baseline=_cases_passed(source, name, hidden),
         )
 
     return build
@@ -1085,8 +1112,11 @@ def _score_list(task: BuiltTask, answer: str) -> tuple[float, str]:
         return 1.0, "correct"
     if set(got) == set(want):
         return 0.8, "right items, wrong order or duplicates"
-    inter, union = len(set(got) & set(want)), len(set(got) | set(want))
-    return (0.5 * inter / union if union else 0.0), "some items are wrong or missing"
+    # Partial credit only for a list with nothing wrong in it: crediting overlap would pay an answer
+    # that lists every candidate.
+    if set(got) - set(want):
+        return 0.0, "the list has items that do not belong"
+    return 0.5 * len(set(got)) / len(set(want)), "some items are missing"
 
 
 _FREE_RULES = frozenset({"length", "banned", "punctuation", "case"})
@@ -1111,14 +1141,21 @@ def _score_constraints(task: BuiltTask, answer: str) -> tuple[float, str]:
 
 
 def score_answer(
-    task: BuiltTask, answer: str, code_runner: Callable[[BuiltTask], float] | None = None
+    task: BuiltTask, answer: str, code_runner: Callable[[BuiltTask], int] | None = None
 ) -> tuple[float, str]:
-    """Correctness in [0, 1] and a short reason. Code tasks are scored by ``code_runner``."""
+    """Correctness in [0, 1] and a short reason.
+
+    ``code_runner`` returns how many of a code task's grader cases pass. Credit counts only the cases
+    the unfixed code failed, so submitting it unchanged, or with an edit that fixes nothing, earns 0.
+    """
     if task.answer_kind == "code":
         if code_runner is None:
             return 0.0, "no code runner"
-        frac = code_runner(task)
-        return frac, f"{round(frac * 100)}% of the grader's cases pass"
+        passed, total, base = code_runner(task), len(task.code_cases), task.code_baseline
+        fixed = max(0, passed - base)
+        return fixed / (
+            total - base
+        ), f"{fixed} of the {total - base} cases the original code fails now pass"
     if not isinstance(answer, str) or not answer.strip():
         return 0.0, "empty answer"
     if task.answer_kind == "number":
