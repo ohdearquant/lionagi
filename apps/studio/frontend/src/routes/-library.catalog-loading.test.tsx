@@ -387,20 +387,23 @@ describe("Library catalog loading", () => {
     expect(detailActiveAttr()).toBe("true");
   });
 
-  it("treats a selection that names no row as no selection", async () => {
-    api.listAgents.mockResolvedValue({
-      agents: [{ name: "first-agent" }, { name: "second-agent" }],
-    });
-    await renderLibrary({ tab: "agent", sel: "bogus" });
-    // The catalog stays up with its first row shown, as it would without a
-    // selection, and no pane hides it behind a detail with nothing to show.
-    expect(detailActiveAttr()).toBe("false");
-    expect(container.querySelector("tbody")?.textContent).toContain("first-agent");
-    expect(container.querySelector('[data-testid="agent-detail"]')?.textContent).toBe(
-      "first-agent",
-    );
-    expect(container.querySelectorAll("tbody tr")[0].getAttribute("aria-selected")).toBe("true");
-  });
+  it.each(["bogus", "agent:missing-agent"])(
+    "treats a selection that names no row as no selection (%s)",
+    async (sel) => {
+      api.listAgents.mockResolvedValue({
+        agents: [{ name: "first-agent" }, { name: "second-agent" }],
+      });
+      await renderLibrary({ tab: "agent", sel });
+      // The catalog stays up with its first row shown, as it would without a
+      // selection, and no pane hides it behind a detail with nothing to show.
+      expect(detailActiveAttr()).toBe("false");
+      expect(container.querySelector("tbody")?.textContent).toContain("first-agent");
+      expect(container.querySelector('[data-testid="agent-detail"]')?.textContent).toBe(
+        "first-agent",
+      );
+      expect(container.querySelectorAll("tbody tr")[0].getAttribute("aria-selected")).toBe("true");
+    },
+  );
 
   it("keeps a hidden workflow detail on its own tab when the catalog has it", async () => {
     api.listWorkflowDefs.mockResolvedValue([{ id: "workflow-id", name: "saved-flow" }]);
@@ -475,7 +478,8 @@ describe("Library catalog loading", () => {
     // screen into a request for detail, because the address never named it.
     act(() => root.unmount());
     root = createRoot(container);
-    await renderLibrary({ tab: "agent" });
+    await act(async () => root.render(<LibraryPage />));
+    await flush();
     expect(detailActiveAttr()).toBe("false");
     expect(router.search).toEqual({ tab: "agent" });
   });
@@ -586,11 +590,14 @@ describe("Library catalog loading", () => {
 
   it("drops a missing selection when the empty catalog opens its create form", async () => {
     await renderLibrary({ tab: "agent", sel: "agent:missing-agent" });
-    const create = [...container.querySelectorAll("button")].find((button) =>
+    // The toolbar's button and the empty catalog's own; the second is the one
+    // only an empty catalog offers.
+    const creates = [...container.querySelectorAll("button")].filter((button) =>
       button.textContent?.includes("newAgent"),
     );
-    expect(create).toBeDefined();
-    await act(async () => create!.click());
+    expect(creates).toHaveLength(2);
+    const create = creates[1];
+    await act(async () => create.click());
     expect(router.search).toEqual({ tab: "agent" });
     expect(detailActiveAttr()).toBe("true");
 
@@ -1525,5 +1532,192 @@ describe("Library catalog loading", () => {
     await clickTab("filterAgent");
     expect(api.listAgents).toHaveBeenCalledTimes(2);
     expect(container.querySelector("tbody")?.textContent).toContain("created-agent");
+  });
+  it("keeps a deep-linked row's pane open while its catalog loads", async () => {
+    const listed = deferred<{ agents: { name: string }[] }>();
+    api.listAgents.mockReturnValue(listed.promise);
+    await renderLibrary({ tab: "agent", sel: "agent:first-agent" });
+    expect(detailActiveAttr()).toBe("true");
+    expect(container.querySelector('[data-testid="agent-detail"]')?.textContent).toBe(
+      "first-agent",
+    );
+
+    listed.resolve({ agents: [{ name: "first-agent" }] });
+    await flush();
+    expect(detailActiveAttr()).toBe("true");
+  });
+
+  it("keeps a deep-linked row's pane open while its failed catalog is retried", async () => {
+    const listed = deferred<{ agents: { name: string }[] }>();
+    api.listAgents.mockRejectedValueOnce(new Error("down")).mockReturnValueOnce(listed.promise);
+    await renderLibrary({ tab: "agent", sel: "agent:first-agent" });
+    expect(detailActiveAttr()).toBe("true");
+
+    await act(async () => retry().click());
+    expect(api.listAgents).toHaveBeenCalledTimes(2);
+    expect(detailActiveAttr()).toBe("true");
+
+    listed.resolve({ agents: [{ name: "first-agent" }] });
+    await flush();
+    expect(detailActiveAttr()).toBe("true");
+  });
+
+  it.each([[[]], [[{ name: "existing-agent" }]]])(
+    "shows a created agent while the reload that lists it is in flight (catalog %j)",
+    async (before) => {
+      const reloaded = deferred<{ agents: { name: string }[] }>();
+      api.listAgents
+        .mockResolvedValueOnce({ agents: before })
+        .mockReturnValueOnce(reloaded.promise);
+      await renderLibrary({ tab: "agent" });
+      const create = [...container.querySelectorAll("button")].find((button) =>
+        button.textContent?.includes("newAgent"),
+      );
+      await act(async () => create!.click());
+      await act(async () =>
+        container.querySelector<HTMLButtonElement>('[data-testid="submit-agent"]')!.click(),
+      );
+      await flush();
+      expect(api.listAgents).toHaveBeenCalledTimes(2);
+      expect(router.search).toEqual({ tab: "agent", sel: "agent:created-agent" });
+      expect(detailActiveAttr()).toBe("true");
+      expect(container.querySelector('[data-testid="agent-detail"]')?.textContent).toBe(
+        "created-agent",
+      );
+
+      reloaded.resolve({ agents: [...before, { name: "created-agent" }] });
+      await flush();
+      expect(detailActiveAttr()).toBe("true");
+      expect(container.querySelector('[data-testid="agent-detail"]')?.textContent).toBe(
+        "created-agent",
+      );
+    },
+  );
+
+  it("returns to the catalog when the reload after a create does not list the row", async () => {
+    const reloaded = deferred<{ agents: { name: string }[] }>();
+    api.listAgents
+      .mockResolvedValueOnce({ agents: [{ name: "existing-agent" }] })
+      .mockReturnValueOnce(reloaded.promise);
+    await renderLibrary({ tab: "agent" });
+    const create = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("newAgent"),
+    );
+    await act(async () => create!.click());
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="submit-agent"]')!.click(),
+    );
+    await flush();
+    expect(detailActiveAttr()).toBe("true");
+
+    reloaded.resolve({ agents: [{ name: "existing-agent" }] });
+    await flush();
+    expect(router.search).toEqual({ tab: "agent", sel: "agent:created-agent" });
+    expect(detailActiveAttr()).toBe("false");
+    expect(container.querySelector('[data-testid="agent-detail"]')?.textContent).toBe(
+      "existing-agent",
+    );
+  });
+
+  it("shows a cloned playbook while the reload that lists it is in flight", async () => {
+    const reloaded = deferred<{ playbooks: { name: string }[] }>();
+    api.listBuiltinPlaybooks.mockResolvedValue({ playbooks: [{ name: "bundled" }] });
+    api.listPlaybooks
+      .mockResolvedValueOnce({ playbooks: [] })
+      .mockReturnValueOnce(reloaded.promise);
+    await renderLibrary({ tab: "playbook", sel: "playbook:builtin:bundled" });
+    expect(detailActiveAttr()).toBe("true");
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="clone-playbook"]')!.click(),
+    );
+    await flush();
+    expect(api.listPlaybooks).toHaveBeenCalledTimes(2);
+    expect(router.search).toEqual({ tab: "playbook", sel: "playbook:custom:cloned-playbook" });
+    expect(detailActiveAttr()).toBe("true");
+    expect(container.querySelector('[data-testid="playbook-detail"]')?.textContent).toContain(
+      "cloned-playbook",
+    );
+
+    reloaded.resolve({ playbooks: [{ name: "cloned-playbook" }] });
+    await flush();
+    expect(detailActiveAttr()).toBe("true");
+    expect(
+      container.querySelector('[data-testid="playbook-detail"]')?.getAttribute("data-builtin"),
+    ).toBe("false");
+  });
+
+  it("returns to the catalog when the address moves from a clicked row to one the tab lacks", async () => {
+    api.listAgents.mockResolvedValue({
+      agents: [{ name: "first-agent" }, { name: "second-agent" }],
+    });
+    await renderLibrary({ tab: "agent" });
+    await act(async () => container.querySelector<HTMLTableRowElement>("tbody tr")!.click());
+    expect(detailActiveAttr()).toBe("true");
+
+    await act(async () =>
+      router.navigate({ search: () => ({ tab: "agent", sel: "agent:missing-agent" }) }),
+    );
+    await flush();
+    expect(detailActiveAttr()).toBe("false");
+  });
+
+  it("keeps the create form open when the router commits its address after the form renders", async () => {
+    api.listAgents.mockResolvedValue({ agents: [{ name: "first-agent" }] });
+    await renderLibrary({ tab: "agent", sel: "agent:first-agent" });
+    // The router commits a navigation after the click's own render, as it does
+    // when it loads the route before updating the address.
+    const commits: (() => void)[] = [];
+    router.navigate.mockImplementation(
+      ({ search }: { search: (previous: typeof router.search) => typeof router.search }) => {
+        commits.push(() => {
+          router.search = search(router.search);
+          root.render(<LibraryPage />);
+        });
+        return Promise.resolve();
+      },
+    );
+    const create = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("newAgent"),
+    );
+    await act(async () => create!.click());
+    expect(container.querySelector('[data-testid="submit-agent"]')).not.toBeNull();
+    expect(commits).toHaveLength(1);
+
+    await act(async () => commits.shift()!());
+    await flush();
+    expect(router.search).toEqual({ tab: "agent" });
+    expect(container.querySelector('[data-testid="submit-agent"]')).not.toBeNull();
+    expect(detailActiveAttr()).toBe("true");
+  });
+
+  it("shows an agent created after a delete resolved behind its create form", async () => {
+    const deletion = deferred<void>();
+    mutations.deleteAgent.mockReturnValue(deletion.promise);
+    const reloaded = deferred<{ agents: { name: string }[] }>();
+    api.listAgents
+      .mockResolvedValueOnce({ agents: [{ name: "first-agent" }] })
+      .mockResolvedValueOnce({ agents: [] })
+      .mockReturnValueOnce(reloaded.promise);
+    await renderLibrary({ tab: "agent", sel: "agent:first-agent" });
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="delete-agent"]')!.click(),
+    );
+    const create = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("newAgent"),
+    );
+    await act(async () => create!.click());
+    deletion.resolve();
+    await flush();
+    expect(container.querySelector('[data-testid="submit-agent"]')).not.toBeNull();
+
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="submit-agent"]')!.click(),
+    );
+    await flush();
+    expect(router.search).toEqual({ tab: "agent", sel: "agent:created-agent" });
+    expect(detailActiveAttr()).toBe("true");
+    expect(container.querySelector('[data-testid="agent-detail"]')?.textContent).toBe(
+      "created-agent",
+    );
   });
 });

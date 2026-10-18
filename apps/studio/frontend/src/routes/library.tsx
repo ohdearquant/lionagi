@@ -258,6 +258,10 @@ function useLibraryData(
   const prevReloadToken = useRef(reloadToken);
   const prevRetryToken = useRef(retryToken);
   const prevInvalidationToken = useRef(invalidation.token);
+  // The latest reload whose requests have all answered. Until it catches up
+  // with the reload token, the cache still holds what the catalog listed
+  // before the reload, so a row a create or clone just added is not in it.
+  const [settledReloadToken, setSettledReloadToken] = useState(reloadToken);
 
   const wants = (kind: LibraryKind) =>
     (tab === kind && (hidden || !UNFINISHED_KINDS.has(kind))) ||
@@ -313,7 +317,19 @@ function useLibraryData(
       // would leave the tab permanently stuck on its error state.
       return cached === undefined || cached === "failed";
     });
-    if (sources.length === 0) return;
+    const settle = () => setSettledReloadToken((settled) => Math.max(settled, reloadToken));
+    if (sources.length === 0) {
+      if (reload) settle();
+      return;
+    }
+    const unanswered = new Set(sources);
+    // A reload settles when every source it requested has answered, whether
+    // or not a newer request has since taken that source's cache entry over.
+    const answered = (source: CatalogSource) => {
+      if (!reload) return;
+      unanswered.delete(source);
+      if (unanswered.size === 0) settle();
+    };
 
     for (const source of sources) {
       // A source being retried is no longer in its failed state: clear the
@@ -331,10 +347,12 @@ function useLibraryData(
       requestVersion.current[source] = version;
       SOURCE_REQUESTS[source]().then(
         (data) => {
+          answered(source);
           if (requestVersion.current[source] !== version) return;
           setCache((prev) => ({ ...prev, [source]: data }));
         },
         () => {
+          answered(source);
           if (requestVersion.current[source] !== version) return;
           setCache((prev) => ({ ...prev, [source]: "failed" }));
         },
@@ -366,6 +384,7 @@ function useLibraryData(
     allAgents: agentsEntry && agentsEntry !== "failed" ? (agentsEntry.agents ?? []) : [],
     allEngines: enginesEntry && enginesEntry !== "failed" ? (enginesEntry.engines ?? []) : [],
     kindStatus,
+    settledReloadToken,
   };
 }
 
@@ -495,7 +514,14 @@ function LibraryPage() {
   const [invalidation, setInvalidation] = useState<CatalogInvalidation>({ token: 0, kinds: [] });
   // Completion callbacks can outlive the tab where they were created. Refresh
   // the current effects instead of issuing requests for a captured tab.
-  const reload = useCallback(() => setReloadToken((token) => token + 1), []);
+  // Returns the token of the reload it starts, so a completion can tell when
+  // that reload has answered.
+  const reloadCount = useRef(0);
+  const reload = useCallback(() => {
+    reloadCount.current += 1;
+    setReloadToken(reloadCount.current);
+    return reloadCount.current;
+  }, []);
   const invalidate = useCallback(
     (kind: LibraryKind) => setInvalidation((prev) => ({ token: prev.token + 1, kinds: [kind] })),
     [],
@@ -523,14 +549,9 @@ function LibraryPage() {
 
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
-  // Collapsed split-pane: show detail when a selection exists or create is
-  // open. The row the catalog picks on its own is not a selection: it fills
-  // the detail pane beside the list but must not replace the catalog in the
-  // collapsed layout, so only a deep link, a row click, or the create form
-  // sets this.
-  const [detailActive, setDetailActive] = useState(false);
   // Set while the create form's own navigation drops the row the URL names,
-  // so that drop is not read as a tab link.
+  // so that drop is not read as a tab link. Only the next address change, the
+  // drop, clears it: the form renders before the router commits that address.
   const openingCreate = useRef(false);
   // A create form belongs to the tab that opened it, and the detail pane's
   // collapsed state belongs to the selection; switching tabs closes the form
@@ -548,10 +569,7 @@ function LibraryPage() {
     const pickingTab = kindChanged || tabChanged || (selDropped && !openingCreate.current);
     if (!pickingTab) return;
     setShowCreate(false);
-    setDetailActive(false);
   }, [kindFilter, tab, sel]);
-  // A URL that stops naming a selection also returns the collapsed layout to
-  // the list, so Back to the catalog does not leave its last row's detail up.
   // A selection that appears while a create form is open is a request for that
   // row — browser Back onto it, or a link — so the form closes and the row's
   // detail takes the pane, which it opens on its own.
@@ -561,7 +579,6 @@ function LibraryPage() {
   const openCreate = () => {
     openingCreate.current = !!sel;
     setShowCreate(true);
-    setDetailActive(true);
     void navigate({
       search: (prev) => {
         if (prev.sel === undefined) return prev;
@@ -573,15 +590,18 @@ function LibraryPage() {
     });
   };
   useEffect(() => {
-    const dropped = !!previousSel.current && !sel;
     const selected = !previousSel.current && !!sel;
     previousSel.current = sel;
-    const keptOpen = openingCreate.current || showCreate;
     openingCreate.current = false;
     if (selected) setShowCreate(false);
-    if (dropped && !keptOpen) setDetailActive(false);
-  }, [sel, showCreate]);
+  }, [sel]);
   const [optimisticWorkflow, setOptimisticWorkflow] = useState<CreatedWorkflowDef | null>(null);
+  // A create or clone moves the address to a row the catalog has not fetched
+  // yet, and the reload it starts keeps the previous list on screen until it
+  // answers. Until then, that address is the selection.
+  const [awaitedSel, setAwaitedSel] = useState<{ sel: string; reload: number } | null>(null);
+  const rowAwaited =
+    awaitedSel !== null && awaitedSel.sel === sel && visible.settledReloadToken < awaitedSel.reload;
 
   const ALL_KIND_TABS: Array<{ value: LibraryTab; label: string }> = [
     { value: "all", label: t("filterAll") },
@@ -630,13 +650,13 @@ function LibraryPage() {
       : null;
 
   // A selection belongs to the tab that shows it. A selection whose catalog
-  // can still tell whether the row exists — a hidden workflow or engine being
-  // fetched, or a source that failed — is kept: those details render their own
-  // loading, error, or not-found state with a Back control. Any other
-  // selection that names no row the tab lists is no selection, so the tab
-  // shows its first row as it does without one instead of opening a pane that
-  // can only hide the catalog. The text search does not narrow this: a row the
-  // search hides still has its detail.
+  // can still tell whether the row exists — a kind the tab is still fetching,
+  // a row a create or clone just added, or a source that failed — is kept:
+  // those details render their own loading, error, or not-found state with a
+  // Back control. Any other selection that names no row the tab lists is no
+  // selection, so the tab shows its first row as it does without one instead
+  // of opening a pane that can only hide the catalog. The text search does not
+  // narrow this: a row the search hides still has its detail.
   const urlSelection =
     parsedSel &&
     (selectedHiddenKind
@@ -651,7 +671,11 @@ function LibraryPage() {
             item.kind === parsedSel.kind &&
             item.name === parsedSel.name &&
             (parsedSel.kind !== "playbook" || item.subKind === parsedSel.subKind),
-        ) || kindStatus[parsedSel.kind] === "failed")
+        ) ||
+        kindStatus[parsedSel.kind] === "failed" ||
+        ((kindFilter === "all" || parsedSel.kind === kindFilter) &&
+          kindStatus[parsedSel.kind] === undefined) ||
+        rowAwaited)
       ? parsedSel
       : null;
 
@@ -666,13 +690,12 @@ function LibraryPage() {
   const selectItem = useCallback(
     (item: LibraryItem) => {
       setShowCreate(false);
-      setDetailActive(true);
       void navigate({
         search: (prev) => ({ ...prev, sel: encodeSel(item.kind, item.name, item.subKind) }),
         replace: false,
       });
     },
-    [navigate, setShowCreate, setDetailActive],
+    [navigate, setShowCreate],
   );
 
   // The detail pane shows the selection the URL names on this tab, and the
@@ -729,7 +752,7 @@ function LibraryPage() {
   // catalog fills in on its own does not. A pane opens only with a detail that
   // offers Back, or with the create form, so the collapsed layout can always
   // return to the catalog.
-  const detailPaneActive = showCreate || !!urlSelection || (detailActive && !!parsed);
+  const detailPaneActive = showCreate || !!urlSelection;
 
   // ── Master pane ────────────────────────────────────────────────────────────
 
@@ -912,7 +935,6 @@ function LibraryPage() {
   // Leaving the detail pane drops its selection as well as its state: a URL
   // still naming the row would reopen the pane.
   function handleBack() {
-    setDetailActive(false);
     setShowCreate(false);
     void navigate({
       search: (prev) => {
@@ -922,17 +944,6 @@ function LibraryPage() {
       },
       replace: false,
     });
-  }
-
-  // A delete can resolve after the viewer has moved on: to another row, to the
-  // create form, or to another tab. The pane state belongs to whatever is on
-  // screen now, so the completion clears it only while the address on this tab
-  // still names the deleted item.
-  function handleDeleted(kind: LibraryKind, name: string) {
-    if (!completionOnTab(kindFilter) || showCreate) return;
-    const selected = parseSel(sel);
-    if (!selected || selected.kind !== kind || selected.name !== name) return;
-    setDetailActive(false);
   }
 
   let detailPane: ReactNode;
@@ -945,7 +956,7 @@ function LibraryPage() {
             if (!mounted.current) return;
             if (completionOnTab(kindFilter)) setShowCreate(false);
             invalidate("mcp");
-            void reload();
+            setAwaitedSel({ sel: encodeSel("mcp", name), reload: reload() });
             void navigate({
               search: (prev) =>
                 (prev.tab ?? "all") === kindFilter && prev.sel === sel
@@ -954,10 +965,7 @@ function LibraryPage() {
               replace: false,
             });
           }}
-          onCancel={() => {
-            setShowCreate(false);
-            setDetailActive(false);
-          }}
+          onCancel={() => setShowCreate(false)}
         />
       </div>
     );
@@ -968,7 +976,7 @@ function LibraryPage() {
           if (!mounted.current) return;
           if (completionOnTab(kindFilter)) setShowCreate(false);
           invalidate("agent");
-          void reload();
+          setAwaitedSel({ sel: encodeSel("agent", name), reload: reload() });
           void navigate({
             search: (prev) =>
               (prev.tab ?? "all") === kindFilter && prev.sel === sel
@@ -977,10 +985,7 @@ function LibraryPage() {
             replace: false,
           });
         }}
-        onCancel={() => {
-          setShowCreate(false);
-          setDetailActive(false);
-        }}
+        onCancel={() => setShowCreate(false)}
       />
     );
   } else if (showCreate) {
@@ -1001,10 +1006,7 @@ function LibraryPage() {
               replace: false,
             });
           }}
-          onCancel={() => {
-            setShowCreate(false);
-            setDetailActive(false);
-          }}
+          onCancel={() => setShowCreate(false)}
         />
       </div>
     );
@@ -1039,7 +1041,6 @@ function LibraryPage() {
         onDeleted={() => {
           if (!mounted.current) return;
           const deleted = parsed.name;
-          handleDeleted("mcp", deleted);
           void reload();
           invalidate("mcp");
           void navigate({
@@ -1064,7 +1065,6 @@ function LibraryPage() {
         onDeleted={() => {
           if (!mounted.current) return;
           const deleted = parsed.name;
-          handleDeleted("agent", deleted);
           invalidate("agent");
           void reload();
           void navigate({
@@ -1089,7 +1089,6 @@ function LibraryPage() {
         onDeleted={() => {
           if (!mounted.current) return;
           const deleted = parsed.name;
-          handleDeleted("workflow", deleted);
           if (optimisticWorkflow?.name === deleted) setOptimisticWorkflow(null);
           invalidate("workflow");
           void reload();
@@ -1116,7 +1115,10 @@ function LibraryPage() {
         onCloned={(clonedName) => {
           if (!mounted.current) return;
           invalidate("playbook");
-          void reload();
+          setAwaitedSel({
+            sel: encodeSel("playbook", clonedName, "custom"),
+            reload: reload(),
+          });
           void navigate({
             search: (prev) =>
               (prev.tab ?? "all") === kindFilter && prev.sel === sel
