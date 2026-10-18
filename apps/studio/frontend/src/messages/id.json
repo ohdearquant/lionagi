@@ -159,6 +159,11 @@
     "effect": {
       "requested": "Requested interface action: {kind}"
     },
+    "truncation": {
+      "title": "Sebagian giliran ini tidak disimpan",
+      "summary": "{frames} bingkai tidak disimpan · {size}",
+      "limit": " · batas: {limit}"
+    },
     "outcome": {
       "completed": "Turn completed",
       "failed": "Turn failed",

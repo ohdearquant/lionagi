@@ -667,6 +667,22 @@ export interface OperatorDonePayload {
   lastSequence: number;
 }
 
+/** Stored notice that the turn hit its durable retention limit. */
+export interface OperatorTruncationPayload {
+  reason: "frames_per_turn" | "turn_payload_bytes";
+  limits: {
+    maxFramesPerTurn: number;
+    maxTurnPayloadBytes: number;
+    maxFramePayloadBytes: number;
+  };
+  elidedFrames: number;
+  elidedBytes: number;
+  elidedFrameTypes: Record<string, number>;
+  firstElidedAt: number;
+  lastElidedAt: number;
+  message: string;
+}
+
 export type OperatorFrameType =
   | "text"
   | "tool_call"
@@ -675,7 +691,8 @@ export type OperatorFrameType =
   | "proposal"
   | "confirmation"
   | "error"
-  | "done";
+  | "done"
+  | "truncation";
 
 export type OperatorPayload =
   | OperatorTextPayload
@@ -685,7 +702,8 @@ export type OperatorPayload =
   | OperatorProposalPayload
   | OperatorConfirmationPayload
   | OperatorErrorPayload
-  | OperatorDonePayload;
+  | OperatorDonePayload
+  | OperatorTruncationPayload;
 
 export interface OperatorFrame<T extends OperatorPayload = OperatorPayload> {
   version: 1;

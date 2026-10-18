@@ -16,7 +16,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from lionagi.ln import short_id
+from lionagi.ln import compute_hash, short_id
 
 _FORMAT_VERSION = 1
 _MANIFEST_NAME = "manifest.json"
@@ -267,7 +267,7 @@ def verify_archive_chunk(path: Path) -> dict[str, Any]:
                 )
             for member_name, meta in manifest.get("members", {}).items():
                 payload = zf.read(member_name)
-                digest = hashlib.sha256(payload).hexdigest()
+                digest = compute_hash(payload, max_bytes=None)
                 if digest != meta.get("sha256"):
                     raise ArchiveVerificationError(
                         f"archive {path} member {member_name!r} digest mismatch"

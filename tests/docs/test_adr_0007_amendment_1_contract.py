@@ -713,8 +713,8 @@ def test_the_registry_and_counters_are_where_cited() -> None:
 def test_the_untyped_authority_and_budget_shapes_are_where_cited() -> None:
     _in_span(
         _INSTRUCTION,
-        206,
-        218,
+        207,
+        219,
         '"Context": self.prompt_context,',
         'doc = {k: v for k, v in doc.items() if v not in (None, "", [], {})}',
     )

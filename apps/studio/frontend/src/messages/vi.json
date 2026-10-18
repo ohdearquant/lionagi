@@ -159,6 +159,11 @@
     "effect": {
       "requested": "Requested interface action: {kind}"
     },
+    "truncation": {
+      "title": "Một phần lượt này không được lưu giữ",
+      "summary": "{frames} khung không được lưu · {size}",
+      "limit": " · giới hạn: {limit}"
+    },
     "outcome": {
       "completed": "Turn completed",
       "failed": "Turn failed",
