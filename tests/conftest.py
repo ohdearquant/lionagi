@@ -37,6 +37,10 @@ else:
     os.environ["LIONAGI_HOME"] = _TEST_LIONAGI_HOME
     atexit.register(_remove_test_home, _TEST_LIONAGI_HOME)
 
+# A store URL exported by the calling shell outranks LIONAGI_HOME, so without this a suite run
+# from that shell would open the caller's real store. Tests that need the setting set their own.
+os.environ.pop("LIONAGI_STATE_DB_URL", None)
+
 # The provider layer reads $CODEX_HOME (global codex config and config
 # profiles). Tests must never see the developer's real ~/.codex OR an
 # externally exported CODEX_HOME: a machine-local model_reasoning_effort would

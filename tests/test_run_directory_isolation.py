@@ -251,6 +251,52 @@ def test_the_callers_home_reaches_neither_the_suite_nor_its_children(probe, tmp_
     assert list(caller_home.iterdir()) == [caller_home / ".lionagi"]
 
 
+_STORE_URL_PROBE_TEST = """
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from lionagi.config import settings
+
+
+def test_report_store_url():
+    child_env = subprocess.run(
+        [sys.executable, "-c", "import os; print(os.environ.get('LIONAGI_STATE_DB_URL', ''))"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    Path(os.environ["PROBE_RESULT"]).write_text(
+        json.dumps(
+            {
+                "env": os.environ.get("LIONAGI_STATE_DB_URL"),
+                "setting": settings.LIONAGI_STATE_DB_URL,
+                "child_env": child_env,
+            }
+        )
+    )
+"""
+
+
+def test_an_exported_store_url_reaches_neither_the_suite_nor_its_children(probe, tmp_path):
+    """``LIONAGI_STATE_DB_URL`` outranks ``LIONAGI_HOME``, so the suite drops an exported one."""
+    caller_store = tmp_path / "caller-state.db"
+
+    completed, bound = probe(
+        {"LIONAGI_STATE_DB_URL": f"sqlite:///{caller_store}"}, source=_STORE_URL_PROBE_TEST
+    )
+
+    assert completed.returncode == 0, (
+        f"probe pytest failed (rc={completed.returncode}):\n"
+        f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+    )
+    assert bound, "probe produced no result file"
+    assert bound == {"env": None, "setting": None, "child_env": ""}
+    assert not caller_store.exists()
+
+
 def test_lionagi_test_home_is_the_deliberate_way_through(probe, tmp_path):
     """``LIONAGI_TEST_HOME`` points the suite somewhere specific, on purpose."""
     caller_home = tmp_path / "caller-store"
