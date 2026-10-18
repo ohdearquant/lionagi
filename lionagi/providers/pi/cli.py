@@ -675,6 +675,24 @@ class PiCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
                 responses.append(chunk)
 
         pi_log.info(f"Session finished with {len(responses)} chunks")
+        if session.is_error:
+            # Classified on the last error event's own text: an assistant message
+            # that arrives after the error replaces the result.
+            said = None
+            for c in session.chunks:
+                event = (
+                    c.raw.get("assistantMessageEvent", {}) if c.type == "message_update" else c.raw
+                )
+                if c.type == "error" or (
+                    c.type == "message_update" and event.get("type") == "error"
+                ):
+                    said = _error_message_from_event(event)
+            if session.session_id:
+                self.session_id = session.session_id
+            raise classify_provider_error(
+                said or "Pi session failed",
+                status=session.error_status,
+            )
         if not session.result:
             texts = [c.text for c in session.chunks if c.text is not None]
             session.result = "\n".join(texts)
@@ -684,11 +702,5 @@ class PiCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
         session.populate_activity()
         if request.cli_include_summary:
             session.populate_summary()
-
-        if session.is_error:
-            raise classify_provider_error(
-                session.result or "Pi session failed",
-                status=session.error_status,
-            )
 
         return to_dict(session, recursive=True)

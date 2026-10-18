@@ -778,6 +778,20 @@ class GeminiCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
                 responses.append(chunk)
 
         log.info("Antigravity session %s finished (%d chunks)", session.session_id, len(responses))
+        if session.is_error:
+            # Classified on the failure's own error text: the result keeps the
+            # turn's response, which a failure in teardown follows. A failed turn
+            # keeps the provider session it ran in, as a returned one does.
+            said = next(
+                (c.content for c in reversed(session.chunks) if c.is_error and c.content),
+                None,
+            )
+            if session.session_id:
+                self.session_id = session.session_id
+            raise classify_provider_error(
+                said or "Antigravity session failed",
+                status=session.error_status,
+            )
         if not session.result:
             texts = [c.content for c in session.chunks if c.type == "text" and c.content]
             session.result = "\n".join(texts)
@@ -787,11 +801,5 @@ class GeminiCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
         session.populate_activity()
         if request.cli_include_summary:
             session.populate_summary()
-
-        if session.is_error:
-            raise classify_provider_error(
-                session.result or "Antigravity session failed",
-                status=session.error_status,
-            )
 
         return to_dict(session, recursive=True)

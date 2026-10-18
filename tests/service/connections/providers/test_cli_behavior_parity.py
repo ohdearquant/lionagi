@@ -96,7 +96,8 @@ async def test_an_api_provider_failed_call_records_failure_and_raises():
                 {
                     "conversation_id": "conv-1",
                     "status": "ERROR",
-                    "response": "rate limit exceeded",
+                    "response": "",
+                    "error": "rate limit exceeded",
                 }
             ],
             "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
@@ -121,6 +122,181 @@ async def test_a_cli_failed_non_streamed_call_matches_the_api_path(
 
     assert isinstance(error.__cause__, ProviderError)
     _assert_failed_call(branch, error, "rate limit exceeded")
+
+
+_ASSISTANT_TEXT = "Investigating why the user is not logged in"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider", "model", "events", "seam"),
+    [
+        (
+            "codex",
+            "gpt-5.1-codex",
+            [
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": _ASSISTANT_TEXT},
+                },
+                {"type": "turn.failed", "error": {"message": "rate limit exceeded"}},
+            ],
+            "lionagi.providers.openai.codex.stream_codex_cli_events",
+        ),
+        (
+            "claude_code",
+            "sonnet",
+            [
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": _ASSISTANT_TEXT}]},
+                },
+                {"type": "result", "result": "rate limit exceeded", "is_error": True},
+            ],
+            "lionagi.providers.anthropic.claude_code.stream_cc_cli_events",
+        ),
+        (
+            "pi",
+            "gemini-2.5-flash",
+            [
+                {"type": "error", "error": {"message": "rate limit exceeded"}},
+                {
+                    "type": "agent_end",
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": _ASSISTANT_TEXT}],
+                        }
+                    ],
+                },
+            ],
+            "lionagi.providers.pi.cli.stream_pi_cli_events",
+        ),
+    ],
+    ids=["codex", "claude_code", "pi"],
+)
+async def test_a_cli_failure_is_classified_on_its_own_text_not_the_assistant_text(
+    provider,
+    model,
+    events,
+    seam,
+):
+    """Assistant text the run produced before it failed is not the failure: the
+    error is classified, and reported, on what the provider said went wrong."""
+    from lionagi.providers._provider_errors import classify_provider_error
+
+    branch = Branch(chat_model=_chat_model(provider, model))
+    error = await _failed_chat(branch, provider, events, seam)
+
+    assert type(error.__cause__) is type(classify_provider_error("rate limit exceeded"))
+    assert _ASSISTANT_TEXT not in str(error.__cause__)
+    _assert_failed_call(branch, error, "rate limit exceeded")
+
+
+@pytest.mark.asyncio
+async def test_a_codex_failure_with_no_text_is_not_reported_as_the_assistant_text():
+    """A failed turn that says nothing is classified as an unexplained failure,
+    not on the assistant text the stream would otherwise fill the result with."""
+    from lionagi.providers._provider_errors import classify_provider_error
+
+    branch = Branch(chat_model=_chat_model("codex", "gpt-5.1-codex"))
+    error = await _failed_chat(
+        branch,
+        "codex",
+        [
+            {"type": "item.completed", "item": {"type": "agent_message", "text": _ASSISTANT_TEXT}},
+            {"type": "turn.failed", "error": ""},
+        ],
+        "lionagi.providers.openai.codex.stream_codex_cli_events",
+    )
+
+    assert type(error.__cause__) is type(classify_provider_error("Codex session failed"))
+    assert _ASSISTANT_TEXT not in str(error.__cause__)
+    _assert_failed_call(branch, error, "Codex session failed")
+
+
+@pytest.mark.asyncio
+async def test_a_bare_gemini_error_status_is_reported_by_its_status():
+    branch = Branch(chat_model=_chat_model("gemini_code", "gemini-4-argon"))
+    error = await _failed_chat(
+        branch,
+        "gemini_code",
+        [{"conversation_id": "conv-1", "status": "ERROR"}],
+        "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+    )
+
+    assert isinstance(error.__cause__, ProviderError)
+    _assert_failed_call(branch, error, "agy returned status=ERROR")
+
+
+@pytest.mark.asyncio
+async def test_a_gemini_teardown_failure_is_reported_as_one():
+    from lionagi.providers._provider_errors import ProviderTeardownError
+
+    async def failing_events(_request):
+        raise RuntimeError("Event loop is closed")
+        yield  # pragma: no cover - makes this an async generator
+
+    branch = Branch(chat_model=_chat_model("gemini_code", "gemini-4-argon"))
+    with patch(
+        "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+        side_effect=failing_events,
+    ):
+        with pytest.raises(ExecutionError) as info:
+            await branch.chat("go on")
+
+    assert isinstance(info.value.__cause__, ProviderTeardownError)
+    _assert_failed_call(branch, info.value, "agy teardown failed")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider", "model", "events", "seam", "session_id"),
+    [
+        (
+            "codex",
+            "gpt-5.1-codex",
+            [
+                {"type": "thread.started", "thread_id": "thread-1"},
+                {"type": "turn.failed", "error": {"message": "rate limit exceeded"}},
+            ],
+            "lionagi.providers.openai.codex.stream_codex_cli_events",
+            "thread-1",
+        ),
+        (
+            "claude_code",
+            "sonnet",
+            [
+                {"type": "system", "subtype": "init", "session_id": "session-1"},
+                {"type": "result", "result": "rate limit exceeded", "is_error": True},
+            ],
+            "lionagi.providers.anthropic.claude_code.stream_cc_cli_events",
+            "session-1",
+        ),
+        (
+            "gemini_code",
+            "gemini-4-argon",
+            [{"conversation_id": "conv-1", "status": "ERROR", "error": "rate limit exceeded"}],
+            "lionagi.providers.google.gemini_code.stream_gemini_cli_events",
+            "conv-1",
+        ),
+    ],
+    ids=["codex", "claude_code", "gemini_code"],
+)
+async def test_a_cli_failed_call_keeps_the_provider_session_it_ran_in(
+    provider,
+    model,
+    events,
+    seam,
+    session_id,
+):
+    """A failed non-streamed call leaves the session id on the endpoint, as a
+    returned call and a streamed call do, so the next call can resume it."""
+    chat_model = _chat_model(provider, model)
+    branch = Branch(chat_model=chat_model)
+    await _failed_chat(branch, provider, events, seam)
+
+    assert chat_model.endpoint.session_id == session_id
 
 
 @pytest.mark.asyncio

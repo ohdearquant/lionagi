@@ -1118,6 +1118,15 @@ class ClaudeCodeCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
                     if isinstance(chunk, CLISession):
                         break
         cc_log.info(f"Session {session.session_id} finished with {len(responses)} chunks")
+        if session.is_error:
+            # Classified on the result event's own text: the assistant text joined
+            # below can name a different failure than the one that ended the run.
+            if session.session_id:
+                self.session_id = session.session_id
+            raise classify_provider_error(
+                session.result or "Claude Code session failed",
+                status=session.error_status,
+            )
         texts = []
         for sc in session.chunks:
             if sc.type == "text" and sc.content is not None:
@@ -1133,11 +1142,5 @@ class ClaudeCodeCLIEndpoint(AgenticHandlersMixin, AgenticEndpoint):
         session.populate_activity()
         if request.cli_include_summary:
             session.populate_summary()
-
-        if session.is_error:
-            raise classify_provider_error(
-                session.result or "Claude Code session failed",
-                status=session.error_status,
-            )
 
         return to_dict(session, recursive=True)
