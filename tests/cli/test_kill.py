@@ -2903,3 +2903,66 @@ def test_an_absent_marker_and_a_null_marker_are_not_the_same_row():
     assert recorded_identity_mode({"process_identity_mode": 7}) == UNRECOGNIZED_IDENTITY_MODE
     assert recorded_identity_mode({"process_identity_mode": "local"}) == "local"
     assert recorded_identity_mode(None) is None
+
+
+@pytest.mark.parametrize("entity_type", ["session", "invocation"])
+@pytest.mark.parametrize("existing_markers", [False, True])
+async def test_unverifiable_stale_dry_run_preserves_complete_row(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entity_type: str,
+    existing_markers: bool,
+):
+    """An inspection-only sweep neither starts nor advances durable evidence."""
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", lambda *a, **k: "unverifiable")
+    query = {
+        "session": "SELECT * FROM sessions WHERE id = ?",
+        "invocation": "SELECT * FROM invocations WHERE id = ?",
+    }[entity_type]
+    async with StateDB() as db:
+        seed = _seed_session if entity_type == "session" else _seed_invocation
+        entity_id = await seed(db, pid=54321, started_at=time.time() - 7200)
+        if existing_markers:
+            merge = (
+                db.merge_session_node_metadata
+                if entity_type == "session"
+                else db.merge_invocation_node_metadata
+            )
+            await merge(entity_id, {"unverifiable_since": 111.0, "unverifiable_count": 4})
+        before = dict(await db.fetch_one(query, (entity_id,)))
+
+    assert await _do_kill_all_stale(threshold_seconds=3600, dry_run=True) == 0
+
+    async with StateDB() as db:
+        after = dict(await db.fetch_one(query, (entity_id,)))
+    assert before["status"] == "running"
+    assert after == before
+
+
+async def test_unverifiable_invocation_preserves_first_observation_across_sweeps(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Invocation evidence persists across sweeps without cancelling the run."""
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: True)
+    monkeypatch.setattr("lionagi.cli.kill._check_pid_identity", lambda *a, **k: "unverifiable")
+    async with StateDB() as db:
+        invocation_id = await _seed_invocation(db, pid=54321, started_at=time.time() - 7200)
+        await db.merge_invocation_node_metadata(invocation_id, {"caller_context": "keep"})
+
+    observations = []
+    for expected_count in (1, 2):
+        assert await _do_kill_all_stale(threshold_seconds=3600, dry_run=False) == 0
+        async with StateDB() as db:
+            row = await db.fetch_one(
+                "SELECT status, node_metadata FROM invocations WHERE id = ?", (invocation_id,)
+            )
+        assert row["status"] == "running"
+        metadata = row["node_metadata"]
+        metadata = json.loads(metadata) if isinstance(metadata, str) else metadata
+        assert metadata["pid"] == 54321
+        assert metadata["caller_context"] == "keep"
+        assert metadata["unverifiable_count"] == expected_count
+        assert isinstance(metadata["unverifiable_since"], float)
+        observations.append(metadata["unverifiable_since"])
+    assert observations[0] == observations[1]
