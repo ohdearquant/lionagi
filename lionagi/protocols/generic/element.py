@@ -15,7 +15,7 @@ from lionagi._class_registry import get_class
 from lionagi.ln._json_dump import get_orjson_default, json_dumps
 from lionagi.ln._utils import now_utc
 from lionagi.ln.types import not_sentinel
-from lionagi.utils import import_module, to_dict
+from lionagi.utils import to_dict
 
 from .._concepts import Collective, Observable, Ordering
 
@@ -177,25 +177,18 @@ class Element(BaseModel):
         if "lion_class" in metadata:
             subcls: str = metadata.pop("lion_class")
             if subcls != Element.class_name(full=True):
-                try:
-                    # get_class resolves both fully-qualified names and legacy
-                    # short names (data persisted before full-name adoption).
-                    subcls_type: type[Element] = get_class(subcls)
-                    # Delegate to a custom from_dict, or when the concrete
-                    # type differs so model_validate uses the right schema.
-                    if hasattr(subcls_type, "from_dict") and (
-                        subcls_type.from_dict.__func__ != cls.from_dict.__func__
-                        or subcls_type is not cls
-                    ):
-                        data["metadata"] = metadata
-                        return subcls_type.from_dict(data)
-
-                except (KeyError, ValueError, ImportError, AttributeError, TypeError):
-                    mod, imp = subcls.rsplit(".", 1)
-                    subcls_type = import_module(mod, import_name=imp)
+                # get_class resolves both fully-qualified names and legacy
+                # short names (data persisted before full-name adoption), and
+                # imports no module outside the allowed prefixes.
+                subcls_type = _lion_class_type(subcls)
+                # Delegate to a custom from_dict, or when the concrete
+                # type differs so model_validate uses the right schema.
+                if (
+                    subcls_type.from_dict.__func__ != cls.from_dict.__func__
+                    or subcls_type is not cls
+                ):
                     data["metadata"] = metadata
-                    if hasattr(subcls_type, "from_dict") and (subcls_type is not cls):
-                        return subcls_type.from_dict(data)
+                    return subcls_type.from_dict(data)
         data["metadata"] = metadata
         return cls.model_validate(data)
 
@@ -219,6 +212,27 @@ class Element(BaseModel):
     def from_json(cls, json_str: str) -> Element:
         """Deserialize JSON string into Element or subclass."""
         return cls.from_dict(orjson.loads(json_str))
+
+
+def _lion_class_type(lion_class: Any) -> type[Element]:
+    """Resolve a ``lion_class`` from serialized metadata to an Element subclass.
+
+    Raises ValueError for a name that is not a string, that resolves to nothing
+    lionagi may load, or that names a type outside the Element hierarchy.
+    """
+    hint = (
+        "import the module that defines it before deserializing, or allow its "
+        "package with lionagi.ln.register_type_prefix()"
+    )
+    if not isinstance(lion_class, str):
+        raise ValueError(f"metadata lion_class must be a string, got {type(lion_class).__name__}")
+    try:
+        resolved = get_class(lion_class)
+    except ValueError as exc:
+        raise ValueError(f"metadata lion_class {lion_class!r} cannot be loaded: {hint}") from exc
+    if not (isinstance(resolved, type) and issubclass(resolved, Element)):
+        raise ValueError(f"metadata lion_class {lion_class!r} is not an Element subclass")
+    return resolved
 
 
 DEFAULT_ELEMENT_SERIALIZER = get_orjson_default(

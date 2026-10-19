@@ -58,6 +58,15 @@ registration into `LION_CLASS_REGISTRY` for Node subclasses, and (b) makes
 every built-in class directly attribute-lookupable on its module, without
 scanning the filesystem.
 
+`get_class` resolves a name in this order: `LION_CLASS_REGISTRY`, a dotted
+path whose module is already imported, a dotted path under an allowed module
+prefix (`lionagi.` and any prefix added with `lionagi.ln.register_type_prefix`,
+loaded through `load_type_from_string`), then the short-name lookup above. It
+imports no module outside the allowed prefixes. `Element.from_dict` accepts
+only an Element subclass from it and raises `ValueError` otherwise, so data
+naming a class from a package of your own needs that package imported first or
+its prefix registered.
+
 <a id="path-safety-contain-relative-path"></a>
 
 ## libs/path_safety: `contain_relative_path`

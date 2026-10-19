@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import importlib
+import sys
 from typing import TypeVar
 
-from lionagi.ln._utils import import_module
+from lionagi.ln._utils import load_type_from_string
 
 T = TypeVar("T")
 LION_CLASS_REGISTRY: dict[str, type[T]] = {}
@@ -37,8 +38,11 @@ __all__ = (
 
 def get_class(class_name: str) -> type:
     """Retrieve a class by name: LION_CLASS_REGISTRY lookup (fully-qualified
-    name), then dotted-path import, then legacy short-name lookup among the
-    built-in modules. Raises ValueError if not found.
+    name), then a dotted path whose module is already imported, then a dotted
+    path under an allowed module prefix (``lionagi.`` and any prefix added with
+    ``lionagi.ln.register_type_prefix``), then legacy short-name lookup among
+    the built-in modules. A module outside the allowed prefixes is never
+    imported here. Raises ValueError if not found.
     """
     if not class_name:
         # Reject empty names here: the suffix-match fallback below would
@@ -51,12 +55,16 @@ def get_class(class_name: str) -> type:
     name = class_name
     if "." in class_name:
         mod, _, name = class_name.rpartition(".")
-        try:
-            cls = import_module(mod, import_name=name)
+        module = sys.modules.get(mod)
+        if module is not None:
+            cls = getattr(module, name, None)
             if isinstance(cls, type):
                 return cls
-        except Exception:  # noqa: BLE001, S110 — normalize import failure to lookup failure
-            pass
+        else:
+            try:
+                return load_type_from_string(class_name)
+            except ValueError:
+                pass
 
     for mod_name in _BUILTIN_MODULES:
         try:
