@@ -256,42 +256,83 @@ def _studio_start(args: argparse.Namespace) -> int:
 
 
 class _PairingRefusedError(Exception):
-    """A daemon answers on the port but would not issue a pairing code."""
+    """A daemon answers on the port but did not issue a pairing code."""
 
 
-def _code_from_running_daemon(port: int) -> str | None:
-    """A pairing code from a lionagi daemon already listening on ``port``, or None.
-
-    None means nothing that answers like a lionagi daemon is there, so this launch
-    starts one. A daemon that answers but refuses to pair raises, since starting a
-    second one on the same port would only fail to bind.
-    """
-    import urllib.error
+def _daemon_health(port: int, challenge: str | None = None) -> dict[str, Any] | None:
+    """What a lionagi daemon on loopback ``port`` answers at ``/health``, or None."""
+    import urllib.parse
     import urllib.request
 
-    base = f"http://127.0.0.1:{port}"
+    url = f"http://127.0.0.1:{port}/health"
+    if challenge is not None:
+        url += "?" + urllib.parse.urlencode({"challenge": challenge})
     try:
-        with urllib.request.urlopen(f"{base}/health", timeout=2) as resp:  # noqa: S310
+        with urllib.request.urlopen(url, timeout=2) as resp:  # noqa: S310
             health = json.loads(resp.read())
     except (OSError, ValueError):
         return None
-    if not isinstance(health, dict) or health.get("status") != "ok":
-        return None
-    headers = {"Content-Type": "application/json"}
-    if token := os.environ.get("LIONAGI_STUDIO_AUTH_TOKEN"):
-        headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(  # noqa: S310
-        f"{base}/api/studio/pairing-codes", data=b"{}", method="POST", headers=headers
+    if isinstance(health, dict) and health.get("status") == "ok":
+        return health
+    return None
+
+
+def _code_from_running_daemon(port: int) -> str | None:
+    """A pairing code from the lionagi daemon already listening on ``port``, or None.
+
+    None means nothing that answers like a lionagi daemon is there, so this launch
+    starts one. The code comes over the same-user reconnect socket in this state
+    directory, never over HTTP, and is returned only when the daemon on ``port``
+    proves it is the one that socket belongs to. Anything else raises, since
+    starting a second daemon on the same port would only fail to bind.
+    """
+    import hmac
+    import secrets
+
+    from lionagi.studio.reconnect import (
+        default_socket_path,
+        port_proof,
+        read_reconnect_reply,
+        unix_sockets_supported,
     )
+
+    if _daemon_health(port) is None:
+        return None
+    if not unix_sockets_supported():
+        raise _PairingRefusedError(
+            "this platform has no reconnect channel; restart the daemon to pair a new page"
+        )
+    socket_path = default_socket_path()
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310
-            code = json.loads(resp.read()).get("code")
-    except urllib.error.HTTPError as exc:
-        raise _PairingRefusedError(f"HTTP {exc.code}") from exc
-    except (OSError, ValueError, AttributeError) as exc:
-        raise _PairingRefusedError(str(exc) or type(exc).__name__) from exc
-    if not isinstance(code, str) or not code:
-        raise _PairingRefusedError("no code in the response")
+        reply = read_reconnect_reply(socket_path)
+    except PermissionError as exc:
+        raise _PairingRefusedError(
+            f"{exc}; stop that process, or start this daemon with its own state directory"
+        ) from exc
+    if reply is None:
+        raise _PairingRefusedError(
+            "it did not answer on its reconnect socket; restart the daemon to pair a new page"
+        )
+    code, key = reply
+    # The socket answers for whichever daemon shares this state directory. Only that
+    # daemon can sign a fresh challenge with the port the request reached, so a second
+    # daemon on this port, or a listener relaying to it from another port, fails here,
+    # and the code just minted is never shown; it expires unused.
+    challenge = secrets.token_hex(16)
+    health = _daemon_health(port, challenge)
+    proof = health.get("proof") if health is not None else None
+    # compare_digest takes ASCII strings only; any other proof is simply not the one expected.
+    if (
+        not isinstance(proof, str)
+        or not proof.isascii()
+        or not hmac.compare_digest(proof, port_proof(key, challenge, port))
+    ):
+        raise _PairingRefusedError(
+            f"the reconnect socket at {socket_path} belongs to another daemon, not the one on "
+            f"port {port}, or port {port} is not the port that daemon binds (a forwarded or "
+            f"mapped port cannot pair); stop that daemon, or start this one with its own state "
+            f"directory"
+        )
     return code
 
 
@@ -305,6 +346,18 @@ def _hosted_launch_url(port: int, code: str) -> str:
     return f"{_HOSTED_URL}/{query}#pair={code}"
 
 
+def _ignore_sigpipe() -> None:
+    """Let a write to a peer that already closed raise BrokenPipeError in the daemon.
+
+    `li` sets SIGPIPE to its default action so `li ... | head` stops quietly; a server running in
+    that process would then be killed by the first client that disconnects mid-write.
+    """
+    import signal
+
+    if hasattr(signal, "SIGPIPE"):
+        signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+
+
 def _start_hosted(host: str, port: int, no_open: bool) -> int:
     from lionagi.studio.launch_access import PAIRING_CODE_TTL_S, mint_pairing_code
 
@@ -314,12 +367,12 @@ def _start_hosted(host: str, port: int, no_open: bool) -> int:
     except _PairingRefusedError as exc:
         log_error(
             f"A Studio daemon is already running at {daemon_url}, but it would not pair "
-            f"a page ({exc}). Stop it and run `li studio` again."
+            f"a page ({exc})."
         )
         return 1
     already_running = code is not None
     if code is None:
-        code = mint_pairing_code()
+        code = mint_pairing_code(for_launch=True)
     url = _hosted_launch_url(port, code)
     print(f"Lion Studio: {_HOSTED_URL}")
     print(f"  connects to your local daemon at {daemon_url}")
@@ -352,6 +405,7 @@ def _start_backend_only(host: str, port: int) -> int:
     print(f"Lion Studio API: http://{host}:{port}")
     # Set before uvicorn.run: the app is loaded via import string and reads this from env.
     os.environ["LIONAGI_STUDIO_HOST"] = host
+    _ignore_sigpipe()
     uvicorn.run("lionagi.studio.app:app", host=host, port=port)
     return 0
 
@@ -604,6 +658,7 @@ def _start_local(
 
     # Set before uvicorn.run: the app is loaded via import string and reads this from env.
     os.environ["LIONAGI_STUDIO_HOST"] = host
+    _ignore_sigpipe()
     try:
         uvicorn.run("lionagi.studio.app:app", host=host, port=port)
     except KeyboardInterrupt:
@@ -1087,6 +1142,13 @@ def _cmd_limits(args: argparse.Namespace) -> int:
     cap_display = "unlimited" if not cap else str(cap)
     print(f"Max concurrent fires:      {cap_display}")
     print(f"Current in-flight:         {result.get('current_inflight', 0)}")
+    holders = result.get("current_holders") or []
+    print(f"Current holders:          {len(holders)}")
+    for holder in holders:
+        print(
+            f"  {holder.get('schedule_id', '?')}  {holder.get('path', '?')}"
+            f"  acquired: {_fmt_rfc3339(holder.get('acquired_at'))}"
+        )
     adhoc_cap = result.get("max_adhoc_concurrent")
     adhoc_cap_display = "unlimited" if not adhoc_cap else str(adhoc_cap)
     print(f"Max concurrent ad-hoc:     {adhoc_cap_display}")
@@ -1391,6 +1453,8 @@ def _print_run_table(runs: list[dict[str, Any]]) -> None:
             f"{_fmt_duration_ms(r.get('duration_ms')):<10}{outcome[:30]:<32}"
             f"{r.get('invocation_id') or '-':<14}{_fmt_artifacts(r.get('artifacts'))}"
         )
+        if r.get("reason_code") or r.get("reason_summary"):
+            print(f"  reason: {r.get('reason_code') or '-'} — {r.get('reason_summary') or '-'}")
 
 
 def _cmd_trigger(args: argparse.Namespace) -> int:

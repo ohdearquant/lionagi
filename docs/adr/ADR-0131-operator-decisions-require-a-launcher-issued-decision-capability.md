@@ -1,8 +1,8 @@
 # ADR-0131: Operator decisions require a launcher-issued decision capability
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Aspirational
-- **Implementation-status**: not-started
+- **Implementation-status**: partial
 - **Area**: studio
 - **Date**: 2026-10-17
 - **Relations**: changes the Studio daemon's route contract for the two Operator decision routes and
@@ -16,23 +16,30 @@ to the daemon can approve its own proposals. This record makes a decision requir
 only the daemon mints, handed to a page by its launcher or, for a reconnect, over a channel only the
 daemon's own OS user can open, and that no HTTP request can obtain.
 
+Landing steps 1, 2 and 2b are in: the decision-capability store and the decision rows that record
+its principal, minting at launch, the retired HTTP mint route, redemption returning the capability,
+the page's use of it, and the same-user reconnect channel the CLI pairs over. Step 3's remaining
+launch adapters and step 4's principal check and refusals are not; decisions are still admitted under
+contract version 1, every decision request accepted today is still accepted, and a request without
+the capability is recorded unattributed.
+
 ## Context
 
 **P1 — the decision routes check no principal.** `confirm_operator_proposal` and
-`decide_operator_proposal` (`lionagi/studio/services/operator.py:312-362`) call the coordinator's
-`decide()` (`lionagi/studio/operator/coordinator.py:1014`), which claims the proposal in the store
-(`lionagi/studio/operator/store.py:2105`). The proposal's hash and version bind what is decided, not
+`decide_operator_proposal` (`lionagi/studio/services/operator.py:336-398`) call the coordinator's
+`decide()` (`lionagi/studio/operator/coordinator.py:1015`), which claims the proposal in the store
+(`lionagi/studio/operator/store.py:2180`). The proposal's hash and version bind what is decided, not
 who decides. With no token configured, the middleware admits a request that carries no `Origin` and
-no `Sec-Fetch-Site` (`lionagi/studio/app.py:67`, `:113`), so a command-line client, a script and a
+no `Sec-Fetch-Site` (`lionagi/studio/app.py:77`, `:113`), so a command-line client, a script and a
 tool's HTTP request are all admitted.
 
 **P2 — a code that pairs a page can be minted by any such request.** `POST
-/api/studio/pairing-codes` (`lionagi/studio/services/pairing.py:28-46`) mints a 120-second code
-(`lionagi/studio/launch_access.py:33`, `:49`) for a request without browser provenance, and `POST
+/api/studio/pairing-codes` (`lionagi/studio/services/pairing.py:33-58`) mints a 120-second code
+(`lionagi/studio/launch_access.py:57`, `:49`) for a request without browser provenance, and `POST
 /api/studio/pair` (`pairing.py:48`) redeems it for the daemon's one process-wide bearer
 (`launch_access.py:43`, `:63`). A test pins that the command line can mint and that the minted code
 redeems (`tests/studio/test_hosted_hardening.py:967`). The CLI uses that route to pair a page with a
-daemon that is already running (`lionagi/studio/cli.py:262`). So pairing is not a boundary: a tool
+daemon that is already running (`lionagi/studio/cli.py:280`). So pairing is not a boundary: a tool
 that can send HTTP can mint, redeem with a forged `Origin`, and decide.
 
 **P3 — the page keeps its bearer in memory only.** The frontend holds the paired bearer in a module
@@ -66,8 +73,14 @@ removed at exit (a socket file left by a daemon that no longer runs is replaced 
 connection the daemon reads the peer's user id from the socket (`SO_PEERCRED` on Linux,
 `LOCAL_PEERCRED` on macOS, each read with `getsockopt` from the standard `socket` module) and
 refuses any id other than its own; for its own user it mints one code in process, under every code
-rule above, and returns it on the socket, which carries nothing else. The CLI opens a page with that
-code as a launch does, and never stops a running daemon itself. The channel is not an HTTP route and
+rule above, and returns it on the socket with the channel's port-proof key, a random 256-bit value
+drawn when the channel starts; the socket carries nothing else. The socket answers for whichever
+daemon uses the state directory, which need not be the daemon on the port the CLI was given, so the
+CLI then sends `/health` on that port a fresh challenge, and the daemon there answers with
+HMAC-SHA256 under the key over the challenge and the TCP port the request arrived on. A second
+daemon on that port, or a listener relaying to the right daemon from another port, cannot produce
+it; the CLI then exits non-zero without showing the code, which expires unused. Otherwise it opens
+a page with that code as a launch does. It never stops a running daemon itself. The channel is not an HTTP route and
 no TCP listener serves it. Any process running as the daemon's own OS user can obtain a code through
 it, which D6 already places outside the guarantee. On a platform without unix sockets there is no
 reconnect, and the CLI says to restart the daemon.

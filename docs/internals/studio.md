@@ -74,19 +74,57 @@ admission rule and the schemas are unchanged.
 A refused origin, or a request without one refused by its `Sec-Fetch-Site`, is
 admitted only with the launch bearer (`launch_access.py`),
 minted per process and held in memory, never put in the environment or written
-anywhere. A page receives it by pairing. `li studio` mints a one-time code, or
-asks a daemon already running on the port for one over
-`POST /api/studio/pairing-codes` (refused to any request carrying an Origin, and
-behind the bearer gate, so a daemon with a token needs it), then opens the
-hosted page with `#pair=<code>`. A browser never sends the fragment to a server.
-The page reads it once before the router starts, removes it with
-`history.replaceState`, and redeems it at `POST /api/studio/pair`, the one API
-path the gate lets through without a bearer. That route requires an Origin in
-`CORS_ORIGINS` (checked before the code is spent); a code works once and
+anywhere. A page receives it by pairing. `li studio` mints a one-time code in
+process before it starts the daemon, or asks a daemon already running on the
+port for one over the daemon's reconnect socket, then opens the hosted page with
+`#pair=<code>`. No HTTP route issues a code: `POST /api/studio/pairing-codes`
+answers 410 after admission, whatever the headers or token. A browser never
+sends the fragment to a server. The page reads it once before the router
+starts, removes it with `history.replaceState`, and redeems it at
+`POST /api/studio/pair`, the one API path the gate lets through without a
+bearer. That route requires an Origin in `CORS_ORIGINS` (checked before the code
+is spent); a code is bound to the origins the launcher named, works once, and
 expires after 120 seconds. The answer is the configured token when one is set,
-else the launch bearer, and the page keeps it in memory only: a reload loses
-it, and the page then shows the access-required screen with `li studio` as the
-remedy.
+else the launch bearer, plus a decision capability bound to the page's origin
+(see below). The page keeps the bearer in memory only, so a reload loses it and
+the page then shows the access-required screen with `li studio` as the remedy;
+the capability is kept in `sessionStorage` for that tab, so it survives the
+reload and is gone with the tab.
+
+**The reconnect socket** (`reconnect.py`) — a unix socket in a `studio/`
+directory beside the StateDB file, created with mode 0600 inside a 0700
+directory in the lifespan before the daemon serves, removed at exit, and
+replaced at start when a socket file left by a dead daemon is there. On each connection it reads the peer's user id
+from the socket (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS, both through
+`socket.getsockopt`), refuses any id but its own, and for its own user mints one
+code in process and writes it, with the channel's port-proof key (256 random
+bits drawn when the channel starts), as the only content of the reply. It is
+not an HTTP route and no TCP listener serves it. `li studio` probes `/health`
+to tell a daemon from another program, reads one code and the key over the
+socket, then sends `/health?challenge=<32 hex digits>` on its port; the daemon
+answers with HMAC-SHA256 under the key over the challenge and the port the
+request arrived on (`port_proof`). Only when that matches does it open a page:
+a second daemon sharing the state directory, or a listener relaying to the
+right daemon from another port, is refused and `li studio` exits 1 without
+printing the code. It never stops a running daemon; on a platform without unix
+sockets it says to restart the daemon. A process running as the daemon's own OS user can obtain a
+code this way, which is outside what the HTTP-only guarantee covers.
+
+**Decision capabilities** (`launch_access.py`) — a page pairs with an admission
+bearer and, separately, a decision capability: a random 256-bit secret the
+daemon keeps only as its hash, bound to a random principal id, this start's
+epoch, the frontend origin it was redeemed from and the scope `operator:decide`,
+expiring eight hours after redemption and revoked by
+`POST /api/studio/disconnect` on an explicit disconnect. A daemon restart
+invalidates every code and capability. `LIONAGI_STUDIO_AUTH_TOKEN` mints
+none, and a decision that carries only that token is accepted in this release
+and records no principal. The two Operator decision routes read it from
+`X-Studio-Decision-Token` when it is there, resolve it to its principal and pass
+that to `decide()`, whose store transaction records the principal id, epoch,
+method, origin and scope on the proposal row and in the audit row; a request
+without the header is still accepted and records no principal. Nothing refuses a
+decision yet: the router contract stays version 1, and the no-token admission
+rule above is unchanged for every route.
 
 **`require_json_content_type`** — rejects every state-changing `/api`
 request that does not declare `application/json`, including bodyless action
@@ -276,6 +314,32 @@ When `action_kind="command"`, the command allow-list check re-runs here,
 immediately before spawn, closing the window where an awaited DB call
 between `build_argv()` and this function gives a revoked
 `LIONAGI_SCHEDULER_COMMAND_ALLOWLIST` env var a scheduling point to land in.
+A command child also gets the daemon's environment without
+`LIONAGI_STATE_DB_URL`, in any letter case (`env_without_state_db_url` in
+`lionagi/ln/_proc.py`). A command often runs another interpreter with its own
+lionagi, and an inherited store URL would open the daemon's store with that
+lionagi: one on a newer schema migrates the file on open, after which the
+daemon's own code refuses it. Every other path that runs a configured or
+agent-chosen command starts the same way: notify commands, external hooks, MCP
+terminal notices, secrets lookup commands, configured stdio MCP servers (the
+Studio connection check and the MCP connection pool), the commands run through
+`communicate_in_process_group` (tool hooks, outbox delivery), and the commands
+an agent runs through lionagi's own shell tool. A command that needs the
+daemon's store names it itself, in its argv or its own environment; an
+environment a caller hands a command explicitly (a server's configured `env`, a
+sandbox cell's `env`) is passed as given. Every `li`
+child (the other action kinds) still inherits the URL, so its run records into
+the daemon's store.
+
+Two limits remain. A command that runs in the daemon's working directory (one
+given no `cwd` of its own) reads the `.env`, `.env.local` and `.secrets.env`
+files there as its own settings, so a store URL in those files still reaches
+it: keep the store URL out of the dotenv files in the daemon's working
+directory, or give the command a `cwd`. And a child without the variable falls
+back to the default store, `$LIONAGI_HOME/state.db`: a daemon whose store is at
+that path, by default or through the variable, shares it with any lionagi its
+commands run under the same home directory, and a lionagi of the same line on
+a newer schema migrates it on open, as an upgrade does.
 
 ## lionagi/studio/services/schedules.py
 
@@ -397,7 +461,9 @@ between `build_argv()` and this function gives a revoked
   `last_fired_at` watermark), `no-evidence` (enabled, but the table can't
   tell whether the schedule genuinely never ran or its run history was
   pruned by retention after firing), `overdue` (enabled, cadence known, no
-  execution evidence within grace of the expected cadence), `failing` (the
+  liveness evidence within grace of the expected cadence: an executed run, a
+  threshold schedule's last evaluation, or a GitHub poll schedule's last healthy
+  poll), `failing` (the
   latest executed run's outcome was failed/timed_out), `healthy`
   (otherwise). `schedules.last_fired_at` is a retained per-schedule column
   that survives `schedule_runs` retention pruning even after every run row

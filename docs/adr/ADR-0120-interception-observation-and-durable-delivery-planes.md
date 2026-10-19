@@ -817,8 +817,8 @@ everything since; facts past the range belong to the next wake.
   `lionagi/cli/orchestrate/flow.py:1986-2031`). A schedule holds `github_cursor`, a reader
   position that remembers how far a poll has read so a refused event is re-offered rather than
   skipped. The poller's writes advance it only forward, so a stale poll cannot move it back
-  (`lionagi/state/schema.sql:464`, `:528-536`; `lionagi/state/db.py:5368-5370`, `:5500`;
-  `lionagi/studio/scheduler/engine.py:1763`; ADR-0070, Accepted); a direct `update_schedule` or
+  (`lionagi/state/schema.sql:464`, `:527-535`; `lionagi/state/db.py:5368-5370`, `:5474`;
+  `lionagi/studio/scheduler/engine.py:1807`; ADR-0070, Accepted); a direct `update_schedule` or
   `apply_schedule_set` write sets it to the value given. It is one position per schedule, not per
   observing subscriber. The nearest durable
   per-session log, and the domain of this record's cursor, is `session_signals`: append-only, with

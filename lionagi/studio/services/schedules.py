@@ -332,7 +332,8 @@ def _validate_flow_yaml_spec(yaml_text: str) -> str | None:
 
 
 # Health severity is computed from cadence + observed schedule_runs rows and,
-# for threshold alerts, the completed-evaluation watermark. It is never based
+# for threshold alerts, the completed-evaluation watermark, and for GitHub poll
+# schedules the last healthy poll. It is never based
 # on next_fire_at -- next_fire_at is a promise the scheduler made, not evidence
 # that anything happened. A missed-fire/overlap/capacity skip advances the
 # cursor while recording no execution, so silence hidden behind a pile of skips
@@ -403,8 +404,11 @@ def compute_schedule_health(
     single latest executed run's outcome was failed/timed_out -- see
     _HEALTH_FAILING_THRESHOLD), healthy (otherwise). For a threshold alert,
     ``last_evaluated_at`` is liveness evidence even when the metric did not
-    breach and therefore no schedule_run was created. It does not replace the
-    latest executed outcome used for the failing verdict.
+    breach and therefore no schedule_run was created. For a GitHub poll
+    schedule, ``last_healthy_poll_at`` is liveness evidence the same way: a
+    poll that found no new event creates no run, so a quiet repository would
+    otherwise read overdue off its last fire. Neither replaces the latest
+    executed outcome used for the failing verdict.
 
     ``schedules.last_fired_at`` is a retained per-schedule column written by
     the normal occurrence paths -- it survives schedule_runs retention
@@ -421,19 +425,23 @@ def compute_schedule_health(
     last_recorded_at = evidence.get("last_recorded_run_at")
     last_fired_at = row.get("last_fired_at")
     last_evaluated_at = row.get("last_evaluated_at") if row.get("threshold_config") else None
+    last_healthy_poll_at = (
+        row.get("last_healthy_poll_at") if row.get("trigger_type") == "github_poll" else None
+    )
+    liveness = [
+        timestamp
+        for timestamp in (last_executed_at, last_evaluated_at, last_healthy_poll_at)
+        if timestamp is not None
+    ]
 
     if not row.get("enabled"):
         state = "disabled"
-    elif last_executed_at is None and last_evaluated_at is None:
+    elif not liveness:
         state = (
             "never-fired" if last_recorded_at is None and last_fired_at is None else "no-evidence"
         )
     else:
-        liveness_at = max(
-            timestamp
-            for timestamp in (last_executed_at, last_evaluated_at)
-            if timestamp is not None
-        )
+        liveness_at = max(liveness)
         cadence_seconds = _schedule_cadence_seconds(row, reference_at=liveness_at)
         overdue = (
             cadence_seconds is not None
@@ -552,8 +560,21 @@ def _error_class_for(row: dict[str, Any]) -> str | None:
     falls through to the occurrence's own error text, which is empty exactly when
     there was no error. Suppressing the class there instead would leave a genuinely
     failed run with no classification and no path to its detail.
+
+    A run whose outcome is its own skip did not fail, so it has no class whatever
+    text explains the skip: the recorded reason is caller-reported outcome text, and
+    classifying it would serve a failure class (``unclassified`` for every fixed
+    scheduler explanation) on a run that never started. A skipped run whose outcome
+    a linked session or invocation reports keeps that layer's class.
     """
-    reported = _reported_summary_class(row.get("outcome"))
+    outcome = row.get("outcome")
+    if (
+        isinstance(outcome, dict)
+        and outcome.get("source") == "occurrence"
+        and outcome.get("code") == "skipped"
+    ):
+        return None
+    reported = _reported_summary_class(outcome)
     if reported is not None:
         return reported
     return _error_class(row.get("error_detail"))
@@ -774,7 +795,39 @@ async def _recent_run_summaries(db: StateDB, schedule_ids: list[str]) -> dict[st
 # reach the wire on these routes either way -- before this list existed the routes
 # returned the joined row verbatim -- so naming them is what turns a pass-through into
 # a decision, and what makes withholding them later a one-line change in one place.
-_RUN_VIEW_FIELDS = _RUN_SUMMARY_FIELDS + ("duration_ms", "artifacts", "session_ids")
+_RUN_VIEW_FIELDS = _RUN_SUMMARY_FIELDS + (
+    "duration_ms",
+    "artifacts",
+    "session_ids",
+    "reason_code",
+    "reason_summary",
+)
+
+# Only these fixed scheduler explanations are safe on list surfaces. A reason
+# code or source label alone does not make an arbitrary recorded summary safe.
+# The stored text must match too; this list never supplies a missing summary.
+_PUBLIC_SKIP_REASONS = frozenset(
+    {
+        (
+            "schedule.deferred.capacity",
+            "Schedule fire deferred: global concurrent-fire cap reached; will retry next tick.",
+        ),
+        (
+            "schedule.skipped.overlap",
+            "Schedule fire skipped because overlap_policy=skip and a prior run is still active.",
+        ),
+        (
+            "schedule.skipped.missed_fire",
+            "Schedule fire skipped because the scheduled time passed while the server was down "
+            "or the tick was delayed (missed_fire_policy=skip).",
+        ),
+        (
+            "schedule.budget.exhausted",
+            "Schedule fire refused and the schedule disabled because its "
+            "configured spend budget is exhausted.",
+        ),
+    }
+)
 
 
 def _reported_summary_class(outcome: Any) -> str | None:
@@ -801,10 +854,23 @@ def _reported_summary_class(outcome: Any) -> str | None:
 
 def _run_view(row: dict[str, Any]) -> dict[str, Any]:
     view = {name: row[name] for name in _RUN_VIEW_FIELDS if name in row}
+    reason_summary = row.get("reason_summary")
+    public_skip_reason = (
+        row.get("status") == "skipped"
+        and (row.get("reason_code"), reason_summary) in _PUBLIC_SKIP_REASONS
+    )
+    if reason_summary and not public_skip_reason:
+        view["reason_summary"] = _error_class(reason_summary)
     view["error_class"] = _error_class_for(row)
     if "outcome" in row:
         outcome = row["outcome"]
         classified = _reported_summary_class(outcome)
+        if (
+            public_skip_reason
+            and outcome.get("source") == "occurrence"
+            and outcome.get("summary") == reason_summary
+        ):
+            classified = None
         view["outcome"] = outcome if classified is None else {**outcome, "summary": classified}
     return view
 
@@ -1373,6 +1439,7 @@ async def schedule_limits_route() -> dict[str, Any]:
     return {
         "max_scheduled_concurrent": config.MAX_SCHEDULED_CONCURRENT,
         "current_inflight": scheduler._global_inflight,
+        "current_holders": scheduler.global_slot_holders,
         "max_adhoc_concurrent": config.MAX_ADHOC_CONCURRENT,
         "current_adhoc_inflight": scheduler._adhoc_inflight,
     }

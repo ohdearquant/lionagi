@@ -35,7 +35,13 @@ API requests and the schema/docs endpoints; `/health`, CORS preflight, and the
 guarded by its one-time code instead of a bearer, and the single-page app shell
 and its hashed assets stay public. Pairing gives the hosted page the configured
 token, so it keeps working once paired; any other client must supply the
-matching bearer.
+matching bearer. The token no longer issues a pairing code
+(`POST /api/studio/pairing-codes` answers 410). Pairing also hands the page a
+decision capability, bound to the page's origin and kept for its tab, which the
+two Operator decision routes record with a decision. The token is not that
+capability, but this release does not yet require one: a decision request
+without it, including one that carries only the token, is still accepted and is
+recorded unattributed.
 These behaviors follow `lionagi/studio/app.py`, `lionagi/studio/config.py`,
 `lionagi/studio/services/pairing.py`, and
 `lionagi/studio/services/operator.py`; frontend credential handling is in

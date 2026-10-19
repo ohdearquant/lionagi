@@ -59,10 +59,10 @@ process-wide terminal callback if, and only if, `notify.on_terminal` resolves
 to a handler. The CLI entry point calls `register_settings_terminal_callback`
 before dispatching any subcommand, `li mirror` included
 (`lionagi/cli/main.py:674-678`, inside `_run` and ahead of argparse dispatch),
-and Studio service startup calls it as well (`lionagi/studio/app.py:190-192`,
+and Studio service startup calls it as well (`lionagi/studio/app.py:200-202`,
 the same module that starts the in-process mirror); the
 function registers when the setting resolves and unregisters when it does not
-(`lionagi/state/lifecycle/notify_settings.py:648-662`). So with no
+(`lionagi/state/lifecycle/notify_settings.py:659-673`). So with no
 `notify.on_terminal` configured, `emit` is a no-op and this consequence is
 latent; with one configured that permits sessions, an `idle → completed` write
 reaches a live handler.
@@ -348,7 +348,7 @@ second name from it at `lionagi/state/db.py:451`.
 | --- | --- | --- |
 | `studio/services/sessions.py:1629` `is_session_stream_done` | **Yes, and it is consequence 1** | read at the source; closes the live stream on terminal + 60s stable |
 | `studio/services/run_resume.py:274` | **Yes if resume is offered on a mirrored row** | read at the source: `queued = source_status not in SESSION_TERMINAL_STATUSES`, so a falsely-terminal session launches a resume immediately instead of queueing it behind live work. **Whether the Studio offers resume for a mirrored session is UNVERIFIED and is the first thing to check.** |
-| `studio/services/run_view.py:109,160` | Likely, display only | not driven |
+| `studio/services/run_view.py:64` | Likely, display only | not driven |
 | `studio/services/artifact_verification.py:62` | Unverified | not driven |
 | `studio/services/run_resume_worker.py:71` | Unverified | not driven |
 | `cli/monitor.py:1199,1211,1269` | Unverified | not driven |

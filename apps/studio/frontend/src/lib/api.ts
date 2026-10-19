@@ -35,7 +35,7 @@ import type {
   WorkerLinkEdge,
 } from "./types";
 import { reportAccessRefused, reportConnectivityFailure } from "./connectivity";
-import { pairedBearer } from "./pairing";
+import { pairedBearer, pairedDecisionToken } from "./pairing";
 
 declare global {
   interface Window {
@@ -720,21 +720,34 @@ export async function acknowledgeOperatorEffect(
   );
 }
 
+/**
+ * The decision capability belongs on the two decision requests only, and only
+ * for the API origin this page was paired with. `redirect: "error"` keeps a
+ * redirect from delivering the header to wherever a 3xx points.
+ */
+async function decisionRequest(path: string, body: unknown): Promise<OperatorProposalResult> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const capability = pairedDecisionToken(API_BASE);
+  if (capability) headers["X-Studio-Decision-Token"] = capability;
+  return fetchJson<OperatorProposalResult>(path, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    redirect: "error",
+  });
+}
+
 export async function confirmOperatorProposal(
   conversationId: string,
   proposalId: string,
   expectedCommandHash: string,
   expectedTargetVersion?: string | null,
 ): Promise<OperatorProposalResult> {
-  return fetchJson<OperatorProposalResult>(
+  return decisionRequest(
     `/api/operator/conversations/${encodeURIComponent(conversationId)}/proposals/${encodeURIComponent(proposalId)}/confirm`,
     {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        expectedCommandHash,
-        expectedTargetVersion: expectedTargetVersion ?? null,
-      }),
+      expectedCommandHash,
+      expectedTargetVersion: expectedTargetVersion ?? null,
     },
   );
 }
@@ -746,16 +759,12 @@ export async function decideOperatorProposal(
   expectedCommandHash?: string,
   expectedTargetVersion?: string | null,
 ): Promise<OperatorProposalResult> {
-  return fetchJson<OperatorProposalResult>(
+  return decisionRequest(
     `/api/operator/conversations/${encodeURIComponent(conversationId)}/proposals/${encodeURIComponent(proposalId)}/decision`,
     {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        decision,
-        ...(expectedCommandHash ? { expectedCommandHash } : {}),
-        expectedTargetVersion: expectedTargetVersion ?? null,
-      }),
+      decision,
+      ...(expectedCommandHash ? { expectedCommandHash } : {}),
+      expectedTargetVersion: expectedTargetVersion ?? null,
     },
   );
 }

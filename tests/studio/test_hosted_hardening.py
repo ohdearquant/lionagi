@@ -844,6 +844,7 @@ def test_fetch_site_accepted_without_origin(sites, accepted):
 
 _PAIR = "/api/studio/pair"
 _MINT = "/api/studio/pairing-codes"
+_DISCONNECT = "/api/studio/disconnect"
 
 
 @pytest.fixture()
@@ -853,6 +854,8 @@ def fresh_launch(monkeypatch):
 
     monkeypatch.setattr(launch_access, "_bearer", None)
     monkeypatch.setattr(launch_access, "_codes", {})
+    monkeypatch.setattr(launch_access, "_capabilities", {}, raising=False)
+    monkeypatch.setattr(launch_access, "_launch_codes", set(), raising=False)
     return launch_access
 
 
@@ -964,20 +967,73 @@ class TestPairing:
 
         assert resp.status_code == 401
 
-    def test_the_command_line_can_mint_a_code_and_a_page_cannot(self, make_client):
+    @pytest.mark.parametrize(
+        "headers",
+        [
+            _LOOPBACK,
+            {**_LOOPBACK, "Origin": "http://localhost:5173"},
+            {**_LOOPBACK, "Origin": _HOSTED},
+            {**_LOOPBACK, "Sec-Fetch-Site": "none"},
+            {**_LOOPBACK, "Sec-Fetch-Site": "cross-site"},
+            {**_LOOPBACK, "X-Studio-Decision-Token": "anything"},
+        ],
+        ids=["command-line", "dev-page", "hosted-page", "typed", "cross-site", "decision-header"],
+    )
+    def test_no_http_request_can_mint_a_code(self, make_client, headers):
+        """The mint route is retired: whatever headers a request carries, an
+        admitted one answers 410 and a page on another origin never gets a code.
+
+        This replaces the test that pinned a command-line mint: that route is how
+        a program that can only speak HTTP obtained a code, and so a bearer."""
         client = make_client()
 
-        minted = client.post(_MINT, json={}, headers=_LOOPBACK)
-        from_page = client.post(
-            _MINT, json={}, headers={**_LOOPBACK, "Origin": "http://localhost:5173"}
-        )
-        from_hosted = client.post(_MINT, json={}, headers={**_LOOPBACK, "Origin": _HOSTED})
+        resp = client.post(_MINT, json={}, headers=headers)
 
-        assert minted.status_code == 201
-        assert isinstance(minted.json()["code"], str) and minted.json()["code"]
-        assert from_page.status_code == 403
-        assert from_hosted.status_code == 401
-        assert self._pair(client, minted.json()["code"]).status_code == 200
+        assert resp.status_code in (401, 410)
+        if resp.status_code == 410:
+            assert "code" not in resp.json()
+            assert "li studio" in resp.json()["detail"]
+
+    def test_pairing_returns_a_decision_capability_bound_to_the_page_origin(
+        self, make_client, fresh_launch
+    ):
+        client = make_client()
+
+        resp = self._pair(client, fresh_launch.mint_pairing_code())
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["token"]
+        principal = fresh_launch.resolve_decision_capability(body["decision_token"], origin=_HOSTED)
+        assert principal is not None
+        assert principal.origin == _HOSTED
+        assert principal.scope == "operator:decide"
+        assert (
+            fresh_launch.resolve_decision_capability(
+                body["decision_token"], origin="http://localhost:5173"
+            )
+            is None
+        )
+
+    def test_an_explicit_disconnect_revokes_the_capability(self, make_client, fresh_launch):
+        client = make_client()
+        capability = self._pair(client, fresh_launch.mint_pairing_code()).json()["decision_token"]
+
+        revoked = client.post(
+            _DISCONNECT,
+            json={},
+            headers={
+                **_LOOPBACK,
+                "Origin": _HOSTED,
+                "Authorization": f"Bearer {fresh_launch.launch_bearer()}",
+                "X-Studio-Decision-Token": capability,
+            },
+        )
+        after = fresh_launch.resolve_decision_capability(capability, origin=_HOSTED)
+
+        assert revoked.status_code == 200
+        assert revoked.json() == {"revoked": True}
+        assert after is None
 
 
 @pytest.mark.integration
@@ -990,24 +1046,33 @@ class TestPairingWithToken:
         monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "studio-test-token")
         monkeypatch.delenv("CORS_ORIGINS", raising=False)
 
-    def test_pairing_returns_the_configured_token(self, make_client, fresh_launch):
+    def test_pairing_returns_the_configured_token_and_a_decision_capability(
+        self, make_client, fresh_launch
+    ):
         client = make_client()
         code = fresh_launch.mint_pairing_code()
 
         resp = client.post(_PAIR, json={"code": code}, headers={**_LOOPBACK, "Origin": _HOSTED})
 
         assert resp.status_code == 200
-        assert resp.json() == {"token": "studio-test-token"}
+        body = resp.json()
+        assert body["token"] == "studio-test-token"
+        assert fresh_launch.resolve_decision_capability(body["decision_token"], origin=_HOSTED)
 
-    def test_minting_needs_the_configured_token(self, make_client):
+    def test_the_configured_token_issues_no_code_and_is_not_a_decision_capability(
+        self, make_client
+    ):
+        """``LIONAGI_STUDIO_AUTH_TOKEN`` admits requests as today; it issues no
+        code and is not a decision capability. A decision it admits is still
+        accepted, unattributed (``test_operator_protocol``)."""
         client = make_client()
+        bearer = {**_LOOPBACK, "Authorization": "Bearer studio-test-token"}
 
-        assert client.post(_MINT, json={}, headers=_LOOPBACK).status_code == 401
+        assert client.post(_MINT, json={}, headers=bearer).status_code == 410
+        import lionagi.studio.launch_access as launch_access
+
         assert (
-            client.post(
-                _MINT, json={}, headers={**_LOOPBACK, "Authorization": "Bearer studio-test-token"}
-            ).status_code
-            == 201
+            launch_access.resolve_decision_capability("studio-test-token", origin=_HOSTED) is None
         )
 
     def test_the_launch_bearer_is_not_accepted_in_token_mode(self, make_client, fresh_launch):
@@ -1021,3 +1086,33 @@ class TestPairingWithToken:
         )
 
         assert resp.status_code == 401
+
+
+# /health answers a reconnect challenge
+
+
+def test_health_signs_a_challenge_with_the_port_the_request_reached(make_client):
+    from lionagi.studio.reconnect import port_proof
+
+    client = make_client()
+    key = bytes(range(32))
+    client.app.state.reconnect_key = key
+    challenge = "0123456789abcdef" * 2
+
+    body = client.get("/health", params={"challenge": challenge}).json()
+
+    # The client's base URL is 127.0.0.1:8765, so the request reached port 8765.
+    assert body == {"status": "ok", "proof": port_proof(key, challenge, 8765)}
+    assert body["proof"] != port_proof(key, challenge, 8766)
+
+
+def test_health_signs_nothing_without_a_key_or_for_a_malformed_challenge(make_client):
+    client = make_client()
+    client.app.state.reconnect_key = None
+    assert client.get("/health", params={"challenge": "0" * 32}).json() == {"status": "ok"}
+
+    client.app.state.reconnect_key = bytes(32)
+    for malformed in ("", "0" * 31, "0" * 33, "g" * 32, "A" * 32, "0" * 31 + "\n"):
+        resp = client.get("/health", params={"challenge": malformed})
+        assert resp.json() == {"status": "ok"}, malformed
+    assert client.get("/health").json() == {"status": "ok"}

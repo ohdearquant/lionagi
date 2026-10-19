@@ -38,6 +38,7 @@ from lionagi.ln import (
     prepare_process_group_env,
     terminate_process_group,
 )
+from lionagi.ln._proc import env_without_state_db_url
 from lionagi.state.lifecycle.callbacks import HANDLER_BUDGET_SECONDS
 
 # The CLI runs this file's module by absolute interpreter path; lionagi is on
@@ -406,7 +407,8 @@ def _deliver(
     # a shell wrapper, a mailer that backgrounds its send — leaves those
     # descendants running once this hook exits. One per terminal event, each
     # holding whatever the notifier held, and nothing left watching them.
-    child_env, group_marker = prepare_process_group_env(env)
+    # A configured command: it names its own store if it needs one.
+    child_env, group_marker = prepare_process_group_env(env_without_state_db_url(env))
     try:
         proc = subprocess.Popen(  # noqa: S603 — argv is the operator-configured delivery command, no shell
             argv,

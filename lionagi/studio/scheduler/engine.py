@@ -152,17 +152,27 @@ class _MaxRunsClaim:
 class _GlobalSlotClaim:
     """One-shot handle for an in-process global concurrent-fire slot."""
 
-    __slots__ = ("_engine", "_released")
+    __slots__ = ("_engine", "_released", "schedule_id", "path", "acquired_at")
 
-    def __init__(self, engine: SchedulerEngine) -> None:
+    def __init__(
+        self,
+        engine: SchedulerEngine,
+        schedule_id: str,
+        *,
+        path: str,
+        acquired_at: float,
+    ) -> None:
         self._engine = engine
         self._released = False
+        self.schedule_id = schedule_id
+        self.path = path
+        self.acquired_at = acquired_at
 
     def release(self) -> None:
         if self._released:
             return
         self._released = True
-        self._engine._release_global_slot()
+        self._engine._release_global_slot(self)
 
 
 class _AdhocSlotClaim:
@@ -422,10 +432,12 @@ class SchedulerEngine:
         # has its own cap below so the two cannot starve each other.
         self._global_slot_lock = asyncio.Lock()
         self._global_inflight = 0
+        self._global_slot_claims: set[_GlobalSlotClaim] = set()
         # Ad-hoc task-worker concurrency cap, independent of MAX_SCHEDULED_CONCURRENT by design.
         self._adhoc_slot_lock = asyncio.Lock()
         self._adhoc_inflight = 0
-        self._deferred_log_counts: dict[str, int] = {}  # schedule_id -> deferrals since last record
+        # schedule_id -> consecutive due evaluations the global fire cap deferred.
+        self._deferred_log_counts: dict[str, int] = {}
         # Threshold-alert cooldown reservations. Membership means a fire for this schedule's current
         # breach is in flight or was just reserved, which closes a race a DB-only last_alert_at
         # check cannot.
@@ -824,7 +836,7 @@ class SchedulerEngine:
                 )
             # A human is waiting on a manual trigger, so at-capacity is refused
             # outright rather than deferred like the automatic fire paths below.
-            slot_allowed, slot_claim = await self._reserve_global_slot()
+            slot_allowed, slot_claim = await self._reserve_global_slot(schedule_id, path="manual")
             if not slot_allowed:
                 from lionagi.studio.config import MAX_SCHEDULED_CONCURRENT
 
@@ -1307,7 +1319,9 @@ class SchedulerEngine:
                     ),
                 )
                 return
-            slot_allowed, slot_claim = await self._reserve_global_slot()
+            slot_allowed, slot_claim = await self._reserve_global_slot(
+                schedule["id"], path="missed_fire"
+            )
             if not slot_allowed:
                 return
 
@@ -1436,9 +1450,21 @@ class SchedulerEngine:
 
         schedules = await self._svc.list_schedules(enabled=True)
 
+        def schedule_order(schedule: dict) -> tuple[int, float]:
+            # Poll passes acquire slots asynchronously and use last_fired_at for their cadence.
+            # Start them after timed rows have had their admission checks in oldest-due order.
+            if schedule.get("trigger_type") == "github_poll":
+                return 1, 0.0
+            # The sort runs outside the per-row guard below, so a value that is not a number sorts
+            # last instead of raising here; that row then fails alone in its own evaluation.
+            next_at = schedule.get("next_fire_at")
+            if isinstance(next_at, int | float):
+                return 0, float(next_at)
+            return 0, float("inf")
+
         failed_schedules = 0
         last_schedule_error: Exception | None = None
-        for s in schedules:
+        for s in sorted(schedules, key=schedule_order):
             try:
                 if s["trigger_type"] == "github_poll":
                     self._start_github_tick(s, now)
@@ -1543,10 +1569,20 @@ class SchedulerEngine:
         last = schedule.get("last_fired_at") or 0
         if now - last < poll_interval:
             return
+        deferred = False
+        try:
+            deferred = await self._github_due_pass(schedule, now)
+        finally:
+            # Any outcome of a due pass but a capacity deferral, a raise included, ends the
+            # schedule's deferral episode, so the next deferral logs and records as a new one.
+            if not deferred:
+                self._deferred_log_counts.pop(schedule["id"], None)
 
+    async def _github_due_pass(self, schedule: dict, now: float) -> bool:
+        """Run one due poll-and-fire pass; True only when the fire cap deferred it."""
         if await self._check_budget(schedule):
             await self._disable_for_budget_exhausted(schedule, now)
-            return
+            return False
 
         rate_allowed, pre_rate_claim = await self._reserve_rate_limit(schedule, now=now)
         if not rate_allowed:
@@ -1557,23 +1593,26 @@ class SchedulerEngine:
                 schedule["id"],
                 schedule.get("rate_limit"),
             )
-            return
+            return False
 
-        # Reserve one global slot before polling, so a no-slot poll does not fetch, advance the
-        # cursor and discard. This slot goes to whichever event fires first; later ones reserve
-        # their own.
-        slot_allowed, pre_slot_claim = await self._reserve_global_slot()
-        if not slot_allowed:
+        # The poll is a trigger check, not a fire, so it holds no global slot while it fetches: a
+        # slow or rate-limited poll would otherwise keep a slot from every other schedule for its
+        # whole duration. A full cap is read here only to spare a fetch whose events could not
+        # run; the read takes nothing. Each event below reserves its own slot, and one that finds
+        # none stays ahead of the cursor for the next poll.
+        from lionagi.studio.config import MAX_SCHEDULED_CONCURRENT
+
+        if 0 < MAX_SCHEDULED_CONCURRENT <= self._global_inflight:
             if pre_rate_claim is not None:
                 pre_rate_claim.release()
             await self._maybe_record_deferred(schedule, now)
-            return
+            return True
 
         from .github import github_poll
 
         sid = schedule["id"]
-        # Every await between reserving pre_slot_claim and handing it to the first dispatched
-        # _fire() must release it on failure, or a transient error mid-poll leaks the slot
+        # Every await between reserving pre_rate_claim and handing it to the first dispatched
+        # _fire() must release it on failure, or a transient error mid-poll leaks the claim
         # permanently. It is nulled the moment it is handed off or released inline, so this finally
         # only fires for the untouched case.
         try:
@@ -1604,7 +1643,7 @@ class SchedulerEngine:
                 )
 
             if not polled:
-                return
+                return False
 
             cursor = schedule.get("github_cursor")
             drop_reason: str | None = None
@@ -1620,6 +1659,8 @@ class SchedulerEngine:
             # event from dispatching a later one this scheduler has not reached yet.
             unclaimed_poll_cycle = True
             claimed_cursor = schedule.get("github_cursor")
+            slot_reserved = False
+            cap_deferred = False
 
             for idx, item in enumerate(polled):
                 if not item.dispatchable:
@@ -1644,16 +1685,19 @@ class SchedulerEngine:
                             ]
                             break
 
-                    if pre_slot_claim is not None:
-                        slot_claim, pre_slot_claim = pre_slot_claim, None
-                    else:
-                        slot_allowed, slot_claim = await self._reserve_global_slot()
-                        if not slot_allowed:
-                            drop_reason = "global concurrent-fire cap reached"
-                            dropped_prs = [
-                                e.event.get("pr_number") for e in polled[idx:] if e.dispatchable
-                            ]
-                            break
+                    slot_allowed, slot_claim = await self._reserve_global_slot(
+                        sid, path="github_event"
+                    )
+                    if not slot_allowed:
+                        drop_reason = "global concurrent-fire cap reached"
+                        dropped_prs = [
+                            e.event.get("pr_number") for e in polled[idx:] if e.dispatchable
+                        ]
+                        # Before any event of this pass took a slot, the cap deferred the whole
+                        # pass, the same as a cap found full before polling.
+                        cap_deferred = not slot_reserved
+                        break
+                    slot_reserved = True
 
                     allowed, max_runs_claim = await self._reserve_max_runs_budget(schedule)
                     if not allowed:
@@ -1762,11 +1806,13 @@ class SchedulerEngine:
                 await self._svc.update_schedule(
                     sid, github_cursor=cursor, guard_cursor_forward=True
                 )
+            if cap_deferred:
+                await self._maybe_record_deferred(schedule, now)
+                return True
         finally:
             if pre_rate_claim is not None:
                 pre_rate_claim.release()
-            if pre_slot_claim is not None:
-                pre_slot_claim.release()
+        return False
 
     async def _record_predispatch_refusal(self, schedule: dict, event_cursor: str) -> int:
         """Count one pre-dispatch refusal of the event at *event_cursor*; returns the new total."""
@@ -1870,7 +1916,24 @@ class SchedulerEngine:
         if not reservations:
             self._rate_limit_inflight.pop(schedule_id, None)
 
-    async def _reserve_global_slot(self) -> tuple[bool, _GlobalSlotClaim | None]:
+    @property
+    def global_slot_holders(self) -> list[dict[str, Any]]:
+        """Return a snapshot of the scheduled-fire claims currently holding capacity."""
+        return [
+            {
+                "schedule_id": claim.schedule_id,
+                "path": claim.path,
+                "acquired_at": claim.acquired_at,
+            }
+            for claim in sorted(
+                self._global_slot_claims,
+                key=lambda claim: (claim.acquired_at, claim.schedule_id, claim.path),
+            )
+        ]
+
+    async def _reserve_global_slot(
+        self, schedule_id: str, *, path: str
+    ) -> tuple[bool, _GlobalSlotClaim | None]:
         """Atomically claim one global concurrent-fire slot; returns (allowed, claim)."""
         from lionagi.studio.config import MAX_SCHEDULED_CONCURRENT
 
@@ -1879,10 +1942,15 @@ class SchedulerEngine:
         async with self._global_slot_lock:
             if self._global_inflight >= MAX_SCHEDULED_CONCURRENT:
                 return False, None
+            claim = _GlobalSlotClaim(self, schedule_id, path=path, acquired_at=time.time())
+            self._global_slot_claims.add(claim)
             self._global_inflight += 1
-            return True, _GlobalSlotClaim(self)
+            return True, claim
 
-    def _release_global_slot(self) -> None:
+    def _release_global_slot(self, claim: _GlobalSlotClaim) -> None:
+        if claim not in self._global_slot_claims:
+            return
+        self._global_slot_claims.remove(claim)
         self._global_inflight = max(0, self._global_inflight - 1)
 
     async def _reserve_adhoc_slot(self) -> tuple[bool, _AdhocSlotClaim | None]:
@@ -1901,10 +1969,21 @@ class SchedulerEngine:
         self._adhoc_inflight = max(0, self._adhoc_inflight - 1)
 
     async def _maybe_record_deferred(self, schedule: dict, now: float) -> None:
-        """Emit a throttled skipped-run record for a capacity-deferred fire."""
+        """Log each capacity-deferral episode once and throttle its skipped-run records."""
         sid = schedule["id"]
         count = self._deferred_log_counts.get(sid, 0) + 1
         self._deferred_log_counts[sid] = count
+        if count == 1:
+            from lionagi.studio.config import MAX_SCHEDULED_CONCURRENT
+
+            _log.info(
+                "Schedule %s (%s) deferred: global concurrent-fire cap reached "
+                "(inflight=%d, cap=%d); will retry next tick",
+                schedule.get("name"),
+                sid,
+                self._global_inflight,
+                MAX_SCHEDULED_CONCURRENT,
+            )
         if count % _DEFERRED_RECORD_EVERY != 1:
             return
         skipped_run_id = short_id(12)
@@ -2043,13 +2122,25 @@ class SchedulerEngine:
         await self._svc.update_schedule(schedule["id"], last_evaluated_at=now)
 
     async def _maybe_fire(self, schedule: dict, now: float) -> None:
+        deferred = False
+        try:
+            deferred = await self._evaluate_due_fire(schedule, now)
+        finally:
+            # Any outcome of a due evaluation but a capacity deferral, a raise included, ends the
+            # schedule's deferral episode, so the next deferral logs and records as a new one. A
+            # manual trigger is not a due evaluation and leaves the episode where it is.
+            if not deferred:
+                self._deferred_log_counts.pop(schedule["id"], None)
+
+    async def _evaluate_due_fire(self, schedule: dict, now: float) -> bool:
+        """Run one due evaluation; True only when the fire cap deferred it."""
         threshold_extra: dict[str, Any] | None = None
         threshold_claim: _ThresholdCooldownClaim | None = None
         if schedule.get("threshold_config"):
             breach = await self._evaluate_threshold_breach(schedule, now)
             if breach is None:
                 await self._record_evaluation_without_firing(schedule, now)
-                return
+                return False
             # Cooldown: suppress refiring while still within the metric's own window of the last
             # alert, so a sustained breach does not fire every tick. The cadence advances
             # underneath, so the next tick re-checks once it lapses.
@@ -2063,7 +2154,7 @@ class SchedulerEngine:
             # them.
             if in_cooldown or sid in self._threshold_pending:
                 await self._record_evaluation_without_firing(schedule, now)
-                return
+                return False
             self._threshold_pending.add(sid)
             threshold_claim = _ThresholdCooldownClaim(self, sid)
             threshold_extra = breach
@@ -2101,11 +2192,11 @@ class SchedulerEngine:
                 fields = self._next_fire_field(schedule, next_at)
                 if fields:
                     await self._svc.update_schedule(schedule["id"], **fields)
-                return
+                return False
 
             if await self._check_budget(schedule):
                 await self._disable_for_budget_exhausted(schedule, now)
-                return
+                return False
 
             rate_allowed, rate_claim = await self._reserve_rate_limit(schedule, now=now)
             if not rate_allowed:
@@ -2116,7 +2207,7 @@ class SchedulerEngine:
                     schedule["id"],
                     schedule.get("rate_limit"),
                 )
-                return
+                return False
 
             allowed, claim = await self._reserve_max_runs_budget(schedule)
             if not allowed:
@@ -2139,15 +2230,17 @@ class SchedulerEngine:
                         },
                     ),
                 )
-                return
+                return False
 
-            slot_allowed, slot_claim = await self._reserve_global_slot()
+            slot_allowed, slot_claim = await self._reserve_global_slot(
+                schedule["id"], path="scheduled"
+            )
             if not slot_allowed:
                 await self._maybe_record_deferred(schedule, now)
                 # Leave next_fire_at untouched so the next tick retries this schedule rather than
                 # skipping it. The claims are given back by the finally below: this defers the fire,
                 # it does not consume a run or abandon the cooldown.
-                return
+                return True
 
             run_id = short_id(12)
             ctx = {
@@ -2186,6 +2279,7 @@ class SchedulerEngine:
                     slot_claim.release()
                 if threshold_claim is not None:
                     threshold_claim.release()
+        return False
 
     async def _guarded_terminal_status(
         self,

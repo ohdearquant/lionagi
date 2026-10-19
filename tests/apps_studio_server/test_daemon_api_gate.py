@@ -186,6 +186,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/api/schedules/{schedule_id}/trigger"),
     ("POST", "/api/sessions/{session_id}/tags"),
     ("POST", "/api/shows/import"),
+    ("POST", "/api/studio/disconnect"),
     ("POST", "/api/studio/pair"),
     ("POST", "/api/studio/pairing-codes"),
     ("POST", "/api/workflow-defs/"),
@@ -764,6 +765,7 @@ def test_schedules_limits_response_shape(tmp_path, monkeypatch):
     assert r.status_code == 200
     assert sorted(r.json().keys()) == [
         "current_adhoc_inflight",
+        "current_holders",
         "current_inflight",
         "max_adhoc_concurrent",
         "max_scheduled_concurrent",

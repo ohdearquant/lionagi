@@ -994,6 +994,112 @@ class TestSeparateAnswerRounds:
         assert isinstance(outcome, Success)
         assert assembled == {"answer": "guess"}
 
+    # A call written in a provider's own tool-call markup instead of <lact>.
+    _INVOKE = (
+        '<invoke name="reader">\n<parameter name="action">read</parameter>\n'
+        '<parameter name="path">lionagi/work/form.py</parameter>\n</invoke>\n'
+    )
+
+    _NEITHER = [
+        _INVOKE,
+        '<lact q a>lookup(query="x")</lact>',
+        "",
+        "Let me read the file first.",
+        f"```lndl\n{_INVOKE}```",
+        "```lndl\n<lvar a>draft</lvar>\n```",
+        "```lndl\n```",
+        # A block quoted inside another fence is quoted text, not the round's own block.
+        '```markdown\n```lndl\n<lact q a>lookup(query="x")</lact>\n```\n```',
+    ]
+    _NEITHER_IDS = [
+        "invoke-markup",
+        "unfenced-lact",
+        "empty",
+        "prose",
+        "fenced-invoke",
+        "fenced-lvar-only",
+        "fenced-empty",
+        "block-quoted-in-another-fence",
+    ]
+
+    @pytest.mark.parametrize("text", _NEITHER, ids=_NEITHER_IDS)
+    def test_a_round_that_neither_calls_nor_answers_is_refused(self, text):
+        outcome, pending, assembled = _classify_round(text, AnswerModel, {}, lacts_with_out=False)
+        assert isinstance(outcome, Retry)
+        assert outcome.error.startswith("nothing in this round ran: it has no <lact> call")
+        assert "such as an <invoke> tag, is not run" in outcome.error
+        assert "declare calls as <lact> or write the answer as OUT{}" in outcome.error
+        assert pending == [] and assembled is None
+
+    @pytest.mark.parametrize("text", _NEITHER, ids=_NEITHER_IDS)
+    def test_the_default_still_continues_a_round_that_neither_calls_nor_answers(self, text):
+        outcome, pending, assembled = _classify_round(text, AnswerModel, {})
+        assert isinstance(outcome, Continue)
+        assert pending == [] and assembled is None
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            '```lndl\r\n<lact q a>lookup(query="x")</lact>\r\n```',
+            '  ```lndl\n  <lact q a>lookup(query="x")</lact>\n  ```',
+            '````lndl\n<lact q a>lookup(query="x")</lact>\n````',
+            '~~~lndl\n<lact q a>lookup(query="x")</lact>\n~~~',
+        ],
+        ids=["crlf", "indented", "four-backticks", "tildes"],
+    )
+    def test_a_call_in_any_fence_shape_runs(self, text):
+        outcome, pending, assembled = _classify_round(text, AnswerModel, {}, lacts_with_out=False)
+        assert isinstance(outcome, Continue)
+        assert [call.function for call in pending] == ["lookup"]
+        assert assembled is None
+
+    def test_a_crlf_answer_reads_as_lf(self):
+        text = '```lndl\r\nOUT{answer: "line 1\r\nline 2"}\r\n```'
+        outcome, _, assembled = _classify_round(text, AnswerModel, {}, lacts_with_out=False)
+        assert isinstance(outcome, Success)
+        assert assembled == {"answer": "line 1\nline 2"}
+
+    def test_an_answer_may_hold_an_indented_code_fence(self):
+        text = "```lndl\n<lvar a>\n  ```python\n  print(1)\n  ```\n</lvar>\nOUT{answer: [a]}\n```"
+        outcome, _, assembled = _classify_round(text, AnswerModel, {}, lacts_with_out=False)
+        assert isinstance(outcome, Success)
+        assert "```python\n  print(1)\n  ```" in assembled["answer"]
+
+    @pytest.mark.asyncio
+    async def test_the_next_round_is_told_its_unfenced_call_did_not_run(self):
+        calls_made: list[str] = []
+
+        def counted_lookup(query: str) -> str:
+            """Return a canned lookup result for a query."""
+            calls_made.append(query)
+            return f"result for {query}"
+
+        middle = build_lndl_middle(round_budget=3, lacts_with_out=False)
+        branch = TestBranch.from_text(
+            [
+                '<invoke name="counted_lookup">\n<parameter name="query">x</parameter>\n</invoke>',
+                '```lndl\n<lact q a>counted_lookup(query="y")</lact>\n```',
+                "```lndl\n<lvar b>read</lvar>\nOUT{answer: [b]}\n```",
+            ]
+        )
+        branch.register_tools([counted_lookup])
+        result = await middle(branch, "look it up", ChatParam(response_format=AnswerModel))
+
+        assert result.answer == "read"
+        assert calls_made == ["y"]
+        calls = TestBranch.calls(branch)
+        assert "Error from your previous round: nothing in this round ran" in (
+            calls[1].last_user_message
+        )
+        assert "Error from your previous round" not in calls[2].last_user_message
+
+    @pytest.mark.asyncio
+    async def test_a_turn_of_unfenced_calls_fails_naming_the_missing_block(self):
+        middle = build_lndl_middle(round_budget=2, lacts_with_out=False)
+        branch = TestBranch.from_text([self._INVOKE, self._INVOKE])
+        with pytest.raises(LNDLError, match="nothing in this round ran: it has no <lact> call"):
+            await middle(branch, "look it up", ChatParam(response_format=AnswerModel))
+
     @pytest.mark.asyncio
     async def test_the_refused_round_runs_no_call(self):
         calls_made: list[str] = []
