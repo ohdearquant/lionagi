@@ -176,9 +176,11 @@ def mint_pairing_code(*, origins: Iterable[str] | None = None, for_launch: bool 
     """A new single-use code for the launch bearer, minting the bearer on first use.
 
     The code redeems only from an origin in *origins*; ``None`` binds it to the
-    origins this daemon admits (``CORS_ORIGINS`` at the time of the call). Each
-    origin is kept as a browser sends it in ``Origin``, so a page address written
-    with an uppercase host, a default port or a path still binds its page.
+    origins this daemon admits, ``CORS_ORIGINS`` at the time of the call, as
+    configured, since the pairing route and the CORS layer compare a request's
+    ``Origin`` with those strings as written. A named origin is kept as a browser
+    sends it in ``Origin``, so a page address written with an uppercase host, a
+    default port or a path still binds its page.
     *for_launch* marks a code a launcher minted in this process for the daemon
     it starts next, so starting that daemon does not invalidate it.
     """
@@ -208,7 +210,7 @@ def _normalize_origins(origins: Iterable[str] | None) -> tuple[str, ...]:
     if origins is None:
         from .config import CORS_ORIGINS
 
-        origins = CORS_ORIGINS
+        return tuple(str(origin) for origin in CORS_ORIGINS)
     return tuple(_canonical_origin(str(origin)) for origin in origins)
 
 
@@ -217,15 +219,25 @@ _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 def _canonical_origin(url: str) -> str:
     """The origin of *url* as a browser serializes it: lowercase scheme and host,
-    no default port, no path. A value that is not an http(s) URL is kept as is."""
+    an IP address in its compressed form, no default port, no path.
+
+    A value that is not an http(s) URL, or that carries credentials before its
+    host, is kept as written, so it matches no ``Origin`` a browser sends.
+    """
     try:
         parts = urlsplit(url)
         port = parts.port
     except ValueError:
         return url
     scheme, host = parts.scheme, parts.hostname
-    if scheme not in _DEFAULT_PORTS or not host:
+    if scheme not in _DEFAULT_PORTS or not host or "@" in parts.netloc:
         return url
+    import ipaddress
+
+    try:
+        host = str(ipaddress.ip_address(host))
+    except ValueError:
+        pass
     if ":" in host:
         host = f"[{host}]"
     if port is None or port == _DEFAULT_PORTS[scheme]:

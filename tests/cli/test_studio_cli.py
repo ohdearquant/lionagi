@@ -889,19 +889,25 @@ class _ViteProc:
         return 0
 
 
-def _dev_launch(tmp_path, monkeypatch, frontend_url, *, health=None, served=None):
+def _dev_launch(
+    tmp_path, monkeypatch, frontend_url, *, host="127.0.0.1", health=None, probe=None, served=None
+):
     import lionagi.studio.cli as studio_mod
 
     monkeypatch.setattr(studio_mod.shutil, "which", lambda name: "/usr/bin/node")
     monkeypatch.setattr(studio_mod, "_ensure_apps_importable", lambda: True)
-    monkeypatch.setattr(studio_mod, "_daemon_health", lambda port, challenge=None: health)
+    monkeypatch.setattr(
+        studio_mod,
+        "_daemon_health",
+        probe or (lambda port, challenge=None, *, host="127.0.0.1": health),
+    )
     with (
         patch("uvicorn.run") as run,
         patch.object(
             studio_mod, "_launch_vite_dev", return_value=(_ViteProc(), frontend_url)
         ) as launch,
     ):
-        result = studio_mod._start_local("127.0.0.1", 8765, 3000, tmp_path, dev_mode=True)
+        result = studio_mod._start_local(host, 8765, 3000, tmp_path, dev_mode=True)
     if served is not None:
         served.extend([run, launch])
     return result
@@ -962,15 +968,80 @@ def test_a_dev_launch_refuses_when_a_daemon_already_answers_on_its_port(
 
 
 @pytest.mark.parametrize(
-    ("proxy", "pairs"),
-    [("http://127.0.0.1:9999", False), ("http://127.0.0.1:8765/", True)],
+    ("bind", "running_at", "refused"),
+    [("::1", "::1", True), ("127.0.0.2", "127.0.0.1", False)],
+)
+def test_a_dev_launch_looks_for_a_running_daemon_on_the_host_it_binds(
+    tmp_path, monkeypatch, caplog, fresh_launch, bind, running_at, refused
+):
+    asked = []
+
+    def probe(port, challenge=None, *, host="127.0.0.1"):
+        asked.append((host, port))
+        return {"status": "ok"} if host == running_at else None
+
+    with caplog.at_level(logging.WARNING):
+        result = _dev_launch(tmp_path, monkeypatch, "http://127.0.0.1:3000", host=bind, probe=probe)
+
+    assert asked == [(bind, 8765)]
+    assert result == (1 if refused else 0)
+    assert ("already running at http://[::1]:8765" in caplog.text) is refused
+
+
+@pytest.mark.parametrize(
+    ("host", "url"),
+    [
+        (None, "http://127.0.0.1:8765/health"),
+        ("127.0.0.1", "http://127.0.0.1:8765/health"),
+        ("0.0.0.0", "http://127.0.0.1:8765/health"),
+        ("::", "http://[::1]:8765/health"),
+        ("0:0:0:0:0:0:0:1", "http://[::1]:8765/health"),
+    ],
+)
+def test_the_health_probe_asks_where_a_client_reaches_the_bind_host(monkeypatch, host, url):
+    import urllib.request
+
+    import lionagi.studio.cli as studio_mod
+
+    asked = []
+
+    def refuse(target, timeout=None):
+        asked.append(target)
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    kwargs = {} if host is None else {"host": host}
+
+    assert studio_mod._daemon_health(8765, **kwargs) is None
+    assert asked == [url]
+
+
+@pytest.mark.parametrize(
+    ("host", "proxy", "pairs"),
+    [
+        ("127.0.0.1", "http://127.0.0.1:9999", False),
+        ("127.0.0.1", "http://127.0.0.1:8765/", True),
+        ("127.0.0.1", "http://127.0.0.1:8765/subpath", False),
+        ("127.0.0.1", "http://127.0.0.1:8765/?x=1", False),
+        ("127.0.0.1", "http://user@127.0.0.1:8765", False),
+        ("127.0.0.1", "http://localhost:8765", False),
+        ("0.0.0.0", "http://127.0.0.1:8765", True),
+        ("0.0.0.0", None, True),
+        ("::", "http://[::1]:8765", True),
+        ("::", None, True),
+        ("0:0:0:0:0:0:0:1", "http://[::1]:8765", True),
+        ("::1", "http://[0:0:0:0:0:0:0:1]:8765", True),
+    ],
 )
 def test_a_dev_launch_prints_a_link_only_when_its_page_reaches_this_daemon(
-    tmp_path, monkeypatch, capsys, caplog, fresh_launch, proxy, pairs
+    tmp_path, monkeypatch, capsys, caplog, fresh_launch, host, proxy, pairs
 ):
-    monkeypatch.setenv("STUDIO_API_URL", proxy)
+    if proxy is None:
+        monkeypatch.delenv("STUDIO_API_URL", raising=False)
+    else:
+        monkeypatch.setenv("STUDIO_API_URL", proxy)
     with caplog.at_level(logging.WARNING):
-        assert _dev_launch(tmp_path, monkeypatch, "http://127.0.0.1:3000") == 0
+        assert _dev_launch(tmp_path, monkeypatch, "http://127.0.0.1:3000", host=host) == 0
 
     assert ("#pair=" in capsys.readouterr().out) is pairs
     assert bool(fresh_launch._codes) is pairs

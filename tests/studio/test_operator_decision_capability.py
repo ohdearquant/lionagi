@@ -163,6 +163,7 @@ def test_a_later_serving_start_keeps_only_the_page_origins_its_carried_codes_nam
         ("HTTP://127.0.0.1:80/", "http://127.0.0.1"),
         ("https://Studio.Example:443/app/", "https://studio.example"),
         ("http://[::1]:3000/", "http://[::1]:3000"),
+        ("http://[0:0:0:0:0:0:0:1]:3000/", "http://[::1]:3000"),
         ("http://127.0.0.1:3000", "http://127.0.0.1:3000"),
     ],
 )
@@ -179,6 +180,32 @@ def test_a_named_origin_that_is_not_an_http_url_is_kept_as_written(fresh):
 
     assert fresh.is_launch_origin("null")
     assert fresh.redeem_pairing_grant(code, origin="null") is not None
+
+
+@pytest.mark.parametrize(
+    ("named", "elsewhere"),
+    [
+        ("http://127.0.0.1:3000@evil.example", "http://evil.example"),
+        ("http://localhost:abc", "http://localhost"),
+    ],
+)
+def test_a_named_address_with_credentials_or_a_bad_port_is_kept_as_written(fresh, named, elsewhere):
+    code = fresh.mint_pairing_code(origins=[named], for_launch=True)
+
+    assert fresh.is_launch_origin(named)
+    assert not fresh.is_launch_origin(elsewhere)
+    assert fresh.redeem_pairing_grant(code, origin=elsewhere) is None
+
+
+def test_a_code_bound_to_the_admitted_origins_keeps_them_as_configured(fresh, monkeypatch):
+    import lionagi.studio.config as config
+
+    configured = "https://Studio.Example:443/"
+    monkeypatch.setattr(config, "CORS_ORIGINS", [configured])
+    code = fresh.mint_pairing_code()
+
+    assert fresh.redeem_pairing_grant(code, origin="https://studio.example") is None
+    assert fresh.redeem_pairing_grant(code, origin=configured) is not None
 
 
 # Capabilities

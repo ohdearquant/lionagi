@@ -102,9 +102,11 @@ a pairing code; the first three are local development ports.
 `li studio --dev` is the one exception. It prints a one-time pairing link for
 the page address Vite reports, and the daemon it starts also lets a page on that
 origin redeem the code, whether or not the origin is in the default list. It
-refuses to start when a daemon already answers on its port, and it prints no
-link when `STUDIO_API_URL` sends the page's API calls to another daemon, since
-only the daemon it starts can redeem the code.
+refuses to start when a daemon already answers on the host and port it binds,
+and it prints no link when `STUDIO_API_URL` sends the page's API calls anywhere
+but the daemon it starts, since only that daemon can redeem the code. A target
+with a path does not count, and neither does `localhost` for a daemon bound to
+`127.0.0.1` or `::1`, because it can resolve to the other address family.
 
 Set `LIONAGI_STUDIO_AUTH_TOKEN` in the daemon's environment before starting it
 to require `Authorization: Bearer <token>` for API requests and the

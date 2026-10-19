@@ -259,12 +259,14 @@ class _PairingRefusedError(Exception):
     """A daemon answers on the port but did not issue a pairing code."""
 
 
-def _daemon_health(port: int, challenge: str | None = None) -> dict[str, Any] | None:
-    """What a lionagi daemon on loopback ``port`` answers at ``/health``, or None."""
+def _daemon_health(
+    port: int, challenge: str | None = None, *, host: str = "127.0.0.1"
+) -> dict[str, Any] | None:
+    """What a lionagi daemon on ``host`` and ``port`` answers at ``/health``, or None."""
     import urllib.parse
     import urllib.request
 
-    url = f"http://127.0.0.1:{port}/health"
+    url = f"http://{_url_authority(host)}:{port}/health"
     if challenge is not None:
         url += "?" + urllib.parse.urlencode({"challenge": challenge})
     try:
@@ -654,10 +656,10 @@ def _start_local(
         # Vite proxies /api → uvicorn (configured in vite.config.mts).
         # The page pairs with the daemon this process serves; no other daemon
         # knows the code minted here.
-        if _daemon_health(port) is not None:
+        if _daemon_health(port, host=host) is not None:
             log_error(
-                f"A Studio daemon is already running at http://127.0.0.1:{port}; --dev "
-                f"serves its own. Stop that daemon or choose another --port."
+                f"A Studio daemon is already running at http://{_url_authority(host)}:{port}; "
+                f"--dev serves its own. Stop that daemon or choose another --port."
             )
             return 1
         api_url = _studio_api_url(host, port)
@@ -672,10 +674,8 @@ def _start_local(
         if launched:
             frontend_proc, frontend_url = launched
             if frontend_url:
-                from lionagi.studio.launch_access import _canonical_origin
-
                 print(f"Lion Studio UI (dev):  {frontend_url}")
-                if _canonical_origin(proxied_to) == _canonical_origin(api_url):
+                if _proxy_reaches_daemon(proxied_to, host, port):
                     print(f"  {_dev_pairing_line(frontend_url)}")
                 else:
                     warn(
@@ -1002,6 +1002,35 @@ def _studio_api_url(api_host: str, api_port: int) -> str:
     """The address the dev server's /api proxy reaches this launch's daemon at."""
     url_host = f"[{api_host}]" if ":" in api_host and not api_host.startswith("[") else api_host
     return f"http://{url_host}:{api_port}"
+
+
+def _proxy_reaches_daemon(target: str, host: str, port: int) -> bool:
+    """Whether a dev proxy aimed at *target* reaches the daemon bound to *host* and *port*.
+
+    Both sides are read as the address a client connects to, so an unspecified
+    bind address matches the loopback address of its family and an IPv6 address
+    matches however it is spelled. A name is compared as written: ``localhost``
+    can resolve to either family, so it is not taken to reach a daemon bound to
+    one of them. A target with a path, query or fragment sends the page's API
+    calls under that path, where this daemon serves nothing.
+    """
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(target)
+        target_port = parts.port
+    except ValueError:
+        return False
+    if (
+        parts.scheme != "http"
+        or not parts.hostname
+        or "@" in parts.netloc
+        or parts.path not in ("", "/")
+        or parts.query
+        or parts.fragment
+    ):
+        return False
+    return (_url_authority(parts.hostname), target_port or 80) == (_url_authority(host), port)
 
 
 def _launch_vite_dev(
