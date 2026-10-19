@@ -5,11 +5,10 @@ import asyncio
 import logging
 from contextvars import ContextVar
 
-import anyio
 import sniffio
 from pydantic import PrivateAttr
 
-from lionagi.ln.concurrency import get_cancelled_exc_class, move_on_after
+from lionagi.ln.concurrency import CancelScope, get_cancelled_exc_class, move_on_after
 from lionagi.protocols.types import DataLogger, Event, EventStatus
 from lionagi.service.hooks import HookEvent, HookEventTypes
 
@@ -222,7 +221,7 @@ class HookedEvent(Event):
             await self._invoke_post_stream_hook_isolated(h_ev)
             return
 
-        with anyio.CancelScope(shield=True):
+        with CancelScope(shield=True):
             with move_on_after(POST_STREAM_TEARDOWN_GRACE) as scope:
                 await self._invoke_post_stream_hook_isolated(h_ev)
             if scope.cancelled_caught:
@@ -287,7 +286,7 @@ class HookedEvent(Event):
             return
 
         child.cancel()
-        with anyio.CancelScope(shield=True):
+        with CancelScope(shield=True):
             try:
                 with move_on_after(POST_STREAM_HOOK_STOP_GRACE):
                     await asyncio.shield(child)

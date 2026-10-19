@@ -672,8 +672,8 @@ async def _linked_engine_session(
     """
     if not engine_session_uid:
         return None
-    import anyio
 
+    from lionagi.ln.concurrency import sleep
     from lionagi.state.claude_mirror import session_db_id
 
     db_id = session_db_id(engine_session_uid)
@@ -681,7 +681,7 @@ async def _linked_engine_session(
     if linked is not None:
         return linked
     for _ in range(retries):
-        await anyio.sleep(retry_interval)
+        await sleep(retry_interval)
         linked = await db.get_session(db_id)
         if linked is not None:
             return linked

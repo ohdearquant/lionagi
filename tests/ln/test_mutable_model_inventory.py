@@ -239,7 +239,7 @@ _ALLOWLIST: dict[str, str] = {
     # An attribute assignment whose owner is an item of a list, not a name or a
     # dotted attribute; the scan refuses that owner shape, and here it writes an
     # edge's label on an already-built edge:
-    "lionagi.operations.flow:1545:21": "an edge label on a list item, not a class attribute",
+    "lionagi.operations.flow:1546:21": "an edge label on a list item, not a class attribute",
     # A class built at runtime by a factory from a parameter; it is outside what the
     # scan proves, and it declares no hash authority:
     "lionagi.protocols.graph.node_factory:144:11": "a node class built by a factory",
@@ -258,11 +258,11 @@ _ALLOWLIST: dict[str, str] = {
     "lionagi.studio.operator.types:48:5": "a config whose alias generator is a callable",
     # An attribute assignment whose owner is not a plain name; here each increments a
     # counter field on an object held in a dict slot:
-    "lionagi.studio.scheduler.signals:219:17": "a counter field on a dict-held object",
-    "lionagi.service.accounts._router:588:13": (
+    "lionagi.studio.scheduler.signals:218:17": "a counter field on a dict-held object",
+    "lionagi.service.accounts._router:589:13": (
         "a counter on a held character popped from a list, not a class attribute"
     ),
-    "lionagi.studio.scheduler.signals:224:17": "a counter field on a dict-held object",
+    "lionagi.studio.scheduler.signals:221:17": "a counter field on a dict-held object",
 }
 
 

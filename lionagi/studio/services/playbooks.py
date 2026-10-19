@@ -5,7 +5,6 @@ from functools import partial
 from pathlib import Path
 from typing import Annotated, Any
 
-import anyio
 import yaml
 from fastapi import Body, HTTPException
 
@@ -21,6 +20,7 @@ from lionagi._flow_spec import (
 )
 from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
 from lionagi.ln import hash_file
+from lionagi.ln.concurrency import run_sync
 
 from ..registry import studio_route
 from ._path_safety import public_path, safe_path_join
@@ -334,13 +334,13 @@ def validate_playbook(name: str, data: dict[str, Any]) -> dict[str, Any]:
 
 @studio_route("/playbooks/", method="GET", area="playbooks", name="list_playbooks")
 async def list_playbooks_route() -> dict[str, Any]:
-    playbooks = await anyio.to_thread.run_sync(list_playbooks)
+    playbooks = await run_sync(list_playbooks)
     return {"playbooks": playbooks}
 
 
 @studio_route("/playbooks/{name}", method="GET", area="playbooks", name="get_playbook")
 async def get_playbook_route(name: str) -> dict[str, Any]:
-    pb = await anyio.to_thread.run_sync(partial(get_playbook, name))
+    pb = await run_sync(partial(get_playbook, name))
     if pb is None:
         raise HTTPException(status_code=404, detail=f"Playbook '{name}' not found")
     return pb
@@ -351,7 +351,7 @@ async def create_playbook_route(
     name: str, body: Annotated[dict[str, Any], Body(default_factory=dict)]
 ) -> dict[str, Any]:
     try:
-        created = await anyio.to_thread.run_sync(partial(create_playbook, name, body))
+        created = await run_sync(partial(create_playbook, name, body))
     except FileExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
@@ -364,7 +364,7 @@ async def update_playbook_route(
     name: str, body: Annotated[dict[str, Any], Body(...)]
 ) -> dict[str, Any]:
     try:
-        updated = await anyio.to_thread.run_sync(partial(update_playbook, name, body))
+        updated = await run_sync(partial(update_playbook, name, body))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if updated is None:
@@ -400,7 +400,7 @@ async def run_playbook(name: str) -> dict[str, Any]:
 
 @studio_route("/playbook-templates/", method="GET", area="playbooks", name="list_builtin_playbooks")
 async def list_builtin_playbooks_route() -> dict[str, Any]:
-    playbooks = await anyio.to_thread.run_sync(list_builtin_playbooks)
+    playbooks = await run_sync(list_builtin_playbooks)
     return {"playbooks": playbooks}
 
 
@@ -411,7 +411,7 @@ async def list_builtin_playbooks_route() -> dict[str, Any]:
     name="get_builtin_playbook",
 )
 async def get_builtin_playbook_route(name: str) -> dict[str, Any]:
-    pb = await anyio.to_thread.run_sync(partial(get_builtin_playbook, name))
+    pb = await run_sync(partial(get_builtin_playbook, name))
     if pb is None:
         raise HTTPException(status_code=404, detail=f"Built-in playbook '{name}' not found")
     return pb
@@ -425,7 +425,7 @@ async def get_builtin_playbook_route(name: str) -> dict[str, Any]:
 )
 async def install_builtin_playbook_route(name: str) -> dict[str, Any]:
     try:
-        result = await anyio.to_thread.run_sync(partial(install_builtin_playbook, name))
+        result = await run_sync(partial(install_builtin_playbook, name))
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return result

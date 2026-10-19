@@ -11,14 +11,13 @@ the mint site and failure-propagation contract.
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from lionagi.ln.concurrency import ExceptionGroup, gather
+from lionagi.ln.concurrency import ExceptionGroup, gather, maybe_await
 from lionagi.session.signal import Signal
 
 __all__ = (
@@ -217,9 +216,7 @@ class SchedulerSignalBus:
             # delivered, just not acted-on.
             if run_id:
                 self._counters[run_id].received += 1
-            out = handler(signal)
-            if inspect.isawaitable(out):
-                out = await out
+            out = await maybe_await(handler(signal))
             if run_id and out:
                 self._counters[run_id].acted_on += 1
             return out

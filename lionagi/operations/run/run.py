@@ -15,7 +15,7 @@ import anyio
 from pydantic import JsonValue
 
 from lionagi.ln import acreate_path, json_dumps
-from lionagi.ln.concurrency import current_time
+from lionagi.ln.concurrency import current_time, fail_after, run_sync
 from lionagi.models.note import Note
 from lionagi.protocols.messages import (
     ActionRequest,
@@ -62,7 +62,7 @@ async def _write_branch_snapshot(branch: Branch, snapshot_dir: str | Path) -> No
         # A non-finite float would be written as `null`, which no reader can
         # tell apart from a genuine null once the snapshot is on disk.
         await f.write(json_dumps(branch.to_dict(), check_non_finite=True))
-    await anyio.to_thread.run_sync(partial(os.replace, str(tmp_fp), str(fp)))
+    await run_sync(partial(os.replace, str(tmp_fp), str(fp)))
 
 
 async def _append_chunk(buffer_path, chunk) -> None:
@@ -93,7 +93,7 @@ async def _stream_with_deadline(model, api_call, deadline: float | None):
                     remaining = deadline - current_time()
                     if remaining <= 0:
                         raise TimeoutError("run() stream timeout exceeded")
-                    with anyio.fail_after(remaining):
+                    with fail_after(remaining):
                         chunk = await stream_iter.__anext__()
                 else:
                     chunk = await stream_iter.__anext__()
@@ -205,7 +205,7 @@ async def _stream_with_liveness(
                     if remaining_to_deadline is None
                     else max(0.0, min(liveness_timeout, remaining_to_deadline))
                 )
-                with anyio.fail_after(wait_for):
+                with fail_after(wait_for):
                     first_chunk = await stream_iter.__anext__()
         except StopAsyncIteration:
             # Zero chunks is a legitimate empty completion, not a hang.
@@ -282,7 +282,7 @@ async def _stream_with_liveness(
                             else max(0.0, min(idle_timeout, remaining_to_deadline))
                         )
                         try:
-                            with anyio.fail_after(wait_for):
+                            with fail_after(wait_for):
                                 chunk = await stream_iter.__anext__()
                         except StopAsyncIteration:
                             break
