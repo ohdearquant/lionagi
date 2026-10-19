@@ -147,22 +147,38 @@ function readStoredConversation(): string | null {
 
 // Everything that decides what the panel shows (the first list read, a selection, a new
 // conversation, a fork, a conversation created from the composer) takes a claim numbered in the
-// order it started. A claim takes the panel only if no later claim has taken it, so among the
-// choices that succeed the operator's latest is the one shown. A claim that fails takes nothing
-// and leaves the panel to the claim that holds it. A selection or a new conversation takes the
-// panel when it starts; a fork, a create and the first list read take it when they resolve.
+// order it started. A claim takes the panel only if no later choice has, so among the choices
+// that succeed the operator's latest is the one shown. A claim that fails takes nothing and
+// leaves the panel to the claim that holds it. A selection or a new conversation takes the panel
+// when it starts; a fork, a create and the first list read take it when they resolve, and the
+// first list read only when it opens something.
+//
+// Choosing the conversation already shown is the operator's latest choice too, but it changes
+// nothing on screen, so it keeps() rather than takes: it blocks every earlier claim and leaves
+// the claim that shows the conversation holding it, so that claim's reload still completes.
 class PanelClaims {
   private started = 0;
   private holder = 0;
+  // No claim below the floor may take the panel; it is the latest choice that took or kept it.
+  private floor = 0;
 
   next(): number {
     return ++this.started;
   }
 
+  canTake(claim: number): boolean {
+    return claim === this.holder || claim >= this.floor;
+  }
+
   take(claim: number): boolean {
-    if (claim < this.holder) return false;
+    if (!this.canTake(claim)) return false;
     this.holder = claim;
+    this.floor = Math.max(this.floor, claim);
     return true;
+  }
+
+  keep(): void {
+    this.floor = this.next();
   }
 
   holds(claim: number): boolean {
@@ -771,10 +787,14 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const [modelCatalog, setModelCatalog] = useState<OperatorModelCatalogEntry[]>([]);
   const [model, setModel] = useState<string>("");
   const [effort, setEffort] = useState<OperatorEffort | "">("");
-  // Sends in flight, by the conversation each was sent from ("" for a draft that has no
-  // conversation yet), so a send in flight locks only its own conversation's composer.
+  // Each new conversation the operator starts is a new draft, so a create still in flight from
+  // an abandoned draft does not lock the composer of the next one.
+  const [draft, setDraft] = useState(0);
+  // Sends in flight, by the view each was sent from: a conversation's id, or `draft:<n>` for a
+  // draft that has no conversation yet. A send in flight locks only its own view's composer.
   const [sendingFrom, setSendingFrom] = useState<ReadonlySet<string>>(() => new Set());
-  const sending = sendingFrom.has(state.conversation?.id ?? "");
+  const view = state.conversation?.id ?? `draft:${draft}`;
+  const sending = sendingFrom.has(view);
   const [streamEpoch, setStreamEpoch] = useState(0);
   const [stopping, setStopping] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -822,6 +842,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const conversationRowReadsRef = useRef<Map<string, number>>(new Map());
   const claimsRef = useRef(new PanelClaims());
   const selectedConversationIdRef = useRef<string | null>(null);
+  // The conversation the panel shows, ready; null while one loads or failed to load. Set after
+  // each render, so it is read only for a settlement that arrives after the panel changed.
+  const shownConversationIdRef = useRef<string | null>(null);
   const metadataRefreshRef = useRef<{
     conversationId: string;
     sequence: number;
@@ -843,6 +866,8 @@ export default function OperatorPanel({ open, onClose }: Props) {
       listFilter,
     };
     selectedConversationIdRef.current = state.conversation?.id ?? null;
+    shownConversationIdRef.current =
+      state.loadState === "ready" ? (state.conversation?.id ?? null) : null;
   }, [conversations, state.conversation, state.loadState, listFilter]);
 
   useLayoutEffect(
@@ -1140,8 +1165,12 @@ export default function OperatorPanel({ open, onClose }: Props) {
         }
         // A later choice that already took the panel (a selection, a new conversation, a
         // resolved fork or create) keeps it: this list may have been read before that choice.
-        // A fork still in flight does not block it; the fork takes the panel if it resolves.
-        if (!claimsRef.current.take(initial)) return;
+        // A fork or create still in flight does not block it; it takes the panel if it resolves.
+        // With nothing to open the list takes no claim, so a send started from the draft still
+        // reports its outcome; it forgets the stored conversation only if no later choice has
+        // been made, since that choice may already have stored its own.
+        const claims = claimsRef.current;
+        if (!claims.canTake(initial)) return;
         if (selected) {
           void loadConversation(selected.id, initial);
         } else if (stored) {
@@ -1375,10 +1404,14 @@ export default function OperatorPanel({ open, onClose }: Props) {
     const trimmed = instruction.trim();
     if (!trimmed || sending || state.activeRequestId || state.loadState === "loading") return;
     const claims = claimsRef.current;
-    let from = state.conversation?.id ?? "";
+    let from = view;
     setSendingFrom((current) => new Set(current).add(from));
     setActionError(null);
+    // The claim that shows the view the send started from. The outcome belongs on screen while
+    // that claim still holds the panel (a re-selection of the same conversation keeps it), or
+    // when the operator has since come back to the conversation it was sent to.
     let owner = claims.current;
+    const settlesHere = () => claims.holds(owner) || shownConversationIdRef.current === from;
     try {
       let conversation = state.conversation;
       if (!conversation) {
@@ -1433,9 +1466,10 @@ export default function OperatorPanel({ open, onClose }: Props) {
         ...(effectiveEffort ? { effort: effectiveEffort } : {}),
         ...(clearing ? { clearSelection: true } : {}),
       });
-      if (!claims.holds(owner)) {
-        // The turn went to the conversation it was sent to; the operator has since opened
-        // another, which must not wait on that turn. The composer is cleared only if it still
+      if (!settlesHere()) {
+        // The turn went to the conversation it was sent to; the panel now shows another, or is
+        // loading one, and must not wait on that turn. A conversation that finishes loading
+        // later reads the turn from its own record. The composer is cleared only if it still
         // holds the text that was sent, not anything typed for the conversation now open.
         setInstruction((current) => (current === instruction ? "" : current));
         return;
@@ -1445,19 +1479,19 @@ export default function OperatorPanel({ open, onClose }: Props) {
       setInstruction("");
       nearBottomRef.current = true;
     } catch (error) {
-      // Once the operator has opened something else, this send's error and the reload it asks
-      // for belong to a conversation the panel no longer shows.
-      if (!claims.holds(owner)) return;
+      // A send's error and the reload it asks for belong to the view it was sent from; once the
+      // panel shows something else they are not shown.
+      if (!settlesHere()) return;
       setActionError(error instanceof Error ? error.message : t("errors.send"));
       if (
         error instanceof ApiError &&
         error.status === 409 &&
         error.code === "stale_context" &&
-        state.conversation
+        !from.startsWith("draft:")
       ) {
-        // A reload of the conversation already shown, under the claim that shows it, so it
-        // does not outrank a fork the operator started after sending.
-        await loadConversation(state.conversation.id, owner);
+        // A reload of the conversation shown, under the claim that shows it, so it does not
+        // outrank a fork the operator started after sending.
+        await loadConversation(from, claims.current);
       }
     } finally {
       const done = from;
@@ -1480,6 +1514,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
     state.lastSequence,
     state.loadState,
     t,
+    view,
     loadConversation,
     refreshConversationMetadata,
   ]);
@@ -1549,6 +1584,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
       const claims = claimsRef.current;
       claims.take(claim ?? claims.next());
       ++conversationRevisionRef.current;
+      setDraft((current) => current + 1);
       window.localStorage.removeItem(STORAGE_KEY);
       metadataViewRef.current = {
         ...metadataViewRef.current,
@@ -1576,11 +1612,11 @@ export default function OperatorPanel({ open, onClose }: Props) {
         resetConversation();
         return;
       }
-      if (conversationId === state.conversation?.id) {
+      if (conversationId === state.conversation?.id && state.loadState !== "error") {
         // Choosing the open conversation again is still the operator's latest choice: a fork
-        // started before it no longer takes the panel.
-        const claims = claimsRef.current;
-        claims.take(claims.next());
+        // started before it no longer takes the panel. The panel already shows it, or is
+        // reloading it, so it is kept as it is. One that failed to load is loaded again below.
+        claimsRef.current.keep();
         return;
       }
       dispatch({ type: "RESET" });
@@ -1590,7 +1626,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
       nearBottomRef.current = true;
       void loadConversation(conversationId);
     },
-    [loadConversation, resetConversation, state.conversation?.id],
+    [loadConversation, resetConversation, state.conversation?.id, state.loadState],
   );
 
   const refreshConversations = useCallback(

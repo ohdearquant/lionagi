@@ -2257,6 +2257,231 @@ describe("OperatorPanel", () => {
         expect(textarea.disabled).toBe(false);
       });
 
+      function stopButton() {
+        return [...container.querySelectorAll("button")].find(
+          (button) => button.textContent === "Stop",
+        );
+      }
+
+      function accepted(conversationId: string) {
+        return { conversationId, requestId: "request-1", acceptedSequence: 1 };
+      }
+
+      it("finishes a stale-context reload when the operator chooses the open conversation again", async () => {
+        const { conversation } = await mountLocalConversation();
+        let refuse!: (error: Error) => void;
+        api.submitOperatorTurn.mockReturnValueOnce(
+          new Promise((_resolve, reject) => {
+            refuse = reject;
+          }),
+        );
+        const reload = deferred<{ conversation: OperatorConversation; frames: [] }>();
+        await typeAndSend("check the scheduler");
+        api.getOperatorConversation.mockReturnValueOnce(reload.promise);
+        await act(async () =>
+          refuse(new api.ApiError(409, "context moved on", { code: "stale_context" })),
+        );
+        expect(container.querySelector('[aria-label="Loading conversation"]')).not.toBeNull();
+        await act(async () => titleButton("Scheduler check").click());
+        await act(async () => reload.resolve({ conversation, frames: [] }));
+
+        expect(container.querySelector('[aria-label="Loading conversation"]')).toBeNull();
+        expect(selectedLabel()).toBe("Conversations: Scheduler check");
+        await typeDraft("try again");
+        expect(sendButton()?.disabled).toBe(false);
+      });
+
+      it("loads the open conversation again when its reload failed and the operator chooses it", async () => {
+        await mountLocalConversation();
+        let refuse!: (error: Error) => void;
+        api.submitOperatorTurn.mockReturnValueOnce(
+          new Promise((_resolve, reject) => {
+            refuse = reject;
+          }),
+        );
+        await typeAndSend("check the scheduler");
+        api.getOperatorConversation.mockRejectedValueOnce(new Error("reload failed"));
+        await act(async () =>
+          refuse(new api.ApiError(409, "context moved on", { code: "stale_context" })),
+        );
+        expect(container.textContent).toContain("reload failed");
+        api.getOperatorConversation.mockClear();
+        await act(async () => titleButton("Scheduler check").click());
+
+        expect(api.getOperatorConversation).toHaveBeenCalledWith("conversation-1");
+        expect(container.textContent).not.toContain("reload failed");
+        expect(selectedLabel()).toBe("Conversations: Scheduler check");
+      });
+
+      it("reports a send's acceptance after a fork and a re-selection of the open conversation", async () => {
+        await mountLocalConversation();
+        const turn = deferred<ReturnType<typeof accepted>>();
+        api.submitOperatorTurn.mockReturnValueOnce(turn.promise);
+        const fork = deferred<{ conversation: OperatorConversation; frames: [] }>();
+        api.forkOperatorConversation.mockReturnValueOnce(fork.promise);
+        await typeAndSend("check the scheduler");
+        await act(async () => rowAction("Other conversation", "Fork").click());
+        await act(async () => titleButton("Scheduler check").click());
+        await act(async () => turn.resolve(accepted("conversation-1")));
+
+        expect(stopButton()).toBeDefined();
+        await act(async () => fork.resolve(forked("Other conversation")));
+        expect(selectedLabel()).toBe("Conversations: Scheduler check");
+      });
+
+      it("reports a send's error after a fork and a re-selection of the open conversation", async () => {
+        await mountLocalConversation();
+        const turn = deferred<ReturnType<typeof accepted>>();
+        api.submitOperatorTurn.mockReturnValueOnce(turn.promise);
+        const fork = deferred<{ conversation: OperatorConversation; frames: [] }>();
+        api.forkOperatorConversation.mockReturnValueOnce(fork.promise);
+        await typeAndSend("check the scheduler");
+        await act(async () => rowAction("Other conversation", "Fork").click());
+        await act(async () => titleButton("Scheduler check").click());
+        await act(async () => turn.reject(new Error("send failed")));
+
+        expect(container.textContent).toContain("send failed");
+      });
+
+      it("reloads on a stale-context refusal that arrives after a re-selection of the open conversation", async () => {
+        await mountLocalConversation();
+        let refuse!: (error: Error) => void;
+        api.submitOperatorTurn.mockReturnValueOnce(
+          new Promise((_resolve, reject) => {
+            refuse = reject;
+          }),
+        );
+        const fork = deferred<{ conversation: OperatorConversation; frames: [] }>();
+        api.forkOperatorConversation.mockReturnValueOnce(fork.promise);
+        await typeAndSend("check the scheduler");
+        await act(async () => rowAction("Other conversation", "Fork").click());
+        await act(async () => titleButton("Scheduler check").click());
+        api.getOperatorConversation.mockClear();
+        await act(async () =>
+          refuse(new api.ApiError(409, "context moved on", { code: "stale_context" })),
+        );
+
+        expect(api.getOperatorConversation).toHaveBeenCalledWith("conversation-1");
+        expect(container.querySelector('[aria-label="Loading conversation"]')).toBeNull();
+        await act(async () => fork.resolve(forked("Other conversation")));
+        expect(selectedLabel()).toBe("Conversations: Scheduler check");
+      });
+
+      it("reports a send's acceptance when the operator comes back to the conversation it was sent to", async () => {
+        await mountLocalConversation();
+        const turn = deferred<ReturnType<typeof accepted>>();
+        api.submitOperatorTurn.mockReturnValueOnce(turn.promise);
+        await typeAndSend("check the scheduler");
+        await act(async () => titleButton("Other conversation").click());
+        expect(selectedLabel()).toBe("Conversations: Other conversation");
+        await openList();
+        await act(async () => titleButton("Scheduler check").click());
+        expect(selectedLabel()).toBe("Conversations: Scheduler check");
+        await act(async () => turn.resolve(accepted("conversation-1")));
+
+        expect(stopButton()).toBeDefined();
+      });
+
+      it("does not lock a new draft's composer on a create abandoned from the previous draft", async () => {
+        await mountLocalConversation();
+        await startNewConversation();
+        const creation = deferred<OperatorConversation>();
+        api.createOperatorConversation.mockReturnValueOnce(creation.promise);
+        api.submitOperatorTurn.mockClear();
+        await typeAndSend("check the scheduler");
+        expect(sendButton()?.textContent).toBe("Sending…");
+        // With no conversation selected the list toggle reads "Start a new conversation" too, so
+        // the reset is the button inside the opened list.
+        await openList();
+        await act(async () => {
+          const reset = [...container.querySelectorAll("button")].find(
+            (candidate) =>
+              candidate.textContent === "Start a new conversation" &&
+              !candidate.getAttribute("aria-label")?.startsWith("Conversations"),
+          ) as HTMLButtonElement;
+          reset.click();
+        });
+
+        const textarea = await typeDraft("a different request");
+        expect(textarea.disabled).toBe(false);
+        expect(sendButton()?.textContent).not.toBe("Sending…");
+        expect(sendButton()?.disabled).toBe(false);
+        await act(async () => creation.resolve(created));
+        expect(api.submitOperatorTurn).not.toHaveBeenCalled();
+      });
+
+      it("shows a create failure when the first list read finds nothing", async () => {
+        const initialList = deferred<OperatorConversation[]>();
+        api.listOperatorConversations.mockReturnValueOnce(initialList.promise);
+        await mount();
+        const creation = deferred<OperatorConversation>();
+        api.createOperatorConversation.mockReturnValueOnce(creation.promise);
+        await typeAndSend("check the scheduler");
+        await act(async () => initialList.resolve([]));
+        await act(async () => creation.reject(new Error("create failed")));
+
+        expect(container.textContent).toContain("create failed");
+      });
+
+      it("keeps a later selection's stored conversation when the first list read finds nothing", async () => {
+        const conversation: OperatorConversation = {
+          id: "conversation-1",
+          title: "Scheduler check",
+          status: "active",
+          pinned: false,
+          activeRequestId: null,
+        };
+        const other: OperatorConversation = {
+          id: "conversation-2",
+          title: "Other conversation",
+          status: "active",
+          pinned: false,
+          activeRequestId: null,
+        };
+        const initialList = deferred<OperatorConversation[]>();
+        api.listOperatorConversations
+          .mockReturnValueOnce(initialList.promise)
+          .mockResolvedValue([conversation, other]);
+        const rows = new Map([conversation, other].map((row) => [row.id, row]));
+        api.getOperatorConversation.mockImplementation(async (id: string) => ({
+          conversation: rows.get(id),
+          frames: [],
+        }));
+        window.localStorage.setItem("studio:operator-conversation", "conversation-1");
+        await mount();
+        await openList();
+        await selectFilter("Active");
+        await act(async () => titleButton("Other conversation").click());
+        expect(window.localStorage.getItem("studio:operator-conversation")).toBe("conversation-2");
+        const selectedRead = deferred<{ conversation: OperatorConversation; frames: [] }>();
+        api.getOperatorConversation.mockReturnValueOnce(selectedRead.promise);
+        await openList();
+        await act(async () => titleButton("Scheduler check").click());
+        await act(async () => initialList.resolve([]));
+
+        expect(window.localStorage.getItem("studio:operator-conversation")).toBe("conversation-2");
+        await act(async () => selectedRead.resolve({ conversation, frames: [] }));
+        expect(window.localStorage.getItem("studio:operator-conversation")).toBe("conversation-1");
+      });
+
+      it("lets a fork started before a failing create take the panel", async () => {
+        await mountLocalConversation();
+        await startNewConversation();
+        const fork = deferred<{ conversation: OperatorConversation; frames: [] }>();
+        api.forkOperatorConversation.mockReturnValueOnce(fork.promise);
+        await openList();
+        await act(async () => rowAction("Other conversation", "Fork").click());
+        const creation = deferred<OperatorConversation>();
+        api.createOperatorConversation.mockReturnValueOnce(creation.promise);
+        api.submitOperatorTurn.mockClear();
+        await typeAndSend("check the scheduler");
+        await act(async () => creation.reject(new Error("create failed")));
+        await act(async () => fork.resolve(forked("Other conversation")));
+
+        expect(api.submitOperatorTurn).not.toHaveBeenCalled();
+        expect(selectedLabel()).toBe("Conversations: Other conversation (fork)");
+      });
+
       it("keeps an earlier fork when a later fork fails before it resolves", async () => {
         await mountLocalConversation();
         const first = deferred<{ conversation: OperatorConversation; frames: [] }>();
