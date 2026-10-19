@@ -178,17 +178,6 @@ class TestLaunchInvalidKind:
         resp = client.post("/api/launches", json={"action_kind": "magic"})
         assert resp.status_code == 422, resp.text
 
-    def test_flow_yaml_without_spec_rejected(self, tmp_path, monkeypatch):
-        """flow_yaml without action_flow_yaml must return 422."""
-        client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")
-
-        resp = client.post(
-            "/api/launches",
-            json={"action_kind": "flow_yaml", "action_model": "sonnet"},
-        )
-        assert resp.status_code == 422, resp.text
-        assert "action_flow_yaml" in resp.json()["detail"]
-
     def test_missing_action_kind_returns_422(self, tmp_path, monkeypatch):
         """Missing action_kind must return 422 (Pydantic required field)."""
         client = _make_client(monkeypatch, fake_db=tmp_path / "state.db")

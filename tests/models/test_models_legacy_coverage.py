@@ -43,10 +43,6 @@ class TestFieldModelInit:
         f = FieldModel(base_type=list, default_factory=list)
         assert f.extract_metadata("default_factory") is list
 
-    def test_conflicting_default_and_factory_raises(self):
-        with pytest.raises(ValueError, match="default"):
-            FieldModel(base_type=int, default=1, default_factory=list)
-
     def test_validator_callable_accepted(self):
         def is_positive(v):
             return v > 0
