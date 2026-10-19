@@ -38,6 +38,23 @@ async def _seed_session(
         )
 
 
+@pytest.fixture
+def now(monkeypatch) -> float:
+    """One instant for the seeded rows and the route's own clock read.
+
+    The route cuts its buckets from the time it reads when it answers, so a run
+    that crosses an hour (or, for the 7d window, a day) between seeding and the
+    request would count a row seeded now in the previous bucket.
+    """
+    import types
+
+    import lionagi.studio.services.stats as stats_mod
+
+    pinned = time.time()
+    monkeypatch.setattr(stats_mod, "time", types.SimpleNamespace(time=lambda: pinned))
+    return pinned
+
+
 def _make_client(monkeypatch, db_path: Path) -> TestClient:
     import lionagi.state.db as state_db_mod
 
@@ -66,9 +83,8 @@ def test_empty_db_returns_dense_zero_buckets(tmp_path, monkeypatch):
         assert b["running"] == 0
 
 
-def test_mixed_statuses_land_in_right_buckets_with_right_counts(tmp_path, monkeypatch):
+def test_mixed_statuses_land_in_right_buckets_with_right_counts(tmp_path, monkeypatch, now):
     db_path = tmp_path / "state.db"
-    now = time.time()
 
     async def seed():
         # Anchor timestamps in "now" hour bucket -> completed x2, failed x1
@@ -102,9 +118,8 @@ def test_mixed_statuses_land_in_right_buckets_with_right_counts(tmp_path, monkey
     assert older_bucket["cancelled"] == 1
 
 
-def test_window_7d_returns_seven_daily_buckets(tmp_path, monkeypatch):
+def test_window_7d_returns_seven_daily_buckets(tmp_path, monkeypatch, now):
     db_path = tmp_path / "state.db"
-    now = time.time()
 
     async def seed():
         await _seed_session(db_path, status="completed", ended_at=now)
@@ -134,10 +149,9 @@ def test_invalid_window_returns_422(tmp_path, monkeypatch):
 
 
 def test_running_sessions_counted_in_total_and_running_not_completion_denominator(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, now
 ):
     db_path = tmp_path / "state.db"
-    now = time.time()
 
     async def seed():
         await _seed_session(db_path, status="completed", ended_at=now)
@@ -157,9 +171,8 @@ def test_running_sessions_counted_in_total_and_running_not_completion_denominato
     assert data["buckets"][-1]["running"] == 1
 
 
-def test_status_aliases_fold_into_rendered_buckets(tmp_path, monkeypatch):
+def test_status_aliases_fold_into_rendered_buckets(tmp_path, monkeypatch, now):
     db_path = tmp_path / "state.db"
-    now = time.time()
 
     async def seed():
         await _seed_session(db_path, status="completed_empty", ended_at=now)
@@ -184,9 +197,8 @@ def test_status_aliases_fold_into_rendered_buckets(tmp_path, monkeypatch):
     assert data["completion_rate"] == pytest.approx(0.0)
 
 
-def test_null_and_unknown_statuses_count_in_total_only(tmp_path, monkeypatch):
+def test_null_and_unknown_statuses_count_in_total_only(tmp_path, monkeypatch, now):
     db_path = tmp_path / "state.db"
-    now = time.time()
 
     async def seed():
         await _seed_session(db_path, status="completed", ended_at=now)
@@ -225,12 +237,9 @@ def test_null_and_unknown_statuses_count_in_total_only(tmp_path, monkeypatch):
     assert data["completion_rate"] == pytest.approx(1.0)
 
 
-def test_oldest_bucket_boundary_is_included(tmp_path, monkeypatch):
+def test_oldest_bucket_boundary_is_included(tmp_path, monkeypatch, now):
     db_path = tmp_path / "state.db"
-    # Avoid seeding right before an hour rollover shifts the window mid-test.
-    if time.time() % 3600 > 3590:
-        time.sleep(12)
-    oldest_start = (int(time.time()) // 3600) * 3600 - 23 * 3600
+    oldest_start = (int(now) // 3600) * 3600 - 23 * 3600
 
     async def seed():
         await _seed_session(db_path, status="failed", ended_at=float(oldest_start))
@@ -249,6 +258,10 @@ def test_oldest_bucket_boundary_is_included(tmp_path, monkeypatch):
 
 def test_running_session_with_only_created_at_anchors_to_creation(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
+    # The store stamps created_at from the wall clock, so the route's clock
+    # cannot be pinned to it; keep clear of an hour rollover instead.
+    if time.time() % 3600 > 3570:
+        time.sleep(3600 - time.time() % 3600 + 1)
 
     async def seed():
         await _seed_session(db_path, status="running")
