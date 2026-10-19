@@ -1380,6 +1380,21 @@ def test_agent_submit_advertises_and_checks_the_idle_timeout(submitted):
     assert "--idle-timeout=90" in submitted["flags"]
 
 
+def test_agent_submit_takes_only_the_two_workload_classes(submitted):
+    schema = call(help="agent.submit")["schema"]
+    assert schema["properties"]["workload"]["enum"] == ["light", "heavy"]
+
+    answer = call(ops=[spawn_op("agent.submit", {"model": "m/p", "prompt": "x", "workload": "x"})])
+    assert answer["ops"][0]["ok"] is False
+    assert submitted == {}
+
+    accepted = call(
+        ops=[spawn_op("agent.submit", {"query": ["m/p"], "prompt": "x", "workload": "light"})]
+    )
+    assert accepted["ops"][0]["ok"] is True, accepted
+    assert "--workload=light" in submitted["flags"]
+
+
 # ── one copy of a schema per response ───────────────────────────────────────
 
 

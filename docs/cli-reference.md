@@ -121,6 +121,7 @@ li agent [model] prompt [flags]
 | `--context-budget N` | `8000` | Total token budget (~4 chars/token) for `--context-from` content, shared across all refs. |
 | `--idle-timeout SECONDS` | `LIONAGI_WORKER_IDLE_TIMEOUT` (`600`) | Stop the run as stalled (`WorkerLivenessError`) when the worker emits nothing for this long after it has started answering. `1` to `2**53 - 1`; `0` is refused. A profile's `idle_timeout` sets it for a role, and the flag wins over the profile. Raise it for a model that thinks long between outputs. It watches a CLI worker's streamed output; an API-model leg's turn is bounded by `--timeout` instead. |
 | `--resume-on-timeout` | false | Resume a timed-out agent session once with a bounded continuation |
+| `--workload light\|heavy` | profile's `workload`, else `heavy` | How the leg counts against the machine-wide agent caps and how a CLI worker is confined; see [Agent caps and workload](#agent-caps-and-workload). |
 
 `-r` and `-c` are mutually exclusive. `--context-from` is rejected together with `-r` / `-c` (resume already carries the source context). Common flags apply.
 
@@ -150,6 +151,42 @@ li agent status                         # latest agent-kind session in this proj
 li agent status SESSION_OR_INVOCATION   # full ID or unique prefix
 li agent status SESSION_OR_INVOCATION --json
 ```
+
+### Agent caps and workload
+
+Every CLI worker (`codex`, `claude_code`, `gemini-cli`, `pi`) takes a slot before its process
+starts, from `li agent`, `li o fanout`, `li o flow` or the Python API alike. Slots are lock files
+under `$LIONAGI_HOME/leases/subagents/<pool>/`, so every lionagi process sharing one
+`LIONAGI_HOME` counts against the same caps. With no cap set nothing is counted. ADR-0133
+records the design.
+
+| Variable | Caps | Default |
+|----------|------|---------|
+| `LIONAGI_MAX_SUBAGENTS` | every CLI worker | unset (no cap) |
+| `LIONAGI_MAX_SUBAGENTS_HEAVY` | workers whose workload is `heavy` | unset (no cap) |
+| `LIONAGI_MAX_SUBAGENTS_<ENGINE>` | one engine's workers: `CODEX`, `CLAUDE`, `GEMINI`, `PI` | unset (no cap) |
+| `LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS` | how long a worker waits for a slot | `600`; `0` refuses at once |
+
+`0`, empty or unset means no cap. A value that is not a whole number refuses the worker rather
+than letting it start uncounted. A worker that waits out the whole window is refused with one
+line naming the pool, its cap and the pids holding it, and `li agent` exits `75` (`EX_TEMPFAIL`):
+the same command succeeds once a slot frees. The refusal is recorded on the run as
+`SubagentAdmissionRefusedError`, a retryable provider error.
+
+The slot belongs to the lionagi process that started the worker and is released when the
+worker's process group has ended, or when that process exits however it exits. A slot whose
+recorded worker is still running counts as held even if the process that took it is gone.
+
+`--workload` (or a profile's `workload`) sets the class:
+
+| Workload | Counts against | Worker confinement |
+|----------|----------------|--------------------|
+| `heavy` (default) | the total cap, the heavy cap and its engine cap | as configured (`--yolo`, `--bypass`, profile settings) |
+| `light` | the total cap and its engine cap | codex: `--sandbox workspace-write` with no extra writable roots and no network, and settings that would lift the sandbox are refused; gemini: `--sandbox`; claude: runs without `Edit`, `Write` and `NotebookEdit` (Bash stays, and Claude Code has no filesystem sandbox, so this is a tool-list boundary only); pi: refused, it has no sandbox lionagi can pin |
+
+`li monitor` prints the held slots per pool under its table, for example
+`subagents: all 3/30, heavy 1/6, codex 2/4`, using the caps in its own environment, and
+`li monitor --machine` carries the same data under `subagents`.
 
 ---
 
@@ -1098,6 +1135,7 @@ All frontmatter fields are optional; matching CLI flags override them at invocat
 | `account_connectors` | Codex only. List of the account's app connectors the role is for. Naming any leaves both features as the account and config set them, even when contained. Never written into run records or branch snapshots |
 | `timeout` | Default hard timeout in seconds |
 | `idle_timeout` | Seconds of silence from an answering worker before the run counts as stalled; defaults to `LIONAGI_WORKER_IDLE_TIMEOUT` (`600`). `--idle-timeout` overrides it |
+| `workload` | `light` or `heavy` (default). Sets how the role's CLI workers count against the agent caps and how they are confined; see [Agent caps and workload](#agent-caps-and-workload). Any other value reads as `heavy` with a warning. `--workload` overrides it, and orchestration workers take their own profile's value |
 | `resume_on_timeout` | Set to `once` for one bounded automatic continuation |
 | `lion_system` | Prepend `LION_SYSTEM_MESSAGE` to the body (default: `true`) |
 | `artifact_defaults` | Expected-artifact defaults; see [ADR-0064](adr/ADR-0064-cli-execution-outcome-and-completion-record.md) |
@@ -1146,6 +1184,8 @@ li agent -c "continue most recent"
 | `LIONAGI_HOME` | Override `~/.lionagi/` base dir | `lionagi/utils.py` |
 | `LIONAGI_WORKER_LIVENESS_TIMEOUT` | Seconds `run()` waits for a CLI worker's first stream chunk before retrying once, then raising `WorkerLivenessError`; default `120`, `0` disables. Applied by default only to endpoints that stream output early (`claude_code`, `codex`) — buffered endpoints (`gemini-cli`, `pi`) are unaffected unless `liveness_timeout` is passed explicitly to `run()` | `lionagi/operations/run/run.py` |
 | `LIONAGI_WORKER_IDLE_TIMEOUT` | Maximum silence between chunks from an early-streaming CLI worker; resets per chunk, defaults to `600`, and `0` disables. A miss after partial output raises `WorkerLivenessError` (`worker.stream_idle`) without retry. Buffered endpoints are unaffected unless `idle_timeout` is passed explicitly to `run()` | `lionagi/operations/run/run.py` |
+| `LIONAGI_MAX_SUBAGENTS`, `LIONAGI_MAX_SUBAGENTS_HEAVY`, `LIONAGI_MAX_SUBAGENTS_<ENGINE>` | Machine-wide caps on CLI workers; unset or `0` means no cap. See [Agent caps and workload](#agent-caps-and-workload) | `lionagi/providers/_subagent_admission.py` |
+| `LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS` | How long a CLI worker waits for a slot before it is refused; default `600`, `0` refuses at once | `lionagi/providers/_subagent_admission.py` |
 | `OPENAI_API_KEY` | OpenAI REST API key (for `iModel`, not for `codex` CLI alias) | `lionagi/config.py` |
 | `ANTHROPIC_API_KEY` | Anthropic REST API key (for `iModel`; `claude` alias uses `claude login` instead) | `lionagi/config.py` |
 | `GEMINI_API_KEY` | Gemini API key (`gemini` provider, not `gemini-code` CLI auth) | `lionagi/config.py` |

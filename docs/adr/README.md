@@ -153,6 +153,8 @@ its area block.
 - 0031-0032 — unused (intentional gaps)
 - [ADR-0126](ADR-0126-provider-credential-routing-and-monthly-account-budgets.md) — Provider
   credential routing and monthly account budgets (sequential number; see Numbering)
+- [ADR-0133](ADR-0133-machine-wide-admission-for-cli-agents.md) — Machine-wide admission for
+  CLI agents (sequential number; see Numbering)
 
 ### orchestration (0033-0040)
 

@@ -109,6 +109,29 @@ class WorkerLivenessError(ProviderError):
         self.reason: str = reason
 
 
+class SubagentAdmissionRefusedError(ProviderError):
+    """No machine-wide slot for a CLI agent: a pool stayed at its cap, or admission could
+    not be read. Raised before the child exists, so nothing ran.
+
+    Retryable: the same request admits once a slot frees or the cap is raised.
+    """
+
+    retryable: ClassVar[bool] = True
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        pool: str = "",
+        cap: int = 0,
+        holders: tuple[int | None, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.pool: str = pool
+        self.cap: int = cap
+        self.holders: tuple[int | None, ...] = holders
+
+
 # --- Emission error (separate axis — not a provider subprocess failure) ---
 
 

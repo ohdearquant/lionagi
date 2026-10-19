@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from lionagi._errors import CLIInputRefusedError
 from lionagi.libs.path_safety import check_paths_safe
 from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
 from lionagi.ln.concurrency import current_time
@@ -34,6 +35,7 @@ from lionagi.providers._cli_subprocess import (
     make_cli_flag as _cli,
 )
 from lionagi.providers._provider_errors import classify_provider_error
+from lionagi.providers._subagent_admission import DEFAULT_WORKLOAD, SubagentWorkload
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.types.cli_session import CLISession
@@ -180,6 +182,14 @@ class PiCodeRequest(BaseModel):
     verbose_output: bool = Field(default=False, exclude=True)
     cli_display_theme: Literal["light", "dark"] = Field(default="light", exclude=True)
     cli_include_summary: bool = Field(default=False, exclude=True)
+    workload: SubagentWorkload = Field(
+        default=DEFAULT_WORKLOAD,
+        exclude=True,
+        description=(
+            "Only 'heavy' (the default): Pi has no sandbox lionagi can pin, so a 'light' "
+            "request is refused before the process starts."
+        ),
+    )
 
     # ── validators ────────────────────────────────────────────────
 
@@ -295,11 +305,18 @@ PiSession = CLISession
 async def _ndjson_from_cli(request: PiCodeRequest):
     if PI_CLI is None:
         raise RuntimeError("Pi CLI not found. Install with: npm i -g @mariozechner/pi-coding-agent")
+    if request.workload != "heavy":
+        raise CLIInputRefusedError(
+            f"workload {request.workload!r} needs a sandbox, and Pi has none lionagi can "
+            "pin; declare the agent's workload 'heavy'"
+        )
     env = {**os.environ, **request.env()} if request.env() else None
     cmd = [PI_CLI, *request.as_cmd_args()]
     # Old Pi subprocess did not set stdin; pass _INHERIT_STDIN to preserve that.
     async with contextlib.aclosing(
-        ndjson_from_cli(cmd, cwd=request.repo, env=env, stdin=_INHERIT_STDIN)
+        ndjson_from_cli(
+            cmd, cwd=request.repo, env=env, stdin=_INHERIT_STDIN, engine="pi", workload="heavy"
+        )
     ) as stream:
         async for obj in stream:
             yield obj

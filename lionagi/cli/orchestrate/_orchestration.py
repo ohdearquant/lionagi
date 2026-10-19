@@ -31,6 +31,7 @@ from lionagi.agent.factory import register_profile_injection
 from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
+from lionagi.providers._subagent_admission import DEFAULT_WORKLOAD
 from lionagi.state import provenance as _provenance
 
 from .. import team as _team_module
@@ -842,6 +843,7 @@ async def setup_orchestration(
         contain_account_integrations=bool(
             getattr(orc_profile, "contain_account_integrations", False)
         ),
+        workload=getattr(orc_profile, "workload", None) or DEFAULT_WORKLOAD,
     )
     _orc_provider = orc_imodel.endpoint.config.provider
     _hand_mcp_servers(orc_imodel, run_mcp_servers, label="orchestrator")
@@ -1129,6 +1131,11 @@ async def build_worker_branch(
         ),
         contain_account_integrations=bool(
             not env.bare and getattr(w_profile, "contain_account_integrations", False)
+        ),
+        workload=(
+            getattr(w_profile, "workload", None) or DEFAULT_WORKLOAD
+            if not env.bare
+            else DEFAULT_WORKLOAD
         ),
     )
     worker_mcp_servers = getattr(env, "mcp_servers", None)

@@ -509,6 +509,62 @@ structure to walk, and it refuses (`TypeError`, not `ValueError` — pydantic
 quotes a `ValueError` verbatim into the validation error) when the raw
 input is immutable and can't be substituted in place.
 
+## CLI agent admission
+
+**`providers/_subagent_admission.py`** (design: ADR-0133)
+
+`ndjson_from_cli()` takes a lease from `admit_subagent()` before it starts the
+child, so the cap covers every CLI worker whatever started it. A lease is one
+slot in each capped pool the worker counts against (its engine, `heavy` for a
+heavy worker, and `all`), taken narrowest first so every process takes pools in
+one order. A slot is `$LIONAGI_HOME/leases/subagents/<pool>/<index>.lock`, held
+with `flock(LOCK_EX | LOCK_NB)` on a descriptor opened `O_CLOEXEC`: the lock
+belongs to the lionagi process, never to the child, so a grandchild that
+daemonizes cannot keep it, and the kernel drops it when that process exits by any
+path. The record written into the slot names the holder pid, engine, workload and
+start, and after a successful spawn the child's pid and create time.
+
+Four rules keep the count honest across processes that do not share memory:
+
+- A free lock whose recorded child is still the recorded process (pid plus start
+  time, through `lionagi.ln._proc`) counts as held. The holder can die while its
+  child, which leads its own session, keeps running; an unreadable process table
+  counts as running, so a slot is never handed out on a probe that could not look.
+- After taking a slot the taker counts every held slot in the pool at every
+  index, and gives its slot back if the count reaches its cap. Caps are read from
+  each process's own environment, so a process with a larger cap may hold an
+  index above a smaller cap.
+- A held slot with no record is a lock taken an instant ago, by an admission
+  between its lock and its write or by a status read counting the pool. It is
+  retried at once, up to 25 times, whatever the wait, rather than read as a full
+  pool; otherwise `li monitor` polling could refuse an admission at wait 0.
+- A cap or wait that does not parse, or a pool directory that cannot be created
+  or written, refuses with `SubagentAdmissionRefusedError` rather than letting
+  the worker start uncounted.
+
+A full pool is re-tried every two seconds, jittered by ±25% so two processes
+that collide on the last slot do not retry in step, until
+`LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS` runs out. The refusal is one line naming
+the pool, its cap, the variable that set it and the holder pids.
+
+The lease is released when the spawn fails, when the `on_spawn` observer fails,
+and in the generator's final `finally` after `end_child_group()`, so the slot
+frees only once the worker's group has been ended. A cancelled spawn releases
+its slot when the cancellation unwinds, while the abandoned-spawn callback ends
+a child that arrives later; that child can outlive its slot by the moment the
+creation call takes to return.
+
+`iModel.stream()` re-raises every stream failure as a `ValueError` whose
+`__cause__` is the provider's error. `li agent` walks that chain: a refusal
+anywhere in it prints the refusal itself and exits `75`, and the MCP terminal
+cause records the provider error's class rather than `unknown`, the same walk the
+run row's reason takes in `cli/_runs.py`.
+
+`subagent_admission_status()` is read-only on the records: it locks and
+unlocks each free slot to tell it from a held one and writes nothing. `li
+monitor` shows it as one line under its table and under `subagents` in machine
+mode.
+
 ## Declared secret lookup
 
 **`providers/_secret_resolution.py`**

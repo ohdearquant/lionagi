@@ -43,6 +43,16 @@ else:
 for _name in [name for name in os.environ if name.upper() == "LIONAGI_STATE_DB_URL"]:
     del os.environ[_name]
 
+# A machine-wide agent cap exported by the calling shell would make every test that spawns a
+# CLI child wait for, or be refused, a slot held by work outside the suite. Tests that exercise
+# admission set their own caps.
+for _name in [
+    name
+    for name in os.environ
+    if name.startswith("LIONAGI_MAX_SUBAGENTS") or name == "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS"
+]:
+    del os.environ[_name]
+
 # The provider layer reads $CODEX_HOME (global codex config and config
 # profiles). Tests must never see the developer's real ~/.codex OR an
 # externally exported CODEX_HOME: a machine-local model_reasoning_effort would

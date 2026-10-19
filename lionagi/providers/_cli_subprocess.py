@@ -34,6 +34,7 @@ from lionagi.ln._proc import (
 from lionagi.ln.concurrency.utils import maybe_await
 
 from ._secret_resolution import fill_declared_secrets_and_names
+from ._subagent_admission import DEFAULT_WORKLOAD, admit_subagent
 
 log = logging.getLogger(__name__)
 
@@ -812,6 +813,8 @@ async def ndjson_from_cli(
     stdin_data: str | bytes | None = None,
     tail_repair: Callable[[str], dict | None] | None = None,
     on_spawn: Callable[[SpawnedProcess], None | Awaitable[None]] | None = None,
+    engine: str | None = None,
+    workload: str = DEFAULT_WORKLOAD,
 ) -> AsyncIterator[dict]:
     """Yield dicts from an NDJSON-emitting CLI subprocess; tail_repair handles
     malformed final chunks. ``stdin_data`` overrides ``stdin`` and is written
@@ -819,7 +822,9 @@ async def ndjson_from_cli(
     child sees EOF. ``on_spawn`` is awaited (may be a coroutine function)
     before any output is read, and its failure is not swallowed — it
     propagates through the teardown below, which ends the child's group.
-    See docs/internals/providers.md#cli-subprocess-lifecycle.
+    Before the spawn the agent takes a machine-wide slot for ``engine`` and
+    ``workload`` (see ``_subagent_admission``), held until the child's group
+    has ended. See docs/internals/providers.md#cli-subprocess-lifecycle.
     """
     # A request copied with model_copy(update=...) skips validation, and the spawn's own
     # encode error would hold the whole key or value, so the environment is read and
@@ -879,12 +884,17 @@ async def ndjson_from_cli(
             raise
         return child, observed
 
+    # Taken last before the spawn, so a refused agent has started nothing, and given
+    # back only once the child's group has ended (the finally at the bottom).
+    lease = await admit_subagent(engine=engine, workload=workload)
     spawn = asyncio.ensure_future(_spawn_and_observe())
     try:
         proc, spawned = await asyncio.shield(spawn)
     except BaseException:
         spawn.add_done_callback(_kill_abandoned_spawn)
+        lease.release()
         raise
+    lease.record_child(spawned.pid, spawned.create_time)
 
     # Read the identity here, not at teardown: once the child is reaped its pid
     # and group id are both recyclable. The run observer receives the live
@@ -901,7 +911,10 @@ async def ndjson_from_cli(
         try:
             await maybe_await(observer(*args))
         except BaseException:
-            await end_child_group(proc, spawned=spawned)
+            try:
+                await end_child_group(proc, spawned=spawned)
+            finally:
+                lease.release()
             raise
 
     decoder = codecs.getincrementaldecoder("utf-8")()
@@ -1107,7 +1120,10 @@ async def ndjson_from_cli(
             sys.exc_info()[1] is not None and not produced_output and not stderr_already_surfaced
         )
 
-        await end_child_group(proc, spawned=spawned)
+        try:
+            await end_child_group(proc, spawned=spawned)
+        finally:
+            lease.release()
 
         if abandoned_silently:
             # Drain first, or the warning reports "said nothing" about a child

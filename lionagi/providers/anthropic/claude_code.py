@@ -40,6 +40,7 @@ from lionagi.providers._provider_errors import (
     ProviderError,
     classify_provider_error,
 )
+from lionagi.providers._subagent_admission import DEFAULT_WORKLOAD, SubagentWorkload
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.types.cli_session import CLISession
@@ -148,6 +149,10 @@ __all__ = ("ClaudeCodeRequest", "stream_claude_code_cli", "ClaudeCodeCLIEndpoint
 
 
 # --------------------------------------------------------------------------- request model
+#: The tools a ``light`` Claude Code agent runs without: every built-in that writes a file.
+LIGHT_DISALLOWED_TOOLS = ("Edit", "Write", "NotebookEdit")
+
+
 class ClaudeCodeRequest(BaseModel):
     """Configuration + prompt for a Claude Code CLI invocation."""
 
@@ -404,6 +409,16 @@ class ClaudeCodeRequest(BaseModel):
     verbose_output: bool = Field(default=False, exclude=True)
     cli_display_theme: Literal["light", "dark"] = Field(default="light", exclude=True)
     cli_include_summary: bool = Field(default=False, exclude=True)
+    workload: SubagentWorkload = Field(
+        default=DEFAULT_WORKLOAD,
+        exclude=True,
+        description=(
+            "'light' removes the Edit, Write and NotebookEdit tools and counts only against "
+            "the machine-wide agent cap; Bash stays, and Claude Code has no filesystem "
+            "sandbox, so this is a tool-list boundary only. 'heavy' (the default) keeps the "
+            "configured tools and also counts against the heavy cap."
+        ),
+    )
 
     # Legacy fields (kept for backward compat, unused in CLI args)
     mcp_tools: list[str] = Field(default_factory=list, exclude=True)
@@ -569,7 +584,14 @@ class ClaudeCodeRequest(BaseModel):
             self.output_format,
         ]
 
-        args.extend(self._build_declarative_args())
+        source = self
+        if self.workload == "light":
+            # Read once and rendered as one list: the declarative renderer emits the flag a
+            # single time, and a second --disallowedTools would depend on how the CLI merges.
+            denied = list(self.disallowed_tools or [])
+            denied += [t for t in LIGHT_DISALLOWED_TOOLS if t not in denied]
+            source = self.model_copy(update={"disallowed_tools": denied})
+        args.extend(source._build_declarative_args())
 
         # permission_mode → --dangerously-skip-permissions OR --permission-mode
         if self.permission_mode:
@@ -645,6 +667,8 @@ async def _ndjson_from_cli(request: ClaudeCodeRequest):
                 env=request.env,
                 tail_repair=_claude_tail_repair,
                 on_spawn=request.on_spawn,
+                engine="claude",
+                workload=request.workload,
             )
         ) as stream:
             async for obj in stream:

@@ -48,6 +48,7 @@ from lionagi.providers._cli_subprocess import (
     make_cli_flag as _cli,
 )
 from lionagi.providers._provider_errors import classify_provider_error
+from lionagi.providers._subagent_admission import DEFAULT_WORKLOAD, SubagentWorkload
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.types.cli_session import CLISession
@@ -691,6 +692,7 @@ class _PlainRequest:
     images: list[str]
     add_dir: list[str]
     env: dict[str, str] | None
+    workload: str
 
     def contains_account_integrations(self) -> bool:
         return self.contain_account_integrations and not self.account_connectors
@@ -804,7 +806,51 @@ def _plain_request(
         images=paths["images"],
         add_dir=paths["add_dir"],
         env=None if env is None else env_as_the_spawn_encodes_it(env),
+        workload=text("workload") or DEFAULT_WORKLOAD,
     )
+
+
+#: The ``-c`` keys a light agent's sandbox is pinned by; a caller override of any of
+#: them could widen what the agent may write or reach, so a light request refuses them.
+_LIGHT_PINNED_OVERRIDE_ROOTS = ("sandbox_mode", "sandbox_workspace_write")
+
+
+def _refuse_light_escape(plain: _PlainRequest) -> None:
+    """Refuse a ``light`` request whose settings would let it write outside its cwd.
+
+    A light agent runs in codex's ``workspace-write`` sandbox (or ``read-only``),
+    writable only in its own working directory and with no network. Each setting
+    that would undo that is refused rather than dropped, so a caller learns the agent
+    needs to be declared ``heavy`` instead of getting a sandbox it did not ask for.
+    Run at construction and again where the process would start.
+    """
+    if plain.workload != "light":
+        return
+    reasons = []
+    if plain.bypass_approvals:
+        reasons.append("bypass_approvals turns the sandbox off")
+    if plain.sandbox == "danger-full-access":
+        reasons.append("sandbox='danger-full-access' turns the sandbox off")
+    if plain.add_dir:
+        reasons.append("add_dir makes directories outside the working directory writable")
+    widening = sorted(
+        {
+            key
+            for key in plain.override_keys()
+            if any(
+                key == root or key.startswith(f"{root}.") for root in _LIGHT_PINNED_OVERRIDE_ROOTS
+            )
+        }
+    )
+    if widening:
+        reasons.append(f"config_overrides set {', '.join(widening)}, which the light sandbox pins")
+    if reasons:
+        # Not a ValueError, so a refusal at construction is not wrapped with the whole input.
+        raise CLIInputRefusedError(
+            "workload 'light' confines codex to its working directory with no network; "
+            + "; ".join(reasons)
+            + ". Declare the agent's workload 'heavy' instead."
+        )
 
 
 def _refuse_ambiguous_approval(plain: _PlainRequest) -> None:
@@ -1444,6 +1490,15 @@ class CodexCodeRequest(BaseModel):
     verbose_output: bool = Field(default=False, exclude=True)
     cli_display_theme: Literal["light", "dark"] = Field(default="light", exclude=True)
     cli_include_summary: bool = Field(default=False, exclude=True)
+    workload: SubagentWorkload = Field(
+        default=DEFAULT_WORKLOAD,
+        exclude=True,
+        description=(
+            "'light' runs codex sandboxed to its working directory with no network and "
+            "counts only against the machine-wide agent cap; 'heavy' (the default) keeps "
+            "the configured sandbox and also counts against the heavy cap."
+        ),
+    )
 
     # ── validators ────────────────────────────────────────────────
 
@@ -1631,7 +1686,9 @@ class CodexCodeRequest(BaseModel):
         # The refusal runs on the normalized snapshot, and again where the process would
         # start, so a request copied without validation cannot put both an
         # `ask_for_approval` policy and an `approval_policy` override on the line.
-        _refuse_ambiguous_approval(_plain_request(self))
+        plain = _plain_request(self)
+        _refuse_ambiguous_approval(plain)
+        _refuse_light_escape(plain)
         return self
 
     # ── workspace path ────────────────────────────────────────────
@@ -1668,17 +1725,33 @@ class CodexCodeRequest(BaseModel):
         if plain is None:
             plain = _plain_request(self, overrides)
         _refuse_ambiguous_approval(plain)
+        _refuse_light_escape(plain)
+        light = plain.workload == "light"
         args: list[str] = ["exec", "--json"]
         cwd = self.cwd()
 
         args.extend(self._build_declarative_args(plain))
 
-        for git_root in _linked_worktree_git_writable_roots(cwd):
+        # A light agent writes only its working directory, so a linked worktree's git
+        # directory is not made writable for it.
+        for git_root in () if light else _linked_worktree_git_writable_roots(cwd):
             if str(git_root) not in plain.add_dir:
                 args.extend(["--add-dir", str(git_root)])
 
         # Approval & sandbox: mutually exclusive hierarchy
-        if plain.bypass_approvals:
+        if light:
+            # The refusal above has ruled out every setting that turns the sandbox off.
+            if plain.ask_for_approval:
+                rendered = _rendered_override_value(plain.ask_for_approval, "ask_for_approval")
+                args.extend(["-c", f"approval_policy={rendered}"])
+            args.extend(
+                ["--sandbox", "read-only" if plain.sandbox == "read-only" else "workspace-write"]
+            )
+            # Pinned against the user's config, which may grant extra writable roots or
+            # the network to every workspace-write session.
+            args.extend(["-c", "sandbox_workspace_write.writable_roots=[]"])
+            args.extend(["-c", "sandbox_workspace_write.network_access=false"])
+        elif plain.bypass_approvals:
             args.append("--dangerously-bypass-approvals-and-sandbox")
         elif plain.full_auto:
             # Codex 0.147.0 removed `--full-auto`, turning the earlier deprecation
@@ -1884,6 +1957,7 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
     # way and the renderer another.
     plain = _plain_request(request)
     _refuse_ambiguous_approval(plain)
+    _refuse_light_escape(plain)
     _refuse_oversized_cli_inputs(
         plain.prompt,
         plain.system_prompt,
@@ -1903,6 +1977,8 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
             # stdin are the bytes those checks read.
             stdin_data=plain.prompt,
             on_spawn=request.on_spawn,
+            engine="codex",
+            workload=plain.workload,
         )
     ) as stream:
         async for obj in stream:

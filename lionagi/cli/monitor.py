@@ -1019,6 +1019,36 @@ async def _gather_table_rows(
 # ── Async main routines ───────────────────────────────────────────────────────
 
 
+def _subagent_status() -> dict[str, Any]:
+    from lionagi.providers._subagent_admission import subagent_admission_status
+
+    try:
+        return subagent_admission_status()
+    except OSError as exc:
+        return {"error": type(exc).__name__}
+
+
+def _format_subagent_line(status: dict[str, Any]) -> str | None:
+    """One line of held slots per pool, e.g. ``subagents: all 3/30, heavy 1/6``.
+
+    None when no pool is capped and none holds a slot, so a machine with no caps
+    shows the table it showed before admission existed.
+    """
+    if "error" in status:
+        return _red(f"subagents: slots unreadable ({status['error']})")
+    parts = []
+    for pool, entry in status.get("pools", {}).items():
+        cap = entry.get("cap")
+        if "error" in entry:
+            parts.append(_red(f"{pool} unreadable ({entry['error']})"))
+            continue
+        held = entry.get("held", 0)
+        if not cap and not held:
+            continue
+        parts.append(f"{pool} {held}/{cap}" if cap else f"{pool} {held}")
+    return f"subagents: {', '.join(parts)}" if parts else None
+
+
 async def _run_table(
     *,
     since: float | None,
@@ -1034,11 +1064,13 @@ async def _run_table(
             rows = await _gather_table_rows(
                 db, since=since, entity_type=entity_type, project=project
             )
-        return _format_table(rows)
+        table = _format_table(rows)
     except Exception as exc:  # noqa: BLE001
         # A catch-all around a store open, so the message can be one that names
         # the store. Masked here for the same reason the envelope sinks are.
         return _red(f"error reading state.db: {mask_credentials(str(exc))}")
+    line = _format_subagent_line(_subagent_status())
+    return f"{table}\n{line}" if line else table
 
 
 async def _run_detail(entity_id: str) -> str:
@@ -1976,12 +2008,14 @@ async def _machine_monitor_data(
             return {
                 "entities": why,
                 "filters": filters,
+                "subagents": _subagent_status(),
                 "observed_at": time.time(),
             }
         entities = await _gather_entities(db, since=since, entity_type=entity_type, project=project)
     return {
         "entities": _available([_machine_entity(kind, row) for kind, row in entities]),
         "filters": filters,
+        "subagents": _subagent_status(),
         "observed_at": time.time(),
     }
 

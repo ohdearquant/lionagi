@@ -15,6 +15,7 @@ from lionagi._paths import find_lionagi_dirs as _find_lionagi_dirs
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.libs.path_safety import validate_bare_name
 from lionagi.ln import coerce_created_at
+from lionagi.providers._subagent_admission import DEFAULT_WORKLOAD, WORKLOADS
 from lionagi.providers.openai._codex_profile import (
     resolve_codex_config_profile,
 )
@@ -92,6 +93,13 @@ def _add_codex_account_integration_kwargs(
         extra["contain_account_integrations"] = True
 
 
+def _add_workload_kwarg(extra: dict, provider: str, workload: str) -> None:
+    # Only a CLI provider spawns an agent process to count or sandbox; left out at the
+    # default, so a heavy leg's request is the one it was before workloads existed.
+    if workload != DEFAULT_WORKLOAD and provider in CLI_PROVIDERS:
+        extra["workload"] = workload
+
+
 def build_imodel_from_spec(
     spec: str,
     *,
@@ -103,6 +111,7 @@ def build_imodel_from_spec(
     fast: bool = False,
     account_connectors: tuple[str, ...] = (),
     contain_account_integrations: bool = False,
+    workload: str = DEFAULT_WORKLOAD,
 ) -> iModel:
     """Parse spec, build iModel. Effort in spec unless overridden."""
     ms = parse_model_spec(spec)
@@ -138,6 +147,7 @@ def build_imodel_from_spec(
         _add_codex_account_integration_kwargs(
             extra, account_connectors, contain_account_integrations
         )
+    _add_workload_kwarg(extra, provider_raw, workload)
     if verbose:
         extra["verbose_output"] = True
     if theme is not None:
@@ -186,6 +196,7 @@ def build_chat_model(
     mcp_exclusive: bool = False,
     account_connectors: tuple[str, ...] = (),
     contain_account_integrations: bool = False,
+    workload: str = DEFAULT_WORKLOAD,
 ) -> iModel | str:
     """Legacy: for agent.py compat.
 
@@ -232,6 +243,7 @@ def build_chat_model(
         _add_codex_account_integration_kwargs(
             extra, account_connectors, contain_account_integrations
         )
+    _add_workload_kwarg(extra, provider, workload)
     if verbose:
         extra["verbose_output"] = True
     if theme is not None:
@@ -488,6 +500,8 @@ class AgentProfile:
     """Account app connectors a codex leg of this role may reach; naming any lifts the containment."""
     idle_timeout: int | None = None
     """Default --idle-timeout (seconds) used when the CLI flag is not given."""
+    workload: str = DEFAULT_WORKLOAD
+    """'light' (sandboxed to its cwd, counted against the machine-wide cap only) or 'heavy'."""
 
 
 def _unreadable_symlink_target(path: Path) -> str | None:
@@ -647,6 +661,8 @@ def profile_config(profile: AgentProfile) -> dict[str, Any]:
         config["contain_account_integrations"] = True
     if profile.account_connectors:
         config["account_connectors"] = list(profile.account_connectors)
+    if profile.workload != DEFAULT_WORKLOAD:
+        config["workload"] = profile.workload
     return config
 
 
@@ -824,6 +840,22 @@ def _parse_profile_account_connectors(name: str, raw: Any) -> tuple[str, ...]:
     return ()
 
 
+def _parse_profile_workload(name: str, raw: Any) -> str:
+    """Validate the profile 'workload'; warn and read anything else as heavy, the class
+    that keeps the configured sandbox and counts against both caps."""
+    if raw is None:
+        return DEFAULT_WORKLOAD
+    if isinstance(raw, str) and raw in WORKLOADS:
+        return raw
+    from ._logging import warn
+
+    warn(
+        f"agent profile {name!r}: workload {raw!r} is not one of {', '.join(WORKLOADS)}; "
+        f"reading it as {DEFAULT_WORKLOAD}"
+    )
+    return DEFAULT_WORKLOAD
+
+
 def _parse_profile(name: str, text: str) -> AgentProfile:
     frontmatter, body = _parse_frontmatter(text)
 
@@ -861,6 +893,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
         idle_timeout=_parse_profile_timeout(
             name, frontmatter.get("idle_timeout"), field="idle_timeout"
         ),
+        workload=_parse_profile_workload(name, frontmatter.get("workload")),
         extra={
             k: v
             for k, v in frontmatter.items()
@@ -879,6 +912,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
                 "idle_timeout",
                 "contain_account_integrations",
                 "account_connectors",
+                "workload",
             )
         },
     )

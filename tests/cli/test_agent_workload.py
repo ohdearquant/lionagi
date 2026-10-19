@@ -1,0 +1,276 @@
+# Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
+# SPDX-License-Identifier: Apache-2.0
+
+"""A leg's workload class comes from ``--workload``, else its role's ``workload``, else
+heavy; it reaches the CLI provider on a new run, a resume and every orchestration
+worker; and a leg refused a slot exits 75 with the refusal on one line."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import patch
+
+import pytest
+
+from lionagi.cli._providers import (
+    _parse_profile,
+    build_chat_model,
+    build_imodel_from_spec,
+    profile_config,
+)
+from lionagi.cli.agent import _admission_refusal
+from lionagi.providers._subagent_admission import SubagentAdmissionRefusedError
+from tests.cli.orchestrate.test_worker_artifact_directive import _build_worker
+from tests.cli.test_agent_resume_model_override import _wire_agent_stubs
+
+_LIGHT_ROLE = "---\nmodel: codex/gpt-5.5\nworkload: light\n---\n\nRead.\n"
+_PLAIN_ROLE = "---\nmodel: codex/gpt-5.5\n---\n\nWork.\n"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (_LIGHT_ROLE, "light"),
+        ("---\nworkload: heavy\n---\n", "heavy"),
+        (_PLAIN_ROLE, "heavy"),
+    ],
+)
+def test_a_role_declares_its_workload(text, expected):
+    profile = _parse_profile("role", text)
+    assert profile.workload == expected
+    assert "workload" not in profile.extra
+
+
+@pytest.mark.parametrize("raw", ["lite", "LIGHT", "true", "[light]"])
+def test_a_workload_the_role_misspells_reads_as_heavy_with_a_warning(raw, caplog):
+    profile = _parse_profile("role", f"---\nworkload: {raw}\n---\n")
+    assert profile.workload == "heavy"
+    assert "reading it as heavy" in caplog.text
+
+
+def test_discovery_reports_a_light_role_and_leaves_a_heavy_one_unchanged():
+    assert profile_config(_parse_profile("r", _LIGHT_ROLE))["workload"] == "light"
+    assert "workload" not in profile_config(_parse_profile("r", _PLAIN_ROLE))
+
+
+def _kwargs(model) -> dict[str, Any]:
+    return dict(model.endpoint.config.kwargs)
+
+
+@pytest.mark.parametrize("provider", ["codex", "claude_code", "gemini-cli", "pi"])
+def test_a_light_cli_leg_hands_its_workload_to_the_provider(provider):
+    model = build_chat_model(provider, "m", False, False, None, workload="light")
+    assert _kwargs(model)["workload"] == "light"
+    spec_model = build_imodel_from_spec(f"{provider}/m", workload="light")
+    assert _kwargs(spec_model)["workload"] == "light"
+
+
+def test_a_heavy_leg_adds_nothing_to_the_request():
+    model = build_imodel_from_spec("codex/m")
+    assert "workload" not in _kwargs(model)
+    assert "workload" not in _kwargs(build_imodel_from_spec("codex/m", workload="heavy"))
+
+
+def test_an_api_model_takes_no_workload():
+    model = build_imodel_from_spec("openai/gpt-4.1-mini", workload="light")
+    assert "workload" not in _kwargs(model)
+
+
+_CAPTURED: dict[str, Any] = {}
+
+
+async def _fake_run_agent(model_str, prompt, **kwargs):
+    _CAPTURED.update(kwargs)
+    return "output", "provider", "branch-id", "completed", "sess-001"
+
+
+def _main(argv: list[str], run_agent=_fake_run_agent) -> int:
+    import lionagi.cli.agent as agent_mod
+    from lionagi.cli.main import main
+
+    _CAPTURED.clear()
+    with patch.object(agent_mod, "_run_agent", run_agent):
+        return main(argv)
+
+
+@pytest.mark.parametrize(("argv", "expected"), [([], None), (["--workload", "light"], "light")])
+def test_the_flag_reaches_the_run(argv, expected):
+    assert _main(["agent", "codex", *argv, "do it"]) == 0
+    assert _CAPTURED["workload"] == expected
+
+
+def test_the_flag_takes_only_the_two_classes(capsys):
+    with pytest.raises(SystemExit):
+        _main(["agent", "codex", "--workload", "medium", "do it"])
+    assert "--workload" in capsys.readouterr().err
+
+
+def test_a_leg_refused_a_slot_exits_75():
+    async def refused(model_str, prompt, **kwargs):
+        raise SubagentAdmissionRefusedError("subagent admission refused: pool 'all' at cap")
+
+    assert _main(["agent", "codex", "do it"], run_agent=refused) == 75
+
+
+def _use_role(monkeypatch, text: str) -> None:
+    import lionagi.cli.agent as agent_mod
+
+    profile = _parse_profile("role", text)
+    monkeypatch.setattr(agent_mod, "load_agent_profile", lambda name: profile)
+
+
+def _capture_chat_kwargs(monkeypatch) -> list[dict]:
+    from lionagi import Branch
+
+    captured: list[dict] = []
+
+    async def fake_operate(self, instruction=None, **kw):
+        captured.append(dict(self.chat_model.endpoint.config.kwargs))
+        return "ok"
+
+    monkeypatch.setattr(Branch, "operate", fake_operate)
+    return captured
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("role", "flag", "expected"),
+    [
+        (_LIGHT_ROLE, None, "light"),
+        (_LIGHT_ROLE, "heavy", None),
+        (_PLAIN_ROLE, "light", "light"),
+        (_PLAIN_ROLE, None, None),
+    ],
+)
+async def test_a_new_run_takes_the_flag_else_the_role(monkeypatch, tmp_path, role, flag, expected):
+    from lionagi.cli.agent import _run_agent
+
+    _wire_agent_stubs(monkeypatch, tmp_path)
+    _use_role(monkeypatch, role)
+    captured = _capture_chat_kwargs(monkeypatch)
+
+    await _run_agent("codex/gpt-5.5", "do the thing", agent_name="role", workload=flag)
+
+    assert captured[-1].get("workload") == expected
+
+
+def _stored_light_codex_branch(tmp_path: Path) -> tuple[str, Path]:
+    from lionagi import Branch, iModel
+
+    branch = Branch(chat_model=iModel(provider="codex", model="gpt-5.5"))
+    data = branch.to_dict()
+    data["chat_model"]["endpoint"]["config"]["kwargs"]["workload"] = "light"
+    path = tmp_path / f"{branch.id}.json"
+    path.write_text(json.dumps(data))
+    return str(branch.id), path
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("role", "expected"), [(_PLAIN_ROLE, None), (_LIGHT_ROLE, "light")])
+async def test_a_resume_runs_with_this_launchs_class_not_the_stored_one(
+    monkeypatch, tmp_path, role, expected
+):
+    import lionagi.cli.agent as agent_mod
+    from lionagi.cli.agent import _run_agent
+
+    branch_id, path = _stored_light_codex_branch(tmp_path)
+    monkeypatch.setattr(agent_mod, "find_branch", lambda bid: ("run-x", path))
+    _wire_agent_stubs(monkeypatch, tmp_path)
+    _use_role(monkeypatch, role)
+    captured = _capture_chat_kwargs(monkeypatch)
+
+    await _run_agent(None, "continue", resume=branch_id, agent_name="role")
+
+    assert captured[-1].get("workload") == expected
+
+
+@pytest.mark.parametrize(("bare", "expected"), [(False, "light"), (True, "heavy")])
+def test_a_worker_takes_its_roles_class_and_a_bare_worker_none(tmp_path, bare, expected):
+    profile = SimpleNamespace(
+        raw_body=True,
+        system_prompt="You are a reader.",
+        effort=None,
+        yolo=False,
+        fast_mode=False,
+        khive_injection=None,
+        workload="light",
+    )
+    _env, _imodel, built = _build_worker(
+        tmp_path, agent_id="reader", role="reader", bare=bare, profile=profile, provider="codex"
+    )
+    assert built["imodel_kwargs"]["workload"] == expected
+
+
+@pytest.mark.asyncio
+async def test_a_leg_at_the_cap_is_refused_through_the_real_provider_path(
+    monkeypatch, tmp_path, caplog
+):
+    """No stand-in for the turn: the refusal raised under the codex provider reaches
+    ``li agent`` as itself, and the codex binary is never started."""
+    from lionagi import Branch, _paths
+    from lionagi.cli.agent import _run_agent
+    from lionagi.providers import _subagent_admission as admission
+    from lionagi.providers._subagent_admission import admit_subagent
+    from lionagi.providers.openai import codex as codex_mod
+
+    real_operate = Branch.operate
+    _wire_agent_stubs(monkeypatch, tmp_path)
+    monkeypatch.setattr(Branch, "operate", real_operate)
+    marker = tmp_path / "codex-started"
+    fake = tmp_path / "codex"
+    fake.write_text(f"#!/bin/sh\ntouch {marker}\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", str(fake))
+    monkeypatch.setattr(codex_mod, "HAS_CODEX_CLI", True)
+    monkeypatch.setattr(_paths, "LIONAGI_HOME", tmp_path / "home")
+    monkeypatch.setattr(admission, "_POLL_SECONDS", 0.05)
+    monkeypatch.setenv("LIONAGI_MAX_SUBAGENTS", "1")
+    monkeypatch.setenv("LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS", "0")
+
+    held = await admit_subagent(engine="claude")
+    try:
+        with pytest.raises(Exception) as raised:
+            await _run_agent("codex/gpt-5.5", "do the thing")
+    finally:
+        held.release()
+    refusal = _admission_refusal(raised.value)
+    assert refusal is not None and "cap of 1" in str(refusal)
+    assert not marker.exists()
+    assert "SubagentAdmissionRefusedError: subagent admission refused" in caplog.text
+    assert "Failed to stream API call" not in caplog.text
+
+
+def test_a_wrapped_refusal_still_exits_75():
+    async def refused(model_str, prompt, **kwargs):
+        try:
+            raise SubagentAdmissionRefusedError("subagent admission refused: pool 'all' at cap")
+        except SubagentAdmissionRefusedError as exc:
+            raise ValueError(f"Failed to stream API call: {exc}") from exc
+
+    assert _main(["agent", "codex", "do it"], run_agent=refused) == 75
+
+
+def test_any_other_failure_keeps_its_exit():
+    async def failed(model_str, prompt, **kwargs):
+        raise ValueError("Failed to stream API call: something else")
+
+    with pytest.raises(ValueError):
+        _main(["agent", "codex", "do it"], run_agent=failed)
+
+
+def test_the_run_row_names_a_wrapped_refusal_as_a_retryable_provider_failure():
+    from lionagi.cli._runs import resolve_run_reason
+    from lionagi.state.reasons import RunReasons
+
+    try:
+        try:
+            raise SubagentAdmissionRefusedError("subagent admission refused: pool 'all' at cap")
+        except SubagentAdmissionRefusedError as exc:
+            raise ValueError(f"Failed to stream API call: {exc}") from exc
+    except ValueError as wrapped:
+        code, summary, _ = resolve_run_reason(status="failed", exception=wrapped)
+    assert code == RunReasons.FAILED_PROVIDER_RETRYABLE
+    assert summary.startswith("SubagentAdmissionRefusedError: subagent admission refused")

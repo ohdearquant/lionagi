@@ -600,12 +600,14 @@ def test_fields_can_ask_for_settings_a_profile_need_not_declare(roots):
     out would make the field's availability depend on which file happens to be
     read.
     """
-    write_profile(roots.proj, "builder", "---\nmodel: m\nidle_timeout: 300\n---\nbody\n")
+    write_profile(
+        roots.proj, "builder", "---\nmodel: m\nidle_timeout: 300\nworkload: light\n---\nbody\n"
+    )
     write_profile(roots.proj, "plain", "---\nmodel: m\n---\nbody\n")
 
-    result = op("profile.list", {"fields": ["resolved.idle_timeout"]})
+    result = op("profile.list", {"fields": ["resolved.idle_timeout", "resolved.workload"]})
 
     assert result["ok"] is True, result
     profiles = {p["name"]: p["resolved"] for p in result["result"]["profiles"]}
-    assert profiles["builder"] == {"idle_timeout": 300}
-    assert profiles["plain"] == {"idle_timeout": None}
+    assert profiles["builder"] == {"idle_timeout": 300, "workload": "light"}
+    assert profiles["plain"] == {"idle_timeout": None, "workload": None}

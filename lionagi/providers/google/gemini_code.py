@@ -33,6 +33,7 @@ from lionagi.providers._provider_errors import (
     ProviderTeardownError,
     classify_provider_error,
 )
+from lionagi.providers._subagent_admission import DEFAULT_WORKLOAD, SubagentWorkload
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.providers import _clamp_gemini_effort
@@ -446,6 +447,14 @@ class GeminiCodeRequest(BaseModel):
     verbose_output: bool = Field(default=False)
     cli_display_theme: Literal["light", "dark"] = Field(default="light")
     cli_include_summary: bool = Field(default=False)
+    workload: SubagentWorkload = Field(
+        default=DEFAULT_WORKLOAD,
+        exclude=True,
+        description=(
+            "'light' always runs agy with --sandbox and counts only against the "
+            "machine-wide agent cap; 'heavy' (the default) also counts against the heavy cap."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -492,7 +501,7 @@ class GeminiCodeRequest(BaseModel):
         ]
         for directory in self.include_directories:
             args += ["--add-dir", str(directory)]
-        if self.sandbox:
+        if self.sandbox or self.workload == "light":
             args.append("--sandbox")
         if self.yolo:
             args.append("--dangerously-skip-permissions")
@@ -522,7 +531,9 @@ async def _ndjson_from_cli(request: GeminiCodeRequest):
     cmd = [AGY_CLI, *request.as_cmd_args()]
     # agy resolves relative --add-dir entries against process cwd (no '-C' flag).
     # Default stdin DEVNULL — print mode reads nothing from stdin.
-    async with contextlib.aclosing(ndjson_from_cli(cmd, cwd=request.cwd())) as stream:
+    async with contextlib.aclosing(
+        ndjson_from_cli(cmd, cwd=request.cwd(), engine="gemini", workload=request.workload)
+    ) as stream:
         async for obj in stream:
             yield obj
 
