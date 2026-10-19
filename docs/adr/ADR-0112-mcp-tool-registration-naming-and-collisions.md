@@ -314,7 +314,7 @@ actual_tool_name = mcp_config.get("_original_tool_name", tool_name)
 - `_original_tool_name` is set on both construction paths today, unconditionally
   (`manager.py:361`, `:399`). It is currently a no-op because it is always equal to the
   registry key.
-- It has **two** readers, not one. The invoker above (`mcp_wrapper.py:1945`) is the
+- It has **two** readers, not one. The invoker above (`mcp_wrapper.py:1978`) is the
   routing reader. The second is `_validate_prebuilt_mcp_tool_admission`
   (`manager.py:115`), on the security path, with its own fallback to the config key.
   Its behavior under D1 is already correct — it prefers the wire name, which is what

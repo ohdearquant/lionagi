@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -17,7 +18,7 @@ from urllib.parse import urlparse
 
 from lionagi.ln._hash import compute_hash
 from lionagi.ln._proc import env_without_state_db_url
-from lionagi.ln.concurrency import Lock, move_on_after
+from lionagi.ln.concurrency import CancelScope, Lock, move_on_after
 
 # Suppress MCP server logging by default
 logging.getLogger("mcp").setLevel(logging.WARNING)
@@ -65,7 +66,7 @@ _MCP_TRANSPORT_PROBE_ATTR = "_lionagi_mcp_transport_probe"
 # up, so the handshake bound is deliberately wider than the Studio check's
 # 8-second probe. A server config's own ``timeout`` replaces this default.
 _MCP_HANDSHAKE_TIMEOUT_SECONDS = 30.0
-_MCP_HANDSHAKE_CLOSE_TIMEOUT_SECONDS = 1.0
+_MCP_HANDSHAKE_CLOSE_TIMEOUT_SECONDS = 5.0
 
 
 def _attach_mcp_transport_probe(exc: BaseException, client: Any) -> None:
@@ -1867,6 +1868,7 @@ class MCPConnectionPool:
                 "contains the actual import failure."
             ) from exc
 
+        transport = None
         if "url" in config:
             client = FastMCPClient(config["url"])
         elif "command" in config:
@@ -1901,18 +1903,49 @@ class MCPConnectionPool:
             raise ValueError("Config must have 'url' or 'command'")
 
         timeout = cls._handshake_timeout(config)
-        # The scope tells this bound apart from a TimeoutError the transport raises itself.
-        with move_on_after(timeout) as handshake:
-            await client.__aenter__()
-        if handshake.cancelled_caught:
-            with move_on_after(_MCP_HANDSHAKE_CLOSE_TIMEOUT_SECONDS):
+        # FastMCP owns asyncio tasks. Do not cancel its enter task before closing
+        # stdio: its cancellation cleanup can cut the SDK's process kill short.
+        entering = asyncio.create_task(client.__aenter__())
+        try:
+            with move_on_after(timeout) as handshake:
+                await asyncio.shield(entering)
+            if handshake.cancelled_caught:
+                raise TimeoutError(
+                    f"MCP server {cls._server_label(config)!r} did not complete its "
+                    f"handshake within {timeout:g}s"
+                )
+        except BaseException:
+            closing = asyncio.create_task(cls._close_failed_handshake(client, transport, entering))
+            cancelled = None
+            # Shield both AnyIO scope cancellation and repeated native Task.cancel().
+            # Propagate cancellation only after the bounded cleanup finishes.
+            with CancelScope(shield=True):
+                while not closing.done():
+                    try:
+                        await asyncio.shield(closing)
+                    except asyncio.CancelledError as exc:
+                        cancelled = exc
+                closing.result()
+            if cancelled is not None:
+                raise cancelled from None
+            raise
+        return client
+
+    @staticmethod
+    async def _close_failed_handshake(client: Any, transport: Any, entering: asyncio.Task) -> None:
+        with CancelScope(shield=True), move_on_after(_MCP_HANDSHAKE_CLOSE_TIMEOUT_SECONDS):
+            try:
+                if transport is not None:
+                    # The SDK gets 2s for EOF, then 2s after SIGTERM before SIGKILL;
+                    # the remaining second permits stream closure and process reap.
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await transport.close()
+            finally:
+                entering.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await entering
                 with contextlib.suppress(Exception):
                     await client.__aexit__(None, None, None)
-            raise TimeoutError(
-                f"MCP server {cls._server_label(config)!r} did not complete its "
-                f"handshake within {timeout:g}s"
-            )
-        return client
 
     @classmethod
     async def cleanup(cls):

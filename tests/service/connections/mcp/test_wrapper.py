@@ -3,6 +3,9 @@
 import asyncio
 import contextlib
 import json
+import os
+import signal
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 
@@ -367,6 +370,115 @@ class TestMCPConnectionPoolHandshakeBounds:
         MCPConnectionPool._clients = {}
         MCPConnectionPool._configs = {}
         MCPConnectionPool._creation_locks = {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX SIGTERM/SIGKILL contract")
+    @pytest.mark.parametrize("cancel", ["timeout", "native", "scope"])
+    async def test_unresponsive_stdio_child_is_killed_and_reaped(
+        self, tmp_path, monkeypatch, cancel
+    ):
+        """A real server ignores EOF and SIGTERM; even cancellation during teardown
+        must wait for the SDK's SIGKILL escalation and process reap."""
+        import mcp.client.stdio as stdio
+
+        from lionagi.ln.concurrency import CancelScope
+
+        ready = tmp_path / "ready"
+        terminated = tmp_path / "sigterm"
+        script = tmp_path / "unresponsive_server.py"
+        script.write_text(
+            "import signal, time\n"
+            "from pathlib import Path\n"
+            f"signal.signal(signal.SIGTERM, lambda *_: Path({str(terminated)!r}).touch())\n"
+            f"Path({str(ready)!r}).touch()\n"
+            "while True:\n"
+            "    time.sleep(1)\n"
+        )
+        processes = []
+        spawn = stdio._create_platform_compatible_process
+
+        async def capture_process(*args, **kwargs):
+            process = await spawn(*args, **kwargs)
+            processes.append(process)
+            return process
+
+        async def wait_for_file(path):
+            async with asyncio.timeout(5):
+                while not path.exists():
+                    await asyncio.sleep(0.01)
+
+        monkeypatch.setattr(stdio, "_create_platform_compatible_process", capture_process)
+        scope = CancelScope()
+
+        async def connect():
+            with scope:
+                return await MCPConnectionPool.get_client(
+                    {
+                        "command": sys.executable,
+                        "args": [str(script)],
+                        "timeout": 1 if cancel == "timeout" else 60,
+                    },
+                    security=MCPSecurityConfig(allow_commands=True),
+                )
+
+        connection = asyncio.create_task(connect())
+        try:
+            await wait_for_file(ready)
+            assert len(processes) == 1
+            if cancel == "native":
+                connection.cancel()
+                await wait_for_file(terminated)
+                connection.cancel()  # Cancel again between SIGTERM and SIGKILL.
+            if cancel == "scope":
+                scope.cancel()
+                await asyncio.wait_for(connection, timeout=10)
+                assert scope.cancelled_caught
+            else:
+                with pytest.raises(asyncio.CancelledError if cancel == "native" else TimeoutError):
+                    await asyncio.wait_for(connection, timeout=10)
+            assert terminated.exists(), "the SDK must attempt graceful termination first"
+            assert processes[0].returncode == -signal.SIGKILL
+            with pytest.raises(ProcessLookupError):
+                os.kill(processes[0].pid, 0)
+            assert MCPConnectionPool._clients == {}
+        finally:
+            # A failing regression must not itself leak the deliberately stubborn child.
+            for process in processes:
+                if process.returncode is None:
+                    with contextlib.suppress(ProcessLookupError):
+                        process.kill()
+                await asyncio.wait_for(process.wait(), timeout=2)
+            if not connection.done():
+                connection.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asyncio.wait_for(connection, timeout=10)
+
+    @pytest.mark.asyncio
+    async def test_unresponsive_close_is_bounded(self, monkeypatch):
+        close_started = asyncio.Event()
+
+        class StuckClient:
+            async def __aenter__(self):
+                await asyncio.Event().wait()
+
+            async def __aexit__(self, *_args):
+                close_started.set()
+                await asyncio.Event().wait()
+
+        monkeypatch.setattr(
+            "lionagi.service.connections.mcp_wrapper._MCP_HANDSHAKE_CLOSE_TIMEOUT_SECONDS", 0.02
+        )
+        with patch("fastmcp.Client", side_effect=lambda *_args: StuckClient()):
+            with pytest.raises(TimeoutError, match="handshake within 0.01s"):
+                await asyncio.wait_for(
+                    MCPConnectionPool.get_client(
+                        {"url": "https://stuck.example/mcp", "timeout": 0.01},
+                        security=MCPSecurityConfig(allow_urls=True),
+                    ),
+                    timeout=1,
+                )
+        assert close_started.is_set()
+        assert MCPConnectionPool._clients == {}
 
     @pytest.mark.asyncio
     async def test_stuck_handshake_times_out_and_leaves_nothing_pooled(self):
