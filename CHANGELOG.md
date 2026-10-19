@@ -43,7 +43,8 @@ behaviour, including accepting a write-capable submission without `cwd`.
   list, and forks preserve the source description independently. The store adds
   nullable `studio_operator_conversations.description`. Live conversation titles
   and descriptions refresh after the tool result, or after a turn ends without
-  one; overlapping rename, pin and archive responses preserve the refreshed state.
+  one. List refreshes retain conversations created while the read was pending
+  and respect local archives and the current list filter.
 - Studio sessions can set or clear an explicit display label through
   `PUT /api/sessions/{session_id}`. Labels take precedence in session list and
   detail names without changing activity timestamps; clearing a label restores

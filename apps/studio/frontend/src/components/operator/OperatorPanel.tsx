@@ -144,15 +144,6 @@ function readStoredConversation(): string | null {
   return value || null;
 }
 
-function mergeConversationRows(
-  current: OperatorConversation[],
-  available: OperatorConversation[],
-): OperatorConversation[] {
-  const rows = new Map(available.map((item) => [item.id, item]));
-  for (const item of current) rows.set(item.id, item);
-  return [...rows.values()];
-}
-
 function conversationLabel(conversation: OperatorConversation): string {
   const title = conversation.title?.trim();
   if (title) return title;
@@ -793,6 +784,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const previousRenamingIdRef = useRef<string | null>(null);
   const conversationListButtonRef = useRef<HTMLButtonElement>(null);
   const selectedConversationIdRef = useRef<string | null>(null);
+  const listFilterRef = useRef<"active" | "archived">("active");
+  const createdConversationIdsRef = useRef(new Set<string>());
+  const archiveResultsRef = useRef(new Map<string, OperatorConversation>());
   const metadataRefreshRef = useRef<{
     conversationId: string;
     sequence: number;
@@ -806,26 +800,55 @@ export default function OperatorPanel({ open, onClose }: Props) {
     [],
   );
 
+  const readConversationList = useCallback(async (status: "active" | "archived") => {
+    const createdBefore = new Set(createdConversationIdsRef.current);
+    const archivedBefore = new Map(archiveResultsRef.current);
+    const available = await listOperatorConversations({ status });
+    return {
+      available,
+      merge(current: OperatorConversation[]) {
+        if (listFilterRef.current !== status) return current;
+        // Only local creations newer than this read may be absent from its result.
+        const rows = new Map(
+          current
+            .filter(
+              (item) =>
+                createdConversationIdsRef.current.has(item.id) && !createdBefore.has(item.id),
+            )
+            .map((item) => [item.id, item]),
+        );
+        for (const item of available) rows.set(item.id, item);
+        // An archive completed during this read must not be undone by its snapshot.
+        for (const [id, updated] of archiveResultsRef.current) {
+          if (archivedBefore.get(id) !== updated && rows.has(id)) {
+            rows.set(id, { ...rows.get(id)!, status: updated.status });
+          }
+        }
+        return [...rows.values()].filter((item) => item.status === listFilterRef.current);
+      },
+    };
+  }, []);
+
   const refreshConversationMetadata = useCallback(
     async (conversationId: string) => {
       try {
-        const [snapshot, available] = await Promise.all([
+        const [snapshot, list] = await Promise.all([
           getOperatorConversation(conversationId),
-          listOperatorConversations({ status: listFilter }),
+          readConversationList(listFilter),
         ]);
         if (selectedConversationIdRef.current !== conversationId) return;
         dispatch({ type: "UPDATE_CONVERSATION", conversation: snapshot.conversation });
-        setConversations((current) =>
-          mergeConversationRows(current, available)
-            .map((item) => (item.id === conversationId ? snapshot.conversation : item))
-            .filter((item) => item.status === listFilter),
-        );
+        setConversations(list.merge);
       } catch (error) {
-        if (selectedConversationIdRef.current !== conversationId) return;
+        if (
+          selectedConversationIdRef.current !== conversationId ||
+          listFilterRef.current !== listFilter
+        )
+          return;
         setActionError(error instanceof Error ? error.message : t("errors.load"));
       }
     },
-    [listFilter, t],
+    [listFilter, readConversationList, t],
   );
 
   useEffect(() => {
@@ -893,6 +916,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
         if (selectedConversationIdRef.current !== conversationId) return;
         window.localStorage.setItem(STORAGE_KEY, snapshot.conversation.id);
         setConversations((current) => {
+          if (snapshot.conversation.status !== listFilterRef.current) {
+            return current.filter((item) => item.id !== snapshot.conversation.id);
+          }
           const index = current.findIndex((item) => item.id === snapshot.conversation.id);
           if (index < 0) return [snapshot.conversation, ...current];
           return current.map((item, itemIndex) =>
@@ -978,10 +1004,10 @@ export default function OperatorPanel({ open, onClose }: Props) {
   useEffect(() => {
     let active = true;
     const stored = readStoredConversation();
-    void listOperatorConversations()
-      .then((available) => {
-        if (!active) return;
-        setConversations((current) => mergeConversationRows(current, available));
+    void readConversationList("active")
+      .then(({ available, merge }) => {
+        if (!active || listFilterRef.current !== "active") return;
+        setConversations(merge);
         if (selectedConversationIdRef.current) return;
         const selected =
           (stored ? available.find((item) => item.id === stored) : null) ??
@@ -995,7 +1021,8 @@ export default function OperatorPanel({ open, onClose }: Props) {
         }
       })
       .catch(() => {
-        if (!active) return;
+        if (!active || selectedConversationIdRef.current || listFilterRef.current !== "active")
+          return;
         if (stored) {
           void loadConversation(stored);
         } else {
@@ -1005,7 +1032,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
     return () => {
       active = false;
     };
-  }, [loadConversation, t]);
+  }, [loadConversation, readConversationList, t]);
 
   useEffect(() => {
     const conversationId = state.conversation?.id;
@@ -1226,6 +1253,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
       let conversation = state.conversation;
       if (!conversation) {
         conversation = await createOperatorConversation();
+        createdConversationIdsRef.current.add(conversation.id);
         selectedConversationIdRef.current = conversation.id;
         window.localStorage.setItem(STORAGE_KEY, conversation.id);
         setConversations((current) => [
@@ -1257,6 +1285,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
       setInstruction("");
       nearBottomRef.current = true;
     } catch (error) {
+      if (state.conversation && selectedConversationIdRef.current !== state.conversation.id) return;
       const message = error instanceof Error ? error.message : t("errors.send");
       setActionError(message);
       if (
@@ -1371,17 +1400,15 @@ export default function OperatorPanel({ open, onClose }: Props) {
 
   const refreshConversations = useCallback(
     (status: "active" | "archived") => {
-      return listOperatorConversations({ status })
-        .then((available) => {
-          setConversations((current) =>
-            mergeConversationRows(current, available).filter((item) => item.status === status),
-          );
-        })
+      listFilterRef.current = status;
+      return readConversationList(status)
+        .then(({ merge }) => setConversations(merge))
         .catch((error) => {
+          if (listFilterRef.current !== status) return;
           setListActionError(error instanceof Error ? error.message : t("errors.load"));
         });
     },
-    [t],
+    [readConversationList, t],
   );
 
   const commitRename = useCallback(
@@ -1405,7 +1432,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         setListActionError(error instanceof Error ? error.message : t("errors.rename"));
       }
     },
-    [conversations, state.conversation, t],
+    [conversations, t],
   );
 
   const togglePin = useCallback(
@@ -1433,7 +1460,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         setConversationBusyId(null);
       }
     },
-    [state.conversation, t],
+    [t],
   );
 
   const toggleArchive = useCallback(
@@ -1445,8 +1472,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
         const updated = await updateOperatorConversation(conversation.id, {
           status: nextStatus,
         });
+        archiveResultsRef.current.set(updated.id, updated);
         setConversations((current) =>
-          updated.status === listFilter
+          updated.status === listFilterRef.current
             ? current.map((item) => (item.id === updated.id ? updated : item))
             : current.filter((item) => item.id !== updated.id),
         );
@@ -1459,7 +1487,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         setConversationBusyId(null);
       }
     },
-    [listFilter, state.conversation, t],
+    [t],
   );
 
   const forkConversationById = useCallback(
@@ -1468,6 +1496,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
       setListActionError(null);
       try {
         const snapshot = await forkOperatorConversation(conversation.id);
+        createdConversationIdsRef.current.add(snapshot.conversation.id);
         setConversations((current) => [snapshot.conversation, ...current]);
         resetConversation();
         selectedConversationIdRef.current = snapshot.conversation.id;

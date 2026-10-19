@@ -3,6 +3,7 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
 import enMessages from "@/messages/en.json";
+import { ApiError } from "@/lib/api";
 import type {
   OperatorConversation,
   OperatorFrame,
@@ -37,7 +38,10 @@ const api = vi.hoisted(() => ({
 }));
 const router = vi.hoisted(() => ({ navigate: vi.fn() }));
 
-vi.mock("@/lib/api", () => api);
+vi.mock("@/lib/api", async (importOriginal) => {
+  const { ApiError } = await importOriginal<typeof import("@/lib/api")>();
+  return { ...api, ApiError };
+});
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ children, search }: { children?: React.ReactNode; search?: { s?: string } }) => (
     <a data-selected-session={search?.s} href="/fleet">
@@ -924,6 +928,201 @@ describe("OperatorPanel", () => {
       });
     });
 
+    const firstRow: OperatorConversation = {
+      id: "conversation-1",
+      title: "Scheduler check",
+      status: "active",
+      pinned: false,
+      activeRequestId: null,
+    };
+    const archivedRow: OperatorConversation = {
+      ...firstRow,
+      id: "archived-1",
+      title: "Archived conversation",
+      status: "archived",
+    };
+
+    async function clickFilter(label: "Active" | "Archived") {
+      const button = [...container.querySelectorAll("button")].find(
+        (item) => item.textContent === label,
+      )!;
+      await act(async () => button.click());
+    }
+
+    async function sendInstruction() {
+      const input = container.querySelector("textarea")!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(
+          input,
+          "Inspect this project",
+        );
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      const send = [...container.querySelectorAll("button")].find(
+        (button) => button.textContent === "Send",
+      )!;
+      await act(async () => send.click());
+    }
+
+    it("uses fresh server rows and removes rows absent from a later list read", async () => {
+      const other = { ...firstRow, id: "other", title: "Externally removed" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      await mount();
+      await openList();
+      expect(container.querySelector("ul")?.textContent).toContain(other.title);
+      api.listOperatorConversations.mockResolvedValueOnce([
+        { ...firstRow, title: "Externally renamed", pinned: true },
+      ]);
+      await clickFilter("Active");
+      expect(container.querySelector("ul")?.textContent).toContain("★ Externally renamed");
+      expect(container.querySelector("ul")?.textContent).not.toContain(firstRow.title);
+      expect(container.querySelector("ul")?.textContent).not.toContain(other.title);
+    });
+
+    it("does not preserve a local creation that predates a later list read", async () => {
+      api.listOperatorConversations.mockResolvedValueOnce([]);
+      api.createOperatorConversation.mockResolvedValueOnce(firstRow);
+      api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "created-turn" });
+      await mount();
+      await sendInstruction();
+      await openList();
+      expect(container.querySelector("ul")?.textContent).toContain(firstRow.title);
+      api.listOperatorConversations.mockResolvedValueOnce([]);
+      await clickFilter("Active");
+      expect(container.querySelector("ul")?.textContent).not.toContain(firstRow.title);
+    });
+
+    it("does not resurrect a row archived while a list read was pending", async () => {
+      await mount();
+      await openList();
+      const pending = deferred<OperatorConversation[]>();
+      api.listOperatorConversations.mockReturnValueOnce(pending.promise);
+      await clickFilter("Active");
+      api.updateOperatorConversation.mockResolvedValueOnce({ ...firstRow, status: "archived" });
+      const archive = container.querySelector(
+        'ul li button[aria-label="Archive"]',
+      ) as HTMLButtonElement;
+      await act(async () => archive.click());
+      expect(container.querySelector("ul")?.textContent).not.toContain(firstRow.title);
+      await act(async () => pending.resolve([firstRow]));
+      expect(container.querySelector("ul")?.textContent).not.toContain(firstRow.title);
+      // A subsequent authoritative read can still observe an external unarchive.
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow]);
+      await clickFilter("Active");
+      expect(container.querySelector("ul")?.textContent).toContain(firstRow.title);
+    });
+
+    it.each(["initial", "manual"])(
+      "ignores the %s list result after its filter changes",
+      async (source) => {
+        const pending = deferred<OperatorConversation[]>();
+        if (source === "initial")
+          api.listOperatorConversations.mockReturnValueOnce(pending.promise);
+        await mount();
+        await openList();
+        if (source === "manual") {
+          api.listOperatorConversations.mockReturnValueOnce(pending.promise);
+          await clickFilter("Active");
+        }
+        api.listOperatorConversations.mockResolvedValueOnce([archivedRow]);
+        await clickFilter("Archived");
+        await act(async () => pending.resolve([firstRow]));
+        expect(container.querySelector("ul")?.textContent).toContain(archivedRow.title);
+        expect(container.querySelector("ul")?.textContent).not.toContain(firstRow.title);
+      },
+    );
+
+    it("keeps the current filter when a selected conversation load settles", async () => {
+      const pending = deferred<{ conversation: OperatorConversation; frames: OperatorFrame[] }>();
+      api.getOperatorConversation.mockReturnValueOnce(pending.promise);
+      await mount();
+      await openList();
+      api.listOperatorConversations.mockResolvedValueOnce([archivedRow]);
+      await clickFilter("Archived");
+      await act(async () => pending.resolve({ conversation: firstRow, frames: [] }));
+      expect(container.querySelector("ul")?.textContent).toContain(archivedRow.title);
+      expect(container.querySelector("ul")?.textContent).not.toContain(firstRow.title);
+    });
+
+    it("uses the live filter when an archive response settles", async () => {
+      await mount();
+      await openList();
+      const pending = deferred<OperatorConversation>();
+      api.updateOperatorConversation.mockReturnValueOnce(pending.promise);
+      const archive = container.querySelector(
+        'ul li button[aria-label="Archive"]',
+      ) as HTMLButtonElement;
+      await act(async () => archive.click());
+      api.listOperatorConversations.mockResolvedValueOnce([{ ...firstRow, status: "archived" }]);
+      await clickFilter("Archived");
+      await act(async () => pending.resolve({ ...firstRow, status: "archived" }));
+      expect(container.querySelector("ul")?.textContent).toContain(firstRow.title);
+      expect(container.querySelector('ul li button[aria-label="Unarchive"]')).not.toBeNull();
+    });
+
+    it("ignores a list error after its filter changes", async () => {
+      await mount();
+      await openList();
+      const pending = deferred<OperatorConversation[]>();
+      api.listOperatorConversations.mockReturnValueOnce(pending.promise);
+      await clickFilter("Active");
+      api.listOperatorConversations.mockResolvedValueOnce([archivedRow]);
+      await clickFilter("Archived");
+      await act(async () => pending.reject(new Error("Old filter failed")));
+      expect(container.textContent).not.toContain("Old filter failed");
+      expect(container.querySelector("ul")?.textContent).toContain(archivedRow.title);
+    });
+
+    it.each([false, true])(
+      "ignores a failed mount list after local creation (stored=%s)",
+      async (stored) => {
+        if (stored) window.localStorage.setItem("studio:operator-conversation", "stored-old");
+        const pending = deferred<OperatorConversation[]>();
+        api.listOperatorConversations.mockReturnValueOnce(pending.promise);
+        api.createOperatorConversation.mockResolvedValueOnce(firstRow);
+        api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "created-turn" });
+        await mount();
+        await sendInstruction();
+        await act(async () => pending.reject(new Error("Mount list failed")));
+        expect(api.getOperatorConversation).not.toHaveBeenCalled();
+        expect(window.localStorage.getItem("studio:operator-conversation")).toBe(firstRow.id);
+        expect(container.querySelector('[role="alert"]')).toBeNull();
+        expect(container.textContent).not.toContain(enMessages.operator.errors.load);
+      },
+    );
+
+    it.each(["selection", "unmount"])(
+      "does not reload stale_context after %s changes",
+      async (change) => {
+        const other = { ...firstRow, id: "other", title: "Other conversation" };
+        api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+        const pending = deferred<{ requestId: string }>();
+        api.submitOperatorTurn.mockReturnValueOnce(pending.promise);
+        await mount();
+        await sendInstruction();
+        if (change === "selection") {
+          await openList();
+          api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+          const select = [...container.querySelectorAll("ul li button")].find(
+            (button) => button.textContent === other.title,
+          ) as HTMLButtonElement;
+          await act(async () => select.click());
+        } else {
+          await act(async () => root?.unmount());
+          root = null;
+        }
+        const calls = api.getOperatorConversation.mock.calls.length;
+        await act(async () =>
+          pending.reject(new ApiError(409, "Old context", { code: "stale_context" })),
+        );
+        expect(api.getOperatorConversation).toHaveBeenCalledTimes(calls);
+        if (change === "selection") expect(container.textContent).not.toContain("Old context");
+        expect(window.localStorage.getItem("studio:operator-conversation")).toBe(
+          change === "selection" ? other.id : firstRow.id,
+        );
+      },
+    );
+
     it("shows a conversation description beneath its title and in the tooltip", async () => {
       const description = "Review scheduler retries and release decisions";
       const conversation = {
@@ -1056,6 +1255,50 @@ describe("OperatorPanel", () => {
         expect(api.streamOperatorConversation).toHaveBeenCalledOnce();
         await emit(metadataResult(2), metadataDone(3));
         expect(api.getOperatorConversation).toHaveBeenCalledTimes(2);
+      });
+
+      it("uses fresh nonselected rows during metadata refresh", async () => {
+        const { conversation, other, emit } = await mountMetadataConversation();
+        api.getOperatorConversation.mockResolvedValueOnce({ conversation, frames: [] });
+        api.listOperatorConversations.mockResolvedValueOnce([
+          conversation,
+          { ...other, title: "External update" },
+        ]);
+        await emit(metadataCall(1), metadataResult(2));
+        expect(container.querySelector("ul")?.textContent).toContain("External update");
+        expect(container.querySelector("ul")?.textContent).not.toContain(other.title);
+      });
+
+      it("keeps the current filter when an older metadata refresh settles", async () => {
+        const { conversation, other, emit } = await mountMetadataConversation();
+        const pending = deferred<OperatorConversation[]>();
+        api.getOperatorConversation.mockResolvedValueOnce({ conversation, frames: [] });
+        api.listOperatorConversations.mockReturnValueOnce(pending.promise);
+        await emit(metadataCall(1), metadataResult(2));
+        api.listOperatorConversations.mockResolvedValueOnce([archivedRow]);
+        await clickFilter("Archived");
+        await act(async () => pending.resolve([conversation, other]));
+        expect(container.querySelector("ul")?.textContent).toContain(archivedRow.title);
+        expect(container.querySelector("ul")?.textContent).not.toContain(other.title);
+      });
+
+      it("does not resurrect a local archive when metadata refresh settles", async () => {
+        const { conversation, other, emit } = await mountMetadataConversation();
+        const pending = deferred<OperatorConversation[]>();
+        api.getOperatorConversation.mockResolvedValueOnce({ conversation, frames: [] });
+        api.listOperatorConversations.mockReturnValueOnce(pending.promise);
+        await emit(metadataCall(1), metadataResult(2));
+        api.updateOperatorConversation.mockResolvedValueOnce({
+          ...conversation,
+          status: "archived",
+        });
+        const archive = container.querySelector(
+          'ul li button[aria-label="Archive"]',
+        ) as HTMLButtonElement;
+        await act(async () => archive.click());
+        await act(async () => pending.resolve([conversation, other]));
+        expect(container.querySelector("ul")?.textContent).not.toContain(conversation.title);
+        expect(container.querySelector("ul")?.textContent).toContain(other.title);
       });
 
       it("rereads on done when the provider never reports the metadata call result", async () => {
