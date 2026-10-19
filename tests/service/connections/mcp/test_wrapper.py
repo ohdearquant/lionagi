@@ -1,5 +1,7 @@
 """Tests for lionagi.service.connections.mcp.wrapper module."""
 
+import asyncio
+import contextlib
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, mock_open, patch
@@ -353,6 +355,243 @@ class TestMCPConnectionPoolCleanup:
         mock_client1.__aexit__.assert_called_once()
         mock_client2.__aexit__.assert_called_once()
         assert len(MCPConnectionPool._clients) == 0
+
+
+class TestMCPConnectionPoolHandshakeBounds:
+    @pytest.fixture(autouse=True)
+    def reset_pool(self):
+        MCPConnectionPool._clients = {}
+        MCPConnectionPool._configs = {}
+        MCPConnectionPool._creation_locks = {}
+        yield
+        MCPConnectionPool._clients = {}
+        MCPConnectionPool._configs = {}
+        MCPConnectionPool._creation_locks = {}
+
+    @pytest.mark.asyncio
+    async def test_stuck_handshake_times_out_and_leaves_nothing_pooled(self):
+        """A handshake that never completes fails at the configured bound,
+        names the server and the bound, and does not leave a half-open client
+        cached. A later connect retries instead of reusing anything."""
+        attempts = 0
+
+        class _StuckClient:
+            def __init__(self):
+                self._never = asyncio.Event()
+                self.exited = False
+
+            async def __aenter__(self):
+                await self._never.wait()
+
+            async def __aexit__(self, *_args):
+                self.exited = True
+
+            def is_connected(self):
+                return False
+
+        class _ReadyClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                pass
+
+            def is_connected(self):
+                return True
+
+        created = []
+
+        def make_client(*_args):
+            nonlocal attempts
+            attempts += 1
+            client = _StuckClient() if attempts == 1 else _ReadyClient()
+            created.append(client)
+            return client
+
+        config = {"url": "https://stuck.example/mcp", "timeout": 0.05}
+        policy = MCPSecurityConfig(allow_urls=True)
+        with patch("fastmcp.Client", side_effect=make_client):
+            with pytest.raises(TimeoutError) as raised:
+                await asyncio.wait_for(
+                    MCPConnectionPool.get_client(config, security=policy),
+                    timeout=2,
+                )
+
+            message = str(raised.value)
+            assert "stuck.example" in message
+            assert "0.05s" in message
+            assert MCPConnectionPool._clients == {}
+            assert created[0].exited is True
+
+            retried = await MCPConnectionPool.get_client(config, security=policy)
+
+        assert isinstance(retried, _ReadyClient)
+        assert attempts == 2
+        assert list(MCPConnectionPool._clients.values()) == [retried]
+
+    @pytest.mark.asyncio
+    async def test_the_timeout_names_the_host_and_not_the_rest_of_the_url(self):
+        class _StuckClient:
+            async def __aenter__(self):
+                await asyncio.Event().wait()
+
+            async def __aexit__(self, *_args):
+                pass
+
+        config = {
+            "url": "https://user:hunter2@stuck.example/mcp?token=abc123",
+            "timeout": 0.05,
+        }
+        policy = MCPSecurityConfig(allow_urls=True)
+        with patch("fastmcp.Client", side_effect=lambda *_a: _StuckClient()):
+            with pytest.raises(TimeoutError) as raised:
+                await asyncio.wait_for(
+                    MCPConnectionPool.get_client(config, security=policy), timeout=2
+                )
+
+        message = str(raised.value)
+        assert "'stuck.example'" in message
+        assert "hunter2" not in message
+        assert "abc123" not in message
+
+    @pytest.mark.asyncio
+    async def test_a_transport_timeout_is_not_reported_as_the_handshake_bound(self):
+        class _FailingClient:
+            exited = False
+
+            async def __aenter__(self):
+                raise TimeoutError("transport read timed out")
+
+            async def __aexit__(self, *_args):
+                type(self).exited = True
+
+        config = {"url": "https://slow.example/mcp", "timeout": 5}
+        policy = MCPSecurityConfig(allow_urls=True)
+        with patch("fastmcp.Client", side_effect=lambda *_a: _FailingClient()):
+            with pytest.raises(TimeoutError, match="^transport read timed out$"):
+                await MCPConnectionPool.get_client(config, security=policy)
+
+        assert MCPConnectionPool._clients == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bound", ["60", 0, -1, True, float("nan")])
+    async def test_a_timeout_that_is_not_positive_seconds_falls_back_to_the_default(
+        self, bound, caplog
+    ):
+        class _ReadyClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                pass
+
+            def is_connected(self):
+                return True
+
+        config = {"url": "https://ready.example/mcp", "timeout": bound}
+        policy = MCPSecurityConfig(allow_urls=True)
+        with (
+            patch("fastmcp.Client", side_effect=lambda *_a: _ReadyClient()),
+            caplog.at_level("WARNING", logger="lionagi.service.connections.mcp_wrapper"),
+        ):
+            client = await MCPConnectionPool.get_client(config, security=policy)
+
+        assert isinstance(client, _ReadyClient)
+        assert MCPConnectionPool._handshake_timeout(config) == 30.0
+        assert "ready.example" in caplog.text
+        assert "bounding its handshake at 30s" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_stuck_server_does_not_block_a_connect_to_another_server(self):
+        class _StuckClient:
+            def __init__(self):
+                self._never = asyncio.Event()
+
+            async def __aenter__(self):
+                await self._never.wait()
+
+            async def __aexit__(self, *_args):
+                pass
+
+            def is_connected(self):
+                return False
+
+        ready = None
+
+        class _ReadyClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                pass
+
+            def is_connected(self):
+                return True
+
+        def make_client(*_args):
+            nonlocal ready
+            if _args and "stuck" in str(_args[0]):
+                return _StuckClient()
+            ready = _ReadyClient()
+            return ready
+
+        policy = MCPSecurityConfig(allow_urls=True)
+        stuck_config = {"url": "https://stuck.example/mcp", "timeout": 1.0}
+        ready_config = {"url": "https://ready.example/mcp"}
+
+        with patch("fastmcp.Client", side_effect=make_client):
+            stuck_task = asyncio.create_task(
+                MCPConnectionPool.get_client(stuck_config, security=policy)
+            )
+            await asyncio.sleep(0.05)
+            try:
+                client = await asyncio.wait_for(
+                    MCPConnectionPool.get_client(ready_config, security=policy),
+                    timeout=0.5,
+                )
+                assert client is ready
+            finally:
+                stuck_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await stuck_task
+
+    @pytest.mark.asyncio
+    async def test_concurrent_connects_to_one_server_create_one_client(self):
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        created = 0
+
+        class _Client:
+            async def __aenter__(self):
+                await release.wait()
+                return self
+
+            async def __aexit__(self, *_args):
+                pass
+
+            def is_connected(self):
+                return True
+
+        def make_client(*_args):
+            nonlocal created
+            created += 1
+            entered.set()
+            return _Client()
+
+        config = {"url": "https://shared.example/mcp"}
+        policy = MCPSecurityConfig(allow_urls=True)
+
+        with patch("fastmcp.Client", side_effect=make_client):
+            first = asyncio.create_task(MCPConnectionPool.get_client(config, security=policy))
+            await asyncio.wait_for(entered.wait(), timeout=0.5)
+            second = asyncio.create_task(MCPConnectionPool.get_client(config, security=policy))
+            await asyncio.sleep(0)
+            release.set()
+            first_client, second_client = await asyncio.gather(first, second)
+
+        assert created == 1
+        assert first_client is second_client
+        assert list(MCPConnectionPool._clients.values()) == [first_client]
 
 
 class TestCreateMCPTool:

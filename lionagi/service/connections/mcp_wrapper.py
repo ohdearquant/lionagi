@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -16,7 +17,7 @@ from urllib.parse import urlparse
 
 from lionagi.ln._hash import compute_hash
 from lionagi.ln._proc import env_without_state_db_url
-from lionagi.ln.concurrency import Lock
+from lionagi.ln.concurrency import Lock, move_on_after
 
 # Suppress MCP server logging by default
 logging.getLogger("mcp").setLevel(logging.WARNING)
@@ -59,6 +60,12 @@ __all__ = (
 
 
 _MCP_TRANSPORT_PROBE_ATTR = "_lionagi_mcp_transport_probe"
+
+# Servers started through package runners can take several seconds to come
+# up, so the handshake bound is deliberately wider than the Studio check's
+# 8-second probe. A server config's own ``timeout`` replaces this default.
+_MCP_HANDSHAKE_TIMEOUT_SECONDS = 30.0
+_MCP_HANDSHAKE_CLOSE_TIMEOUT_SECONDS = 1.0
 
 
 def _attach_mcp_transport_probe(exc: BaseException, client: Any) -> None:
@@ -1555,6 +1562,7 @@ class MCPConnectionPool:
     _configs: dict[str, dict] = {}
     _lock: Lock | None = None
     _lock_guard: threading.Lock = threading.Lock()
+    _creation_locks: dict[str, Lock] = {}
     _security: MCPSecurityConfig | None = None
 
     @staticmethod
@@ -1643,6 +1651,54 @@ class MCPConnectionPool:
         return cls._lock
 
     @classmethod
+    async def _get_creation_lock(cls, cache_key: str) -> Lock:
+        """The per-server guard for one cache identity. The class-wide lock
+        protects only the map of guards, never a handshake."""
+        async with cls._get_lock():
+            lock = cls._creation_locks.get(cache_key)
+            if lock is None:
+                lock = Lock()
+                cls._creation_locks[cache_key] = lock
+            return lock
+
+    @classmethod
+    async def _cached_client(cls, cache_key: str) -> Any | None:
+        async with cls._get_lock():
+            client = cls._clients.get(cache_key)
+            if client is None:
+                return None
+            if hasattr(client, "is_connected") and client.is_connected():
+                return client
+            del cls._clients[cache_key]
+            return None
+
+    @classmethod
+    def _handshake_timeout(cls, config: dict[str, Any]) -> float:
+        bound = config.get("timeout")
+        if bound is None:
+            return _MCP_HANDSHAKE_TIMEOUT_SECONDS
+        if isinstance(bound, bool) or not isinstance(bound, (int, float)) or not bound > 0:
+            # The pool ignored this key before it bounded the handshake, so a value that
+            # is not a positive number of seconds falls back rather than failing a connect.
+            logger.warning(
+                "MCP server %r: timeout %r is not a positive number of seconds; "
+                "bounding its handshake at %gs",
+                cls._server_label(config),
+                bound,
+                _MCP_HANDSHAKE_TIMEOUT_SECONDS,
+            )
+            return _MCP_HANDSHAKE_TIMEOUT_SECONDS
+        return float(bound)
+
+    @staticmethod
+    def _server_label(config: dict[str, Any]) -> str:
+        # The host only: a server URL can carry credentials in its user info or query.
+        url = config.get("url")
+        if url:
+            return urlparse(str(url)).hostname or "<url>"
+        return str(config.get("command") or "<unknown>")
+
+    @classmethod
     def set_security_config(cls, config: MCPSecurityConfig) -> None:
         """Set the process-global default security policy for new connections.
         Existing connected clients are unaffected; every later omitted-policy
@@ -1727,16 +1783,19 @@ class MCPConnectionPool:
         cache_key: str,
         security: MCPSecurityConfig | None,
     ) -> Any:
-        async with cls._get_lock():
-            if cache_key in cls._clients:
-                client = cls._clients[cache_key]
-                if hasattr(client, "is_connected") and client.is_connected():
-                    return client
-                else:
-                    del cls._clients[cache_key]
+        cached = await cls._cached_client(cache_key)
+        if cached is not None:
+            return cached
 
+        async with await cls._get_creation_lock(cache_key):
+            # Another connect to the same server may have finished while this
+            # one waited for its guard.
+            cached = await cls._cached_client(cache_key)
+            if cached is not None:
+                return cached
             client = await cls._create_client(config, security=security)
-            cls._clients[cache_key] = client
+            async with cls._get_lock():
+                cls._clients[cache_key] = client
             return client
 
     @classmethod
@@ -1841,7 +1900,18 @@ class MCPConnectionPool:
         else:
             raise ValueError("Config must have 'url' or 'command'")
 
-        await client.__aenter__()
+        timeout = cls._handshake_timeout(config)
+        # The scope tells this bound apart from a TimeoutError the transport raises itself.
+        with move_on_after(timeout) as handshake:
+            await client.__aenter__()
+        if handshake.cancelled_caught:
+            with move_on_after(_MCP_HANDSHAKE_CLOSE_TIMEOUT_SECONDS):
+                with contextlib.suppress(Exception):
+                    await client.__aexit__(None, None, None)
+            raise TimeoutError(
+                f"MCP server {cls._server_label(config)!r} did not complete its "
+                f"handshake within {timeout:g}s"
+            )
         return client
 
     @classmethod

@@ -795,6 +795,19 @@ deliberately not part of `get_client`'s public contract: `create_mcp_tool`'s
 stored callable is the only caller, re-entering a transport its own closure
 already holds the capability for.
 
+### MCPConnectionPool connect bounds
+
+A connect runs under a guard per cache key, not under the pool's class-wide
+lock, which only protects the client and guard maps. A slow or dead server
+therefore delays connects to itself and never connects to other servers;
+concurrent connects to one server still create one client. The MCP handshake
+is bounded by the server config's `timeout` in seconds, 30 s when it is absent.
+A `timeout` that is not a positive number logs a warning and uses 30 s, since
+the pool ignored the key before. A handshake past its bound closes the client
+(given at most 1 s to close), caches nothing and raises `TimeoutError` naming
+the server's host or command and the bound; a `TimeoutError` the transport
+raises itself propagates unchanged.
+
 ### HookedEvent stream teardown contract
 
 `HookedEvent._stream` runs the pre-hook, yields chunks from `_core_stream()`,

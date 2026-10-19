@@ -216,7 +216,7 @@ def qualified_mcp_name(server_name: str, tool_name: str) -> str:
 The name matters and is not `mcp_tool_name`. That identifier is already bound to a `str`
 on this exact path — a local in `_validate_prebuilt_mcp_tool_admission`
 (`manager.py:114`, read at `:117` and `:132`) and a parameter of
-`is_synthetic_mcp_wrapper_schema` (`mcp_wrapper.py:1423`). A module-level function of that
+`is_synthetic_mcp_wrapper_schema` (`mcp_wrapper.py:1458`). A module-level function of that
 name would be shadowed inside the one function that most needs it, and a later call from
 there would raise `TypeError: 'str' object is not callable` at runtime and only at
 runtime, on the admission path. Rename the helper rather than the locals: the locals are
@@ -314,7 +314,7 @@ actual_tool_name = mcp_config.get("_original_tool_name", tool_name)
 - `_original_tool_name` is set on both construction paths today, unconditionally
   (`manager.py:361`, `:399`). It is currently a no-op because it is always equal to the
   registry key.
-- It has **two** readers, not one. The invoker above (`mcp_wrapper.py:1840`) is the
+- It has **two** readers, not one. The invoker above (`mcp_wrapper.py:1945`) is the
   routing reader. The second is `_validate_prebuilt_mcp_tool_admission`
   (`manager.py:115`), on the security path, with its own fallback to the config key.
   Its behavior under D1 is already correct — it prefers the wire name, which is what
