@@ -420,15 +420,34 @@ async def test_a_child_recorded_without_its_start_time_is_not_protected_after_it
         child.wait(timeout=10)
 
 
+@pytest.mark.parametrize(
+    ("extra", "read"),
+    [pytest.param(0, True, id="at-the-limit"), pytest.param(1, False, id="one-byte-past")],
+)
+def test_a_record_is_read_up_to_the_byte_limit_and_not_past_it(tmp_path, extra, read):
+    import json
+
+    base = len(json.dumps({"note": ""}).encode())
+    record = {"note": "x" * (admission._RECORD_BYTES - base + extra)}
+    path = tmp_path / "slot"
+    path.write_bytes(json.dumps(record).encode())
+    assert path.stat().st_size == admission._RECORD_BYTES + extra
+
+    assert (admission._read_record(path) == record) is read
+    if not read:
+        assert admission._read_record(path) is None
+
+
 @pytest.mark.asyncio
-async def test_a_record_past_the_read_limit_is_still_read_whole(home, monkeypatch):
+async def test_a_record_of_several_kilobytes_is_still_read_whole(home, monkeypatch):
     env = {"LIONAGI_MAX_SUBAGENTS": "1", "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0"}
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
         state, started = process_create_time(child.pid)
         assert state == "found"
         lease = await _admit(env)
-        # A long engine name makes a record past 4 KiB; the slot must still read as held.
+        # An 8,000-byte note makes the record larger than one 4 KiB read; the slot must
+        # still read as held.
         for slot in lease.slots:
             slot.record["note"] = "x" * 8000
         lease.record_child(child.pid, started)

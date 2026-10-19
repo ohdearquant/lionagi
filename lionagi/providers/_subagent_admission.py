@@ -374,7 +374,9 @@ class SubagentLease:
 def _read_record(path: Path) -> dict[str, Any] | None:
     try:
         with path.open("rb") as handle:
-            loaded = json.loads(handle.read(_RECORD_BYTES + 1) or b"null")
+            data = handle.read(_RECORD_BYTES + 1)
+        # The extra byte only tells a file past the limit from one exactly at it.
+        loaded = json.loads(data or b"null") if len(data) <= _RECORD_BYTES else None
     except (OSError, ValueError):
         return None
     return loaded if isinstance(loaded, dict) else None

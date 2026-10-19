@@ -2181,6 +2181,14 @@ async def _execute_dag(
         add_dir = kwargs.setdefault("add_dir", [])
         if not _is_light_codex(chat_model) and project_root not in add_dir:
             add_dir.append(project_root)
+        # The same team grant a planned worker gets: a codex spawn in team mode
+        # needs the teams directory writable, and a light one is refused for it.
+        if getattr(env, "team_data", None) and chat_model.endpoint.config.provider == "codex":
+            from .. import team as _team_module
+
+            teams_dir = str(_team_module.TEAMS_DIR.resolve())
+            if teams_dir not in add_dir:
+                add_dir.append(teams_dir)
 
     t_exec = time.monotonic()
     # The run-start publish is bounded the same way as the stop marker, and has

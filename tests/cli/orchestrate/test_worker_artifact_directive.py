@@ -688,7 +688,7 @@ def test_a_genuinely_absent_directory_is_still_missing(tmp_path):
     assert "does not exist" in entries[0]["error"]
 
 
-async def _spawned_branch_kwargs(tmp_path, monkeypatch, workload: str) -> dict:
+async def _spawned_branch_kwargs(tmp_path, monkeypatch, workload: str, team_data=None) -> dict:
     """Run a reactively spawned codex branch through the setup `_execute_dag` hands the
     DAG runner, and return the request kwargs it leaves on the branch."""
     import lionagi.engines as engines_mod
@@ -724,7 +724,7 @@ async def _spawned_branch_kwargs(tmp_path, monkeypatch, workload: str) -> dict:
         cwd=str(tmp_path),
         verbose=False,
         _live_persist=None,
-        team_data=None,
+        team_data=team_data,
         exchange=None,
     )
     dag_state = SimpleNamespace(
@@ -771,3 +771,41 @@ async def test_a_spawned_heavy_codex_worker_keeps_the_project_root(tmp_path, mon
     kwargs = await _spawned_branch_kwargs(tmp_path, monkeypatch, DEFAULT_WORKLOAD)
 
     assert kwargs["add_dir"] == [str(tmp_path.resolve())]
+
+
+@pytest.mark.asyncio
+async def test_a_spawned_heavy_codex_team_worker_gets_the_teams_directory(tmp_path, monkeypatch):
+    """A reactive spawn in team mode gets the same teams-directory grant a planned
+    worker gets, or it could not write to the team inbox."""
+    from lionagi.cli import team as team_module
+
+    teams_dir = tmp_path / "state" / "teams"
+    teams_dir.mkdir(parents=True)
+    monkeypatch.setattr(team_module, "TEAMS_DIR", teams_dir)
+
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path, monkeypatch, DEFAULT_WORKLOAD, team_data={"id": "team-1"}
+    )
+
+    assert kwargs["add_dir"] == [str(tmp_path.resolve()), str(teams_dir.resolve())]
+
+
+@pytest.mark.asyncio
+async def test_a_spawned_light_codex_team_worker_is_refused_before_it_starts(tmp_path, monkeypatch):
+    """Team mode needs the teams directory writable, which light codex cannot grant,
+    for a reactive spawn as for a planned worker."""
+    from lionagi._errors import CLIInputRefusedError
+    from lionagi.cli import team as team_module
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    teams_dir = tmp_path / "state" / "teams"
+    teams_dir.mkdir(parents=True)
+    monkeypatch.setattr(team_module, "TEAMS_DIR", teams_dir)
+
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path, monkeypatch, "light", team_data={"id": "team-1"}
+    )
+
+    assert kwargs["add_dir"] == [str(teams_dir.resolve())]
+    with pytest.raises(CLIInputRefusedError, match="add_dir"):
+        CodexCodeRequest(prompt="work", **kwargs)
