@@ -1048,6 +1048,54 @@ async def test_real_subprocess_large_dual_pipe_output_does_not_hang():
     assert elapsed < 15, "hook should complete well within its own timeout, not hang"
 
 
+async def test_hook_that_exits_without_reading_stdin_is_not_a_run_error(tmp_path):
+    """A hook may ignore its input. Writing an envelope larger than a pipe
+    buffer to a hook that exits at once closes the read end before the write
+    completes, so the runner must treat that broken pipe as the hook's valid
+    early exit rather than as its own failure."""
+    from lionagi.hooks.external import _run_hook_process
+
+    envelope = b"x" * (4 * 1024 * 1024)
+    returncode, stdout, stderr = await asyncio.wait_for(
+        _run_hook_process(
+            [sys.executable, "-c", "import sys; sys.exit(0)"],
+            None,
+            str(tmp_path),
+            envelope,
+            15,
+        ),
+        timeout=20,
+    )
+
+    assert returncode == 0
+    assert stdout.data == b""
+    assert stderr.data == b""
+
+
+async def test_write_stdin_propagates_non_pipe_errors():
+    """Only a closed input pipe is harmless. Every other write failure still
+    raises, so a real I/O fault is not mistaken for a hook ignoring stdin."""
+    from lionagi.hooks.external import _write_stdin
+
+    class _BrokenStdin:
+        def write(self, data: bytes) -> None:
+            pass
+
+        async def drain(self) -> None:
+            raise ValueError("write failed for another reason")
+
+        def close(self) -> None:
+            pass
+
+        async def wait_closed(self) -> None:
+            pass
+
+    proc = MagicMock()
+    proc.stdin = _BrokenStdin()
+    with pytest.raises(ValueError, match="write failed for another reason"):
+        await _write_stdin(proc, b"{}")
+
+
 class _Unserializable:
     """A plain object with no __dict__ shape json.dumps can handle."""
 
