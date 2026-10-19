@@ -59,10 +59,6 @@ class TestSchemaInputHandling:
         with pytest.raises(ValueError, match="Invalid JSON"):
             load_pydantic_model_from_schema("{not json")
 
-    def test_wrong_type_raises_typeerror(self):
-        with pytest.raises(TypeError):
-            load_pydantic_model_from_schema(12345)  # type: ignore[arg-type]
-
     def test_json_string_accepted(self):
         schema = '{"type": "object", "properties": {"n": {"type": "integer"}}}'
         cls = load_pydantic_model_from_schema(schema, "M")

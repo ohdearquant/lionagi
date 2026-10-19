@@ -348,6 +348,7 @@ async def _finalize_warmup(task: asyncio.Task | None) -> None:
 async def lifespan(app_instance):
     from lionagi.cli._code_identity import snapshot_git_position
 
+    from .daemon_log import daemon_log_handler
     from .scheduler.engine import scheduler
     from .services.lifecycle import run_startup_reconciliation
     from .services.operator import operator_shutdown, operator_startup
@@ -371,33 +372,36 @@ async def lifespan(app_instance):
     from lionagi.state.lifecycle.notify_settings import register_settings_terminal_callback
 
     register_settings_terminal_callback()
-    await scheduler.start()
-    # Corrects phantom/stale-status rows /api routes read directly; must precede serving.
-    await run_startup_reconciliation()
-    # Recover any accepted Operator turn that was interrupted by a prior daemon
-    # exit before accepting new submissions.
-    await operator_startup()
-    # Codes and decision capabilities belong to the daemon that issued them.
-    # Serving starts a new epoch unless a launcher minted this launch's code
-    # just before starting this daemon in the same process.
-    begin_serving()
-    reconnect = _start_reconnect_channel()
-    app_instance.state.reconnect_key = reconnect.key if reconnect is not None else None
-    mirror_stop, mirror_task = _start_claude_mirror()
-    # Pure maintenance; deferred so readiness isn't gated on it.
-    warmup_task = asyncio.create_task(_startup_warmup(), name="studio-startup-warmup")
-    yield
-    from .services.launches import shutdown_launches
+    # The scheduler's INFO lines (a schedule firing) print on stderr however the app is
+    # served: li studio, python -m lionagi.studio, or uvicorn pointed at this module.
+    with daemon_log_handler():
+        await scheduler.start()
+        # Corrects phantom/stale-status rows /api routes read directly; must precede serving.
+        await run_startup_reconciliation()
+        # Recover any accepted Operator turn that was interrupted by a prior daemon
+        # exit before accepting new submissions.
+        await operator_startup()
+        # Codes and decision capabilities belong to the daemon that issued them.
+        # Serving starts a new epoch unless a launcher minted this launch's code
+        # just before starting this daemon in the same process.
+        begin_serving()
+        reconnect = _start_reconnect_channel()
+        app_instance.state.reconnect_key = reconnect.key if reconnect is not None else None
+        mirror_stop, mirror_task = _start_claude_mirror()
+        # Pure maintenance; deferred so readiness isn't gated on it.
+        warmup_task = asyncio.create_task(_startup_warmup(), name="studio-startup-warmup")
+        yield
+        from .services.launches import shutdown_launches
 
-    disarm_traceback_dump()
-    app_instance.state.reconnect_key = None
-    if reconnect is not None:
-        await asyncio.to_thread(reconnect.stop)
-    await _finalize_warmup(warmup_task)
-    await _stop_claude_mirror(mirror_stop, mirror_task)
-    await operator_shutdown()
-    await shutdown_launches()
-    await scheduler.stop()
+        disarm_traceback_dump()
+        app_instance.state.reconnect_key = None
+        if reconnect is not None:
+            await asyncio.to_thread(reconnect.stop)
+        await _finalize_warmup(warmup_task)
+        await _stop_claude_mirror(mirror_stop, mirror_task)
+        await operator_shutdown()
+        await shutdown_launches()
+        await scheduler.stop()
 
 
 # Strict Host-header authority grammar, deliberately stricter than

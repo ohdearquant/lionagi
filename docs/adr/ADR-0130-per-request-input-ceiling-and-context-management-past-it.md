@@ -29,9 +29,9 @@ rejected by the provider.
 
 **P1 — price tiers change at a prompt size, and nothing in the request path knows it.** The pricing
 table prices some models by prompt length: `claude-haiku-5-5` carries a first tier bounded at
-100,000 prompt tokens (`lionagi/service/accounts/_pricing.py:123-144`, `PriceTier.max_prompt_tokens`
-at `:52`), and the tier counts fresh, cache-read and cache-written input together. The same entry's
-`ModelPrice.max_input_tokens` (`:62`) is the model's capacity, one million, and is used to reserve
+100,000 prompt tokens (`lionagi/service/accounts/_pricing.py:125-146`, `PriceTier.max_prompt_tokens`
+at `:54`), and the tier counts fresh, cache-read and cache-written input together. The same entry's
+`ModelPrice.max_input_tokens` (`:64`) is the model's capacity, one million, and is used to reserve
 spend; it is not the size a caller wants to stay under. No code before a send compares the request
 against either number.
 
@@ -75,7 +75,7 @@ distinct from the pricing table's `ModelPrice.max_input_tokens`, which keeps its
 **D2 — `"auto"` resolves to the model's first price-tier boundary.** For a request whose model the
 pricing table prices by prompt length, `"auto"` is the first tier's `max_prompt_tokens` (100,000 for
 `claude-haiku-5-5`). The table prices the requests it is consulted for, the Anthropic Messages path
-and the account router (`lionagi/providers/anthropic/messages.py:891`,
+and the account router (`lionagi/providers/anthropic/messages.py:989`,
 `lionagi/service/accounts/_router.py:123`); a provider the table does not price, such as a command-line
 agent billed by subscription, has no tier here, so unset leaves it unchanged. For a model with one flat
 tier, or none in the table, `"auto"` resolves to no ceiling, and the resolution says so in the
@@ -155,7 +155,7 @@ iModel, call, the default for an unset policy, `"auto"` with the tier it read, a
 or none because nothing prices the model by prompt length), the measurement method, the size before and
 after, the action (`notice`, `fold`, `refuse`), the folded call ids, and for a refusal that no
 request was sent. It is an additive signal type under `SIGNAL_SCHEMA_VERSION`
-(`lionagi/session/signal.py:40`); its readers are told before it ships.
+(`lionagi/session/signal.py:41`); its readers are told before it ships.
 
 ## Landing order
 
