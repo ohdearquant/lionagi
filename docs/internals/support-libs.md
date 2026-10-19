@@ -70,8 +70,10 @@ loadable, and there it matches only a class defined under that same prefix;
 any other dotted name the first steps do not resolve raises `ValueError`
 rather than resolving to a built-in or registered class that shares its short
 name. A bare short name matches a class defined under `lionagi.` in the
-built-in modules, never one they merely import such as `Path`, or any
+built-in modules (never one they merely import, such as `Path`) or a
 registered Node subclass. It imports no module outside the allowed prefixes.
+When a dotted name under an allowed prefix fails to load and no later step
+resolves it, the `ValueError` says why loading failed and chains that error.
 `Element.from_dict` accepts only an Element subclass from it and raises
 `ValueError` otherwise, and a `Pile`'s `item_type` names resolve the same way,
 so data naming a class from a package of your own needs that package imported
