@@ -2,7 +2,7 @@
 
 - **Status**: Proposed
 - **Kind**: Aspirational
-- **Implementation-status**: implemented — D1-D6
+- **Implementation-status**: implemented — D1-D7
 - **Area**: service-providers
 - **Date**: 2026-10-18
 - **Relations**: extends ADR-0030 D4 (one subprocess entry point for agentic providers); read with
@@ -38,6 +38,11 @@ only reads".
 that a launcher could tell from the agent's own failure, so a capped spawn would read as a failed
 run.
 
+**P5 — nothing bounded how deep agents start agents.** A CLI agent can run `li agent` itself,
+through a shell tool or through an MCP server it was given, and the agent that starts can do the
+same. Each level holds its slots while it waits on the next, so under a cap a nested agent waits
+for a slot its own ancestor holds until it is refused, and without one nothing stops the chain.
+
 | Concern | Decision |
 |---------|----------|
 | Where the count happens | D1: one admission call in `ndjson_from_cli()` before the child starts |
@@ -46,6 +51,7 @@ run.
 | What happens at the cap | D4: wait up to 600 s by default, then refuse with `SubagentAdmissionRefusedError`; `li agent` exits 75 |
 | What `light` means per engine | D5: confinement the engine can enforce, or a refusal where it can enforce none |
 | How a person sees it | D6: `li monitor` prints held slots per pool; machine mode carries the same data |
+| Agents inside agents | D7: an agent lionagi started cannot start another through lionagi; refused at once, exit 1 |
 
 Out of scope:
 
@@ -95,6 +101,8 @@ Each provider passes its engine name: `codex`, `claude`, `gemini`, `pi`.
 
 - With no pool capped, `admit_subagent()` returns an empty lease and touches no file. An
   uncapped install behaves as it did before this ADR.
+- The nested-agent check (D7) runs before admission, and the stdin payload is encoded before it,
+  so neither a nested agent nor an input that cannot be encoded waits for or holds a slot.
 - The lease is taken before `create_subprocess_exec`, so a refused agent has no child.
 - After the spawn, `record_child(pid, create_time)` writes the child's identity into every slot.
 - The lease is released when the spawn raises, when the `on_spawn` observer raises, and in the
@@ -124,9 +132,9 @@ cap placed in any one launcher covers only that launcher's agents (P1).
 - A value that does not parse as a whole number (`thirty`, `-1`, `2.5`) refuses the agent. A
   misspelled cap must not let agents start uncounted on a machine whose owner believes it is
   capped.
-- An agent takes a slot in each capped pool it counts against, narrowest first: engine, then
-  `heavy`, then `all`. A `light` agent never touches `heavy`. One order everywhere means two
-  agents can never each hold a slot the other is waiting for.
+- An agent takes a slot in each capped pool it counts against, or in none (D3). It locks the
+  pools in one order, sorted by pool name, so two admissions never each hold a lock the other is
+  waiting for. A `light` agent never touches `heavy`.
 
 **Why this way.** The total cap is the machine's budget. The heavy cap is narrower because heavy
 agents are the ones whose own work (builds, test runs) competes for the machine. An engine cap
@@ -140,7 +148,7 @@ A slot is the file `$LIONAGI_HOME/leases/subagents/<pool>/<index>.lock`, `index`
 `0600`. The holder writes a record into the file:
 
 ```json
-{"child_pid": 48211, "child_started": 1792345678.21, "engine": "codex",
+{"cap": 4, "child_pid": 48211, "child_started": 1792345678.21, "engine": "codex",
  "holder_pid": 48190, "since": 1792345677.95, "workload": "light"}
 ```
 
@@ -156,17 +164,21 @@ A slot is the file `$LIONAGI_HOME/leases/subagents/<pool>/<index>.lock`, `index`
   is still the same process (pid and start time, through `lionagi.ln._proc`) counts as held. An
   unreadable process table counts as running, so a slot is never handed out on a probe that
   could not look.
-- **Every held slot counts, at every index.** After locking a slot and writing its record, the
-  taker counts the held slots in the pool other than its own, at every index on disk, and gives
-  its slot back if that count reaches its cap. Two processes can read different caps from their
-  environments; a process with a cap of 3 may hold index 2, which a process with a cap of 2 would
-  never visit.
-- **A lock with no record is contention, not a holder.** A slot locked by another process's
-  admission (between its lock and its write) or by a status read (D6) has no record. When every
-  candidate slot was busy and at least one busy slot had no record, the admission retries within
-  milliseconds, up to 25 times, whatever its wait. Without this a `li monitor` poll could refuse
-  an agent that has a wait of 0 while the pool had room.
+- **Counting and taking happen under the pool's admission lock.** Each pool has an admission lock,
+  `<pool>/.admission`. An admission takes the admission locks of all its pools before it counts
+  any, counts every held slot at every index on disk, and takes a slot in each pool only once all
+  of them have room; a slot taken before a later pool turns out full goes back. It is admitted to
+  every pool or to none, never reads another admission's half-taken slots, and holds no slot in
+  one pool while it waits on another. The admission locks are released before any wait.
+- **A pool is full at the smallest cap in play.** Each record carries the cap its holder read. Two
+  processes can read different caps from their environments, so a pool is full when its held
+  slots reach the smallest of the admission's own cap and every cap its holders recorded: a
+  process reading a cap of 3 cannot run a pool past a holder that read 2.
 - **Release clears the record before unlocking**, so a released slot never names a child.
+- **A lock with no record is a holder between those two steps.** It counts as held, and a pool
+  that is full only because of one is re-read within milliseconds, up to 25 times, before any
+  wait; a slot counted free and found locked when taken is treated the same. Without this an
+  admission with a wait of 0 could be refused for a slot that was freeing that instant.
 - A pool directory that cannot be created or written refuses the agent.
 - On a platform without `flock` (Windows) an uncapped agent runs as before and a configured cap
   refuses, because nothing could hold the slot it would count.
@@ -226,7 +238,7 @@ every CLI request model (`exclude=True`, never serialized):
 
 | Engine | `light` |
 |--------|---------|
-| codex | `--sandbox workspace-write` (or `read-only` when asked), `-c sandbox_workspace_write.writable_roots=[]`, `-c sandbox_workspace_write.network_access=false`, and no linked-worktree `--add-dir`. `bypass_approvals`, `sandbox='danger-full-access'`, `add_dir` and any `config_overrides` key under `sandbox_mode` or `sandbox_workspace_write` are refused with `CLIInputRefusedError`, at construction and again where the process would start |
+| codex | `--sandbox workspace-write` (or `read-only` when asked), `-c sandbox_workspace_write.writable_roots=[]`, `-c sandbox_workspace_write.network_access=false`, and no linked-worktree `--add-dir`. `bypass_approvals`, `sandbox='danger-full-access'`, `add_dir` and any `config_overrides` key under `sandbox_mode` or `sandbox_workspace_write` are refused with `CLIInputRefusedError`, at construction and again where the process would start. The sandbox keeps the temporary directories writable, and codex starts the MCP servers it is given outside it |
 | claude_code | `Edit`, `Write` and `NotebookEdit` are added to `--disallowedTools`, merged with the caller's list into one flag. Bash stays. Claude Code has no filesystem sandbox, so this is a tool-list boundary only: a command run through Bash can still write |
 | gemini-cli | `--sandbox`, always |
 | pi | refused before the process starts: Pi has no sandbox lionagi can pin |
@@ -237,7 +249,8 @@ The class is chosen as follows:
 
 - `li agent --workload light|heavy` wins, then the profile's `workload:` frontmatter, then
   `heavy`. A profile value other than the two classes reads as `heavy` with a warning.
-- A resumed conversation runs with this launch's class, not the one stored on the branch.
+- A resumed conversation runs with this launch's class, not the one stored on the branch:
+  resuming a `light` leg without `-a` or `--workload light` runs it `heavy`.
 - An orchestration worker takes its own profile's class; a bare worker (no profile) is `heavy`.
   The orchestrator takes its profile's class.
 - API-model legs take no workload; the field is passed only to CLI providers, and only when it is
@@ -271,20 +284,68 @@ def subagent_admission_status(environ: Mapping[str, str] | None = None) -> dict[
 
 **Exact semantics.**
 
-- The status read writes nothing. It locks and unlocks each free slot to tell it from a held one;
-  D3's contention retry is what keeps that from refusing a concurrent admission.
+- The status read writes no slot. It counts each pool under the pool's admission lock (D3), as an
+  admission does, so the two never see each other's half-done work.
 - Caps shown are the reading process's own. A shell without the variables shows held counts with
   no cap.
 - No cap and no held slot prints no line, so an uncapped machine's table is unchanged.
+
+### D7 — An agent lionagi started cannot start another through lionagi
+
+```python
+# lionagi/providers/_subagent_admission.py
+def refuse_nested_agent(engine: str | None = None) -> None: ...   # raises NestedAgentRefusedError
+def set_child_agent_depth(depth: int) -> None: ...
+def child_agent_depth() -> int: ...
+
+class NestedAgentRefusedError(ProviderError):   # lionagi/providers/_provider_errors.py
+    retryable: ClassVar[bool] = False
+```
+
+**Exact semantics.**
+
+- **Every agent lionagi starts carries a depth.** The spawn sets `LIONAGI_AGENT_DEPTH` in the
+  child's environment to `child_agent_depth()`: `1`, unless `li agent` launched a profile named in
+  `LIONAGI_SEAT_PROFILES` in this process, which sets `0`. It is set over whatever the
+  environment held: an interactive shell can carry `0`, and an agent a program in that shell
+  starts through the Python API is still an agent lionagi started, so it is handed `1`.
+- **Inside an agent is read two ways.** The depth this process inherited, read once at import
+  (so `li agent`'s own stamp before its spawn does not refuse it), and, when that is `0`, the
+  environment each ancestor started with, read through psutil up to pid 1. An ancestor whose
+  environment cannot be read (another user's, one that exited, or on macOS a platform binary such
+  as `/bin/sh`) is passed over; the agent CLIs that carry the depth are not such binaries.
+- **Refused at every entry, before anything starts.** `ndjson_from_cli()` checks first, before
+  admission, so a nested agent never waits for a slot an ancestor holds. `li agent` (API-model
+  legs included), `li o flow` and `li o fanout` check before they stamp their own depth
+  and before any run exists.
+- **The refusal is final from where it was made.** `NestedAgentRefusedError` is a provider error
+  with `retryable = False`, not an admission refusal; `li agent` and `li o` print it on one line,
+  naming the process that carries the depth, and exit `1`, not `75`.
+- **What stays allowed.** A session nobody started through lionagi (a Claude Code or Codex
+  session opened by hand) carries no depth and may start agents and use the lion MCP server as
+  before. An agent lionagi started may be given MCP servers; what it cannot do is start an agent
+  through lionagi, by its shell or through one of those servers.
+
+**Why this way.** The caps bound how many agents run; this bounds how deep they start each other,
+whether or not a cap is set (P5). The two reads cover each other's gap: codex starts an MCP server
+with only the variables its config names, so a `li agent` that server runs inherits no depth while
+the codex process above it does; a process that detaches (`nohup`, `setsid`, launchd) loses its
+ancestry but keeps its environment.
+
+**Limits.** A process that both clears its environment and leaves the agent's process tree
+escapes both reads; the caps still bound it. A check in the agent harness itself (a pre-tool hook
+that refuses `li` commands inside an agent) can add a third layer outside lionagi.
 
 ## Consequences
 
 - An install with no cap set behaves exactly as before: no file, no lock, no wait.
 - A cap applies to every lionagi process that shares one `LIONAGI_HOME`. Two processes with
   different `LIONAGI_HOME` values count separately, as if on separate machines.
-- A capped agent can wait up to ten minutes by default before its first output. Callers that bound
-  a leg's start (a liveness watchdog, a launcher timeout) must allow for the wait or set a shorter
-  one; the wait is in front of the child, not inside it.
+- A capped agent can wait up to ten minutes by default before its first output. lionagi's own
+  first-output liveness window opens at admission, so a waiting worker is not read as a silent
+  one; only the caller's total deadline runs during the wait. Bounds outside lionagi (a launcher
+  timeout, a watchdog reading the process) must allow for the wait or set a shorter one; the wait
+  is in front of the child, not inside it.
 - A refusal is a retryable failure with its own exit status. A launcher that treats every nonzero
   exit as the agent's fault will misreport refusals until it reads 75.
 - `light` changes what an agent can do. A profile marked `light` whose work needs writes outside
@@ -292,6 +353,9 @@ def subagent_admission_status(environ: Mapping[str, str] | None = None) -> dict[
   setting at construction, but a network call simply fails.
 - Reversing D1-D4 removes one call and one module; nothing else depends on the slot files. D5 is a
   public field and flag, removed only with a deprecation.
+- An agent lionagi started can no longer run `li agent` or `li o`, or a lionagi program
+  that starts a CLI agent (D7). A test suite run by such an agent is affected the same way where
+  a test starts lionagi in a subprocess.
 
 ## Alternatives considered
 
@@ -357,6 +421,25 @@ remains.
 
 Running the agent anyway would keep callers working, while it runs unconfined and is counted as
 something it is not. Rejected: a refusal says which class the agent has to be.
+
+### A nested agent that runs on its ancestor's slot
+
+A nested agent could borrow the slot its ancestor holds instead of waiting for one, which ends the
+wait-for-your-own-parent case. It makes nesting work rather than refusing it, and leaves depth
+unbounded. Rejected in favour of D7.
+
+### No MCP servers for `light` agents
+
+Withholding MCP servers from `light` codex agents would close one route to a nested `li agent`.
+MCP servers are tools an agent may legitimately need, whatever its class, and the route is
+closed for every class by D7. Rejected.
+
+### Reading only the environment, or only the ancestry
+
+The environment alone misses an MCP server started with a scrubbed environment; the ancestry
+alone misses a detached process and costs a process-table walk on every spawn even where the
+environment already answers. Rejected: the environment is read first and the ancestry only when it
+says `0`.
 
 ### A fair queue for waiters
 

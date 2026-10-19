@@ -413,9 +413,10 @@ class ClaudeCodeRequest(BaseModel):
         default=DEFAULT_WORKLOAD,
         exclude=True,
         description=(
-            "'light' removes the Edit, Write and NotebookEdit tools and counts only against "
-            "the machine-wide agent cap; Bash stays, and Claude Code has no filesystem "
-            "sandbox, so this is a tool-list boundary only. 'heavy' (the default) keeps the "
+            "'light' removes the Edit, Write and NotebookEdit tools and counts against the "
+            "total and claude agent caps; Bash stays, and Claude Code has no filesystem "
+            "sandbox, so this is a tool-list boundary only: a command run through Bash can "
+            "still write anywhere or start other agents. 'heavy' (the default) keeps the "
             "configured tools and also counts against the heavy cap."
         ),
     )

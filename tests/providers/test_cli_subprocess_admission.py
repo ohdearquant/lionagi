@@ -86,3 +86,29 @@ async def test_a_spawn_that_fails_gives_its_slot_back(capped):
         async with contextlib.aclosing(stream):
             await stream.__anext__()
     assert _held()["held"] == 0
+
+
+@pytest.mark.asyncio
+async def test_an_input_that_cannot_be_encoded_is_refused_before_admission(capped, monkeypatch):
+    from lionagi.providers import _cli_subprocess
+
+    marker = capped / "started"
+    admissions = []
+    real_admit = _cli_subprocess.admit_subagent
+
+    async def _spy(**kwargs):
+        admissions.append(kwargs)
+        return await real_admit(**kwargs)
+
+    monkeypatch.setattr(_cli_subprocess, "admit_subagent", _spy)
+    stream = ndjson_from_cli(
+        [sys.executable, "-c", f"open({str(marker)!r}, 'w').close()"],
+        stdin_data="\ud800",
+        engine="codex",
+    )
+    with pytest.raises(UnicodeEncodeError):
+        async with contextlib.aclosing(stream):
+            await stream.__anext__()
+    assert admissions == []
+    assert not marker.exists()
+    assert _held()["held"] == 0

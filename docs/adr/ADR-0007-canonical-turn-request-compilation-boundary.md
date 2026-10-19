@@ -555,7 +555,7 @@ lines:
   and any authority type are absent from it; `_prepare_run_kwargs()` is still the active chat/run
   path
   (`lionagi/operations/chat/_prepare.py:194`, called from `lionagi/operations/chat/chat.py:62`
-  and `lionagi/operations/run/run.py:488`), and `prepare_messages_for_chat()` still stands
+  and `lionagi/operations/run/run.py:484`), and `prepare_messages_for_chat()` still stands
   separately (`lionagi/protocols/messages/prepare.py:100`);
 - kept versus dropped: over a per-provider cap or over the total budget, the registry appends
   the provider name to `ProviderReport.skipped` and moves on
@@ -582,11 +582,11 @@ lines:
   The summary is what the compiler sees, and it does not say which records it stands for;
 - in-context omission markers do exist, one layer down, in the Codex provider, in three shapes: a
   head-and-tail cut of a bounded tool result's text, counting characters
-  (`lionagi/providers/openai/codex.py:2149-2152`); a list's tail replaced by an item counting the
-  entries left out (`:2271-2274`); and a mapping's `"[omitted]"` entry counting the keys left out
-  (`:2303-2308`). A fourth site repeats the mapping's shape rather than adding a new one: the
+  (`lionagi/providers/openai/codex.py:2151-2154`); a list's tail replaced by an item counting the
+  entries left out (`:2273-2276`); and a mapping's `"[omitted]"` entry counting the keys left out
+  (`:2305-2310`). A fourth site repeats the mapping's shape rather than adding a new one: the
   file-change echo appends its own `{"omitted": "<n> of <m> changes not shown"}` entry once per
-  file-change item (`lionagi/providers/openai/codex.py:2363-2366`, called from `:2552`), so the
+  file-change item (`lionagi/providers/openai/codex.py:2365-2368`, called from `:2554`), so the
   same mapping shape appears twice. None names a section: they count characters or entries. This
   amendment generalizes the posture, not the shape; that provider's own bounds are unchanged;
 - refusal exists twice on the active path. `_prepare_run_kwargs()` raises a `ValueError` when the

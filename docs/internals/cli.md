@@ -1191,21 +1191,30 @@ from a subprocess.
 
 ## `_agent_depth.py` — inherited agent-depth env marker
 
-`LIONAGI_AGENT_DEPTH` (integer string; unset/`0` = top-level, `>=1` = spawned worker) lets an
-external policy hook distinguish a seat session from a worker it spawned, using process
-ancestry-independent env inheritance — ancestry breaks under `nohup`/`setsid` detachment and
-launchd reparenting, but env inheritance survives it. `LIONAGI_SEAT_PROFILES` is an
-operator-configured, comma-separated set of `-a` profile names that reset depth to 0 instead of
-incrementing it; the set is empty by default and no profile name is hardcoded in source.
+`LIONAGI_AGENT_DEPTH` (integer string; unset/`0` = top-level, `>=1` = inside an agent lionagi
+started) lets lionagi refuse to start an agent from inside one, and lets an external policy hook
+tell a top-level session from a worker it spawned. `LIONAGI_SEAT_PROFILES` is an
+operator-configured, comma-separated set of `-a` profile names that stamp depth 0 instead of 1;
+the set is empty by default and no profile name is hardcoded in source.
 
 `stamp_agent_depth(agent_name)` (called from `_run_agent`) and `stamp_worker_depth()` (called
-from `_run_fanout` and `_run_flow`, which also covers `li play`) both set
-`os.environ["LIONAGI_AGENT_DEPTH"]` before any engine spawn. `_cli_subprocess.py`'s
-`ndjson_from_cli` passes `env=None` to `create_subprocess_exec` for all three CLI-backed engines
-(`claude_code`, `codex`, `gemini_code`), so the child inherits this process's `os.environ`
-verbatim — the stamp propagates with zero endpoint changes. `inherited_depth()` is captured once
-at import as a module constant rather than read live, so `_run_agent`'s in-process auto-resume
-recursion re-stamps to the same depth instead of double-incrementing.
+from `_run_fanout` and `_run_flow`, which also covers `li play`) first call
+`refuse_nested_agent()` (`providers/_subagent_admission.py`), then stamp through
+`set_child_agent_depth`: `os.environ["LIONAGI_AGENT_DEPTH"]` for anything this process starts, and
+the depth `ndjson_from_cli` hands every CLI child, which it sets over whatever the environment
+holds. An interactive shell can carry `0`, so a CLI agent a program in that shell starts through
+the Python API is handed `1`; only a `LIONAGI_SEAT_PROFILES` profile `li agent` launched gets `0`.
+
+`refuse_nested_agent` reads the depth this process inherited, captured once at import, and, when
+that is `0`, the environment each ancestor started with (psutil, walking parents). The import
+snapshot is why `_run_agent`'s in-process auto-resume recursion is not refused by its own first
+stamp. The ancestor read covers what env inheritance cannot: codex starts an MCP server with only
+the variables its config names, so a `li agent` that server runs inherits no depth while the codex
+process above it does. Env inheritance covers what ancestry cannot: `nohup`/`setsid` detachment
+and launchd reparenting cut the parent chain. An ancestor whose environment cannot be read is
+passed over; on macOS that includes platform binaries such as `/bin/sh`, but not the agent CLIs,
+whose environment stays readable. The refusal raises `NestedAgentRefusedError`, which `li agent`
+and `li o` report on one line with exit `1`.
 
 ## `kill.py`
 

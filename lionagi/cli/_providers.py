@@ -501,7 +501,8 @@ class AgentProfile:
     idle_timeout: int | None = None
     """Default --idle-timeout (seconds) used when the CLI flag is not given."""
     workload: str = DEFAULT_WORKLOAD
-    """'light' (sandboxed to its cwd, counted against the machine-wide cap only) or 'heavy'."""
+    """'light' (held to what its engine can enforce, counted against the total and engine caps)
+    or 'heavy' (also counted against the heavy cap); see ``li agent --workload``."""
 
 
 def _unreadable_symlink_target(path: Path) -> str | None:

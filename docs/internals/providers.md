@@ -513,31 +513,39 @@ input is immutable and can't be substituted in place.
 
 **`providers/_subagent_admission.py`** (design: ADR-0133)
 
-`ndjson_from_cli()` takes a lease from `admit_subagent()` before it starts the
-child, so the cap covers every CLI worker whatever started it. A lease is one
-slot in each capped pool the worker counts against (its engine, `heavy` for a
-heavy worker, and `all`), taken narrowest first so every process takes pools in
-one order. A slot is `$LIONAGI_HOME/leases/subagents/<pool>/<index>.lock`, held
-with `flock(LOCK_EX | LOCK_NB)` on a descriptor opened `O_CLOEXEC`: the lock
-belongs to the lionagi process, never to the child, so a grandchild that
-daemonizes cannot keep it, and the kernel drops it when that process exits by any
-path. The record written into the slot names the holder pid, engine, workload and
-start, and after a successful spawn the child's pid and create time.
+`ndjson_from_cli()` first refuses to run inside an agent lionagi started
+(`refuse_nested_agent()`, below), then takes a lease from `admit_subagent()`
+before it starts the child, so the cap covers every CLI worker whatever started
+it. A lease is one slot in each capped pool the worker counts against (its
+engine, `heavy` for a heavy worker, and `all`). A slot is
+`$LIONAGI_HOME/leases/subagents/<pool>/<index>.lock`, held with
+`flock(LOCK_EX | LOCK_NB)` on a descriptor opened `O_CLOEXEC`: the lock belongs
+to the lionagi process, never to the child, so a grandchild that daemonizes
+cannot keep it, and the kernel drops it when that process exits by any path. The
+record written into the slot names the holder pid, engine, workload, start and
+the cap the holder read, and after a successful spawn the child's pid and create
+time.
 
-Four rules keep the count honest across processes that do not share memory:
+Five rules keep the count honest across processes that do not share memory:
 
+- Counting and taking happen under each pool's admission lock
+  (`<pool>/.admission`). An admission takes the admission locks of all its pools,
+  in pool-name order, before it counts any, and takes a slot in each only once
+  every pool has room, so it is admitted to every pool or to none and never
+  reads another admission's half-taken slots. The status read counts under the
+  same lock and writes nothing.
 - A free lock whose recorded child is still the recorded process (pid plus start
   time, through `lionagi.ln._proc`) counts as held. The holder can die while its
   child, which leads its own session, keeps running; an unreadable process table
   counts as running, so a slot is never handed out on a probe that could not look.
-- After taking a slot the taker counts every held slot in the pool at every
-  index, and gives its slot back if the count reaches its cap. Caps are read from
-  each process's own environment, so a process with a larger cap may hold an
-  index above a smaller cap.
-- A held slot with no record is a lock taken an instant ago, by an admission
-  between its lock and its write or by a status read counting the pool. It is
-  retried at once, up to 25 times, whatever the wait, rather than read as a full
-  pool; otherwise `li monitor` polling could refuse an admission at wait 0.
+- A pool is full at the smallest cap among the admission's own and those its
+  holders recorded, so a process reading a larger cap cannot run past a holder
+  that read a smaller one.
+- A locked slot with no record is a holder between clearing its record and
+  unlocking (`release()` truncates, then unlocks). It counts as held, and a pool
+  full only because of one is re-read within milliseconds, up to 25 times, before
+  any wait, so an admission at wait 0 is not refused for a slot freeing that
+  instant. A slot counted free and found locked when taken is treated the same.
 - A cap or wait that does not parse, or a pool directory that cannot be created
   or written, refuses with `SubagentAdmissionRefusedError` rather than letting
   the worker start uncounted.
@@ -549,10 +557,11 @@ the pool, its cap, the variable that set it and the holder pids.
 
 The lease is released when the spawn fails, when the `on_spawn` observer fails,
 and in the generator's final `finally` after `end_child_group()`, so the slot
-frees only once the worker's group has been ended. A cancelled spawn releases
-its slot when the cancellation unwinds, while the abandoned-spawn callback ends
-a child that arrives later; that child can outlive its slot by the moment the
-creation call takes to return.
+frees only once the worker's group has been ended. The stdin payload is encoded
+before admission, so an input that cannot be encoded is refused with nothing to
+give back. A cancelled spawn releases its slot when the cancellation unwinds,
+while the abandoned-spawn callback ends a child that arrives later; that child
+can outlive its slot by the moment the creation call takes to return.
 
 `iModel.stream()` re-raises every stream failure as a `ValueError` whose
 `__cause__` is the provider's error. `li agent` walks that chain: a refusal
@@ -560,10 +569,23 @@ anywhere in it prints the refusal itself and exits `75`, and the MCP terminal
 cause records the provider error's class rather than `unknown`, the same walk the
 run row's reason takes in `cli/_runs.py`.
 
-`subagent_admission_status()` is read-only on the records: it locks and
-unlocks each free slot to tell it from a held one and writes nothing. `li
-monitor` shows it as one line under its table and under `subagents` in machine
-mode.
+`subagent_admission_status()` writes no slot: it counts each pool under its
+admission lock, as an admission does. `li monitor` shows it as one line under
+its table and under `subagents` in machine mode.
+
+### Nested agents
+
+`refuse_nested_agent()` raises `NestedAgentRefusedError` (not retryable, and not
+an admission refusal, so `li agent` exits `1` rather than `75`) when this process
+inherited `LIONAGI_AGENT_DEPTH` of 1 or more, read once at import, or when an
+ancestor started with one, read from each ancestor's start environment through
+psutil. The spawn hands every child `LIONAGI_AGENT_DEPTH=child_agent_depth()`,
+`1` unless `li agent` launched a profile named in `LIONAGI_SEAT_PROFILES` in this process
+(`set_child_agent_depth(0)`), over whatever the environment held. The ancestor
+read catches a `li agent` an agent's tool runs with a scrubbed environment, such
+as a codex MCP server; it passes over an ancestor whose environment cannot be
+read, which on macOS includes platform binaries like `/bin/sh` but not the agent
+CLIs. ADR-0133 D7 records the design.
 
 ## Declared secret lookup
 

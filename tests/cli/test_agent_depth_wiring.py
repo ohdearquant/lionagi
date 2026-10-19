@@ -1,13 +1,13 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Wiring of LIONAGI_AGENT_DEPTH stamping into `_run_agent`, `_run_fanout`,
-`_run_flow`, and the engine subprocess spawn (`ndjson_from_cli`).
+"""Wiring of LIONAGI_AGENT_DEPTH stamping, and of the nested-agent refusal before it,
+into `_run_agent`, `_run_fanout`, `_run_flow`, and the engine subprocess spawn
+(`ndjson_from_cli`).
 
-The stamp must land in os.environ BEFORE any provider/engine spawn — the
-mechanism (see docs/internals/cli.md) relies on `ndjson_from_cli` passing
-env=None to create_subprocess_exec so the spawned engine inherits this
-process's os.environ verbatim.
+The stamp must land BEFORE any provider/engine spawn, and the refusal before the
+stamp: a process inside an agent lionagi started stamps nothing and starts nothing
+(see docs/internals/cli.md).
 """
 
 from __future__ import annotations
@@ -18,11 +18,8 @@ import pytest
 
 from lionagi.cli import _agent_depth as depth_mod
 from lionagi.cli._agent_depth import DEPTH_ENV
-
-
-@pytest.fixture(autouse=True)
-def _clean_depth_env(monkeypatch):
-    monkeypatch.delenv(DEPTH_ENV, raising=False)
+from lionagi.providers import _subagent_admission as admission
+from lionagi.providers._provider_errors import NestedAgentRefusedError
 
 
 class _StopEarly(Exception):
@@ -33,8 +30,6 @@ class _StopEarly(Exception):
 async def test_run_agent_stamps_depth_before_any_spawn(monkeypatch):
     import lionagi.cli.agent as agent_mod
 
-    monkeypatch.setattr(depth_mod, "_INHERITED_DEPTH", 0)
-
     def _boom_build_chat_model(*a, **kw):
         raise _StopEarly("build_chat_model must not be reached before the stamp")
 
@@ -43,15 +38,50 @@ async def test_run_agent_stamps_depth_before_any_spawn(monkeypatch):
     with pytest.raises(_StopEarly):
         await agent_mod._run_agent("claude", "do the thing", agent_name=None)
 
-    # No seat set configured, no -a profile -> non-seat -> parent(0) + 1.
+    # No LIONAGI_SEAT_PROFILES configured, no -a profile -> depth 1.
     assert os.environ[DEPTH_ENV] == "1"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_inside_an_agent_is_refused_before_the_stamp(monkeypatch):
+    import lionagi.cli.agent as agent_mod
+
+    monkeypatch.setattr(admission, "_INHERITED_AGENT_DEPTH", 1)
+
+    def _boom_build_chat_model(*a, **kw):
+        raise _StopEarly("build_chat_model must not be reached inside an agent")
+
+    monkeypatch.setattr(agent_mod, "build_chat_model", _boom_build_chat_model)
+
+    with pytest.raises(NestedAgentRefusedError):
+        await agent_mod._run_agent("claude", "do the thing", agent_name=None)
+
+    assert DEPTH_ENV not in os.environ
+
+
+def test_li_agent_inside_an_agent_exits_1_with_the_refusal_on_one_line(monkeypatch, capsys):
+    import lionagi.cli.agent as agent_mod
+    from lionagi.cli.main import main
+
+    monkeypatch.setattr(admission, "_ancestor_agent_depth", lambda: (1, 4242))
+    ran = []
+
+    def _boom_build_chat_model(*a, **kw):
+        ran.append(True)
+        raise _StopEarly("build_chat_model must not be reached inside an agent")
+
+    monkeypatch.setattr(agent_mod, "build_chat_model", _boom_build_chat_model)
+
+    assert main(["agent", "claude", "do the thing"]) == 1
+    err = capsys.readouterr().err
+    assert "nested agent refused" in err and "pid 4242" in err
+    assert "Traceback" not in err
+    assert not ran
 
 
 @pytest.mark.asyncio
 async def test_run_fanout_stamps_depth_before_setup(monkeypatch):
     import lionagi.cli.orchestrate.fanout as fanout_mod
-
-    monkeypatch.setattr(depth_mod, "_INHERITED_DEPTH", 2)
 
     async def _boom_setup_orchestration(*a, **kw):
         raise _StopEarly("setup_orchestration must not be reached before the stamp")
@@ -61,15 +91,13 @@ async def test_run_fanout_stamps_depth_before_setup(monkeypatch):
     with pytest.raises(_StopEarly):
         await fanout_mod._run_fanout("claude", "do the thing")
 
-    # Fanout workers are never seats: unconditional parent(2) + 1.
-    assert os.environ[DEPTH_ENV] == "3"
+    # Fanout workers are never top-level: always 1.
+    assert os.environ[DEPTH_ENV] == "1"
 
 
 @pytest.mark.asyncio
 async def test_run_flow_stamps_depth_before_setup(monkeypatch):
     import lionagi.cli.orchestrate.flow as flow_mod
-
-    monkeypatch.setattr(depth_mod, "_INHERITED_DEPTH", 1)
 
     async def _boom_setup_orchestration(*a, **kw):
         raise _StopEarly("setup_orchestration must not be reached before the stamp")
@@ -79,8 +107,40 @@ async def test_run_flow_stamps_depth_before_setup(monkeypatch):
     with pytest.raises(_StopEarly):
         await flow_mod._run_flow("claude", "do the thing")
 
-    # li o flow / li play workers are never seats: unconditional parent(1) + 1.
-    assert os.environ[DEPTH_ENV] == "2"
+    # li o flow / li play workers are never top-level: always 1.
+    assert os.environ[DEPTH_ENV] == "1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pattern", ["fanout", "flow"])
+async def test_orchestration_inside_an_agent_is_refused_before_setup(monkeypatch, pattern):
+    import lionagi.cli.orchestrate.fanout as fanout_mod
+    import lionagi.cli.orchestrate.flow as flow_mod
+
+    module, run = {
+        "fanout": (fanout_mod, fanout_mod._run_fanout),
+        "flow": (flow_mod, flow_mod._run_flow),
+    }[pattern]
+    monkeypatch.setattr(admission, "_INHERITED_AGENT_DEPTH", 1)
+
+    async def _boom_setup_orchestration(*a, **kw):
+        raise _StopEarly("setup_orchestration must not be reached inside an agent")
+
+    monkeypatch.setattr(module, "setup_orchestration", _boom_setup_orchestration)
+
+    with pytest.raises(NestedAgentRefusedError):
+        await run("claude", "do the thing")
+    assert DEPTH_ENV not in os.environ
+
+
+def test_the_orchestration_runner_exits_1_on_a_nested_refusal(caplog):
+    from lionagi.cli.orchestrate import _run_orch_command
+
+    async def _refused():
+        raise NestedAgentRefusedError("nested agent refused: test")
+
+    assert _run_orch_command(_refused(), verbose=False) == (None, 1)
+    assert "nested agent refused: test" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -92,7 +152,6 @@ async def test_ndjson_from_cli_inherits_stamped_depth(monkeypatch):
 
     from lionagi.providers._cli_subprocess import ndjson_from_cli
 
-    monkeypatch.setattr(depth_mod, "_INHERITED_DEPTH", 0)
     depth_mod.stamp_agent_depth("implementer")
     assert os.environ[DEPTH_ENV] == "1"
 

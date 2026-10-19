@@ -618,3 +618,83 @@ async def test_without_flock_an_uncapped_agent_runs_and_a_capped_one_is_refused(
 def test_the_refusal_is_recorded_on_the_run_by_its_class():
     assert "SubagentAdmissionRefusedError" in allowed_cause_classes()
     assert SubagentAdmissionRefusedError.retryable is True
+
+
+def _lock_outside_admission(path: Path) -> int:
+    """Hold *path* the way a holder between clearing its record and unlocking does:
+    locked, through an fd of its own, with nothing written."""
+    import fcntl
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return fd
+
+
+def test_a_slot_locked_outside_the_admission_lock_is_not_taken(home):
+    pool_dir = _pools(home) / "all"
+    fd = _lock_outside_admission(pool_dir / "0.lock")
+    try:
+        slot = admission._take_slot("all", pool_dir, {"0.lock"}, {"holder_pid": os.getpid()})
+    finally:
+        os.close(fd)
+    assert slot is None
+    assert (pool_dir / "0.lock").read_bytes() == b""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rereads", [admission._CONTENTION_RETRIES, 0])
+async def test_a_pool_full_only_of_a_clearing_holder_is_read_again_before_any_wait(
+    home, monkeypatch, rereads
+):
+    """Wait 0: the admission gets no poll. The only slot is locked with no record, as
+    a holder's is between clearing and unlocking; it unlocks after the first read. The
+    quick re-reads admit; with none the same pool is refused."""
+    monkeypatch.setattr(admission, "_CONTENTION_RETRIES", rereads)
+    fd = _lock_outside_admission(_pools(home) / "all" / "0.lock")
+    held = [fd]
+    reads = []
+    real_read_pool = admission._read_pool
+
+    def _read_then_unlock(pool_dir):
+        result = real_read_pool(pool_dir)
+        reads.append(result[2])
+        if held:
+            os.close(held.pop())
+        return result
+
+    monkeypatch.setattr(admission, "_read_pool", _read_then_unlock)
+    env = {"LIONAGI_MAX_SUBAGENTS": "1", "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0"}
+    try:
+        if rereads:
+            lease = await _admit(env)
+            assert len(lease.slots) == 1
+            lease.release()
+            assert reads == [1, 0]
+        else:
+            with pytest.raises(SubagentAdmissionRefusedError, match="waited 0s"):
+                await _admit(env)
+            assert reads == [1]
+    finally:
+        for leftover in held:
+            os.close(leftover)
+
+
+@pytest.mark.asyncio
+async def test_a_recorded_holder_is_not_read_again(home, monkeypatch):
+    env = {"LIONAGI_MAX_SUBAGENTS": "1", "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0"}
+    first = await _admit(env)
+    reads = []
+    real_read_pool = admission._read_pool
+
+    def _counted(pool_dir):
+        reads.append(pool_dir.name)
+        return real_read_pool(pool_dir)
+
+    monkeypatch.setattr(admission, "_read_pool", _counted)
+    try:
+        with pytest.raises(SubagentAdmissionRefusedError):
+            await _admit(env)
+    finally:
+        first.release()
+    assert reads == ["all"]

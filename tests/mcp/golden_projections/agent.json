@@ -172,7 +172,7 @@
         "x-flag": "--verbose"
       },
       "workload": {
-        "description": "How the leg counts against the machine-wide agent caps (LIONAGI_MAX_SUBAGENTS, LIONAGI_MAX_SUBAGENTS_HEAVY) and how it is sandboxed. 'light' runs a CLI worker confined to its working directory (codex: workspace-write with no network; gemini: --sandbox; claude: without the Edit, Write and NotebookEdit tools) and counts only against the total cap. 'heavy' keeps the configured sandbox and also counts against the heavy cap. Defaults to the profile's 'workload', else heavy.",
+        "description": "How the leg counts against the machine-wide agent caps (LIONAGI_MAX_SUBAGENTS, LIONAGI_MAX_SUBAGENTS_HEAVY and the engine's own) and what it is held to. 'light' holds a CLI worker to what its engine can enforce (codex: workspace-write sandbox with no network; gemini: --sandbox; claude: without the Edit, Write and NotebookEdit tools, Bash kept, no sandbox; pi: refused) and counts against the total cap and its engine cap. 'heavy' keeps the configured sandbox and also counts against the heavy cap. Defaults to the profile's 'workload', else heavy.",
         "enum": [
           "light",
           "heavy"

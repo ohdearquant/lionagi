@@ -315,7 +315,12 @@ async def _ndjson_from_cli(request: PiCodeRequest):
     # Old Pi subprocess did not set stdin; pass _INHERIT_STDIN to preserve that.
     async with contextlib.aclosing(
         ndjson_from_cli(
-            cmd, cwd=request.repo, env=env, stdin=_INHERIT_STDIN, engine="pi", workload="heavy"
+            cmd,
+            cwd=request.repo,
+            env=env,
+            stdin=_INHERIT_STDIN,
+            engine="pi",
+            workload=request.workload,
         )
     ) as stream:
         async for obj in stream:

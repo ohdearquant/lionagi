@@ -177,12 +177,29 @@ The slot belongs to the lionagi process that started the worker and is released 
 worker's process group has ended, or when that process exits however it exits. A slot whose
 recorded worker is still running counts as held even if the process that took it is gone.
 
+An agent lionagi started cannot start another agent through lionagi. Every CLI worker starts
+with `LIONAGI_AGENT_DEPTH` set (to `1` unless its launch already set it), and `li agent`,
+`li o flow`, `li o fanout` and every CLI worker spawn refuse at once, before taking a slot, in a
+process that inherited a depth of `1` or more or that runs under a process started with one. The
+second check covers tools an agent starts with an environment of its own choosing, such as the MCP
+servers codex starts with only the variables its config names. The refusal is
+`NestedAgentRefusedError`, a provider error that is not retryable, and `li agent` and `li o` exit
+`1` with one line naming the process that carries the depth. A session nobody started through
+lionagi (a Claude Code or Codex session opened by hand) carries no depth and starts agents as
+before, and so does an agent launched with a profile named in `LIONAGI_SEAT_PROFILES`, which
+starts at depth `0`. The caps bound how many agents run; this bounds how deep they start each
+other, whether or not a cap is set.
+
 `--workload` (or a profile's `workload`) sets the class:
 
 | Workload | Counts against | Worker confinement |
 |----------|----------------|--------------------|
 | `heavy` (default) | the total cap, the heavy cap and its engine cap | as configured (`--yolo`, `--bypass`, profile settings) |
-| `light` | the total cap and its engine cap | codex: `--sandbox workspace-write` with no extra writable roots and no network, and settings that would lift the sandbox are refused; gemini: `--sandbox`; claude: runs without `Edit`, `Write` and `NotebookEdit` (Bash stays, and Claude Code has no filesystem sandbox, so this is a tool-list boundary only); pi: refused, it has no sandbox lionagi can pin |
+| `light` | the total cap and its engine cap | codex: `--sandbox workspace-write` with no extra writable roots and no network, and settings that would lift the sandbox are refused; the sandbox still keeps the temporary directories writable, and the MCP servers the leg is given run outside it; gemini: `--sandbox`; claude: runs without `Edit`, `Write` and `NotebookEdit` (Bash stays, and Claude Code has no filesystem sandbox, so this is a tool-list boundary only: a Bash command can still write anywhere); pi: refused, it has no sandbox lionagi can pin |
+
+A resumed leg (`-r`, `-c`) runs with the class this launch resolves: `--workload`, else the
+profile's, else `heavy`. Resuming a `light` leg without `-a` or `--workload light` therefore runs
+it `heavy`; pass the flag again to keep it light.
 
 `li monitor` prints the held slots per pool under its table, for example
 `subagents: all 3/30, heavy 1/6, codex 2/4`, using the caps in its own environment, and

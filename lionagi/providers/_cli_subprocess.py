@@ -34,7 +34,13 @@ from lionagi.ln._proc import (
 from lionagi.ln.concurrency.utils import maybe_await
 
 from ._secret_resolution import fill_declared_secrets_and_names
-from ._subagent_admission import DEFAULT_WORKLOAD, admit_subagent
+from ._subagent_admission import (
+    AGENT_DEPTH_ENV,
+    DEFAULT_WORKLOAD,
+    admit_subagent,
+    child_agent_depth,
+    refuse_nested_agent,
+)
 
 log = logging.getLogger(__name__)
 
@@ -826,6 +832,9 @@ async def ndjson_from_cli(
     ``workload`` (see ``_subagent_admission``), held until the child's group
     has ended. See docs/internals/providers.md#cli-subprocess-lifecycle.
     """
+    # An agent lionagi started cannot start another through lionagi, by its shell or by an
+    # MCP server it was given; refused here, before any slot is waited for.
+    refuse_nested_agent(engine)
     # A request copied with model_copy(update=...) skips validation, and the spawn's own
     # encode error would hold the whole key or value, so the environment is read and
     # checked here, once, and that copy is what the fill and the spawn receive.
@@ -842,6 +851,10 @@ async def ndjson_from_cli(
     # One mapping for both the child and the redactor: with env=None the child
     # reads os.environ at exec, later than any snapshot taken here.
     spawn_env, spawn_marker = prepare_process_group_env(child_env)
+    # Every agent lionagi starts carries a depth, so a lionagi it runs refuses to start
+    # another (refuse_nested_agent). Set over whatever the environment held: only a
+    # LIONAGI_SEAT_PROFILES profile `li agent` launched here is handed 0 (child_agent_depth).
+    spawn_env[AGENT_DEPTH_ENV] = str(child_agent_depth())
     redaction_env: Mapping[str, str] = {
         **_secret_candidates(spawn_env, declared),
         **_cmd_secret_values(cmd),
@@ -855,8 +868,12 @@ async def ndjson_from_cli(
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
     )
+    # Encoded before the slot is taken and the child started, so an input that cannot be
+    # encoded is refused while nothing has to be given back.
+    stdin_payload: bytes | None = None
     if stdin_data is not None:
         kwargs["stdin"] = asyncio.subprocess.PIPE
+        stdin_payload = stdin_data.encode() if isinstance(stdin_data, str) else stdin_data
     elif stdin is not _INHERIT_STDIN:
         kwargs["stdin"] = stdin
 
@@ -894,8 +911,10 @@ async def ndjson_from_cli(
         spawn.add_done_callback(_kill_abandoned_spawn)
         lease.release()
         raise
-    # From here the child runs and holds the lease: anything that fails before the
-    # stream's own try below ends its group and gives the slots back here.
+    # From here the child runs and holds the lease. A failure in this try ends the
+    # child's group and gives the slots back here; the statements between it and the
+    # stream's own try only define closures and create tasks, and the stdin payload was
+    # encoded before the spawn, so nothing a caller passes can raise in that span.
     try:
         lease.record_child(spawned.pid, spawned.create_time)
 
@@ -990,9 +1009,8 @@ async def ndjson_from_cli(
                 proc.stdin.close()
 
     stdin_task: asyncio.Task | None = None
-    if stdin_data is not None:
-        payload = stdin_data.encode() if isinstance(stdin_data, str) else stdin_data
-        stdin_task = asyncio.create_task(_write_stdin(payload))
+    if stdin_payload is not None:
+        stdin_task = asyncio.create_task(_write_stdin(stdin_payload))
 
     # Guards against orphan-held pipes leaving stdout open forever; see
     # docs/internals/providers.md#cli-subprocess-lifecycle.

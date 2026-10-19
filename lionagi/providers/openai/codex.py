@@ -860,7 +860,7 @@ def _refuse_light_escape(plain: _PlainRequest) -> None:
     if reasons:
         # Not a ValueError, so a refusal at construction is not wrapped with the whole input.
         raise CLIInputRefusedError(
-            "workload 'light' confines codex to its working directory with no network; "
+            "workload 'light' runs codex in its workspace-write sandbox with no network; "
             + "; ".join(reasons)
             + ". Declare the agent's workload 'heavy' instead."
         )
@@ -1507,9 +1507,11 @@ class CodexCodeRequest(BaseModel):
         default=DEFAULT_WORKLOAD,
         exclude=True,
         description=(
-            "'light' runs codex sandboxed to its working directory with no network and "
-            "counts only against the machine-wide agent cap; 'heavy' (the default) keeps "
-            "the configured sandbox and also counts against the heavy cap."
+            "'light' runs codex in its workspace-write sandbox (writable in its working "
+            "directory and the temporary directories that sandbox keeps writable) with no "
+            "network, and counts against the total and codex agent caps. The MCP servers it "
+            "is given run outside that sandbox. 'heavy' (the default) keeps the configured "
+            "sandbox and also counts against the heavy cap."
         ),
     )
 
@@ -1964,7 +1966,7 @@ class CodexCodeRequest(BaseModel):
             refusal = str(exc)
         if refusal is not None:
             raise CLIInputRefusedError(
-                "workload 'light' confines codex to its working directory with no network; "
+                "workload 'light' runs codex in its workspace-write sandbox with no network; "
                 f"{refusal}. Declare the agent's workload 'heavy' instead."
             )
 

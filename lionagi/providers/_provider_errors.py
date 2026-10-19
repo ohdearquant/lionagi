@@ -132,6 +132,17 @@ class SubagentAdmissionRefusedError(ProviderError):
         self.holders: tuple[int | None, ...] = holders
 
 
+class NestedAgentRefusedError(ProviderError):
+    """A process running inside a CLI agent lionagi started tried to start another CLI
+    agent through lionagi. Raised before any admission, so nothing ran and no slot was
+    waited for.
+
+    Not retryable: the same command run from inside the same agent is refused the same way.
+    """
+
+    retryable: ClassVar[bool] = False
+
+
 # --- Emission error (separate axis — not a provider subprocess failure) ---
 
 

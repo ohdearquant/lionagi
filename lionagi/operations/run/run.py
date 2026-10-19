@@ -194,37 +194,33 @@ async def _stream_with_liveness(
             if liveness_timeout is None:
                 first_chunk = await stream_iter.__anext__()
             else:
-                remaining_to_deadline = (
-                    stream_deadline - current_time() if stream_deadline is not None else None
-                )
-                # Liveness "owns" the timeout only when it's the tighter bound;
-                # otherwise this is the caller's total-stream deadline.
-                is_liveness_boundary = (
-                    remaining_to_deadline is None or liveness_timeout < remaining_to_deadline
-                )
-                wait_for = (
-                    liveness_timeout
-                    if remaining_to_deadline is None
-                    else max(0.0, min(liveness_timeout, remaining_to_deadline))
-                )
+
+                def first_output_bound(now: float) -> tuple[bool, float]:
+                    # How long the first output may take from *now*, and whether that bound
+                    # is liveness's: liveness "owns" the timeout only when it's the tighter
+                    # bound; otherwise this is the caller's total-stream deadline.
+                    if stream_deadline is None:
+                        return True, liveness_timeout
+                    remaining = stream_deadline - now
+                    return liveness_timeout < remaining, max(0.0, min(liveness_timeout, remaining))
+
+                is_liveness_boundary, wait_for = first_output_bound(current_time())
 
                 def _time_from_admission(admitted: bool) -> None:
-                    # A CLI worker can wait for a machine-wide slot before it starts. Only
-                    # the caller's own deadline runs during that wait; the window for the
-                    # first output opens once the worker is admitted.
+                    # Called by the CLI spawn (lionagi.providers._subagent_admission, through
+                    # the context set below) when a worker starts waiting for a machine-wide
+                    # slot and when it is admitted. Only the caller's own deadline runs during
+                    # the wait; the window for the first output opens at admission, and so does
+                    # the answer to whether a timeout is the worker's silence (retried below)
+                    # or the caller's deadline (raised).
                     nonlocal is_liveness_boundary
-                    now = current_time()
-                    remaining = stream_deadline - now if stream_deadline is not None else None
                     if not admitted:
                         is_liveness_boundary = False
-                        scope.deadline = math.inf if remaining is None else now + remaining
+                        scope.deadline = math.inf if stream_deadline is None else stream_deadline
                         return
-                    is_liveness_boundary = remaining is None or liveness_timeout < remaining
-                    scope.deadline = now + (
-                        liveness_timeout
-                        if remaining is None
-                        else max(0.0, min(liveness_timeout, remaining))
-                    )
+                    now = current_time()
+                    is_liveness_boundary, bound = first_output_bound(now)
+                    scope.deadline = now + bound
 
                 with anyio.fail_after(wait_for) as scope:
                     with _on_subagent_admission(_time_from_admission):

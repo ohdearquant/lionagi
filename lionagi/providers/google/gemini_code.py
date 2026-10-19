@@ -451,8 +451,8 @@ class GeminiCodeRequest(BaseModel):
         default=DEFAULT_WORKLOAD,
         exclude=True,
         description=(
-            "'light' always runs agy with --sandbox and counts only against the "
-            "machine-wide agent cap; 'heavy' (the default) also counts against the heavy cap."
+            "'light' always runs agy with --sandbox and counts against the total and gemini "
+            "agent caps; 'heavy' (the default) also counts against the heavy cap."
         ),
     )
 

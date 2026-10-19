@@ -36,9 +36,17 @@ holders recorded, so a process reading a larger cap cannot run past a smaller on
 When a pool is full the admission waits, re-trying every two seconds, for up to
 ``LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS`` (600 by default, ``0`` refuses at once),
 then raises :class:`SubagentAdmissionRefusedError` naming the pool, its cap and
-the pids holding it. A cap or wait that does not read as a whole number, an engine
-name that cannot name a pool, or a pool directory that cannot be created or
-written, refuses the same way rather than letting the agent start uncounted.
+the pids holding it. A pool that is full only while a holder is between clearing its
+record and unlocking is re-read within milliseconds, up to 25 times, before any
+wait. A cap or wait that does not read as a whole number, an engine name that cannot
+name a pool, or a pool directory that cannot be created or written, refuses the same
+way rather than letting the agent start uncounted.
+
+A CLI agent lionagi started cannot start another through lionagi: the spawning
+process of such an agent would hold its slots while it waited on the child, and
+nothing would bound how deep agents start agents. :func:`refuse_nested_agent` is
+that check; the spawn calls it before any admission, so a nested agent is refused at
+once rather than after the wait.
 """
 
 from __future__ import annotations
@@ -60,7 +68,7 @@ import anyio
 
 from lionagi.ln._proc import process_create_time, start_time_matches
 
-from ._provider_errors import SubagentAdmissionRefusedError
+from ._provider_errors import NestedAgentRefusedError, SubagentAdmissionRefusedError
 
 # A slot is an flock; without one (Windows) an uncapped agent runs as before and a
 # configured cap refuses, since nothing could hold the slot it would count.
@@ -71,16 +79,21 @@ else:
 
 __all__ = (
     "ADMIT_WAIT_ENV",
+    "AGENT_DEPTH_ENV",
     "DEFAULT_ADMIT_WAIT_SECONDS",
     "DEFAULT_WORKLOAD",
     "HEAVY_CAP_ENV",
     "TOTAL_CAP_ENV",
     "WORKLOADS",
+    "NestedAgentRefusedError",
     "SubagentAdmissionRefusedError",
     "SubagentLease",
     "SubagentWorkload",
     "admit_subagent",
+    "child_agent_depth",
     "engine_cap_env",
+    "refuse_nested_agent",
+    "set_child_agent_depth",
     "subagent_admission_status",
 )
 
@@ -88,6 +101,101 @@ TOTAL_CAP_ENV = "LIONAGI_MAX_SUBAGENTS"
 HEAVY_CAP_ENV = "LIONAGI_MAX_SUBAGENTS_HEAVY"
 ADMIT_WAIT_ENV = "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS"
 DEFAULT_ADMIT_WAIT_SECONDS = 600.0
+# How many lionagi-started agents deep a process runs. `li agent` and the flow, fan-out and
+# play workers stamp it on what they start, and every CLI spawn gives a child that has none
+# a depth of 1; a process whose own environment carries 1 or more is inside such an agent.
+AGENT_DEPTH_ENV = "LIONAGI_AGENT_DEPTH"
+
+
+def _parse_agent_depth(raw: str | None) -> int:
+    try:
+        value = int(raw) if raw is not None else 0
+    except ValueError:
+        return 0
+    return max(value, 0)
+
+
+# Read once, at import: `li agent` sets its own copy to 1 before it starts its child, so a
+# live read at the spawn would refuse every `li agent` as nested inside itself.
+_INHERITED_AGENT_DEPTH = _parse_agent_depth(os.environ.get(AGENT_DEPTH_ENV))
+
+
+def _ancestor_agent_depth() -> tuple[int, int | None]:
+    """The deepest agent depth any ancestor of this process started with, and that
+    ancestor's pid (None when no ancestor carries one).
+
+    Read from each ancestor's environment as it was when it started, not from this
+    process's own, because a CLI agent may start its tools with an environment of its own
+    choosing: codex starts an MCP server with only the variables its config names, so a
+    `li agent` that server runs inherits no depth, while the codex process above it does.
+    An ancestor whose environment cannot be read (another user's, one that exited, or on
+    macOS a platform binary such as /bin/sh, whose environment the kernel withholds) is
+    passed over. The agent a CLI provider starts is not such a binary, so the process that
+    carries the depth stays readable; the machine-wide caps bound the machine regardless.
+    """
+    import psutil
+
+    deepest, at = 0, None
+    try:
+        process = psutil.Process().parent()
+    except psutil.Error:
+        return deepest, at
+    seen: set[int] = set()
+    while process is not None and process.pid > 1 and process.pid not in seen:
+        seen.add(process.pid)
+        try:
+            depth = _parse_agent_depth(process.environ().get(AGENT_DEPTH_ENV))
+        except psutil.Error:
+            depth = 0
+        if depth > deepest:
+            deepest, at = depth, process.pid
+        try:
+            process = process.parent()
+        except psutil.Error:
+            break
+    return deepest, at
+
+
+def refuse_nested_agent(engine: str | None = None) -> None:
+    """Refuse when this process runs inside a CLI agent lionagi started.
+
+    Inside means this process inherited an agent depth of 1 or more, or one of its
+    ancestors started with one. The machine-wide caps bound how many agents run; this
+    bounds how deep they start each other, and it applies whether or not a cap is set.
+    """
+    depth, at = _INHERITED_AGENT_DEPTH, None
+    if depth < 1:
+        depth, at = _ancestor_agent_depth()
+    if depth >= 1:
+        what = f"a {engine} agent" if engine else "another agent"
+        where = f"pid {at}" if at is not None else "this process"
+        raise NestedAgentRefusedError(
+            f"nested agent refused: this process runs inside an agent lionagi started "
+            f"({where} has {AGENT_DEPTH_ENV}={depth}), and such an agent cannot start "
+            f"{what} through lionagi; start it from the session that started that agent"
+        )
+
+
+# The depth every CLI agent this process starts is handed: 1, unless `li agent` launched a
+# LIONAGI_SEAT_PROFILES profile here and set 0, so that agent may start others. Never taken from
+# the environment this process inherited: an interactive shell can carry 0, and an agent a
+# program in that shell starts through the Python API must still refuse to start another.
+_child_agent_depth = 1
+
+
+def set_child_agent_depth(depth: int) -> None:
+    """Hand ``depth`` to every CLI agent this process starts from here on, and set it in
+    this process's environment for anything else it starts."""
+    global _child_agent_depth
+    _child_agent_depth = depth
+    os.environ[AGENT_DEPTH_ENV] = str(depth)
+
+
+def child_agent_depth() -> int:
+    """The depth the next CLI agent this process starts is handed."""
+    return _child_agent_depth
+
+
 SubagentWorkload = Literal["light", "heavy"]
 WORKLOADS: tuple[str, ...] = ("light", "heavy")
 DEFAULT_WORKLOAD = "heavy"
@@ -100,6 +208,8 @@ _TOTAL_POOL = "all"
 _HEAVY_POOL = "heavy"
 _SLOT_SUFFIX = ".lock"
 _ADMISSION_LOCK = ".admission"
+# How many quick re-reads a pool gets while a holder is between clearing and unlocking.
+_CONTENTION_RETRIES = 25
 # A slot record is a few hundred bytes; one larger than this is not read as a record.
 _RECORD_BYTES = 65536
 _ENGINE_POOL_RE = re.compile(r"[a-z][a-z0-9_]{0,31}")
@@ -350,24 +460,36 @@ def _lock_admission_blocking(pool_dir: Path) -> int:
 
 
 def _unlock_admission(fd: int) -> None:
-    # Closing the fd drops the lock; the file stays, so the next admission locks the same one.
-    os.close(fd)
+    # Unlocked, then closed, as a slot is released; the file stays, so the next
+    # admission locks the same one.
+    try:
+        with contextlib.suppress(OSError):
+            _fcntl.flock(fd, _fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
-def _read_pool(pool_dir: Path) -> tuple[list[dict[str, Any]], set[str]]:
-    """Under the pool's admission lock: the records of its held slots, and the names of
-    its slot files that are free. Writes nothing.
+def _read_pool(pool_dir: Path) -> tuple[list[dict[str, Any]], set[str], int]:
+    """Under the pool's admission lock: the records of its held slots, the names of its
+    slot files that are free, and how many held slots had no record. Writes nothing.
 
     A slot is held while its holder has it locked, or while the child its record names
-    still runs; a dead holder's record in a free slot is not counted.
+    still runs; a dead holder's record in a free slot is not counted. Every process that
+    locks a slot to count or take it holds the admission lock, so a locked slot with no
+    record is one whose holder has cleared it and not yet unlocked: still counted, and
+    reported so the admission can look again in a moment.
     """
     held: list[dict[str, Any]] = []
     free: set[str] = set()
+    unrecorded = 0
     for path in sorted(pool_dir.glob(f"*{_SLOT_SUFFIX}")):
         fd = _open_slot_file(path)
         try:
             if not _lock_now(fd):
-                held.append(_read_record(path) or {})
+                record = _read_record(path)
+                if not record:
+                    unrecorded += 1
+                held.append(record or {})
                 continue
             record = _read_record(path)
             if _recorded_child_runs(record):
@@ -379,7 +501,7 @@ def _read_pool(pool_dir: Path) -> tuple[list[dict[str, Any]], set[str]]:
             # Closing drops the lock taken above; the slot is taken later, if at all,
             # through a fresh fd.
             os.close(fd)
-    return held, free
+    return held, free, unrecorded
 
 
 def _effective_cap(cap: int, held: list[dict[str, Any]]) -> int:
@@ -387,9 +509,10 @@ def _effective_cap(cap: int, held: list[dict[str, Any]]) -> int:
     return min([cap, *recorded])
 
 
-def _take_slot(pool: str, pool_dir: Path, free: set[str], holder: dict[str, Any]) -> _Slot:
+def _take_slot(pool: str, pool_dir: Path, free: set[str], holder: dict[str, Any]) -> _Slot | None:
     """Under the pool's admission lock, with room counted: lock the lowest-numbered slot
-    no holder has and write this holder's record into it."""
+    no holder has and write this holder's record into it. None when that slot turned out
+    to be locked, which only a process taking slots without the admission lock does."""
     index = 0
     while True:
         name = f"{index}{_SLOT_SUFFIX}"
@@ -399,10 +522,8 @@ def _take_slot(pool: str, pool_dir: Path, free: set[str], holder: dict[str, Any]
         index += 1
     fd = _open_slot_file(path)
     if not _lock_now(fd):
-        # Nothing takes a slot outside the admission lock, so this is a holder that does
-        # not take it (an older lionagi); counted next round rather than overwritten.
         os.close(fd)
-        raise BlockingIOError(f"slot {name} of pool '{pool}' was taken outside its lock")
+        return None
     slot = _Slot(pool, path, fd, dict(holder))
     try:
         slot.write()
@@ -460,12 +581,15 @@ async def admit_subagent(
         "child_pid": None,
         "child_started": None,
     }
+    quick_rereads = 0
     while True:
         lease = SubagentLease()
         locks: list[int] = []
         full: tuple[str, str, int, int, list[dict[str, Any]]] | None = None
+        # The pool was full only for a holder between clearing its record and unlocking.
+        clearing = False
         try:
-            pools: list[tuple[str, Path, int, set[str]]] = []
+            counted: list[tuple[str, str, Path, int, int, list[dict[str, Any]], set[str]]] = []
             for pool, _variable, _cap in caps:
                 pool_dir = _pools_root() / pool
                 pool_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -474,15 +598,22 @@ async def admit_subagent(
             # once all of them have room.
             for pool, variable, cap in caps:
                 pool_dir = _pools_root() / pool
-                held, free = _read_pool(pool_dir)
+                held, free, unrecorded = _read_pool(pool_dir)
                 effective = _effective_cap(cap, held)
                 if len(held) >= effective:
                     full = (pool, variable, cap, effective, held)
+                    clearing = unrecorded > 0
                     break
-                pools.append((pool, pool_dir, cap, free))
+                counted.append((pool, variable, pool_dir, cap, effective, held, free))
             if full is None:
-                for pool, pool_dir, cap, free in pools:
-                    lease.slots.append(_take_slot(pool, pool_dir, free, {**holder, "cap": cap}))
+                for pool, variable, pool_dir, cap, effective, held, free in counted:
+                    slot = _take_slot(pool, pool_dir, free, {**holder, "cap": cap})
+                    if slot is None:
+                        # Counted free, found locked: looked at again like a clearing holder.
+                        full = (pool, variable, cap, effective, held)
+                        clearing = True
+                        break
+                    lease.slots.append(slot)
         except SubagentAdmissionRefusedError:
             lease.release()
             raise
@@ -500,6 +631,12 @@ async def admit_subagent(
                 _unlock_admission(fd)
         if full is None:
             return _admitted(lease)
+        # All or none: a slot taken before a pool turned out full goes back.
+        lease.release()
+        if clearing and quick_rereads < _CONTENTION_RETRIES:
+            quick_rereads += 1
+            await anyio.sleep(random.uniform(0.001, 0.005))  # noqa: S311 (retry spacing)
+            continue
         pool, variable, cap, effective, holders = full
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -564,7 +701,7 @@ def subagent_admission_status(environ: Mapping[str, str] | None = None) -> dict[
             if pool in on_disk:
                 lock = _lock_admission_blocking(pool_dir)
                 try:
-                    held, _free = _read_pool(pool_dir)
+                    held, _free, _unrecorded = _read_pool(pool_dir)
                 finally:
                     _unlock_admission(lock)
             elif pool_dir.exists() or pool_dir.is_symlink():

@@ -30,6 +30,7 @@ from lionagi.protocols.messages import ActionRequest, AssistantResponse
 from lionagi.providers._subagent_admission import (
     DEFAULT_WORKLOAD,
     WORKLOADS,
+    NestedAgentRefusedError,
     SubagentAdmissionRefusedError,
 )
 from lionagi.state import provenance as _provenance
@@ -909,7 +910,7 @@ async def _run_agent(
     no_mcp_config: bool = False,
     _auto_resumed: bool = False,
     _injection_totals: dict[str, int] | None = None,
-    # Last, so every parameter before it keeps the position it had
+    # Last, so every parameter before them keeps the position it had
     idle_timeout: int | None = None,
     workload: str | None = None,
 ) -> tuple[str, str, str, str, str | None]:
@@ -2182,12 +2183,13 @@ def add_agent_subparser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         default=None,
         help=(
             "How the leg counts against the machine-wide agent caps "
-            "(LIONAGI_MAX_SUBAGENTS, LIONAGI_MAX_SUBAGENTS_HEAVY) and how it is sandboxed. "
-            "'light' runs a CLI worker confined to its working directory (codex: "
-            "workspace-write with no network; gemini: --sandbox; claude: without the Edit, "
-            "Write and NotebookEdit tools) and counts only against the total cap. 'heavy' "
-            "keeps the configured sandbox and also counts against the heavy cap. Defaults "
-            "to the profile's 'workload', else heavy."
+            "(LIONAGI_MAX_SUBAGENTS, LIONAGI_MAX_SUBAGENTS_HEAVY and the engine's own) and "
+            "what it is held to. 'light' holds a CLI worker to what its engine can enforce "
+            "(codex: workspace-write sandbox with no network; gemini: --sandbox; claude: "
+            "without the Edit, Write and NotebookEdit tools, Bash kept, no sandbox; pi: "
+            "refused) and counts against the total cap and its engine cap. 'heavy' keeps the "
+            "configured sandbox and also counts against the heavy cap. Defaults to the "
+            "profile's 'workload', else heavy."
         ),
     )
     agent.add_argument(
@@ -2357,6 +2359,10 @@ def run_agent(args: argparse.Namespace) -> int:
     except ContextFromError as exc:
         log_error(str(exc))
         return 2
+    except NestedAgentRefusedError as exc:
+        # Refused before any run exists; not retryable, so not the admission exit code.
+        log_error(str(exc))
+        return EXIT_CODE_BY_STATUS["failed"]
     except KeyboardInterrupt:
         return EXIT_CODE_BY_STATUS["aborted"]
     except SigtermInterrupt as exc:

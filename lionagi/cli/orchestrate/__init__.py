@@ -19,6 +19,7 @@ from lionagi._flow_spec import (
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.libs.path_safety import validate_path_component as validate_path_component
 from lionagi.ln.concurrency import is_cancelled, run_async
+from lionagi.providers._provider_errors import NestedAgentRefusedError
 
 from .._logging import hint, log_error
 from .._providers import add_common_cli_args
@@ -943,6 +944,9 @@ def _run_orch_command(coro, *, verbose: bool, extra_handlers: tuple = ()) -> tup
         return None, EXIT_CODE_BY_STATUS["timed_out"]
     except KeyboardInterrupt:
         return None, EXIT_CODE_BY_STATUS["aborted"]
+    except NestedAgentRefusedError as exc:
+        log_error(str(exc))
+        return None, EXIT_CODE_BY_STATUS["failed"]
     except BaseException as exc:
         for exc_type, code in extra_handlers:
             if isinstance(exc, exc_type):
