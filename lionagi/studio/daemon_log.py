@@ -39,6 +39,9 @@ class _StderrHandler(logging.StreamHandler):
 
 
 _entries_lock = threading.Lock()
+# The handler of the active entries, kept here rather than looked up on the logger: code that
+# removes it from the logger while the app serves must not make the next entry start a second one.
+_active: _StderrHandler | None = None
 
 
 @contextmanager
@@ -55,17 +58,21 @@ def daemon_log_handler() -> Iterator[logging.Handler]:
     drop the lines. ``propagate`` is off while serving, so a root handler some import installed does
     not print each line a second time; root handlers therefore do not see scheduler records while
     the app serves, and a handler meant to is added to ``lionagi.studio.scheduler`` itself. Entries
-    while another is active share its handler and set the level and ``propagate`` again; the last
-    one to exit restores the handler, level and ``propagate`` the first one found.
+    while another is active share its handler (putting it back on the logger if something removed
+    it) and set the level and ``propagate`` again; the last one to exit restores the handler, level
+    and ``propagate`` the first one found.
     """
+    global _active
     logger = logging.getLogger(SCHEDULER_LOGGER)
     with _entries_lock:
-        handler = next((h for h in logger.handlers if isinstance(h, _StderrHandler)), None)
+        handler = _active
         if handler is None:
             handler = _StderrHandler(logger.level, logger.propagate)
             formatter = logging.Formatter(DAEMON_LOG_FORMAT, datefmt=_DATE_FORMAT)
             formatter.converter = time.gmtime
             handler.setFormatter(formatter)
+            _active = handler
+        if handler not in logger.handlers:
             logger.addHandler(handler)
         handler.entries += 1
         logger.setLevel(min(logger.getEffectiveLevel(), logging.INFO))
@@ -76,6 +83,7 @@ def daemon_log_handler() -> Iterator[logging.Handler]:
         with _entries_lock:
             handler.entries -= 1
             if handler.entries == 0:
+                _active = None
                 logger.removeHandler(handler)
                 logger.setLevel(handler.saved_level)
                 logger.propagate = handler.saved_propagate

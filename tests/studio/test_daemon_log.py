@@ -173,6 +173,42 @@ def test_entries_leaving_out_of_order_keep_printing_until_the_last_leaves(logger
     assert len(_lines(capsys.readouterr().err)) == 1
 
 
+@pytest.mark.parametrize("first_leaves_first", [False, True], ids=["nested", "overlapping"])
+def test_a_handler_removed_while_serving_comes_back_and_one_restore_runs(
+    loggers, capsys, first_leaves_first
+):
+    _, scheduler = loggers
+    scheduler.setLevel(logging.NOTSET)
+    scheduler.propagate = True
+    handlers = list(scheduler.handlers)
+    first, second = daemon_log_handler(), daemon_log_handler()
+    handler = first.__enter__()
+    scheduler.removeHandler(handler)  # some other code, while the app serves
+    assert second.__enter__() is handler
+    assert handler in scheduler.handlers
+    (first if first_leaves_first else second).__exit__(None, None, None)
+    _fire()
+    (second if first_leaves_first else first).__exit__(None, None, None)
+    assert scheduler.handlers == handlers
+    assert scheduler.level == logging.NOTSET
+    assert scheduler.propagate is True
+    assert len(_lines(capsys.readouterr().err)) == 1
+
+
+def test_a_second_entry_pins_the_level_and_propagate_again(loggers, root_handler, capsys):
+    lionagi, scheduler = loggers
+    lionagi.setLevel(logging.WARNING)
+    with daemon_log_handler():
+        # Changed by other code while serving: INFO would be dropped, or printed by the root too.
+        scheduler.setLevel(logging.WARNING)
+        scheduler.propagate = True
+        with daemon_log_handler():
+            assert scheduler.level == logging.INFO
+            assert scheduler.propagate is False
+            _fire()
+    assert len(_lines(capsys.readouterr().err, FIRE)) == 1
+
+
 def test_records_outside_the_scheduler_are_left_to_the_root_handlers(loggers, root_handler, capsys):
     lionagi, _ = loggers
     lionagi.setLevel(logging.INFO)
