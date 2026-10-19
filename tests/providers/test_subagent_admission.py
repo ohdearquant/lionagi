@@ -438,6 +438,26 @@ def test_a_record_is_read_up_to_the_byte_limit_and_not_past_it(tmp_path, extra, 
         assert admission._read_record(path) is None
 
 
+def test_a_record_padded_past_the_byte_limit_is_not_read(tmp_path):
+    """The record itself fits; the file does not. Only the extra byte read tells them apart."""
+    import json
+
+    body = json.dumps({"note": "x"}).encode()
+    path = tmp_path / "slot"
+    path.write_bytes(body + b" " * (admission._RECORD_BYTES + 1 - len(body)))
+    assert json.loads(path.read_bytes()[: admission._RECORD_BYTES]) == {"note": "x"}
+
+    assert admission._read_record(path) is None
+
+
+@pytest.mark.parametrize("opener", [b"[", b'{"a":'], ids=["arrays", "objects"])
+def test_a_record_nested_past_the_parser_depth_reads_as_no_record(tmp_path, opener):
+    path = tmp_path / "slot"
+    path.write_bytes((opener * admission._RECORD_BYTES)[: admission._RECORD_BYTES])
+
+    assert admission._read_record(path) is None
+
+
 @pytest.mark.asyncio
 async def test_a_record_of_several_kilobytes_is_still_read_whole(home, monkeypatch):
     env = {"LIONAGI_MAX_SUBAGENTS": "1", "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0"}
@@ -446,8 +466,8 @@ async def test_a_record_of_several_kilobytes_is_still_read_whole(home, monkeypat
         state, started = process_create_time(child.pid)
         assert state == "found"
         lease = await _admit(env)
-        # An 8,000-byte note makes the record larger than one 4 KiB read; the slot must
-        # still read as held.
+        # An 8,000-byte note: a record of several kilobytes is still read whole, so the
+        # slot still reads as held.
         for slot in lease.slots:
             slot.record["note"] = "x" * 8000
         lease.record_child(child.pid, started)

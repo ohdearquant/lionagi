@@ -688,9 +688,19 @@ def test_a_genuinely_absent_directory_is_still_missing(tmp_path):
     assert "does not exist" in entries[0]["error"]
 
 
-async def _spawned_branch_kwargs(tmp_path, monkeypatch, workload: str, team_data=None) -> dict:
-    """Run a reactively spawned codex branch through the setup `_execute_dag` hands the
-    DAG runner, and return the request kwargs it leaves on the branch."""
+async def _spawned_branch_kwargs(
+    tmp_path,
+    monkeypatch,
+    workload: str,
+    team_data=None,
+    *,
+    from_orchestrator: bool = False,
+    provider: str = "codex",
+) -> dict:
+    """Run a reactively spawned branch through the setup `_execute_dag` hands the DAG
+    runner, and return the request kwargs it leaves on the branch. The spawn is a clone
+    of a worker's branch, or of the orchestrator's when *from_orchestrator*; both carry
+    *workload*."""
     import lionagi.engines as engines_mod
     from lionagi import Branch, iModel
     from lionagi.cli.orchestrate import flow as flow_mod
@@ -716,7 +726,18 @@ async def _spawned_branch_kwargs(tmp_path, monkeypatch, workload: str, team_data
     monkeypatch.setattr(flow_mod, "_persist_session_phase", _noop)
     monkeypatch.setattr(flow_mod, "_persist_control_poller_state_bounded", _noop)
     monkeypatch.setattr(flow_mod, "_hand_mcp_servers", lambda *a, **k: None)
+
+    def _branch(name: str) -> Branch:
+        chat_model = iModel(provider=provider, model="gpt-5.5" if provider == "codex" else "sonnet")
+        _add_workload_kwarg(chat_model.endpoint.config.kwargs, provider, workload)
+        return Branch(
+            system=bare_worker_system(artifact_dir=tmp_path / "artifacts" / name),
+            chat_model=chat_model,
+        )
+
+    orchestrator = _branch("orchestrator")
     env = SimpleNamespace(
+        orc_branch=orchestrator,
         run=SimpleNamespace(agent_artifact_dir=lambda aid: tmp_path / "artifacts" / aid),
         session=SimpleNamespace(branches=[], observe=lambda *a, **k: None),
         builder=SimpleNamespace(get_graph=lambda: None),
@@ -742,15 +763,14 @@ async def _spawned_branch_kwargs(tmp_path, monkeypatch, workload: str, team_data
     with pytest.raises(_Captured):
         await flow_mod._execute_dag(env, plan, dag_state, max_concurrent=1, max_ops=5)
 
-    chat_model = iModel(provider="codex", model="gpt-5.5")
-    _add_workload_kwarg(chat_model.endpoint.config.kwargs, "codex", workload)
-    branch = Branch(
-        system=bare_worker_system(artifact_dir=tmp_path / "artifacts" / "emitter"),
-        chat_model=chat_model,
-    )
+    source = orchestrator if from_orchestrator else _branch("emitter")
+    orchestrator_kwargs = dict(orchestrator.chat_model.endpoint.config.kwargs)
+    branch = source.clone()
     captured["setup"](SimpleNamespace(metadata={"spawn_id": "spawn-1"}), branch)
     kwargs = branch.chat_model.endpoint.config.kwargs
     assert kwargs["repo"] == tmp_path / "artifacts" / "spawn-1"
+    # The spawn's setup changes the clone's request, never the orchestrator's own.
+    assert orchestrator.chat_model.endpoint.config.kwargs == orchestrator_kwargs
     return kwargs
 
 
@@ -788,6 +808,37 @@ async def test_a_spawned_heavy_codex_team_worker_gets_the_teams_directory(tmp_pa
     )
 
     assert kwargs["add_dir"] == [str(tmp_path.resolve()), str(teams_dir.resolve())]
+
+
+@pytest.mark.asyncio
+async def test_an_unassigned_spawn_of_a_light_orchestrator_runs_heavy(tmp_path, monkeypatch):
+    """An independent spawn with no assignee is cloned from the orchestrator's branch. The
+    orchestrator's class confines only its own process, so the spawn runs as a bare worker:
+    heavy, with the project root, while a spawn cloned from a light worker stays light."""
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    kwargs = await _spawned_branch_kwargs(tmp_path, monkeypatch, "light", from_orchestrator=True)
+
+    assert "workload" not in kwargs
+    assert kwargs["add_dir"] == [str(tmp_path.resolve())]
+    CodexCodeRequest(prompt="work", **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_a_spawned_claude_team_worker_gets_no_teams_directory(tmp_path, monkeypatch):
+    """The teams-directory grant is a codex sandbox root; a claude worker, planned or
+    spawned, keeps the project root alone."""
+    from lionagi.cli import team as team_module
+
+    teams_dir = tmp_path / "state" / "teams"
+    teams_dir.mkdir(parents=True)
+    monkeypatch.setattr(team_module, "TEAMS_DIR", teams_dir)
+
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path, monkeypatch, DEFAULT_WORKLOAD, team_data={"id": "team-1"}, provider="claude_code"
+    )
+
+    assert kwargs["add_dir"] == [str(tmp_path.resolve())]
 
 
 @pytest.mark.asyncio

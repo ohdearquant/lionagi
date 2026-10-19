@@ -2176,6 +2176,12 @@ async def _execute_dag(
         )
         kwargs = chat_model.endpoint.config.kwargs
         kwargs.pop("account_connectors", None)
+        # A request with no assignee and no emitter branch (an independent one) is
+        # cloned from the orchestrator's branch. The orchestrator's class confines
+        # only its own process, so the spawn runs as a bare worker does: heavy, the
+        # class an absent key means.
+        if branch.metadata.get("clone_from") is env.orc_branch:
+            kwargs.pop("workload", None)
         kwargs["repo"] = artifact_dir
         project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
         add_dir = kwargs.setdefault("add_dir", [])

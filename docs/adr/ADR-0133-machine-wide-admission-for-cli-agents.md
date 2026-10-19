@@ -259,6 +259,10 @@ The class is chosen as follows:
   worker's class, so a `light` orchestrator can plan `heavy` workers from its roster. This is
   deliberate. The roster is the caller's grant, the orchestrator cannot start an agent itself
   (D7), and a caller who wants only `light` workers hands a roster of `light` profiles.
+- A node spawned during the run is cloned from its assignee's branch, else from the branch of
+  the node that emitted it, and keeps that worker's class. A spawn with neither (an independent
+  request naming no assignee) is cloned from the orchestrator's branch and runs `heavy`, as a
+  bare worker does: the orchestrator's class confines only its own process.
 - A `light` codex worker is handed no `add_dir`, so its one writable root is its working
   directory, the worker's artifact directory; the project-root `add_dir` every other CLI worker
   is handed is unchanged. A codex worker in team mode needs the team directory writable, so a `light` codex

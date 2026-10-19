@@ -377,7 +377,9 @@ def _read_record(path: Path) -> dict[str, Any] | None:
             data = handle.read(_RECORD_BYTES + 1)
         # The extra byte only tells a file past the limit from one exactly at it.
         loaded = json.loads(data or b"null") if len(data) <= _RECORD_BYTES else None
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
+        # RecursionError: a file of nested brackets within the limit. The writer never
+        # produces one; it reads as no record, like any other text that is not one.
         return None
     return loaded if isinstance(loaded, dict) else None
 
