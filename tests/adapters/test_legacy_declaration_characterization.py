@@ -25,7 +25,8 @@ def _model(route, field, *, base_type=None):
 @pytest.mark.parametrize("route", ["legacy", "spec"])
 @pytest.mark.parametrize("default", [0, False, "", None])
 def test_falsey_defaults_remain_explicit(route, default):
-    model = _model(route, FieldModel(Any, name="value", default=default))
+    model = _model(route, FieldModel(name="value", default=default))
+    assert model.model_fields["value"].annotation is Any
 
     assert not model.model_fields["value"].is_required()
     value = model().value
