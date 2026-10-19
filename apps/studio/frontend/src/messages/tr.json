@@ -708,7 +708,9 @@
         "lastOutcome": "son {outcome} {delta} önce",
         "neverFiredSince": "{date} tarihinden beri hiç çalışmadı",
         "noEvidenceHint": "kaydedilmiş çalıştırma yok"
-      }
+      },
+      "disableReason": "Gerekçe",
+      "disableReasonHint": "Bu zamanlamanın neden duraklatıldığını açıklayın."
     },
     "run": {
       "elapsed": "{delta} geçti",

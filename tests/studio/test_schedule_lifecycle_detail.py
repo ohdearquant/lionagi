@@ -80,3 +80,72 @@ async def test_deleted_detail_is_404_but_definition_history_remains(tmp_path, mo
         result = await db.get_schedule_history("definition", limit=1)
         assert result["available"]
         assert result["events"][0]["status"] == "deleted"
+
+
+async def test_disable_persists_the_reason_in_definition_history(tmp_path, monkeypatch):
+    path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    async with StateDB(path) as db:
+        await db.create_schedule(
+            {
+                "id": "definition",
+                "name": "Definition",
+                "enabled": 1,
+                "trigger_type": "interval",
+                "interval_sec": 60,
+                "action_kind": "agent",
+            }
+        )
+
+    assert await schedules.disable_schedule("definition", reason="planned maintenance") is True
+
+    result = await schedules.get_schedule_route("definition")
+    latest = result["lifecycle"]["latest"]
+    assert latest["status"] == "disabled"
+    assert latest["reason_code"] == "schedule_definition.disabled.manual"
+    assert latest["reason_summary"] == "planned maintenance"
+
+
+async def test_disable_without_a_reason_records_an_unspecified_disable(tmp_path, monkeypatch):
+    path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    async with StateDB(path) as db:
+        await db.create_schedule(
+            {
+                "id": "definition",
+                "name": "Definition",
+                "enabled": 1,
+                "trigger_type": "interval",
+                "interval_sec": 60,
+                "action_kind": "agent",
+            }
+        )
+
+    assert await schedules.disable_schedule("definition") is True
+
+    latest = (await schedules.get_schedule_route("definition"))["lifecycle"]["latest"]
+    assert latest["status"] == "disabled"
+    assert latest["reason_code"] == "schedule_definition.disabled.unspecified"
+
+
+@pytest.mark.parametrize("reason", ["", "   ", "x" * 501])
+async def test_disable_refuses_an_unusable_reason_before_writing(tmp_path, monkeypatch, reason):
+    path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    async with StateDB(path) as db:
+        await db.create_schedule(
+            {
+                "id": "definition",
+                "name": "Definition",
+                "enabled": 1,
+                "trigger_type": "interval",
+                "interval_sec": 60,
+                "action_kind": "agent",
+            }
+        )
+
+    with pytest.raises(ValueError, match="reason"):
+        await schedules.disable_schedule("definition", reason=reason)
+
+    async with StateDB(path) as db:
+        assert (await db.get_schedule("definition"))["enabled"]

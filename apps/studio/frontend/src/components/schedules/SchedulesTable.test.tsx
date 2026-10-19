@@ -179,6 +179,7 @@ describe("SchedulesTable — keyboard interaction (mounted)", () => {
     if (root) act(() => root?.unmount());
     root = null;
     container.remove();
+    document.body.querySelectorAll('[role="dialog"]').forEach((dialog) => dialog.remove());
     vi.unstubAllGlobals();
   });
 
@@ -276,8 +277,8 @@ describe("SchedulesTable — keyboard interaction (mounted)", () => {
 
     click(toggle!);
     await flush();
-    expect(api.disableSchedule).toHaveBeenCalledTimes(1);
-    expect(api.disableSchedule).toHaveBeenCalledWith("sched-1");
+    expect(api.disableSchedule).not.toHaveBeenCalled();
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
     expect(onOpen).not.toHaveBeenCalled();
   });
 });

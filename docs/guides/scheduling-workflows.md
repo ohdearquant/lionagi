@@ -270,10 +270,14 @@ those checks because polling has a separate cadence and runs asynchronously.
 ## Stopping things
 
 ```bash
-li schedule disable <id>   # keep the row, stop firing
+li schedule disable <id> --reason "upstream outage"   # keep the row, stop firing
 li schedule delete <id>    # remove it
 li kill <run-or-session-id>  # stop an in-flight run, reaping detached workers
 ```
+
+`--reason` is optional. When given, it is kept in the schedule's definition
+history beside the disable, so whoever finds the schedule stopped later can read
+why; without it the history records the disable with no stated reason.
 
 ## When something misbehaves
 

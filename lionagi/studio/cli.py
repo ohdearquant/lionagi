@@ -33,6 +33,16 @@ from lionagi.studio._host import normalize_host
 _STUDIO_IMAGE = "ghcr.io/ohdearquant/lion-studio:latest"
 _HOSTED_URL = "https://lion-studio.khive.ai"
 
+
+def _normalize_schedule_reason(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError("--reason must not be blank")
+    if len(value) > 500:
+        raise ValueError("--reason must be at most 500 characters")
+    return value
+
+
 # Keys the scheduler engine's chain-fire merge actually understands;
 # anything else would shallow-merge into the fired child row and clobber columns.
 _CHAIN_ACTION_ALLOWED_KEYS = frozenset(
@@ -1392,7 +1402,14 @@ def _cmd_enable(args: argparse.Namespace) -> int:
 
 
 def _cmd_disable(args: argparse.Namespace) -> int:
-    result = _api(f"/{args.id}/disable", method="POST")
+    body = None
+    if args.reason is not None:
+        try:
+            body = {"reason": _normalize_schedule_reason(args.reason)}
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+    result = _api(f"/{args.id}/disable", method="POST", body=body)
     if result is None:
         return 1
     print(f"Disabled: {args.id}")
@@ -2587,7 +2604,11 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
     # enable / disable / delete
     for sub_name, sub_help, example in (
         ("enable", "Enable a schedule.", "li schedule enable sched-abc123"),
-        ("disable", "Disable a schedule.", "li schedule disable sched-abc123"),
+        (
+            "disable",
+            "Disable a schedule.",
+            'li schedule disable sched-abc123 --reason "planned maintenance"',
+        ),
         ("delete", "Delete a schedule.", "li schedule delete sched-abc123"),
     ):
         p = sched_sub.add_parser(
@@ -2599,6 +2620,12 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         p.add_argument(
             "id", help="Id of the schedule, as returned by `li schedule list` in its `id` field."
         )
+        if sub_name == "disable":
+            p.add_argument(
+                "--reason",
+                default=None,
+                help="Why this schedule stops firing, recorded in its definition history. Optional.",
+            )
 
     # trigger
     trigger_p = sched_sub.add_parser(

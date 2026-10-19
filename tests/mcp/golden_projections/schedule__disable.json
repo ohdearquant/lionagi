@@ -7,6 +7,11 @@
         "description": "Id of the schedule, as returned by `li schedule list` in its `id` field.",
         "type": "string",
         "x-positional": true
+      },
+      "reason": {
+        "description": "Why this schedule stops firing, recorded in its definition history. Optional.",
+        "type": "string",
+        "x-flag": "--reason"
       }
     },
     "required": [
