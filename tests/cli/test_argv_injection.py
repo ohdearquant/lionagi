@@ -34,36 +34,17 @@ def _schedule(**kwargs) -> dict:
 
 
 class TestBuildArgvActionModelInjection:
-    def test_model_starting_with_dash_raises(self):
+    @pytest.mark.parametrize(
+        "action_model",
+        ("--bypass", "--yolo", "--project", "-m"),
+        ids=("bypass", "yolo", "project", "short-flag"),
+    )
+    def test_model_starting_with_dash_raises(self, action_model):
         """action_model starting with '-' must raise ValueError."""
         from lionagi.studio.scheduler.subprocess import build_argv
 
         with pytest.raises(ValueError, match="starts with '-'"):
-            build_argv(_schedule(action_model="--bypass"), {})
-
-    def test_model_bypass_flag_raises(self):
-        from lionagi.studio.scheduler.subprocess import build_argv
-
-        with pytest.raises(ValueError, match="starts with '-'"):
-            build_argv(_schedule(action_model="--bypass"), {})
-
-    def test_model_yolo_flag_raises(self):
-        from lionagi.studio.scheduler.subprocess import build_argv
-
-        with pytest.raises(ValueError, match="starts with '-'"):
-            build_argv(_schedule(action_model="--yolo"), {})
-
-    def test_model_project_flag_raises(self):
-        from lionagi.studio.scheduler.subprocess import build_argv
-
-        with pytest.raises(ValueError, match="starts with '-'"):
-            build_argv(_schedule(action_model="--project"), {})
-
-    def test_model_short_flag_raises(self):
-        from lionagi.studio.scheduler.subprocess import build_argv
-
-        with pytest.raises(ValueError, match="starts with '-'"):
-            build_argv(_schedule(action_model="-m"), {})
+            build_argv(_schedule(action_model=action_model), {})
 
     def test_model_invalid_chars_raises(self):
         from lionagi.studio.scheduler.subprocess import build_argv
