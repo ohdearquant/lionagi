@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from lionagi.libs.path_safety import resolve_workspace_path as _resolve_workspace_path
 from lionagi.ln import is_ssrf_safe
+from lionagi.ln._paths import _resolve_workspace_root
 from lionagi.ln.concurrency import run_sync
 from lionagi.ln.types import Enum
 from lionagi.protocols.action.tool import Tool
@@ -291,7 +292,7 @@ class ReaderTool(LionTool):
         self._tool = None
         self._cache: dict[str, tuple[str, float]] = {}
         self._cache_ttl = cache_ttl
-        self.workspace_root = Path(workspace_root or Path.cwd()).expanduser().resolve()
+        self.workspace_root = _resolve_workspace_root(workspace_root)
         self._allowed_url_hosts: frozenset[str] = frozenset(allowed_url_hosts or ())
 
     async def handle_request(self, request: ReaderRequest) -> ReaderResponse:
