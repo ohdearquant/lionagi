@@ -106,11 +106,14 @@ def get_class(class_name: str) -> type:
 
     # Importing the built-in modules above may have registered additional
     # Node subclasses under their full-qualified names; check by suffix. A
-    # short name matches any of them; a dotted name only one registered under
-    # an allowed prefix that the name itself starts with.
+    # short name matches any of them; a dotted name only one defined under an
+    # allowed prefix that the name itself starts with. The class's own module
+    # decides, not the key it was registered under: a key records the module a
+    # class had when it was registered, which need not be where it is defined now.
     for key, cls in LION_CLASS_REGISTRY.items():
         if key == name or key.endswith(f".{name}"):
-            if "." not in class_name or key.startswith(prefixes):
+            defined_in = getattr(cls, "__module__", None)
+            if "." not in class_name or f"{defined_in}.".startswith(prefixes):
                 return cls
 
     raise ValueError(_NOT_FOUND.format(class_name))

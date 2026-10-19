@@ -11,7 +11,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Callable, Generator, Iterator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, ClassVar, Generic, Literal, TypeVar, cast
+from typing import Any, ClassVar, Generic, Literal, TypeVar, cast, get_origin
 from uuid import UUID
 
 from pydantic import Field, PrivateAttr, field_serializer
@@ -78,27 +78,27 @@ def _validate_item_type(value, /) -> set[type[T]] | None:
         return None
 
     value = to_list_type(value)
-    out, resolved = set(), []
+    resolved = []
 
     from lionagi._class_registry import get_class
 
     for i in value:
-        subcls = i
+        pending = [i]
         if isinstance(i, str):
             try:
                 # Imports no module outside the allowed prefixes; a bare name is refused.
-                subcls = get_class(i) if "." in i else None
+                pending = [get_class(i) if "." in i else None]
             except Exception as e:
-                raise ValidationError.from_value(
-                    i,
-                    message=str(e),
-                    cause=e,
-                ) from e
-        if isinstance(subcls, type) or is_union_type(subcls):
-            resolved.extend(union_members(subcls) if is_union_type(subcls) else (subcls,))
-            out.update(resolved)
-        else:
-            raise ValidationError.from_value(i, expected="A type.")
+                raise ValidationError.from_value(i, message=str(e), cause=e) from e
+        # A union counts as each member, nested ones too; never None, a ForwardRef or a generic.
+        while pending:
+            m = pending.pop()
+            if is_union_type(m):
+                pending.extend(union_members(m))
+            elif isinstance(m, type) and m is not type(None) and get_origin(m) is None:
+                resolved.append(m)
+            else:
+                raise ValidationError.from_value(i, expected="A type.")
 
     # Compared once resolved and unions expanded: a type and its name, two names
     # for one class, or a type and a union holding it repeat one item type.
@@ -106,7 +106,7 @@ def _validate_item_type(value, /) -> set[type[T]] | None:
         raise ValidationError("Detected duplicated item types in item_type.")
 
     if len(value) > 0:
-        return out
+        return set(resolved)
 
 
 def _validate_progression(value: Any, collections: dict[UUID, T], /) -> Progression:

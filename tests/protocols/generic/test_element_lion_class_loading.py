@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import sys
 import types
+from typing import Annotated, ForwardRef, Literal, Optional, Union
 
 import pytest
 
@@ -277,12 +278,51 @@ def test_distinct_item_types_given_by_type_and_name_are_kept():
     assert pile.item_type == {Element, Node}
 
 
-def test_a_registered_class_falls_back_only_under_the_prefix_it_was_registered_under(monkeypatch):
-    spoof = type("SpoofNode", (LocalElement,), {"__module__": "lionagi.spoofed_zz"})
-    monkeypatch.setitem(LION_CLASS_REGISTRY, "ext_unallowed_zz.SpoofNode", spoof)
-    assert get_class("SpoofNode") is spoof
+def test_a_registered_class_falls_back_by_the_module_it_is_defined_in(monkeypatch):
+    # A registry key records the module a class had when it was registered; the
+    # fallback follows the module the class is defined in now.
+    foreign = type("ForeignKeyedElem", (LocalElement,), {"__module__": "foreign_pkg_zz"})
+    monkeypatch.setitem(LION_CLASS_REGISTRY, "lionagi.old_mod_zz.ForeignKeyedElem", foreign)
+    assert get_class("ForeignKeyedElem") is foreign
     with pytest.raises(ValueError, match="Unable to find class"):
-        get_class("lionagi.no_such_mod_zz.SpoofNode")
+        get_class("lionagi.moved_mod_zz.ForeignKeyedElem")
+
+    moved = type("RekeyedElem", (LocalElement,), {"__module__": "lionagi.custom_mod_zz"})
+    monkeypatch.setitem(LION_CLASS_REGISTRY, "foreign_pkg_zz.RekeyedElem", moved)
+    assert get_class("lionagi.moved_mod_zz.RekeyedElem") is moved
+    assert type(Element.from_dict(_dumped("lionagi.custom_mod_zz.RekeyedElem"))) is moved
+
+
+def test_a_class_registered_under_its_bare_name_falls_back_by_its_module(monkeypatch):
+    bare = type("BareKeyedElem", (LocalElement,), {"__module__": "lionagi.custom_mod_zz"})
+    monkeypatch.setitem(LION_CLASS_REGISTRY, "BareKeyedElem", bare)
+    assert get_class("lionagi.moved_mod_zz.BareKeyedElem") is bare
+    elsewhere = type("BareKeyedOther", (LocalElement,), {"__module__": "foreign_pkg_zz"})
+    monkeypatch.setitem(LION_CLASS_REGISTRY, "BareKeyedOther", elsewhere)
+    with pytest.raises(ValueError, match="Unable to find class"):
+        get_class("lionagi.moved_mod_zz.BareKeyedOther")
+
+
+class _UnreadableModule(type):
+    @property
+    def __module__(cls):
+        raise AttributeError("__module__")
+
+
+def test_a_class_whose_module_cannot_be_read_does_not_fall_back(monkeypatch):
+    unreadable = _UnreadableModule("UnreadableModuleZz", (), {})
+    monkeypatch.setitem(LION_CLASS_REGISTRY, "lionagi.old_mod_zz.UnreadableModuleZz", unreadable)
+    assert get_class("UnreadableModuleZz") is unreadable
+    with pytest.raises(ValueError, match="Unable to find class"):
+        get_class("lionagi.moved_mod_zz.UnreadableModuleZz")
+
+    import importlib
+
+    builtin = importlib.import_module(_class_registry._BUILTIN_MODULES[0])
+    unlisted = _UnreadableModule("UnlistedModuleZz", (), {})
+    monkeypatch.setattr(builtin, "UnlistedModuleZz", unlisted, raising=False)
+    with pytest.raises(ValueError, match="Unable to find class"):
+        get_class("UnlistedModuleZz")
 
 
 def test_a_union_item_type_counts_as_each_of_its_members():
@@ -291,3 +331,33 @@ def test_a_union_item_type_counts_as_each_of_its_members():
     assert Pile(item_type=[Element | Node]).item_type == {Element, Node}
     with pytest.raises(ValidationError, match="duplicated item types"):
         Pile(item_type=[Element, Element | Node])
+
+
+def test_a_union_nested_in_a_union_counts_as_each_of_its_members():
+    from lionagi.protocols.generic.log import Log
+    from lionagi.protocols.graph.node import Node
+
+    nested = Annotated[Node | Log, "meta"] | LocalElement
+    assert Pile(item_type=[nested]).item_type == {Node, Log, LocalElement}
+    with pytest.raises(ValidationError, match="duplicated item types"):
+        Pile(item_type=[Node, nested])
+    pile = Pile(collections=[LocalElement()], item_type=[nested], strict_type=True)
+    assert len(pile) == 1
+
+
+@pytest.mark.parametrize(
+    "item_type",
+    [
+        Union[ForwardRef("lionagi.protocols.graph.node.Node"), LocalElement],
+        Union[LocalElement, Literal["x"]],
+        LocalElement | list[Element],
+        list[Element],
+        LocalElement | None,
+        Optional[LocalElement],
+    ],
+    ids=["forward-refs", "literal", "generic-member", "generic", "none", "optional"],
+)
+def test_an_item_type_that_is_not_a_class_is_refused(item_type):
+    with pytest.raises(ValidationError) as exc:
+        Pile(item_type=[item_type])
+    assert exc.value.details.get("expected") == "A type."
