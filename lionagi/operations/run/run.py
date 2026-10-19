@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sys
 from collections.abc import AsyncGenerator
@@ -24,6 +25,7 @@ from lionagi.protocols.messages import (
     Instruction,
 )
 from lionagi.providers._provider_errors import WorkerLivenessError, classify_provider_error
+from lionagi.providers._subagent_admission import _on_subagent_admission
 from lionagi.service.accounts._pricing import CACHE_WRITE_LIFETIMES, cache_write_split
 
 from .._api_hooks import emit_api_post_call, emit_api_pre_call, emit_api_stream_chunk
@@ -205,8 +207,28 @@ async def _stream_with_liveness(
                     if remaining_to_deadline is None
                     else max(0.0, min(liveness_timeout, remaining_to_deadline))
                 )
-                with anyio.fail_after(wait_for):
-                    first_chunk = await stream_iter.__anext__()
+
+                def _time_from_admission(admitted: bool) -> None:
+                    # A CLI worker can wait for a machine-wide slot before it starts. Only
+                    # the caller's own deadline runs during that wait; the window for the
+                    # first output opens once the worker is admitted.
+                    nonlocal is_liveness_boundary
+                    now = current_time()
+                    remaining = stream_deadline - now if stream_deadline is not None else None
+                    if not admitted:
+                        is_liveness_boundary = False
+                        scope.deadline = math.inf if remaining is None else now + remaining
+                        return
+                    is_liveness_boundary = remaining is None or liveness_timeout < remaining
+                    scope.deadline = now + (
+                        liveness_timeout
+                        if remaining is None
+                        else max(0.0, min(liveness_timeout, remaining))
+                    )
+
+                with anyio.fail_after(wait_for) as scope:
+                    with _on_subagent_admission(_time_from_admission):
+                        first_chunk = await stream_iter.__anext__()
         except StopAsyncIteration:
             # Zero chunks is a legitimate empty completion, not a hang.
             return

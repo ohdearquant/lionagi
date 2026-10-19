@@ -894,35 +894,36 @@ async def ndjson_from_cli(
         spawn.add_done_callback(_kill_abandoned_spawn)
         lease.release()
         raise
-    lease.record_child(spawned.pid, spawned.create_time)
+    # From here the child runs and holds the lease: anything that fails before the
+    # stream's own try below ends its group and gives the slots back here.
+    try:
+        lease.record_child(spawned.pid, spawned.create_time)
 
-    # Read the identity here, not at teardown: once the child is reaped its pid
-    # and group id are both recyclable. The run observer receives the live
-    # handle privately; the caller callback keeps its existing identity-only
-    # contract. Both are awaited before output is consumed, and failed
-    # accounting tears down the child.
-    observers = (
-        (_RUN_CLI_SPAWN_OBSERVER.get(), (proc, spawned)),
-        (on_spawn, (spawned,)),
-    )
-    for observer, args in observers:
-        if observer is None:
-            continue
+        # Read the identity here, not at teardown: once the child is reaped its pid
+        # and group id are both recyclable. The run observer receives the live
+        # handle privately; the caller callback keeps its existing identity-only
+        # contract. Both are awaited before output is consumed, and failed
+        # accounting tears down the child.
+        observers = (
+            (_RUN_CLI_SPAWN_OBSERVER.get(), (proc, spawned)),
+            (on_spawn, (spawned,)),
+        )
+        for observer, args in observers:
+            if observer is not None:
+                await maybe_await(observer(*args))
+
+        if proc.stdout is None:
+            raise RuntimeError("Failed to capture stdout from subprocess")
+    except BaseException:
         try:
-            await maybe_await(observer(*args))
-        except BaseException:
-            try:
-                await end_child_group(proc, spawned=spawned)
-            finally:
-                lease.release()
-            raise
+            await end_child_group(proc, spawned=spawned)
+        finally:
+            lease.release()
+        raise
 
     decoder = codecs.getincrementaldecoder("utf-8")()
     json_decoder = json.JSONDecoder()
     buffer: str = ""
-
-    if proc.stdout is None:
-        raise RuntimeError("Failed to capture stdout from subprocess")
 
     # Bounded stderr drain — without this a stderr-heavy session deadlocks
     # when the OS pipe buffer fills before stdout EOF.

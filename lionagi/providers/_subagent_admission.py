@@ -22,14 +22,23 @@ file non-inheritable, so a grandchild that daemonizes cannot keep a slot after
 the agent ends. Because the holder can die while its child, which leads its own
 session, keeps running, the child's pid and start time are written into the slot
 and a slot whose recorded child is still the same running process counts as
-held even when nobody holds its lock.
+held even when nobody holds its lock. A child whose start time could not be read
+is protected only while its holder lives: a bare pid could name a reused one.
+
+Counting a pool and taking its slot happen under that pool's admission lock
+(``<pool>/.admission``), and an agent takes the admission locks of all its pools,
+in one order, before it counts any: it is admitted to every pool or to none, so
+two admissions never read each other's half-taken slots as holders, and an agent
+waiting on one pool holds no slot in another. Each slot records the cap its holder
+read, and a pool is full at the smallest cap among the agent's own and those its
+holders recorded, so a process reading a larger cap cannot run past a smaller one.
 
 When a pool is full the admission waits, re-trying every two seconds, for up to
 ``LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS`` (600 by default, ``0`` refuses at once),
 then raises :class:`SubagentAdmissionRefusedError` naming the pool, its cap and
-the pids holding it. A cap or wait that does not read as a whole number, or a
-pool directory that cannot be created or written, refuses the same way rather
-than letting the agent start uncounted.
+the pids holding it. A cap or wait that does not read as a whole number, an engine
+name that cannot name a pool, or a pool directory that cannot be created or
+written, refuses the same way rather than letting the agent start uncounted.
 """
 
 from __future__ import annotations
@@ -38,9 +47,11 @@ import contextlib
 import json
 import os
 import random
+import re
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -82,12 +93,59 @@ WORKLOADS: tuple[str, ...] = ("light", "heavy")
 DEFAULT_WORKLOAD = "heavy"
 
 _POLL_SECONDS = 2.0
-# A slot locked with no record is being taken or counted by another process right now;
-# the pool is retried at once this many times before it is read as full.
-_CONTENTION_RETRIES = 25
+# An admission lock is held only while one process counts and takes a pool's slots, or
+# a status read counts them; one held past this is refused rather than waited on.
+_ADMISSION_LOCK_SECONDS = 5.0
 _TOTAL_POOL = "all"
 _HEAVY_POOL = "heavy"
 _SLOT_SUFFIX = ".lock"
+_ADMISSION_LOCK = ".admission"
+# A slot record is a few hundred bytes; one larger than this is not read as a record.
+_RECORD_BYTES = 65536
+_ENGINE_POOL_RE = re.compile(r"[a-z][a-z0-9_]{0,31}")
+
+
+# Told when an agent started in this context begins waiting for slots and when it is
+# admitted; see _on_subagent_admission.
+_ON_ADMISSION: ContextVar[Callable[[bool], None] | None] = ContextVar(
+    "lionagi_subagent_on_admission", default=None
+)
+
+
+@contextlib.contextmanager
+def _on_subagent_admission(callback: Callable[[bool], None]) -> Iterator[None]:
+    """Call ``callback(False)`` when a CLI agent started in this context starts waiting for
+    its slots, and ``callback(True)`` once it is admitted.
+
+    A caller timing the agent's first output stops its clock for the wait and starts it
+    at admission, so the time spent waiting for a slot is not read as a worker that
+    never spoke.
+    """
+    token = _ON_ADMISSION.set(callback)
+    try:
+        yield
+    finally:
+        _ON_ADMISSION.reset(token)
+
+
+def _tell_admission(admitted: bool) -> None:
+    callback = _ON_ADMISSION.get()
+    if callback is not None:
+        callback(admitted)
+
+
+def _admitted(lease: SubagentLease) -> SubagentLease:
+    _tell_admission(True)
+    return lease
+
+
+def _engine_pool(engine: str) -> str | None:
+    """The pool an engine counts in (``gemini-cli`` -> ``gemini_cli``), or None when the
+    name cannot be one: a pool name is also a directory and the suffix of a variable."""
+    pool = engine.lower().replace("-", "_")
+    if not _ENGINE_POOL_RE.fullmatch(pool) or pool in (_TOTAL_POOL, _HEAVY_POOL):
+        return None
+    return pool
 
 
 def engine_cap_env(engine: str) -> str:
@@ -136,18 +194,22 @@ def _read_wait(environ: Mapping[str, str]) -> float:
 def _caps(
     environ: Mapping[str, str], engine: str | None, workload: str
 ) -> list[tuple[str, str, int]]:
-    """``(pool, variable, cap)`` for every capped pool this agent counts against.
-
-    Narrowest first, so every process takes pools in one order.
-    """
+    """``(pool, variable, cap)`` for every capped pool this agent counts against, sorted by
+    pool name: every process takes the admission locks in that one order."""
     pools: list[tuple[str, str, int]] = []
     if engine:
+        pool = _engine_pool(engine)
+        if pool is None:
+            raise SubagentAdmissionRefusedError(
+                f"subagent admission refused: engine {engine!r} cannot name a pool "
+                "(a letter, then up to 31 letters, digits, '_' or '-'; not 'all' or 'heavy')"
+            )
         name = engine_cap_env(engine)
-        pools.append((engine.lower(), name, _read_whole_number(environ, name)))
+        pools.append((pool, name, _read_whole_number(environ, name)))
     if workload == _HEAVY_POOL:
         pools.append((_HEAVY_POOL, HEAVY_CAP_ENV, _read_whole_number(environ, HEAVY_CAP_ENV)))
     pools.append((_TOTAL_POOL, TOTAL_CAP_ENV, _read_whole_number(environ, TOTAL_CAP_ENV)))
-    return [p for p in pools if p[2] > 0]
+    return sorted(p for p in pools if p[2] > 0)
 
 
 @dataclass
@@ -159,8 +221,9 @@ class _Slot:
 
     def write(self) -> None:
         data = json.dumps(self.record, sort_keys=True).encode()
-        os.ftruncate(self.fd, 0)
+        # Written, then cut to length: a reader never finds the file empty while it is held.
         os.pwrite(self.fd, data, 0)
+        os.ftruncate(self.fd, len(data))
 
     def release(self) -> None:
         if self.fd < 0:
@@ -201,7 +264,7 @@ class SubagentLease:
 def _read_record(path: Path) -> dict[str, Any] | None:
     try:
         with path.open("rb") as handle:
-            loaded = json.loads(handle.read(4096) or b"null")
+            loaded = json.loads(handle.read(_RECORD_BYTES + 1) or b"null")
     except (OSError, ValueError):
         return None
     return loaded if isinstance(loaded, dict) else None
@@ -210,8 +273,9 @@ def _read_record(path: Path) -> dict[str, Any] | None:
 def _recorded_child_runs(record: dict[str, Any] | None) -> bool:
     """Whether the slot's recorded child is still the process that was recorded.
 
-    An unreadable process table counts as running: a slot is never handed out on a
-    probe that could not look.
+    A record without the child's start time does not count: the pid alone could name a
+    process that reused it. An unreadable process table counts as running: a slot is
+    never handed out on a probe that could not look.
     """
     if not record:
         return False
@@ -219,80 +283,133 @@ def _recorded_child_runs(record: dict[str, Any] | None) -> bool:
     started = record.get("child_started")
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return False
+    if not isinstance(started, (int, float)) or isinstance(started, bool):
+        return False
     state, observed = process_create_time(pid)
     if state == "unknown":
         return True
     if state == "gone" or observed is None:
         return False
-    if not isinstance(started, (int, float)) or isinstance(started, bool):
-        return True
     return start_time_matches(observed, float(started))
+
+
+def _recorded_cap(record: dict[str, Any]) -> int | None:
+    cap = record.get("cap")
+    if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0:
+        return cap
+    return None
 
 
 def _open_slot_file(path: Path) -> int:
     return os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0), 0o600)
 
 
-def _try_slot(path: Path) -> tuple[int | None, dict[str, Any] | None]:
-    """Lock *path* if it is free: ``(fd, previous record)``, or ``(None, holder record)``."""
-    fd = _open_slot_file(path)
+def _lock_now(fd: int) -> bool:
     try:
         _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
     except BlockingIOError:
-        os.close(fd)
-        return None, _read_record(path)
+        return False
+    return True
+
+
+def _admission_lock_held_too_long(pool: str) -> SubagentAdmissionRefusedError:
+    return SubagentAdmissionRefusedError(
+        f"subagent admission refused: the admission lock of pool '{pool}' stayed held for "
+        f"{_ADMISSION_LOCK_SECONDS:g}s"
+    )
+
+
+async def _lock_admission(pool_dir: Path) -> int:
+    """Hold *pool_dir*'s admission lock; the fd to close when the pool is counted."""
+    fd = _open_slot_file(pool_dir / _ADMISSION_LOCK)
+    try:
+        deadline = time.monotonic() + _ADMISSION_LOCK_SECONDS
+        while not _lock_now(fd):
+            if time.monotonic() >= deadline:
+                raise _admission_lock_held_too_long(pool_dir.name)
+            await anyio.sleep(random.uniform(0.005, 0.05))  # noqa: S311 (retry spacing)
     except BaseException:
         os.close(fd)
         raise
-    record = _read_record(path)
-    if _recorded_child_runs(record):
-        _fcntl.flock(fd, _fcntl.LOCK_UN)
+    return fd
+
+
+def _lock_admission_blocking(pool_dir: Path) -> int:
+    """:func:`_lock_admission` for a synchronous status read."""
+    fd = _open_slot_file(pool_dir / _ADMISSION_LOCK)
+    try:
+        deadline = time.monotonic() + _ADMISSION_LOCK_SECONDS
+        while not _lock_now(fd):
+            if time.monotonic() >= deadline:
+                raise _admission_lock_held_too_long(pool_dir.name)
+            time.sleep(0.01)
+    except BaseException:
         os.close(fd)
-        return None, record
-    return fd, record
+        raise
+    return fd
 
 
-def _held_by_others(pool_dir: Path, own: Path | None) -> list[dict[str, Any]]:
-    """The records of every held slot in *pool_dir* other than *own*, at every index."""
+def _unlock_admission(fd: int) -> None:
+    # Closing the fd drops the lock; the file stays, so the next admission locks the same one.
+    os.close(fd)
+
+
+def _read_pool(pool_dir: Path) -> tuple[list[dict[str, Any]], set[str]]:
+    """Under the pool's admission lock: the records of its held slots, and the names of
+    its slot files that are free. Writes nothing.
+
+    A slot is held while its holder has it locked, or while the child its record names
+    still runs; a dead holder's record in a free slot is not counted.
+    """
     held: list[dict[str, Any]] = []
+    free: set[str] = set()
     for path in sorted(pool_dir.glob(f"*{_SLOT_SUFFIX}")):
-        if own is not None and path == own:
-            continue
-        fd, record = _try_slot(path)
-        if fd is None:
-            held.append(record or {})
-            continue
-        _fcntl.flock(fd, _fcntl.LOCK_UN)
-        os.close(fd)
-    return held
-
-
-def _take_pool_slot(
-    pool: str, cap: int, holder: dict[str, Any]
-) -> tuple[_Slot | None, list[dict[str, Any]]]:
-    """A slot under *cap* in *pool*, or ``None`` and the holders that fill it."""
-    pool_dir = _pools_root() / pool
-    pool_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    for index in range(cap):
-        path = pool_dir / f"{index}{_SLOT_SUFFIX}"
-        fd, _ = _try_slot(path)
-        if fd is None:
-            continue
-        slot = _Slot(pool, path, fd, dict(holder))
+        fd = _open_slot_file(path)
         try:
-            # Written first, so a process counting this pool meanwhile names this holder.
-            slot.write()
-            # Every held slot counts, not only those below this process's cap: another
-            # process may read a larger cap from its own environment and hold a higher index.
-            others = _held_by_others(pool_dir, path)
-        except BaseException:
-            slot.release()
-            raise
-        if len(others) >= cap:
-            slot.release()
-            return None, others
-        return slot, []
-    return None, _held_by_others(pool_dir, None)
+            if not _lock_now(fd):
+                held.append(_read_record(path) or {})
+                continue
+            record = _read_record(path)
+            if _recorded_child_runs(record):
+                held.append(record or {})
+            else:
+                # Whatever record a free slot still has is overwritten when it is taken.
+                free.add(path.name)
+        finally:
+            # Closing drops the lock taken above; the slot is taken later, if at all,
+            # through a fresh fd.
+            os.close(fd)
+    return held, free
+
+
+def _effective_cap(cap: int, held: list[dict[str, Any]]) -> int:
+    recorded = [c for c in (_recorded_cap(r) for r in held) if c is not None]
+    return min([cap, *recorded])
+
+
+def _take_slot(pool: str, pool_dir: Path, free: set[str], holder: dict[str, Any]) -> _Slot:
+    """Under the pool's admission lock, with room counted: lock the lowest-numbered slot
+    no holder has and write this holder's record into it."""
+    index = 0
+    while True:
+        name = f"{index}{_SLOT_SUFFIX}"
+        path = pool_dir / name
+        if name in free or not path.exists():
+            break
+        index += 1
+    fd = _open_slot_file(path)
+    if not _lock_now(fd):
+        # Nothing takes a slot outside the admission lock, so this is a holder that does
+        # not take it (an older lionagi); counted next round rather than overwritten.
+        os.close(fd)
+        raise BlockingIOError(f"slot {name} of pool '{pool}' was taken outside its lock")
+    slot = _Slot(pool, path, fd, dict(holder))
+    try:
+        slot.write()
+    except BaseException:
+        slot.release()
+        raise
+    return slot
 
 
 def _holder_text(records: list[dict[str, Any]]) -> str:
@@ -326,7 +443,7 @@ async def admit_subagent(
     environ = os.environ if environ is None else environ
     caps = _caps(environ, engine, workload)
     if not caps:
-        return SubagentLease()
+        return _admitted(SubagentLease())
     if _fcntl is None:
         raise SubagentAdmissionRefusedError(
             f"subagent admission refused: {', '.join(v for _, v, _ in caps)} set, but this "
@@ -334,6 +451,7 @@ async def admit_subagent(
         )
     wait = _read_wait(environ)
     deadline = time.monotonic() + wait
+    _tell_admission(False)
     holder = {
         "holder_pid": os.getpid(),
         "engine": engine,
@@ -342,17 +460,32 @@ async def admit_subagent(
         "child_pid": None,
         "child_started": None,
     }
-    contended = 0
     while True:
         lease = SubagentLease()
-        full: tuple[str, str, int, list[dict[str, Any]]] | None = None
+        locks: list[int] = []
+        full: tuple[str, str, int, int, list[dict[str, Any]]] | None = None
         try:
+            pools: list[tuple[str, Path, int, set[str]]] = []
+            for pool, _variable, _cap in caps:
+                pool_dir = _pools_root() / pool
+                pool_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+                locks.append(await _lock_admission(pool_dir))
+            # Every admission lock is held: count every pool, and take a slot in each only
+            # once all of them have room.
             for pool, variable, cap in caps:
-                slot, holders = _take_pool_slot(pool, cap, holder)
-                if slot is None:
-                    full = (pool, variable, cap, holders)
+                pool_dir = _pools_root() / pool
+                held, free = _read_pool(pool_dir)
+                effective = _effective_cap(cap, held)
+                if len(held) >= effective:
+                    full = (pool, variable, cap, effective, held)
                     break
-                lease.slots.append(slot)
+                pools.append((pool, pool_dir, cap, free))
+            if full is None:
+                for pool, pool_dir, cap, free in pools:
+                    lease.slots.append(_take_slot(pool, pool_dir, free, {**holder, "cap": cap}))
+        except SubagentAdmissionRefusedError:
+            lease.release()
+            raise
         except OSError as exc:
             lease.release()
             raise SubagentAdmissionRefusedError(
@@ -362,28 +495,24 @@ async def admit_subagent(
         except BaseException:
             lease.release()
             raise
+        finally:
+            for fd in reversed(locks):
+                _unlock_admission(fd)
         if full is None:
-            return lease
-        lease.release()
-        pool, variable, cap, holders = full
-        # A holder with no record is a slot locked for an instant: a status read counting
-        # the pool, or an admission between its lock and its write. Not a full pool, so it
-        # is retried at once, whatever the wait, rather than refused or slept on.
-        if contended < _CONTENTION_RETRIES and any(
-            not isinstance(r.get("holder_pid"), int) for r in holders
-        ):
-            contended += 1
-            await anyio.sleep(random.uniform(0.005, 0.05))  # noqa: S311 (retry spacing)
-            continue
+            return _admitted(lease)
+        pool, variable, cap, effective, holders = full
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             what = f"{engine} " if engine else ""
+            if effective < cap:
+                at = f"at a cap of {effective} a holder read ({variable}={cap} here)"
+            else:
+                at = f"at its cap of {cap} ({variable})"
             raise SubagentAdmissionRefusedError(
                 f"subagent admission refused: {workload} {what}agent waited {wait:g}s; "
-                f"pool '{pool}' is at its cap of {cap} ({variable}), "
-                f"held by pid {_holder_text(holders)}",
+                f"pool '{pool}' is {at}, held by pid {_holder_text(holders)}",
                 pool=pool,
-                cap=cap,
+                cap=effective,
                 holders=tuple(r.get("holder_pid") for r in holders),
             )
         # Jittered, so two processes that collide on the last slot do not retry in step.
@@ -394,8 +523,10 @@ async def admit_subagent(
 def subagent_admission_status(environ: Mapping[str, str] | None = None) -> dict[str, Any]:
     """The caps read from *environ* and every pool's cap and held slots, for a status display.
 
-    Read-only on the slots: a free slot is locked and unlocked to tell it from a held
-    one, and no record is written. A cap of 0 means the pool has none.
+    Writes no slot: each pool is counted under its admission lock, as an admission counts
+    it, so the read and an admission never see each other's half-done work. A cap of 0
+    means the pool has none; a variable whose suffix cannot name an engine's pool is
+    reported under ``caps`` and counts in no pool.
     """
     environ = os.environ if environ is None else environ
     root = _pools_root()
@@ -413,7 +544,9 @@ def subagent_admission_status(environ: Mapping[str, str] | None = None) -> dict[
         elif name == HEAVY_CAP_ENV:
             pool = _HEAVY_POOL
         else:
-            pool = name[len(engine_prefix) :].lower()
+            pool = _engine_pool(name[len(engine_prefix) :])
+            if pool is None:
+                continue
         pool_caps[pool] = caps[name]
     if _fcntl is None:
         status: dict[str, Any] = {"root": str(root), "caps": caps, "pools": {}}
@@ -426,15 +559,24 @@ def subagent_admission_status(environ: Mapping[str, str] | None = None) -> dict[
         entry: dict[str, Any] = {"cap": pool_caps.get(pool, 0)}
         pools[pool] = entry
         held: list[dict[str, Any]] = []
-        if pool in on_disk:
-            try:
-                held = _held_by_others(root / pool, None)
-            except OSError as exc:
-                entry["error"] = type(exc).__name__
-                continue
+        pool_dir = root / pool
+        try:
+            if pool in on_disk:
+                lock = _lock_admission_blocking(pool_dir)
+                try:
+                    held, _free = _read_pool(pool_dir)
+                finally:
+                    _unlock_admission(lock)
+            elif pool_dir.exists() or pool_dir.is_symlink():
+                # Something other than a directory sits where the pool's slots belong; an
+                # admission to it is refused, so it is not reported as an empty pool.
+                raise NotADirectoryError(str(pool_dir))
+        except (OSError, SubagentAdmissionRefusedError) as exc:
+            entry["error"] = type(exc).__name__
+            continue
         entry["held"] = len(held)
         entry["holders"] = [
-            {k: r.get(k) for k in ("holder_pid", "child_pid", "engine", "workload", "since")}
+            {k: r.get(k) for k in ("holder_pid", "child_pid", "engine", "workload", "since", "cap")}
             for r in held
         ]
     return {"root": str(root), "caps": caps, "pools": pools}

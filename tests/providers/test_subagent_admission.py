@@ -17,6 +17,7 @@ from pathlib import Path
 
 import anyio
 import pytest
+from anyio import to_thread
 
 from lionagi.ln._proc import process_create_time
 from lionagi.mcp._terminal_cause import allowed_cause_classes
@@ -181,20 +182,19 @@ async def test_a_slot_stays_held_while_its_recorded_child_runs_after_the_holder_
 
 
 @pytest.mark.asyncio
-async def test_a_slot_locked_for_an_instant_by_a_status_read_is_not_a_full_pool(home):
-    """``li monitor`` counts a pool by locking each free slot for a moment. An
-    admission that lands in that moment, with no wait allowed, still admits."""
+async def test_a_pool_being_counted_by_a_status_read_is_waited_on_not_refused(home):
+    """``li monitor`` counts a pool under its admission lock. An admission that lands
+    while it does, with no wait allowed, still admits once the read ends."""
     import fcntl
 
     env = {"LIONAGI_MAX_SUBAGENTS": "1", "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0"}
     pool = _pools(home) / "all"
     pool.mkdir(parents=True)
-    fd = os.open(pool / "0.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    fd = os.open(pool / ".admission", os.O_RDWR | os.O_CREAT, 0o600)
     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     async def status_read_ends():
         await anyio.sleep(0.1)
-        fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
 
     async with anyio.create_task_group() as tg:
@@ -202,6 +202,287 @@ async def test_a_slot_locked_for_an_instant_by_a_status_read_is_not_a_full_pool(
         lease = await _admit(env)
     assert [slot.pool for slot in lease.slots] == ["all"]
     lease.release()
+
+
+@pytest.mark.asyncio
+async def test_an_admission_lock_held_too_long_is_refused(home, monkeypatch):
+    import fcntl
+
+    monkeypatch.setattr(admission, "_ADMISSION_LOCK_SECONDS", 0.2)
+    pool = _pools(home) / "all"
+    pool.mkdir(parents=True)
+    fd = os.open(pool / ".admission", os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        with pytest.raises(SubagentAdmissionRefusedError, match="admission lock of pool 'all'"):
+            await _admit({"LIONAGI_MAX_SUBAGENTS": "1"})
+        assert subagent_admission_status({"LIONAGI_MAX_SUBAGENTS": "1"})["pools"]["all"] == {
+            "cap": 1,
+            "error": "SubagentAdmissionRefusedError",
+        }
+    finally:
+        os.close(fd)
+
+
+@pytest.mark.asyncio
+async def test_a_status_read_mid_admission_never_turns_a_free_pool_full(home):
+    """A status read locks each slot for a moment to count it; a free slot still holding a
+    dead holder's record must not read as held when the admission lands in that moment."""
+    env = {"LIONAGI_MAX_SUBAGENTS": "1", "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0"}
+    pool = _pools(home) / "all"
+    pool.mkdir(parents=True)
+    for _ in range(50):
+        (pool / "0.lock").write_text('{"holder_pid": 999999, "cap": 1, "child_pid": null}')
+        stop = anyio.Event()
+
+        async def read_status():
+            while not stop.is_set():
+                await to_thread.run_sync(subagent_admission_status, env)
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(read_status)
+            lease = await _admit(env)
+            stop.set()
+        lease.release()
+
+
+@pytest.mark.asyncio
+async def test_a_dead_holders_record_in_a_free_slot_does_not_count(home):
+    env = {"LIONAGI_MAX_SUBAGENTS": "1", "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0"}
+    pool = _pools(home) / "all"
+    pool.mkdir(parents=True)
+    # What a SIGKILLed holder leaves: its record, no lock, no child.
+    (pool / "0.lock").write_text('{"holder_pid": 999999, "cap": 1, "child_pid": null}')
+    lease = await _admit(env)
+    assert [slot.path.name for slot in lease.slots] == ["0.lock"]
+    lease.release()
+
+
+@pytest.mark.asyncio
+async def test_a_smaller_cap_a_holder_read_bounds_an_agent_reading_a_larger_one(home):
+    narrow = {"LIONAGI_MAX_SUBAGENTS": "1", "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0"}
+    wide = {"LIONAGI_MAX_SUBAGENTS": "2", "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0"}
+    first = await _admit(narrow)
+    try:
+        with pytest.raises(SubagentAdmissionRefusedError) as refused:
+            await _admit(wide)
+    finally:
+        first.release()
+    assert "at a cap of 1 a holder read (LIONAGI_MAX_SUBAGENTS=2 here)" in str(refused.value)
+    assert refused.value.cap == 1
+    # With the narrow holder gone the wide cap is the only one again.
+    leases = [await _admit(wide) for _ in range(2)]
+    for lease in leases:
+        lease.release()
+
+
+_RACER = textwrap.dedent(
+    """
+    import sys, time, anyio
+    from lionagi.providers._subagent_admission import SubagentAdmissionRefusedError, admit_subagent
+
+    async def main():
+        env = {"LIONAGI_MAX_SUBAGENTS": sys.argv[1], "LIONAGI_MAX_SUBAGENTS_CODEX": sys.argv[2],
+               "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0"}
+        start = float(sys.argv[3])
+        # Asleep until just before the start, then a short spin, so the racers start together.
+        time.sleep(max(0.0, start - time.time() - 0.05))
+        while time.time() < start:
+            pass
+        try:
+            await admit_subagent(engine="codex", workload=sys.argv[4], environ=env)
+        except SubagentAdmissionRefusedError:
+            print("refused", flush=True)
+            return
+        print("admitted", flush=True)
+        time.sleep(5)
+
+    anyio.run(main)
+    """
+)
+
+
+@pytest.mark.parametrize(
+    ("total", "codex", "workloads", "admitted"),
+    [
+        # Two admitters at a cap of 2 colliding on the same instant: both fit.
+        ("2", "0", ["light", "light"], 2),
+        # Four at a cap of 2: exactly two, never more and never fewer.
+        ("2", "0", ["light"] * 4, 2),
+        # Three engine-capped admitters, one heavy: the engine cap of 3 fits all three.
+        ("5", "3", ["heavy", "light", "light"], 3),
+    ],
+)
+def test_admitters_racing_on_one_pool_admit_exactly_up_to_its_cap(
+    home, total, codex, workloads, admitted
+):
+    env = {**os.environ, "LIONAGI_HOME": str(home)}
+    start = str(time.time() + 4.0)
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-c", _RACER, total, codex, start, workload],
+            env=env,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        for workload in workloads
+    ]
+    try:
+        outcomes = [proc.stdout.readline().strip() for proc in procs]
+    finally:
+        for proc in procs:
+            proc.kill()
+            proc.wait(timeout=10)
+    assert outcomes.count("admitted") == admitted, outcomes
+    assert outcomes.count("refused") == len(workloads) - admitted, outcomes
+
+
+@pytest.mark.asyncio
+async def test_racers_below_a_holder_at_a_higher_index_admit_up_to_the_room_left(home):
+    """A holder that read a cap of 3 keeps slot 2; two agents reading a cap of 2 race
+    for the one slot left. One admits and one is refused; neither reads the other's
+    half-taken slot as a holder and both refuse."""
+    wide = {"LIONAGI_MAX_SUBAGENTS": "3", "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0"}
+    leases = [await _admit(wide) for _ in range(3)]
+    leases[0].release()
+    leases[1].release()
+    try:
+        env = {**os.environ, "LIONAGI_HOME": str(home)}
+        start = str(time.time() + 4.0)
+        outcomes = []
+        for _round in range(3):
+            procs = [
+                subprocess.Popen(
+                    [sys.executable, "-c", _RACER, "2", "0", start, "light"],
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    text=True,
+                )
+                for _ in range(2)
+            ]
+            try:
+                outcomes.append(sorted(proc.stdout.readline().strip() for proc in procs))
+            finally:
+                for proc in procs:
+                    proc.kill()
+                    proc.wait(timeout=10)
+            start = str(time.time() + 3.0)
+        assert outcomes == [["admitted", "refused"]] * 3, outcomes
+    finally:
+        for lease in leases:
+            lease.release()
+
+
+@pytest.mark.asyncio
+async def test_an_agent_waiting_on_one_pool_holds_no_slot_in_another(home):
+    env = {
+        "LIONAGI_MAX_SUBAGENTS_HEAVY": "1",
+        "LIONAGI_MAX_SUBAGENTS_CODEX": "1",
+        "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "30",
+    }
+    other = await _admit(env, engine="claude", workload="heavy")  # fills heavy
+    waiting = []
+
+    async def heavy_codex():
+        waiting.append(await _admit(env, engine="codex", workload="heavy"))
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(heavy_codex)
+        await anyio.sleep(0.3)
+        # The heavy codex agent waits on heavy and holds nothing in codex meanwhile.
+        light = await _admit(
+            {**env, "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0"}, engine="codex", workload="light"
+        )
+        assert [slot.pool for slot in light.slots] == ["codex"]
+        light.release()
+        other.release()
+    assert sorted(slot.pool for slot in waiting[0].slots) == ["codex", "heavy"]
+    waiting[0].release()
+
+
+@pytest.mark.asyncio
+async def test_a_child_recorded_without_its_start_time_is_not_protected_after_its_holder(home):
+    env = {"LIONAGI_MAX_SUBAGENTS": "1", "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0"}
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        lease = await _admit(env)
+        lease.record_child(child.pid, None)
+        for slot in lease.slots:
+            os.close(slot.fd)
+            slot.fd = -1
+        # A bare pid could be a reused one, so the slot frees with its holder.
+        again = await _admit(env)
+        assert len(again.slots) == 1
+        again.release()
+    finally:
+        child.kill()
+        child.wait(timeout=10)
+
+
+@pytest.mark.asyncio
+async def test_a_record_past_the_read_limit_is_still_read_whole(home, monkeypatch):
+    env = {"LIONAGI_MAX_SUBAGENTS": "1", "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0"}
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        state, started = process_create_time(child.pid)
+        assert state == "found"
+        lease = await _admit(env)
+        # A long engine name makes a record past 4 KiB; the slot must still read as held.
+        for slot in lease.slots:
+            slot.record["note"] = "x" * 8000
+        lease.record_child(child.pid, started)
+        for slot in lease.slots:
+            os.close(slot.fd)
+            slot.fd = -1
+        with pytest.raises(SubagentAdmissionRefusedError, match=f"child {child.pid}"):
+            await _admit(env)
+    finally:
+        child.kill()
+        child.wait(timeout=10)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("engine", ["all", "heavy", "ALL", "../escaped", "a/b", "", "x" * 33, "9x"])
+async def test_an_engine_that_cannot_name_a_pool_is_refused(home, engine):
+    env = {
+        f"LIONAGI_MAX_SUBAGENTS_{engine.upper()}": "1",
+        "LIONAGI_MAX_SUBAGENTS": "3",
+        "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0",
+    }
+    if engine == "":
+        # An empty engine is no engine: it counts in the total pool only.
+        lease = await _admit(env, engine="")
+        assert [slot.pool for slot in lease.slots] == ["all"]
+        lease.release()
+        return
+    with pytest.raises(SubagentAdmissionRefusedError, match="cannot name a pool"):
+        await _admit(env, engine=engine)
+    assert not (_pools(home).parent / "escaped").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_hyphenated_engine_counts_in_the_pool_its_variable_names(home):
+    env = {"LIONAGI_MAX_SUBAGENTS_GEMINI_CLI": "1"}
+    lease = await _admit(env, engine="gemini-cli")
+    try:
+        assert [slot.pool for slot in lease.slots] == ["gemini_cli"]
+        assert subagent_admission_status(env)["pools"]["gemini_cli"]["held"] == 1
+    finally:
+        lease.release()
+
+
+def test_status_reports_a_file_where_a_pool_directory_belongs(home):
+    _pools(home).mkdir(parents=True)
+    (_pools(home) / "all").write_text("not a directory")
+    status = subagent_admission_status({"LIONAGI_MAX_SUBAGENTS": "2"})
+    assert status["pools"]["all"] == {"cap": 2, "error": "NotADirectoryError"}
+
+
+def test_status_does_not_map_a_reserved_engine_variable_onto_a_pool(home):
+    env = {"LIONAGI_MAX_SUBAGENTS": "4", "LIONAGI_MAX_SUBAGENTS_ALL": "1"}
+    status = subagent_admission_status(env)
+    assert status["caps"]["LIONAGI_MAX_SUBAGENTS_ALL"] == 1
+    assert status["pools"]["all"]["cap"] == 4
 
 
 @pytest.mark.asyncio

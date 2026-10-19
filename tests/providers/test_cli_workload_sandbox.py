@@ -79,6 +79,80 @@ def test_a_light_codex_agent_that_could_write_elsewhere_is_refused_at_constructi
     assert "Declare the agent's workload 'heavy'" in str(refused.value)
 
 
+@pytest.mark.parametrize(
+    ("overrides", "named"),
+    [
+        ({'"sandbox_mode"': "danger-full-access"}, "sandbox_mode"),
+        ({"sandbox_workspace_write . writable_roots": ["/tmp"]}, "sandbox_workspace_write"),
+        ({'"sandbox_workspace_write"."network_access"': True}, "sandbox_workspace_write"),
+        ({"profile": "unconfined"}, "profile"),
+        ({"profiles.unconfined.sandbox_mode": "danger-full-access"}, "profiles"),
+    ],
+)
+def test_a_light_codex_override_is_judged_by_the_key_codex_reads(tmp_path, overrides, named):
+    with pytest.raises(CLIInputRefusedError, match=named):
+        CodexCodeRequest(prompt="hi", repo=tmp_path, workload="light", config_overrides=overrides)
+
+
+def test_a_light_codex_override_key_toml_cannot_read_is_refused(tmp_path):
+    with pytest.raises(CLIInputRefusedError, match="entry 0 is not a TOML key"):
+        CodexCodeRequest(prompt="hi", repo=tmp_path, workload="light", config_overrides={"a b": 1})
+
+
+def test_a_light_codex_agent_refuses_a_profile_lionagi_did_not_write(tmp_path):
+    with pytest.raises(CLIInputRefusedError, match="profile='unconfined'"):
+        CodexCodeRequest(prompt="hi", repo=tmp_path, workload="light", profile="unconfined")
+    generated = "lionagi-mcp-" + "0" * 32
+    args = _codex(tmp_path, workload="light", profile=generated, env={"CODEX_HOME": str(tmp_path)})
+    assert _pairs(args, "--profile") + _pairs(args, "-p") == [generated]
+
+
+def _home_with_config(tmp_path, text: str) -> dict[str, str]:
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "config.toml").write_text(text)
+    return {"CODEX_HOME": str(home)}
+
+
+def test_a_light_codex_agent_refuses_a_root_profile_in_the_configs_codex_reads(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    env = _home_with_config(tmp_path, 'profile = "wide"\n')
+    with pytest.raises(CLIInputRefusedError, match="root profile key"):
+        _codex(repo, workload="light", env=env)
+    (repo / ".codex").mkdir()
+    (repo / ".codex" / "config.toml").write_text('profile = "wide"\n')
+    with pytest.raises(CLIInputRefusedError, match="project codex config"):
+        _codex(repo, workload="light", env={"CODEX_HOME": str(tmp_path / "empty")})
+    # The same configs leave a heavy agent's command line alone.
+    assert "--sandbox" not in _codex(repo, workload="heavy", env=env)
+
+
+def test_a_light_codex_agent_refuses_a_config_defining_its_generated_profile(tmp_path):
+    generated = "lionagi-mcp-" + "1" * 32
+    env = _home_with_config(
+        tmp_path, f'[profiles."{generated}"]\nsandbox_mode = "danger-full-access"\n'
+    )
+    with pytest.raises(CLIInputRefusedError, match="defines a profile named"):
+        _codex(tmp_path, workload="light", profile=generated, env=env)
+
+
+def test_a_light_codex_agent_refuses_a_codex_config_it_cannot_read(tmp_path):
+    env = _home_with_config(tmp_path, "profile = \n")
+    with pytest.raises(CLIInputRefusedError, match="Declare the agent's workload 'heavy'"):
+        _codex(tmp_path, workload="light", env=env)
+
+
+def test_the_light_pins_come_after_every_caller_override(tmp_path):
+    args = _codex(tmp_path, workload="light", config_overrides={"model_verbosity": "low"})
+    overrides = _pairs(args, "-c")
+    assert overrides[-2:] == [
+        "sandbox_workspace_write.writable_roots=[]",
+        "sandbox_workspace_write.network_access=false",
+    ]
+    assert overrides.index('model_verbosity="low"') < len(overrides) - 2
+
+
 def test_a_copied_request_cannot_slip_a_light_agent_past_the_refusal(tmp_path):
     request = CodexCodeRequest(prompt="hi", repo=tmp_path, workload="light")
     copied = request.model_copy(update={"bypass_approvals": True})
