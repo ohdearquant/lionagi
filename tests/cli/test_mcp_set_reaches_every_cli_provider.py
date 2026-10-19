@@ -70,19 +70,17 @@ def test_an_empty_exclusive_set_is_strict_for_the_claude_transport():
     assert kwargs["strict_mcp_config"] is True
 
 
-def test_an_empty_exclusive_set_disables_by_name_for_the_codex_transport(codex_home):
+def test_an_empty_exclusive_set_ignores_the_codex_user_config(codex_home):
     """codex has no wholesale clear: `-c mcp_servers={}` merges onto the existing
-    table rather than replacing it, so each server it would have loaded is
-    disabled by name instead."""
+    table rather than replacing it. The empty set is the run that loads no user
+    config at all, and a by-name disable of a server from a config the run does
+    not load is a table with no server in it, which codex refuses to start with."""
     codex_home.write_config({"khive": {"command": "kkernel"}, "docs": {"url": "http://x"}})
     kwargs: dict = {}
 
     assert apply_forwarded_mcp_servers(kwargs, {}, provider="codex", exclusive=True)
 
-    assert kwargs["config_overrides"] == {
-        "mcp_servers.docs.enabled": False,
-        "mcp_servers.khive.enabled": False,
-    }
+    assert kwargs == {"ignore_user_config": True}
 
 
 def test_an_exclusive_caller_with_no_set_is_strict_for_the_claude_transport():
@@ -98,13 +96,51 @@ def test_an_exclusive_caller_with_no_set_is_strict_for_the_claude_transport():
     assert kwargs["strict_mcp_config"] is True
 
 
-def test_an_exclusive_caller_with_no_set_disables_every_configured_codex_server(codex_home):
+def test_an_exclusive_caller_with_no_set_ignores_the_codex_user_config(codex_home):
     codex_home.write_config({"khive": {"command": "kkernel"}})
     kwargs: dict = {}
 
     assert apply_forwarded_mcp_servers(kwargs, None, provider="codex", exclusive=True)
 
-    assert kwargs["config_overrides"] == {"mcp_servers.khive.enabled": False}
+    assert kwargs == {"ignore_user_config": True}
+
+
+def test_a_request_that_ignores_the_user_config_disables_nothing_by_name(codex_home):
+    """A name from a config the run does not load has no table behind it, so a
+    by-name disable of it is an orphan codex refuses to start with."""
+    codex_home.write_config({"ambient": {"command": "ambient-mcp"}})
+    kwargs: dict = {"ignore_user_config": True}
+
+    assert apply_forwarded_mcp_servers(
+        kwargs, {"docs": {"command": "docs-mcp"}}, provider="codex", exclusive=True
+    )
+
+    assert kwargs["config_overrides"] == {"mcp_servers.docs.command": "docs-mcp"}
+
+
+def test_secret_fields_are_refused_on_a_request_that_ignores_the_user_config(codex_home):
+    """The secret fields reach codex only through a generated `-p` profile, and a
+    run that ignores the user config loads no profile: the server would start
+    without them. Refused, with no profile written and no value in the message."""
+    codex_home.write_config({})
+    kwargs: dict = {"ignore_user_config": True}
+
+    with pytest.raises(ConfigurationError, match="ignores the user config") as refused:
+        apply_forwarded_mcp_servers(kwargs, SECRET_SERVERS, provider="codex", exclusive=True)
+
+    assert SECRET not in str(refused.value)
+    assert codex_home.profile_files() == []
+    assert "profile" not in kwargs
+
+
+def test_an_ignored_user_config_is_a_carried_set_and_a_disable_is_not():
+    from lionagi.agent.factory import request_kwargs_carry_forwarded_mcp
+
+    assert request_kwargs_carry_forwarded_mcp({"ignore_user_config": True})
+    assert not request_kwargs_carry_forwarded_mcp({"ignore_user_config": False})
+    assert not request_kwargs_carry_forwarded_mcp(
+        {"config_overrides": {"mcp_servers.ambient.enabled": False}}
+    )
 
 
 def test_a_caller_with_no_set_and_no_claim_to_the_whole_set_changes_nothing(codex_home):
@@ -159,25 +195,47 @@ def test_an_exclusive_set_drops_a_generated_profile_and_keeps_a_named_one(codex_
 
 
 @pytest.mark.asyncio
-async def test_codex_disables_only_servers_its_own_config_declares(codex_home, tmp_path):
+async def test_codex_disables_only_servers_its_own_config_declares(
+    codex_home, tmp_path, monkeypatch
+):
     """An allowlist excludes servers of the config it filters, and codex is told
     to disable only the names its own config declares: an
     `mcp_servers.<name>.enabled=false` override for any other name is a table
     with no server in it, which codex refuses to start with."""
     from lionagi.agent.factory import create_agent
     from lionagi.agent.spec import AgentSpec
+    from lionagi.protocols.action.manager import ActionManager
 
-    codex_home.write_config({"khive": {"command": "kkernel"}})
+    async def skip_native_registration(self, *args, **kwargs):
+        return {}
+
+    # The allowed server is handed to codex; registering it as a lionagi-native
+    # tool would start it here, which is not what this test is about.
+    monkeypatch.setattr(ActionManager, "load_mcp_config", skip_native_registration)
+
+    codex_home.write_config({"ambient": {"command": "ambient-mcp"}})
     config_path = tmp_path / ".mcp.json"
-    config_path.write_text(json.dumps({"mcpServers": {"docs": {"command": "docs-mcp-absent"}}}))
+    config_path.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "docs": {"command": "docs-mcp"},
+                    "notes": {"command": "notes-mcp-absent"},
+                }
+            }
+        )
+    )
     spec = AgentSpec.compose("reviewer", model=CODEX_SPEC)
     spec.mcp_config_path = str(config_path)
-    spec.mcp_servers = []
+    spec.mcp_servers = ["docs"]
 
     branch = await create_agent(spec, load_settings=False)
 
     overrides = branch.chat_model.endpoint.config.kwargs["config_overrides"]
-    assert overrides == {"mcp_servers.khive.enabled": False}
+    assert overrides == {
+        "mcp_servers.docs.command": "docs-mcp",
+        "mcp_servers.ambient.enabled": False,
+    }
 
 
 @pytest.mark.parametrize("spelling", ["CLAUDE_CODE", " claude_code ", "Claude_Code"])
@@ -253,7 +311,8 @@ def test_plain_leg_empty_set_is_the_whole_set_on_both_transports(codex_home):
     codex_home.write_config({"khive": {"command": "kkernel"}})
 
     codex = build_chat_model("codex", "gpt-5.3-codex", False, False, None, mcp_servers={})
-    assert codex.endpoint.config.kwargs["config_overrides"] == {"mcp_servers.khive.enabled": False}
+    assert codex.endpoint.config.kwargs["ignore_user_config"] is True
+    assert "config_overrides" not in codex.endpoint.config.kwargs
 
     claude = build_chat_model("claude_code", "claude-opus-4-5", False, False, None, mcp_servers={})
     assert claude.endpoint.config.kwargs["mcp_servers"] == {}
@@ -270,13 +329,42 @@ def test_plain_leg_with_a_declared_empty_set_is_contained_on_both_transports(cod
     codex = build_chat_model(
         "codex", "gpt-5.3-codex", False, False, None, mcp_servers=None, mcp_exclusive=True
     )
-    assert codex.endpoint.config.kwargs["config_overrides"] == {"mcp_servers.khive.enabled": False}
+    assert codex.endpoint.config.kwargs["ignore_user_config"] is True
+    assert "config_overrides" not in codex.endpoint.config.kwargs
 
     claude = build_chat_model(
         "claude_code", "claude-opus-4-5", False, False, None, mcp_servers=None, mcp_exclusive=True
     )
     assert claude.endpoint.config.kwargs["mcp_servers"] == {}
     assert claude.endpoint.config.kwargs["strict_mcp_config"] is True
+
+
+@pytest.mark.asyncio
+async def test_plain_leg_empty_set_reaches_the_codex_command_line(codex_home):
+    from lionagi.cli._providers import build_chat_model
+
+    codex_home.write_config({"ambient": {"command": "ambient-mcp"}})
+    model = build_chat_model("codex", "gpt-5.3-codex", False, False, None, mcp_servers={})
+    args = await _cmd_args(model)
+
+    assert "--ignore-user-config" in args
+    assert not [arg for arg in args if "ambient" in arg]
+
+
+def test_plain_leg_derives_no_effort_from_a_user_config_it_ignores(codex_home):
+    """The derived default keeps the user config's own effort under the model's
+    ceiling; a leg that does not load that config has no such value."""
+    from lionagi.cli._providers import build_chat_model
+
+    (codex_home.path / "config.toml").write_text('model_reasoning_effort = "ultra"\n')
+
+    ignores = build_chat_model("codex", "gpt-5.3-codex-spark", False, False, None, mcp_servers={})
+    reads = build_chat_model(
+        "codex", "gpt-5.3-codex-spark", False, False, None, mcp_servers=SERVERS
+    )
+
+    assert "reasoning_effort" not in ignores.endpoint.config.kwargs
+    assert reads.endpoint.config.kwargs["reasoning_effort"] == "xhigh"
 
 
 def test_plain_leg_with_no_set_and_no_declaration_is_left_alone(codex_home):
@@ -465,7 +553,8 @@ async def test_resumed_codex_leg_with_no_mcp_config_drops_the_previous_runs_serv
     monkeypatch.setattr(Branch, "operate", capture)
     await agent_mod._run_agent(None, "follow up", resume=branch_id, no_mcp_config=True)
 
-    assert seen["kwargs"]["config_overrides"] == {"mcp_servers.khive.enabled": False}
+    assert seen["kwargs"]["ignore_user_config"] is True
+    assert "config_overrides" not in seen["kwargs"]
 
 
 @pytest.mark.asyncio
@@ -871,11 +960,11 @@ def flow_run(monkeypatch, tmp_path):
     return launch_dir
 
 
-async def _codex_worker(flow_run, servers: dict):
-    from lionagi.cli.orchestrate._orchestration import build_worker_branch, setup_orchestration
+async def _codex_orchestration(flow_run, servers: dict):
+    from lionagi.cli.orchestrate._orchestration import setup_orchestration
 
     (flow_run / ".mcp.json").write_text(json.dumps({"mcpServers": servers}))
-    env = await setup_orchestration(
+    return await setup_orchestration(
         pattern_name="Fanout",
         model_spec=CODEX_SPEC,
         agent_name=None,
@@ -886,6 +975,12 @@ async def _codex_worker(flow_run, servers: dict):
         effort=None,
         theme=None,
     )
+
+
+async def _codex_worker(flow_run, servers: dict):
+    from lionagi.cli.orchestrate._orchestration import build_worker_branch
+
+    env = await _codex_orchestration(flow_run, servers)
     # A worker's role resolves through the agent profiles installed on the
     # machine, and a profile's model beats the run's default spec. Without a
     # pin, whichever model `implementer` happens to name locally is the one
@@ -926,9 +1021,20 @@ async def test_a_codex_worker_is_spawned_with_the_runs_server_set(flow_run, code
 
 
 @pytest.mark.asyncio
-async def test_a_codex_worker_keeps_secret_fields_off_the_command_line(flow_run, codex_home):
-    codex_home.write_config({})
-    _env, branch = await _codex_worker(flow_run, SECRET_SERVERS)
+async def test_a_codex_worker_refuses_secret_fields_it_cannot_carry(flow_run, codex_home):
+    """A codex worker ignores the user config, so it loads no generated profile,
+    the only carrier of `env` and `http_headers` that keeps them off argv. The
+    worker is refused at build, writes no profile of its own and puts no value
+    in the message. The orchestrator's own model is not a worker and keeps its
+    profile."""
+    from lionagi.cli.orchestrate._orchestration import build_worker_branch
 
-    kwargs = branch.chat_model.endpoint.config.kwargs
-    _assert_secret_is_off_the_wire(kwargs, await _cmd_args(branch.chat_model), codex_home)
+    codex_home.write_config({})
+    env = await _codex_orchestration(flow_run, SECRET_SERVERS)
+    before = codex_home.profile_files()
+
+    with pytest.raises(ConfigurationError, match="ignores the user config") as refused:
+        await build_worker_branch(env, agent_id="w1", role="implementer", model_override=CODEX_SPEC)
+
+    assert SECRET not in str(refused.value)
+    assert codex_home.profile_files() == before

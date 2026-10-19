@@ -68,14 +68,18 @@ and one implementation.
   rather than an addition to whatever the provider finds for itself. It
   makes an empty set mean "no servers", and so does no set at all
   (`servers=None`), which is how `--no-mcp-config` arrives: the Claude CLI
-  needs `strict_mcp_config`; codex, which has no wholesale clear, needs each
-  server its own config declares disabled by name (see
+  needs `strict_mcp_config`; codex, which has no wholesale clear, gets
+  `ignore_user_config` (`--ignore-user-config`), so the user config and every
+  server, hook and profile it declares are not loaded at all. A non-empty
+  exclusive codex set instead needs each server its own config declares, and
+  the set leaves out, disabled by name (see
   `_discover_ambient_codex_mcp_server_names`, which raises
   `ConfigurationError` if it can't enumerate them — an allowlist that can't
   be enforced must fail closed, never silently pass every ambient server
-  through). Only those names: `mcp_servers.<name>.enabled=false` for a name
-  codex has no table for is a table with no server in it, and codex refuses
-  to start with one. An exclusive set also replaces whatever set the
+  through). Only those names, and none when the request ignores the user
+  config: `mcp_servers.<name>.enabled=false` for a name codex has no table
+  for is a table with no server in it, and codex refuses to start with one.
+  An exclusive set also replaces whatever set the
   request already carries — a resumed leg's request is the persisted one —
   so the Claude `mcp_servers` map, codex `mcp_servers.*` overrides (a whole
   `mcp_servers` table included) and a generated codex profile are dropped
@@ -93,7 +97,10 @@ and one implementation.
   etc.), so they route through `_write_codex_mcp_secret_profile` to a
   private on-disk profile (`$CODEX_HOME/<name>.config.toml`, loaded via
   `-p <name>`) instead of a `-c` override. `env_http_headers` values are
-  env-var *names*, not secrets, so those stay on the `-c` path.
+  env-var *names*, not secrets, so those stay on the `-c` path. A request
+  that ignores the user config loads no profile either, so a server carrying
+  `env` or `http_headers` on one is refused with `ConfigurationError` rather
+  than started without them.
 - `_forward_mcp_to_cli_request` reaches the per-turn request kwargs a CLI
   provider subprocess actually reads (unlike `_load_mcp`, which only reaches
   lionagi-native `branch.acts` tools, inert for CLI providers). With

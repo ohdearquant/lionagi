@@ -785,6 +785,10 @@ def request_kwargs_carry_forwarded_mcp(kwargs: dict[str, Any] | None) -> bool:
     kwargs = kwargs or {}
     if kwargs.get("mcp_servers"):
         return True
+    if kwargs.get("ignore_user_config") is True:
+        # Codex states an exclusive empty set by loading no user config at all,
+        # so the request carries the set with no per-server entry.
+        return True
     overrides = kwargs.get("config_overrides") or {}
     return any(
         key.startswith("mcp_servers.") and not (key.endswith(".enabled") and value is False)
@@ -834,6 +838,12 @@ def apply_forwarded_mcp_servers(
             kwargs["strict_mcp_config"] = True
         return True
 
+    if exclusive and not servers:
+        # The empty set is the hermetic codex run: the user config, and every server,
+        # hook and profile it declares, is not loaded at all. Codex keeps its own
+        # authentication store under the flag.
+        kwargs["ignore_user_config"] = True
+
     # codex takes no JSON MCP-config input; each server is forwarded as
     # `-c mcp_servers.<name>.<field>=<value>` overrides. A field outside the
     # McpServerConfig schema is a caller mistake (loud ConfigurationError),
@@ -867,11 +877,27 @@ def apply_forwarded_mcp_servers(
         # is disabled by name instead. Only names codex's own config declares:
         # `mcp_servers.<name>.enabled=false` for any other name is a table with
         # no server in it, and codex refuses to start with one.
+        # A run that ignores the user config loads none of its servers, and an
+        # `enabled=false` for one of them is then such a table too.
         allowed = set(servers) if allowed_names is None else set(allowed_names)
-        configured = _discover_ambient_codex_mcp_server_names()
+        configured = (
+            set()
+            if kwargs.get("ignore_user_config")
+            else _discover_ambient_codex_mcp_server_names()
+        )
         for excluded_name in sorted(configured - allowed):
             overrides[f"mcp_servers.{excluded_name}.enabled"] = False
 
+    if secret_fields and kwargs.get("ignore_user_config"):
+        # The secret fields travel in a generated `-p` profile, and `--ignore-user-config`
+        # drops profile files with the rest of the user config: the server would start
+        # without its `env` or `http_headers`.
+        raise ConfigurationError(
+            f"MCP server(s) {sorted(secret_fields)!r} set `env` or `http_headers`, which reach "
+            "codex only through a config profile, and this run ignores the user config "
+            "(--ignore-user-config), profiles included, so the server would start without "
+            "them. Drop `env` and `http_headers` from the server config."
+        )
     if secret_fields:
         _write_codex_mcp_secret_profile(kwargs, secret_fields)
     if overrides:

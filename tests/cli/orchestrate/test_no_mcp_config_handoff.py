@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,6 +23,7 @@ from lionagi.cli._providers import AgentProfile
 from lionagi.cli._runs import RunDir
 from lionagi.cli.orchestrate._orchestration import build_worker_branch, setup_orchestration
 from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
+from lionagi.providers.openai.codex import CodexCodeRequest
 
 
 @pytest.fixture
@@ -83,6 +85,13 @@ async def _cli_args(imodel) -> list[str]:
     api_call = await imodel.create_event(prompt="hi")
     request = api_call.payload["request"]
     assert isinstance(request, ClaudeCodeRequest)
+    return request.as_cmd_args()
+
+
+async def _codex_cli_args(imodel) -> list[str]:
+    api_call = await imodel.create_event(prompt="hi")
+    request = api_call.payload["request"]
+    assert isinstance(request, CodexCodeRequest)
     return request.as_cmd_args()
 
 
@@ -269,7 +278,9 @@ async def test_explicit_mcp_config_is_the_job_control_opt_in(tmp_run, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_codex_worker_disables_withheld_job_control_by_name(tmp_run, codex_home):
+async def test_codex_worker_never_loads_withheld_job_control(tmp_run, codex_home):
+    """The worker gets the run's set over `-c` and loads no user config, so the
+    job-control server the user config declares is neither forwarded nor loaded."""
     servers = {
         "lion-control": {"command": "li", "args": ["mcp"]},
         "knowledge": {"command": "kkernel", "args": ["mcp"]},
@@ -284,15 +295,21 @@ async def test_codex_worker_disables_withheld_job_control_by_name(tmp_run, codex
         role="implementer",
         model_override="codex/gpt-5",
     )
+    args = await _codex_cli_args(branch.chat_model)
 
-    overrides = branch.chat_model.endpoint.config.kwargs["config_overrides"]
+    kwargs = branch.chat_model.endpoint.config.kwargs
+    overrides = kwargs["config_overrides"]
+    assert kwargs["ignore_user_config"] is True
     assert overrides["mcp_servers.knowledge.command"] == "kkernel"
-    assert overrides["mcp_servers.lion-control.enabled"] is False
+    assert not [key for key in overrides if key.startswith("mcp_servers.lion-control.")]
+    assert "--ignore-user-config" in args
+    assert not [arg for arg in args if "lion-control" in arg]
 
 
-def test_refusal_reaches_a_codex_worker_as_a_disabled_server(caplog, codex_home):
+def test_refusal_reaches_a_codex_worker_as_an_ignored_user_config(caplog, codex_home):
     """codex has no per-request server set and no wholesale clear, so a refusal
-    reaches it as every server it would have loaded, disabled by name."""
+    reaches it as a run that loads no user config, and with it none of the
+    servers that config declares."""
     import logging
 
     from lionagi.cli._providers import build_imodel_from_spec
@@ -302,7 +319,9 @@ def test_refusal_reaches_a_codex_worker_as_a_disabled_server(caplog, codex_home)
     with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
         orch_mod._hand_mcp_servers(imodel, {}, label="reviewer-2")
 
-    assert imodel.endpoint.config.kwargs["config_overrides"] == {"mcp_servers.khive.enabled": False}
+    kwargs = imodel.endpoint.config.kwargs
+    assert kwargs["ignore_user_config"] is True
+    assert "config_overrides" not in kwargs
     assert caplog.text == ""
 
 
@@ -737,3 +756,109 @@ def test_job_control_is_recognised_through_launchers(config):
 )
 def test_other_servers_are_not_taken_for_job_control(config):
     assert not orch_mod._is_job_control_server(config)
+
+
+# The worker's own CLI configuration. A worker is started by the run, and the
+# user config of the person running it carries servers, hooks and permissions
+# the worker was never handed.
+
+
+def _pair_follows(args: list[str], flag: str, value: str) -> bool:
+    return any(args[i : i + 2] == [flag, value] for i in range(len(args) - 1))
+
+
+@pytest.mark.asyncio
+async def test_a_codex_worker_with_no_run_set_still_ignores_the_user_config(tmp_run, codex_home):
+    """No run set hands the worker nothing, and the user config stays out anyway."""
+    codex_home.write_config({"ambient": {"command": "ambient-mcp"}})
+    env = await _setup(no_mcp_config=False)
+    assert env.mcp_servers is None
+
+    branch, _, _, _ = await build_worker_branch(
+        env, agent_id="w1", role="implementer", model_override="codex/gpt-5"
+    )
+    args = await _codex_cli_args(branch.chat_model)
+
+    assert "--ignore-user-config" in args
+    assert "-p" not in args
+    assert not [arg for arg in args if "ambient" in arg]
+
+
+@pytest.mark.asyncio
+async def test_a_claude_worker_reads_no_setting_sources(tmp_run):
+    env = await _setup(no_mcp_config=False)
+
+    branch, _, _, _ = await build_worker_branch(
+        env, agent_id="w1", role="implementer", model_override="claude_code/sonnet"
+    )
+    args = await _cli_args(branch.chat_model)
+
+    assert _pair_follows(args, "--setting-sources", "")
+    assert "--settings" not in args
+
+
+def test_the_boundary_drops_a_codex_profile_and_a_claude_settings_file(codex_home):
+    """A `-p` profile is part of the user config, and a settings file is a
+    source of its own; neither reaches a worker."""
+    from lionagi.cli._providers import build_imodel_from_spec
+
+    codex = build_imodel_from_spec("codex/gpt-5")
+    codex.endpoint.config.kwargs["profile"] = "work"
+    claude = build_imodel_from_spec("claude_code/sonnet")
+    claude.endpoint.config.kwargs["settings"] = "settings.json"
+
+    orch_mod._isolate_worker_cli_config(codex)
+    orch_mod._isolate_worker_cli_config(claude)
+
+    assert codex.endpoint.config.kwargs["ignore_user_config"] is True
+    assert codex.endpoint.config.kwargs["profile"] is None
+    assert claude.endpoint.config.kwargs["setting_sources"] == ""
+    assert claude.endpoint.config.kwargs["settings"] is None
+
+
+@pytest.mark.parametrize("spelling", ["CLAUDE_CODE", " claude_code "])
+def test_the_boundary_folds_claude_provider_spellings(spelling):
+    imodel = SimpleNamespace(
+        is_cli=True,
+        endpoint=SimpleNamespace(config=SimpleNamespace(provider=spelling, kwargs={})),
+    )
+
+    orch_mod._isolate_worker_cli_config(imodel)
+
+    assert imodel.endpoint.config.kwargs == {"setting_sources": "", "settings": None}
+
+
+def test_the_boundary_leaves_a_model_with_no_cli_alone():
+    kwargs = {"temperature": 0.1}
+    imodel = SimpleNamespace(
+        is_cli=False,
+        endpoint=SimpleNamespace(config=SimpleNamespace(provider="codex", kwargs=kwargs)),
+    )
+
+    orch_mod._isolate_worker_cli_config(imodel)
+
+    assert kwargs == {"temperature": 0.1}
+
+
+@pytest.mark.asyncio
+async def test_a_codex_worker_refuses_a_server_whose_secrets_it_could_not_carry(
+    tmp_run, codex_home
+):
+    """`env` and `http_headers` reach codex only through a profile file, which a
+    run that ignores the user config does not load: the server would start
+    without them. The worker is refused, and the value is not in the refusal."""
+    from lionagi._errors import ConfigurationError
+
+    secret = "sk-live-do-not-print-me"
+    servers = {"knowledge": {"command": "kkernel", "env": {"KNOWLEDGE_KEY": secret}}}
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": servers}))
+    codex_home.write_config({})
+    env = await _setup(no_mcp_config=False)
+
+    with pytest.raises(ConfigurationError, match="ignores the user config") as refused:
+        await build_worker_branch(
+            env, agent_id="w1", role="implementer", model_override="codex/gpt-5"
+        )
+
+    assert secret not in str(refused.value)
+    assert not list(codex_home.path.glob("lionagi-mcp-*.config.toml"))

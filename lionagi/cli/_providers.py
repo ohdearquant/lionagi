@@ -236,7 +236,10 @@ def build_chat_model(
         extra["verbose_output"] = True
     if theme is not None:
         extra["cli_display_theme"] = theme
-    if effort is None and provider == "codex":
+    if effort is None and provider == "codex" and not extra.get("ignore_user_config"):
+        # The derived default exists to keep the user config's own effort under the
+        # model's ceiling. A request that ignores the user config never loads that
+        # value, so there is nothing to derive from it.
         effort = codex_unset_effort_default(model, codex_profile_overrides)
     if effort is not None:
         kwarg = PROVIDER_EFFORT_KWARG.get(provider)

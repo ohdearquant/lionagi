@@ -20,10 +20,18 @@ from textwrap import shorten
 from typing import TYPE_CHECKING, Any, Literal
 
 import toml
-from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 from pydantic.json_schema import SkipJsonSchema
 
-from lionagi._errors import CLIInputRefusedError, ContainmentRefusedError
+from lionagi._errors import CLIInputRefusedError, ConfigurationError, ContainmentRefusedError
 from lionagi.libs.path_safety import check_add_dirs_safe as check_add_dir_entries_safe
 from lionagi.libs.path_safety import check_path_safe, check_paths_safe
 from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
@@ -55,11 +63,14 @@ from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.utils import to_dict
 
 from ._codex_profile import (
+    _read_codex_config,
     codex_config_defining_profile,
+    codex_home_for_env,
     configured_codex_profile,
     is_generated_codex_profile,
     project_codex_profile,
 )
+from ._codex_project_layers import declaring_project_layer
 from ._config import CodexConfigs
 
 if TYPE_CHECKING:
@@ -76,6 +87,23 @@ HAS_CODEX_CLI, CODEX_CLI = discover_cli("codex")
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("codex-cli")
+
+_BOOL_ADAPTER = TypeAdapter(bool)
+
+
+def _as_declared_bool(value: Any) -> bool:
+    """Read a pre-validation boolean the way the field's own coercion will.
+
+    A model-level ``mode="before"`` validator sees raw input, where ``bool("false")`` is
+    True: a request carrying ``ignore_user_config="false"`` would take the hermetic branch
+    while validating to a request that reads the user config. A value the field rejects
+    fails validation moments later, so it is read as False here.
+    """
+    try:
+        return _BOOL_ADAPTER.validate_python(value)
+    except ValidationError:
+        return False
+
 
 # --------------------------------------------------------------------------- types
 CodexSandboxMode = Literal[
@@ -108,7 +136,12 @@ CODEX_REASONING_EFFORTS: tuple[str, ...] = (
     "ultra",
 )
 
-__all__ = ("CodexCodeRequest", "stream_codex_cli", "CodexCLIEndpoint")
+__all__ = (
+    "CodexCodeRequest",
+    "stream_codex_cli",
+    "CodexCLIEndpoint",
+    "refuse_declaring_project_layer",
+)
 
 # The integrations Codex attaches from the signed-in account rather than from
 # a config file: its app connectors and its plugins. They come with the auth
@@ -685,6 +718,7 @@ class _PlainRequest:
     search: bool
     fast_mode: bool
     contain_account_integrations: bool
+    ignore_user_config: bool
     account_connectors: list[str]
     output_schema: str | None
     output_last_message: str | None
@@ -709,6 +743,7 @@ class _PlainRequest:
                 "output_schema",
                 "output_last_message",
                 "add_dir",
+                "ignore_user_config",
             )
         }
 
@@ -798,6 +833,7 @@ def _plain_request(
         search=flag("search"),
         fast_mode=flag("fast_mode"),
         contain_account_integrations=flag("contain_account_integrations"),
+        ignore_user_config=flag("ignore_user_config"),
         account_connectors=texts("account_connectors"),
         output_schema=paths["output_schema"],
         output_last_message=paths["output_last_message"],
@@ -1265,6 +1301,18 @@ class CodexCodeRequest(BaseModel):
         description="Include the plan tool in the conversation",
         json_schema_extra=_cli("--include-plan-tool", 63, "bool"),
     )
+    ignore_user_config: bool = Field(
+        default=False,
+        description=(
+            "Do not load CODEX_HOME/config.toml for this invocation, so the user's "
+            "MCP servers, hooks and profiles stay out of the run. Codex keeps its "
+            "normal authentication store. The flag does not cover project layers, so a "
+            "run with this set is refused when one of them declares `mcp_servers`. The "
+            "user config's sandbox network grant, when it has one, is passed beside "
+            "the flag: the flag is about what the run loads, not about its network."
+        ),
+        json_schema_extra=_cli("--ignore-user-config", 64, "bool"),
+    )
 
     # ── feature flags (order 70–79) ───────────────────────────────
     enable_features: list[str] | None = Field(
@@ -1411,11 +1459,16 @@ class CodexCodeRequest(BaseModel):
             if isinstance(effort, str):
                 values[key] = _clamp_codex_effort(effort, model)
 
+        hermetic = _as_declared_bool(
+            values.get("ignore_user_config", cls.model_fields["ignore_user_config"].default)
+        )
         # `is None`, not `not isinstance(..., str)`: only an ABSENT or null
         # effort is unset. A non-string is malformed input; it falls through
         # to the field's own `str | None` validation, which rejects it, rather
-        # than being replaced by the derived default.
-        if values.get("reasoning_effort") is None:
+        # than being replaced by the derived default. A request that ignores the
+        # user config derives nothing from it: the child never reads that file,
+        # so there is no configured value to clamp.
+        if not hermetic and values.get("reasoning_effort") is None:
             # The child's own environment decides which config codex reads, and
             # `env` replaces that environment wholesale when it is set. By this
             # point an earlier before-validator has wrapped it for redaction,
@@ -1748,6 +1801,14 @@ class CodexCodeRequest(BaseModel):
             )
             args.extend(["-c", f"{key}={rendered}"])
 
+        # `--ignore-user-config` drops the whole user config, and with it the
+        # `[sandbox_workspace_write] network_access` grant: under the flag alone a
+        # workspace-write child has no network. The flag is about what the run loads,
+        # not about its network, so the user config's own grant rides beside it, and
+        # only when the user config makes one; an override naming the key wins.
+        if plain.ignore_user_config and _user_config_network_grant(plain):
+            args.extend(["-c", "sandbox_workspace_write.network_access=true"])
+
         # Working directory (always emit)
         args.extend(["-C", str(cwd)])
 
@@ -1871,6 +1932,57 @@ class CodexCodeRequest(BaseModel):
 CodexSession = CLISession
 
 
+def _user_config_network_grant(plain: _PlainRequest) -> bool:
+    """Whether the user config the run ignores grants the workspace-write sandbox network.
+
+    False when an override of the run names the key, as `sandbox_workspace_write.network_access`
+    or inside a `sandbox_workspace_write` table: the caller's value is on the command line
+    already. A user config that cannot be read grants nothing; the run does not load it.
+    """
+    for index, (key, value) in enumerate(plain.overrides):
+        path = _override_key_path(key, f"The key of the config override entry {index}")
+        if path[:2] == ["sandbox_workspace_write", "network_access"]:
+            return False
+        if path == ["sandbox_workspace_write"] and isinstance(value, Mapping):
+            if "network_access" in value:
+                return False
+    try:
+        config = _read_codex_config(codex_home_for_env(plain.env) / "config.toml")
+    except ValueError as exc:
+        log.warning("the network grant of the ignored codex config is unknown: %s", exc)
+        return False
+    table = (config or {}).get("sandbox_workspace_write")
+    return isinstance(table, Mapping) and table.get("network_access") is True
+
+
+def refuse_declaring_project_layer(plain: _PlainRequest, cwd: Path) -> None:
+    """Refuse a run that ignores the user config when one of its project layers declares
+    `mcp_servers`, naming the file and the line, or when its project layers cannot be
+    determined. Codex loads project layers under `--ignore-user-config`, and a trusted one
+    adds MCP servers past the run's own set."""
+    cli_markers = None
+    for index, (key, value) in enumerate(plain.overrides):
+        path = _override_key_path(key, f"The key of the config override entry {index}")
+        if path == ["project_root_markers"]:
+            cli_markers = value  # the later `-c` of one key wins, as the CLI reads them
+    try:
+        declared = declaring_project_layer(
+            cwd, os.environ if plain.env is None else plain.env, cli_markers
+        )
+    except ConfigurationError as exc:
+        raise ConfigurationError(
+            f"Codex cannot start under cwd {cwd} with --ignore-user-config: {exc}."
+        ) from exc
+    if declared is not None:
+        config_file, line_number = declared
+        raise ConfigurationError(
+            f"Codex cannot start under cwd {cwd} with --ignore-user-config: {config_file} "
+            f"(line {line_number}) is a Codex project config declaring `mcp_servers`, which a "
+            "trusted project layer loads past the run's own server set and "
+            "--ignore-user-config does not suppress."
+        )
+
+
 # --------------------------------------------------------------------------- NDJSON stream
 
 
@@ -1891,6 +2003,10 @@ async def _ndjson_from_cli(request: CodexCodeRequest):
         text_fields=plain.argument_text_fields(),
         contained=plain.contains_account_integrations(),
     )
+    if plain.ignore_user_config:
+        # Every `codex exec` reads its project layers afresh, so a layer written since the
+        # request was built is checked here, where the process would start.
+        refuse_declaring_project_layer(plain, request.cwd())
     cmd = [CODEX_CLI, *request.as_cmd_args(plain=plain)]
     _refuse_oversized_command(cmd)
     # Do NOT pass cwd here — Codex CLI already gets the workspace via -C <repo>;
