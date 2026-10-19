@@ -209,6 +209,21 @@ def test_a_second_entry_pins_the_level_and_propagate_again(loggers, root_handler
     assert len(_lines(capsys.readouterr().err, FIRE)) == 1
 
 
+def test_an_entry_after_the_last_exit_restores_the_state_it_found(loggers):
+    _, scheduler = loggers
+    scheduler.setLevel(logging.WARNING)
+    scheduler.propagate = False
+    with daemon_log_handler():
+        pass
+    assert (scheduler.level, scheduler.propagate) == (logging.WARNING, False)
+    # A later serve starts from a different state; it restores that one, not the first's.
+    scheduler.setLevel(logging.ERROR)
+    scheduler.propagate = True
+    with daemon_log_handler():
+        pass
+    assert (scheduler.level, scheduler.propagate) == (logging.ERROR, True)
+
+
 def test_records_outside_the_scheduler_are_left_to_the_root_handlers(loggers, root_handler, capsys):
     lionagi, _ = loggers
     lionagi.setLevel(logging.INFO)
