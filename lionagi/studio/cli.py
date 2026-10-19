@@ -175,6 +175,9 @@ def run_studio(args: argparse.Namespace) -> int:
     if not getattr(args, "studio_action", None):
         args.studio_action = "start"
     _validate_mode_flags(args)
+    # A daemon started here would start its runs outside this process's tree.
+    if _refused_inside_an_agent():
+        return 1
     return _studio_start(args)
 
 
@@ -2121,6 +2124,8 @@ def _quick_create_target(kind: str, args: argparse.Namespace) -> Any:
 
 def run_schedule_quick_create(kind: str, argv: list[str]) -> int:
     """`li schedule create <kind> <name> ...` entry point."""
+    if _refused_inside_an_agent():
+        return 1
     from pydantic import ValidationError
 
     from lionagi.state.db import StateDB
@@ -2682,6 +2687,26 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
     return sched
 
 
+# The schedule subcommands that can have the Studio daemon start a run. The daemon runs
+# outside the asking process's tree, so no check at spawn can see that the request came
+# from inside an agent; the refusal happens here, before the request leaves.
+_STARTS_RUNS = frozenset({"create", "enable", "trigger", "apply"})
+
+
+def _refused_inside_an_agent() -> bool:
+    """Print the refusal and return True when this process runs inside an agent lionagi
+    started (see refuse_nested_agent)."""
+    from lionagi.providers._provider_errors import NestedAgentRefusedError
+    from lionagi.providers._subagent_admission import refuse_nested_agent
+
+    try:
+        refuse_nested_agent()
+    except NestedAgentRefusedError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return True
+    return False
+
+
 _ACTION_MAP = {
     "list": _cmd_list,
     "get": _cmd_get,
@@ -2714,5 +2739,7 @@ def run_schedule(args: argparse.Namespace) -> int:
         return 1
     if action == "runs" and not (1 <= args.limit <= 200):
         print(f"Error: --limit must be between 1 and 200, got {args.limit}.", file=sys.stderr)
+        return 1
+    if action in _STARTS_RUNS and _refused_inside_an_agent():
         return 1
     return fn(args)

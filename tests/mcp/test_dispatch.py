@@ -1473,3 +1473,37 @@ def test_a_spawn_inside_an_agent_is_refused_before_any_job_exists(verb, monkeypa
     assert op["error"]["kind"] == "conflict"
     assert "nested agent refused" in op["error"]["message"]
     assert not (tmp_path / "jobs").exists() or not any((tmp_path / "jobs").iterdir())
+
+
+def test_a_play_inside_an_agent_is_refused_before_any_job_exists(a_playbook, monkeypatch, tmp_path):
+    import lionagi.cli._providers as providers
+    from lionagi.mcp import config
+    from lionagi.providers import _subagent_admission
+
+    monkeypatch.setattr(providers, "load_agent_profile", lambda name: None)
+    monkeypatch.setattr(_subagent_admission, "_INHERITED_AGENT_DEPTH", 1)
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(config, "li_command", lambda: ["true"])
+
+    def no_spawn(*args, **kwargs):
+        raise AssertionError("a run was started")
+
+    monkeypatch.setattr(jobs.subprocess, "Popen", no_spawn)
+
+    qualified = call(help={"verb": "play.submit", "playbook": a_playbook})
+    answer = call(
+        ops=[
+            {
+                "op": "play.submit",
+                "args": {"playbook": a_playbook},
+                "schema_fingerprint": qualified["schema_fingerprint"],
+            }
+        ]
+    )
+
+    op = answer["ops"][0]
+    assert op["ok"] is False
+    assert op["error"]["kind"] == "conflict"
+    assert "nested agent refused" in op["error"]["message"]
+    assert not (tmp_path / "jobs").exists() or not any((tmp_path / "jobs").iterdir())

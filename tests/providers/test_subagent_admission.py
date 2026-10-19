@@ -772,3 +772,51 @@ async def test_each_wait_gives_a_clearing_holder_met_after_it_its_own_quick_rere
     per_wait = 1 + admission._CONTENTION_RETRIES
     assert waits == [per_wait, 2 * per_wait]
     assert len(reads) == 2 * per_wait + 1
+
+
+@pytest.mark.asyncio
+async def test_a_wait_spent_on_a_clearing_holder_ends_without_quick_rereads_past_it(
+    home, monkeypatch
+):
+    """A clearing holder that never clears is read again quickly within each wait, but
+    the sleep that reaches the deadline leads to one last read and the refusal, with no
+    quick re-reads after the wait is spent."""
+    monkeypatch.setattr(admission, "_POLL_SECONDS", 1.0)
+    env = {"LIONAGI_MAX_SUBAGENTS": "2", "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "3"}
+    first = await _admit(env)
+    held = _lock_outside_admission(_pools(home) / "all" / "1.lock")
+    reads = []
+    waits = []
+    now = [1000.0]
+    real_read_pool = admission._read_pool
+
+    def _counted(pool_dir):
+        reads.append(pool_dir.name)
+        return real_read_pool(pool_dir)
+
+    async def _sleep(seconds):
+        if seconds >= 0.5:
+            waits.append(len(reads))
+        # Rounded so the sleep that runs to the deadline lands on it exactly.
+        now[0] = round(now[0] + seconds, 9)
+        await anyio.sleep(0)
+
+    monkeypatch.setattr(admission, "_read_pool", _counted)
+    monkeypatch.setattr(admission, "anyio", SimpleNamespace(sleep=_sleep))
+    monkeypatch.setattr(admission, "random", SimpleNamespace(uniform=lambda low, high: low))
+    monkeypatch.setattr(
+        admission,
+        "time",
+        SimpleNamespace(monotonic=lambda: now[0], time=time.time, sleep=time.sleep),
+    )
+    try:
+        with pytest.raises(SubagentAdmissionRefusedError, match="waited 3s"):
+            await _admit(env)
+    finally:
+        os.close(held)
+        first.release()
+    assert now[0] == 1003.0
+    assert len(waits) >= 2
+    per_wait = 1 + admission._CONTENTION_RETRIES
+    assert waits[1] - waits[0] == per_wait
+    assert len(reads) - waits[-1] == 1

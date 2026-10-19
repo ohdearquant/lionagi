@@ -582,6 +582,7 @@ async def admit_subagent(
         "child_started": None,
     }
     quick_rereads = 0
+    slept = False
     while True:
         lease = SubagentLease()
         locks: list[int] = []
@@ -634,7 +635,12 @@ async def admit_subagent(
             return _admitted(lease)
         # All or none: a slot taken before a pool turned out full goes back.
         lease.release()
-        if clearing and quick_rereads < _CONTENTION_RETRIES:
+        # Quick re-reads stay inside the wait once it has slept, so even a wait of 0 gets one look.
+        if (
+            clearing
+            and quick_rereads < _CONTENTION_RETRIES
+            and (not slept or time.monotonic() < deadline)
+        ):
             quick_rereads += 1
             await anyio.sleep(random.uniform(0.001, 0.005))  # noqa: S311 (retry spacing)
             continue
@@ -656,6 +662,7 @@ async def admit_subagent(
         # Jittered, so two processes that collide on the last slot do not retry in step.
         jitter = random.uniform(0.75, 1.25)  # noqa: S311 (retry spacing, not a secret)
         await anyio.sleep(min(remaining, _POLL_SECONDS * jitter))
+        slept = True
         # A holder met after this sleep is a new one, with its own quick re-reads.
         quick_rereads = 0
 

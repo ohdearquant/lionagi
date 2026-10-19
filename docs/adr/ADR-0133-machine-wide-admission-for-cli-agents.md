@@ -329,11 +329,19 @@ class NestedAgentRefusedError(ProviderError):   # lionagi/providers/_provider_er
   legs included), `li o flow` and `li o fanout` check before they stamp their own depth
   and before any run exists.
 - **Checked where the request is made, before anything detaches.** `li o flow --background` and
-  the lion MCP server's `agent.submit`, `flow.submit` and `fanout.submit` check in the process
-  that was asked. The detached run checks again, but when the depth reached the asking process
-  only through its ancestry, a launcher that exits first leaves the run outside that ancestry.
-  The MCP server answers with the ADR-0106 kind `conflict` (well-formed, refused for where the
-  caller runs) and starts no job.
+  the lion MCP server's `agent.submit`, `flow.submit`, `fanout.submit` and `play.submit` check in
+  the process that was asked. The detached run checks again, but when the depth reached the
+  asking process only through its ancestry, a launcher that exits first leaves the run outside
+  that ancestry. The MCP server answers with the ADR-0106 kind `conflict` (well-formed, refused
+  for where the caller runs) and starts no job.
+- **A run the Studio daemon would start is refused at the request.** The daemon runs outside the
+  asking process's tree, so the spawn it makes cannot see where the request came from. `li
+  schedule create` (both forms), `enable`, `trigger` and `apply`, the lion MCP server's
+  `schedule.create`, `schedule.trigger` and `schedule.enable`, and `li studio` itself refuse
+  before the request leaves or the daemon starts; the MCP verbs answer `conflict`, the commands
+  exit `1`. Disabling or deleting a schedule starts nothing and stays allowed. A request sent to
+  the daemon's HTTP API by other means is outside what lionagi's entry points can check; the
+  machine-wide caps still bound the agents it starts.
 - **The refusal is final from where it was made.** `NestedAgentRefusedError` is a provider error
   with `retryable = False`, not an admission refusal; `li agent` and `li o` print it on one line,
   naming the process that carries the depth, and exit `1`, not `75`.

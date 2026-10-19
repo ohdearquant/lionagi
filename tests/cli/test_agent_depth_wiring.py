@@ -224,3 +224,114 @@ def test_a_background_flow_outside_any_agent_still_detaches(monkeypatch, tmp_pat
     assert len(started) == 1
     assert started[0][1]["start_new_session"] is True
     assert DEPTH_ENV not in started[0][1]["env"]
+
+
+# The Studio daemon starts a schedule's run outside the asking process's tree, so a
+# request that can start one is refused in the process that makes it.
+_STARTS_A_RUN = {
+    "create": ["schedule", "create", "nightly", "--cron", "0 3 * * *", "--prompt", "x"],
+    "trigger": ["schedule", "trigger", "sched-1"],
+    "enable": ["schedule", "enable", "sched-1"],
+}
+
+
+@pytest.mark.parametrize("action", sorted(_STARTS_A_RUN))
+def test_a_machine_schedule_request_that_can_start_a_run_is_refused_inside_an_agent(
+    monkeypatch, capfd, action
+):
+    import json
+
+    from lionagi.cli import machine_schedule
+    from lionagi.cli.main import main
+
+    monkeypatch.setattr(admission, "_INHERITED_AGENT_DEPTH", 1)
+
+    def no_request(*a, **kw):
+        raise AssertionError("the Studio daemon was asked")
+
+    monkeypatch.setattr(machine_schedule, "_studio", no_request)
+
+    # The machine envelope is written to fd 1 itself, not through sys.stdout.
+    main([*_STARTS_A_RUN[action], "--machine"])
+    envelope = json.loads(capfd.readouterr().out)
+    assert envelope["ok"] is False
+    assert envelope["error"]["kind"] == "conflict"
+    assert "nested agent refused" in envelope["error"]["message"]
+
+
+def test_a_machine_schedule_disable_inside_an_agent_still_reaches_the_daemon(monkeypatch, capfd):
+    import json
+
+    from lionagi.cli import machine_schedule
+    from lionagi.cli.main import main
+
+    monkeypatch.setattr(admission, "_INHERITED_AGENT_DEPTH", 1)
+    asked = []
+    monkeypatch.setattr(
+        machine_schedule, "_studio", lambda path, method="GET", body=None: asked.append(path) or {}
+    )
+
+    main(["schedule", "disable", "sched-1", "--machine"])
+    envelope = json.loads(capfd.readouterr().out)
+    assert envelope["ok"] is True
+    assert asked == ["/sched-1/disable"]
+
+
+@pytest.mark.parametrize("action", ["apply", "create", "enable", "trigger"])
+def test_li_schedule_that_can_start_a_run_exits_1_inside_an_agent(monkeypatch, capsys, action):
+    import lionagi.studio.cli as studio_cli
+    from lionagi.cli.main import main
+
+    monkeypatch.setattr(admission, "_INHERITED_AGENT_DEPTH", 1)
+
+    def no_handler(args):
+        raise AssertionError(f"li schedule {action} ran inside an agent")
+
+    monkeypatch.setitem(studio_cli._ACTION_MAP, action, no_handler)
+    argv = _STARTS_A_RUN.get(action, ["schedule", "apply", "set.yaml"])
+
+    assert main(argv) == 1
+    assert "nested agent refused" in capsys.readouterr().err
+
+
+def test_li_schedule_quick_create_exits_1_inside_an_agent(monkeypatch, capsys):
+    import lionagi.studio.cli as studio_cli
+    from lionagi.cli.main import main
+
+    monkeypatch.setattr(admission, "_INHERITED_AGENT_DEPTH", 1)
+
+    def no_parser(kind):
+        raise AssertionError("the quick-create form was parsed inside an agent")
+
+    monkeypatch.setattr(studio_cli, "build_quick_create_parser", no_parser)
+
+    argv = ["schedule", "create", "command", "nightly", "--every", "15m", "--", "echo", "hi"]
+    assert main(argv) == 1
+    assert "nested agent refused" in capsys.readouterr().err
+
+
+def test_li_schedule_disable_inside_an_agent_still_runs(monkeypatch):
+    import lionagi.studio.cli as studio_cli
+    from lionagi.cli.main import main
+
+    monkeypatch.setattr(admission, "_INHERITED_AGENT_DEPTH", 1)
+    ran = []
+    monkeypatch.setitem(studio_cli._ACTION_MAP, "disable", lambda args: ran.append(args.id) or 0)
+
+    assert main(["schedule", "disable", "sched-1"]) == 0
+    assert ran == ["sched-1"]
+
+
+def test_li_studio_inside_an_agent_exits_1_before_a_daemon_starts(monkeypatch, capsys):
+    import lionagi.studio.cli as studio_cli
+    from lionagi.cli.main import main
+
+    monkeypatch.setattr(admission, "_INHERITED_AGENT_DEPTH", 1)
+
+    def no_daemon(args):
+        raise AssertionError("a Studio daemon was started inside an agent")
+
+    monkeypatch.setattr(studio_cli, "_studio_start", no_daemon)
+
+    assert main(["studio", "--no-frontend"]) == 1
+    assert "nested agent refused" in capsys.readouterr().err

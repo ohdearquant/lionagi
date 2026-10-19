@@ -186,8 +186,12 @@ every CLI worker spawn refuse at once, before taking a slot, in a process that i
 of `1` or more or that runs under a process started with one. The second check covers tools an
 agent starts with an environment of its own choosing, such as the MCP servers codex starts with
 only the variables its config names. `li o flow --background` and the lion MCP server's agent,
-flow and fan-out submits check in the process that is asked, before anything detaches: a detached
-run checks again, but once its launcher has exited it no longer runs under the agent that asked.
+flow, fan-out and play submits check in the process that is asked, before anything detaches: a
+detached run checks again, but once its launcher has exited it no longer runs under the agent
+that asked. For the same reason `li schedule create`, `enable`, `trigger` and `apply`, the MCP
+server's schedule create, trigger and enable verbs, and `li studio` refuse inside an agent before
+the Studio daemon is asked or started, since the daemon starts its runs outside the agent's
+process tree.
 The refusal is `NestedAgentRefusedError`, a provider error that is not retryable; `li agent` and
 `li o` exit `1` with one line naming the process that carries the depth, and the MCP server
 answers with a `conflict` error and starts no job. A session nobody started through
