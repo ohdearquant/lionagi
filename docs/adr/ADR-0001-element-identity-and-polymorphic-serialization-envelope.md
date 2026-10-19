@@ -1,10 +1,46 @@
 # ADR-0001: Element identity and polymorphic serialization envelope
 
-- **Status**: Accepted
+- **Status**: Accepted, amended 2026-10-19 (see Amendment 1)
 - **Kind**: Retrospective
 - **Area**: core-data-model
 - **Date**: 2026-07-09
 - **Relations**: none
+
+## Amendment 1 (2026-10-19) — a dotted discriminator is imported only under an allowed prefix
+
+D3 and its exact semantics below record that `get_class` imports the module named by any dotted
+discriminator, that `Element.from_dict` retries a failed lookup with a direct import, and that the
+code keeps no allow-list. A payload could therefore make a reader import any module on its path.
+Recovery now uses the allow-list that `lionagi.ln.load_type_from_string` already applies: `lionagi.`
+plus every prefix added with `lionagi.ln.register_type_prefix()`.
+
+Decision: `get_class` resolves in this order.
+
+1. An exact `LION_CLASS_REGISTRY` hit.
+2. A dotted name whose module is already imported: the attribute is read from that module's own
+   namespace, without calling a module-level `__getattr__`, and returned when it is a class.
+3. A dotted name under an allowed prefix, imported through `load_type_from_string`.
+4. A dotted name under an allowed prefix that step 3 could not import, such as a lionagi class whose
+   module has moved: the short name is looked up in `_BUILTIN_MODULES` and then by registry suffix,
+   and only a class defined under an allowed prefix that the name itself starts with is returned. A
+   dotted name outside every allowed prefix raises `ValueError` instead.
+5. A bare short name: `_BUILTIN_MODULES`, accepting only a class defined under `lionagi.`, then a
+   registry key ending in that name.
+
+`Element.from_dict` no longer retries with a direct import, and it dispatches only to an `Element`
+subclass; any other resolved type raises `ValueError`. A string `item_type` given to `Pile` is
+resolved by the same `get_class`, and a bare name there is refused.
+
+Consequence: a payload that names a third-party class which is not registered, not in an
+already-imported module and not under a registered prefix now raises `ValueError`, and the message
+names `register_type_prefix()`. A process that reads such payloads imports the defining module
+first or registers its package prefix. This takes part of the cost the closed-registry alternative
+describes: a third-party class is readable once its package is admitted, and unreadable before.
+
+Limits: a module that is already imported counts as admitted, so the allow-list bounds which modules
+deserialization imports, while dispatch to a loaded class is bounded only by the `Element` subclass
+check. Delta 1's registration half, third-party models round-tripping without being admitted
+first, stays open.
 
 ## Context
 

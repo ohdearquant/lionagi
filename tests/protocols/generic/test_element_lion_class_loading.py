@@ -10,6 +10,7 @@ import types
 
 import pytest
 
+from lionagi import _class_registry
 from lionagi._class_registry import LION_CLASS_REGISTRY, get_class
 from lionagi._errors import ValidationError
 from lionagi.ln import _utils
@@ -110,11 +111,15 @@ def test_a_lionagi_class_whose_module_moved_still_resolves_by_its_short_name():
     assert get_class("lionagi.no_such_module_zz.Instruction") is Instruction
 
 
-@pytest.mark.parametrize("lion_class", [".", "untrusted.", "lionagi."])
-def test_a_name_ending_in_a_dot_is_refused(lion_class, monkeypatch):
+@pytest.mark.parametrize("lion_class", ["", ".", "untrusted.", "lionagi.", ".Foo", ".LocalElement"])
+def test_a_name_with_an_empty_module_or_class_part_is_refused(lion_class, monkeypatch):
     monkeypatch.setitem(LION_CLASS_REGISTRY, "probe.", LocalElement)
-    with pytest.raises(ValueError, match="Unable to find class"):
+    monkeypatch.setitem(LION_CLASS_REGISTRY, "probe.LocalElement", LocalElement)
+    loads = []
+    monkeypatch.setattr(_class_registry, "load_type_from_string", loads.append)
+    with pytest.raises(ValueError, match="Unable to find class .*register_type_prefix"):
         get_class(lion_class)
+    assert loads == []
 
 
 def test_a_module_level_getattr_outside_the_prefixes_is_not_called(monkeypatch):
@@ -270,3 +275,19 @@ def test_distinct_item_types_given_by_type_and_name_are_kept():
 
     pile = Pile(item_type=[Element, "lionagi.protocols.graph.node.Node"])
     assert pile.item_type == {Element, Node}
+
+
+def test_a_registered_class_falls_back_only_under_the_prefix_it_was_registered_under(monkeypatch):
+    spoof = type("SpoofNode", (LocalElement,), {"__module__": "lionagi.spoofed_zz"})
+    monkeypatch.setitem(LION_CLASS_REGISTRY, "ext_unallowed_zz.SpoofNode", spoof)
+    assert get_class("SpoofNode") is spoof
+    with pytest.raises(ValueError, match="Unable to find class"):
+        get_class("lionagi.no_such_mod_zz.SpoofNode")
+
+
+def test_a_union_item_type_counts_as_each_of_its_members():
+    from lionagi.protocols.graph.node import Node
+
+    assert Pile(item_type=[Element | Node]).item_type == {Element, Node}
+    with pytest.raises(ValidationError, match="duplicated item types"):
+        Pile(item_type=[Element, Element | Node])

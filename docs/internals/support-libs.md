@@ -75,8 +75,9 @@ registered Node subclass. It imports no module outside the allowed prefixes.
 `Element.from_dict` accepts only an Element subclass from it and raises
 `ValueError` otherwise, and a `Pile`'s `item_type` names resolve the same way,
 so data naming a class from a package of your own needs that package imported
-first or its prefix registered. A refused `item_type` name raises
-`ValidationError` naming both remedies.
+first or its prefix registered. A refused dotted `item_type` name raises
+`ValidationError` naming both remedies; a bare name is refused there. A union
+in `item_type` counts as each of its members.
 
 <a id="path-safety-contain-relative-path"></a>
 

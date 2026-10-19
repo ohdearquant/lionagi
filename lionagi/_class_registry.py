@@ -51,15 +51,15 @@ def get_class(class_name: str) -> type:
     the built-in modules, then a LION_CLASS_REGISTRY key ending in the short
     name. A dotted name outside the allowed prefixes that neither of its own
     steps resolves raises instead of falling back to its short name, and one
-    under an allowed prefix falls back only to a class defined under that
-    prefix; a bare short name resolves only to a lionagi class or a registered
+    under an allowed prefix falls back only to a class defined under an
+    allowed prefix that the name itself starts with; a bare short name resolves only to a lionagi class or a registered
     one. A module outside the allowed prefixes is never imported here. Raises
     ValueError if not found.
     """
     if not class_name:
         # Reject empty names here: the suffix-match fallback below would
         # otherwise match any registry key ending in a bare ".".
-        raise ValueError(f"Unable to find class {class_name!r}")
+        raise ValueError(_NOT_FOUND.format(repr(class_name)))
 
     if class_name in LION_CLASS_REGISTRY:
         return LION_CLASS_REGISTRY[class_name]
@@ -70,8 +70,9 @@ def get_class(class_name: str) -> type:
     prefixes: tuple[str, ...] = ("lionagi.",)
     if "." in class_name:
         mod, _, name = class_name.rpartition(".")
+        # An empty short name ("pkg.") would match every registry key ending in ".".
         if not mod or not name:
-            raise ValueError(f"Unable to find class {class_name}")
+            raise ValueError(_NOT_FOUND.format(class_name))
         module = sys.modules.get(mod)
         if isinstance(module, types.ModuleType):
             # The module's own namespace, not getattr: a module-level
@@ -100,15 +101,16 @@ def get_class(class_name: str) -> type:
         cls = getattr(module, name, None)
         # A built-in module's namespace also holds what it imports (Path,
         # BaseModel, UUID); only a class defined under the prefix counts.
-        if isinstance(cls, type) and f"{cls.__module__}.".startswith(prefixes):
+        if isinstance(cls, type) and f"{getattr(cls, '__module__', None)}.".startswith(prefixes):
             return cls
 
     # Importing the built-in modules above may have registered additional
     # Node subclasses under their full-qualified names; check by suffix. A
-    # short name matches any of them; a dotted name only one under its prefix.
+    # short name matches any of them; a dotted name only one registered under
+    # an allowed prefix that the name itself starts with.
     for key, cls in LION_CLASS_REGISTRY.items():
         if key == name or key.endswith(f".{name}"):
-            if "." not in class_name or f"{cls.__module__}.".startswith(prefixes):
+            if "." not in class_name or key.startswith(prefixes):
                 return cls
 
     raise ValueError(_NOT_FOUND.format(class_name))

@@ -94,14 +94,14 @@ def _validate_item_type(value, /) -> set[type[T]] | None:
                     message=str(e),
                     cause=e,
                 ) from e
-        if isinstance(subcls, type):
-            resolved.append(subcls)
-            out.update(union_members(subcls) if is_union_type(subcls) else (subcls,))
+        if isinstance(subcls, type) or is_union_type(subcls):
+            resolved.extend(union_members(subcls) if is_union_type(subcls) else (subcls,))
+            out.update(resolved)
         else:
             raise ValidationError.from_value(i, expected="A type.")
 
-    # Compared once resolved: a type and its name, or two names for one class,
-    # are the same item type.
+    # Compared once resolved and unions expanded: a type and its name, two names
+    # for one class, or a type and a union holding it repeat one item type.
     if len(resolved) != len(set(resolved)):
         raise ValidationError("Detected duplicated item types in item_type.")
 
