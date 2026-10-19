@@ -195,6 +195,8 @@ its area block.
 - 0049 — unused (intentional gap)
 - [ADR-0120](ADR-0120-interception-observation-and-durable-delivery-planes.md) — Interception,
   observation, and durable delivery planes (sequential number; see Numbering)
+- [ADR-0134](ADR-0134-hooks-for-spawned-cli-agents.md) — Hooks for spawned CLI agents: one
+  registry, rendered at the spawn seam (sequential number; see Numbering)
 
 ### utilities (0050-0054)
 
