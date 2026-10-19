@@ -787,7 +787,8 @@ async def spawn_and_wait(
         base_env = env_without_state_db_url(base_env)
     env, group_marker = prepare_process_group_env(base_env)
 
-    _log.info("Spawning: %s", " ".join(argv))
+    # DEBUG only: argv carries the whole prompt and any argument a caller passed, newlines included.
+    _log.debug("Spawning: %s", " ".join(argv))
     proc = await asyncio.create_subprocess_exec(
         *argv,
         stdout=asyncio.subprocess.PIPE,
