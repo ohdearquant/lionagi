@@ -141,6 +141,38 @@ def test_a_nested_entry_reuses_the_handler_and_the_outer_exit_restores(loggers, 
     assert len(_lines(capsys.readouterr().err)) == 2
 
 
+def test_a_lionagi_level_set_while_serving_does_not_drop_the_lines(loggers, capsys):
+    lionagi, scheduler = loggers
+    lionagi.setLevel(logging.INFO)
+    scheduler.setLevel(logging.NOTSET)
+    with daemon_log_handler():
+        lionagi.setLevel(logging.WARNING)  # the CLI's logging setup, run after serving began
+        _fire()
+        with daemon_log_handler():
+            _fire()
+    assert scheduler.level == logging.NOTSET
+    assert len(_lines(capsys.readouterr().err)) == 2
+
+
+def test_entries_leaving_out_of_order_keep_printing_until_the_last_leaves(loggers, capsys):
+    _, scheduler = loggers
+    scheduler.setLevel(logging.NOTSET)
+    scheduler.propagate = True
+    handlers = list(scheduler.handlers)
+    first, second = daemon_log_handler(), daemon_log_handler()
+    handler = first.__enter__()
+    assert second.__enter__() is handler
+    first.__exit__(None, None, None)
+    assert handler in scheduler.handlers
+    assert scheduler.propagate is False
+    _fire()
+    second.__exit__(None, None, None)
+    assert scheduler.handlers == handlers
+    assert scheduler.level == logging.NOTSET
+    assert scheduler.propagate is True
+    assert len(_lines(capsys.readouterr().err)) == 1
+
+
 def test_records_outside_the_scheduler_are_left_to_the_root_handlers(loggers, root_handler, capsys):
     lionagi, _ = loggers
     lionagi.setLevel(logging.INFO)

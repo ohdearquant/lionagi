@@ -248,9 +248,11 @@ a UTC timestamp:
 
 A due evaluation can end without that line. The concurrent-fire cap and a
 rolling `rate_limit` each log one line when they start holding a schedule back,
-not one per tick. An `overlap_policy="skip"` schedule whose previous run is still
-going records a skipped run and prints nothing at INFO, and so do a threshold
-that is not breached and a GitHub poll that finds no new events. Read
+not one per tick; the cap also records skipped runs, the rate limit records
+none. An `overlap_policy="skip"` schedule whose previous run is still going
+records a skipped run and prints nothing at INFO. A threshold that is not
+breached and a GitHub poll that finds no new events print nothing and record no
+run; the threshold stamps the schedule's `last_evaluated_at`. Read
 `li schedule runs <id>` (below) before reading a quiet log as a stopped
 scheduler. Whether the loop itself is advancing is what `li doctor` checks, through
 the daemon's readiness route; `/health` answers only whether the process is up.
