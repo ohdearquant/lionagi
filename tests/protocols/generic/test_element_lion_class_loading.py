@@ -73,6 +73,24 @@ def test_the_same_module_loads_once_its_prefix_is_allowed(probe_module):
     assert probe_module.read_text() == "yes"
 
 
+def test_a_module_under_an_allowed_prefix_that_fails_to_import_says_why(tmp_path, monkeypatch):
+    broken = "lion_class_broken_probe"
+    (tmp_path / f"{broken}.py").write_text("raise ImportError('needs an optional dependency')\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, broken, raising=False)
+    monkeypatch.setattr(_utils, "_ALLOWED_MODULE_PREFIXES", set(_utils._DEFAULT_ALLOWED_PREFIXES))
+    monkeypatch.setattr(_utils, "_TYPE_CACHE", {})
+    _utils.register_type_prefix(f"{broken}.")
+    try:
+        with pytest.raises(
+            ValueError,
+            match="cannot be loaded: .*loading it failed: .*needs an optional dependency",
+        ):
+            Element.from_dict(_dumped(f"{broken}.Thing"))
+    finally:
+        sys.modules.pop(broken, None)
+
+
 def test_an_element_subclass_already_imported_still_round_trips():
     original = LocalElement(note="kept")
     restored = Element.from_dict(original.to_dict(mode="python"))
@@ -99,8 +117,10 @@ def test_a_lion_class_that_is_not_a_string_is_refused(lion_class):
     ["lion_class_unimported_zz.Instruction", "lion_class_unimported_zz.Node", "sys.Element"],
 )
 def test_a_dotted_name_outside_the_prefixes_does_not_fall_back_to_its_short_name(lion_class):
-    with pytest.raises(ValueError, match="Unable to find class"):
+    with pytest.raises(ValueError, match="Unable to find class") as raised:
         get_class(lion_class)
+    # Chained from the refused load, so the reason survives beside the remedy.
+    assert "not in allowed prefixes" in str(raised.value.__cause__)
     with pytest.raises(ValueError, match="cannot be loaded"):
         Element.from_dict(_dumped(lion_class))
     assert "lion_class_unimported_zz" not in sys.modules
@@ -361,3 +381,10 @@ def test_an_item_type_that_is_not_a_class_is_refused(item_type):
     with pytest.raises(ValidationError) as exc:
         Pile(item_type=[item_type])
     assert exc.value.details.get("expected") == "A type."
+
+
+def test_a_bare_item_type_name_is_refused_with_the_dotted_form_to_use():
+    with pytest.raises(
+        ValidationError, match="names no module: pass the class itself or its dotted"
+    ):
+        Pile(item_type=["Element"])

@@ -64,22 +64,26 @@ module-level `__getattr__` is not called), a dotted path under an allowed
 module prefix (`lionagi.` and any prefix added with
 `lionagi.ln.register_type_prefix`, loaded through `load_type_from_string`),
 then the short-name lookup above, then a `LION_CLASS_REGISTRY` key ending in
-the short name. Only a dotted name under an allowed prefix reaches the
+the short name. Of dotted names, only one under an allowed prefix reaches the
 short-name steps, which keeps a lionagi class whose module has moved
 loadable, and there it matches only a class defined under that same prefix;
 any other dotted name the first steps do not resolve raises `ValueError`
 rather than resolving to a built-in or registered class that shares its short
 name. A bare short name matches a class defined under `lionagi.` in the
 built-in modules (never one they merely import, such as `Path`) or a
-registered Node subclass. It imports no module outside the allowed prefixes.
+registered Node subclass. A dotted path through an already-imported module
+resolves to whatever class that module's namespace holds under the name,
+including one the module only imports (`lionagi.protocols.generic.pile.Path` is
+`pathlib.Path`). It imports no module outside the allowed prefixes.
 When a dotted name under an allowed prefix fails to load and no later step
 resolves it, the `ValueError` says why loading failed and chains that error.
 `Element.from_dict` accepts only an Element subclass from it and raises
 `ValueError` otherwise, and a `Pile`'s `item_type` names resolve the same way,
 so data naming a class from a package of your own needs that package imported
 first or its prefix registered. A refused dotted `item_type` name raises
-`ValidationError` naming both remedies; a bare name is refused there. A union
-in `item_type` counts as each of its members.
+`ValidationError` naming both remedies; a bare name is refused there, with a
+message giving the dotted form to use. A union in `item_type` counts as each of
+its members.
 
 <a id="path-safety-contain-relative-path"></a>
 

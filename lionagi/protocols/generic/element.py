@@ -220,16 +220,13 @@ def _lion_class_type(lion_class: Any) -> type[Element]:
     Raises ValueError for a name that is not a string, that resolves to nothing
     lionagi may load, or that names a type outside the Element hierarchy.
     """
-    hint = (
-        "import the module that defines it before deserializing, or allow its "
-        "package with lionagi.ln.register_type_prefix()"
-    )
     if not isinstance(lion_class, str):
         raise ValueError(f"metadata lion_class must be a string, got {type(lion_class).__name__}")
     try:
         resolved = get_class(lion_class)
     except ValueError as exc:
-        raise ValueError(f"metadata lion_class {lion_class!r} cannot be loaded: {hint}") from exc
+        # get_class's message carries the remedy and, when loading failed, the reason.
+        raise ValueError(f"metadata lion_class {lion_class!r} cannot be loaded: {exc}") from exc
     if not (isinstance(resolved, type) and issubclass(resolved, Element)):
         raise ValueError(f"metadata lion_class {lion_class!r} is not an Element subclass")
     return resolved

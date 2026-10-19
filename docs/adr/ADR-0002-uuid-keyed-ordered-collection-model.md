@@ -408,7 +408,7 @@ _async_lock: lionagi.ln.concurrency.Lock  # wraps anyio.Lock
 AnyIO lock and then acquires the RLock with a non-blocking spin (a short sleep between attempts), so
 it never blocks the event loop while a sync thread holds `_lock`; because it holds both, an async
 method and a `synchronized` method on the same `Pile` exclude each other, in one thread and across
-threads. `_both_locks` (`pile.py:555-564`) applies the same ordered pair to an unscoped region.
+threads. `_both_locks` (`pile.py:565-574`) applies the same ordered pair to an unscoped region.
 
 **Exact semantics**:
 
@@ -432,7 +432,7 @@ threads. `_both_locks` (`pile.py:555-564`) applies the same ordered pair to an u
   with the copy.
 - `adump` snapshots dictionary UUIDs and a DataFrame under `_both_locks`, writes outside the locks,
   and, when `clear=True`, later removes only the snapshotted UUIDs under a second `_both_locks`
-  region (`pile.py:994-1013`). Items added during the write are retained.
+  region (`pile.py:1004-1023`). Items added during the write are retained.
 - Synchronous `dump(clear=True)` is format-dependent in the shipped control flow: Parquet reaches
   the final `clear()` call, while JSON-lines and CSV return immediately after their writer and do
   not clear. Async `adump(clear=True)` applies the snapshot removal after all three supported

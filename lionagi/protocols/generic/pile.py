@@ -85,9 +85,19 @@ def _validate_item_type(value, /) -> set[type[T]] | None:
     for i in value:
         pending = [i]
         if isinstance(i, str):
+            if "." not in i:
+                # A bare name says nothing about which package's class it means.
+                raise ValidationError.from_value(
+                    i,
+                    expected="A type.",
+                    message=(
+                        f"item_type {i!r} names no module: pass the class itself or its "
+                        "dotted path, such as 'lionagi.protocols.generic.element.Element'"
+                    ),
+                )
             try:
-                # Imports no module outside the allowed prefixes; a bare name is refused.
-                pending = [get_class(i) if "." in i else None]
+                # Imports no module outside the allowed prefixes.
+                pending = [get_class(i)]
             except Exception as e:
                 raise ValidationError.from_value(i, message=str(e), cause=e) from e
         # A union counts as each member, nested ones too; never None, a ForwardRef or a generic.
