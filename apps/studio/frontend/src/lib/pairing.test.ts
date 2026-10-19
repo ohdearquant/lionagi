@@ -114,6 +114,23 @@ describe("redeemPairingCode", () => {
     expect(document.cookie).not.toContain("launch-bearer");
   });
 
+  it("shares one exchange between callers that ask while it is in flight", async () => {
+    let answer: (response: Response) => void = () => {};
+    fetchMock
+      .mockReturnValueOnce(new Promise<Response>((resolve) => (answer = resolve)))
+      .mockResolvedValue(respond(401, { detail: "used" }));
+
+    const first = redeemPairingCode(BASE);
+    expect(hasPendingPairingCode()).toBe(true);
+    const second = redeemPairingCode(BASE);
+    answer(respond(200, { token: "launch-bearer" }));
+
+    expect(await Promise.all([first, second])).toEqual(["paired", "paired"]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(pairedBearer(BASE)).toBe("launch-bearer");
+    expect(hasPendingPairingCode()).toBe(false);
+  });
+
   it("keeps the decision capability in sessionStorage for that daemon only", async () => {
     fetchMock.mockResolvedValue(
       respond(200, { token: "launch-bearer", decision_token: "decision-capability" }),

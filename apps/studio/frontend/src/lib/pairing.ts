@@ -19,6 +19,7 @@ const DECISION_STORAGE_KEY = "studio.decisionToken";
 type Paired = { base: string; token: string };
 
 let pendingCode: string | undefined;
+let redeeming: Promise<PairingResult> | undefined;
 let paired: Paired | undefined;
 // A storage that refuses writes (private mode) still honours this page load.
 let decisionMemory: Paired | undefined;
@@ -71,7 +72,7 @@ export function takePairingCodeFromLocation(): void {
 }
 
 export function hasPendingPairingCode(): boolean {
-  return pendingCode !== undefined;
+  return pendingCode !== undefined || redeeming !== undefined;
 }
 
 export type PairingResult = "paired" | "refused" | "unreachable";
@@ -79,9 +80,20 @@ export type PairingResult = "paired" | "refused" | "unreachable";
 /**
  * Exchange the pending code with the daemon at `apiBase`. A refused code is
  * dropped, since it was used, expired or never issued; a code that did not
- * reach the daemon is kept for the next attempt.
+ * reach the daemon is kept for the next attempt. A caller that asks while an
+ * exchange is in flight shares its result: the code works once, so a second
+ * request would be refused after the first had already paired the page.
  */
-export async function redeemPairingCode(apiBase: string): Promise<PairingResult> {
+export function redeemPairingCode(apiBase: string): Promise<PairingResult> {
+  if (redeeming === undefined) {
+    redeeming = exchangePairingCode(apiBase).finally(() => {
+      redeeming = undefined;
+    });
+  }
+  return redeeming;
+}
+
+async function exchangePairingCode(apiBase: string): Promise<PairingResult> {
   const code = pendingCode;
   if (code === undefined) return "refused";
   let response: Response;
@@ -137,6 +149,7 @@ export function clearDecisionToken(): void {
 
 export function resetPairingForTests(): void {
   pendingCode = undefined;
+  redeeming = undefined;
   paired = undefined;
   writeDecisionCapability(undefined);
 }

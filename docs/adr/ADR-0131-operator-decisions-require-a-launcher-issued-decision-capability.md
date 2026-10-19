@@ -137,7 +137,7 @@ rule and the token's narrower meaning.
    2b. D2's reconnect channel, with the CLI's reconnect moved from the HTTP mint to it. It ships in
    the same release as step 2's 410, so no released daemon is without a reconnect, and before step 4.
 3. D5's adapters, one launch path per change, so that every launch path except Docker delivers a code
-   before any decision requires one. Today only the hosted launch delivers one.
+   before any decision requires one. Today the hosted launch and `--dev` deliver one.
 4. D4: the principal check in `decide()` and the refusals, Docker's decisions-disabled refusal, and
    D7's version-2 marker with the page's version gate, in one release. From this step the contract
    is version 2.
