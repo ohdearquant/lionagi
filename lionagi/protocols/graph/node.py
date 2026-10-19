@@ -5,12 +5,11 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-import orjson
 from pydantic import BaseModel, field_serializer, field_validator
 
 from lionagi._class_registry import LION_CLASS_REGISTRY
 from lionagi.adapters._base import Adaptable, AsyncAdaptable
-from lionagi.ln import now_utc
+from lionagi.ln import json_loads, now_utc
 from lionagi.ln.types import DataClass
 
 from .._concepts import Relational
@@ -39,7 +38,7 @@ class Node(Element, Relational, AsyncAdaptable, Adaptable):
             return None
         if isinstance(value, str):
             try:
-                loaded = orjson.loads(value)
+                loaded = json_loads(value)
                 if not isinstance(loaded, list):
                     raise ValueError
                 return [float(x) for x in loaded]

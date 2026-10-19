@@ -11,6 +11,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from lionagi.libs.path_safety import resolve_workspace_path as _resolve_workspace_path
+from lionagi.ln._paths import _resolve_workspace_root
 from lionagi.ln.concurrency import run_sync
 from lionagi.protocols.action.tool import Tool
 
@@ -162,7 +163,7 @@ class AstSearchTool(LionTool):
 
     def __init__(self, workspace_root: str | Path | None = None) -> None:
         self._tool: Tool | None = None
-        self.workspace_root = Path(workspace_root or Path.cwd()).expanduser().resolve()
+        self.workspace_root = _resolve_workspace_root(workspace_root)
 
     async def handle_request(self, request: AstSearchRequest) -> AstSearchResponse:
         if isinstance(request, dict):

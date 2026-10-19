@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-import orjson
 import yaml
+
+from lionagi.ln._json_load import json_loads
 
 # YAML Dumper with minimal, readable settings
 
@@ -71,7 +72,7 @@ def minimal_yaml(
 ) -> str:
     """Serialize Python value to minimal YAML (block style, no aliases, optional empty-pruning)."""
     if isinstance(value, str):
-        value = orjson.loads(value)
+        value = json_loads(value)
 
     data = _prune(value) if drop_empties else value
     return yaml.dump(

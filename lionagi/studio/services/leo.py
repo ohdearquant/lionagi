@@ -17,11 +17,11 @@ import uuid
 from functools import partial
 from typing import Any
 
-import anyio
 from fastapi import HTTPException
 from pydantic import BaseModel
 
 from lionagi._errors import NotFoundError
+from lionagi.ln.concurrency import run_sync
 
 from ._sse import sse_response
 
@@ -196,7 +196,7 @@ async def tool_list_playbooks() -> dict[str, Any]:
     """List available playbooks (read-only)."""
     from lionagi.studio.services import playbooks as pb_svc
 
-    result = await anyio.to_thread.run_sync(pb_svc.list_playbooks)
+    result = await run_sync(pb_svc.list_playbooks)
     return {"playbooks": result}
 
 
@@ -204,7 +204,7 @@ async def tool_get_playbook(name: str) -> dict[str, Any]:
     """Get details for a specific playbook by name (read-only)."""
     from lionagi.studio.services import playbooks as pb_svc
 
-    result = await anyio.to_thread.run_sync(partial(pb_svc.get_playbook, name))
+    result = await run_sync(partial(pb_svc.get_playbook, name))
     if result is None:
         return {"error": f"Playbook '{name}' not found"}
     return result

@@ -8,11 +8,11 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Generic, Literal, TypeAlias, TypeVar
 from uuid import UUID, uuid4
 
-import orjson
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
 from lionagi._class_registry import get_class
 from lionagi.ln._json_dump import get_orjson_default, json_dumps
+from lionagi.ln._json_load import json_loads
 from lionagi.ln._utils import now_utc
 from lionagi.ln.types import not_sentinel
 from lionagi.utils import to_dict
@@ -155,9 +155,9 @@ class Element(BaseModel):
         if mode == "python":
             return self._to_dict(**kw)
         if mode == "json":
-            return orjson.loads(self.to_json(decode=False, **kw))
+            return json_loads(self.to_json(decode=False, **kw))
         if mode == "db":
-            dict_ = orjson.loads(self.to_json(decode=False, **kw))
+            dict_ = json_loads(self.to_json(decode=False, **kw))
             dict_[db_meta_key or "node_metadata"] = dict_.pop("metadata", {})
             return dict_
         raise ValueError(f"Unsupported mode: {mode}")
@@ -211,7 +211,7 @@ class Element(BaseModel):
     @classmethod
     def from_json(cls, json_str: str) -> Element:
         """Deserialize JSON string into Element or subclass."""
-        return cls.from_dict(orjson.loads(json_str))
+        return cls.from_dict(json_loads(json_str))
 
 
 def _lion_class_type(lion_class: Any) -> type[Element]:

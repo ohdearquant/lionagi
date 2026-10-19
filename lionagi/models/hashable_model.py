@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from typing import Literal
 
-import orjson
 from pydantic import BaseModel, ConfigDict
 from typing_extensions import Self
 
@@ -50,9 +49,9 @@ class HashableModel(BaseModel):
             case "python":
                 return self._to_dict(**kw)
             case "json":
-                return orjson.loads(self.to_json(decode=False))
+                return ln.json_loads(self.to_json(decode=False))
             case "db":
-                dict_ = orjson.loads(self.to_json(decode=False))
+                dict_ = ln.json_loads(self.to_json(decode=False))
                 if "metadata" in dict_:
                     dict_["node_metadata"] = dict_.pop("metadata", {})
                 return dict_
@@ -66,7 +65,7 @@ class HashableModel(BaseModel):
                 return cls.model_validate(data, **kw)
             case "json":
                 if isinstance(data, str | bytes):
-                    data = orjson.loads(data)
+                    data = ln.json_loads(data)
                 return cls.model_validate(data, **kw)
             case "db":
                 if "node_metadata" in data:

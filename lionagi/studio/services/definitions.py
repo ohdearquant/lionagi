@@ -7,11 +7,11 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-import anyio
 from fastapi import HTTPException, Query
 from pydantic import BaseModel
 
 from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
+from lionagi.ln.concurrency import run_sync
 
 # Imported eagerly: the state package resolves attributes lazily, so this
 # reaches the small URL-handling module without pulling the database layer in.
@@ -175,7 +175,7 @@ async def list_definitions(kind: str | None = None) -> list[dict[str, Any]]:
                 result.append(entry)
         return result
 
-    result = await anyio.to_thread.run_sync(partial(_scan_disk, kind))
+    result = await run_sync(partial(_scan_disk, kind))
 
     # Same policy get_definition() applies to a single record: while demo mode
     # is on, an agent's on-disk location is abbreviated to a bare filename in
@@ -241,11 +241,11 @@ def _resolve_skill_file(name: str) -> Path | None:
 
 
 async def _get_skill_definition(name: str) -> dict[str, Any] | None:
-    disk_file = await anyio.to_thread.run_sync(partial(_resolve_skill_file, name))
+    disk_file = await run_sync(partial(_resolve_skill_file, name))
     if disk_file is None:
         return None
 
-    content = await anyio.to_thread.run_sync(disk_file.read_text)
+    content = await run_sync(disk_file.read_text)
     path = _relative_path(disk_file)
 
     try:
@@ -288,11 +288,11 @@ async def get_definition(kind: str, name: str) -> dict[str, Any] | None:
     if not base:
         return None
 
-    disk_file = await anyio.to_thread.run_sync(partial(_find_definition_file, base, name))
+    disk_file = await run_sync(partial(_find_definition_file, base, name))
     if not disk_file:
         return None
 
-    content = await anyio.to_thread.run_sync(disk_file.read_text)
+    content = await run_sync(disk_file.read_text)
     path = _relative_path(disk_file)
 
     redact = kind == "agent" and demo_mode_enabled()
@@ -436,7 +436,7 @@ async def save_definition(
 
     lock = await _lock_for(kind, name)
     async with lock:
-        disk_file = await anyio.to_thread.run_sync(partial(_find_definition_file, base, name))
+        disk_file = await run_sync(partial(_find_definition_file, base, name))
         if not disk_file:
             disk_file = base / f"{name}{_DEFAULT_EXT.get(kind, '.md')}"
         elif kind == "agent":
@@ -446,7 +446,7 @@ async def save_definition(
             # hold here too, or it's a bypass. Read straight off disk_file rather than
             # calling into agents.py, since that module resolves its own _AGENTS_ROOT
             # independently of this module's (test-patchable) AGENTS_DIR/KIND_DIRS.
-            existing_text = await anyio.to_thread.run_sync(disk_file.read_text)
+            existing_text = await run_sync(disk_file.read_text)
             existing_fm, _ = _parse_fm(existing_text)
             if _is_protected_system(existing_fm):
                 raise PermissionError(f"Agent '{name}' is a system agent and cannot be edited")
@@ -466,7 +466,7 @@ async def save_definition(
             ensure_lionagi_dir(disk_file.parent)
             disk_file.write_text(content)
 
-        await anyio.to_thread.run_sync(_write_disk)
+        await run_sync(_write_disk)
 
     # ADR-0077 D2: response field is "saved_at", not "created_at"
     return {
@@ -519,7 +519,7 @@ async def _save_skill_definition(
             ensure_lionagi_dir(disk_file.parent)
             disk_file.write_text(content)
 
-        await anyio.to_thread.run_sync(_write_disk)
+        await run_sync(_write_disk)
 
     return {
         "kind": "skill",
@@ -590,13 +590,11 @@ async def snapshot_current(kind: str | None = None) -> int:
     defs = await list_definitions(kind)
 
     for d in defs:
-        disk_path = await anyio.to_thread.run_sync(
-            partial(_find_definition_file, KIND_DIRS[d["kind"]], d["name"])
-        )
+        disk_path = await run_sync(partial(_find_definition_file, KIND_DIRS[d["kind"]], d["name"]))
         if disk_path is None:
             continue
 
-        content = await anyio.to_thread.run_sync(disk_path.read_text)
+        content = await run_sync(disk_path.read_text)
 
         if d["has_versions"]:
             # Compare against the raw stored version, not get_version()'s

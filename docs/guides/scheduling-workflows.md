@@ -237,6 +237,30 @@ For runs nobody watches live, make artifact presence part of your triage: a
 `completed` status with a missing artifact is the classic silent failure of any
 recurring system.
 
+The daemon's own stderr says when it fires. However the app is served
+(`li studio`, `python -m lionagi.studio`, or `uvicorn lionagi.studio.app:app` as
+in the container image), the scheduler's INFO records print one line each, with
+a UTC timestamp:
+
+```text
+2026-10-18T21:26:40.512Z INFO:lionagi.studio.scheduler.engine:Firing schedule nightly-review (run 065ae8d3, chain_depth=0)
+```
+
+A due evaluation can end without that line. The concurrent-fire cap and a
+rolling `rate_limit` each log one line when they start holding a schedule back,
+not one per tick; the cap also records skipped runs, the rate limit records
+none. An `overlap_policy="skip"` schedule whose previous run is still going
+records a skipped run and prints nothing at INFO. A threshold that is not
+breached and a GitHub poll that finds no new events print nothing and record no
+run; the threshold stamps the schedule's `last_evaluated_at`. Read
+`li schedule runs <id>` (below) before reading a quiet log as a stopped
+scheduler. Whether the loop itself is advancing is what `li doctor` checks, through
+the daemon's readiness route; `/health` answers only whether the process is up.
+
+While the app serves, the scheduler's records go to this stderr line and not to
+handlers on the root logger. A handler meant to receive them is added to the
+`lionagi.studio.scheduler` logger itself.
+
 ## Inspect skipped runs and capacity
 
 `li schedule runs <id>` and `li schedule run <run-id>` show why a run was skipped

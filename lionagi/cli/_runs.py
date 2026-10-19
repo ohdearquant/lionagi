@@ -672,8 +672,8 @@ async def _linked_engine_session(
     """
     if not engine_session_uid:
         return None
-    import anyio
 
+    from lionagi.ln.concurrency import sleep
     from lionagi.state.claude_mirror import session_db_id
 
     db_id = session_db_id(engine_session_uid)
@@ -681,7 +681,7 @@ async def _linked_engine_session(
     if linked is not None:
         return linked
     for _ in range(retries):
-        await anyio.sleep(retry_interval)
+        await sleep(retry_interval)
         linked = await db.get_session(db_id)
         if linked is not None:
             return linked
@@ -1562,9 +1562,8 @@ def _make_message_handler(
     message_retry_queues: list | None = None,
 ):
     """Return an async _on_message handler for live DB persistence."""
-    from copy import deepcopy
-
     from lionagi.hooks._message_retry import MessagePersistRetryQueue, PendingMessageEvent
+    from lionagi.ln import copy
     from lionagi.state.compat import StateCompatibilityRefused
 
     retry_queue = MessagePersistRetryQueue(
@@ -1591,7 +1590,7 @@ def _make_message_handler(
                 on_persisted = _record_persisted
             await retry_queue.submit(
                 PendingMessageEvent(
-                    message=deepcopy(msg_dict),
+                    message=copy(msg_dict),
                     session_id=session_id,
                     branch_progression_id=(branch_prog_id if append_to_progressions else None),
                     session_progression_id=(session_prog_id if append_to_progressions else None),

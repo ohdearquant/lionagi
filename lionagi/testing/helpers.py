@@ -13,7 +13,7 @@ from typing import Any, TypeVar
 from pydantic import Field as _Field
 
 from lionagi.ln import fail_after, gather, move_on_after
-from lionagi.ln.concurrency import current_time
+from lionagi.ln.concurrency import current_time, sleep
 from lionagi.protocols.generic.element import UUID, Element
 from lionagi.protocols.generic.event import EventStatus
 from lionagi.protocols.graph.node import Node
@@ -35,7 +35,7 @@ class AsyncTestHelpers:
         while current_time() - start_time < timeout:
             if condition():
                 return
-            await asyncio.sleep(interval)
+            await sleep(interval)
         raise AssertionError(error_message or f"Condition not met within {timeout} seconds")
 
     @staticmethod
@@ -80,7 +80,7 @@ class AsyncTestHelpers:
             initial_tasks = len(asyncio.all_tasks())
             try:
                 result = await func(*args, **kwargs)
-                await asyncio.sleep(0.01)
+                await sleep(0.01)
                 final_tasks = len(asyncio.all_tasks())
                 if final_tasks > initial_tasks:
                     remaining = [t for t in asyncio.all_tasks() if not t.done()]

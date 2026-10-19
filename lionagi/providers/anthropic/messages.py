@@ -274,7 +274,7 @@ def _settlement_reading(event: Any) -> dict | None:
     the id and the usage of its message, a ``message_delta`` its usage; None is yielded
     for anything else, a ``message_start`` whose message is not an object included.
     """
-    import copy
+    from lionagi.ln import copy
 
     if not isinstance(event, dict):
         return None
@@ -286,10 +286,10 @@ def _settlement_reading(event: Any) -> dict | None:
         return {
             "model": message.get("model"),
             "id": message.get("id"),
-            "usage": copy.deepcopy(message.get("usage")),
+            "usage": copy(message.get("usage")),
         }
     if event_type == "message_delta":
-        return {"usage": copy.deepcopy(event.get("usage"))}
+        return {"usage": copy(event.get("usage"))}
     return None
 
 
