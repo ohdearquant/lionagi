@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 
 import pytest
@@ -126,6 +127,73 @@ async def test_disable_without_a_reason_records_an_unspecified_disable(tmp_path,
     latest = (await schedules.get_schedule_route("definition"))["lifecycle"]["latest"]
     assert latest["status"] == "disabled"
     assert latest["reason_code"] == "schedule_definition.disabled.unspecified"
+
+
+@pytest.mark.parametrize("entrypoint", ["service", "route", "no-reason"])
+async def test_repeated_disable_cannot_claim_to_record_a_new_reason(
+    tmp_path, monkeypatch, entrypoint
+):
+    path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    async with StateDB(path) as db:
+        await db.create_schedule(
+            {
+                "id": "definition",
+                "name": "Definition",
+                "enabled": 1,
+                "trigger_type": "interval",
+                "interval_sec": 60,
+                "action_kind": "agent",
+            }
+        )
+    await schedules.disable_schedule("definition", reason="original explanation")
+    async with StateDB(path, readonly=True) as db:
+        before = await db.get_schedule_history("definition")
+    if entrypoint == "service":
+        with pytest.raises(ValueError, match="already disabled.*reason.*not recorded"):
+            await schedules.disable_schedule("definition", reason="later explanation")
+    elif entrypoint == "route":
+        with pytest.raises(HTTPException) as caught:
+            await schedules.disable_schedule_route(
+                "definition", schedules.DisableScheduleRequest(reason="later explanation")
+            )
+        assert caught.value.status_code == 400
+        assert "reason was not recorded" in caught.value.detail
+    else:
+        assert await schedules.disable_schedule("definition") is True
+    async with StateDB(path, readonly=True) as db:
+        assert (await db.get_schedule("definition"))["enabled"] == 0
+        assert await db.get_schedule_history("definition") == before
+
+
+async def test_concurrent_reasoned_disables_report_only_the_recorded_winner(tmp_path, monkeypatch):
+    path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    async with StateDB(path) as db:
+        await db.create_schedule(
+            {
+                "id": "definition",
+                "name": "Definition",
+                "enabled": 1,
+                "trigger_type": "interval",
+                "interval_sec": 60,
+                "action_kind": "agent",
+            }
+        )
+    reasons = ("first explanation", "second explanation")
+    results = await asyncio.gather(
+        *(schedules.disable_schedule("definition", reason=reason) for reason in reasons),
+        return_exceptions=True,
+    )
+    assert results.count(True) == 1
+    failure = next(result for result in results if result is not True)
+    assert isinstance(failure, ValueError)
+    assert "reason was not recorded" in str(failure)
+    async with StateDB(path, readonly=True) as db:
+        history = (await db.get_schedule_history("definition"))["events"]
+    assert len(history) == 2  # Creation plus the one state edge.
+    disabled = next(event for event in history if event["status"] == "disabled")
+    assert disabled["reason_summary"] == reasons[results.index(True)]
 
 
 @pytest.mark.parametrize("reason", ["", "   ", "x" * 501])

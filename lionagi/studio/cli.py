@@ -2624,7 +2624,10 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
             p.add_argument(
                 "--reason",
                 default=None,
-                help="Why this schedule stops firing, recorded in its definition history. Optional.",
+                help=(
+                    "Optional explanation recorded when an enabled schedule is disabled. "
+                    "Refused if already disabled; no reason or history entry is added."
+                ),
             )
 
     # trigger

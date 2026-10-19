@@ -84,8 +84,13 @@ export default function EnabledToggle({
       </button>
       {reasonOpen &&
         createPortal(
-          // eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events -- contain portal events so they cannot open the schedule row behind it; Modal owns keyboard handling
-          <div onClick={(event) => event.stopPropagation()}>
+          // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- contain row activation; Modal still owns Escape and Tab
+          <div
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") event.stopPropagation();
+            }}
+          >
             <Modal
               title={t("disable")}
               closeLabel={tDetail("cancel")}

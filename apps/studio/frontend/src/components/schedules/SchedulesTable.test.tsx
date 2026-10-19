@@ -237,6 +237,32 @@ describe("SchedulesTable — keyboard interaction (mounted)", () => {
     expect(onOpen).toHaveBeenNthCalledWith(1, "sched-1");
   });
 
+  it.each(["Enter", " "])("typing %j in the disable reason does not open the row", async (key) => {
+    await mount();
+    const toggle = container.querySelector('button[aria-label="Disable schedule"]');
+    expect(toggle).not.toBeNull();
+    click(toggle!);
+    await flush();
+    const reason = document.body.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Reason"]',
+    );
+    expect(reason).not.toBeNull();
+    reason!.focus();
+    const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+    act(() => {
+      reason!.dispatchEvent(event);
+    });
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(reason);
+    expect(api.disableSchedule).not.toHaveBeenCalled();
+
+    // The dialog still owns Escape; isolating row activation must not hide it.
+    keydown(reason!, "Escape");
+    await flush();
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+  });
+
   it("Enter on Run now triggers the run only — the row does not also open", async () => {
     await mount();
     const runNow = Array.from(container.querySelectorAll("button")).find(

@@ -1270,8 +1270,11 @@ async def enable_schedule(schedule_id: str) -> bool:
 
 
 async def disable_schedule(schedule_id: str, *, reason: str | None = None) -> bool:
-    """Disable a schedule. A given reason is recorded in its definition history as a
-    manual disable; without one the history records the disable as unspecified."""
+    """Disable a schedule, recording a supplied reason on the enabled-to-disabled edge.
+
+    A reason on an already-disabled schedule is refused without changing history.
+    Without a reason, repeated disable remains an idempotent success.
+    """
     if reason is not None:
         reason = reason.strip()
         if not reason:
@@ -1279,26 +1282,38 @@ async def disable_schedule(schedule_id: str, *, reason: str | None = None) -> bo
         if len(reason) > 500:
             raise ValueError("reason must be at most 500 characters")
     async with StateDB() as db:
-        schedule = await db.get_schedule(schedule_id)
-        if not schedule:
-            return False
         if reason is None:
-            await db.update_schedule(schedule_id, enabled=0)
-            return True
-        await db.update_schedule(
-            schedule_id,
-            enabled=0,
-            reason=ReasonRecord(
-                code=ScheduleDefinitionReasons.DISABLED_MANUAL,
-                summary=reason,
-            ),
-            audit_context=ScheduleAuditContext(
-                source="operator",
-                origin="http",
-                assurance="client_reported",
-            ),
-        )
-    return True
+            return await db.update_schedule(schedule_id, enabled=0)
+        # Check under the same lock/transaction as the existing lifecycle writer:
+        # a concurrent disable must not turn this explanation into a silent no-op.
+        fields = {"enabled": 0}
+        stmt, params = db._build_update_schedule_stmt(schedule_id, fields)
+        async with db.transaction() as conn:
+            schedule = await db._lifecycle_service().schedule_adapter.read_for_update(
+                conn, schedule_id
+            )
+            if schedule is None:
+                return False
+            if not schedule["enabled"]:
+                raise ValueError(
+                    f"Schedule '{schedule_id}' is already disabled; reason was not recorded"
+                )
+            return await db._update_schedule_in_tx(
+                conn,
+                schedule_id,
+                fields,
+                stmt,
+                params,
+                reason=ReasonRecord(
+                    code=ScheduleDefinitionReasons.DISABLED_MANUAL,
+                    summary=reason,
+                ),
+                audit_context=ScheduleAuditContext(
+                    source="operator",
+                    origin="http",
+                    assurance="client_reported",
+                ),
+            )
 
 
 async def list_schedule_runs(
@@ -1577,7 +1592,10 @@ async def disable_schedule_route(
     schedule_id: str,
     body: DisableScheduleRequest | None = None,
 ) -> dict[str, Any]:
-    ok = await disable_schedule(schedule_id, reason=body.reason if body else None)
+    try:
+        ok = await disable_schedule(schedule_id, reason=body.reason if body else None)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not ok:
         raise HTTPException(status_code=404, detail=f"Schedule '{schedule_id}' not found")
     return {"ok": True, "enabled": False}
