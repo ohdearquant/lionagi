@@ -30,13 +30,13 @@ the capability is recorded unattributed.
 `decide()` (`lionagi/studio/operator/coordinator.py:1015`), which claims the proposal in the store
 (`lionagi/studio/operator/store.py:2180`). The proposal's hash and version bind what is decided, not
 who decides. With no token configured, the middleware admits a request that carries no `Origin` and
-no `Sec-Fetch-Site` (`lionagi/studio/app.py:77`, `:113`), so a command-line client, a script and a
+no `Sec-Fetch-Site` (`lionagi/studio/app.py:77`, `:123`), so a command-line client, a script and a
 tool's HTTP request are all admitted.
 
 **P2 — a code that pairs a page can be minted by any such request.** `POST
 /api/studio/pairing-codes` (`lionagi/studio/services/pairing.py:33-58`) mints a 120-second code
 (`lionagi/studio/launch_access.py:57`, `:49`) for a request without browser provenance, and `POST
-/api/studio/pair` (`pairing.py:48`) redeems it for the daemon's one process-wide bearer
+/api/studio/pair` (`pairing.py:60-61`) redeems it for the daemon's one process-wide bearer
 (`launch_access.py:43`, `:63`). A test pins that the command line can mint and that the minted code
 redeems (`tests/studio/test_hosted_hardening.py:967`). The CLI uses that route to pair a page with a
 daemon that is already running (`lionagi/studio/cli.py:280`). So pairing is not a boundary: a tool

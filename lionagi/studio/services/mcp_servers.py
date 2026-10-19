@@ -34,7 +34,6 @@ from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlparse
 
-import anyio
 from fastapi import Body, HTTPException
 
 from lionagi import ln
@@ -329,7 +328,7 @@ async def _attempt_connection(config: dict[str, Any]) -> dict[str, Any]:
             )
             client = FastMCPClient(transport)
 
-        with anyio.fail_after(_CONNECT_TIMEOUT_SECONDS):
+        with ln.concurrency.fail_after(_CONNECT_TIMEOUT_SECONDS):
             async with client:
                 await client.ping()
         return {"ok": True, "error": None}
@@ -597,13 +596,13 @@ async def validate_config(
 
 @studio_route("/mcp/servers/", method="GET", area="mcp", name="list_mcp_servers")
 async def list_mcp_servers_route() -> dict[str, Any]:
-    servers = await anyio.to_thread.run_sync(list_servers)
+    servers = await ln.concurrency.run_sync(list_servers)
     return {"servers": servers}
 
 
 @studio_route("/mcp/servers/{name}", method="GET", area="mcp", name="get_mcp_server")
 async def get_mcp_server_route(name: str) -> dict[str, Any]:
-    server = await anyio.to_thread.run_sync(partial(get_server, name))
+    server = await ln.concurrency.run_sync(partial(get_server, name))
     if server is None:
         raise HTTPException(status_code=404, detail=f"MCP server '{name}' not found")
     return server
@@ -619,7 +618,7 @@ async def register_mcp_server_route(body: Annotated[dict[str, Any], Body(...)]) 
     config = _config_from_body(body)
     enabled = bool(body.get("enabled", True))
     try:
-        return await anyio.to_thread.run_sync(
+        return await ln.concurrency.run_sync(
             partial(register_server, name, config, enabled=enabled)
         )
     except DuplicateServerError as exc:
@@ -634,7 +633,7 @@ async def update_mcp_server_route(
 ) -> dict[str, Any]:
     config = _config_from_body(body)
     try:
-        updated = await anyio.to_thread.run_sync(partial(update_server, name, config))
+        updated = await ln.concurrency.run_sync(partial(update_server, name, config))
     except McpServerError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if updated is None:
@@ -644,7 +643,7 @@ async def update_mcp_server_route(
 
 @studio_route("/mcp/servers/{name}/enable", method="POST", area="mcp", name="enable_mcp_server")
 async def enable_mcp_server_route(name: str) -> dict[str, Any]:
-    updated = await anyio.to_thread.run_sync(partial(set_enabled, name, True))
+    updated = await ln.concurrency.run_sync(partial(set_enabled, name, True))
     if updated is None:
         raise HTTPException(status_code=404, detail=f"MCP server '{name}' not found")
     return updated
@@ -652,7 +651,7 @@ async def enable_mcp_server_route(name: str) -> dict[str, Any]:
 
 @studio_route("/mcp/servers/{name}/disable", method="POST", area="mcp", name="disable_mcp_server")
 async def disable_mcp_server_route(name: str) -> dict[str, Any]:
-    updated = await anyio.to_thread.run_sync(partial(set_enabled, name, False))
+    updated = await ln.concurrency.run_sync(partial(set_enabled, name, False))
     if updated is None:
         raise HTTPException(status_code=404, detail=f"MCP server '{name}' not found")
     return updated
@@ -660,7 +659,7 @@ async def disable_mcp_server_route(name: str) -> dict[str, Any]:
 
 @studio_route("/mcp/servers/{name}", method="DELETE", area="mcp", name="delete_mcp_server")
 async def delete_mcp_server_route(name: str) -> dict[str, Any]:
-    removed = await anyio.to_thread.run_sync(partial(remove_server, name))
+    removed = await ln.concurrency.run_sync(partial(remove_server, name))
     if not removed:
         raise HTTPException(status_code=404, detail=f"MCP server '{name}' not found")
     return {"ok": True}

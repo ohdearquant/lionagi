@@ -371,45 +371,6 @@ class TestTouchMetadataFallback:
 class TestSoftDeleteRealFields:
     """soft_delete() and restore() use real fields when available."""
 
-    def test_soft_delete_sets_real_is_deleted(self):
-        cls = create_node("Del", soft_delete=True)
-        d = cls(content="bye")
-        d.soft_delete()
-        assert d.is_deleted is True
-
-    def test_soft_delete_sets_real_deleted_at(self, monkeypatch):
-        t0 = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
-        t1 = datetime(2024, 6, 1, 12, 0, 5, tzinfo=timezone.utc)
-        monkeypatch.setattr(element_mod, "now_utc", lambda: t0)
-        monkeypatch.setattr(node_mod, "now_utc", lambda: t0)
-        cls = create_node("Del", soft_delete=True)
-        d = cls()
-        assert d.created_at == t0.timestamp()
-        monkeypatch.setattr(node_mod, "now_utc", lambda: t1)
-        d.soft_delete()
-        # deleted_at reflects the soft_delete() clock (t1) and orders strictly after
-        # the node's actual construction time (created_at), not an arbitrary constant.
-        assert d.deleted_at == t1.isoformat()
-        deleted_at = datetime.fromisoformat(d.deleted_at)
-        assert deleted_at == t1
-        assert deleted_at > datetime.fromtimestamp(d.created_at, tz=timezone.utc)
-
-    def test_restore_clears_real_is_deleted(self):
-        cls = create_node("Rest", soft_delete=True)
-        r = cls()
-        r.soft_delete()
-        assert r.is_deleted is True
-        r.restore()
-        assert r.is_deleted is False
-
-    def test_restore_clears_real_deleted_at(self):
-        cls = create_node("Rest", soft_delete=True)
-        r = cls()
-        r.soft_delete()
-        assert r.deleted_at is not None
-        r.restore()
-        assert r.deleted_at is None
-
     def test_full_cycle_with_real_fields(self):
         cls = create_node(
             "FullCycle",

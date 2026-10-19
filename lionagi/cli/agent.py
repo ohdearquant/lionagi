@@ -19,9 +19,11 @@ from lionagi._errors import ConfigurationError
 from lionagi._errors import TimeoutError as LionTimeoutError
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.ln.concurrency import (
+    CancelScope,
     SigtermInterrupt,
     cache_cancelled_exc_class,
     cancelled_exc_classes,
+    fail_after,
     run_async,
 )
 from lionagi.mcp.config import JOB_MARKER_ENV_VAR
@@ -364,14 +366,12 @@ async def _run_api_turn(
     """
     import contextlib
 
-    import anyio
-
     from lionagi.operations.run.run import _write_branch_snapshot
 
     calls_before = _calls_sent(branch)
     tools_before = _tool_results(branch)
     started = time.monotonic()
-    deadline = anyio.fail_after(timeout) if timeout is not None else contextlib.nullcontext()
+    deadline = fail_after(timeout) if timeout is not None else contextlib.nullcontext()
     try:
         with deadline:
             if loop == "lndl":
@@ -398,7 +398,7 @@ async def _run_api_turn(
                     max_extensions=max_extensions,
                 )
     finally:
-        with anyio.CancelScope(shield=True):
+        with CancelScope(shield=True):
             calls_after = _calls_sent(branch)
             record = branch.metadata.get(_API_LAUNCH_KEY)
             # The record totals this invocation's turns: a queued message drained as a
@@ -1628,9 +1628,8 @@ async def _run_agent(
         if not notify or _notify_session_id is not None or _direct_notice_sent:
             return
         _direct_notice_sent = True
-        import anyio as _anyio
 
-        with _anyio.CancelScope(shield=True):
+        with CancelScope(shield=True):
             try:
                 from lionagi.cli.orchestrate._notify import deliver_flow_notify_now
 
@@ -1791,9 +1790,7 @@ async def _run_agent(
 
         # Shield teardown so iModel shutdown always runs (avoids leaked
         # rate-limit replenisher tasks that hang anyio.run forever).
-        import anyio
-
-        with anyio.CancelScope(shield=True):
+        with CancelScope(shield=True):
             # Engine session id, used by teardown to tell a genuine failure
             # from a wrapper exception racing a still-live engine session.
             _engine_session_uid = getattr(branch.chat_model.endpoint, "session_id", None)

@@ -17,6 +17,7 @@ from yarl import URL
 
 from lionagi import ln
 from lionagi.ln import short_id
+from lionagi.ln.concurrency import sleep
 from lionagi.service.connections.agentic_endpoint import AgenticEndpoint
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.registry import EndpointType, register_endpoint
@@ -114,7 +115,7 @@ class ScriptedEndpoint(AgenticEndpoint):
 
         if isinstance(entry, ErrorResponse):
             if entry.delay_ms:
-                await asyncio.sleep(entry.delay_ms / 1000)
+                await sleep(entry.delay_ms / 1000)
             self._record(payload, headers, entry, response=None, matched_by=matched_by)
             raise _build_exception(entry)
 
@@ -142,7 +143,7 @@ class ScriptedEndpoint(AgenticEndpoint):
 
         if isinstance(entry, ErrorResponse):
             if entry.delay_ms:
-                await asyncio.sleep(entry.delay_ms / 1000)
+                await sleep(entry.delay_ms / 1000)
             self._record(
                 payload, headers, entry, response=None, matched_by=matched_by, streamed=True
             )

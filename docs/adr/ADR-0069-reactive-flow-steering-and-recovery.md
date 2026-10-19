@@ -526,8 +526,8 @@ if entry and entry.get("status") == "completed":
 
 The spawned path pre-marks the same way, from `entry["status"] == "completed"`
 (`lionagi/cli/orchestrate/flow.py:1307-1309`). The executor then admits an already-completed
-operation and stores its response as that node's result (`lionagi/operations/flow.py:240-243`), and
-dependents read the stored value into their own context (`lionagi/operations/flow.py:938-955`).
+operation and stores its response as that node's result (`lionagi/operations/flow.py:241-244`), and
+dependents read the stored value into their own context (`lionagi/operations/flow.py:939-956`).
 Nothing on the replay path reads, re-checks, or hashes the result a dependent consumes.
 
 **Why that is a gap.** A `completed` string in a JSON file is a claim about work rather than the

@@ -91,15 +91,6 @@ class TestValidateArtifactContract:
 
 
 class TestResolveArtifactContract:
-    def test_agent_defaults_only(self):
-        result = resolve_artifact_contract(
-            playbook_artifacts=None,
-            agent_defaults={"expected": [{"id": "report", "path": "report.md"}]},
-        )
-        assert result is not None
-        assert len(result["expected"]) == 1
-        assert result["expected"][0]["source"] == "agent_profile"
-
     def test_playbook_overrides_agent_same_id(self):
         result = resolve_artifact_contract(
             playbook_artifacts={"expected": [{"id": "report", "path": "playbook_report.md"}]},
@@ -109,14 +100,6 @@ class TestResolveArtifactContract:
         assert len(result["expected"]) == 1
         assert result["expected"][0]["path"] == "playbook_report.md"
         assert result["expected"][0]["source"] == "playbook"
-
-    def test_playbook_and_agent_different_ids_merged(self):
-        result = resolve_artifact_contract(
-            playbook_artifacts={"expected": [{"id": "brief", "path": "brief.md"}]},
-            agent_defaults={"expected": [{"id": "log", "path": "log.txt"}]},
-        )
-        assert result is not None
-        assert len(result["expected"]) == 2
 
     def test_required_defaults_to_true(self):
         result = resolve_artifact_contract(
@@ -155,20 +138,6 @@ class TestVerifyArtifactContract:
         assert result is not None
         assert result["status"] == "failed"
         assert len(result["missing_required"]) == 1
-
-    def test_optional_missing_gives_warning(self, tmp_path):
-        (tmp_path / "required.md").write_text("content")
-        contract = {
-            "expected": [
-                {"id": "required", "path": "required.md", "required": True},
-                {"id": "optional", "path": "optional.md", "required": False},
-            ]
-        }
-        result = verify_artifact_contract(contract, artifacts_root=str(tmp_path))
-        assert result is not None
-        assert result["status"] == "warning"
-        assert len(result["missing_optional"]) == 1
-        assert len(result["produced"]) == 1
 
     def test_all_missing_required_fails_splits(self, tmp_path):
         contract = {
@@ -243,6 +212,7 @@ def test_resolve_contract_agent_only():
         agent_defaults={"expected": [{"id": "report", "path": "report.md"}]},
     )
     assert result is not None
+    assert len(result["expected"]) == 1
     assert result["expected"][0]["source"] == "agent_profile"
 
 
@@ -252,6 +222,7 @@ def test_resolve_contract_merge_union():
         agent_defaults={"expected": [{"id": "log", "path": "log.txt"}]},
     )
     assert result is not None
+    assert len(result["expected"]) == 2
     ids = {e["id"] for e in result["expected"]}
     assert ids == {"brief", "log"}
 
@@ -347,6 +318,7 @@ def test_verify_optional_missing(tmp_path):
     assert result is not None
     assert result["status"] == "warning"
     assert len(result["missing_optional"]) == 1
+    assert len(result["produced"]) == 1
 
 
 def test_verify_empty_file(tmp_path):

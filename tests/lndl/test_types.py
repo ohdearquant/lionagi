@@ -187,10 +187,6 @@ class TestEnsureNoActionCalls:
 
 
 class TestCoerceResult:
-    def test_dict_to_str_for_str_target(self):
-        result = _coerce_result({"key": "val"}, str)
-        assert isinstance(result, str)
-
     def test_int_coercion(self):
         result = _coerce_result("42", int)
         assert result == 42
@@ -202,10 +198,6 @@ class TestCoerceResult:
     def test_no_coercion_same_type(self):
         result = _coerce_result("hello", str)
         assert result == "hello"
-
-    def test_none_target_type(self):
-        result = _coerce_result({"x": 1}, None)
-        assert result == {"x": 1}
 
 
 class TestRevalidateModel:

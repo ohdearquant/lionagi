@@ -24,7 +24,6 @@ import {
   streamOperatorConversation,
   submitOperatorTurn,
   updateOperatorConversation,
-  type OperatorConversationPatch,
 } from "@/lib/api";
 import type {
   OperatorContextSnapshot,
@@ -145,49 +144,13 @@ function readStoredConversation(): string | null {
   return value || null;
 }
 
-// Everything that decides what the panel shows (the first list read, a selection, a new
-// conversation, a fork, a conversation created from the composer) takes a claim numbered in the
-// order it started. A claim takes the panel only if no later choice has, so among the choices
-// that succeed the operator's latest is the one shown. A claim that fails takes nothing and
-// leaves the panel to the claim that holds it. A selection or a new conversation takes the panel
-// when it starts; a fork, a create and the first list read take it when they resolve, and the
-// first list read only when it opens something.
-//
-// Choosing the conversation already shown is the operator's latest choice too, but it changes
-// nothing on screen, so it keeps() rather than takes: it blocks every earlier claim and leaves
-// the claim that shows the conversation holding it, so that claim's reload still completes.
-class PanelClaims {
-  private started = 0;
-  private holder = 0;
-  // No claim below the floor may take the panel; it is the latest choice that took or kept it.
-  private floor = 0;
-
-  next(): number {
-    return ++this.started;
-  }
-
-  canTake(claim: number): boolean {
-    return claim === this.holder || claim >= this.floor;
-  }
-
-  take(claim: number): boolean {
-    if (!this.canTake(claim)) return false;
-    this.holder = claim;
-    this.floor = Math.max(this.floor, claim);
-    return true;
-  }
-
-  keep(): void {
-    this.floor = this.next();
-  }
-
-  holds(claim: number): boolean {
-    return this.holder === claim;
-  }
-
-  get current(): number {
-    return this.holder;
-  }
+function mergeConversationRows(
+  current: OperatorConversation[],
+  available: OperatorConversation[],
+): OperatorConversation[] {
+  const rows = new Map(available.map((item) => [item.id, item]));
+  for (const item of current) rows.set(item.id, item);
+  return [...rows.values()];
 }
 
 function conversationLabel(conversation: OperatorConversation): string {
@@ -787,14 +750,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const [modelCatalog, setModelCatalog] = useState<OperatorModelCatalogEntry[]>([]);
   const [model, setModel] = useState<string>("");
   const [effort, setEffort] = useState<OperatorEffort | "">("");
-  // Each new conversation the operator starts is a new draft, so a create still in flight from
-  // an abandoned draft does not lock the composer of the next one.
-  const [draft, setDraft] = useState(0);
-  // Sends in flight, by the view each was sent from: a conversation's id, or `draft:<n>` for a
-  // draft that has no conversation yet. A send in flight locks only its own view's composer.
-  const [sendingFrom, setSendingFrom] = useState<ReadonlySet<string>>(() => new Set());
-  const view = state.conversation?.id ?? `draft:${draft}`;
-  const sending = sendingFrom.has(view);
+  const [sending, setSending] = useState(false);
   const [streamEpoch, setStreamEpoch] = useState(0);
   const [stopping, setStopping] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -819,7 +775,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const [listActionError, setListActionError] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
-  const [conversationBusyIds, setConversationBusyIds] = useState<Set<string>>(() => new Set());
+  const [conversationBusyId, setConversationBusyId] = useState<string | null>(null);
   const [panelWidth, setPanelWidth] = useState(DEFAULT_WIDTH);
   const [showJump, setShowJump] = useState(false);
   const [visibleCount, setVisibleCount] = useState(200);
@@ -836,145 +792,57 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const renameButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const previousRenamingIdRef = useRef<string | null>(null);
   const conversationListButtonRef = useRef<HTMLButtonElement>(null);
-  const conversationRevisionRef = useRef(0);
-  const conversationRefreshNeededRef = useRef(false);
-  const conversationMutationsRef = useRef<Map<string, number>>(new Map());
-  const conversationRowReadsRef = useRef<Map<string, number>>(new Map());
-  const claimsRef = useRef(new PanelClaims());
   const selectedConversationIdRef = useRef<string | null>(null);
-  // The conversation the panel shows, ready; null while one loads or failed to load. Set after
-  // each render, so it is read only for a settlement that arrives after the panel changed.
-  const shownConversationIdRef = useRef<string | null>(null);
   const metadataRefreshRef = useRef<{
     conversationId: string;
     sequence: number;
     pending: Map<string, Set<string>>;
-    lifetime: object;
   } | null>(null);
-  const metadataViewRef = useRef({
-    conversation: state.conversation,
-    conversations,
-    loadState: state.loadState,
-    listFilter,
-  });
-
-  useLayoutEffect(() => {
-    metadataViewRef.current = {
-      conversation: state.conversation,
-      conversations,
-      loadState: state.loadState,
-      listFilter,
-    };
-    selectedConversationIdRef.current = state.conversation?.id ?? null;
-    shownConversationIdRef.current =
-      state.loadState === "ready" ? (state.conversation?.id ?? null) : null;
-  }, [conversations, state.conversation, state.loadState, listFilter]);
-
-  useLayoutEffect(
-    () => () => {
-      metadataRefreshRef.current = null;
-    },
-    [state.conversation?.id, state.loadState],
-  );
 
   useEffect(
     () => () => {
-      ++conversationRevisionRef.current;
-      // Nothing started before unmount may take the panel afterwards.
-      const claims = claimsRef.current;
-      claims.take(claims.next());
+      selectedConversationIdRef.current = null;
     },
     [],
   );
 
-  const beginConversationMutation = useCallback((conversationId: string) => {
-    // Blur and click can run before React renders the disabled controls.
-    if (conversationMutationsRef.current.has(conversationId)) return null;
-    const revision = ++conversationRevisionRef.current;
-    conversationMutationsRef.current = new Map(conversationMutationsRef.current).set(
-      conversationId,
-      revision,
-    );
-    setConversationBusyIds(new Set(conversationMutationsRef.current.keys()));
-    return revision;
-  }, []);
-
-  const finishConversationMutation = useCallback((conversationId: string, revision: number) => {
-    if (conversationMutationsRef.current.get(conversationId) !== revision) return false;
-    const needsRefresh =
-      conversationRevisionRef.current !== revision || conversationRefreshNeededRef.current;
-    // A read started during the PATCH may still hold pre-commit data.
-    ++conversationRevisionRef.current;
-    const pending = new Map(conversationMutationsRef.current);
-    pending.delete(conversationId);
-    conversationMutationsRef.current = pending;
-    setConversationBusyIds(new Set(pending.keys()));
-    return needsRefresh;
-  }, []);
-
   const refreshConversationMetadata = useCallback(
-    async (status?: "active" | "archived", conversationOverride?: string) => {
-      const view = metadataViewRef.current;
-      const conversationId =
-        conversationOverride ?? (view.loadState === "ready" ? view.conversation?.id : undefined);
-      const lifetime = metadataRefreshRef.current?.lifetime;
-      const filter = status ?? view.listFilter;
-      const revision = ++conversationRevisionRef.current;
-      const rowReads = new Map(conversationRowReadsRef.current);
-      if (conversationId) rowReads.set(conversationId, revision);
-      for (const row of view.conversations) rowReads.set(row.id, revision);
-      conversationRowReadsRef.current = rowReads;
-      // A later save may invalidate this read before its response is applied.
-      // Keep the obligation until a refresh settles with current data.
-      conversationRefreshNeededRef.current = true;
-      const current = () =>
-        conversationRevisionRef.current === revision &&
-        metadataViewRef.current.listFilter === filter &&
-        (Boolean(conversationOverride) ||
-          !conversationId ||
-          (metadataViewRef.current.conversation?.id === conversationId &&
-            metadataViewRef.current.loadState === "ready" &&
-            metadataRefreshRef.current?.lifetime === lifetime));
+    async (conversationId: string) => {
       try {
-        // Every list refresh also refreshes the selected row, so superseding a
-        // tool-triggered read cannot silently lose its metadata update.
         const [snapshot, available] = await Promise.all([
-          conversationId ? getOperatorConversation(conversationId) : Promise.resolve(null),
-          listOperatorConversations({ status: filter }),
+          getOperatorConversation(conversationId),
+          listOperatorConversations({ status: listFilter }),
         ]);
-        if (!current() || (snapshot && snapshot.conversation.id !== conversationId)) {
-          conversationRefreshNeededRef.current = true;
-          return;
-        }
-        if (snapshot)
-          dispatch({ type: "UPDATE_CONVERSATION", conversation: snapshot.conversation });
-        setConversations(
-          available
-            .filter(
-              (item) => item.id !== conversationId || snapshot?.conversation.status === filter,
-            )
-            .map((item) => (item.id === conversationId && snapshot ? snapshot.conversation : item)),
+        if (selectedConversationIdRef.current !== conversationId) return;
+        dispatch({ type: "UPDATE_CONVERSATION", conversation: snapshot.conversation });
+        setConversations((current) =>
+          mergeConversationRows(current, available)
+            .map((item) => (item.id === conversationId ? snapshot.conversation : item))
+            .filter((item) => item.status === listFilter),
         );
-        conversationRefreshNeededRef.current = false;
       } catch (error) {
-        if (current()) throw error;
+        if (selectedConversationIdRef.current !== conversationId) return;
+        setActionError(error instanceof Error ? error.message : t("errors.load"));
       }
     },
-    [],
+    [listFilter, t],
   );
 
   useEffect(() => {
     const conversationId = state.conversation?.id;
-    if (!conversationId || state.loadState !== "ready") return;
+    if (!conversationId || state.loadState !== "ready") {
+      metadataRefreshRef.current = null;
+      return;
+    }
     const previous = metadataRefreshRef.current;
-    const tracking = {
-      conversationId,
-      sequence: previous?.sequence ?? 0,
-      pending: new Map<string, Set<string>>(
-        [...(previous?.pending ?? [])].map(([requestId, calls]) => [requestId, new Set(calls)]),
-      ),
-      lifetime: previous?.lifetime ?? {},
-    };
+    const sameConversation = previous?.conversationId === conversationId;
+    const tracking = sameConversation
+      ? previous
+      : {
+          conversationId,
+          sequence: 0,
+          pending: new Map<string, Set<string>>(),
+        };
     let refresh = false;
     for (const frame of state.frames) {
       if (frame.conversationId !== conversationId || frame.sequence <= tracking.sequence) continue;
@@ -982,13 +850,10 @@ export default function OperatorPanel({ open, onClose }: Props) {
       refresh = recordConversationMetadataCall(tracking.pending, frame) || refresh;
     }
     metadataRefreshRef.current = tracking;
-    // A loaded snapshot already carries current metadata. Retain its pending
-    // calls so a later result or done frame can refresh an in-progress turn.
-    if (!previous || !refresh) return;
-    void refreshConversationMetadata().catch((error) => {
-      setActionError(error instanceof Error ? error.message : t("errors.load"));
-    });
-  }, [refreshConversationMetadata, state.conversation?.id, state.frames, state.loadState, t]);
+    // Loaded snapshots already contain current metadata. Track their pending
+    // calls so later provider results or a terminal frame can refresh it.
+    if (sameConversation && refresh) void refreshConversationMetadata(conversationId);
+  }, [refreshConversationMetadata, state.conversation?.id, state.frames, state.loadState]);
 
   // Derived rather than synced through an effect: archiving the row being
   // renamed, or switching the filter away from it, removes the row and its
@@ -1020,65 +885,34 @@ export default function OperatorPanel({ open, onClose }: Props) {
   }, [activeRenamingId]);
 
   const loadConversation = useCallback(
-    // With no claim, the load is a new choice and takes the panel now; the first list read and a
-    // stale-context reload pass the claim they already hold.
-    async (conversationId: string, claim?: number) => {
-      const claims = claimsRef.current;
-      const load = claim ?? claims.next();
-      if (!claims.take(load)) return;
+    async (conversationId: string) => {
+      selectedConversationIdRef.current = conversationId;
       dispatch({ type: "LOAD_START" });
-      while (claims.holds(load)) {
-        const revision = ++conversationRevisionRef.current;
-        conversationRowReadsRef.current = new Map(conversationRowReadsRef.current).set(
-          conversationId,
-          revision,
-        );
-        try {
-          const snapshot = await getOperatorConversation(conversationId);
-          if (!claims.holds(load)) return;
-          // A local save or list read may have superseded this snapshot. Keep
-          // loading the chosen conversation instead of stranding it in loading.
-          if (conversationRevisionRef.current !== revision) continue;
-          window.localStorage.setItem(STORAGE_KEY, snapshot.conversation.id);
-          setConversations((current) => {
-            const index = current.findIndex((item) => item.id === snapshot.conversation.id);
-            if (index < 0) return [snapshot.conversation, ...current];
-            return current.map((item, itemIndex) =>
-              itemIndex === index ? snapshot.conversation : item,
-            );
-          });
-          dispatch({
-            type: "LOAD_SUCCESS",
-            conversation: snapshot.conversation,
-            frames: snapshot.frames,
-          });
-          if (conversationRefreshNeededRef.current) {
-            void refreshConversationMetadata().catch((error) => {
-              setActionError(error instanceof Error ? error.message : t("errors.load"));
-            });
-          }
-          return;
-        } catch (error) {
-          if (!claims.holds(load)) return;
-          if (conversationRevisionRef.current !== revision) continue;
-          dispatch({
-            type: "LOAD_ERROR",
-            error: error instanceof Error ? error.message : t("errors.load"),
-          });
-          // This load superseded a refresh a save deferred to it; the list
-          // still owes the saved row.
-          if (conversationRefreshNeededRef.current) {
-            void refreshConversationMetadata().catch((refreshError) => {
-              setActionError(
-                refreshError instanceof Error ? refreshError.message : t("errors.load"),
-              );
-            });
-          }
-          return;
-        }
+      try {
+        const snapshot = await getOperatorConversation(conversationId);
+        if (selectedConversationIdRef.current !== conversationId) return;
+        window.localStorage.setItem(STORAGE_KEY, snapshot.conversation.id);
+        setConversations((current) => {
+          const index = current.findIndex((item) => item.id === snapshot.conversation.id);
+          if (index < 0) return [snapshot.conversation, ...current];
+          return current.map((item, itemIndex) =>
+            itemIndex === index ? snapshot.conversation : item,
+          );
+        });
+        dispatch({
+          type: "LOAD_SUCCESS",
+          conversation: snapshot.conversation,
+          frames: snapshot.frames,
+        });
+      } catch (error) {
+        if (selectedConversationIdRef.current !== conversationId) return;
+        dispatch({
+          type: "LOAD_ERROR",
+          error: error instanceof Error ? error.message : t("errors.load"),
+        });
       }
     },
-    [refreshConversationMetadata, t],
+    [t],
   );
 
   useEffect(() => {
@@ -1144,43 +978,26 @@ export default function OperatorPanel({ open, onClose }: Props) {
   useEffect(() => {
     let active = true;
     const stored = readStoredConversation();
-    const revision = ++conversationRevisionRef.current;
-    // Taken at setup, so any choice the operator makes after the panel opens is a later claim.
-    // StrictMode's remount takes a new one after the unmount cleanup took the panel.
-    const initial = claimsRef.current.next();
     void listOperatorConversations()
       .then((available) => {
         if (!active) return;
+        setConversations((current) => mergeConversationRows(current, available));
+        if (selectedConversationIdRef.current) return;
         const selected =
           (stored ? available.find((item) => item.id === stored) : null) ??
           available.find((item) => item.status === "active") ??
           available[0] ??
           null;
-        if (conversationRevisionRef.current === revision) {
-          setConversations(available);
-        } else if (selectedConversationIdRef.current !== null) {
-          // A newer read has already selected a row. This initial list is only
-          // needed to choose one when nothing is open yet.
-          return;
-        }
-        // A later choice that already took the panel (a selection, a new conversation, a
-        // resolved fork or create) keeps it: this list may have been read before that choice.
-        // A fork or create still in flight does not block it; it takes the panel if it resolves.
-        // With nothing to open the list takes no claim, so a send started from the draft still
-        // reports its outcome; it forgets the stored conversation only if no later choice has
-        // been made, since that choice may already have stored its own.
-        const claims = claimsRef.current;
-        if (!claims.canTake(initial)) return;
         if (selected) {
-          void loadConversation(selected.id, initial);
+          void loadConversation(selected.id);
         } else if (stored) {
           window.localStorage.removeItem(STORAGE_KEY);
         }
       })
       .catch(() => {
-        if (!active || conversationRevisionRef.current !== revision) return;
+        if (!active) return;
         if (stored) {
-          void loadConversation(stored, initial);
+          void loadConversation(stored);
         } else {
           setActionError(t("errors.load"));
         }
@@ -1402,51 +1219,20 @@ export default function OperatorPanel({ open, onClose }: Props) {
 
   const handleSend = useCallback(async () => {
     const trimmed = instruction.trim();
-    if (!trimmed || sending || state.activeRequestId || state.loadState === "loading") return;
-    const claims = claimsRef.current;
-    let from = view;
-    setSendingFrom((current) => new Set(current).add(from));
+    if (!trimmed || sending || state.activeRequestId) return;
+    setSending(true);
     setActionError(null);
-    // The claim that shows the view the send started from. The outcome belongs on screen while
-    // that claim still holds the panel (a re-selection of the same conversation keeps it), or
-    // when the operator has since come back to the conversation it was sent to.
-    let owner = claims.current;
-    const settlesHere = () => claims.holds(owner) || shownConversationIdRef.current === from;
     try {
       let conversation = state.conversation;
       if (!conversation) {
-        const create = claims.next();
         conversation = await createOperatorConversation();
-        ++conversationRevisionRef.current;
-        if (!claims.take(create)) {
-          // The operator opened another conversation, started a new one or a fork took the
-          // panel while this one was being created. That choice keeps the panel and the draft
-          // is not sent; the list is read again so the new conversation appears in it.
-          void refreshConversationMetadata().catch((error) => {
-            setListActionError(error instanceof Error ? error.message : t("errors.load"));
-          });
-          return;
-        }
-        owner = create;
-        const created = conversation.id;
-        setSendingFrom((current) => {
-          const next = new Set(current);
-          next.delete(from);
-          return next.add(created);
-        });
-        from = created;
+        selectedConversationIdRef.current = conversation.id;
         window.localStorage.setItem(STORAGE_KEY, conversation.id);
         setConversations((current) => [
           conversation as OperatorConversation,
           ...current.filter((item) => item.id !== conversation?.id),
         ]);
         dispatch({ type: "LOAD_SUCCESS", conversation, frames: [] });
-        // Creating superseded any read a save deferred its row update to.
-        if (conversationRefreshNeededRef.current) {
-          void refreshConversationMetadata().catch((error) => {
-            setListActionError(error instanceof Error ? error.message : t("errors.load"));
-          });
-        }
       }
       const context = operatorContext(
         location.pathname,
@@ -1466,40 +1252,23 @@ export default function OperatorPanel({ open, onClose }: Props) {
         ...(effectiveEffort ? { effort: effectiveEffort } : {}),
         ...(clearing ? { clearSelection: true } : {}),
       });
-      if (!settlesHere()) {
-        // The turn went to the conversation it was sent to; the panel now shows another, or is
-        // loading one, and must not wait on that turn. A conversation that finishes loading
-        // later reads the turn from its own record. The composer is cleared only if it still
-        // holds the text that was sent, not anything typed for the conversation now open.
-        setInstruction((current) => (current === instruction ? "" : current));
-        return;
-      }
       dispatch({ type: "TURN_ACCEPTED", requestId: accepted.requestId });
       setStreamEpoch((current) => current + 1);
       setInstruction("");
       nearBottomRef.current = true;
     } catch (error) {
-      // A send's error and the reload it asks for belong to the view it was sent from; once the
-      // panel shows something else they are not shown.
-      if (!settlesHere()) return;
-      setActionError(error instanceof Error ? error.message : t("errors.send"));
+      const message = error instanceof Error ? error.message : t("errors.send");
+      setActionError(message);
       if (
         error instanceof ApiError &&
         error.status === 409 &&
         error.code === "stale_context" &&
-        !from.startsWith("draft:")
+        state.conversation
       ) {
-        // A reload of the conversation shown, under the claim that shows it, so it does not
-        // outrank a fork the operator started after sending.
-        await loadConversation(from, claims.current);
+        await loadConversation(state.conversation.id);
       }
     } finally {
-      const done = from;
-      setSendingFrom((current) => {
-        const next = new Set(current);
-        next.delete(done);
-        return next;
-      });
+      setSending(false);
     }
   }, [
     instruction,
@@ -1512,11 +1281,8 @@ export default function OperatorPanel({ open, onClose }: Props) {
     state.activeRequestId,
     state.conversation,
     state.lastSequence,
-    state.loadState,
     t,
-    view,
     loadConversation,
-    refreshConversationMetadata,
   ]);
 
   const handleStop = useCallback(async () => {
@@ -1577,34 +1343,14 @@ export default function OperatorPanel({ open, onClose }: Props) {
     return () => window.clearTimeout(timer);
   }, [autoAllow, proposals, decidedProposalIds, deciding, handleProposalDecision]);
 
-  // With no claim this is the operator starting a new conversation, which takes the panel now;
-  // a fork that has taken the panel passes its own claim.
-  const resetConversation = useCallback(
-    (claim?: number) => {
-      const claims = claimsRef.current;
-      claims.take(claim ?? claims.next());
-      ++conversationRevisionRef.current;
-      setDraft((current) => current + 1);
-      window.localStorage.removeItem(STORAGE_KEY);
-      metadataViewRef.current = {
-        ...metadataViewRef.current,
-        conversation: null,
-        loadState: "idle",
-      };
-      dispatch({ type: "RESET" });
-      setActionError(null);
-      setInstruction("");
-      setDecidedProposalIds(new Set());
-      if (conversationRefreshNeededRef.current) {
-        // A save settled after its row update was deferred to a read, and this
-        // reset abandoned that read. The list still owes the saved row.
-        void refreshConversationMetadata().catch((error) => {
-          setListActionError(error instanceof Error ? error.message : t("errors.load"));
-        });
-      }
-    },
-    [refreshConversationMetadata, t],
-  );
+  const resetConversation = useCallback(() => {
+    selectedConversationIdRef.current = null;
+    window.localStorage.removeItem(STORAGE_KEY);
+    dispatch({ type: "RESET" });
+    setActionError(null);
+    setInstruction("");
+    setDecidedProposalIds(new Set());
+  }, []);
 
   const selectConversation = useCallback(
     (conversationId: string) => {
@@ -1612,13 +1358,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         resetConversation();
         return;
       }
-      if (conversationId === state.conversation?.id && state.loadState !== "error") {
-        // Choosing the open conversation again is still the operator's latest choice: a fork
-        // started before it no longer takes the panel. The panel already shows it, or is
-        // reloading it, so it is kept as it is. One that failed to load is loaded again below.
-        claimsRef.current.keep();
-        return;
-      }
+      if (conversationId === state.conversation?.id) return;
       dispatch({ type: "RESET" });
       setVisibleCount(200);
       setActionError(null);
@@ -1626,106 +1366,111 @@ export default function OperatorPanel({ open, onClose }: Props) {
       nearBottomRef.current = true;
       void loadConversation(conversationId);
     },
-    [loadConversation, resetConversation, state.conversation?.id, state.loadState],
+    [loadConversation, resetConversation, state.conversation?.id],
   );
 
   const refreshConversations = useCallback(
     (status: "active" | "archived") => {
-      metadataViewRef.current = { ...metadataViewRef.current, listFilter: status };
-      return refreshConversationMetadata(status).catch((error) => {
-        setListActionError(error instanceof Error ? error.message : t("errors.load"));
-      });
-    },
-    [refreshConversationMetadata, t],
-  );
-
-  const saveConversation = useCallback(
-    async (conversationId: string, patch: OperatorConversationPatch, errorMessage: string) => {
-      const revision = beginConversationMutation(conversationId);
-      if (revision === null) return;
-      setListActionError(null);
-      try {
-        const updated = await updateOperatorConversation(conversationId, patch);
-        if ((conversationRowReadsRef.current.get(updated.id) ?? 0) <= revision) {
-          const filter = metadataViewRef.current.listFilter;
+      return listOperatorConversations({ status })
+        .then((available) => {
           setConversations((current) =>
-            current
-              .filter((item) => item.id !== updated.id || updated.status === filter)
-              .map((item) => (item.id === updated.id ? updated : item))
-              .sort(
-                (a, b) =>
-                  Number(b.pinned) - Number(a.pinned) || (b.updatedAt ?? 0) - (a.updatedAt ?? 0),
-              ),
+            mergeConversationRows(current, available).filter((item) => item.status === status),
           );
-          dispatch({ type: "UPDATE_CONVERSATION", conversation: updated });
-        }
-      } catch (error) {
-        setListActionError(error instanceof Error ? error.message : errorMessage);
-      } finally {
-        if (finishConversationMutation(conversationId, revision)) {
-          // A full PATCH response may predate another save or a tool write.
-          // Settlement also invalidates reads made before this save committed.
-          conversationRefreshNeededRef.current = true;
-          void refreshConversationMetadata().catch((error) => {
-            setListActionError(error instanceof Error ? error.message : t("errors.load"));
-          });
-        }
-      }
+        })
+        .catch((error) => {
+          setListActionError(error instanceof Error ? error.message : t("errors.load"));
+        });
     },
-    [beginConversationMutation, finishConversationMutation, refreshConversationMetadata, t],
+    [t],
   );
 
   const commitRename = useCallback(
     async (conversationId: string, title: string) => {
-      if (conversationMutationsRef.current.has(conversationId)) return;
       const trimmed = title.trim();
       setRenamingId(null);
       const existing = conversations.find((item) => item.id === conversationId);
       if (existing && (existing.title ?? "") === trimmed) return;
-      await saveConversation(
-        conversationId,
-        {
+      setListActionError(null);
+      try {
+        const updated = await updateOperatorConversation(conversationId, {
           title: trimmed.length > 0 ? trimmed : null,
-        },
-        t("errors.rename"),
-      );
+        });
+        setConversations((current) =>
+          current.map((item) => (item.id === updated.id ? updated : item)),
+        );
+        if (selectedConversationIdRef.current === updated.id) {
+          dispatch({ type: "UPDATE_CONVERSATION", conversation: updated });
+        }
+      } catch (error) {
+        setListActionError(error instanceof Error ? error.message : t("errors.rename"));
+      }
     },
-    [conversations, saveConversation, t],
+    [conversations, state.conversation, t],
   );
 
   const togglePin = useCallback(
     async (conversation: OperatorConversation) => {
-      await saveConversation(conversation.id, { pinned: !conversation.pinned }, t("errors.pin"));
+      setConversationBusyId(conversation.id);
+      setListActionError(null);
+      try {
+        const updated = await updateOperatorConversation(conversation.id, {
+          pinned: !conversation.pinned,
+        });
+        setConversations((current) =>
+          current
+            .map((item) => (item.id === updated.id ? updated : item))
+            .sort(
+              (a, b) =>
+                Number(b.pinned) - Number(a.pinned) || (b.updatedAt ?? 0) - (a.updatedAt ?? 0),
+            ),
+        );
+        if (selectedConversationIdRef.current === updated.id) {
+          dispatch({ type: "UPDATE_CONVERSATION", conversation: updated });
+        }
+      } catch (error) {
+        setListActionError(error instanceof Error ? error.message : t("errors.pin"));
+      } finally {
+        setConversationBusyId(null);
+      }
     },
-    [saveConversation, t],
+    [state.conversation, t],
   );
 
   const toggleArchive = useCallback(
     async (conversation: OperatorConversation) => {
       const nextStatus = conversation.status === "archived" ? "active" : "archived";
-      await saveConversation(conversation.id, { status: nextStatus }, t("errors.archive"));
+      setConversationBusyId(conversation.id);
+      setListActionError(null);
+      try {
+        const updated = await updateOperatorConversation(conversation.id, {
+          status: nextStatus,
+        });
+        setConversations((current) =>
+          updated.status === listFilter
+            ? current.map((item) => (item.id === updated.id ? updated : item))
+            : current.filter((item) => item.id !== updated.id),
+        );
+        if (selectedConversationIdRef.current === updated.id) {
+          dispatch({ type: "UPDATE_CONVERSATION", conversation: updated });
+        }
+      } catch (error) {
+        setListActionError(error instanceof Error ? error.message : t("errors.archive"));
+      } finally {
+        setConversationBusyId(null);
+      }
     },
-    [saveConversation, t],
+    [listFilter, state.conversation, t],
   );
 
   const forkConversationById = useCallback(
     async (conversation: OperatorConversation) => {
-      const revision = beginConversationMutation(conversation.id);
-      if (revision === null) return;
+      setConversationBusyId(conversation.id);
       setListActionError(null);
-      // A fork is slow enough for the operator to select another conversation, start a new one
-      // or fork another while it runs. It takes the panel when it resolves, unless one of those
-      // later choices already has; one that fails takes nothing.
-      const claims = claimsRef.current;
-      const fork = claims.next();
       try {
         const snapshot = await forkOperatorConversation(conversation.id);
-        setConversations((current) => [
-          snapshot.conversation,
-          ...current.filter((item) => item.id !== snapshot.conversation.id),
-        ]);
-        if (!claims.take(fork)) return;
-        resetConversation(fork);
+        setConversations((current) => [snapshot.conversation, ...current]);
+        resetConversation();
+        selectedConversationIdRef.current = snapshot.conversation.id;
         window.localStorage.setItem(STORAGE_KEY, snapshot.conversation.id);
         setVisibleCount(200);
         nearBottomRef.current = true;
@@ -1738,21 +1483,10 @@ export default function OperatorPanel({ open, onClose }: Props) {
       } catch (error) {
         setListActionError(error instanceof Error ? error.message : t("errors.fork"));
       } finally {
-        if (finishConversationMutation(conversation.id, revision)) {
-          conversationRefreshNeededRef.current = true;
-          void refreshConversationMetadata().catch((error) => {
-            setListActionError(error instanceof Error ? error.message : t("errors.load"));
-          });
-        }
+        setConversationBusyId(null);
       }
     },
-    [
-      beginConversationMutation,
-      finishConversationMutation,
-      refreshConversationMetadata,
-      resetConversation,
-      t,
-    ],
+    [resetConversation, t],
   );
 
   const clampWidth = useCallback(
@@ -1897,7 +1631,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
                         </li>
                       )}
                       {conversations.map((conversation) => {
-                        const busy = conversationBusyIds.has(conversation.id);
+                        const busy = conversationBusyId === conversation.id;
                         const archived = conversation.status === "archived";
                         return (
                           <li
@@ -1937,7 +1671,6 @@ export default function OperatorPanel({ open, onClose }: Props) {
                               <button
                                 type="button"
                                 onDoubleClick={() => {
-                                  if (conversationMutationsRef.current.has(conversation.id)) return;
                                   setRenamingId(conversation.id);
                                   setRenameDraft(conversation.title ?? "");
                                 }}
@@ -1946,7 +1679,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
                                   setListPanelOpen(false);
                                 }}
                                 title={conversation.description || t("list.renamePlaceholder")}
-                                className="min-w-0 flex-1 text-start text-meta text-content-primary outline-none"
+                                className="min-w-0 flex-1 truncate text-start text-meta text-content-primary outline-none"
                               >
                                 <span className="block truncate">
                                   {conversation.pinned ? "★ " : ""}
@@ -1974,7 +1707,6 @@ export default function OperatorPanel({ open, onClose }: Props) {
                                   title: conversationLabel(conversation),
                                 })}
                                 onClick={() => {
-                                  if (conversationMutationsRef.current.has(conversation.id)) return;
                                   setRenamingId(conversation.id);
                                   setRenameDraft(conversation.title ?? "");
                                 }}
@@ -2078,7 +1810,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
                 >
                   {t("retry")}
                 </Button>
-                <Button variant="secondary" size="sm" onClick={() => resetConversation()}>
+                <Button variant="secondary" size="sm" onClick={resetConversation}>
                   {t("newConversation")}
                 </Button>
               </div>
@@ -2271,9 +2003,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
                   variant="primary"
                   size="sm"
                   trailing={<IconArrowRight size={12} />}
-                  disabled={
-                    !instruction.trim() || sending || fatalError || state.loadState === "loading"
-                  }
+                  disabled={!instruction.trim() || sending || fatalError}
                   onClick={() => void handleSend()}
                 >
                   {sending ? t("composer.sending") : t("composer.send")}

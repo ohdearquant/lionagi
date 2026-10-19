@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import BaseModel, Field
 
 from lionagi.libs.path_safety import resolve_workspace_path as _resolve_workspace_path
+from lionagi.ln._paths import _resolve_workspace_root
 from lionagi.ln.concurrency import run_sync
 from lionagi.ln.types import Enum
 from lionagi.protocols.action.tool import Tool
@@ -360,7 +361,7 @@ class CodingToolkit(LionTool):
         self.notify = notify
         self.notify_threshold = notify_threshold
         self.notify_max_tokens = notify_max_tokens
-        self.workspace_root = Path(workspace_root or Path.cwd()).expanduser().resolve()
+        self.workspace_root = _resolve_workspace_root(workspace_root)
         self.sandbox_allow_protected = sandbox_allow_protected
         selected = tuple(tools) if tools is not None else DEFAULT_CODING_TOOLS
         unknown = [t for t in selected if t not in ALL_CODING_TOOLS]
