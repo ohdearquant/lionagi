@@ -381,7 +381,7 @@ class TestMCPConnectionPoolHandshakeBounds:
         must wait for the SDK's SIGKILL escalation and process reap."""
         import mcp.client.stdio as stdio
 
-        from lionagi.ln.concurrency import CancelScope
+        from lionagi.ln.concurrency import CancelScope, fail_after
 
         ready = tmp_path / "ready"
         terminated = tmp_path / "sigterm"
@@ -403,7 +403,7 @@ class TestMCPConnectionPoolHandshakeBounds:
             return process
 
         async def wait_for_file(path):
-            async with asyncio.timeout(5):
+            with fail_after(5):
                 while not path.exists():
                     await asyncio.sleep(0.01)
 
