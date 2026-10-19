@@ -1052,12 +1052,13 @@ def test_one_scan_answers_once_per_artifact_root(tmp_path):
 
 # How long a deliberately-blocked walk is held, how often the probe below takes
 # the loop's pulse, and how long a stall has to be before it counts as the loop
-# having been held. The tolerance sits well above scheduling jitter at this tick
-# rate and well below the block, so neither a loaded machine nor a marginal
-# improvement can decide the verdict.
-_BLOCK_SECONDS = 0.5
+# having been held. A walk left on the loop stalls it for at least the whole
+# block, so the tolerance sits at half the block: equal margin on each side.
+# A hosted runner in the middle of a full parallel run has been measured
+# stalling a healthy loop for 0.3 s, which a narrower margin read as the defect.
+_BLOCK_SECONDS = 1.5
 _TICK_SECONDS = 0.005
-_STALL_TOLERANCE = 0.2
+_STALL_TOLERANCE = _BLOCK_SECONDS / 2
 
 
 async def _max_loop_stall(coro) -> float:
