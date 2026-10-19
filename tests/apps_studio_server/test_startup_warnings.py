@@ -578,10 +578,11 @@ class TestCLIHostWiring:
 
         captured: dict[str, str] = {}
 
-        def _fake_uvicorn_run(_app: str, *, host: str, port: int) -> None:
+        def _fake_uvicorn_run(_app: str, *, host: str, port: int, workers: int) -> None:
             # The export must have happened before uvicorn.run is invoked.
             captured["env_host"] = os.environ.get("LIONAGI_STUDIO_HOST", "")
             captured["bind_host"] = host
+            captured["workers"] = workers
 
         import uvicorn
 
@@ -591,6 +592,8 @@ class TestCLIHostWiring:
 
         assert rc == 0
         assert captured["bind_host"] == "0.0.0.0"
+        # One process: a code minted before serving lives only in this one.
+        assert captured["workers"] == 1
         assert captured["env_host"] == "0.0.0.0", (
             "CLI must export the resolved bind host into LIONAGI_STUDIO_HOST "
             "before uvicorn.run so the app's security warning sees it"
@@ -614,7 +617,7 @@ class TestCLIHostWiring:
 
         captured: dict[str, str] = {}
 
-        def _fake_uvicorn_run(_app: str, *, host: str, port: int) -> None:
+        def _fake_uvicorn_run(_app: str, *, host: str, port: int, workers: int) -> None:
             captured["env_host"] = os.environ.get("LIONAGI_STUDIO_HOST", "")
             captured["bind_host"] = host
 

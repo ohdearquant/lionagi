@@ -144,6 +144,43 @@ def test_the_page_origin_a_launcher_names_outlives_the_serving_start_but_not_a_r
     assert not fresh.is_launch_origin(dev)
 
 
+def test_a_later_serving_start_keeps_only_the_page_origins_its_carried_codes_named(fresh):
+    dev = "http://127.0.0.1:3000"
+    code = fresh.mint_pairing_code(origins=[dev], for_launch=True)
+    fresh.begin_serving()
+    assert fresh.redeem_pairing_grant(code, origin=dev) is not None
+
+    fresh.mint_pairing_code(for_launch=True)
+    fresh.begin_serving()
+    assert not fresh.is_launch_origin(dev)
+    assert not fresh._launch_origins
+
+
+@pytest.mark.parametrize(
+    ("named", "origin"),
+    [
+        ("http://LocalHost:3000", "http://localhost:3000"),
+        ("HTTP://127.0.0.1:80/", "http://127.0.0.1"),
+        ("https://Studio.Example:443/app/", "https://studio.example"),
+        ("http://[::1]:3000/", "http://[::1]:3000"),
+        ("http://127.0.0.1:3000", "http://127.0.0.1:3000"),
+    ],
+)
+def test_a_named_page_address_binds_the_origin_a_browser_sends(fresh, named, origin):
+    code = fresh.mint_pairing_code(origins=[named], for_launch=True)
+
+    assert fresh.is_launch_origin(origin)
+    assert fresh.redeem_pairing_grant(code, origin=named.rstrip("/") + "/x") is None
+    assert fresh.redeem_pairing_grant(code, origin=origin) is not None
+
+
+def test_a_named_origin_that_is_not_an_http_url_is_kept_as_written(fresh):
+    code = fresh.mint_pairing_code(origins=["null"], for_launch=True)
+
+    assert fresh.is_launch_origin("null")
+    assert fresh.redeem_pairing_grant(code, origin="null") is not None
+
+
 # Capabilities
 
 

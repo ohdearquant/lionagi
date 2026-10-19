@@ -889,16 +889,22 @@ class _ViteProc:
         return 0
 
 
-def _dev_launch(tmp_path, monkeypatch, frontend_url):
+def _dev_launch(tmp_path, monkeypatch, frontend_url, *, health=None, served=None):
     import lionagi.studio.cli as studio_mod
 
     monkeypatch.setattr(studio_mod.shutil, "which", lambda name: "/usr/bin/node")
     monkeypatch.setattr(studio_mod, "_ensure_apps_importable", lambda: True)
+    monkeypatch.setattr(studio_mod, "_daemon_health", lambda port, challenge=None: health)
     with (
-        patch("uvicorn.run"),
-        patch.object(studio_mod, "_launch_vite_dev", return_value=(_ViteProc(), frontend_url)),
+        patch("uvicorn.run") as run,
+        patch.object(
+            studio_mod, "_launch_vite_dev", return_value=(_ViteProc(), frontend_url)
+        ) as launch,
     ):
-        return studio_mod._start_local("127.0.0.1", 8765, 3000, tmp_path, dev_mode=True)
+        result = studio_mod._start_local("127.0.0.1", 8765, 3000, tmp_path, dev_mode=True)
+    if served is not None:
+        served.extend([run, launch])
+    return result
 
 
 def test_a_dev_launch_prints_a_link_that_pairs_only_the_page_vite_reported(
@@ -914,6 +920,70 @@ def test_a_dev_launch_prints_a_link_that_pairs_only_the_page_vite_reported(
     assert fresh_launch.is_launch_origin(page)
     assert fresh_launch.redeem_pairing_grant(code, origin="http://localhost:3000") is None
     assert fresh_launch.redeem_pairing_grant(code, origin=page) is not None
+
+
+@pytest.mark.parametrize(
+    ("reported", "origin"),
+    [
+        ("http://LocalHost:3000", "http://localhost:3000"),
+        ("http://127.0.0.1:80", "http://127.0.0.1"),
+        ("http://127.0.0.1:3000/", "http://127.0.0.1:3000"),
+        ("http://[::1]:3000", "http://[::1]:3000"),
+    ],
+)
+def test_a_dev_link_carries_the_origin_a_browser_sends_for_the_page_vite_reported(
+    tmp_path, monkeypatch, capsys, fresh_launch, reported, origin
+):
+    monkeypatch.delenv("STUDIO_API_URL", raising=False)
+    assert _dev_launch(tmp_path, monkeypatch, reported) == 0
+
+    line = next(text for text in capsys.readouterr().out.splitlines() if "#pair=" in text)
+    assert f"once: {origin}/#pair=" in line
+    code = line.split("#pair=", 1)[1]
+    assert fresh_launch.is_launch_origin(origin)
+    assert fresh_launch.redeem_pairing_grant(code, origin=origin) is not None
+
+
+def test_a_dev_launch_refuses_when_a_daemon_already_answers_on_its_port(
+    tmp_path, monkeypatch, caplog, fresh_launch
+):
+    served = []
+    with caplog.at_level(logging.WARNING):
+        result = _dev_launch(
+            tmp_path, monkeypatch, "http://127.0.0.1:3000", health={"status": "ok"}, served=served
+        )
+
+    run, launch = served
+    assert result == 1
+    assert "already running at http://127.0.0.1:8765" in caplog.text
+    launch.assert_not_called()
+    run.assert_not_called()
+    assert fresh_launch._codes == {}
+
+
+@pytest.mark.parametrize(
+    ("proxy", "pairs"),
+    [("http://127.0.0.1:9999", False), ("http://127.0.0.1:8765/", True)],
+)
+def test_a_dev_launch_prints_a_link_only_when_its_page_reaches_this_daemon(
+    tmp_path, monkeypatch, capsys, caplog, fresh_launch, proxy, pairs
+):
+    monkeypatch.setenv("STUDIO_API_URL", proxy)
+    with caplog.at_level(logging.WARNING):
+        assert _dev_launch(tmp_path, monkeypatch, "http://127.0.0.1:3000") == 0
+
+    assert ("#pair=" in capsys.readouterr().out) is pairs
+    assert bool(fresh_launch._codes) is pairs
+    assert ("no pairing link" in caplog.text) is not pairs
+
+
+def test_a_dev_launch_serves_in_one_process(tmp_path, monkeypatch, fresh_launch):
+    monkeypatch.setenv("WEB_CONCURRENCY", "2")
+    served = []
+    assert _dev_launch(tmp_path, monkeypatch, "http://127.0.0.1:3000", served=served) == 0
+
+    run, _launch = served
+    assert run.call_args.kwargs["workers"] == 1
 
 
 def test_a_dev_launch_whose_page_address_is_unknown_mints_no_code(
@@ -1158,6 +1228,8 @@ def test_host_is_loopback_classifies_numeric_and_named_loopback_hosts():
     assert _host_is_loopback("127.0.0.2") is True
     assert _host_is_loopback("::1") is True
     assert _host_is_loopback("localhost") is True
+    assert _host_is_loopback("LocalHost") is True
+    assert _host_is_loopback("Studio.LOCALHOST") is True
 
 
 def test_host_is_loopback_rejects_wildcard_lan_and_hostname():
@@ -1215,7 +1287,7 @@ def fresh_launch(monkeypatch):
 
     monkeypatch.setattr(launch_access, "_bearer", None)
     monkeypatch.setattr(launch_access, "_codes", {})
-    monkeypatch.setattr(launch_access, "_launch_codes", set())
+    monkeypatch.setattr(launch_access, "_launch_codes", {})
     monkeypatch.setattr(launch_access, "_launch_origins", set())
     return launch_access
 

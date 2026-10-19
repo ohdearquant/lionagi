@@ -857,7 +857,7 @@ def fresh_launch(monkeypatch):
     monkeypatch.setattr(launch_access, "_bearer", None)
     monkeypatch.setattr(launch_access, "_codes", {})
     monkeypatch.setattr(launch_access, "_capabilities", {}, raising=False)
-    monkeypatch.setattr(launch_access, "_launch_codes", set(), raising=False)
+    monkeypatch.setattr(launch_access, "_launch_codes", {}, raising=False)
     monkeypatch.setattr(launch_access, "_launch_origins", set())
     return launch_access
 
@@ -959,8 +959,17 @@ class TestPairing:
         client = make_client()
         code = fresh_launch.mint_pairing_code(for_launch=True)
 
+        assert not fresh_launch._launch_origins
         assert self._pair(client, code, origin=_DEV_PAGE).status_code == 403
         assert self._pair(client, code).status_code == 200
+
+    def test_a_page_address_written_another_way_pairs_from_the_origin_its_browser_sends(
+        self, make_client, fresh_launch
+    ):
+        client = make_client()
+        code = fresh_launch.mint_pairing_code(origins=[f"{_DEV_PAGE}/"], for_launch=True)
+
+        assert self._pair(client, code, origin=_DEV_PAGE).status_code == 200
 
     def test_the_launch_bearer_is_not_in_the_environment(self, make_client, fresh_launch):
         import os

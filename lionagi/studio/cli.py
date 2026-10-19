@@ -350,15 +350,21 @@ def _dev_pairing_line(frontend_url: str) -> str:
     """The link that pairs the dev page at *frontend_url* with the daemon this process starts.
 
     The code is bound to that page's exact origin, the address Vite reported, so
-    only a page opened at that address can spend it.
+    only a page opened at that address can spend it. The link is that origin as a
+    browser sends it, so the page it opens is the page the code is bound to.
     """
-    from lionagi.studio.launch_access import PAIRING_CODE_TTL_S, mint_pairing_code
+    from lionagi.studio.launch_access import (
+        PAIRING_CODE_TTL_S,
+        _canonical_origin,
+        mint_pairing_code,
+    )
 
-    code = mint_pairing_code(origins=[frontend_url], for_launch=True)
+    origin = _canonical_origin(frontend_url)
+    code = mint_pairing_code(origins=[origin], for_launch=True)
     minutes = int(PAIRING_CODE_TTL_S // 60)
     return (
         f"to decide Operator proposals, open this link within {minutes} minutes; "
-        f"it works once: {frontend_url}/#pair={code}"
+        f"it works once: {origin}/#pair={code}"
     )
 
 
@@ -422,7 +428,10 @@ def _start_backend_only(host: str, port: int) -> int:
     # Set before uvicorn.run: the app is loaded via import string and reads this from env.
     os.environ["LIONAGI_STUDIO_HOST"] = host
     _ignore_sigpipe()
-    uvicorn.run("lionagi.studio.app:app", host=host, port=port)
+    # One process: the pairing codes this launch minted live in it, so a worker
+    # count from WEB_CONCURRENCY would serve the pairing route from a process
+    # that never issued them.
+    uvicorn.run("lionagi.studio.app:app", host=host, port=port, workers=1)
     return 0
 
 
@@ -643,6 +652,16 @@ def _start_local(
     if dev_mode:
         # Dev mode: hot-reload Vite dev server + uvicorn side-by-side.
         # Vite proxies /api → uvicorn (configured in vite.config.mts).
+        # The page pairs with the daemon this process serves; no other daemon
+        # knows the code minted here.
+        if _daemon_health(port) is not None:
+            log_error(
+                f"A Studio daemon is already running at http://127.0.0.1:{port}; --dev "
+                f"serves its own. Stop that daemon or choose another --port."
+            )
+            return 1
+        api_url = _studio_api_url(host, port)
+        proxied_to = os.environ.get("STUDIO_API_URL", api_url)
         launched = _launch_vite_dev(
             frontend_dir,
             frontend_port,
@@ -653,8 +672,16 @@ def _start_local(
         if launched:
             frontend_proc, frontend_url = launched
             if frontend_url:
+                from lionagi.studio.launch_access import _canonical_origin
+
                 print(f"Lion Studio UI (dev):  {frontend_url}")
-                print(f"  {_dev_pairing_line(frontend_url)}")
+                if _canonical_origin(proxied_to) == _canonical_origin(api_url):
+                    print(f"  {_dev_pairing_line(frontend_url)}")
+                else:
+                    warn(
+                        f"STUDIO_API_URL sends the dev page's API calls to {proxied_to}, "
+                        f"which cannot redeem a code this launch mints; no pairing link."
+                    )
             # else: _launch_vite_dev already printed a specific, actionable
             # warning (early exit / stream end / timeout) with captured output.
         print(f"Lion Studio API:       http://{host}:{port}")
@@ -677,7 +704,8 @@ def _start_local(
     os.environ["LIONAGI_STUDIO_HOST"] = host
     _ignore_sigpipe()
     try:
-        uvicorn.run("lionagi.studio.app:app", host=host, port=port)
+        # One process, as in _start_backend_only: the dev page's code lives here.
+        uvicorn.run("lionagi.studio.app:app", host=host, port=port, workers=1)
     except KeyboardInterrupt:
         print("\nStopping Lion Studio...")
     finally:
@@ -828,8 +856,9 @@ def _host_is_loopback(host: str) -> bool:
     127.0.0.0/8 block is loopback, not just 127.0.0.1. `localhost` and
     `*.localhost` get explicit handling since they aren't IP literals.
     The 0.0.0.0/:: wildcards are "unspecified", not loopback, and stay
-    LAN-seeking.
+    LAN-seeking. Hostnames compare case-insensitively, as DNS does.
     """
+    host = host.lower()
     if host == "localhost" or host.endswith(".localhost"):
         return True
     try:
@@ -969,6 +998,12 @@ def _await_vite_ready_url(
     return matches[0]
 
 
+def _studio_api_url(api_host: str, api_port: int) -> str:
+    """The address the dev server's /api proxy reaches this launch's daemon at."""
+    url_host = f"[{api_host}]" if ":" in api_host and not api_host.startswith("[") else api_host
+    return f"http://{url_host}:{api_port}"
+
+
 def _launch_vite_dev(
     frontend_dir: Path,
     frontend_port: int,
@@ -988,8 +1023,7 @@ def _launch_vite_dev(
     if api_host is not None and api_port is not None:
         # An operator-supplied target is an intentional escape hatch and wins
         # over the host/port selected by this CLI invocation.
-        url_host = f"[{api_host}]" if ":" in api_host and not api_host.startswith("[") else api_host
-        env.setdefault("STUDIO_API_URL", f"http://{url_host}:{api_port}")
+        env.setdefault("STUDIO_API_URL", _studio_api_url(api_host, api_port))
     try:
         proc = subprocess.Popen(  # noqa: S603
             _vite_dev_argv(frontend_port, host),  # noqa: S607
