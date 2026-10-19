@@ -2001,7 +2001,10 @@ async def test_resumed_checkpoint_carries_restored_flow_context_across_zero_comp
 
 
 async def test_resume_refuses_checkpoint_with_spawned_entries(tmp_path: Path):
-    """Replaying reactively spawned work on resume isn't implemented, so a checkpoint recording any must refuse outright rather than silently drop that completed spawned work."""
+    """Version-1 spawned entries lack the operation and parent evidence needed
+    for reconstruction. Refuse this incomplete checkpoint rather than drop
+    completed work; reconstructable version-2 entries are covered separately.
+    """
     env = _make_resume_env(tmp_path)
     checkpoint = {
         "version": 1,
