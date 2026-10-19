@@ -112,8 +112,8 @@ def announce_busy_timeout() -> None:
 
 def has_wal_reset_fix(version_info: tuple[int, ...]) -> bool:
     """Whether a linked SQLite carries the fix for the WAL-reset corruption race
-    (all WAL-mode releases 3.7.0-3.51.2; fixed in 3.51.3, backported to 3.44.6
-    and 3.50.7). See docs/internals/runtime.md."""
+    (https://www.sqlite.org/wal.html#walresetbug: 3.7.0-3.51.2, fixed in 3.51.3,
+    backported to 3.44.6 and 3.50.7). See docs/internals/runtime.md."""
     v = tuple(version_info[:3])
     if v >= (3, 51, 3):
         return True
