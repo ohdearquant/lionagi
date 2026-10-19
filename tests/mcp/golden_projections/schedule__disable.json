@@ -9,7 +9,7 @@
         "x-positional": true
       },
       "reason": {
-        "description": "Why this schedule stops firing, recorded in its definition history. Optional.",
+        "description": "Optional explanation recorded when an enabled schedule is disabled. Refused if already disabled; no reason or history entry is added.",
         "type": "string",
         "x-flag": "--reason"
       }
