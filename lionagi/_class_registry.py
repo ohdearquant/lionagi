@@ -5,6 +5,7 @@ import importlib
 import sys
 from typing import TypeVar
 
+from lionagi.ln import _utils as _ln_utils
 from lionagi.ln._utils import load_type_from_string
 
 T = TypeVar("T")
@@ -41,8 +42,11 @@ def get_class(class_name: str) -> type:
     name), then a dotted path whose module is already imported, then a dotted
     path under an allowed module prefix (``lionagi.`` and any prefix added with
     ``lionagi.ln.register_type_prefix``), then legacy short-name lookup among
-    the built-in modules. A module outside the allowed prefixes is never
-    imported here. Raises ValueError if not found.
+    the built-in modules, then a LION_CLASS_REGISTRY key ending in the short
+    name. A dotted name outside the allowed prefixes that neither of its own
+    steps resolves raises instead of falling back to its short name. A module
+    outside the allowed prefixes is never imported here. Raises ValueError if
+    not found.
     """
     if not class_name:
         # Reject empty names here: the suffix-match fallback below would
@@ -57,14 +61,21 @@ def get_class(class_name: str) -> type:
         mod, _, name = class_name.rpartition(".")
         module = sys.modules.get(mod)
         if module is not None:
-            cls = getattr(module, name, None)
+            # The module's own namespace, not getattr: a module-level
+            # __getattr__ (PEP 562) can import further modules.
+            cls = vars(module).get(name)
             if isinstance(cls, type):
                 return cls
-        else:
-            try:
-                return load_type_from_string(class_name)
-            except ValueError:
-                pass
+        try:
+            return load_type_from_string(class_name)
+        except Exception:  # noqa: BLE001, S110 — normalize import failure to lookup failure
+            pass
+        # Only a lionagi class (or one under a registered prefix) whose module
+        # has moved falls back to its short name; any other dotted name would
+        # resolve to whichever built-in or registered class shares that name.
+        allowed = _ln_utils._ALLOWED_MODULE_PREFIXES
+        if not name or not any(class_name.startswith(p) for p in allowed):
+            raise ValueError(f"Unable to find class {class_name}")
 
     for mod_name in _BUILTIN_MODULES:
         try:

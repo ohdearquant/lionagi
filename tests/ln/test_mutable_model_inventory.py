@@ -226,7 +226,7 @@ _ALLOWLIST: dict[str, str] = {
     "lionagi.ln.concurrency.primitives:126:13": "``Generic[T]``, the typing generic base",
     "lionagi.protocols._concepts:110:21": "``Generic[E]``, the typing generic base",
     "lionagi.protocols._concepts:98:23": "``Generic[E]``, the typing generic base",
-    "lionagi.protocols.generic.element:274:10": "``Generic[E]``, the typing generic base",
+    "lionagi.protocols.generic.element:288:10": "``Generic[E]``, the typing generic base",
     "lionagi.protocols.generic.flow:25:21": "``Generic[E, P]``, the typing generic base",
     "lionagi.protocols.generic.pile:175:21": "``Collective[T]``, the collection base on ``Element``",
     "lionagi.protocols.generic.pile:175:36": "``Generic[T]``, the typing generic base",

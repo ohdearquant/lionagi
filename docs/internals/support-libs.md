@@ -59,13 +59,20 @@ every built-in class directly attribute-lookupable on its module, without
 scanning the filesystem.
 
 `get_class` resolves a name in this order: `LION_CLASS_REGISTRY`, a dotted
-path whose module is already imported, a dotted path under an allowed module
-prefix (`lionagi.` and any prefix added with `lionagi.ln.register_type_prefix`,
-loaded through `load_type_from_string`), then the short-name lookup above. It
-imports no module outside the allowed prefixes. `Element.from_dict` accepts
-only an Element subclass from it and raises `ValueError` otherwise, so data
-naming a class from a package of your own needs that package imported first or
-its prefix registered.
+path whose module is already imported (read from the module's namespace, so a
+module-level `__getattr__` is not called), a dotted path under an allowed
+module prefix (`lionagi.` and any prefix added with
+`lionagi.ln.register_type_prefix`, loaded through `load_type_from_string`),
+then the short-name lookup above, then a `LION_CLASS_REGISTRY` key ending in
+the short name. Only a dotted name under an allowed prefix reaches the
+short-name steps, which keeps a lionagi class whose module has moved
+loadable; any other dotted name the first steps do not resolve raises
+`ValueError` rather than resolving to a built-in or registered class that
+shares its short name. It imports no module outside the allowed prefixes.
+`Element.from_dict` accepts only an Element subclass from it and raises
+`ValueError` otherwise, and a `Pile`'s `item_type` names resolve the same way,
+so data naming a class from a package of your own needs that package imported
+first or its prefix registered.
 
 <a id="path-safety-contain-relative-path"></a>
 

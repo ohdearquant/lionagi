@@ -80,14 +80,14 @@ def _validate_item_type(value, /) -> set[type[T]] | None:
     value = to_list_type(value)
     out = set()
 
-    from lionagi.utils import import_module
+    from lionagi._class_registry import get_class
 
     for i in value:
         subcls = i
         if isinstance(i, str):
             try:
-                mod, imp = i.rsplit(".", 1)
-                subcls = import_module(mod, import_name=imp)
+                # Imports no module outside the allowed prefixes; a bare name is refused.
+                subcls = get_class(i) if "." in i else None
             except Exception as e:
                 raise ValidationError.from_value(
                     i,

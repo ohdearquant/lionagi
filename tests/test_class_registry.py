@@ -325,10 +325,10 @@ class TestGetClassDottedPathFallback:
         def fail_import(*args, **kwargs):
             raise RuntimeError("module initialization failed")
 
-        monkeypatch.setattr(class_registry, "import_module", fail_import)
+        monkeypatch.setattr(class_registry, "load_type_from_string", fail_import)
 
         with pytest.raises(ValueError, match="Unable to find class"):
-            class_registry.get_class("broken.module.UniqueRegistryClass")
+            class_registry.get_class("lionagi.broken_module.UniqueRegistryClass")
 
 
 # Duplicate-name handling: last writer wins (overwrite semantics, pinned).
