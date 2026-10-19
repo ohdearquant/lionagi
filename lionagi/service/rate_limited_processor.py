@@ -5,11 +5,10 @@ import asyncio
 import logging
 from typing import Any
 
-import anyio
 from anyio import get_cancelled_exc_class
 from typing_extensions import Self, override
 
-from lionagi.ln.concurrency import Lock
+from lionagi.ln.concurrency import Lock, sleep
 from lionagi.protocols.types import Executor, Processor
 
 from .connections.api_calling import APICalling
@@ -51,7 +50,7 @@ class RateLimitedAPIProcessor(Processor):
         try:
             await self.start()
             while not self.is_stopped():
-                await anyio.sleep(self.interval)
+                await sleep(self.interval)
 
                 # Reset available counters to their configured limits
                 async with self._lock:

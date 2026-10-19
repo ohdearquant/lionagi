@@ -44,9 +44,9 @@ keeps growing its request until the provider refuses it or bills it at the next 
 
 **P3 — a dependent spawned child inherits its emitter's whole conversation.** A reactively spawned
 child with no branch of its own is built from its emitter's branch
-(`lionagi/operations/flow.py:1612-1640`, `_assign_injected_branch`), as `base.clone(...)`; the
+(`lionagi/operations/flow.py:1613-1641`, `_assign_injected_branch`), as `base.clone(...)`; the
 clone copies every message and maps the emitter's active view onto the copies
-(`lionagi/session/branch.py:523`). Branch setup runs after the clone (`flow.py:1633`, `:1637-1638`). A child
+(`lionagi/session/branch.py:523`). Branch setup runs after the clone (`flow.py:1634`, `:1638-1639`). A child
 cloned from a long emitter starts at the emitter's size, before it has done anything. Observed: a
 child whose inherited history rendered to 3,477,964 characters was started on a CLI provider whose
 turn input is limited to 1,048,576 characters, and died at turn start.
@@ -76,7 +76,7 @@ distinct from the pricing table's `ModelPrice.max_input_tokens`, which keeps its
 pricing table prices by prompt length, `"auto"` is the first tier's `max_prompt_tokens` (100,000 for
 `claude-haiku-5-5`). The table prices the requests it is consulted for, the Anthropic Messages path
 and the account router (`lionagi/providers/anthropic/messages.py:891`,
-`lionagi/service/accounts/_router.py:122`); a provider the table does not price, such as a command-line
+`lionagi/service/accounts/_router.py:123`); a provider the table does not price, such as a command-line
 agent billed by subscription, has no tier here, so unset leaves it unchanged. For a model with one flat
 tier, or none in the table, `"auto"` resolves to no ceiling, and the resolution says so in the
 decision event (D7) rather than inventing a number. A

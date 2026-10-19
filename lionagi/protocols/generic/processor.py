@@ -4,9 +4,7 @@
 import asyncio
 from typing import Any, ClassVar
 
-import anyio
-
-from lionagi.ln.concurrency import ConcurrencyEvent, Semaphore, create_task_group
+from lionagi.ln.concurrency import ConcurrencyEvent, Semaphore, create_task_group, sleep
 
 from .._concepts import Observer
 from .element import ID
@@ -164,7 +162,7 @@ class Processor(Observer):
             before = self.queue.qsize()
             await self.process()
             if not self.queue.empty() and self.queue.qsize() >= before:
-                await anyio.sleep(self.capacity_refresh_time)
+                await sleep(self.capacity_refresh_time)
 
     async def request_permission(self, **kwargs: Any) -> bool:
         return True
@@ -180,7 +178,7 @@ class Processor(Observer):
 
         while not self.is_stopped():
             await self.process()
-            await anyio.sleep(self.capacity_refresh_time)
+            await sleep(self.capacity_refresh_time)
 
         self.execution_mode = False
 

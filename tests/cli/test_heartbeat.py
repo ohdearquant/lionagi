@@ -10,6 +10,7 @@ import threading
 import time
 from types import SimpleNamespace
 
+import anyio
 import pytest
 
 from lionagi.cli.orchestrate import flow as flow_mod
@@ -322,6 +323,10 @@ async def test_execute_dag_heartbeat_tracks_samples_and_terminal_state(
     from lionagi.engines import PlanningEngine
     from lionagi.operations.builder import OperationGraphBuilder
     from lionagi.session.signal import NodeCompleted, NodeFailed, NodeStarted
+
+    # Resolve the backend before replacing asyncio.sleep: a cold backend
+    # must not capture this test's controlled sleep for later tests.
+    await anyio.sleep(0)
 
     branch = Branch(name="worker")
     session = Session(default_branch=branch)

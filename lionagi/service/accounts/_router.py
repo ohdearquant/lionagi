@@ -10,8 +10,9 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 from uuid import UUID, uuid4
 
-import anyio
 from pydantic import SecretStr
+
+from lionagi.ln.concurrency import CancelScope
 
 from ._credentials import CredentialSources, resolve_account_key
 from ._ledger import CredentialLedger, default_ledger_path
@@ -122,7 +123,7 @@ class AccountRouter:
         quote = quote_ceiling(self.revision, body)
         attempt_id = uuid4()
         # Shielded so a cancelled caller cannot leave a committed reservation unknown to it.
-        with anyio.CancelScope(shield=True):
+        with CancelScope(shield=True):
             reservation = await self.ledger.reserve(scope, attempt_id, quote, self.accounts)
         account = next(spec for spec in self.accounts if spec.name == reservation.account)
         try:
@@ -155,7 +156,7 @@ class AccountRouter:
         await self.settle_reservation_not_sent(attempt.reservation)
 
     async def settle_reservation_not_sent(self, reservation: Reservation) -> None:
-        with anyio.CancelScope(shield=True):
+        with CancelScope(shield=True):
             await self.ledger.settle(reservation.attempt_id, ProvenNotSent())
 
     async def block(self, attempt: RouterAttempt, reason: str) -> None:
@@ -171,7 +172,7 @@ class AccountRouter:
         evidence = usage or UnknownOutcome(reason)
         # The write runs in a worker thread that is not abandoned on cancellation, so the
         # shield keeps an anyio cancel scope from returning before it commits.
-        with anyio.CancelScope(shield=True):
+        with CancelScope(shield=True):
             await self.ledger.settle(attempt.attempt_id, evidence)
 
 
