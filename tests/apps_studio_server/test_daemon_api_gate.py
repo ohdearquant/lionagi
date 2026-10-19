@@ -279,7 +279,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 140
+    assert len(_GOLDEN_ROUTES) == 141
 
 
 def _compiled_match_shape(path_template: str) -> str:
