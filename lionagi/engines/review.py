@@ -16,6 +16,7 @@ from pydantic import Field
 from lionagi.casts.emission import Finding, Verdict
 from lionagi.ln import compute_hash
 from lionagi.ln import gather as ln_gather
+from lionagi.ln.concurrency import fail_after
 from lionagi.ln.concurrency._compat import (
     get_exception_group_exceptions,
     is_exception_group,
@@ -193,7 +194,7 @@ async def _is_all_isolated_failure_after_probe(exc: BaseException) -> bool:
     if not callable(probe):
         return True
     try:
-        with anyio.fail_after(_MCP_TRANSPORT_PROBE_TIMEOUT_S):
+        with fail_after(_MCP_TRANSPORT_PROBE_TIMEOUT_S):
             result = await probe()
     except Exception:
         return True

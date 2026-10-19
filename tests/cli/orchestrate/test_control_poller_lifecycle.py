@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import MagicMock, patch
 
+import anyio
 import pytest
 
 from lionagi.casts.emission import TaskAssignment
@@ -248,6 +249,10 @@ async def test_ctl_task_crash_does_not_kill_the_run(tmp_path, monkeypatch):
 async def test_ctl_task_not_yet_available_window_is_skipped_not_fatal(tmp_path, monkeypatch):
     """Before `run_dag` populates `executor_ref`, the poller must find no
     executor and skip the tick — not raise — for as many ticks as it takes."""
+    # Resolve the backend before replacing asyncio.sleep, keeping this
+    # lifecycle assertion independent of earlier tests' backend imports.
+    await anyio.sleep(0)
+
     monkeypatch.setattr(_flow, "_CONTROL_POLL_INTERVAL", 0.02)
     original_sleep = asyncio.sleep
     completed_empty_ticks = asyncio.Event()

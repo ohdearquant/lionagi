@@ -4,11 +4,11 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-import anyio
 from fastapi import HTTPException
 
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.libs.path_safety import has_traversal
+from lionagi.ln.concurrency import run_sync
 
 from ..registry import studio_route
 from ._io import read_json_file as _read_json
@@ -349,13 +349,13 @@ def get_plugin_agent(plugin_name: str, agent_name: str) -> dict[str, Any] | None
 
 @studio_route("/plugins", method="GET", area="plugins")
 async def list_plugins_endpoint() -> dict[str, Any]:
-    plugins = await anyio.to_thread.run_sync(partial(list_plugins, redact=demo_mode_enabled()))
+    plugins = await run_sync(partial(list_plugins, redact=demo_mode_enabled()))
     return {"plugins": plugins}
 
 
 @studio_route("/plugins/{name}", method="GET", area="plugins")
 async def get_plugin_endpoint(name: str) -> dict[str, Any]:
-    plugin = await anyio.to_thread.run_sync(partial(get_plugin, name, redact=demo_mode_enabled()))
+    plugin = await run_sync(partial(get_plugin, name, redact=demo_mode_enabled()))
     if not plugin:
         raise HTTPException(status_code=404, detail=f"Plugin {name} not found")
     return plugin
@@ -363,7 +363,7 @@ async def get_plugin_endpoint(name: str) -> dict[str, Any]:
 
 @studio_route("/plugins/{plugin_name}/skills/{skill_name}", method="GET", area="plugins")
 async def get_plugin_skill_endpoint(plugin_name: str, skill_name: str) -> dict[str, Any]:
-    skill = await anyio.to_thread.run_sync(partial(get_plugin_skill, plugin_name, skill_name))
+    skill = await run_sync(partial(get_plugin_skill, plugin_name, skill_name))
     if not skill:
         raise HTTPException(
             status_code=404,
@@ -374,7 +374,7 @@ async def get_plugin_skill_endpoint(plugin_name: str, skill_name: str) -> dict[s
 
 @studio_route("/plugins/{plugin_name}/agents/{agent_name}", method="GET", area="plugins")
 async def get_plugin_agent_endpoint(plugin_name: str, agent_name: str) -> dict[str, Any]:
-    agent = await anyio.to_thread.run_sync(partial(get_plugin_agent, plugin_name, agent_name))
+    agent = await run_sync(partial(get_plugin_agent, plugin_name, agent_name))
     if not agent:
         raise HTTPException(
             status_code=404,

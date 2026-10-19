@@ -26,6 +26,7 @@ from lionagi._errors import ExecutionError, OperationError
 from lionagi.ln import AlcallParams, coerce_created_at
 from lionagi.ln.concurrency import (
     BaseExceptionGroup,
+    CancelScope,
     CapacityLimiter,
     ConcurrencyEvent,
     create_task_group,
@@ -1230,7 +1231,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
         self.session.observe(EscalationRequest, self._on_bus_escalation)
         self._running = True
 
-        driver_cancel_scope = anyio.CancelScope()
+        driver_cancel_scope = CancelScope()
         driver_done = anyio.Event()
         driver_errors: list[BaseException] = []
 
