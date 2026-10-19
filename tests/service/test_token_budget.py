@@ -28,6 +28,7 @@ class TestTokenBudget:
         assert budget.is_critical is True
 
     def test_is_warning_at_70_pct(self):
+        """The inclusive 70% warning boundary remains below the critical boundary."""
         budget = TokenBudget(used=70, limit=100)
         assert budget.is_warning is True
         assert budget.is_critical is False
@@ -94,10 +95,6 @@ class TestTokenBudgetBoundaries:
     def test_is_critical_false_at_89_pct(self):
         budget = TokenBudget(used=89, limit=100)
         assert budget.is_critical is False
-
-    def test_is_warning_exactly_at_70_pct(self):
-        budget = TokenBudget(used=70, limit=100)
-        assert budget.is_warning is True
 
     def test_remaining_exactly_at_limit(self):
         budget = TokenBudget(used=100, limit=100)

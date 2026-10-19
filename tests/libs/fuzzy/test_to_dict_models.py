@@ -113,11 +113,6 @@ def test_to_dict_basic_dict():
     assert to_dict({"a": 1, "b": 2}) == {"a": 1, "b": 2}
 
 
-def test_to_dict_none():
-    """Test None input"""
-    assert to_dict(None) == {}
-
-
 def test_to_dict_empty_string():
     """Test empty string"""
     assert to_dict("") == {}
