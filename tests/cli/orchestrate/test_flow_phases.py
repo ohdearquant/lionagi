@@ -711,10 +711,11 @@ async def test_execute_dag_reactive_wires_spawn_branch_setup_for_cli_workspace(t
             is_cli=True,
             endpoint=SimpleNamespace(
                 config=SimpleNamespace(
+                    provider="claude_code",
                     kwargs={
                         "contain_account_integrations": True,
                         "account_connectors": ["github"],
-                    }
+                    },
                 )
             ),
         )
