@@ -569,6 +569,7 @@ async def _run_fanout_inner(
         _shared["saved_workers"] = [saved_workers[i] for i in sorted(saved_workers)]
 
     synthesis_result = None
+    synth_node = None
     if with_synthesis and not contexts:
         # An empty context means either "every worker failed" or "no worker ran
         # at all". Only the first one has failures to report, so name the
@@ -661,6 +662,24 @@ async def _run_fanout_inner(
         progress(f"  li team receive -t {env.team_data['id']} --as orchestrator")
         progress(f"  li team show {env.team_data['id']}")
 
+    # Transitional v1 Session projection. Delete this writer only after
+    # Run detail derives from ExecutionPlan/PlanDelta and OperationAttempt
+    # records, with existing client payload compatibility
+    # verified. It is not the canonical graph or lifecycle authority.
+    # Preserve the graph that actually ran, including failed workers and a
+    # synthesis leg only when it was built. Worker references match flow's
+    # metadata convention; synthesis retains its builder-assigned identity.
+    node_agents = dict(zip(fanned_nodes, worker_names, strict=True))
+    agents_meta = [
+        {"id": name, "name": name, "model": model}
+        for name, model in zip(worker_names, fanned_labels, strict=True)
+    ]
+    if synth_node is not None:
+        synth_id = str(synth_node)
+        node_agents[synth_node] = synth_id
+        agents_meta.append(
+            {"id": synth_id, "name": "synthesis", "model": synthesis_result["model"]}
+        )
     finalize_orchestration(
         env,
         kind="fanout",
@@ -668,6 +687,17 @@ async def _run_fanout_inner(
         extras={
             "workers": fanned_labels,
             "synthesis_model": (synthesis_result["model"] if synthesis_result else None),
+            "agents": agents_meta,
+            "operations": [
+                {
+                    "id": agent_id,
+                    "agent_id": agent_id,
+                    "control": False,
+                    "spawned": False,
+                    "depends_on": list(worker_names) if node_id == synth_node else [],
+                }
+                for node_id, agent_id in node_agents.items()
+            ],
         },
     )
 
