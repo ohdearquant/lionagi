@@ -720,7 +720,7 @@ async def test_execute_dag_reactive_wires_spawn_branch_setup_for_cli_workspace(t
                     },
                 )
             ),
-        )
+        ),
     )
     spawn_branch_setup(operation, cli_branch)
 
