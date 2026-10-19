@@ -3,6 +3,7 @@
 
 import importlib
 import sys
+import types
 from typing import TypeVar
 
 from lionagi.ln import _utils as _ln_utils
@@ -36,6 +37,11 @@ __all__ = (
     "LION_CLASS_REGISTRY",
 )
 
+_NOT_FOUND = (
+    "Unable to find class {}: import the module that defines it first, or allow its "
+    "package with lionagi.ln.register_type_prefix()"
+)
+
 
 def get_class(class_name: str) -> type:
     """Retrieve a class by name: LION_CLASS_REGISTRY lookup (fully-qualified
@@ -44,9 +50,11 @@ def get_class(class_name: str) -> type:
     ``lionagi.ln.register_type_prefix``), then legacy short-name lookup among
     the built-in modules, then a LION_CLASS_REGISTRY key ending in the short
     name. A dotted name outside the allowed prefixes that neither of its own
-    steps resolves raises instead of falling back to its short name. A module
-    outside the allowed prefixes is never imported here. Raises ValueError if
-    not found.
+    steps resolves raises instead of falling back to its short name, and one
+    under an allowed prefix falls back only to a class defined under that
+    prefix; a bare short name resolves only to a lionagi class or a registered
+    one. A module outside the allowed prefixes is never imported here. Raises
+    ValueError if not found.
     """
     if not class_name:
         # Reject empty names here: the suffix-match fallback below would
@@ -57,10 +65,15 @@ def get_class(class_name: str) -> type:
         return LION_CLASS_REGISTRY[class_name]
 
     name = class_name
+    # The module prefixes a short-name match must be defined under: lionagi for
+    # a bare name, narrowed below to a dotted name's own allowed prefix.
+    prefixes: tuple[str, ...] = ("lionagi.",)
     if "." in class_name:
         mod, _, name = class_name.rpartition(".")
+        if not mod or not name:
+            raise ValueError(f"Unable to find class {class_name}")
         module = sys.modules.get(mod)
-        if module is not None:
+        if isinstance(module, types.ModuleType):
             # The module's own namespace, not getattr: a module-level
             # __getattr__ (PEP 562) can import further modules.
             cls = vars(module).get(name)
@@ -71,11 +84,13 @@ def get_class(class_name: str) -> type:
         except Exception:  # noqa: BLE001, S110 — normalize import failure to lookup failure
             pass
         # Only a lionagi class (or one under a registered prefix) whose module
-        # has moved falls back to its short name; any other dotted name would
-        # resolve to whichever built-in or registered class shares that name.
+        # has moved falls back to its short name, and only to a class defined
+        # under that same prefix; any other dotted name would resolve to
+        # whichever built-in or registered class shares that name.
         allowed = _ln_utils._ALLOWED_MODULE_PREFIXES
-        if not name or not any(class_name.startswith(p) for p in allowed):
-            raise ValueError(f"Unable to find class {class_name}")
+        prefixes = tuple(p for p in allowed if class_name.startswith(p))
+        if not prefixes:
+            raise ValueError(_NOT_FOUND.format(class_name))
 
     for mod_name in _BUILTIN_MODULES:
         try:
@@ -83,13 +98,17 @@ def get_class(class_name: str) -> type:
         except ImportError:
             continue
         cls = getattr(module, name, None)
-        if isinstance(cls, type):
+        # A built-in module's namespace also holds what it imports (Path,
+        # BaseModel, UUID); only a class defined under the prefix counts.
+        if isinstance(cls, type) and f"{cls.__module__}.".startswith(prefixes):
             return cls
 
     # Importing the built-in modules above may have registered additional
-    # Node subclasses under their full-qualified names; check by suffix.
+    # Node subclasses under their full-qualified names; check by suffix. A
+    # short name matches any of them; a dotted name only one under its prefix.
     for key, cls in LION_CLASS_REGISTRY.items():
         if key == name or key.endswith(f".{name}"):
-            return cls
+            if "." not in class_name or f"{cls.__module__}.".startswith(prefixes):
+                return cls
 
-    raise ValueError(f"Unable to find class {class_name}")
+    raise ValueError(_NOT_FOUND.format(class_name))

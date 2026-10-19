@@ -78,7 +78,7 @@ def _validate_item_type(value, /) -> set[type[T]] | None:
         return None
 
     value = to_list_type(value)
-    out = set()
+    out, resolved = set(), []
 
     from lionagi._class_registry import get_class
 
@@ -91,18 +91,18 @@ def _validate_item_type(value, /) -> set[type[T]] | None:
             except Exception as e:
                 raise ValidationError.from_value(
                     i,
-                    expected="An importable type.",
+                    message=str(e),
                     cause=e,
                 ) from e
         if isinstance(subcls, type):
-            if is_union_type(subcls):
-                out.update(union_members(subcls))
-            else:
-                out.add(subcls)
+            resolved.append(subcls)
+            out.update(union_members(subcls) if is_union_type(subcls) else (subcls,))
         else:
             raise ValidationError.from_value(i, expected="A type.")
 
-    if len(value) != len(set(value)):
+    # Compared once resolved: a type and its name, or two names for one class,
+    # are the same item type.
+    if len(resolved) != len(set(resolved)):
         raise ValidationError("Detected duplicated item types in item_type.")
 
     if len(value) > 0:

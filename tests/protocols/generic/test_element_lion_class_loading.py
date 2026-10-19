@@ -152,6 +152,7 @@ def test_a_pile_item_type_outside_the_prefixes_is_not_imported(probe_module):
     with pytest.raises(ValidationError) as raised:
         Element.from_dict(_dumped_pile([f"{_MODULE}.Thing"]))
     assert "Unable to find class" in str(raised.value.__cause__)
+    assert "register_type_prefix" in str(raised.value)
     assert not probe_module.exists()
     assert _MODULE not in sys.modules
 
@@ -165,3 +166,107 @@ def test_a_pile_item_type_already_imported_still_resolves():
 def test_a_pile_item_type_without_a_module_is_refused():
     with pytest.raises(ValidationError):
         Element.from_dict(_dumped_pile(["Instruction"]))
+
+
+_OUTSIDE = "lion_class_outside_zz"
+
+
+@pytest.fixture
+def outside_node(tmp_path, monkeypatch):
+    """A Node subclass in an imported module outside the allowed prefixes."""
+    import importlib
+
+    (tmp_path / f"{_OUTSIDE}.py").write_text(
+        "from lionagi.protocols.graph.node import Node\nclass ExternalNode(Node):\n    pass\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(_utils, "_ALLOWED_MODULE_PREFIXES", set(_utils._DEFAULT_ALLOWED_PREFIXES))
+    monkeypatch.setattr(_utils, "_TYPE_CACHE", {})
+    cls = importlib.import_module(_OUTSIDE).ExternalNode
+    assert LION_CLASS_REGISTRY[f"{_OUTSIDE}.ExternalNode"] is cls
+    yield cls
+    LION_CLASS_REGISTRY.pop(f"{_OUTSIDE}.ExternalNode", None)
+    sys.modules.pop(_OUTSIDE, None)
+
+
+def test_a_lionagi_name_does_not_fall_back_to_a_class_outside_lionagi(outside_node):
+    assert get_class(f"{_OUTSIDE}.ExternalNode") is outside_node
+    with pytest.raises(ValueError, match="Unable to find class"):
+        get_class("lionagi.no_such_module_zz.ExternalNode")
+    with pytest.raises(ValueError, match="cannot be loaded"):
+        Element.from_dict(_dumped("lionagi.no_such_module_zz.ExternalNode"))
+
+
+def test_a_registered_prefix_name_falls_back_only_to_a_class_under_that_prefix(outside_node):
+    _utils.register_type_prefix(f"{_OUTSIDE}.")
+    assert get_class(f"{_OUTSIDE}.moved_zz.ExternalNode") is outside_node
+    with pytest.raises(ValueError, match="Unable to find class"):
+        get_class(f"{_OUTSIDE}.moved_zz.Instruction")
+    with pytest.raises(ValueError, match="Unable to find class"):
+        get_class(f"{_OUTSIDE}.moved_zz.Node")
+
+
+@pytest.mark.parametrize("short", ["Path", "BaseModel", "UUID"])
+def test_a_name_does_not_resolve_to_a_type_a_built_in_module_imports(short):
+    import importlib
+
+    from lionagi._class_registry import _BUILTIN_MODULES
+
+    held = [getattr(importlib.import_module(m), short, None) for m in _BUILTIN_MODULES]
+    assert any(isinstance(t, type) and not t.__module__.startswith("lionagi.") for t in held)
+    for name in (short, f"lionagi.no_such_mod_zz.{short}"):
+        with pytest.raises(ValueError, match="Unable to find class"):
+            get_class(name)
+    with pytest.raises(ValidationError, match="register_type_prefix"):
+        Element.from_dict(_dumped_pile([f"lionagi.no_such_mod_zz.{short}"]))
+
+
+class _SlottedProxy:
+    __slots__ = ()
+    calls: list[str] = []
+
+    def __getattr__(self, name):
+        _SlottedProxy.calls.append(name)
+        return LocalElement
+
+
+def test_a_non_module_in_sys_modules_is_skipped_not_read(monkeypatch):
+    from lionagi.protocols.messages.instruction import Instruction
+
+    _SlottedProxy.calls = []
+    monkeypatch.setitem(sys.modules, "lion_class_nonmod_zz", object())
+    monkeypatch.setitem(sys.modules, "lion_class_proxy_zz", _SlottedProxy())
+    monkeypatch.setitem(sys.modules, "lionagi.lion_class_removed_zz", object())
+    for name in ("lion_class_nonmod_zz.Thing", "lion_class_proxy_zz.Thing"):
+        with pytest.raises(ValueError, match="Unable to find class"):
+            get_class(name)
+    assert _SlottedProxy.calls == []
+    assert get_class("lionagi.lion_class_removed_zz.Instruction") is Instruction
+
+
+def test_a_name_ending_in_a_dot_imports_nothing_under_an_allowed_prefix(probe_module):
+    _utils.register_type_prefix(f"{_MODULE}.")
+    with pytest.raises(ValueError, match="Unable to find class"):
+        get_class(f"{_MODULE}.")
+    assert not probe_module.exists()
+    assert _MODULE not in sys.modules
+
+
+@pytest.mark.parametrize(
+    "item_type",
+    [
+        [Element, "lionagi.protocols.generic.element.Element"],
+        ["lionagi.protocols.generic.element.Element", "lionagi.no_such_mod_zz.Element"],
+    ],
+    ids=["type-and-name", "two-names"],
+)
+def test_one_item_type_given_twice_is_refused_after_resolution(item_type):
+    with pytest.raises(ValidationError, match="duplicated item types"):
+        Pile(item_type=item_type)
+
+
+def test_distinct_item_types_given_by_type_and_name_are_kept():
+    from lionagi.protocols.graph.node import Node
+
+    pile = Pile(item_type=[Element, "lionagi.protocols.graph.node.Node"])
+    assert pile.item_type == {Element, Node}
