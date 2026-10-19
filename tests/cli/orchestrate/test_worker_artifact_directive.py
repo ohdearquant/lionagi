@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from lionagi.cli._providers import _add_workload_kwarg
 from lionagi.cli.orchestrate._common import (
     BARE_WORKER_SYSTEM,
     bare_worker_system,
@@ -18,6 +19,7 @@ from lionagi.cli.orchestrate._orchestration import (
     _emit_worker_artifact_report,
     collect_worker_artifacts,
 )
+from lionagi.providers._subagent_admission import DEFAULT_WORKLOAD
 
 # Half 1: the prompt names the directory
 
@@ -161,6 +163,9 @@ def _build_worker(
 
     def _fake_build_imodel(*a, **kw):
         built["imodel_kwargs"] = kw
+        _add_workload_kwarg(
+            imodel.endpoint.config.kwargs, provider, kw.get("workload", DEFAULT_WORKLOAD)
+        )
         return imodel
 
     env = orch.OrchestrationEnv(
@@ -213,17 +218,36 @@ def _add_dir_values(args: list[str]) -> list[str]:
     return [args[index + 1] for index, value in enumerate(args) if value == "--add-dir"]
 
 
-def _codex_worker_args(tmp_path, *, team_data=None) -> list[str]:
-    from lionagi.providers.openai.codex import CodexCodeRequest
+def _light_profile():
+    return SimpleNamespace(
+        raw_body=True,
+        system_prompt="Read and report.",
+        effort=None,
+        yolo=False,
+        fast_mode=False,
+        khive_injection=None,
+        workload="light",
+    )
 
+
+def _codex_worker_kwargs(tmp_path, *, team_data=None, light=False) -> dict:
     _env, imodel, _built = _build_worker(
         tmp_path,
         agent_id="worker-1",
         role="worker",
         provider="codex",
         team_data=team_data,
+        bare=not light,
+        profile=_light_profile() if light else None,
     )
-    request = CodexCodeRequest(prompt="work", **imodel.endpoint.config.kwargs)
+    return imodel.endpoint.config.kwargs
+
+
+def _codex_worker_args(tmp_path, *, team_data=None, light=False) -> list[str]:
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    kwargs = _codex_worker_kwargs(tmp_path, team_data=team_data, light=light)
+    request = CodexCodeRequest(prompt="work", **kwargs)
     return request.as_cmd_args()
 
 
@@ -249,6 +273,42 @@ def test_codex_worker_without_team_does_not_grant_the_teams_directory(tmp_path, 
     args = _codex_worker_args(tmp_path)
 
     assert _add_dir_values(args) == [str(tmp_path.resolve())]
+
+
+def test_a_light_codex_worker_gets_no_extra_writable_root_and_starts(tmp_path):
+    """Codex refuses a light request any directory outside its working directory, so
+    the worker is handed none and writes only its artifact directory."""
+    kwargs = _codex_worker_kwargs(tmp_path, light=True)
+    assert kwargs["workload"] == "light"
+    assert kwargs["repo"] == tmp_path / "artifacts" / "worker-1"
+
+    args = _codex_worker_args(tmp_path, light=True)
+
+    assert _add_dir_values(args) == []
+    assert args[args.index("--sandbox") + 1] == "workspace-write"
+
+
+def test_a_light_codex_team_worker_is_refused_before_it_starts(tmp_path, monkeypatch):
+    """Team mode needs the teams directory writable, which light codex cannot grant."""
+    from lionagi._errors import CLIInputRefusedError
+    from lionagi.cli import team as team_module
+
+    teams_dir = tmp_path / "state" / "teams"
+    teams_dir.mkdir(parents=True)
+    monkeypatch.setattr(team_module, "TEAMS_DIR", teams_dir)
+
+    with pytest.raises(CLIInputRefusedError, match="add_dir"):
+        _codex_worker_args(tmp_path, team_data={"id": "team-1"}, light=True)
+
+
+def test_a_light_claude_worker_keeps_the_project_root(tmp_path):
+    """Light Claude Code bounds the tool list, not the filesystem, so it keeps the
+    project root it reads from."""
+    _env, imodel, _built = _build_worker(
+        tmp_path, agent_id="worker-1", role="worker", bare=False, profile=_light_profile()
+    )
+    assert imodel.endpoint.config.kwargs["workload"] == "light"
+    assert imodel.endpoint.config.kwargs["add_dir"] == [str(tmp_path.resolve())]
 
 
 def test_worker_prompt_names_the_cwd_it_is_launched_with(tmp_path):

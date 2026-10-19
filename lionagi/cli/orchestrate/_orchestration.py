@@ -1158,7 +1158,13 @@ async def build_worker_branch(
     if is_cli:
         project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
         add_dir = w_imodel.endpoint.config.kwargs.setdefault("add_dir", [])
-        if project_root not in add_dir:
+        # A light codex worker writes only its working directory, the artifact
+        # directory above, and codex refuses it any other writable root.
+        light_codex = (
+            w_imodel.endpoint.config.provider == "codex"
+            and w_imodel.endpoint.config.kwargs.get("workload") == "light"
+        )
+        if not light_codex and project_root not in add_dir:
             add_dir.append(project_root)
         if (
             getattr(env, "team_data", None)

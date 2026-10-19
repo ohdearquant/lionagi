@@ -171,7 +171,9 @@ records the design.
 than letting it start uncounted. A worker that waits out the whole window is refused with one
 line naming the pool, its cap and the pids holding it, and `li agent` exits `75` (`EX_TEMPFAIL`):
 the same command succeeds once a slot frees. The refusal is recorded on the run as
-`SubagentAdmissionRefusedError`, a retryable provider error.
+`SubagentAdmissionRefusedError`, a retryable provider error. A pool stays full at the smallest
+cap its holders read, so a raised cap takes effect as the agents admitted under the lower one
+finish.
 
 The slot belongs to the lionagi process that started the worker and is released when the
 worker's process group has ended, or when that process exits however it exits. A slot whose
@@ -200,6 +202,10 @@ other, whether or not a cap is set.
 A resumed leg (`-r`, `-c`) runs with the class this launch resolves: `--workload`, else the
 profile's, else `heavy`. Resuming a `light` leg without `-a` or `--workload light` therefore runs
 it `heavy`; pass the flag again to keep it light.
+
+In `li o flow` and `li o fanout` each worker takes its own profile's class, whatever the
+orchestrator's. A `light` codex worker is given no extra writable directory, so it writes only
+its artifact directory, and under `--team-mode` it is refused before it starts.
 
 `li monitor` prints the held slots per pool under its table, for example
 `subagents: all 3/30, heavy 1/6, codex 2/4`, using the caps in its own environment, and

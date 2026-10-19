@@ -127,7 +127,9 @@ cap placed in any one launcher covers only that launcher's agents (P1).
 **Exact semantics.**
 
 - Variables are read from the admitting process's environment at every admission, so a change
-  applies to the next agent without a restart.
+  applies to the next agent without a restart. A pool stays full at the smallest cap its holders
+  read (D3), so a raised cap admits past the agents admitted under the lower one only as they
+  release; a lowered cap applies at once.
 - Unset, empty or `0` means the pool has no cap.
 - A value that does not parse as a whole number (`thirty`, `-1`, `2.5`) refuses the agent. A
   misspelled cap must not let agents start uncounted on a machine whose owner believes it is
@@ -211,7 +213,7 @@ subagent admission refused: heavy codex agent waited 600s; pool 'heavy' is at it
 
 - A wait that does not parse as a non-negative finite number refuses.
 - The refusal is a `ProviderError` with `retryable = True`: the same request admits once a slot
-  frees or the cap rises.
+  frees, or once the cap rises and the holders that read the lower cap have released (D3).
 - `iModel.stream()` re-raises a stream failure as a `ValueError` caused by the provider's error.
   `li agent` walks that cause chain: a refusal anywhere in it prints the refusal itself, not the
   wrapper, and the command exits **75** (`EX_TEMPFAIL`, `EXIT_CODE_SUBAGENT_REFUSED` in
@@ -252,7 +254,15 @@ The class is chosen as follows:
 - A resumed conversation runs with this launch's class, not the one stored on the branch:
   resuming a `light` leg without `-a` or `--workload light` runs it `heavy`.
 - An orchestration worker takes its own profile's class; a bare worker (no profile) is `heavy`.
-  The orchestrator takes its profile's class.
+  The orchestrator takes its profile's class, which confines the orchestrator's own process and
+  not the plan it writes: the flow process the caller started runs each worker with that
+  worker's class, so a `light` orchestrator can plan `heavy` workers from its roster. This is
+  deliberate. The roster is the caller's grant, the orchestrator cannot start an agent itself
+  (D7), and a caller who wants only `light` workers hands a roster of `light` profiles.
+- A `light` codex worker is handed no `add_dir`, so its one writable root is its working
+  directory, the worker's artifact directory; the project-root `add_dir` every other CLI worker
+  is handed is unchanged. A codex worker in team mode needs the team directory writable, so a `light` codex
+  worker there is refused with `CLIInputRefusedError` before it starts.
 - API-model legs take no workload; the field is passed only to CLI providers, and only when it is
   not the default.
 - `agent.submit` on the MCP surface exposes the flag with the same two values. A `light`

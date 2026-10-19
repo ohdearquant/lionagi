@@ -540,7 +540,7 @@ Five rules keep the count honest across processes that do not share memory:
   counts as running, so a slot is never handed out on a probe that could not look.
 - A pool is full at the smallest cap among the admission's own and those its
   holders recorded, so a process reading a larger cap cannot run past a holder
-  that read a smaller one.
+  that read a smaller one; a raised cap admits past those holders as they release.
 - A locked slot with no record is a holder between clearing its record and
   unlocking (`release()` truncates, then unlocks). It counts as held, and a pool
   full only because of one is re-read within milliseconds, up to 25 times, before
