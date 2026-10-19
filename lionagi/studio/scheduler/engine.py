@@ -438,6 +438,8 @@ class SchedulerEngine:
         self._adhoc_inflight = 0
         # schedule_id -> consecutive due evaluations the global fire cap deferred.
         self._deferred_log_counts: dict[str, int] = {}
+        # schedule_ids whose rolling rate-limit episode has been logged; a reservation that passes ends it.
+        self._rate_limited_logged: set[str] = set()
         # Threshold-alert cooldown reservations. Membership means a fire for this schedule's current
         # breach is in flight or was just reserved, which closes a race a DB-only last_alert_at
         # check cannot.
@@ -1586,14 +1588,9 @@ class SchedulerEngine:
 
         rate_allowed, pre_rate_claim = await self._reserve_rate_limit(schedule, now=now)
         if not rate_allowed:
-            _log.info(
-                "Schedule %s (%s) reached rolling rate limit %s; "
-                "github events deferred without polling or disabling",
-                schedule.get("name"),
-                schedule["id"],
-                schedule.get("rate_limit"),
-            )
+            self._log_rate_limited(schedule, "github events deferred without polling or disabling")
             return False
+        self._rate_limited_logged.discard(schedule["id"])
 
         # The poll is a trigger check, not a fire, so it holds no global slot while it fetches: a
         # slow or rate-limited poll would otherwise keep a slot from every other schedule for its
@@ -1968,6 +1965,20 @@ class SchedulerEngine:
     def _release_adhoc_slot(self) -> None:
         self._adhoc_inflight = max(0, self._adhoc_inflight - 1)
 
+    def _log_rate_limited(self, schedule: dict, outcome: str) -> None:
+        """Log a schedule's rolling rate-limit episode once; the tick loop re-checks it every pass."""
+        sid = schedule["id"]
+        if sid in self._rate_limited_logged:
+            return
+        self._rate_limited_logged.add(sid)
+        _log.info(
+            "Schedule %s (%s) reached rolling rate limit %s; %s",
+            schedule.get("name"),
+            sid,
+            schedule.get("rate_limit"),
+            outcome,
+        )
+
     async def _maybe_record_deferred(self, schedule: dict, now: float) -> None:
         """Log each capacity-deferral episode once and throttle its skipped-run records."""
         sid = schedule["id"]
@@ -2200,14 +2211,11 @@ class SchedulerEngine:
 
             rate_allowed, rate_claim = await self._reserve_rate_limit(schedule, now=now)
             if not rate_allowed:
-                _log.info(
-                    "Schedule %s (%s) reached rolling rate limit %s; "
-                    "deferring without disabling or advancing next_fire_at",
-                    schedule.get("name"),
-                    schedule["id"],
-                    schedule.get("rate_limit"),
+                self._log_rate_limited(
+                    schedule, "deferring without disabling or advancing next_fire_at"
                 )
                 return False
+            self._rate_limited_logged.discard(schedule["id"])
 
             allowed, claim = await self._reserve_max_runs_budget(schedule)
             if not allowed:

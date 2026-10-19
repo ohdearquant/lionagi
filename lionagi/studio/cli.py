@@ -395,8 +395,6 @@ def _start_hosted(host: str, port: int, no_open: bool) -> int:
 def _start_backend_only(host: str, port: int) -> int:
     import uvicorn
 
-    from lionagi.studio.daemon_log import daemon_log_handler
-
     # The backend app lives inside the installed package
     # (lionagi.studio.app); it does not import anything from the repo's
     # apps/ tree, so a pip install must not be gated on finding one. The
@@ -408,8 +406,7 @@ def _start_backend_only(host: str, port: int) -> int:
     # Set before uvicorn.run: the app is loaded via import string and reads this from env.
     os.environ["LIONAGI_STUDIO_HOST"] = host
     _ignore_sigpipe()
-    with daemon_log_handler():
-        uvicorn.run("lionagi.studio.app:app", host=host, port=port)
+    uvicorn.run("lionagi.studio.app:app", host=host, port=port)
     return 0
 
 
@@ -606,8 +603,6 @@ def _start_local(
 ) -> int:
     import uvicorn
 
-    from lionagi.studio.daemon_log import daemon_log_handler
-
     if frontend_dir is None:
         print("Error: --dev requires the lionagi repo. Clone it first.", file=sys.stderr)
         return 1
@@ -665,8 +660,7 @@ def _start_local(
     os.environ["LIONAGI_STUDIO_HOST"] = host
     _ignore_sigpipe()
     try:
-        with daemon_log_handler():
-            uvicorn.run("lionagi.studio.app:app", host=host, port=port)
+        uvicorn.run("lionagi.studio.app:app", host=host, port=port)
     except KeyboardInterrupt:
         print("\nStopping Lion Studio...")
     finally:

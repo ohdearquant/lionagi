@@ -383,3 +383,70 @@ async def test_a_github_poll_holds_no_slot_and_each_event_holds_its_own(monkeypa
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+def _rate_limit_lines(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if "rolling rate limit" in r.getMessage()]
+
+
+def _scripted_rate_limit(answers):
+    script = iter(answers)
+
+    async def reserve(schedule, *, now):
+        return next(script), None
+
+    return reserve
+
+
+@pytest.mark.asyncio
+async def test_a_rate_limit_episode_logs_once_and_a_passing_reservation_ends_it(
+    monkeypatch, caplog
+):
+    engine = SchedulerEngine(svc=_make_svc())
+    limited = _minimal_schedule(id="limited", name="limited schedule", next_fire_at=100.0)
+    other = _minimal_schedule(id="other", name="other schedule", next_fire_at=100.0)
+    monkeypatch.setattr(
+        engine, "_reserve_rate_limit", _scripted_rate_limit([False, False, False, True, False])
+    )
+    launches = []
+    monkeypatch.setattr(engine, "_tracked_fire", lambda schedule, run_id, **kw: launches.append(kw))
+    with caplog.at_level(logging.INFO, logger="lionagi.studio.scheduler.engine"):
+        await engine._maybe_fire(limited, now=100.0)
+        await engine._maybe_fire(other, now=100.0)
+        await engine._maybe_fire(limited, now=130.0)
+        # Three refusals across two schedules: one line each, however often the tick re-checks.
+        assert len(_rate_limit_lines(caplog)) == 2
+        await engine._maybe_fire(limited, now=160.0)
+        assert len(launches) == 1
+        launches[0]["global_slot_claim"].release()
+        await engine._maybe_fire(limited, now=190.0)
+    lines = _rate_limit_lines(caplog)
+    assert len(lines) == 3, lines
+    assert ["limited schedule" in line for line in lines] == [True, False, True]
+    assert all("deferring without disabling or advancing next_fire_at" in line for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_a_github_rate_limit_episode_logs_once_until_a_reservation_passes(
+    monkeypatch, caplog
+):
+    monkeypatch.setattr(config, "MAX_SCHEDULED_CONCURRENT", 1)
+    engine = SchedulerEngine(svc=_make_svc())
+    schedule = _minimal_schedule(id="poller", name="poller schedule", trigger_type="github_poll")
+    monkeypatch.setattr(
+        engine, "_reserve_rate_limit", _scripted_rate_limit([False, False, True, False])
+    )
+    _, blocker = await engine._reserve_global_slot("blocker", path="manual")
+    try:
+        with caplog.at_level(logging.INFO, logger="lionagi.studio.scheduler.engine"):
+            assert await engine._github_due_pass(schedule, 100.0) is False
+            assert await engine._github_due_pass(schedule, 130.0) is False
+            assert len(_rate_limit_lines(caplog)) == 1
+            # The reservation passes and the full cap defers the pass before any poll.
+            assert await engine._github_due_pass(schedule, 160.0) is True
+            assert await engine._github_due_pass(schedule, 190.0) is False
+    finally:
+        blocker.release()
+    lines = _rate_limit_lines(caplog)
+    assert len(lines) == 2, lines
+    assert all("poller schedule" in line and "github events deferred" in line for line in lines)

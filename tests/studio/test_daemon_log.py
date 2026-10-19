@@ -1,19 +1,21 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""The daemon prints lionagi's INFO records (a schedule firing) on stderr while it serves."""
+"""The daemon prints the scheduler's INFO records (a schedule firing) on stderr while it serves."""
 
 from __future__ import annotations
 
 import calendar
+import io
 import logging
 import re
+import stat
 import sys
 import time
 
 import pytest
 
-from lionagi.studio.daemon_log import daemon_log_handler
+from lionagi.studio.daemon_log import SCHEDULER_LOGGER, daemon_log_handler
 
 FIRE = "Firing schedule nightly (run r1, chain_depth=0)"
 LINE = re.compile(
@@ -24,45 +26,57 @@ LINE = re.compile(
 
 
 @pytest.fixture()
-def lionagi_logger():
-    logger = logging.getLogger("lionagi")
-    saved = (logger.level, logger.propagate, list(logger.handlers))
-    yield logger
-    logger.setLevel(saved[0])
-    logger.propagate = saved[1]
-    logger.handlers[:] = saved[2]
+def loggers():
+    """The ``lionagi`` and scheduler loggers, restored after the test whatever it changed."""
+    saved = []
+    for name in ("lionagi", SCHEDULER_LOGGER):
+        logger = logging.getLogger(name)
+        saved.append((logger, logger.level, logger.propagate, list(logger.handlers)))
+    yield logging.getLogger("lionagi"), logging.getLogger(SCHEDULER_LOGGER)
+    for logger, level, propagate, handlers in saved:
+        logger.setLevel(level)
+        logger.propagate = propagate
+        logger.handlers[:] = handlers
+
+
+class _RootStderrHandler(logging.Handler):
+    """Stands in for the root stderr handler an import's ``logging.basicConfig`` installs; it
+    writes to the ``sys.stderr`` of the moment, so the test's capture receives what it prints."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        sys.stderr.write(self.format(record) + "\n")
 
 
 @pytest.fixture()
 def root_handler(capsys):
-    # A root handler some import installed: without propagate=False each record prints twice.
-    # Built after capsys swaps sys.stderr, so what it prints is captured too.
-    handler = logging.StreamHandler(sys.stderr)
+    # Without propagate=False each scheduler record would print twice: once here, once timestamped.
+    handler = _RootStderrHandler()
     root = logging.getLogger()
     root.addHandler(handler)
     yield handler
     root.removeHandler(handler)
 
 
-def _fire():
-    logging.getLogger("lionagi.studio.scheduler.engine").info(FIRE)
+def _fire(level: int = logging.INFO, message: str = FIRE) -> None:
+    logging.getLogger("lionagi.studio.scheduler.engine").log(level, message)
 
 
-def _fire_lines(err: str) -> list[str]:
-    return [line for line in err.splitlines() if FIRE in line]
+def _lines(err: str, message: str = FIRE) -> list[str]:
+    return [line for line in err.splitlines() if message in line]
 
 
-def test_a_fire_record_prints_once_with_a_utc_timestamp(lionagi_logger, root_handler, capsys):
-    lionagi_logger.setLevel(logging.WARNING)  # what the CLI sets outside verbose mode
+def test_a_fire_record_prints_once_with_a_utc_timestamp(loggers, root_handler, capsys):
+    lionagi, _ = loggers
+    lionagi.setLevel(logging.WARNING)  # what the CLI sets outside verbose mode
     with daemon_log_handler():
         _fire()
-    lines = _fire_lines(capsys.readouterr().err)
+    lines = _lines(capsys.readouterr().err)
     assert len(lines) == 1, lines
     assert LINE.match(lines[0]), lines[0]
 
 
 @pytest.mark.skipif(not hasattr(time, "tzset"), reason="no time.tzset")
-def test_the_timestamp_is_utc_whatever_the_local_zone(lionagi_logger, capsys, monkeypatch):
+def test_the_timestamp_is_utc_whatever_the_local_zone(loggers, capsys, monkeypatch):
     monkeypatch.setenv("TZ", "Asia/Kathmandu")  # UTC+05:45: a local-time stamp is far off
     time.tzset()
     try:
@@ -71,40 +85,85 @@ def test_the_timestamp_is_utc_whatever_the_local_zone(lionagi_logger, capsys, mo
     finally:
         monkeypatch.undo()
         time.tzset()
-    [line] = _fire_lines(capsys.readouterr().err)
+    [line] = _lines(capsys.readouterr().err)
     stamp = calendar.timegm(time.strptime(line.split(".", 1)[0], "%Y-%m-%dT%H:%M:%S"))
     assert abs(stamp - time.time()) < 120, line
 
 
-def test_serving_ends_with_the_logger_as_it_was(lionagi_logger, capsys):
-    lionagi_logger.setLevel(logging.WARNING)
-    lionagi_logger.propagate = True
-    handlers = list(lionagi_logger.handlers)
+def test_a_stream_swapped_after_serving_starts_receives_the_record(loggers, capsys, monkeypatch):
     with daemon_log_handler():
-        pass
-    assert lionagi_logger.level == logging.WARNING
-    assert lionagi_logger.propagate is True
-    assert lionagi_logger.handlers == handlers
+        swapped = io.StringIO()
+        monkeypatch.setattr(sys, "stderr", swapped)
+        _fire()
+    assert len(_lines(swapped.getvalue())) == 1, swapped.getvalue()
+    assert _lines(capsys.readouterr().err) == []
+
+
+def test_serving_ends_with_the_logger_as_it_was(loggers, capsys):
+    lionagi, scheduler = loggers
+    lionagi.setLevel(logging.WARNING)
+    scheduler.setLevel(logging.NOTSET)
+    scheduler.propagate = True
+    handlers = list(scheduler.handlers)
+    with daemon_log_handler():
+        assert scheduler.level == logging.INFO
+        assert scheduler.propagate is False
+    assert scheduler.level == logging.NOTSET
+    assert scheduler.propagate is True
+    assert scheduler.handlers == handlers
     _fire()
-    assert _fire_lines(capsys.readouterr().err) == []
+    assert _lines(capsys.readouterr().err) == []
 
 
-def test_a_debug_level_is_kept_while_serving(lionagi_logger):
-    lionagi_logger.setLevel(logging.DEBUG)
+def test_a_debug_level_is_kept_and_its_records_print(loggers, capsys):
+    lionagi, scheduler = loggers
+    lionagi.setLevel(logging.DEBUG)
+    scheduler.setLevel(logging.NOTSET)
     with daemon_log_handler():
-        assert lionagi_logger.level == logging.DEBUG
-    assert lionagi_logger.level == logging.DEBUG
+        assert scheduler.getEffectiveLevel() == logging.DEBUG
+        _fire(logging.DEBUG, "Spawning: li agent")
+    assert scheduler.level == logging.NOTSET
+    [line] = _lines(capsys.readouterr().err, "Spawning: li agent")
+    assert " DEBUG:lionagi.studio.scheduler.engine:" in line, line
 
 
-def test_python_m_lionagi_studio_serves_inside_the_handler(
-    lionagi_logger, root_handler, capsys, monkeypatch
-):
-    import runpy
+def test_a_nested_entry_reuses_the_handler_and_the_outer_exit_restores(loggers, capsys):
+    _, scheduler = loggers
+    handlers = list(scheduler.handlers)
+    with daemon_log_handler() as outer:
+        with daemon_log_handler() as inner:
+            assert inner is outer
+            _fire()
+        assert outer in scheduler.handlers
+        assert scheduler.propagate is False
+        _fire()
+    assert scheduler.handlers == handlers
+    assert len(_lines(capsys.readouterr().err)) == 2
 
-    import uvicorn
 
-    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: _fire())
-    lionagi_logger.setLevel(logging.WARNING)
-    runpy.run_module("lionagi.studio", run_name="__main__")
-    lines = _fire_lines(capsys.readouterr().err)
-    assert len(lines) == 1 and LINE.match(lines[0]), lines
+def test_records_outside_the_scheduler_are_left_to_the_root_handlers(loggers, root_handler, capsys):
+    lionagi, _ = loggers
+    lionagi.setLevel(logging.INFO)
+    message = "Studio route registered"
+    with daemon_log_handler():
+        assert lionagi.propagate is True
+        logging.getLogger("lionagi.studio.app").info(message)
+    # Printed once, by the root handler in its own format, never by the daemon's handler.
+    assert _lines(capsys.readouterr().err, message) == [message]
+
+
+@pytest.mark.asyncio
+async def test_a_spawn_prints_none_of_its_arguments_while_serving(loggers, capsys, tmp_path):
+    from lionagi.studio.scheduler.subprocess import spawn_and_wait
+
+    child = tmp_path / "quiet-child"
+    child.write_text("#!/bin/sh\nexit 0\n")
+    child.chmod(child.stat().st_mode | stat.S_IXUSR)
+    prompt = "Review the nightly diff\nsecond line of the prompt"
+    with daemon_log_handler():
+        exit_code, _ = await spawn_and_wait([str(child), prompt], "inv-quiet", deadline_seconds=30)
+    assert exit_code == 0
+    err = capsys.readouterr().err
+    # The same run's exit line printed, so the handler was live while the arguments were not.
+    assert "INFO:lionagi.studio.scheduler.subprocess:Process exited with code 0" in err, err
+    assert "nightly diff" not in err and "second line" not in err, err

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -630,3 +631,45 @@ class TestCLIHostWiring:
             "_start_local must overwrite a stale LIONAGI_STUDIO_HOST with the "
             "actual resolved bind host before uvicorn.run"
         )
+
+
+def test_the_lifespan_prints_a_schedule_firing_however_the_app_is_served(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``uvicorn lionagi.studio.app:app`` (the container image's command) runs no CLI code, only
+    the lifespan; a schedule firing inside it prints one timestamped line even with ``lionagi`` at
+    WARNING, and the scheduler logger is as it was once the app stops."""
+    import lionagi.studio.app as app_mod
+    import lionagi.studio.scheduler.engine as engine_mod
+
+    fire = "Firing schedule nightly (run r1, chain_depth=0)"
+
+    async def _start_and_fire() -> None:
+        logging.getLogger("lionagi.studio.scheduler.engine").info(fire)
+
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    app = app_mod.create_app()
+    _neutralize_heavy_lifespan(monkeypatch)
+    monkeypatch.setattr(engine_mod.scheduler, "start", _start_and_fire)
+    lionagi_logger = logging.getLogger("lionagi")
+    scheduler_logger = logging.getLogger("lionagi.studio.scheduler")
+    before = (scheduler_logger.level, scheduler_logger.propagate, list(scheduler_logger.handlers))
+    lionagi_level = lionagi_logger.level
+    lionagi_logger.setLevel(logging.WARNING)  # what `li` sets outside verbose mode
+    try:
+        with TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765"):
+            pass
+        after = (
+            scheduler_logger.level,
+            scheduler_logger.propagate,
+            list(scheduler_logger.handlers),
+        )
+    finally:
+        lionagi_logger.setLevel(lionagi_level)
+    assert after == before
+    lines = [line for line in capsys.readouterr().err.splitlines() if fire in line]
+    assert len(lines) == 1, lines
+    assert re.match(
+        r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z INFO:lionagi\.studio\.scheduler\.engine:",
+        lines[0],
+    ), lines[0]

@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""The Studio daemon's own log lines: lionagi's INFO records on stderr while the server runs."""
+"""The Studio daemon's own log lines: the scheduler's INFO records on stderr while the app serves."""
 
 from __future__ import annotations
 
@@ -11,9 +11,10 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-__all__ = ("DAEMON_LOG_FORMAT", "daemon_log_handler")
+__all__ = ("DAEMON_LOG_FORMAT", "SCHEDULER_LOGGER", "daemon_log_handler")
 
 DAEMON_LOG_FORMAT = "%(asctime)s.%(msecs)03dZ %(levelname)s:%(name)s:%(message)s"
+SCHEDULER_LOGGER = "lionagi.studio.scheduler"
 _DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
 
 
@@ -31,17 +32,25 @@ class _StderrHandler(logging.StreamHandler):
 
 @contextmanager
 def daemon_log_handler() -> Iterator[logging.Handler]:
-    """Print the ``lionagi`` logger's INFO and above to stderr while the daemon serves.
+    """Print the scheduler's INFO and above to stderr while the app serves.
 
-    Without a handler of its own, the scheduler's INFO records (``Firing schedule ...``) reach only
-    Python's last-resort handler, which prints WARNING and above, so a daemon firing schedules
-    normally logs nothing about it. The CLI also sets the ``lionagi`` level to WARNING outside
-    verbose mode; serving lifts it to INFO. ``propagate`` is off while serving, so a root handler
-    installed by some import does not print each record a second time. The handler, level and
-    ``propagate`` are restored when the server stops. A level already at INFO or below (DEBUG) is
-    kept. Uvicorn's loggers are not touched.
+    The app's lifespan enters this, so every way of serving gets it: ``li studio``,
+    ``python -m lionagi.studio`` and ``uvicorn lionagi.studio.app:app``. Without it the scheduler's
+    INFO records (``Firing schedule ...``) reach only Python's last-resort handler, which prints
+    WARNING and above, and ``li`` also sets the ``lionagi`` logger to WARNING outside verbose mode.
+
+    Only the ``lionagi.studio.scheduler`` logger changes. Its level is lifted to INFO when it would
+    drop INFO; a DEBUG level is kept. ``propagate`` is off while serving, so a root handler some
+    import installed does not print each line a second time; root handlers therefore do not see
+    scheduler records while the app serves, and a handler meant to is added to
+    ``lionagi.studio.scheduler`` itself. An entry while another is active reuses its handler and
+    changes nothing; the outermost exit restores the handler, level and ``propagate``.
     """
-    logger = logging.getLogger("lionagi")
+    logger = logging.getLogger(SCHEDULER_LOGGER)
+    for existing in logger.handlers:
+        if isinstance(existing, _StderrHandler):
+            yield existing
+            return
     handler = _StderrHandler()
     formatter = logging.Formatter(DAEMON_LOG_FORMAT, datefmt=_DATE_FORMAT)
     formatter.converter = time.gmtime
