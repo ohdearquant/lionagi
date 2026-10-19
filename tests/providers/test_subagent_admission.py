@@ -14,6 +14,7 @@ import sys
 import textwrap
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import anyio
 import pytest
@@ -698,3 +699,76 @@ async def test_a_recorded_holder_is_not_read_again(home, monkeypatch):
     finally:
         first.release()
     assert reads == ["all"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("cap", "reads_expected"), [(1, 1), (2, 1 + admission._CONTENTION_RETRIES)]
+)
+async def test_a_clearing_holder_is_read_again_only_while_the_recorded_holders_leave_room(
+    home, monkeypatch, cap, reads_expected
+):
+    """Wait 0. One holder is recorded and one is between clearing and unlocking. At a cap
+    of 1 the recorded holder alone fills the pool, so the clearing one freeing its slot
+    admits nothing and the pool is not read again; at a cap of 2 it would admit."""
+    env = {"LIONAGI_MAX_SUBAGENTS": str(cap), "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0"}
+    first = await _admit(env)
+    fd = _lock_outside_admission(_pools(home) / "all" / "1.lock")
+    reads = []
+    real_read_pool = admission._read_pool
+
+    def _counted(pool_dir):
+        result = real_read_pool(pool_dir)
+        reads.append((len(result[0]), result[2]))
+        return result
+
+    monkeypatch.setattr(admission, "_read_pool", _counted)
+    try:
+        with pytest.raises(SubagentAdmissionRefusedError, match="waited 0s"):
+            await _admit(env)
+    finally:
+        os.close(fd)
+        first.release()
+    assert reads == [(2, 1)] * reads_expected
+
+
+@pytest.mark.asyncio
+async def test_each_wait_gives_a_clearing_holder_met_after_it_its_own_quick_rereads(
+    home, monkeypatch
+):
+    """A clearing holder that stays locked uses up the quick re-reads, then the
+    admission waits. The holder it meets after that wait is read again as many times,
+    and the second wait frees it."""
+    monkeypatch.setattr(admission, "_POLL_SECONDS", 1.0)
+    env = {"LIONAGI_MAX_SUBAGENTS": "2", "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "60"}
+    first = await _admit(env)
+    held = [_lock_outside_admission(_pools(home) / "all" / "1.lock")]
+    reads = []
+    waits = []
+    real_read_pool = admission._read_pool
+
+    def _counted(pool_dir):
+        reads.append(pool_dir.name)
+        return real_read_pool(pool_dir)
+
+    async def _sleep(seconds):
+        # Only the wait between polls is this long; a quick re-read sleeps milliseconds.
+        if seconds >= 0.5:
+            waits.append(len(reads))
+            if len(waits) == 2:
+                os.close(held.pop())
+        await anyio.sleep(0)
+
+    monkeypatch.setattr(admission, "_read_pool", _counted)
+    monkeypatch.setattr(admission, "anyio", SimpleNamespace(sleep=_sleep))
+    try:
+        lease = await _admit(env)
+    finally:
+        for leftover in held:
+            os.close(leftover)
+        first.release()
+    assert len(lease.slots) == 1
+    lease.release()
+    per_wait = 1 + admission._CONTENTION_RETRIES
+    assert waits == [per_wait, 2 * per_wait]
+    assert len(reads) == 2 * per_wait + 1

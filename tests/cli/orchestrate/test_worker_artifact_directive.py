@@ -686,3 +686,88 @@ def test_a_genuinely_absent_directory_is_still_missing(tmp_path):
     entries = collect_worker_artifacts(_env_with_dirs({"a": tmp_path / "never-created"}))
     assert entries[0]["status"] == "missing"
     assert "does not exist" in entries[0]["error"]
+
+
+async def _spawned_branch_kwargs(tmp_path, monkeypatch, workload: str) -> dict:
+    """Run a reactively spawned codex branch through the setup `_execute_dag` hands the
+    DAG runner, and return the request kwargs it leaves on the branch."""
+    import lionagi.engines as engines_mod
+    from lionagi import Branch, iModel
+    from lionagi.cli.orchestrate import flow as flow_mod
+
+    class _Captured(Exception):
+        pass
+
+    captured: dict = {}
+
+    class _Run:
+        async def run_dag(self, *args, **kwargs):
+            captured["setup"] = kwargs["spawn_branch_setup"]
+            raise _Captured
+
+    class _Engine:
+        def new_run(self, session=None):
+            return _Run()
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(engines_mod, "PlanningEngine", _Engine)
+    monkeypatch.setattr(flow_mod, "_persist_session_phase", _noop)
+    monkeypatch.setattr(flow_mod, "_persist_control_poller_state_bounded", _noop)
+    monkeypatch.setattr(flow_mod, "_hand_mcp_servers", lambda *a, **k: None)
+    env = SimpleNamespace(
+        run=SimpleNamespace(agent_artifact_dir=lambda aid: tmp_path / "artifacts" / aid),
+        session=SimpleNamespace(branches=[], observe=lambda *a, **k: None),
+        builder=SimpleNamespace(get_graph=lambda: None),
+        worker_artifact_dirs={},
+        cwd=str(tmp_path),
+        verbose=False,
+        _live_persist=None,
+        team_data=None,
+        exchange=None,
+    )
+    dag_state = SimpleNamespace(
+        reactive=True,
+        spawn_roles=None,
+        node_ids={},
+        known_nodes=set(),
+        deps_by_node={},
+        worker_models={},
+        role_base={},
+        op_segments=[],
+        max_spawn=5,
+    )
+    plan = SimpleNamespace(assignments=[], agent_ids=[])
+    with pytest.raises(_Captured):
+        await flow_mod._execute_dag(env, plan, dag_state, max_concurrent=1, max_ops=5)
+
+    chat_model = iModel(provider="codex", model="gpt-5.5")
+    _add_workload_kwarg(chat_model.endpoint.config.kwargs, "codex", workload)
+    branch = Branch(
+        system=bare_worker_system(artifact_dir=tmp_path / "artifacts" / "emitter"),
+        chat_model=chat_model,
+    )
+    captured["setup"](SimpleNamespace(metadata={"spawn_id": "spawn-1"}), branch)
+    kwargs = branch.chat_model.endpoint.config.kwargs
+    assert kwargs["repo"] == tmp_path / "artifacts" / "spawn-1"
+    return kwargs
+
+
+@pytest.mark.asyncio
+async def test_a_spawned_light_codex_worker_gets_no_extra_writable_root_and_starts(
+    tmp_path, monkeypatch
+):
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    kwargs = await _spawned_branch_kwargs(tmp_path, monkeypatch, "light")
+
+    assert kwargs.get("add_dir", []) == []
+    CodexCodeRequest(prompt="work", **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_a_spawned_heavy_codex_worker_keeps_the_project_root(tmp_path, monkeypatch):
+    kwargs = await _spawned_branch_kwargs(tmp_path, monkeypatch, DEFAULT_WORKLOAD)
+
+    assert kwargs["add_dir"] == [str(tmp_path.resolve())]

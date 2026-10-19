@@ -106,7 +106,7 @@ that statement: the Claude Code adapter yields only its terminal `result` usage,
 whenever the session ran more than one request. The run attaches that metadata to an
 `AssistantResponse` only when the turn produced text (`lionagi/operations/run/run.py:544-563`),
 although it separately accumulates usage and passes it to `API_POST_CALL` even without a text
-response (`lionagi/operations/run/run.py:715-720,803-811`). The Gemini CLI path reports one
+response (`lionagi/operations/run/run.py:715-720,825-833`). The Gemini CLI path reports one
 summary per invocation. Landing step 2 makes the Claude Code adapter report the input count of the
 session's last request from that request's own event, and the run keep it when the turn produced no
 text; a Gemini CLI summary for more than one turn, or one with no turn count, counts as a total.

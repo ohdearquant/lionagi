@@ -1442,3 +1442,34 @@ def test_one_refused_op_carries_no_reference():
     answer = call(ops=[spawn_op("agent.submit", {"nope": 1})])
     assert "schema" in answer["ops"][0]["error"]
     assert "schema_ref" not in answer["ops"][0]["error"]
+
+
+# ── an agent lionagi started cannot start another through this server ───────
+
+
+@pytest.mark.parametrize("verb", ["agent.submit", "flow.submit", "fanout.submit"])
+def test_a_spawn_inside_an_agent_is_refused_before_any_job_exists(verb, monkeypatch, tmp_path):
+    # Refused in the server, not left to the detached run: a server that exits first
+    # would leave that run outside the agent's process tree.
+    import lionagi.cli._providers as providers
+    from lionagi.mcp import config
+    from lionagi.providers import _subagent_admission
+
+    monkeypatch.setattr(providers, "load_agent_profile", lambda name: None)
+    monkeypatch.setattr(_subagent_admission, "_INHERITED_AGENT_DEPTH", 1)
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(config, "li_command", lambda: ["true"])
+
+    def no_spawn(*args, **kwargs):
+        raise AssertionError("a run was started")
+
+    monkeypatch.setattr(jobs.subprocess, "Popen", no_spawn)
+
+    answer = call(ops=[spawn_op(verb, {"query": ["m", "do it"]})])
+
+    op = answer["ops"][0]
+    assert op["ok"] is False
+    assert op["error"]["kind"] == "conflict"
+    assert "nested agent refused" in op["error"]["message"]
+    assert not (tmp_path / "jobs").exists() or not any((tmp_path / "jobs").iterdir())

@@ -180,13 +180,17 @@ worker's process group has ended, or when that process exits however it exits. A
 recorded worker is still running counts as held even if the process that took it is gone.
 
 An agent lionagi started cannot start another agent through lionagi. Every CLI worker starts
-with `LIONAGI_AGENT_DEPTH` set (to `1` unless its launch already set it), and `li agent`,
-`li o flow`, `li o fanout` and every CLI worker spawn refuse at once, before taking a slot, in a
-process that inherited a depth of `1` or more or that runs under a process started with one. The
-second check covers tools an agent starts with an environment of its own choosing, such as the MCP
-servers codex starts with only the variables its config names. The refusal is
-`NestedAgentRefusedError`, a provider error that is not retryable, and `li agent` and `li o` exit
-`1` with one line naming the process that carries the depth. A session nobody started through
+with `LIONAGI_AGENT_DEPTH` set over any value it would inherit: `1`, or `0` for a `li agent`
+launch of a profile named in `LIONAGI_SEAT_PROFILES`. `li agent`, `li o flow`, `li o fanout` and
+every CLI worker spawn refuse at once, before taking a slot, in a process that inherited a depth
+of `1` or more or that runs under a process started with one. The second check covers tools an
+agent starts with an environment of its own choosing, such as the MCP servers codex starts with
+only the variables its config names. `li o flow --background` and the lion MCP server's agent,
+flow and fan-out submits check in the process that is asked, before anything detaches: a detached
+run checks again, but once its launcher has exited it no longer runs under the agent that asked.
+The refusal is `NestedAgentRefusedError`, a provider error that is not retryable; `li agent` and
+`li o` exit `1` with one line naming the process that carries the depth, and the MCP server
+answers with a `conflict` error and starts no job. A session nobody started through
 lionagi (a Claude Code or Codex session opened by hand) carries no depth and starts agents as
 before, and so does an agent launched with a profile named in `LIONAGI_SEAT_PROFILES`, which
 starts at depth `0`. The caps bound how many agents run; this bounds how deep they start each

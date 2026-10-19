@@ -102,8 +102,8 @@ HEAVY_CAP_ENV = "LIONAGI_MAX_SUBAGENTS_HEAVY"
 ADMIT_WAIT_ENV = "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS"
 DEFAULT_ADMIT_WAIT_SECONDS = 600.0
 # How many lionagi-started agents deep a process runs. `li agent` and the flow, fan-out and
-# play workers stamp it on what they start, and every CLI spawn gives a child that has none
-# a depth of 1; a process whose own environment carries 1 or more is inside such an agent.
+# play workers stamp it, and every CLI spawn sets it on the child over any inherited value: 1,
+# or 0 for a profile in LIONAGI_SEAT_PROFILES. A process carrying 1 or more is inside an agent.
 AGENT_DEPTH_ENV = "LIONAGI_AGENT_DEPTH"
 
 
@@ -586,7 +586,7 @@ async def admit_subagent(
         lease = SubagentLease()
         locks: list[int] = []
         full: tuple[str, str, int, int, list[dict[str, Any]]] | None = None
-        # The pool was full only for a holder between clearing its record and unlocking.
+        # The pool was full only because of holders between clearing a record and unlocking.
         clearing = False
         try:
             counted: list[tuple[str, str, Path, int, int, list[dict[str, Any]], set[str]]] = []
@@ -602,7 +602,8 @@ async def admit_subagent(
                 effective = _effective_cap(cap, held)
                 if len(held) >= effective:
                     full = (pool, variable, cap, effective, held)
-                    clearing = unrecorded > 0
+                    # Worth a quick look again only if the recorded holders leave room.
+                    clearing = unrecorded > 0 and len(held) - unrecorded < effective
                     break
                 counted.append((pool, variable, pool_dir, cap, effective, held, free))
             if full is None:
@@ -655,6 +656,8 @@ async def admit_subagent(
         # Jittered, so two processes that collide on the last slot do not retry in step.
         jitter = random.uniform(0.75, 1.25)  # noqa: S311 (retry spacing, not a secret)
         await anyio.sleep(min(remaining, _POLL_SECONDS * jitter))
+        # A holder met after this sleep is a new one, with its own quick re-reads.
+        quick_rereads = 0
 
 
 def subagent_admission_status(environ: Mapping[str, str] | None = None) -> dict[str, Any]:

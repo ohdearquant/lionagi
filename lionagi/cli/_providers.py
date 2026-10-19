@@ -100,6 +100,13 @@ def _add_workload_kwarg(extra: dict, provider: str, workload: str) -> None:
         extra["workload"] = workload
 
 
+def _is_light_codex(imodel: iModel) -> bool:
+    # A light codex worker writes only its working directory and the artifact directory
+    # the run gives it, and codex refuses it any other writable root.
+    config = imodel.endpoint.config
+    return config.provider == "codex" and config.kwargs.get("workload") == "light"
+
+
 def build_imodel_from_spec(
     spec: str,
     *,

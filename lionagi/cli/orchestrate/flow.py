@@ -30,7 +30,7 @@ from lionagi.tools.communication.messenger import LionMessenger
 from .._agent_depth import stamp_worker_depth
 from .._logging import progress
 from .._logging import warn as _warn
-from .._providers import parse_model_spec
+from .._providers import _is_light_codex, parse_model_spec
 from .._util import classify_exception
 from ._checkpoint import CheckpointWriter, FlowResumeError, resolve_checkpoint_target
 from ._common import (
@@ -2179,7 +2179,7 @@ async def _execute_dag(
         kwargs["repo"] = artifact_dir
         project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
         add_dir = kwargs.setdefault("add_dir", [])
-        if project_root not in add_dir:
+        if not _is_light_codex(chat_model) and project_root not in add_dir:
             add_dir.append(project_root)
 
     t_exec = time.monotonic()

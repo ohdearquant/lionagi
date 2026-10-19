@@ -20,6 +20,7 @@ from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.libs.path_safety import validate_path_component as validate_path_component
 from lionagi.ln.concurrency import is_cancelled, run_async
 from lionagi.providers._provider_errors import NestedAgentRefusedError
+from lionagi.providers._subagent_admission import refuse_nested_agent
 
 from .._logging import hint, log_error
 from .._providers import add_common_cli_args
@@ -1207,6 +1208,13 @@ def run_orchestrate(args: argparse.Namespace) -> int:
             return 1
 
         if background:
+            # The detached run checks again, but if this process exits first, that run has left
+            # the process tree that shows it runs inside an agent (ADR-0133 D7).
+            try:
+                refuse_nested_agent()
+            except NestedAgentRefusedError as exc:
+                log_error(str(exc))
+                return EXIT_CODE_BY_STATUS["failed"]
             if getattr(args, "invocation", None) is not None:
                 _unused, validation_rc = _run_orch_command(
                     _validate_flow_invocation(args.invocation),

@@ -328,6 +328,12 @@ class NestedAgentRefusedError(ProviderError):   # lionagi/providers/_provider_er
   admission, so a nested agent never waits for a slot an ancestor holds. `li agent` (API-model
   legs included), `li o flow` and `li o fanout` check before they stamp their own depth
   and before any run exists.
+- **Checked where the request is made, before anything detaches.** `li o flow --background` and
+  the lion MCP server's `agent.submit`, `flow.submit` and `fanout.submit` check in the process
+  that was asked. The detached run checks again, but when the depth reached the asking process
+  only through its ancestry, a launcher that exits first leaves the run outside that ancestry.
+  The MCP server answers with the ADR-0106 kind `conflict` (well-formed, refused for where the
+  caller runs) and starts no job.
 - **The refusal is final from where it was made.** `NestedAgentRefusedError` is a provider error
   with `retryable = False`, not an admission refusal; `li agent` and `li o` print it on one line,
   naming the process that carries the depth, and exit `1`, not `75`.

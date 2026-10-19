@@ -18,6 +18,7 @@ import pytest
 
 from lionagi.cli import _agent_depth as depth_mod
 from lionagi.cli._agent_depth import DEPTH_ENV
+from lionagi.ln._proc import _PROCESS_GROUP_MARKER
 from lionagi.providers import _subagent_admission as admission
 from lionagi.providers._provider_errors import NestedAgentRefusedError
 
@@ -152,6 +153,8 @@ async def test_ndjson_from_cli_inherits_stamped_depth(monkeypatch):
 
     from lionagi.providers._cli_subprocess import ndjson_from_cli
 
+    # As a run inside an agent inherits it from that agent's process group.
+    monkeypatch.setenv(_PROCESS_GROUP_MARKER, "inherited-group-token")
     depth_mod.stamp_agent_depth("implementer")
     assert os.environ[DEPTH_ENV] == "1"
 
@@ -173,8 +176,51 @@ async def test_ndjson_from_cli_inherits_stamped_depth(monkeypatch):
     # Every variable this process holds reaches the child, so anything an
     # endpoint stamps is inherited without further wiring. Compared by name
     # only: the spawn env also carries resolved secrets, and a failure here
-    # must not print their values.
+    # must not print their values. The process-group token is the exception:
+    # each child is handed its own, over one a run inside an agent inherits.
     spawn_env = captured_kwargs["env"]
-    assert not {key for key, value in os.environ.items() if spawn_env.get(key) != value}
+    changed = {key for key, value in os.environ.items() if spawn_env.get(key) != value}
+    assert not changed - {_PROCESS_GROUP_MARKER}
+    assert spawn_env[_PROCESS_GROUP_MARKER] != "inherited-group-token"
     assert spawn_env[DEPTH_ENV] == "1"
     assert captured_kwargs["_depth_at_spawn"] == "1"
+
+
+def _background_flow(monkeypatch, tmp_path) -> tuple[int, list]:
+    import subprocess
+
+    from lionagi.cli.main import main
+
+    monkeypatch.chdir(tmp_path)
+    started: list = []
+
+    class _Proc:
+        pid = 4321
+
+    def fake_popen(argv, **kwargs):
+        started.append((argv, kwargs))
+        return _Proc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    rc = main(["o", "flow", "claude", "do work", "--background", "--save", str(tmp_path / "out")])
+    return rc, started
+
+
+def test_a_background_flow_inside_an_agent_is_refused_before_it_detaches(
+    monkeypatch, tmp_path, capsys
+):
+    # The detached run checks too, but by then this process may have exited and taken the
+    # ancestry that shows the run is inside an agent with it.
+    monkeypatch.setattr(admission, "_INHERITED_AGENT_DEPTH", 1)
+    rc, started = _background_flow(monkeypatch, tmp_path)
+    assert rc == 1
+    assert started == []
+    assert "nested agent refused" in capsys.readouterr().err
+
+
+def test_a_background_flow_outside_any_agent_still_detaches(monkeypatch, tmp_path):
+    rc, started = _background_flow(monkeypatch, tmp_path)
+    assert rc == 0
+    assert len(started) == 1
+    assert started[0][1]["start_new_session"] is True
+    assert DEPTH_ENV not in started[0][1]["env"]
