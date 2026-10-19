@@ -118,6 +118,7 @@ async def test_recent_reads_limit_index_work_and_fetch_only_displayed_error_payl
             columns = ", ".join(schedules._RUN_SUMMARY_FIELDS)
             connection.execute(
                 f"CREATE TEMP VIEW observed_runs AS SELECT {columns},"
+                " trigger_context, chain_parent_id,"
                 " observe_error(error_detail) AS error_detail FROM schedule_runs"
             )
             observed_query = query.replace("schedule_runs", "observed_runs")
@@ -206,11 +207,18 @@ async def test_recent_slice_order_bound_completeness_and_projection(isolated_db,
         f"run-{index:02}" for index in range(count - 1, max(-1, count - 26), -1)
     ]
     for row in summary["runs"]:
-        assert set(row) == set(schedules._RUN_SUMMARY_FIELDS) | {"error_class"}
+        assert set(row) == set(schedules._RUN_SUMMARY_FIELDS) | {
+            "error_class",
+            "scheduled",
+            "missed_fire_at",
+        }
         assert row["error_class"] == "permission"
+        assert row["scheduled"] is False
+        assert row["missed_fire_at"] is None
         assert row["status"] == "failed"
         assert row["chain_depth"] == int(row["id"].split("-")[1]) % 2
     assert "private" not in str(summary)
+    assert "secret" not in str(summary)
 
 
 @pytest.mark.asyncio

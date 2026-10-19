@@ -509,8 +509,8 @@ async def list_schedules(
 #
 # trigger_context and error_detail are content-bearing and are not on it. trigger_context
 # carries whole external event payloads; error_detail carries subprocess stderr and
-# exception text. Neither is a summary fact, so this surface serves a classification of
-# the failure instead of the text that produced it.
+# exception text. This surface derives only scheduled-vs-manual and the intended time
+# of a skipped missed fire from the trigger payload, and classifies failure text.
 _RUN_SUMMARY_FIELDS = (
     "id",
     "schedule_id",
@@ -580,8 +580,41 @@ def _error_class_for(row: dict[str, Any]) -> str | None:
     return _error_class(row.get("error_detail"))
 
 
+def _run_trigger_facts(row: dict[str, Any]) -> dict[str, Any]:
+    """Project two typed trigger facts, keeping all other event payload private."""
+    context = row.get("trigger_context")
+    if isinstance(context, str):
+        try:
+            context = json.loads(context)
+        except json.JSONDecodeError:
+            context = None
+    if not isinstance(context, dict):
+        context = {}
+    scheduled = (
+        context.get("scheduled") is True
+        and not row.get("chain_depth")
+        and not row.get("chain_parent_id")
+    )
+    missed_fire_at = None
+    value = context.get("missed_fire_at")
+    if (
+        row.get("reason_code") == "schedule.skipped.missed_fire"
+        and isinstance(value, int | float)
+        and not isinstance(value, bool)
+    ):
+        try:
+            candidate = float(value)
+        except OverflowError:
+            pass
+        else:
+            if math.isfinite(candidate):
+                missed_fire_at = candidate
+    return {"scheduled": scheduled, "missed_fire_at": missed_fire_at}
+
+
 def _run_summary(row: dict[str, Any]) -> dict[str, Any]:
     summary = {name: row[name] for name in _RUN_SUMMARY_FIELDS if name in row}
+    summary.update(_run_trigger_facts(row))
     summary["error_class"] = _error_class_for(row)
     return summary
 
@@ -613,7 +646,8 @@ def _recent_run_keys_sql(dialect: str) -> str:
             "SELECT recent.value AS id, definition.value AS schedule_id,"
             " occurrence.invocation_id, occurrence.action_kind, occurrence.status,"
             " occurrence.exit_code, occurrence.chain_depth, occurrence.fired_at,"
-            " occurrence.ended_at, occurrence.error_detail"
+            " occurrence.ended_at, occurrence.error_detail,"
+            " occurrence.trigger_context, occurrence.chain_parent_id"
             " FROM json_each(?) AS definition"
             " JOIN json_each((SELECT json_group_array(id) FROM ("
             " SELECT id FROM schedule_runs WHERE schedule_id = definition.value"
@@ -626,7 +660,8 @@ def _recent_run_keys_sql(dialect: str) -> str:
         "SELECT recent.id AS id, definition.value AS schedule_id,"
         " occurrence.invocation_id, occurrence.action_kind, occurrence.status,"
         " occurrence.exit_code, occurrence.chain_depth, occurrence.fired_at,"
-        " occurrence.ended_at, occurrence.error_detail"
+        " occurrence.ended_at, occurrence.error_detail,"
+        " occurrence.trigger_context, occurrence.chain_parent_id"
         " FROM jsonb_array_elements_text(CAST(? AS jsonb)) AS definition(value)"
         " JOIN LATERAL ("
         " SELECT jsonb_agg(ordered.id ORDER BY ordered.fired_at DESC, ordered.id DESC) AS ids"
@@ -669,14 +704,15 @@ _RunBatch = tuple[
 async def _read_run_batch(db: StateDB, schedule_ids: list[str]) -> _RunBatch:
     """Read a set of definitions' occurrence rows and the evidence they project with.
 
-    Up to three set reads, none per run: the bounded key read, then the
-    invocation and session evidence for the displayed rows only. A read failure raises to
-    the caller, which uses it to decide what to attribute the failure to.
+    Bounded set reads, none per run: the key read, any skipped-run reasons, then
+    invocation and session evidence for the displayed rows only. A read failure raises
+    to the caller, which uses it to decide what to attribute the failure to.
     """
     rows = await db.fetch_all(
         _recent_run_keys_sql(db.dialect),
         (json.dumps(schedule_ids), _RECENT_RUN_LIMIT + 1, _RECENT_RUN_LIMIT),
     )
+    rows = await run_view._with_skip_reasons(db, rows)
     grouped: dict[str, list[dict[str, Any]]] = {sid: [] for sid in schedule_ids}
     for row in rows:
         grouped[row["schedule_id"]].append(row)
@@ -854,6 +890,7 @@ def _reported_summary_class(outcome: Any) -> str | None:
 
 def _run_view(row: dict[str, Any]) -> dict[str, Any]:
     view = {name: row[name] for name in _RUN_VIEW_FIELDS if name in row}
+    view.update(_run_trigger_facts(row))
     reason_summary = row.get("reason_summary")
     public_skip_reason = (
         row.get("status") == "skipped"
@@ -878,7 +915,8 @@ def _run_view(row: dict[str, Any]) -> dict[str, Any]:
 # The single-run route is the documented reader of the raw failure text -- the list
 # surfaces serve a classification instead -- which is why error_detail is here and off
 # _RUN_SUMMARY_FIELDS. trigger_context stays private on the list surfaces' reasoning:
-# whole external event payloads, and no client reads it.
+# whole external event payloads stay private; schedule-health readers receive only
+# scheduled-vs-manual and the intended time of a skipped missed fire.
 _RUN_RECORD_FIELDS = _RUN_VIEW_FIELDS + ("error_detail",)
 
 
@@ -896,6 +934,7 @@ def _run_record(row: dict[str, Any]) -> dict[str, Any]:
     projection; absent rather than empty on a run that is itself a child.
     """
     record = {name: row[name] for name in _RUN_RECORD_FIELDS if name in row}
+    record.update(_run_trigger_facts(row))
     record["error_class"] = _error_class_for(row)
     if "outcome" in row:
         record["outcome"] = row["outcome"]

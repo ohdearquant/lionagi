@@ -178,6 +178,8 @@ _DECLARED_RUN_FIELDS = {
     "fired_at",
     "ended_at",
     "error_class",
+    "scheduled",
+    "missed_fire_at",
 }
 # Named one by one rather than left to the allow-list, because each is content-bearing and
 # each was called out by name: trigger_context carries whole external event payloads and
@@ -1000,9 +1002,7 @@ def test_the_single_run_record_serves_no_private_run_column(tmp_path, monkeypatc
 
 
 def test_the_single_run_record_serves_no_trigger_payload(tmp_path, monkeypatch):
-    """trigger_context carries whole external event payloads and no client reads it.
-    Named separately from the sweep because it is the one field this route used to serve
-    that the web client still declared, so dropping it is a client-visible decision."""
+    """Whole external event payloads stay private despite the two derived trigger facts."""
     parent_id, _ = _seed_chained_run_with_private_columns(monkeypatch, tmp_path / "state.db")
 
     resp = _make_client().get(f"/api/schedules/runs/{parent_id}")
