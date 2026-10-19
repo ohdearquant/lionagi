@@ -131,6 +131,19 @@ def test_a_launch_code_belongs_to_the_daemon_it_starts_in_the_same_process(fresh
     assert fresh.redeem_pairing_grant(other, origin=_HOSTED) is None
 
 
+def test_the_page_origin_a_launcher_names_outlives_the_serving_start_but_not_a_reset(fresh):
+    dev = "http://127.0.0.1:3000"
+    fresh.mint_pairing_code(origins=[dev])
+    assert not fresh.is_launch_origin(dev)
+
+    fresh.mint_pairing_code(origins=[dev], for_launch=True)
+    fresh.begin_serving()
+    assert fresh.is_launch_origin(dev)
+
+    fresh.reset_launch_access()
+    assert not fresh.is_launch_origin(dev)
+
+
 # Capabilities
 
 

@@ -346,6 +346,22 @@ def _hosted_launch_url(port: int, code: str) -> str:
     return f"{_HOSTED_URL}/{query}#pair={code}"
 
 
+def _dev_pairing_line(frontend_url: str) -> str:
+    """The link that pairs the dev page at *frontend_url* with the daemon this process starts.
+
+    The code is bound to that page's exact origin, the address Vite reported, so
+    only a page opened at that address can spend it.
+    """
+    from lionagi.studio.launch_access import PAIRING_CODE_TTL_S, mint_pairing_code
+
+    code = mint_pairing_code(origins=[frontend_url], for_launch=True)
+    minutes = int(PAIRING_CODE_TTL_S // 60)
+    return (
+        f"to decide Operator proposals, open this link within {minutes} minutes; "
+        f"it works once: {frontend_url}/#pair={code}"
+    )
+
+
 def _ignore_sigpipe() -> None:
     """Let a write to a peer that already closed raise BrokenPipeError in the daemon.
 
@@ -638,6 +654,7 @@ def _start_local(
             frontend_proc, frontend_url = launched
             if frontend_url:
                 print(f"Lion Studio UI (dev):  {frontend_url}")
+                print(f"  {_dev_pairing_line(frontend_url)}")
             # else: _launch_vite_dev already printed a specific, actionable
             # warning (early exit / stream end / timeout) with captured output.
         print(f"Lion Studio API:       http://{host}:{port}")

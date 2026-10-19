@@ -99,6 +99,11 @@ The default browser origins, `CORS_ORIGINS`, are `http://localhost:5173`,
 `https://lion-studio.khive.ai`. Only a page on one of these origins can redeem
 a pairing code; the first three are local development ports.
 
+`li studio --dev` is the one exception. It prints a one-time pairing link for
+the exact page address Vite reports, and the daemon it starts also lets a page
+on that origin redeem the code, whether or not the origin is in the default
+list.
+
 Set `LIONAGI_STUDIO_AUTH_TOKEN` in the daemon's environment before starting it
 to require `Authorization: Bearer <token>` for API requests and the
 schema/docs endpoints. `/health`, CORS preflight, and the `POST /api/studio/pair`

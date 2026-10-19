@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from ..config import CORS_ORIGINS
 from ..launch_access import (
     DECISION_TOKEN_HEADER,
+    is_launch_origin,
     redeem_pairing_grant,
     revoke_decision_capability,
 )
@@ -61,10 +62,11 @@ async def create_pairing_code_route(request: Request) -> dict[str, object]:
 async def redeem_pairing_code_route(request: Request, body: PairRequest) -> dict[str, str]:
     """Spend a pairing code for the bearer a page on an allowed origin sends, and a
     decision capability bound to that origin."""
-    # Only a page on an origin CORS admits (by default the hosted app) may pair;
-    # any other page that came by a code is refused before the code is spent.
+    # Only a page on an origin CORS admits (by default the hosted app), or on an
+    # origin a launcher in this process named for its page, may pair; any other
+    # page that came by a code is refused before the code is spent.
     origin = request.headers.get("origin")
-    if origin is None or origin not in CORS_ORIGINS:
+    if origin is None or (origin not in CORS_ORIGINS and not is_launch_origin(origin)):
         raise HTTPException(
             status_code=403,
             detail="pairing is open only to a page on an origin this daemon allows",

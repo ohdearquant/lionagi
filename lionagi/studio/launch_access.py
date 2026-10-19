@@ -44,6 +44,7 @@ __all__ = (
     "PAIRING_REDEEM_PATH",
     "begin_serving",
     "daemon_epoch",
+    "is_launch_origin",
     "launch_bearer",
     "mint_decision_capability",
     "mint_pairing_code",
@@ -80,6 +81,11 @@ _epoch = _new_epoch()
 # They belong to the daemon starting now, so serving begins by carrying them
 # into the new epoch instead of clearing them.
 _launch_codes: set[str] = set()
+# The page origins a launcher in this process named for its codes. The pairing
+# route admits a page on one of them as it admits one on an origin CORS allows:
+# a launcher that serves its own page (``li studio --dev``) names that page's
+# exact origin, which need not be one CORS allows.
+_launch_origins: set[str] = set()
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +132,7 @@ def reset_launch_access() -> None:
         _codes.clear()
         _capabilities.clear()
         _launch_codes.clear()
+        _launch_origins.clear()
         _epoch = _new_epoch()
 
 
@@ -179,7 +186,15 @@ def mint_pairing_code(*, origins: Iterable[str] | None = None, for_launch: bool 
         _codes[code] = (now + PAIRING_CODE_TTL_S, bound)
         if for_launch:
             _launch_codes.add(code)
+            if origins is not None:
+                _launch_origins.update(bound)
         return code
+
+
+def is_launch_origin(origin: str) -> bool:
+    """Whether a launcher in this process named *origin* for a code it minted."""
+    with _lock:
+        return origin in _launch_origins
 
 
 def _normalize_origins(origins: Iterable[str] | None) -> tuple[str, ...]:

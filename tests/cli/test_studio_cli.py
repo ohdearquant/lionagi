@@ -881,6 +881,51 @@ def test_start_local_propagates_selected_backend_to_vite(tmp_path, monkeypatch):
     )
 
 
+class _ViteProc:
+    def terminate(self):
+        pass
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def _dev_launch(tmp_path, monkeypatch, frontend_url):
+    import lionagi.studio.cli as studio_mod
+
+    monkeypatch.setattr(studio_mod.shutil, "which", lambda name: "/usr/bin/node")
+    monkeypatch.setattr(studio_mod, "_ensure_apps_importable", lambda: True)
+    with (
+        patch("uvicorn.run"),
+        patch.object(studio_mod, "_launch_vite_dev", return_value=(_ViteProc(), frontend_url)),
+    ):
+        return studio_mod._start_local("127.0.0.1", 8765, 3000, tmp_path, dev_mode=True)
+
+
+def test_a_dev_launch_prints_a_link_that_pairs_only_the_page_vite_reported(
+    tmp_path, monkeypatch, capsys, fresh_launch
+):
+    page = "http://127.0.0.1:3000"
+    assert _dev_launch(tmp_path, monkeypatch, page) == 0
+
+    line = next(text for text in capsys.readouterr().out.splitlines() if "#pair=" in text)
+    assert f"{page}/#pair=" in line
+    assert "it works once" in line
+    code = line.split("#pair=", 1)[1]
+    assert fresh_launch.is_launch_origin(page)
+    assert fresh_launch.redeem_pairing_grant(code, origin="http://localhost:3000") is None
+    assert fresh_launch.redeem_pairing_grant(code, origin=page) is not None
+
+
+def test_a_dev_launch_whose_page_address_is_unknown_mints_no_code(
+    tmp_path, monkeypatch, capsys, fresh_launch
+):
+    assert _dev_launch(tmp_path, monkeypatch, None) == 0
+
+    assert "#pair=" not in capsys.readouterr().out
+    assert fresh_launch._codes == {}
+    assert not fresh_launch._launch_origins
+
+
 def test_launch_vite_dev_passes_selected_backend_to_proxy_env(tmp_path, monkeypatch):
     """The backend selected by ``li studio --dev`` must become Vite's proxy target."""
     import lionagi.studio.cli as studio_mod
@@ -1170,6 +1215,8 @@ def fresh_launch(monkeypatch):
 
     monkeypatch.setattr(launch_access, "_bearer", None)
     monkeypatch.setattr(launch_access, "_codes", {})
+    monkeypatch.setattr(launch_access, "_launch_codes", set())
+    monkeypatch.setattr(launch_access, "_launch_origins", set())
     return launch_access
 
 

@@ -18,8 +18,10 @@ daemon's own OS user can open, and that no HTTP request can obtain.
 
 Landing steps 1, 2 and 2b are in: the decision-capability store and the decision rows that record
 its principal, minting at launch, the retired HTTP mint route, redemption returning the capability,
-the page's use of it, and the same-user reconnect channel the CLI pairs over. Step 3's remaining
-launch adapters and step 4's principal check and refusals are not; decisions are still admitted under
+the page's use of it, and the same-user reconnect channel the CLI pairs over. Of step 3, `--dev`
+delivers a code bound to the page origin Vite reports, and the pairing route admits an origin a
+launcher in the same process named; `--no-frontend` and the desktop shell do not deliver one yet.
+Step 4's principal check and refusals are not in; decisions are still admitted under
 contract version 1, every decision request accepted today is still accepted, and a request without
 the capability is recorded unattributed.
 

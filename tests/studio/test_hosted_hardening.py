@@ -551,6 +551,8 @@ class TestAuthenticatedIdentity:
 
 
 _HOSTED = "https://lion-studio.khive.ai"
+# A dev page's address as Vite reports it; not one of the default CORS origins.
+_DEV_PAGE = "http://127.0.0.1:3000"
 _LOOPBACK = {"Host": "127.0.0.1:8765"}
 # No route answers here, so an accepted request is a 404 and a refused one is a 401.
 _UNROUTED = "/api/no-such-route"
@@ -856,6 +858,7 @@ def fresh_launch(monkeypatch):
     monkeypatch.setattr(launch_access, "_codes", {})
     monkeypatch.setattr(launch_access, "_capabilities", {}, raising=False)
     monkeypatch.setattr(launch_access, "_launch_codes", set(), raising=False)
+    monkeypatch.setattr(launch_access, "_launch_origins", set())
     return launch_access
 
 
@@ -932,6 +935,31 @@ class TestPairing:
         refused = self._pair(client, code, origin=origin)
 
         assert refused.status_code == 403
+        assert self._pair(client, code).status_code == 200
+
+    def test_a_page_on_the_origin_a_launcher_named_pairs_and_its_neighbour_does_not(
+        self, make_client, fresh_launch
+    ):
+        """`li studio --dev` names its page's exact origin, which CORS need not allow."""
+        client = make_client()
+        code = fresh_launch.mint_pairing_code(origins=[_DEV_PAGE], for_launch=True)
+
+        refused = self._pair(client, code, origin="http://127.0.0.1:3001")
+        paired = self._pair(client, code, origin=_DEV_PAGE)
+
+        assert refused.status_code == 403
+        assert paired.status_code == 200
+        principal = fresh_launch.resolve_decision_capability(
+            paired.json()["decision_token"], origin=_DEV_PAGE
+        )
+        assert principal is not None
+        assert principal.origin == _DEV_PAGE
+
+    def test_a_code_minted_for_no_named_origin_admits_no_new_page(self, make_client, fresh_launch):
+        client = make_client()
+        code = fresh_launch.mint_pairing_code(for_launch=True)
+
+        assert self._pair(client, code, origin=_DEV_PAGE).status_code == 403
         assert self._pair(client, code).status_code == 200
 
     def test_the_launch_bearer_is_not_in_the_environment(self, make_client, fresh_launch):
