@@ -4,7 +4,6 @@ import logging
 from functools import partial
 from typing import Annotated, Any
 
-import anyio
 import yaml
 from fastapi import Body, HTTPException
 
@@ -12,6 +11,7 @@ from lionagi._paths import LIONAGI_HOME
 from lionagi.casts.pattern import list_modes as _list_modes
 from lionagi.casts.pattern import list_roles as _list_roles
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
+from lionagi.ln.concurrency import run_sync
 
 from ..registry import studio_route
 from ._path_safety import public_path, safe_path_join, validate_name_component
@@ -385,7 +385,7 @@ def update_agent(name: str, data: dict[str, Any]) -> dict[str, Any] | None:
 
 @studio_route("/agents/", method="GET", area="agents", name="list_agents")
 async def list_agents_route() -> dict[str, Any]:
-    agents = await anyio.to_thread.run_sync(list_agents)
+    agents = await run_sync(list_agents)
     redact = demo_mode_enabled()
     agents = [project_agent_fields(a, redact=redact) for a in agents]
     return {"agents": agents}
@@ -393,7 +393,7 @@ async def list_agents_route() -> dict[str, Any]:
 
 @studio_route("/agents/{name}", method="GET", area="agents", name="get_agent")
 async def get_agent_route(name: str) -> dict[str, Any]:
-    agent = await anyio.to_thread.run_sync(partial(get_agent, name))
+    agent = await run_sync(partial(get_agent, name))
     if agent is None:
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
     return project_agent_fields(agent, redact=demo_mode_enabled())
@@ -404,7 +404,7 @@ async def create_agent_route(
     name: str, body: Annotated[dict[str, Any], Body(default_factory=dict)]
 ) -> dict[str, Any]:
     try:
-        created = await anyio.to_thread.run_sync(partial(create_agent, name, body))
+        created = await run_sync(partial(create_agent, name, body))
     except AgentExistsError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
@@ -417,7 +417,7 @@ async def update_agent_route(
     name: str, body: Annotated[dict[str, Any], Body(...)]
 ) -> dict[str, Any]:
     try:
-        updated = await anyio.to_thread.run_sync(partial(update_agent, name, body))
+        updated = await run_sync(partial(update_agent, name, body))
     except (AgentProtectedError, RedactedPayloadError) as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     except ValueError as e:
@@ -430,7 +430,7 @@ async def update_agent_route(
 @studio_route("/agents/{name}", method="DELETE", area="agents", name="delete_agent")
 async def delete_agent_route(name: str) -> dict[str, Any]:
     try:
-        deleted = await anyio.to_thread.run_sync(partial(delete_agent, name))
+        deleted = await run_sync(partial(delete_agent, name))
     except AgentProtectedError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     if not deleted:

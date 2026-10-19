@@ -180,7 +180,7 @@ holder's, exercised where the holder lives.
   - `Exchange` over `flows` (`lionagi/session/exchange.py:87-110`);
   - `DataLogger` over `logs` (`lionagi/protocols/generic/log.py:244-247`, `:291-325`);
   - `Executor` over its event pile and pending order
-    (`lionagi/protocols/generic/processor.py:199-204`);
+    (`lionagi/protocols/generic/processor.py:197-202`);
   - `InMemoryStore` over its item `Pile` (`memory.py:53-82`), which owns no lock today and relies
     on `Pile.ainclude`/`aget`; under D2 it takes its own lock for `store` and `retrieve`;
   - `Flow` over its named views (`flow.py:138-247`).
@@ -195,7 +195,7 @@ holder's, exercised where the holder lives.
   (`session.py:279-284`), whose callee `Branch.aclone` additionally takes the message pile lock
   (`branch.py:519-521`), and `Pile.adapt_to_async` (`pile.py:902-903`). Both move onto the holder
   rule or onto the snapshot, as does `DependencyAwareExecutor._preallocate_all_branches`
-  (`lionagi/operations/flow.py:344-362`), which holds `branches.async_lock` around synchronous work
+  (`lionagi/operations/flow.py:345-363`), which holds `branches.async_lock` around synchronous work
   today.
 - **Accepted records this changes.**
   - ADR-0006 D4 (`Accepted`) is the message-added observer contract. Its async path reads "lock pile
@@ -226,8 +226,8 @@ holder's, exercised where the holder lives.
 |------|-------------------|-------|
 | A collection's default order (`Pile.progression`) | `pile.py:188-191`; uniqueness enforced today at `:129-138`, `:303-307`, `:826-835`, `:707-747` | unique |
 | `Flow` views appended by `add_item` | `flow.py:206-229`; ADR-0002 D5 records that repeated calls append the same id repeatedly | repeated |
-| `Executor.pending` | `processor.py:199`, `:236` (`pending.include(event)`) | repeated type, used set-like: this call site stores at most one position per id |
-| `Executor.pile` | `processor.py:201-204` | unique |
+| `Executor.pending` | `processor.py:197`, `:238` (`pending.include(event)`) | repeated type, used set-like: this call site stores at most one position per id |
+| `Executor.pile` | `processor.py:199-202` | unique |
 | `MessageManager.messages` | `manager.py:47-52` | unique |
 | `MessageManager` typed views (`assistant_responses`, `actions`, `action_requests`, `action_responses`, `instructions`) | `manager.py:453-490` | unique: each access builds a fresh filtered Pile (`pile.py:1015-1053`) whose own default order is a unique order |
 | `Branch.progression`, both forms | `branch.py:247-254`: the `metadata["current_progression"]` subset, built at `lionagi/tools/context/context.py:142-149`, or `MessageManager.progression` when it is unset | unique: the subset is seeded from the full order and the context tool never appends a duplicate to it (`context.py:334-335` skips ids already active before `:343`), `branch.py:249` calls it a subset, and ADR-0007 D2 rejects a duplicate id in the selected history (`docs/adr/ADR-0007-canonical-turn-request-compilation-boundary.md:218-219`) |

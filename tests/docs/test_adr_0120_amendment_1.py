@@ -57,19 +57,19 @@ def _amendment_flat() -> str:
 
 def test_in_process_spawn_paths_are_present_where_named() -> None:
     assert "run.spawn" in _span("lionagi/engines/hypothesis.py", 890, 961)
-    assert "run.spawn" in _line("lionagi/engines/review.py", 615)
+    assert "run.spawn" in _line("lionagi/engines/review.py", 616)
     assert "run.spawn" in _line("lionagi/engines/research.py", 187)
     assert "run.spawn" in _line("lionagi/engines/research.py", 191)
 
 
 def test_flow_bus_spawn_and_escalation_paths_are_present() -> None:
     assert "observe(self.spawn_type, self._on_bus_spawn)" in _line(
-        "lionagi/operations/flow.py", 1163
-    )
-    assert "observe(EscalationRequest, self._on_bus_escalation)" in _line(
         "lionagi/operations/flow.py", 1164
     )
-    assert "def _inject_request" in _line("lionagi/operations/flow.py", 1456)
+    assert "observe(EscalationRequest, self._on_bus_escalation)" in _line(
+        "lionagi/operations/flow.py", 1165
+    )
+    assert "def _inject_request" in _line("lionagi/operations/flow.py", 1457)
 
 
 def test_observer_gate_still_applies_before_routes_and_subscribers() -> None:
@@ -82,8 +82,8 @@ def test_observer_gate_still_applies_before_routes_and_subscribers() -> None:
 
 
 def test_review_verdict_has_an_emit_site_into_the_session_observer() -> None:
-    assert "class ReviewVerdict(Verdict)" in _line("lionagi/engines/review.py", 280)
-    assert "await run.emit(final)" in _line("lionagi/engines/review.py", 841)
+    assert "class ReviewVerdict(Verdict)" in _line("lionagi/engines/review.py", 281)
+    assert "await run.emit(final)" in _line("lionagi/engines/review.py", 842)
 
 
 def test_schedule_reader_position_is_the_github_poll_cursor() -> None:
@@ -179,7 +179,7 @@ def test_amendment_names_the_emit_site_it_kept_in_row_seven() -> None:
     text = _text()
     flat = _flat()
     assert "emitted only as a capability bundle" not in text
-    assert "lionagi/engines/review.py:280`, `:841" in flat
+    assert "lionagi/engines/review.py:281`, `:842" in flat
     row_seven = next(line for line in text.splitlines() if line.startswith("| 7 |"))
     assert "budget" in row_seven
     assert "`Verdict` cast outside" in row_seven
