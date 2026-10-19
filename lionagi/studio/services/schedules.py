@@ -21,7 +21,7 @@ from sqlalchemy.exc import IntegrityError as SAIntegrityError
 from lionagi._flow_spec import normalize_flow_spec_keys, validate_flow_spec_fields
 from lionagi.ln import short_id
 from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
-from lionagi.state.lifecycle import ReasonRecord, ScheduleAuditContext
+from lionagi.state.lifecycle import ReasonRecord
 from lionagi.state.reasons import ScheduleDefinitionReasons
 
 from ..registry import studio_route
@@ -1308,11 +1308,9 @@ async def disable_schedule(schedule_id: str, *, reason: str | None = None) -> bo
                     code=ScheduleDefinitionReasons.DISABLED_MANUAL,
                     summary=reason,
                 ),
-                audit_context=ScheduleAuditContext(
-                    source="operator",
-                    origin="http",
-                    assurance="client_reported",
-                ),
+                # The request carries a reason and nothing about who sent it, so this
+                # edge records the same unobserved provenance as a disable without one.
+                audit_context=None,
             )
 
 

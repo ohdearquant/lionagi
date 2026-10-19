@@ -107,6 +107,36 @@ async def test_disable_persists_the_reason_in_definition_history(tmp_path, monke
     assert latest["reason_summary"] == "planned maintenance"
 
 
+@pytest.mark.parametrize("reason", [None, "planned maintenance"])
+async def test_a_disable_records_no_provenance_it_did_not_observe(tmp_path, monkeypatch, reason):
+    """The request carries a reason at most and nothing about its sender, so a reason
+    must not turn the edge into one attributed to an operator."""
+    path = tmp_path / "state.db"
+    monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
+    async with StateDB(path) as db:
+        await db.create_schedule(
+            {
+                "id": "definition",
+                "name": "Definition",
+                "enabled": 1,
+                "trigger_type": "interval",
+                "interval_sec": 60,
+                "action_kind": "agent",
+            }
+        )
+
+    assert await schedules.disable_schedule("definition", reason=reason) is True
+
+    async with StateDB(path, readonly=True) as db:
+        events = (await db.get_schedule_history("definition"))["events"]
+    disabled = next(event for event in events if event["status"] == "disabled")
+    assert disabled["source"] == "unavailable"
+    assert disabled["actor"] is None
+    provenance = disabled["metadata"]["provenance"]
+    assert provenance["origin"] == "unavailable"
+    assert provenance["assurance"] == "unavailable"
+
+
 async def test_disable_without_a_reason_records_an_unspecified_disable(tmp_path, monkeypatch):
     path = tmp_path / "state.db"
     monkeypatch.setattr("lionagi.state.db.DEFAULT_DB_PATH", path)
