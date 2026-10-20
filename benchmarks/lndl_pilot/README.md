@@ -240,7 +240,7 @@ rows. Each leg's spend lines are in its run's `spend.jsonl`.
 ## How the committed files differ from the runs' output
 
 - `run_pilot.py` is `runs/run_pilot.as-run.py.txt` with `noqa` comments added, the `(r1)` at the
-  end of one comment removed (both as-run copies keep it), the layout reformatted by ruff, and four
+  end of one comment removed (both as-run copies keep it), the layout reformatted by ruff, and five
   changes. First, `summarize()` leaves the D4 rule unset when a leg had no spend line (above) or
   the rows are not the whole run, where the as-run copies computed it. Second, a run that stops
   early keeps what it has (`run_one()`, `run_pair()`, `main()`): a leg whose `subprocess.run`
@@ -250,17 +250,21 @@ rows. Each leg's spend lines are in its run's `spend.jsonl`.
   so a task file that cannot be read leaves none behind. Fourth, `main()` refuses a task file in
   which a task has a non-empty `none_of` beside its `accept` block, which `check_answer` would
   ignore, before it makes the run directory; each task in the two as-run task files has an empty
-  one. Of the files' top-level statements, `summarize()`, `run_one()`, `run_pair()` and `main()`
+  one. Fifth, `main()` names a task file that is in this directory by its path here in
+  `header.json`, the form `summarize.py` reads (below). Of the files' top-level statements, `summarize()`, `run_one()`, `run_pair()` and `main()`
   are the ones whose `ast.dump` differs, and `run_pilot.py` adds two imports (`threading` and
   `collections.abc.Callable`). With `missing_spend` at 0 and every leg run in all four runs, both
   give the same totals and rule: the test loads each as-run copy, checks its sha256 against the
   run's `runner_sha256`, and recomputes the run's `summary.json` with it.
-- In each `header.json`, `tasks_file` was the absolute path the runner writes
+- In each `header.json`, `tasks_file` was the absolute path the runner as run wrote
   (`Path(args.tasks).resolve()`, line 141 of `runs/run_pilot.as-run.py.txt` and line 147 of r5's
   copy). It was replaced by `tasks.yaml` before the first commit and now names the copy of the
   task set that run used, `runs/tasks.r2-r4.yaml` or `runs/tasks.r5.yaml`,
   whose sha256 is the header's `tasks_sha256`. `tasks.yaml` beside the runner is the task set as
-  it is now (sha256 `b938a95d…`), which no run used.
+  it is now (sha256 `b938a95d…`), which no run used. `summarize.py` reads `tasks_file` only from
+  inside this directory: an absolute path, or one that resolves outside it, is refused, whatever
+  the file's hash. `run_pilot.py` now writes the path relative to this directory when the task
+  file is in it, so a new run's header needs no edit.
 - Each committed `summary.json` is the one `summarize.py` writes, which replaces the one the
   runner writes at the end of a run (see Running it): the totals and
   `d4_rule_by_checks` are the runner's own summary of `results.jsonl` (its `d4_rule`, renamed), and

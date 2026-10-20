@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -205,6 +206,31 @@ def test_a_task_file_that_is_not_there_is_refused(r5_copy):
     (r5_copy / "header.json").write_text(json.dumps(header))
     with pytest.raises(ValueError, match="runs/tasks.missing.yaml is not in lndl_pilot/"):
         pilot.build_summary(r5_copy)
+
+
+@pytest.mark.parametrize("named", ["absolute", "climbing", "absolute-inside"])
+def test_a_task_file_outside_the_pilot_is_refused_though_its_hash_matches(r5_copy, named):
+    outside = r5_copy.parent / "tasks.r5.yaml"
+    shutil.copyfile(PILOT / "runs" / "tasks.r5.yaml", outside)
+    name = {
+        "absolute": str(outside),
+        "climbing": os.path.relpath(outside, PILOT),
+        # The run's own task file, named by a path that only holds on this machine.
+        "absolute-inside": str(PILOT / "runs" / "tasks.r5.yaml"),
+    }[named]
+    header = json.loads((r5_copy / "header.json").read_text())
+    header["tasks_file"] = name
+    (r5_copy / "header.json").write_text(json.dumps(header))
+    with pytest.raises(ValueError, match="is not in lndl_pilot/"):
+        pilot.build_summary(r5_copy)
+
+
+def test_a_path_that_leaves_the_pilot_and_comes_back_is_read(r5_copy):
+    header = json.loads((r5_copy / "header.json").read_text())
+    header["tasks_file"] = "../lndl_pilot/runs/tasks.r5.yaml"
+    (r5_copy / "header.json").write_text(json.dumps(header))
+    committed = json.loads((PILOT / "runs" / "r5" / "summary.json").read_text())
+    assert pilot.build_summary(r5_copy) == committed
 
 
 def _duplicate_a_result(run_dir: Path) -> None:
@@ -521,6 +547,38 @@ def test_the_reading_and_the_checks_differ_in_the_ten_answers_the_adr_names():
     ]
 
 
+_R5_ROW = re.compile(
+    # The one cell where the check and the reading differ is in bold.
+    r"^\| `(t\d\d)` \| `([^`]+)` \| `([^`]+)` \| (?:\*\*)?(accepted|rejected), (right|wrong)(?:\*\*)? "
+    r"\| (?:\*\*)?(accepted|rejected), (right|wrong)(?:\*\*)? \|$"
+)
+
+
+def test_the_readmes_r5_table_is_r5s_reading():
+    text = (PILOT / "README.md").read_text().split("### r5, task by task", 1)[1]
+    table = {}
+    for line in text.splitlines():
+        if m := _R5_ROW.match(line):
+            table[m[1]] = (m[2], m[3], {"lndl": (m[4], m[5]), "react": (m[6], m[7])})
+    reading = _jsonl(PILOT / "runs" / "r5" / "reading.jsonl")
+    expected = {}
+    for r in reading:
+        sources, by_loop = expected.setdefault(r["id"], ((), {}))
+        expected[r["id"]] = ((r["source_6fa69b19"], r["source_208bcc08"]), by_loop)
+        assert sources in ((), expected[r["id"]][0])
+        by_loop[r["loop"]] = (r["check"], r["reading"])
+    assert len(table) == 24
+    assert table == {tid: (*sources, by_loop) for tid, (sources, by_loop) in expected.items()}
+    # "and one in r5"
+    differ = [
+        (tid, loop)
+        for tid, (_, _, by_loop) in table.items()
+        for loop, (check, read) in by_loop.items()
+        if (check == "accepted") != (read == "right")
+    ]
+    assert differ == [("t24", "lndl")]
+
+
 class _Legs:
     """Stands in for subprocess.run: the header's two probes answer, and each leg is counted."""
 
@@ -607,6 +665,25 @@ def test_a_run_over_part_of_the_task_set_leaves_the_rule_unset(monkeypatch, tmp_
     assert summary["d4_rule"] is None
     assert summary["partial"] == "the run covers 1 of 2 tasks (--only)"
     assert summary["d4_rule_unset"] == "the run covers 1 of 2 tasks (--only)"
+
+
+@pytest.mark.parametrize("inside", [True, False])
+def test_the_header_names_a_task_file_in_the_pilot_by_its_path_there(monkeypatch, tmp_path, inside):
+    tasks_file = PILOT / "tasks.yaml"
+    if not inside:
+        tasks_file = tmp_path / "tasks.yaml"
+        shutil.copyfile(PILOT / "tasks.yaml", tasks_file)
+    out = tmp_path / "run"
+    monkeypatch.setattr(runner.subprocess, "run", _Legs())
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["run_pilot.py", "--tasks", str(tasks_file), "--out", str(out), "--only", "t01"],
+    )
+    assert runner.main() == 0
+    header = json.loads((out / "header.json").read_text())
+    assert header["tasks_file"] == ("tasks.yaml" if inside else str(tasks_file.resolve()))
 
 
 def test_an_interrupt_starts_no_further_leg_and_writes_a_partial_summary(monkeypatch, tmp_path):

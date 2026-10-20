@@ -6,7 +6,8 @@ against its task's source line, one row per leg: `id`, `loop`, `check` (the
 check's result, which must agree with `results.jsonl`), `reading` (`right` or
 `wrong`) and the source line the reading used at `6fa69b19` and at `208bcc08`.
 Both files must hold one row per task in the run's task file (named in its
-`header.json` and matching its `tasks_sha256`) and per loop, and each reading's
+`header.json` by a path inside this directory, and matching its `tasks_sha256`)
+and per loop, and each reading's
 `6fa69b19` source line must be one its task's `truth` cites.
 The totals and `d4_rule_by_checks` are `run_pilot.summarize` on the results;
 `d4_rule_by_substance` is `run_pilot.summarize` on the same rows with each leg
@@ -45,8 +46,14 @@ def _rows(path: Path) -> list[dict]:
 
 def _task_truths(run_dir: Path) -> dict[str, str]:
     header = json.loads((run_dir / "header.json").read_text())
-    tasks_path = HERE / header["tasks_file"]
-    if not tasks_path.is_file():
+    # Read only from inside this directory: an absolute path, or one that resolves outside it
+    # (through `..` or a link), names a file the pilot's record does not hold.
+    tasks_path = (HERE / header["tasks_file"]).resolve()
+    if (
+        Path(header["tasks_file"]).is_absolute()
+        or not tasks_path.is_relative_to(HERE)
+        or not tasks_path.is_file()
+    ):
         raise ValueError(f"{run_dir.name}: {header['tasks_file']} is not in {HERE.name}/")
     tasks_bytes = tasks_path.read_bytes()
     if hashlib.sha256(tasks_bytes).hexdigest() != header["tasks_sha256"]:

@@ -191,7 +191,10 @@ def main() -> int:
         tasks = [t for t in tasks if t["id"] in wanted]
     loops = args.loops.split(",")
     header = {
-        "tasks_file": str(tasks_path),
+        # Relative to this directory, as summarize.py reads it, when the task file is in it.
+        "tasks_file": str(
+            tasks_path.relative_to(HERE) if tasks_path.is_relative_to(HERE) else tasks_path
+        ),
         "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "tasks_sha256": hashlib.sha256(tasks_bytes).hexdigest(),
         "task_count": len(tasks),
