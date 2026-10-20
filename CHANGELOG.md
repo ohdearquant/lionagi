@@ -42,9 +42,10 @@ with a client built on the standard library (ADR-0135), and four kinds of code n
   options that were passed through to `aiohttp` (`ssl=`, `proxy=`, `timeout=`) raise `TypeError`.
 - Code that catches `aiohttp.ClientResponseError` catches
   `lionagi.service.connections.HTTPStatusError`, which carries `.status`, `.headers`, `.method` and
-  `.url`; code that catches `aiohttp.ClientError` for network failures catches
+  `.url` but not `aiohttp`'s `.request_info` or `.history`, and whose `str()` is its message (which
+  names the status); code that catches `aiohttp.ClientError` for network failures catches
   `lionagi.service.connections.TransportError`, a `ConnectionError`. A timeout is still a
-  `TimeoutError`.
+  `TimeoutError`, and on Python 3.10 also an `asyncio.TimeoutError`, as `aiohttp`'s was.
 - A subclass that overrides `Endpoint._call_aiohttp` or `Endpoint._stream_aiohttp` overrides
   `_call_http` or `_stream_http`, which take the same arguments.
 - Code that passes a `msgspec.Struct` to lionagi's structural helpers installs `msgspec` itself.
@@ -166,7 +167,8 @@ with a client built on the standard library (ADR-0135), and four kinds of code n
 - Endpoint HTTP requests use a client built on `http.client`, with each blocking step in a worker
   thread (at most 256 requests in flight per event loop). The endpoint's `timeout` still bounds the
   whole request, a streamed body included, and a cancelled or timed-out request closes its
-  connection at once. Redirects are no longer followed: a 3xx response fails the call like any other
+  connection at once, apart from a TCP connect still in progress, which runs until it completes or
+  the time the request had left runs out. A `timeout` of 0 or less still sets no bound. Redirects are no longer followed: a 3xx response fails the call like any other
   non-200 status, so a request and its credentials never go to an address the endpoint's address
   check did not see. Proxy settings in the environment are not read, as before. Responses are
   requested uncompressed. A 200 response body is decoded as JSON whatever `Content-Type` it

@@ -82,7 +82,7 @@ dev = [
     "httpx>=0.28.1",
     "testcontainers[postgres]>=4.0",
     # Tests that pass a msgspec Struct through the structural helpers; lionagi
-    # accepts one when msgspec is installed and never imports it otherwise.
+    # accepts one when msgspec is installed and works without it.
     "msgspec>=0.20.0",
 ]
 

@@ -140,8 +140,10 @@ Exact semantics:
   that other code waits on.
 - A step waiting for a slot is waiting inside its request's deadline (D3).
 - `anyio` releases a slot as soon as the waiting task is cancelled, while an abandoned thread runs
-  on. D4 makes that thread end promptly once its connection is open; a thread still opening one runs
-  until the attempt ends, so such threads are not counted against `MAX_REQUESTS_IN_FLIGHT`.
+  on. D4 makes that thread end promptly once its TCP connection is open; a thread still in the TCP
+  connect runs until the attempt ends, so such threads are not counted against
+  `MAX_REQUESTS_IN_FLIGHT`. The limit bounds requests in flight, and threads only while no stopped
+  request is still connecting.
 - `iter_chunks` yields what each `read1(65536)` returns. A piece can end inside a line or inside a
   UTF-8 character; the endpoint's stream parser decodes incrementally (`codecs` incremental decoder)
   and splits lines itself. `read1` answers an empty read both at the body's end and when the peer
@@ -149,7 +151,10 @@ Exact semantics:
   `TransportError` (from `http.client.IncompleteRead`), as `read()` does; a stream cut short never
   ends as if it had arrived whole. A chunked body cut before its last chunk raises the same way from
   `http.client` itself.
-- `json()` decodes the body as JSON without checking `Content-Type`. A 200 response is therefore
+- `json()` decodes the body as JSON without checking the media type in `Content-Type`. A body
+  declared in a charset other than UTF-8 is decoded with it first, as `aiohttp` did; otherwise
+  `json.loads` reads the bytes and detects UTF-8, UTF-16 or UTF-32 itself. `text()` takes the
+  declared charset too, else UTF-8. Because the media type is not checked, a 200 response is
   decoded whatever type it declares: a JSON body served as `text/plain` now succeeds, and a body
   that is not JSON raises `json.JSONDecodeError` (a `ValueError`), which no retry path retries.
   `aiohttp`'s `json()` raised `ContentTypeError` for any type other than `application/...json`, and
@@ -171,7 +176,8 @@ Exact semantics:
   body included, which is what `aiohttp.ClientTimeout(total=t)` bounded. Each blocking step runs
   under `anyio.fail_after` with the time left, and the socket's own timeout is set to the same
   remainder before each step, the connection's too, which bounds opening it: time spent waiting for
-  a slot is not left for the connect. `timeout=None` sets no bound.
+  a slot is not left for the connect. `timeout=None`, or a value of 0 or less, sets no bound;
+  `aiohttp` armed no timer for those either.
 - A 3xx response is returned like any other status; the endpoint then treats it as a non-200
   failure. `allow_redirects=True` raises `ValueError`. The Lattice adapter still passes
   `allow_redirects=False`, which is accepted.
@@ -179,9 +185,10 @@ Exact semantics:
   `trust_env=True`, which the endpoint never set).
 - The request carries `Accept-Encoding: identity`, so bodies arrive uncompressed and no
   decompressor is involved.
-- Default headers: `User-Agent: lionagi/<version>`; `Content-Type: application/json` for a `json=`
-  body unless the caller set one; `Content-Length` for any body. A later header source replaces an
-  earlier one of the same name in any case (session headers, then request headers).
+- Default headers: `User-Agent: lionagi/<version>`; `Accept: */*`, as `aiohttp` sent;
+  `Content-Type: application/json` for a `json=` body unless the caller set one; `Content-Length`
+  for any body. A later header source replaces an earlier one of the same name in any case (session
+  headers, then request headers).
 - `params` are URL-encoded and appended to any query the URL already has. The URL's path and query
   are percent-encoded where a request line cannot carry a character (a space, a non-ASCII letter),
   and an escape already in them is kept, as `aiohttp`'s URL handling did; `http.client` alone
@@ -199,16 +206,22 @@ for `gzip, deflate` by default.
 The `_Exchange` object owns one connection and the socket it opened:
 
 - `stop()` marks the exchange stopped. If no step is running it closes the response and the
-  connection now. If a step is running it shuts the socket down (`SHUT_RDWR`), which makes the
-  blocked read or write return; the thread running the step then closes everything.
+  connection now. If a step is running it shuts the socket down (`SHUT_RDWR`, the plain socket's
+  `shutdown`, since `SSLSocket.shutdown` also drops the TLS state a handshake on the other thread
+  is about to use), which makes the blocked read or write return; the thread running the step then
+  closes everything.
+- An HTTPS request does what `HTTPSConnection.connect()` does in two steps: the TCP connect, then
+  `wrap_socket(..., do_handshake_on_connect=False)`, and runs the handshake only after the TLS
+  socket is published to the exchange. A stop during the handshake therefore shuts it down like any
+  other step, where the stdlib's `connect()` would hold it until its timeout.
 - The exchange keeps its own reference to the socket, taken right after connecting, because
   `http.client` clears `HTTPConnection.sock` once a response says the server will close the
   connection. Without that reference a cancelled read under `Connection: close` would block until
   the server sent something.
 - A stop that arrives while the connection is still being opened is seen before anything is sent:
-  `send()` checks after `connect()` returns and raises `TransportError("the request was stopped")`.
-  The connect itself runs until it completes or its timeout, the time the request had left when the
-  step began (D3), expires; the address lookup before it has no bound.
+  `send()` checks when it publishes the socket and raises `TransportError("the request was
+  stopped")`. The TCP connect itself runs until it completes or its timeout, the time the request
+  had left when the step began (D3), expires; the address lookup before it has no bound.
 - A cancelled task, an expired deadline, and a step that fails all call `stop()`. `HTTPResponse`
   `close()` calls it too, and `HTTPSession.close()` calls it for each response still open and each
   request still waiting for its response, so the peer sees the connection end when the caller is
@@ -217,7 +230,9 @@ The `_Exchange` object owns one connection and the socket it opened:
 Tests (`tests/service/connections/test_http_client.py`) run the timeout, cancel and close cases
 against a local server that answers once with `Connection: close` and once without it, and require
 the server to see the connection end; the stop-while-connecting case runs against a stand-in
-connection that records whether a request was sent.
+connection that records whether a request was sent. A cancel and a session close during a TLS
+handshake the server never answers must end the connection within 3 s of a 10 s timeout, and a
+stop right after the TLS socket is published must fail the handshake with a socket error.
 
 ### D5. Errors
 
@@ -243,7 +258,9 @@ Exact semantics:
   `TransportError` or `TimeoutError`, and lets a cancellation through. A refused or reset
   connection, a TLS failure, and a reply that is not HTTP become `TransportError` naming the method
   and URL, with the original exception as `__cause__`.
-- An expired deadline raises `TimeoutError("<METHOD> <url> did not complete within <t> s")`.
+- An expired deadline raises `TimeoutError("<METHOD> <url> did not complete within <t> s")`. On
+  Python 3.10, where `asyncio.TimeoutError` is a class of its own, the error is of a class derived
+  from both, as `aiohttp`'s timeout derived from `asyncio.TimeoutError`.
 - The endpoint raises `HTTPStatusError` for a status it treats as a failure, where it raised
   `aiohttp.ClientResponseError`: 429 and 5xx as retryable, other non-200 statuses wrapped in the
   existing non-retryable sentinel, and a 200 body that names an error under the status it names.
@@ -299,6 +316,7 @@ keeping `aiohttp` installed for it, which is what this record removes.
       def encode(self) -> bytes: ...
   ```
 
+  A `str` value with no `content_type` is sent as `text/plain; charset=utf-8`, as `aiohttp` sent it.
   A value is `str`, bytes, or a file object read once when the body is built; anything else raises
   `TypeError`. A value that contains the boundary raises `ValueError`. Names and filenames are
   written as browsers write them (RFC 7578 section 4.2 allows UTF-8 there): UTF-8 as is, with `"`, CR
@@ -314,12 +332,12 @@ keeping `aiohttp` installed for it, which is what this record removes.
 
 - A base install is 30 packages. A vulnerability in `aiohttp` or its dependencies no longer reaches a
   user who has not installed the `sandbox` extra.
-- HTTP behaviour is now lionagi's to maintain: about 500 lines in `_http.py` and the tests that pin
+- HTTP behaviour is now lionagi's to maintain: about 550 lines in `_http.py` and the tests that pin
   them. A defect in chunked decoding or TLS is `http.client`'s and arrives with interpreter updates;
   a defect in deadlines, cancellation or headers is ours.
 - Each request in flight holds a worker thread, at most 256 per event loop. A process that runs more
   requests than that at once queues them, and the queueing counts against their deadlines.
-- A request stopped while its TCP or TLS connection is being opened leaves its thread in `connect()`
+- A request stopped while its TCP connection is being opened leaves its thread in the connect
   until the connect finishes or times out; nothing is sent on that connection.
 - Responses arrive uncompressed. Large non-streamed JSON responses cost more bytes on the wire than
   under `aiohttp`, which asked for gzip.

@@ -8,10 +8,10 @@ blocking step (connect and send, wait for the status line, read the body) runs i
 thread under a limiter of this module's own, so HTTP requests never take threads from the
 default pool other code in the process waits on. A request that is cancelled, or that runs past
 its session's timeout, shuts its socket down, which ends the blocked step and frees the thread;
-a request whose connection is still being opened when it is stopped is never sent. Opening a
-connection cannot be interrupted that way, so the thread doing it stays until the attempt ends:
-the time the request had left bounds the connect, but not the address lookup before it, and
-such a thread no longer counts against ``MAX_REQUESTS_IN_FLIGHT``.
+a request whose connection is still being opened when it is stopped is never sent. A TLS
+handshake is ended the same way, but the TCP connect before it cannot be, so the thread doing it
+stays until the attempt ends: the time the request had left bounds the connect, but not the
+address lookup before it, and such a thread no longer counts against ``MAX_REQUESTS_IN_FLIGHT``.
 
 A URL's path and query are sent percent-encoded: a character that cannot appear in a request
 line (a space, a non-ASCII letter) is encoded, and an escape already in the URL is kept.
@@ -19,11 +19,13 @@ line (a space, a non-ASCII letter) is encoded, and an escape already in the URL 
 Redirects are never followed, since the address guard checks one URL and a redirect could lead
 anywhere; a 3xx response is returned like any other status. Proxy settings in the environment
 are not read. The client sends no ``Accept-Encoding`` other than ``identity``, so response
-bodies arrive uncompressed.
+bodies arrive uncompressed. A ``timeout`` of 0 or less sets no bound, as ``None`` does.
 """
 
 from __future__ import annotations
 
+import asyncio
+import codecs
 import http.client
 import json as _json
 import socket
@@ -53,8 +55,8 @@ __all__ = (
 T = TypeVar("T")
 
 #: The most HTTP requests in flight at once in one event loop. Each holds a worker thread while
-#: it waits on the network, so this bounds those threads, apart from those still opening a
-#: connection for a request that was stopped (module docstring); a request past it waits for a
+#: it waits on the network, so this bounds those threads, apart from those still in the TCP
+#: connect of a request that was stopped (module docstring); a request past it waits for a
 #: slot, and the wait counts against its timeout.
 MAX_REQUESTS_IN_FLIGHT = 256
 _READ_SIZE = 65536
@@ -73,6 +75,16 @@ _ssl_context_lock = threading.Lock()
 class TransportError(ConnectionError):
     """The request got no complete HTTP response: the connection could not be opened, it broke,
     or what came back was not HTTP."""
+
+
+# What a request past its deadline raises. On Python 3.10 ``asyncio.TimeoutError`` is a class of
+# its own, and ``aiohttp``'s timeout derived from it, so there this one derives from both.
+if asyncio.TimeoutError is TimeoutError:
+    _RequestTimeoutError = TimeoutError
+else:  # Python 3.10
+
+    class _RequestTimeoutError(TimeoutError, asyncio.TimeoutError):
+        pass
 
 
 class _ResponseHeaders(dict):
@@ -185,17 +197,19 @@ class MultipartForm:
             disposition = f'form-data; name="{self._quote(name)}"'
             if filename is not None:
                 disposition += f'; filename="{self._quote(filename)}"'
-            head = f"--{self.boundary}\r\nContent-Disposition: {disposition}\r\n"
-            if content_type is not None:
-                head += f"Content-Type: {content_type}\r\n"
             if hasattr(value, "read"):
                 value = value.read()
             if isinstance(value, str):
                 value = value.encode("utf-8")
+                # A text part says so, as aiohttp wrote it.
+                content_type = content_type or "text/plain; charset=utf-8"
             elif not isinstance(value, (bytes, bytearray)):
                 raise TypeError(f"form field {name!r} must be str, bytes or a file object")
             if self.boundary.encode() in value:
                 raise ValueError(f"form field {name!r} contains the form's boundary")
+            head = f"--{self.boundary}\r\nContent-Disposition: {disposition}\r\n"
+            if content_type is not None:
+                head += f"Content-Type: {content_type}\r\n"
             parts.append(head.encode("utf-8") + b"\r\n" + bytes(value) + b"\r\n")
         parts.append(f"--{self.boundary}--\r\n".encode())
         return b"".join(parts)
@@ -209,8 +223,9 @@ class _Exchange:
     no longer holds it.
     """
 
-    def __init__(self, conn: http.client.HTTPConnection):
+    def __init__(self, conn: http.client.HTTPConnection, tls: ssl.SSLContext | None = None):
         self.conn = conn
+        self._tls = tls
         self.sock: socket.socket | None = None
         self._response: http.client.HTTPResponse | None = None
         self._lock = threading.Lock()
@@ -225,9 +240,11 @@ class _Exchange:
                 self._close()
             elif self.sock is not None:
                 # A step blocked on the socket returns once it is shut down. The thread running
-                # the step closes everything when it returns.
+                # the step closes everything when it returns. The plain socket's shutdown: an SSL
+                # socket's own also drops its TLS state, which a handshake starting on the other
+                # thread would fail on with an AttributeError.
                 try:
-                    self.sock.shutdown(socket.SHUT_RDWR)
+                    socket.socket.shutdown(self.sock, socket.SHUT_RDWR)
                 except OSError:
                     pass
 
@@ -249,13 +266,26 @@ class _Exchange:
                 if self._stopped:
                     self._close()
 
-    def send(self, method: str, target: str, body: bytes | None, headers: dict[str, str]):
-        self.conn.connect()
+    def _publish(self, sock: socket.socket) -> None:
         with self._lock:
-            self.sock = self.conn.sock
+            self.sock = sock
             # Stopped while the connection was opened: nothing has been sent, and nothing is.
             if self._stopped:
                 raise TransportError("the request was stopped")
+
+    def send(self, method: str, target: str, body: bytes | None, headers: dict[str, str]):
+        if self._tls is None:
+            self.conn.connect()
+            self._publish(self.conn.sock)
+        else:
+            # What HTTPSConnection.connect() does, with the TLS socket published before its
+            # handshake, which waits on the server: stopping the request ends the handshake too.
+            http.client.HTTPConnection.connect(self.conn)
+            self.conn.sock = self._tls.wrap_socket(
+                self.conn.sock, server_hostname=self.conn.host, do_handshake_on_connect=False
+            )
+            self._publish(self.conn.sock)
+            self.conn.sock.do_handshake()
         self.conn.request(method, target, body=body, headers=headers)
         response = self.conn.getresponse()
         with self._lock:
@@ -314,13 +344,32 @@ class HTTPResponse:
         finally:
             self.close()
 
-    async def text(self, encoding: str = "utf-8") -> str:
-        return (await self.read()).decode(encoding, errors="replace")
+    def _charset(self) -> str | None:
+        """The codec of the charset ``Content-Type`` declares; ``None`` when it declares none
+        Python knows."""
+        charset = self.headers.get_content_charset()
+        if charset:
+            try:
+                return codecs.lookup(charset).name
+            except (LookupError, ValueError):
+                pass
+        return None
+
+    async def text(self, encoding: str | None = None) -> str:
+        """The body as text, in *encoding*, else the declared charset, else UTF-8."""
+        body = await self.read()
+        return body.decode(encoding or self._charset() or "utf-8", errors="replace")
 
     async def json(self) -> Any:
-        """The body parsed as JSON; ``None`` when the body is empty or only whitespace."""
+        """The body parsed as JSON, decoded with the charset the response declares; ``None`` when
+        the body is empty or only whitespace."""
         body = await self.read()
-        return _json.loads(body) if body.strip() else None
+        if not body.strip():
+            return None
+        charset = self._charset()
+        # Without a declared charset, or with UTF-8, the parser detects UTF-8 (a byte-order mark
+        # too), UTF-16 and UTF-32 itself.
+        return _json.loads(body if charset in (None, "utf-8") else body.decode(charset))
 
     def _read_piece(self) -> bytes:
         chunk = self._raw.read1(_READ_SIZE)
@@ -382,7 +431,7 @@ async def _run_step(
             )
     except TimeoutError:
         exchange.stop()
-        raise TimeoutError(f"{method} {url} did not complete within {timeout} s") from None
+        raise _RequestTimeoutError(f"{method} {url} did not complete within {timeout} s") from None
     except BaseException as exc:
         # Cancelled, or the step failed: either way the exchange is over.
         exchange.stop()
@@ -396,12 +445,13 @@ class HTTPSession:
     """Default headers and a per-request timeout, shared by the requests made through it.
 
     ``timeout`` bounds a request from its start until its response has been read, a streamed
-    response included; ``None`` sets no bound. Closing the session closes the responses still
-    open and ends the requests still waiting for theirs.
+    response included; ``None``, or a value of 0 or less, sets no bound. Closing the session
+    closes the responses still open and ends the requests still waiting for theirs.
     """
 
     def __init__(self, *, timeout: float | None = None, headers: Any = None):
-        self.timeout = timeout
+        # aiohttp armed no timer for a total of 0 or less either.
+        self.timeout = timeout if timeout is not None and timeout > 0 else None
         self.headers = headers
         self._responses: list[HTTPResponse] = []
         self._exchanges: list[_Exchange] = []
@@ -439,7 +489,9 @@ class HTTPSession:
         if parts.scheme not in ("http", "https") or not parts.hostname:
             raise ValueError(f"not an http or https URL: {url!r}")
 
-        send_headers = _merged_headers({"User-Agent": _USER_AGENT}, self.headers, headers)
+        send_headers = _merged_headers(
+            {"User-Agent": _USER_AGENT, "Accept": "*/*"}, self.headers, headers
+        )
         names = {name.lower() for name in send_headers}
         body: bytes | None
         if json is not None:
@@ -466,13 +518,14 @@ class HTTPSession:
         if query:
             target += f"?{query}"
         deadline = None if self.timeout is None else time.monotonic() + self.timeout
-        if parts.scheme == "https":
+        tls = _default_ssl_context() if parts.scheme == "https" else None
+        if tls is not None:
             conn: http.client.HTTPConnection = http.client.HTTPSConnection(
-                parts.hostname, parts.port, timeout=self.timeout, context=_default_ssl_context()
+                parts.hostname, parts.port, timeout=self.timeout, context=tls
             )
         else:
             conn = http.client.HTTPConnection(parts.hostname, parts.port, timeout=self.timeout)
-        exchange = _Exchange(conn)
+        exchange = _Exchange(conn, tls)
         self._exchanges.append(exchange)
         method = method.upper()
         raw = await _run_step(

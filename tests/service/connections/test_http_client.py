@@ -88,6 +88,7 @@ async def test_a_json_request_and_its_response(announce_close):
     assert headers["Content-Type"] == "application/json"
     assert headers["Content-Length"] == str(len(b'{"q": "hi"}'))
     assert headers["User-Agent"] == _http._USER_AGENT
+    assert headers["Accept"] == "*/*"
     assert headers["Accept-Encoding"] == "identity"
 
 
@@ -105,11 +106,29 @@ async def test_a_path_and_query_are_sent_percent_encoded(path, sent):
         return json_response({})
 
     async with serving(handler) as base, HTTPSession(timeout=5) as session:
-        response = await session.request("GET", f"{base}{path}?q=a é")
+        response = await session.request("GET", f"{base}{path}?q=a é&k=%2F")
         await response.read()
 
     assert seen["path"] == sent
-    assert seen["query"] == {"q": "a é"}
+    assert seen["query"] == {"q": "a é", "k": "/"}
+
+
+@pytest.mark.parametrize(
+    ("charset", "body"),
+    [
+        ("iso-8859-1", '{"text": "café"}'.encode("latin-1")),
+        ("utf-8", b"\xef\xbb\xbf" + '{"text": "café"}'.encode()),
+    ],
+    ids=["latin-1", "utf-8-with-bom"],
+)
+async def test_a_json_body_is_decoded_with_the_charset_it_declares(charset, body):
+    wire = (
+        f"HTTP/1.1 200 OK\r\nContent-Type: application/json; charset={charset}\r\n"
+        f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
+    ).encode() + body
+    async with answering(wire) as url, HTTPSession(timeout=5) as session:
+        response = await session.request("GET", url)
+        assert await response.json() == {"text": "café"}
 
 
 @pytest.mark.parametrize("body", [b"", b" \r\n"], ids=["empty", "whitespace"])
@@ -215,10 +234,13 @@ async def test_a_request_past_its_timeout_raises_and_closes_its_connection(annou
     async with serving(_waits_for_close(closed), announce_close) as base:
         started = time.monotonic()
         async with HTTPSession(timeout=0.3) as session:
-            with pytest.raises(TimeoutError, match="did not complete within 0.3 s"):
+            with pytest.raises(TimeoutError, match="did not complete within 0.3 s") as raised:
                 await session.request("POST", base, json={})
-        assert time.monotonic() - started < 3
-        await asyncio.wait_for(closed.wait(), timeout=3)
+            # A class of its own on Python 3.10, which aiohttp's timeout derived from.
+            assert isinstance(raised.value, asyncio.TimeoutError)
+            assert time.monotonic() - started < 3
+            # Before the session closes, so the request's own stop is what ended the connection.
+            await asyncio.wait_for(closed.wait(), timeout=3)
 
 
 @framings
@@ -291,6 +313,17 @@ async def test_closing_a_session_ends_a_request_still_waiting_for_its_response(a
             await asyncio.wait_for(task, timeout=3)
         # No timeout was set and nothing was cancelled, so only the close can have ended it.
         await asyncio.wait_for(closed.wait(), timeout=3)
+
+
+@pytest.mark.parametrize("timeout", [0, -1])
+async def test_a_timeout_of_zero_or_less_sets_no_bound(timeout):
+    async def handler(request: Request):
+        await asyncio.sleep(0.2)
+        return json_response({"ok": True})
+
+    async with serving(handler) as base, HTTPSession(timeout=timeout) as session:
+        response = await session.request("POST", base, json={})
+        assert await response.json() == {"ok": True}
 
 
 async def test_opening_a_connection_is_bounded_by_the_time_the_request_has_left(monkeypatch):
@@ -484,6 +517,61 @@ async def test_a_request_stopped_while_connecting_is_never_sent():
     assert conn.requests == []
 
 
+@pytest.mark.parametrize("stop", ["cancel", "close"])
+async def test_a_request_stopped_in_its_tls_handshake_closes_its_connection(stop):
+    gone = asyncio.Event()
+
+    async def silent(reader, writer):
+        # Reads the client's hello, never answers it, and waits for the client's end to close.
+        await reader.read(65536)
+        await reader.read()
+        gone.set()
+        writer.close()
+
+    server = await asyncio.start_server(silent, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        session = HTTPSession(timeout=10)
+        task = asyncio.create_task(session.request("GET", f"https://127.0.0.1:{port}/"))
+        await asyncio.sleep(0.3)
+        if stop == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=3)
+        else:
+            session.close()
+            with pytest.raises(TransportError):
+                await asyncio.wait_for(task, timeout=3)
+        # The timeout is 10 s, so only the stop can have ended the handshake this soon.
+        await asyncio.wait_for(gone.wait(), timeout=3)
+        session.close()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+def test_a_stop_right_after_the_tls_socket_is_published_fails_the_handshake_as_a_socket_error(
+    monkeypatch,
+):
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        tls = _http._default_ssl_context()
+        conn = http.client.HTTPSConnection("127.0.0.1", port, timeout=5, context=tls)
+        exchange = _http._Exchange(conn, tls)
+        publish = exchange._publish
+
+        def publish_then_stop(sock):
+            publish(sock)
+            exchange.stop()
+
+        monkeypatch.setattr(exchange, "_publish", publish_then_stop)
+        # A socket error, which the client reports as a transport failure, never an AttributeError.
+        with pytest.raises(OSError):
+            exchange.run(lambda: exchange.send("GET", "/", None, {}))
+
+
 def test_a_multipart_form_reads_back_through_the_standard_library_parser():
     form = MultipartForm()
     form.add_field("model", "whisper-1")
@@ -500,6 +588,8 @@ def test_a_multipart_form_reads_back_through_the_standard_library_parser():
     }
     assert set(parts) == {"model", "note", "file"}
     assert parts["model"].get_payload(decode=True) == b"whisper-1"
+    assert parts["model"].get_content_type() == "text/plain"
+    assert parts["model"].get_content_charset() == "utf-8"
     assert parts["note"].get_payload(decode=True) == b'quote " and\r\nbreak'
     assert parts["file"].get_filename() == "clip.wav"
     assert parts["file"].get_content_type() == "audio/wav"
