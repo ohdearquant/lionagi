@@ -11,7 +11,7 @@
   walk); read with ADR-0133 (proposed in #3657, open: admission at the same entry point) and
   ADR-0094 (automated PR review pipeline)
 
-lionagi starts `claude` and `codex` processes for every CLI agent it runs. This record makes lionagi
+lionagi starts `claude` and `codex` processes for its Claude and Codex agents. This record makes lionagi
 declare the hooks those processes run, in one registry with additive layers, in place of the hook
 files the user and the repository keep, and makes every agent turn lionagi starts through its CLI
 providers, which all pass one spawn function, compile those hooks and carry them; a turn that
@@ -25,7 +25,8 @@ is what an engine adds from its own managed policy.
 The first hook it carries serves one redaction requirement: the values in the run's secret set
 (the values the hook is configured with, and the named part of what lionagi's own log redactor
 treats as secret in what it hands the engine process: values under declared names, and values of
-at least eight characters under variable and flag names that match its credential words, D7) are
+at least eight characters under variable names and in assignment arguments that match its
+credential words and in the argument after any argument whose text matches them, D7) are
 replaced by tokens from the run's redaction table before they reach the model's context
 and before the engine writes its transcript. D7 meets it on the routes lionagi mediates. lionagi
 redacts the prompt text it hands the engine before the spawn: the hook replaces each value it is
@@ -182,11 +183,13 @@ that starts another `li` process hands it on in that child's environment: the MC
 (`lionagi/studio/scheduler/subprocess.py`) all of it to a `li` child, and the run-resume worker
 (`lionagi/studio/services/run_resume_worker.py`) and the MCP verb dispatcher
 (`lionagi/mcp/dispatch.py`) start `li` with the inherited one. Each of the four sets
-`LIONAGI_HOOKS_REQUIREMENT` explicitly after building the child's environment, so a later filter
-on that environment cannot drop it. `ndjson_from_cli()` sets it the same way in the engine
-child's environment, which the engine does not read and the commands its shell runs inherit, so a
+`LIONAGI_HOOKS_REQUIREMENT` explicitly after building the child's environment, to the absolute
+path of the requirement file this process read, or removes it when this process read none, so a
+later filter on that environment cannot drop it. `ndjson_from_cli()` sets it the same way in the
+engine child's environment, from the render's `requirement_path`, which the engine does not read
+and the commands its shell runs inherit, so a
 `li` command an agent's shell runs reads the same requirement unless that command removes it,
-which nothing here prevents (D8): whoever controls a launcher's environment controls its
+which nothing here prevents (Out of scope): whoever controls a launcher's environment controls its
 requirement. A process started outside these paths carries only what its own environment holds.
 No profile or request can weaken it. A registry at a different path, an absent required
 registry, or a missing or weakened mandatory attachment refuses the spawn (D6, A6). An empty registry
@@ -400,6 +403,7 @@ class RenderedHooks:
     binary: Path                     # the only first element ndjson_from_cli() accepts
     run_id: str                      # minted by the compiler, one per provider call
     snapshot: HooksSnapshot          # registry path, content and digest (or its absence), read once per provider call
+    requirement_path: Path | None    # the file the launcher's requirement was read from (D1), or None
     argv_additions: tuple[str, ...]  # flags the spawn appends
     files: tuple[Path, ...]          # the render file and D7's run files, removed when the provider call returns
 ```
@@ -438,7 +442,9 @@ Exact semantics:
   from the registry as it is then.
 - A fan-out compiles each worker's spawn from the snapshot taken at the fan-out's admission, so a
   bad edit made while it runs refuses no worker that was already admitted.
-- The compiler is the only reader of `agents.json`. Nothing else interprets it.
+- The compiler is the only reader that builds a render from `agents.json`. `li hooks trust` and the
+  Studio hooks API also read it, to list the argv it attaches (A7) and to repair it (D6), and start
+  no agent.
 
 Why this way. Builders are many and miss the continuation (P3); a wrapper around the spawn could be
 bypassed by any code that calls the provider directly. The spawn function is the one place every
@@ -451,7 +457,7 @@ through it" into a type error for the path that does not.
   `<file>` is `LIONAGI_HOME/run/hooks/<run_id>.settings.json`, created with exclusive create and
   mode 0600, holding `{"hooks": ...}` rendered from the compiled attachments. An existing file at
   that path is a refusal, never an overwrite. The `auto_finish` continuation passes the same file
-  (D3) and writes none.
+  (D3) and writes no render of its own; D7 updates the table before it.
 - `--strict-mcp-config` makes the MCP servers lionagi passes the only servers the agent loads: the
   engine discovers none on its own, so a repository's `.mcp.json`, whose stdio servers are
   commands, reaches an agent only through lionagi. `li agent` passes one: without `--mcp-config` or
@@ -480,7 +486,8 @@ through it" into a type error for the path that does not.
   home directory that is itself a repository, or a `~/.lionagi` that is one or links into one,
   refuses every spawn under a redaction entry, from any working directory, the Operator's default
   root included, until `LIONAGI_HOME` resolves outside every work tree (Consequences). The rule
-  keeps those files out of a repository; it does not stop a process of the same account from writing
+  keeps those files out of any work tree it can see by a `.git` entry; it does not stop a process of
+  the same account from writing
   them (D7).
 - A caller-supplied `settings` file is still accepted when every top-level key it holds is in the
   `settings_keys` the adapter publishes for that engine version (D2). The compiler merges those keys
@@ -576,7 +583,9 @@ the agent's own failure:
 - a library entry that a required attachment names has no `pin`, or a pin that leaves out a file
   its argv names (D1); a `pin` digest does not match or a pinned file is missing; or `argv[0]`, a
   pinned file, the registry, the library, the approval store or the requirement file, or a
-  directory holding one, can be written by anyone other than its owner;
+  directory holding one, can be written by anyone other than its owner; or, under a redaction
+  entry, a run directory that already exists is not the account's or can be written by anyone
+  other than its owner (D7);
 - a required attachment names `gemini` or `pi`, or names no engines, on a spawn of one of them (D8);
 - the registry or a profile attaches a library entry with only a string `command`, or an Operator
   turn attaches one to a spawn whose baseline holds a required attachment (D1);
@@ -588,6 +597,8 @@ the agent's own failure:
 - under a redaction entry: a prompt-file field (`system_prompt_file`, `append_system_prompt_file`),
   a native resume of a session that did not start under the same redaction baseline, or an MCP
   server that cannot be put behind a proxy (D7);
+- under a redaction entry, the compiled attachments for the spawn's engine lack one on `pre_tool`,
+  `post_tool`, that engine's `Stop` or `agent_exit` (D7);
 - under a redaction entry, the run directory's real path or an ancestor of it holds a `.git`
   entry, or one of them cannot be read (D4);
 - writing the render or one of D7's run files failed;
@@ -636,8 +647,10 @@ so a refusal never blocks its own repair.
 A spawn is under a redaction entry, wherever this record says so, when its compiled attachments for
 its engine include one on `agent_prompt`: that event exists for this contract alone (D2). lionagi
 keys on it the run files, the proxies, the chosen session id and the refusals D4 and D6 name. The
-tool routes and the scans come from the entry's other attachments, which the registry in D1 lists;
-an entry that attaches fewer of them gets only what those do.
+tool routes and the scans come from the entry's other attachments, which the registry in D1 lists,
+and a spawn whose attachments for its engine hold `agent_prompt` without each of `pre_tool`,
+`post_tool`, that engine's `Stop` and `agent_exit` is refused (D6), so no spawn runs under part of
+this contract.
 
 What "before the engine writes its transcript" means here. Neither engine is known to call a hook
 before it persists a tool result. So the redaction entry keeps a value out of the context and the
@@ -653,7 +666,8 @@ Each place where that matters is named where it arises, and none is claimed as p
 
 The run's files. For a provider call with the redaction entry, lionagi creates three files beside
 the render, each by exclusive create with mode 0600, in the run directory, which it creates with
-mode 0700, and removes them when the call returns, after `agent_exit`. Every write that replaces a
+mode 0700 (one that already exists must be the account's and writable by no one else, D6), and
+removes them when the call returns, after `agent_exit`. Every write that replaces a
 run file, the hook's included, goes through a temporary file created by exclusive create with mode
 0600 in the run directory and renamed over it, so the rename keeps the mode; a temporary file
 created under the process's umask would leave the table readable by other accounts. It passes their
@@ -693,10 +707,14 @@ through the redactor.
   A deployment that runs agents under the entry can leave such variables out of the environment it
   hands them (the request's `env`). That cost is accepted: it is the rule lionagi's logs already
   apply to named values, and a whole-word match, the obvious narrowing, would miss a name such as
-  `OPENAI_APIKEY`. Before each child's spawn, the first turn's and the continuation's, lionagi adds
-  each value of the second part the table lacks, under a token it mints from the variable's name,
-  through the same temporary file and rename, and then runs the prompt check (`agent_prompt`, below)
-  again over the texts that spawn carries, so a value of either part in a prompt refuses the spawn.
+  `OPENAI_APIKEY`. lionagi reads the table from disk once, right after the first `agent_prompt`
+  writes it, and from then on holds it in memory. Before each child's spawn, the first turn's and
+  the continuation's, it adds each value of the second part that table lacks, under a token it mints
+  from the variable's name, writes the table from memory through the same temporary file and rename,
+  and then runs the prompt check (`agent_prompt`, below) again over the texts that spawn carries, so
+  a value of either part in a prompt refuses the spawn. It never builds a write from the table on
+  disk, so an edit made between one child's exit and the next spawn is not carried forward; the
+  comparison below finds it.
   No hook and no lionagi step writes the table while a child runs, except lionagi's restore before
   that child's `agent_exit` (below); every event and every check reads it. So every check below
   compares against the whole set, not only values a hook has replaced, and two hook implementations
@@ -718,11 +736,12 @@ through the redactor.
   (D2), so every receipt a check matches has an id. The receipts detect an engine that ran a tool
   without its hook; they do not detect an agent that appends to them through its shell.
 
-Edits during a run. Before each child's spawn lionagi keeps the bytes of the table, of the read
-policy and of the Claude render file as it last wrote them. Before it runs that child's
-`agent_exit` hook it compares each file with those bytes; a difference fails the run, and lionagi
-writes its own bytes back first, so the exit scan reads the whole set. The comparison sees only a
-difference that is still there at the exit: a shell command that edits one of these files and
+Edits during a run. lionagi holds in memory the bytes of the table, of the read policy and of the
+Claude render file as it last wrote them. Before each child's spawn after the first, and before each
+child's `agent_exit` hook, it compares each file's bytes, owner and mode with what it wrote; a
+difference fails the run. Only after the comparison does it write its own bytes back, so the
+comparison sees the edit and the exit scan reads the whole set. The comparison sees only a
+difference that is still there when it runs: a shell command that edits one of these files and
 restores its bytes before the child exits passes it. Between an edit and its restore, or the exit,
 an emptied or edited table blinds the redactor, the post-tool check and the stop scan, and what is
 printed then reaches the model; an edited read policy lets a hook-performed read return a file the
@@ -886,6 +905,8 @@ The implementing PRs carry these, each with the artifact that shows it.
   and a native resume of a session started without the entry; a Claude `auto_finish` continuation
   (two exit events, one run outcome, and an argv that carries the first turn's id as `--resume` and
   neither `--session-id` nor `--continue`); two concurrent runs; a registry edited during a run; a
+  redaction table edited, and one whose mode is widened, between the first child's exit and the
+  continuation's spawn, each failing the run; a
   missing hook command, a relative `argv[0]`, an `agent_prompt`, pre-tool or exit entry with no
   `timeout` and one whose `timeout` is a boolean, and an unsupported event; a Codex trust record
   that does not match; an Operator turn whose assembly attaches an argv entry, one that attaches a
@@ -946,7 +967,7 @@ The implementing PRs carry these, each with the artifact that shows it.
   `LIONAGI_HOOKS_REQUIREMENT` out, and the child still reads the requirement, because each sets it
   after building that environment (D1). A `li` command run by an agent's shell reads the same
   requirement, because `ndjson_from_cli()` sets it in the engine's environment, and one that
-  removes it from its own environment runs without it; the test records both (D8).
+  removes it from its own environment runs without it; the test records both (Out of scope).
 - **A7 — command approval.** The same command attached by hand in the registry, through the Studio
   library API, through a profile and as an argv entry through the Operator refuses without the
   approval of its final argv and runs after it; the Operator's legacy string entries, which need
@@ -976,8 +997,10 @@ The implementing PRs carry these, each with the artifact that shows it.
   outside `settings_keys`, a non-empty Claude setting source, and a Claude spawn built without
   `--strict-mcp-config`; a Codex project layer that declares MCP servers, one that sets a key
   outside `project_layer_keys`, and a layer set that cannot be established; under a redaction entry,
-  each prompt-file field and an MCP server that cannot be put behind a proxy; under a redaction
-  entry, a `LIONAGI_HOME` inside the agent's work tree, one under a home directory that is itself a
+  each prompt-file field and an MCP server that cannot be put behind a proxy, a spawn whose
+  attachments lack each of `pre_tool`, `post_tool`, the engine's `Stop` and `agent_exit` in turn, and
+  a run directory that already exists owned by another account and one writable by its group; under
+  a redaction entry, a `LIONAGI_HOME` inside the agent's work tree, one under a home directory that is itself a
   repository, with the agent started outside every repository so that only the run directory's
   ancestors can refuse it, a `LIONAGI_HOME` that is a symbolic link into a repository, and a run
   directory with an ancestor the check cannot read; a failed write of the render or of a run file;
