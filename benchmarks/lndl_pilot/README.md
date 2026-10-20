@@ -166,7 +166,8 @@ and r4, and `spend_lines` is at least 1 in all 144 rows. Each leg's spend lines 
   statements,
   `summarize()`, `run_one()`, `run_pair()` and `main()` are the ones whose `ast.dump` differs, and
   `run_pilot.py` adds two imports (`threading` and `collections.abc.Callable`), the `TASK_ID`
-  pattern and `task_problems()`. With `missing_spend` at 0 and every leg run in all three runs, both
+  pattern, the YAML loader that refuses a key named twice (`_TaskLoader`,
+  `_mapping_without_repeats()` and the call that registers it) and `task_problems()`. With `missing_spend` at 0 and every leg run in all three runs, both
   write the same `summary.json`; `tests/benchmarks/test_lndl_pilot.py` recomputes each committed
   summary from its run's `results.jsonl`.
 - In each `header.json`, `tasks_file` was an absolute path on the machine that ran it and now
