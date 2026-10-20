@@ -30,8 +30,33 @@ LI = HERE / "venv" / "bin" / "li"
 SCRATCH_HOME = HERE / "home"
 SPEND = re.compile(r"\[api\] spend: (\d+) request\(s\), (\d+) tool call\(s\), ([0-9.]+)s")
 RUN_TIMEOUT_S = 420
-# A task id names the leg's files in the run directory, so it may not reach outside it.
-TASK_ID = re.compile(r"[A-Za-z0-9_-]+")
+# A task id and a loop name together name a leg's files in the run directory, so neither may
+# reach outside it. At 100 characters each, an id, `-`, a loop name and the longest suffix
+# (`.prompt.txt`, 11) come to 212 bytes, inside a file name's 255.
+TASK_ID = re.compile(r"[A-Za-z0-9_-]{1,100}")
+
+
+class _TaskLoader(yaml.SafeLoader):
+    """safe_load keeps the last of a key a mapping names twice; this loader refuses it."""
+
+
+def _mapping_without_repeats(loader: _TaskLoader, node: yaml.MappingNode) -> dict:
+    seen: list = []
+    for key_node, _ in node.value:
+        if key_node.tag == "tag:yaml.org,2002:merge":
+            continue
+        key = loader.construct_object(key_node, deep=True)
+        if key in seen:
+            raise yaml.constructor.ConstructorError(
+                None, None, f"found the key {key!r} twice in one mapping", key_node.start_mark
+            )
+        seen.append(key)
+    return loader.construct_mapping(node, deep=True)
+
+
+_TaskLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping_without_repeats
+)
 
 
 def _matches(text: str, item: str) -> bool:
@@ -49,7 +74,7 @@ def check_answer(answer: str, accept: dict) -> bool:
 def run_one(task: dict, loop: str, out: Path) -> dict:
     stem = out / f"{task['id']}-{loop}"
     prompt_file = stem.with_suffix(".prompt.txt")
-    prompt_file.write_text(task["prompt"])
+    prompt_file.write_text(task["prompt"], encoding="utf-8")
     env = {
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
         "HOME": str(SCRATCH_HOME),
@@ -73,6 +98,7 @@ def run_one(task: dict, loop: str, out: Path) -> dict:
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             errors="replace",
             timeout=RUN_TIMEOUT_S,
         )
@@ -96,8 +122,8 @@ def run_one(task: dict, loop: str, out: Path) -> dict:
         rc = "harness-error"
         stdout, stderr = "", f"{type(exc).__name__}: {exc}\n"
     elapsed = round(time.monotonic() - started, 3)
-    stem.with_suffix(".stdout.txt").write_text(stdout)
-    stem.with_suffix(".stderr.txt").write_text(stderr)
+    stem.with_suffix(".stdout.txt").write_text(stdout, encoding="utf-8")
+    stem.with_suffix(".stderr.txt").write_text(stderr, encoding="utf-8")
     spends = SPEND.findall(stderr) or SPEND.findall(stdout)
     requests = tool_calls = wall = None
     if spends:
@@ -167,7 +193,7 @@ def task_problems(tasks: object) -> list[str]:
             problems.append(f"{name}: not a mapping")
             continue
         if not isinstance(tid, str) or not TASK_ID.fullmatch(tid):
-            problems.append(f"{name}: `id` is not letters, digits, `_` and `-`")
+            problems.append(f"{name}: `id` is not 1 to 100 letters, digits, `_` and `-`")
         elif tid.lower() in seen:
             # Each leg's files are named after its id, so on a volume that ignores letter case
             # two ids that differ only in case would write the same files.
@@ -178,8 +204,19 @@ def task_problems(tasks: object) -> list[str]:
             # check_answer reads `none_of` from `accept` only, so one beside it would be ignored.
             problems.append(f"{name}: `none_of` outside `accept`")
         for key in ("class", "prompt"):
-            if not isinstance(task.get(key), str) or not task[key]:
+            value = task.get(key)
+            if not isinstance(value, str) or not value:
                 problems.append(f"{name}: `{key}` is not a non-empty string")
+                continue
+            try:
+                # The prompt file and the table are written as UTF-8 once legs have run.
+                value.encode("utf-8")
+            except UnicodeEncodeError:
+                problems.append(f"{name}: `{key}` is not valid UTF-8 text")
+                continue
+            if key == "class" and value.splitlines() != [value]:
+                # A table row is one line; a `|` is escaped where the row is written.
+                problems.append(f"{name}: `class` holds a line break")
         accept = task.get("accept")
         if not isinstance(accept, dict) or set(accept) - {"all_of", "none_of"}:
             problems.append(f"{name}: `accept` is not a mapping of `all_of` and `none_of`")
@@ -190,13 +227,28 @@ def task_problems(tasks: object) -> list[str]:
                 problems.append(f"{name}: `accept.{key}` is not a list of non-empty strings")
                 continue
             for item in value:
-                if item.startswith("re:"):
-                    try:
-                        re.compile(item[3:])
-                    # A repeat count past the engine's limit raises OverflowError, and deep
-                    # nesting RecursionError, rather than re.error.
-                    except (re.error, OverflowError, RecursionError) as exc:
-                        problems.append(f"{name}: `{item}` does not compile: {exc}")
+                try:
+                    item.encode("utf-8")
+                except UnicodeEncodeError:
+                    # A lone surrogate never matches an answer read from a leg's output.
+                    problems.append(f"{name}: `accept.{key}` has an item that is not valid UTF-8")
+                    continue
+                if not item.startswith("re:"):
+                    continue
+                try:
+                    pattern = re.compile(item[3:], re.IGNORECASE)
+                # A repeat count past the engine's limit raises OverflowError, and deep
+                # nesting RecursionError, rather than re.error.
+                except (re.error, OverflowError, RecursionError) as exc:
+                    problems.append(f"{name}: `{item}` does not compile: {exc}")
+                    continue
+                if not item[3:].strip() or pattern.search("") is not None:
+                    # A pattern that matches an empty answer would let all_of accept one and
+                    # make none_of refuse every answer; a blank one is a stray space.
+                    problems.append(
+                        f"{name}: `accept.{key}` has a `re:` pattern that is blank or matches"
+                        " an empty answer"
+                    )
         if items["all_of"] == []:
             # With nothing required, an empty answer would be accepted.
             problems.append(f"{name}: `accept.all_of` is empty")
@@ -264,7 +316,16 @@ def main() -> int:
         return 2
     tasks_path = Path(args.tasks).resolve()
     tasks_bytes = tasks_path.read_bytes()
-    tasks = yaml.safe_load(tasks_bytes)["tasks"]
+    try:
+        loaded = yaml.load(tasks_bytes, Loader=_TaskLoader)  # noqa: S506 - a SafeLoader subclass
+    # Deep nesting raises RecursionError rather than a YAMLError.
+    except (yaml.YAMLError, RecursionError) as exc:
+        print(f"{tasks_path} is not YAML: {exc}\nnothing run", file=sys.stderr)
+        return 2
+    if not isinstance(loaded, dict) or "tasks" not in loaded:
+        print(f"{tasks_path} has no top-level `tasks`; nothing run", file=sys.stderr)
+        return 2
+    tasks = loaded["tasks"]
     task_set = len(tasks) if isinstance(tasks, list) else 0
     loops = args.loops.split(",")
     # Each of these would otherwise surface only once legs had run, or after the run directory
@@ -274,18 +335,70 @@ def main() -> int:
         problems.append(f"{LI} is not executable")
     if args.concurrency < 1:
         problems.append(f"--concurrency {args.concurrency} is below 1")
+    # Read from the listing, so the name must match in letter case on any volume.
+    profiles = {p.name for p in (HERE / ".lionagi" / "agents").glob("d4-*.md") if p.is_file()}
     for loop in loops:
-        if not (HERE / ".lionagi" / "agents" / f"d4-{loop}.md").is_file():
+        if not TASK_ID.fullmatch(loop):
+            problems.append(f"--loops: {loop!r} is not 1 to 100 letters, digits, `_` and `-`")
+        elif f"d4-{loop}.md" not in profiles:
             problems.append(f"--loops: no profile d4-{loop}.md")
     if len({loop.lower() for loop in loops}) < len(loops):
         # A loop named twice would run each task's leg twice into the same files.
         problems.append(f"--loops: {args.loops!r} names a loop twice, ignoring letter case")
-    if Path(args.out).exists():
+    # resolve() reads a `..` as text, where the OS goes up only from a directory it can look up,
+    # so the two agree on where --out lies only when the OS resolves the path up to each `..`.
+    parts = Path(args.out).parts
+    up = None
+    for i, part in enumerate(parts):
+        if part != "..":
+            continue
+        try:
+            os.stat(Path(*parts[: i + 1]))
+        except FileNotFoundError:
+            up = f"goes up from {Path(*parts[:i])}, which does not exist"
+        except OSError as exc:
+            up = f"goes up from {Path(*parts[:i])}, which cannot be looked up: {exc.strerror}"
+        if up is not None:
+            break
+    if not args.out:
+        problems.append("--out is empty")
+    elif os.path.lexists(Path(args.out)):
+        # Through Path, which drops a trailing slash: with one, lstat follows a dangling link.
         problems.append(f"--out: {args.out} already exists")
+    elif up is not None:
+        problems.append(f"--out: {args.out} {up}")
+    else:
+        try:
+            # Absolute: each child runs with cwd set to the read tree, so a relative path would
+            # resolve there and the prompt file would not be found.
+            out = Path(args.out).resolve()
+            # From Python 3.13 resolve() returns through a link loop instead of raising, so the
+            # deepest part of the path that exists is resolved strictly: a loop, a dangling link
+            # or a file on the way is refused here, not by mkdir once the run has begun.
+            parent = Path(args.out).absolute().parent
+            while not os.path.lexists(parent) and parent != parent.parent:
+                parent = parent.parent
+            # isdir() asks the OS, which before Python 3.13 can disagree with realpath(): a link
+            # whose target goes up out of a file (`F/../D`) resolves there as text.
+            if not (os.path.isdir(os.path.realpath(parent, strict=True)) and os.path.isdir(parent)):
+                problems.append(f"--out: {args.out} is under {parent}, which is not a directory")
+        # resolve() raises RuntimeError on a link loop before Python 3.13; realpath raises OSError.
+        except (OSError, RuntimeError) as exc:
+            problems.append(f"--out: {args.out} does not resolve: {exc}")
     if args.only:
         wanted = args.only.split(",")
-        known = {t.get("id") for t in tasks if isinstance(t, dict)} if task_set else set()
+        known = (
+            {t["id"] for t in tasks if isinstance(t, dict) and isinstance(t.get("id"), str)}
+            if task_set
+            else set()
+        )
         problems += [f"--only: no task {tid!r}" for tid in wanted if tid not in known]
+    if not problems:
+        # Task `x-a` under loop `b` and task `x` under loop `a-b` would write the same files.
+        stems = [f"{t['id']}-{loop}".lower() for t in tasks for loop in loops]
+        clashes = sorted({stem for stem in stems if stems.count(stem) > 1})
+        if clashes:
+            problems.append(f"two legs would write the same files: {', '.join(clashes)}")
     if problems:
         for problem in problems:
             print(problem, file=sys.stderr)
@@ -306,9 +419,6 @@ def main() -> int:
                 )
             tasks_file = str(spelled.relative_to(HERE))
             break
-    # Absolute: each child runs with cwd set to the read tree, so a relative path would
-    # resolve there and the prompt file would not be found.
-    out = Path(args.out).resolve()
     header = {
         "tasks_file": tasks_file,
         "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -341,7 +451,25 @@ def main() -> int:
     }
     # Made once everything above has been checked and `git` and `li` have answered for the
     # header, so a refused run, or an `li` that cannot start, leaves no run directory behind.
-    out.mkdir(parents=True, exist_ok=False)
+    # The ancestors mkdir would create, deepest first, so that a failure part way removes them.
+    missing = []
+    for ancestor in out.parents:
+        if os.path.lexists(ancestor):
+            break
+        missing.append(ancestor)
+    try:
+        out.mkdir(parents=True, exist_ok=False)
+    except OSError as exc:
+        # An ancestor without search permission or on a read-only file system shows only here, and
+        # so does a name the file system refuses, once the ancestors before it have been made.
+        for ancestor in missing:
+            try:
+                ancestor.rmdir()
+            except OSError:
+                pass
+        print(f"--out: {args.out} cannot be created: {exc}", file=sys.stderr)
+        print("nothing run", file=sys.stderr)
+        return 2
     (out / "header.json").write_text(json.dumps(header, indent=2))
     recorded: list[dict] = []
     lock = threading.Lock()
@@ -398,7 +526,7 @@ def main() -> int:
         "| id | class | " + " | ".join(f"{l} req / tools / wall / ok" for l in loops) + " |",  # noqa: E741
         "|---|---|" + "---|" * len(loops),
     ]
-    # Every task the run covers has a line, so a leg that never started reads `not run`.
+    # Every task the run covers has a line, so a leg with no recorded row reads `not run`.
     for task in sorted(tasks, key=lambda t: t["id"]):
         tid = task["id"]
         cells = []
@@ -407,11 +535,14 @@ def main() -> int:
             if r is None:
                 cells.append("not run")
                 continue
-            cells.append(
-                f"{r['requests']} / {r['tool_calls']} / {r['wall_seconds']} / {'yes' if r['accepted'] else 'no'}"
-            )
-        lines.append(f"| {tid} | {task['class']} | " + " | ".join(cells) + " |")
-    (out / "table.md").write_text("\n".join(lines) + "\n")
+            counts = [
+                "-" if r[k] is None else str(r[k])
+                for k in ("requests", "tool_calls", "wall_seconds")
+            ]
+            cells.append(" / ".join([*counts, "yes" if r["accepted"] else "no"]))
+        cls = task["class"].replace("|", "\\|")
+        lines.append(f"| {tid} | {cls} | " + " | ".join(cells) + " |")
+    (out / "table.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(json.dumps(summary, indent=2))
     if stopped:
         return 130

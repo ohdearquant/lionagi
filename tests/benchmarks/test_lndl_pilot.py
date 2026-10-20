@@ -777,6 +777,21 @@ def test_a_leg_whose_check_raises_after_it_ran_is_its_own_row(monkeypatch, tmp_p
         # These two raise OverflowError and RecursionError rather than re.error.
         ({"all_of": ["re:4{4294967296}"]}, "`re:4{4294967296}` does not compile"),
         ({"all_of": ["re:" + "(" * 3000 + "4" + ")" * 3000]}, "does not compile"),
+        # A pattern that matches an empty answer lets all_of accept one and makes none_of
+        # refuse every answer; a blank one is a stray space.
+        ({"all_of": ["re:"]}, "`accept.all_of` has a `re:` pattern that is blank or matches"),
+        ({"all_of": ["re:(?:)"]}, "`accept.all_of` has a `re:` pattern that is blank or matches"),
+        ({"all_of": ["re:x*"]}, "`accept.all_of` has a `re:` pattern that is blank or matches"),
+        ({"all_of": ["re:^"]}, "`accept.all_of` has a `re:` pattern that is blank or matches"),
+        ({"all_of": ["re: "]}, "`accept.all_of` has a `re:` pattern that is blank or matches"),
+        (
+            {"all_of": ["42"], "none_of": ["re:"]},
+            "`accept.none_of` has a `re:` pattern that is blank or matches",
+        ),
+        (
+            {"all_of": ["42"], "none_of": ["re:.*"]},
+            "`accept.none_of` has a `re:` pattern that is blank or matches",
+        ),
         # Each of these would accept an answer its check never looked at.
         ({}, "`accept.all_of` is empty"),
         ({"all_of": []}, "`accept.all_of` is empty"),
@@ -791,6 +806,7 @@ def test_a_leg_whose_check_raises_after_it_ran_is_its_own_row(monkeypatch, tmp_p
             "`accept` is not a mapping of `all_of` and `none_of`",
         ),
         ({"all_of": ["re:4(2)"]}, None),
+        ({"all_of": ["re:4+2"], "none_of": ["re:\\b24\\b"]}, None),
     ],
 )
 def test_a_check_that_would_fail_or_pass_unchecked_is_refused_before_anything_runs(
@@ -817,7 +833,7 @@ def test_a_check_that_would_fail_or_pass_unchecked_is_refused_before_anything_ru
         (lambda tasks: tasks[0].update(prompt=""), "t01: `prompt` is not a non-empty string"),
         (
             lambda tasks: tasks[0].update(id="../t01"),
-            "../t01: `id` is not letters, digits, `_` and `-`",
+            "../t01: `id` is not 1 to 100 letters, digits, `_` and `-`",
         ),
         (lambda tasks: tasks[1].update(id="t01"), "t01: `id` repeats"),
         # Each leg's files are named after its id; on a volume that ignores letter case these
@@ -825,22 +841,48 @@ def test_a_check_that_would_fail_or_pass_unchecked_is_refused_before_anything_ru
         (lambda tasks: tasks[1].update(id="T01"), "T01: `id` repeats, ignoring letter case"),
         (
             lambda tasks: tasks[0].update(id=["t01"]),
-            "task 1: `id` is not letters, digits, `_` and `-`",
+            "task 1: `id` is not 1 to 100 letters, digits, `_` and `-`",
         ),
         (lambda tasks: tasks.__setitem__(1, "t02"), "task 2: not a mapping"),
+        # 100 characters is the runner's own limit for an id.
+        (lambda tasks: tasks[0].update(id="t" * 101), "`id` is not 1 to 100 letters"),
+        # These two would pass as strings and fail once the run directory had been made.
+        (lambda tasks: tasks[0].update(prompt="q\ud800"), "t01: `prompt` is not valid UTF-8 text"),
+        (
+            lambda tasks: tasks[0].update({"class": "\ud800"}),
+            "t01: `class` is not valid UTF-8 text",
+        ),
+        # A table row is one line.
+        (
+            lambda tasks: tasks[0].update({"class": "look\nup"}),
+            "t01: `class` holds a line break",
+        ),
+        (
+            lambda tasks: tasks[0].update({"class": "look\u2028up"}),
+            "t01: `class` holds a line break",
+        ),
+        # An item that is not UTF-8 text never matches an answer read from a leg's output.
+        (
+            lambda tasks: tasks[0]["accept"].update(all_of=["\ud800"]),
+            "t01: `accept.all_of` has an item that is not valid UTF-8",
+        ),
+        (
+            lambda tasks: tasks[0]["accept"].update(none_of=["\ud800"]),
+            "t01: `accept.none_of` has an item that is not valid UTF-8",
+        ),
     ],
 )
 def test_a_malformed_task_is_refused_before_anything_runs(
     monkeypatch, tmp_path, capsys, edit, refused
 ):
-    real_load = runner.yaml.safe_load
+    real_load = runner.yaml.load
 
-    def safe_load(data):
-        loaded = real_load(data)
+    def load(data, Loader):
+        loaded = real_load(data, Loader=Loader)
         edit(loaded["tasks"])
         return loaded
 
-    monkeypatch.setattr(runner.yaml, "safe_load", safe_load)
+    monkeypatch.setattr(runner.yaml, "load", load)
     legs = _Legs()
     rc, out = _run_main(monkeypatch, tmp_path, legs, ["t01", "t02"])
 
@@ -859,6 +901,11 @@ def test_a_malformed_task_is_refused_before_anything_runs(
         (["--only", "t01,"], "--only: no task ''"),
         (["--loops", "react,react"], "--loops: 'react,react' names a loop twice"),
         (["--loops", "react,REACT"], "--loops: 'react,REACT' names a loop twice"),
+        # On a volume that ignores letter case d4-REACT.md opens d4-react.md.
+        (["--loops", "REACT,lndl"], "--loops: no profile d4-REACT.md"),
+        # A loop name heads a table column and names files.
+        (["--loops", "re|act,lndl"], "--loops: 're|act' is not 1 to 100 letters"),
+        (["--out", ""], "--out is empty"),
         ([], "is not executable"),
     ],
 )
@@ -952,7 +999,7 @@ def test_a_missing_read_tree_or_li_is_refused_before_anything_runs(
     assert f"{tmp_path / 'absent'} not found; nothing run" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("case", ["out-exists", "li-is-a-directory"])
+@pytest.mark.parametrize("case", ["out-exists", "out-dangling-link", "li-is-a-directory"])
 def test_an_existing_out_or_an_li_that_is_not_a_file_is_refused_before_anything_runs(
     monkeypatch, tmp_path, capsys, case
 ):
@@ -961,6 +1008,8 @@ def test_an_existing_out_or_an_li_that_is_not_a_file_is_refused_before_anything_
     def main():
         if case == "out-exists":
             (tmp_path / "run").mkdir()
+        elif case == "out-dangling-link":
+            (tmp_path / "run").symlink_to(tmp_path / "elsewhere")
         else:
             runner.LI.unlink()
             runner.LI.mkdir()
@@ -976,9 +1025,302 @@ def test_an_existing_out_or_an_li_that_is_not_a_file_is_refused_before_anything_
     if case == "out-exists":
         assert f"--out: {out} already exists" in err
         assert list(out.iterdir()) == []
+    elif case == "out-dangling-link":
+        assert f"--out: {out} already exists" in err
+        assert out.is_symlink()
+        assert not (tmp_path / "elsewhere").exists()
     else:
         assert f"{runner.LI} is not executable" in err
         assert not out.exists()
+
+
+def test_only_beside_an_id_that_is_not_text_is_refused_before_anything_runs(
+    monkeypatch, tmp_path, capsys
+):
+    real_load = runner.yaml.load
+
+    def load(data, Loader):
+        loaded = real_load(data, Loader=Loader)
+        loaded["tasks"][0]["id"] = ["t01"]
+        loaded["tasks"][1]["id"] = {"t02": 1}
+        return loaded
+
+    monkeypatch.setattr(runner.yaml, "load", load)
+    legs = _Legs()
+    rc, out = _run_main(monkeypatch, tmp_path, legs, ["t01", "t02"], "--only", "t01")
+
+    assert rc == 2
+    assert legs.legs == []
+    assert not out.exists()
+    err = capsys.readouterr().err
+    assert "task 1: `id` is not 1 to 100" in err
+    assert "task 2: `id` is not 1 to 100" in err
+    assert "--only: no task 't01'" in err
+
+
+@pytest.mark.parametrize(
+    ("content", "refused"),
+    [
+        ("- t01\n", "has no top-level `tasks`"),
+        ("{}\n", "has no top-level `tasks`"),
+        ("", "has no top-level `tasks`"),
+        ("tasks: [t01\n", "is not YAML"),
+        # safe_load would keep the second of a repeated key and run that alone.
+        ("tasks: [t01]\ntasks: [t02]\n", "is not YAML: found the key 'tasks' twice"),
+        ("tasks:\n- id: t01\n  id: t02\n", "is not YAML: found the key 'id' twice"),
+        ("tasks: " + "[" * 3000 + "]" * 3000 + "\n", "is not YAML"),
+    ],
+)
+def test_a_task_file_of_another_shape_is_refused_before_anything_runs(
+    monkeypatch, tmp_path, capsys, content, refused
+):
+    tasks_file = tmp_path / "tasks.yaml"
+    tasks_file.write_text(content)
+    out = tmp_path / "run"
+    (tmp_path / "li").touch(mode=0o755)
+    monkeypatch.setattr(runner, "TREE", tmp_path)
+    monkeypatch.setattr(runner, "LI", tmp_path / "li")
+    legs = _Legs()
+    monkeypatch.setattr(runner.subprocess, "run", legs)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
+    monkeypatch.setattr(
+        sys, "argv", ["run_pilot.py", "--tasks", str(tasks_file), "--out", str(out)]
+    )
+
+    assert runner.main() == 2
+    assert legs.legs == []
+    assert not out.exists()
+    err = capsys.readouterr().err
+    assert f"{tasks_file} {refused}" in err
+    assert "nothing run" in err
+
+
+def test_a_table_row_escapes_its_class_and_marks_a_missing_count(monkeypatch, tmp_path):
+    real_load = runner.yaml.load
+
+    def load(data, Loader):
+        loaded = real_load(data, Loader=Loader)
+        loaded["tasks"][0]["class"] = "look|up"
+        return loaded
+
+    def no_spend(argv, **kwargs):
+        if argv[1:2] != ["agent"]:
+            return subprocess.CompletedProcess(argv, 0, stdout="probe\n", stderr="")
+        return subprocess.CompletedProcess(argv, 0, stdout="the answer is 42\n", stderr="")
+
+    monkeypatch.setattr(runner.yaml, "load", load)
+    rc, out = _run_main(monkeypatch, tmp_path, no_spend, ["t01"])
+
+    assert rc == 0
+    assert (out / "table.md").read_text().splitlines()[2:] == [
+        "| t01 | look\\|up | - / - / - / yes | - / - / - / yes |",
+    ]
+
+
+@pytest.mark.parametrize(
+    "cls",
+    [
+        "look\u00a0up",
+        "look\u3000up",
+        "family \U0001f468\u200d\U0001f469\u200d\U0001f467",
+        "soft\u00adhyphen",
+    ],
+)
+def test_a_class_without_a_line_break_is_written_as_it_is(monkeypatch, tmp_path, cls):
+    real_load = runner.yaml.load
+
+    def load(data, Loader):
+        loaded = real_load(data, Loader=Loader)
+        loaded["tasks"][0]["class"] = cls
+        return loaded
+
+    monkeypatch.setattr(runner.yaml, "load", load)
+    rc, out = _run_main(monkeypatch, tmp_path, _Legs(), ["t01"])
+
+    assert rc == 0
+    rows = (out / "table.md").read_text(encoding="utf-8").splitlines()[2:]
+    assert rows == [f"| t01 | {cls} | 2 / 1 / 1.5 / yes | 2 / 1 / 1.5 / yes |"]
+
+
+def test_two_legs_that_would_write_the_same_files_are_refused_before_anything_runs(
+    monkeypatch, tmp_path, capsys
+):
+    # Task `x-a` under loop `b` and task `x` under loop `a-b` both name their files `x-a-b`.
+    profiles = tmp_path / "pilot" / ".lionagi" / "agents"
+    profiles.mkdir(parents=True)
+    for loop in ("b", "a-b"):
+        (profiles / f"d4-{loop}.md").write_text("profile\n")
+    monkeypatch.setattr(runner, "HERE", tmp_path / "pilot")
+    legs = _Legs()
+    rc, out = _run_main(monkeypatch, tmp_path, legs, ["x-a", "x"], "--loops", "b,a-b")
+
+    assert rc == 2
+    assert legs.legs == []
+    assert not out.exists()
+    assert "two legs would write the same files: x-a-b" in capsys.readouterr().err
+
+
+def test_an_out_through_a_link_loop_is_refused_before_anything_runs(monkeypatch, tmp_path, capsys):
+    (tmp_path / "loop").symlink_to(tmp_path / "loop")
+    legs = _Legs()
+    rc, _ = _run_main(monkeypatch, tmp_path, legs, ["t01"], "--out", str(tmp_path / "loop" / "run"))
+
+    assert rc == 2
+    assert legs.legs == []
+    assert f"--out: {tmp_path / 'loop' / 'run'} does not resolve" in capsys.readouterr().err
+
+
+def test_an_out_naming_a_dangling_link_with_a_trailing_slash_is_refused(
+    monkeypatch, tmp_path, capsys
+):
+    (tmp_path / "dang").symlink_to(tmp_path / "elsewhere")
+    legs = _Legs()
+    rc, _ = _run_main(monkeypatch, tmp_path, legs, ["t01"], "--out", f"{tmp_path / 'dang'}/")
+
+    assert rc == 2
+    assert legs.legs == []
+    assert not (tmp_path / "elsewhere").exists()
+    assert f"--out: {tmp_path / 'dang'}/ already exists" in capsys.readouterr().err
+
+
+def test_an_out_under_a_file_is_refused_before_anything_runs(monkeypatch, tmp_path, capsys):
+    (tmp_path / "afile").write_text("")
+    legs = _Legs()
+    rc, _ = _run_main(
+        monkeypatch, tmp_path, legs, ["t01"], "--out", str(tmp_path / "afile" / "run")
+    )
+
+    assert rc == 2
+    assert legs.legs == []
+    err = capsys.readouterr().err
+    assert f"--out: {tmp_path / 'afile' / 'run'} is under {tmp_path / 'afile'}, which is not" in err
+
+
+@pytest.mark.parametrize("kind", ["missing", "dangling", "file", "loop"])
+def test_an_out_going_up_from_a_missing_directory_is_refused(monkeypatch, tmp_path, capsys, kind):
+    (tmp_path / "P").mkdir()
+    target = tmp_path / "P" / "G"
+    if kind == "dangling":
+        target.symlink_to(tmp_path / "target_missing" / "deep")
+    elif kind == "file":
+        target.write_text("")
+    elif kind == "loop":
+        target.symlink_to(target)
+    out = f"{tmp_path}/P/M/../G/run"
+    legs = _Legs()
+    rc, _ = _run_main(monkeypatch, tmp_path, legs, ["t01"], "--out", out)
+
+    assert rc == 2
+    assert legs.legs == []
+    assert not (tmp_path / "target_missing").exists()
+    assert f"--out: {out} goes up from {tmp_path / 'P' / 'M'}, which does not exist" in (
+        capsys.readouterr().err
+    )
+
+
+@pytest.mark.parametrize("tail", ["U/../run", "U/M/../run"])
+def test_an_out_going_up_through_a_directory_that_cannot_be_searched_is_refused(
+    monkeypatch, tmp_path, capsys, tail
+):
+    closed = tmp_path / "P" / "U"
+    closed.mkdir(parents=True)
+    closed.chmod(0o600)
+    out = f"{tmp_path}/P/{tail}"
+    try:
+        if os.access(closed / ".", os.X_OK):
+            pytest.skip("this user can search a directory without search permission")
+        legs = _Legs()
+        rc, _ = _run_main(monkeypatch, tmp_path, legs, ["t01"], "--out", out)
+    finally:
+        closed.chmod(0o700)
+
+    assert rc == 2
+    assert legs.legs == []
+    assert not (tmp_path / "P" / "run").exists()
+    up_from = Path(out).parent.parent
+    assert f"--out: {out} goes up from {up_from}, which cannot be looked up:" in (
+        capsys.readouterr().err
+    )
+
+
+def test_an_out_through_a_link_whose_target_goes_up_out_of_a_file_is_refused(
+    monkeypatch, tmp_path, capsys
+):
+    (tmp_path / "P").mkdir()
+    (tmp_path / "P" / "F").write_text("")
+    (tmp_path / "P" / "D").mkdir()
+    (tmp_path / "P" / "L").symlink_to("F/../D")
+    out = tmp_path / "P" / "L" / "run"
+    legs = _Legs()
+    rc, _ = _run_main(monkeypatch, tmp_path, legs, ["t01"], "--out", str(out))
+
+    assert rc == 2
+    assert legs.legs == []
+    assert not (tmp_path / "P" / "D" / "run").exists()
+    err = capsys.readouterr().err
+    assert f"--out: {out} " in err
+    assert "does not resolve" in err or "which is not a directory" in err
+
+
+def test_an_out_under_a_dangling_link_is_refused_before_anything_runs(
+    monkeypatch, tmp_path, capsys
+):
+    (tmp_path / "dang").symlink_to(tmp_path / "elsewhere")
+    out = tmp_path / "dang" / "run"
+    legs = _Legs()
+    rc, _ = _run_main(monkeypatch, tmp_path, legs, ["t01"], "--out", str(out))
+
+    assert rc == 2
+    assert legs.legs == []
+    assert not (tmp_path / "elsewhere").exists()
+    assert f"--out: {out} does not resolve" in capsys.readouterr().err
+
+
+def test_an_out_going_up_out_of_a_link_to_a_directory_runs_where_the_os_puts_it(
+    monkeypatch, tmp_path
+):
+    (tmp_path / "real" / "D").mkdir(parents=True)
+    (tmp_path / "V").symlink_to(tmp_path / "real" / "D")
+    legs = _Legs()
+    rc, _ = _run_main(monkeypatch, tmp_path, legs, ["t01"], "--out", f"{tmp_path}/V/../run")
+
+    assert rc == 0
+    assert len(legs.legs) == 2
+    assert (tmp_path / "real" / "run" / "header.json").is_file()
+    assert not (tmp_path / "run").exists()
+
+
+def test_an_out_whose_name_the_file_system_refuses_leaves_no_directory_behind(
+    monkeypatch, tmp_path, capsys
+):
+    out = tmp_path / "a" / "b" / ("n" * 300)
+    legs = _Legs()
+    rc, _ = _run_main(monkeypatch, tmp_path, legs, ["t01"], "--out", str(out))
+
+    assert rc == 2
+    assert legs.legs == []
+    assert not (tmp_path / "a").exists()
+    assert f"--out: {out} cannot be created:" in capsys.readouterr().err
+
+
+def test_an_out_that_cannot_be_created_is_refused_before_anything_runs(
+    monkeypatch, tmp_path, capsys
+):
+    closed = tmp_path / "closed"
+    closed.mkdir()
+    closed.chmod(0o600)
+    try:
+        if os.access(closed / ".", os.X_OK):
+            pytest.skip("this user can search a directory without search permission")
+        legs = _Legs()
+        rc, _ = _run_main(monkeypatch, tmp_path, legs, ["t01"], "--out", str(closed / "run"))
+    finally:
+        closed.chmod(0o700)
+
+    assert rc == 2
+    assert legs.legs == []
+    assert not (closed / "run").exists()
+    assert f"--out: {closed / 'run'} cannot be created:" in capsys.readouterr().err
 
 
 def test_an_li_that_cannot_start_leaves_no_run_directory(monkeypatch, tmp_path):
