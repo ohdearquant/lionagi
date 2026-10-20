@@ -86,10 +86,13 @@ and one implementation.
   at the edges: `tomllib` and `toml` refuse the syntax only TOML 1.1 allows (an
   `\e` escape, an inline table across lines or with a trailing comma, a time
   without seconds), which codex 0.162.1 reads with its TOML 1.1 parser and
-  `tomli` 2.5 accepts, and only `toml` accepts a leading byte-order mark. A file
+  `tomli` 2.5 accepts, and only `toml` accepts a leading byte-order mark, so a
+  root `profile` key in a file that starts with one is not seen here. A file
   `toml` cannot read takes its server list from the fallback. These reads and
   the fallback use the codex home named by the environment the
-  child runs under (the model's `env`, when it holds one), and a set whose
+  child runs under (the model's `env`, when it holds one; a `~` or relative
+  `CODEX_HOME` there is refused, since where it lands depends on the child), and
+  the fallback runs the codex binary the run itself starts. A set whose
   `env` or `http_headers` need a generated profile is refused when that home is
   not this process's, since the profile file is written here.
   Those disables do not reach a server only

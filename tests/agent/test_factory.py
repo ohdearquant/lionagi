@@ -1787,13 +1787,17 @@ async def test_forward_mcp_codex_allowlist_reads_a_deeply_nested_ambient_config_
         return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
 
     monkeypatch.setattr("subprocess.run", _run)
+    # The run starts the binary found on this process's PATH; the discovery starts the same one.
+    import lionagi.providers.openai.codex as codex_mod
+
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", "/opt/bin/codex")
 
     config = AgentSpec.compose("reviewer", model="codex/gpt-5.5", cwd=str(tmp_path / "elsewhere"))
     config.mcp_config_path = _write_mcp_config(tmp_path, {"docs": {"command": "docs-mcp"}})
     config.mcp_servers = ["docs"]
     branch = await create_agent(config, load_settings=False)
 
-    assert [argv for argv, _ in calls] == [["codex", "mcp", "list", "--json"]]
+    assert [argv for argv, _ in calls] == [["/opt/bin/codex", "mcp", "list", "--json"]]
     overrides = branch.chat_model.endpoint.config.kwargs.get("config_overrides")
     assert overrides == {"mcp_servers.docs.command": "docs-mcp"}
 

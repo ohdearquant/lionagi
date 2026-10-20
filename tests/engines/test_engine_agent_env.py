@@ -848,7 +848,9 @@ async def test_the_judge_refuses_over_an_ambient_config_nested_too_deep_to_parse
     with pytest.raises(ContainmentRefusedError, match="cannot read the codex config"):
         await engine.judge(run, "e1", "a subject")
     # The discovery reached its documented fallback rather than raising RecursionError.
-    assert [argv for argv, _ in calls if argv[0] == "codex"] == [["codex", "mcp", "list", "--json"]]
+    assert [argv for argv, _ in calls if argv[1:2] == ["mcp"]] == [
+        ["/nonexistent/codex-cli", "mcp", "list", "--json"]
+    ]
     assert started == []
 
 

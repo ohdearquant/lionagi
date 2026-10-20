@@ -2107,7 +2107,7 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
             else f"a root profile key of type {type(profile).__name__}"
         )
         raise ConfigurationError(
-            f"Codex cannot start with --ignore-user-config: {config_path} sets {named}. Codex "
+            f"Codex is not started with --ignore-user-config: {config_path} sets {named}. Codex "
             "0.130.0, given no -p, makes it the active profile, whose sandbox settings replace "
             "the root ones, and codex 0.162.1 still declares the key. The flag hides the key, "
             "so the run would start without what codex does with it. Remove the key, and set "

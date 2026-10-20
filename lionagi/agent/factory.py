@@ -921,6 +921,8 @@ def apply_forwarded_mcp_servers(
             if isinstance(key, str) and str.__str__(key).strip(_TRIMMED).split(".")[0] == "profile":
                 named_profile = value
         if named_profile is None:
+            if child_env is not None:
+                _refuse_non_absolute_codex_home(child_env)
             try:
                 named_profile = configured_codex_profile(child_env)
             except ValueError:
@@ -1010,6 +1012,7 @@ def apply_forwarded_mcp_servers(
 
         # The profile file is written under this process's codex home, and codex looks for
         # `-p <name>` under the home its own environment names.
+        _refuse_non_absolute_codex_home(child_env)
         if codex_home_for_env(child_env).resolve() != _codex_home().resolve():
             raise ConfigurationError(
                 f"MCP server(s) {sorted(secret_fields)!r} set `env` or `http_headers`, which "
@@ -1204,6 +1207,18 @@ _CODEX_MCP_SERVER_FIELDS = frozenset(
 _SECRET_CODEX_MCP_FIELDS = frozenset({"env", "http_headers"})
 
 
+def _refuse_non_absolute_codex_home(env: Mapping[str, str]) -> None:
+    """Refuse a child CODEX_HOME that is a `~` or relative path before reading the config it
+    names, as the project-layer check does: where it lands depends on the child, not on the
+    directory read here."""
+    value = env.get("CODEX_HOME")
+    if value and not os.path.isabs(value):
+        raise ConfigurationError(
+            f"The child environment's CODEX_HOME {value!r} is not an absolute path, so the "
+            "codex config it names cannot be read before the run starts. Give an absolute path."
+        )
+
+
 def _discover_ambient_codex_mcp_server_names(env: Mapping[str, str] | None = None) -> set[str]:
     """Discover names of ambient/profile-configured codex MCP servers codex
     would load on its own, so an explicit allowlist can disable them too.
@@ -1226,6 +1241,7 @@ def _discover_ambient_codex_mcp_server_names(env: Mapping[str, str] | None = Non
     else:
         from lionagi.providers.openai._codex_profile import codex_home_for_env
 
+        _refuse_non_absolute_codex_home(env)
         codex_home = codex_home_for_env(env)
     config_path = codex_home / "config.toml"
     try:
@@ -1242,9 +1258,13 @@ def _discover_ambient_codex_mcp_server_names(env: Mapping[str, str] | None = Non
             return set(mcp_servers)
         return set()
 
+    from lionagi.providers.openai.codex import CODEX_CLI
+
     try:
-        result = subprocess.run(
-            ["codex", "mcp", "list", "--json"],  # noqa: S607 — relies on PATH resolution for "codex", intentional
+        result = subprocess.run(  # noqa: S603 -- the argv is the binary below and literals
+            # The binary the run itself starts, found on this process's PATH: the child's
+            # environment may carry no PATH at all, and the run still starts.
+            [CODEX_CLI or "codex", "mcp", "list", "--json"],  # noqa: S607
             env=None if env is None else dict(env),
             capture_output=True,
             text=True,

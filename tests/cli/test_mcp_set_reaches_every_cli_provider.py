@@ -432,6 +432,46 @@ def test_secret_fields_are_refused_for_a_child_under_another_codex_home(codex_ho
     assert len(codex_home.profile_files()) == 1
 
 
+@pytest.mark.parametrize("value", ["~/child-codex-home", "child-codex-home"])
+@pytest.mark.parametrize("site", ["allowlist", "root profile", "secret profile"])
+def test_a_child_codex_home_that_is_not_absolute_is_refused_before_its_config_is_read(
+    codex_home, tmp_path, monkeypatch, value, site
+):
+    """Each read of the child's codex config refuses a `~` or relative CODEX_HOME, as the
+    project-layer check does, with nothing started and no profile written. The config under
+    each place the value could land declares a root profile, so the root-profile read
+    would otherwise refuse for that instead. The control names the same home absolutely."""
+    import subprocess
+
+    monkeypatch.chdir(tmp_path)
+    child_home = tmp_path / "child-home"
+    for landed in (tmp_path / "child-codex-home", child_home / "child-codex-home"):
+        landed.mkdir(parents=True)
+        if site == "root profile":
+            (landed / "config.toml").write_text(_ROOT_PROFILE_CONFIG)
+    codex_home.write_config({"kept": {"command": "kept-mcp"}})
+    started: list = []
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: started.append(argv))
+
+    def apply(codex_home_value: str) -> bool:
+        env = {"CODEX_HOME": codex_home_value, "HOME": str(child_home), "PATH": "/usr/bin:/bin"}
+        if site == "allowlist":
+            return apply_forwarded_mcp_servers(
+                {}, {}, provider="codex", exclusive=True, allowed_names=["kept"], env=env
+            )
+        if site == "root profile":
+            return apply_forwarded_mcp_servers(
+                {}, SERVERS, provider="codex", exclusive=True, env=env
+            )
+        return apply_forwarded_mcp_servers({}, SECRET_SERVERS, provider="codex", env=env)
+
+    with pytest.raises(ConfigurationError, match="is not an absolute path"):
+        apply(value)
+    assert started == []
+    assert codex_home.profile_files() == []
+    assert apply(str(codex_home.path))
+
+
 @pytest.mark.parametrize("key", ["profile", " profile ", "profile.x"])
 def test_secret_fields_are_refused_beside_a_profile_override(codex_home, key):
     """The secret fields reach codex through a `-p` profile of their own; an override that
