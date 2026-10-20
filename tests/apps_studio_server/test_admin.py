@@ -1054,14 +1054,12 @@ def test_one_scan_answers_once_per_artifact_root(tmp_path):
 # the loop's pulse, and how long a stall has to be before it counts as the loop
 # having been held. A walk left on the loop stalls it for at least the whole
 # block, so the tolerance sits at half the block: equal margin on each side.
-# A hosted runner in the middle of a full parallel run has been measured
-# stalling a healthy loop for 0.3 s, which a narrower margin read as the defect.
 _BLOCK_SECONDS = 1.5
 _TICK_SECONDS = 0.005
 _STALL_TOLERANCE = _BLOCK_SECONDS / 2
 
 
-async def _max_loop_stall(coro) -> float:
+async def _max_loop_stall(coro, during: list[tuple[float, float]] | None = None) -> float:
     """Run *coro*, returning the longest the loop went without giving a turn.
 
     Counting turns is not enough, and the difference is not academic: a
@@ -1074,17 +1072,28 @@ async def _max_loop_stall(coro) -> float:
     The longest gap does not dilute with the coroutine's total length. It is
     also the number another in-flight request actually experiences, which is
     what the property is about.
+
+    With *during*, a list of ``(start, end)`` intervals filled in while *coro*
+    runs, only the part of each gap that overlaps one of them counts. A walk
+    left on the loop leaves no turn anywhere inside its interval, so it still
+    measures the whole block; the coroutine's own work before and after the
+    walk (opening the store, writing the transition) is not what is measured.
     """
-    worst = 0.0
-    last = time.perf_counter()
+    ticks = [time.perf_counter()]
     task = asyncio.ensure_future(coro)
     while not task.done():
         await asyncio.sleep(_TICK_SECONDS)
-        now = time.perf_counter()
-        worst = max(worst, now - last)
-        last = now
+        ticks.append(time.perf_counter())
     await task
-    return worst
+    windows = during if during is not None else [(ticks[0], ticks[-1])]
+    return max(
+        (
+            max(0.0, min(b, end) - max(a, start))
+            for a, b in zip(ticks, ticks[1:], strict=False)
+            for start, end in windows
+        ),
+        default=0.0,
+    )
 
 
 @pytest.mark.parametrize(
@@ -1146,11 +1155,12 @@ def test_a_lock_scan_does_not_block_the_loop_that_serves_every_other_request(
     _run(_age_and_record_dead_pid())
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
-    walked: list[Path] = []
+    walks: list[tuple[float, float]] = []
 
     def slow_walk(root, *, cutoff, budget=None):
-        walked.append(root)
+        start = time.perf_counter()
         time.sleep(_BLOCK_SECONDS)
+        walks.append((start, time.perf_counter()))
         return admin_svc._ScanResult(None, False)
 
     monkeypatch.setattr(admin_svc, "_walk_for_stale_lock", slow_walk)
@@ -1164,9 +1174,9 @@ def test_a_lock_scan_does_not_block_the_loop_that_serves_every_other_request(
     else:
         subject = getattr(admin_svc, endpoint)()
 
-    stall = _run(_max_loop_stall(subject))
+    stall = _run(_max_loop_stall(subject, during=walks))
 
-    assert walked, (
+    assert walks, (
         "no walk ran, so the loop was free for reasons unrelated to this fix; "
         "the stall below describes an empty population"
     )
