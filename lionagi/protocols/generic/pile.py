@@ -77,7 +77,7 @@ def _validate_item_type(value, /) -> set[type[T]] | None:
     if value is None:
         return None
 
-    value = to_list_type(value)
+    value = [value] if isinstance(value, str) else to_list_type(value)
     resolved = []
 
     from lionagi._class_registry import get_class

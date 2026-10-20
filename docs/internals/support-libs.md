@@ -79,11 +79,13 @@ When a dotted name under an allowed prefix fails to load and no later step
 resolves it, the `ValueError` says why loading failed and chains that error.
 `Element.from_dict` accepts only an Element subclass from it and raises
 `ValueError` otherwise, and a `Pile`'s `item_type` names resolve the same way,
-so data naming a class from a package of your own needs that package imported
-first or its prefix registered. A refused dotted `item_type` name raises
-`ValidationError` naming both remedies; a bare name is refused there, with a
-message giving the dotted form to use. A union in `item_type` counts as each of
-its members.
+so data naming a class from a package of your own needs its defining module
+imported first or its package prefix registered. The error gives the remedy
+that fits the name: `register_type_prefix()` for a dotted name outside the
+allowed prefixes whose module is not imported, the dotted form for a bare name,
+and why loading failed for a name under an allowed prefix. A bare `item_type`
+name is refused, a single name counts as a list holding it, and a union counts
+as each of its members.
 
 <a id="path-safety-contain-relative-path"></a>
 

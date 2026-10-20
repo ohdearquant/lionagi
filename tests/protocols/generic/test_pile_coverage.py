@@ -35,9 +35,9 @@ class TestValidateItemType:
         with pytest.raises(ValidationError):
             _validate_item_type(["nonexistent.module.ClassName"])
 
-    def test_bad_string_resolves_error_is_suppressed(self):
+    def test_a_single_string_resolves_as_a_list_holding_it_does(self):
         result = _validate_item_type("lionagi.protocols.generic.element.Element")
-        assert result is None
+        assert result == {Element}
 
     def test_non_type_raises_validation_error(self):
         with pytest.raises(ValidationError):

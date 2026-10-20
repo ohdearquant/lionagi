@@ -138,7 +138,7 @@ def test_a_name_with_an_empty_module_or_class_part_is_refused(lion_class, monkey
     monkeypatch.setitem(LION_CLASS_REGISTRY, "probe.LocalElement", LocalElement)
     loads = []
     monkeypatch.setattr(_class_registry, "load_type_from_string", loads.append)
-    with pytest.raises(ValueError, match="Unable to find class .*register_type_prefix"):
+    with pytest.raises(ValueError, match="Unable to find class .*not a dotted class path"):
         get_class(lion_class)
     assert loads == []
 
@@ -243,8 +243,9 @@ def test_a_name_does_not_resolve_to_a_type_a_built_in_module_imports(short):
     for name in (short, f"lionagi.no_such_mod_zz.{short}"):
         with pytest.raises(ValueError, match="Unable to find class"):
             get_class(name)
-    with pytest.raises(ValidationError, match="register_type_prefix"):
+    with pytest.raises(ValidationError, match="no class of that name loads") as raised:
         Element.from_dict(_dumped_pile([f"lionagi.no_such_mod_zz.{short}"]))
+    assert "register_type_prefix" not in str(raised.value)
 
 
 class _SlottedProxy:
@@ -388,3 +389,41 @@ def test_a_bare_item_type_name_is_refused_with_the_dotted_form_to_use():
         ValidationError, match="names no module: pass the class itself or its dotted"
     ):
         Pile(item_type=["Element"])
+
+
+@pytest.mark.parametrize(
+    "item_type", ["lionagi.protocols.generic.element.Element", "lionagi.protocols.graph.node.Node"]
+)
+def test_a_single_dotted_name_as_item_type_is_resolved(item_type):
+    assert Pile(item_type=item_type).item_type == {get_class(item_type)}
+
+
+def test_a_single_bare_name_as_item_type_is_refused():
+    with pytest.raises(ValidationError, match="names no module"):
+        Pile(item_type="Element")
+
+
+def test_a_single_name_as_item_type_outside_the_prefixes_is_refused(probe_module):
+    with pytest.raises(ValidationError, match="register_type_prefix"):
+        Pile(item_type=f"{_MODULE}.Thing")
+    assert not probe_module.exists()
+
+
+@pytest.mark.parametrize(
+    ("name", "says"),
+    [
+        ("", "not a dotted class path or a class name"),
+        ("lionagi.", "not a dotted class path or a class name"),
+        ("NoSuchClassZz", "give its dotted path"),
+        ("lionagi.no_such_mod_zz.Thing", "no class of that name loads from that module path"),
+        ("json.NoSuchClassZz", "its module is imported and holds no class of that name"),
+        (f"{_MODULE}.Thing", "allow its package with lionagi.ln.register_type_prefix()"),
+    ],
+)
+def test_the_not_found_remedy_fits_the_shape_of_the_name(name, says, probe_module):
+    with pytest.raises(ValueError) as raised:
+        get_class(name)
+    assert says in str(raised.value)
+    if not says.startswith("allow"):
+        assert "register_type_prefix" not in str(raised.value)
+    assert not probe_module.exists()

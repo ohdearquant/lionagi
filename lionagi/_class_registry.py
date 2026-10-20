@@ -37,9 +37,18 @@ __all__ = (
     "LION_CLASS_REGISTRY",
 )
 
-_NOT_FOUND = (
-    "Unable to find class {}: import the module that defines it first, or allow its "
-    "package with lionagi.ln.register_type_prefix()"
+_NOT_FOUND = "Unable to find class {}: {}"
+# What would make the name resolve differs by its shape.
+_MALFORMED = "it is not a dotted class path or a class name"
+_BARE = (
+    "a bare name resolves only to a class in lionagi's built-in modules or in "
+    "LION_CLASS_REGISTRY; give its dotted path"
+)
+_UNDER_PREFIX = "no class of that name loads from that module path"
+_IMPORTED = "its module is imported and holds no class of that name"
+_OUTSIDE = (
+    "its module is outside the allowed prefixes; import that module first, or allow "
+    "its package with lionagi.ln.register_type_prefix()"
 )
 
 
@@ -60,7 +69,7 @@ def get_class(class_name: str) -> type:
     if not class_name:
         # Reject empty names here: the suffix-match fallback below would
         # otherwise match any registry key ending in a bare ".".
-        raise ValueError(_NOT_FOUND.format(repr(class_name)))
+        raise ValueError(_NOT_FOUND.format(repr(class_name), _MALFORMED))
 
     if class_name in LION_CLASS_REGISTRY:
         return LION_CLASS_REGISTRY[class_name]
@@ -76,7 +85,7 @@ def get_class(class_name: str) -> type:
         mod, _, name = class_name.rpartition(".")
         # An empty short name ("pkg.") would match every registry key ending in ".".
         if not mod or not name:
-            raise ValueError(_NOT_FOUND.format(class_name))
+            raise ValueError(_NOT_FOUND.format(class_name, _MALFORMED))
         module = sys.modules.get(mod)
         if isinstance(module, types.ModuleType):
             # The module's own namespace, not getattr: a module-level
@@ -95,7 +104,8 @@ def get_class(class_name: str) -> type:
         allowed = _ln_utils._ALLOWED_MODULE_PREFIXES
         prefixes = tuple(p for p in allowed if class_name.startswith(p))
         if not prefixes:
-            raise ValueError(_NOT_FOUND.format(class_name)) from load_error
+            hint = _IMPORTED if isinstance(module, types.ModuleType) else _OUTSIDE
+            raise ValueError(_NOT_FOUND.format(class_name, hint)) from load_error
 
     for mod_name in _BUILTIN_MODULES:
         try:
@@ -120,10 +130,9 @@ def get_class(class_name: str) -> type:
             if "." not in class_name or f"{defined_in}.".startswith(prefixes):
                 return cls
 
-    message = _NOT_FOUND.format(class_name)
+    message = _NOT_FOUND.format(class_name, _UNDER_PREFIX if "." in class_name else _BARE)
     if load_error is not None:
         # The name is under an allowed prefix, so loading it was already tried:
-        # say why it failed (a module that raises on import, a missing name),
-        # which the generic remedy above does not cover.
+        # say why it failed (a module that raises on import, a missing name).
         message = f"{message} (loading it failed: {load_error})"
     raise ValueError(message) from load_error

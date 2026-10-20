@@ -80,7 +80,7 @@ The current implementation is defined by `lionagi/protocols/generic/element.py`,
 |---|---|
 | Object identity and base fields | D1: Addressable framework models inherit the frozen UUID and creation timestamp plus mutable metadata from `Element`. |
 | Serialized envelope | D2: Writers place a fully qualified `lion_class` discriminator in metadata and support Python, JSON, and database dictionary shapes. |
-| Concrete-class recovery | D3: Readers resolve registry entries, importable dotted paths, and a fixed legacy built-in short-name set in that order. |
+| Concrete-class recovery | D3: Readers resolve registry entries, importable dotted paths, and a fixed legacy built-in short-name set in that order. Amendment 1 replaces the order and imports a dotted path only under an allowed prefix. |
 | Node payload | D4: `Node` adds serializable arbitrary content and a nullable float-list embedding while retaining the Element envelope. |
 
 This ADR deliberately does **not** decide:
@@ -229,6 +229,10 @@ database shapes move metadata as one unit.
 
 The resolver is deliberately compatibility-oriented rather than a uniform extension registry.
 
+Amendment 1 at the top of this record supersedes this section's resolution order, the direct
+import retry in `Element.from_dict` and the statement that the code keeps no allow-list. The text
+below records the resolver as it was before the amendment.
+
 **The contract** (`lionagi/_class_registry.py`):
 
 ```python
@@ -237,7 +241,7 @@ LION_CLASS_REGISTRY: dict[str, type] = {}
 def get_class(class_name: str) -> type: ...
 ```
 
-Resolution proceeds in this exact order:
+Before Amendment 1, resolution proceeded in this order:
 
 1. Return an exact `LION_CLASS_REGISTRY[class_name]` hit.
 2. If the string contains `.`, split it at the last dot and attempt to import that module attribute;
@@ -275,7 +279,8 @@ class Node(Element, Relational, AsyncAdaptable, Adaptable):
 - A short-name suffix collision is resolved by registry insertion order, not by an explicit
   ambiguity error.
 - Dotted-path recovery executes Python import machinery. Payloads must therefore come from a trust
-  context permitted to name importable classes; the code does not maintain an allow-list.
+  context permitted to name importable classes; the code did not maintain an allow-list before
+  Amendment 1.
 
 This shape grew from two compatibility needs: qualified names for extensions and continued reads
 of older built-in short names. It buys recovery breadth at the cost of an asymmetric registration
