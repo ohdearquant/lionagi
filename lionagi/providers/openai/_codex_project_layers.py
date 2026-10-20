@@ -35,11 +35,13 @@ from lionagi._errors import ConfigurationError
 
 try:
     import tomllib as _tomllib
-except ModuleNotFoundError:  # Python 3.10: the declared `tomli`, a TOML 1.0 parser like tomllib
+except ModuleNotFoundError:  # Python 3.10: the declared `tomli`; recent releases also read TOML 1.1
     import tomli as _tomllib  # type: ignore[no-redef]
 
 __all__ = ("declaring_project_layer", "mcp_servers_declaration_line", "project_layers")
 
+# How many candidate lines `mcp_servers_declaration_line` tries before naming the first.
+_LINES_TRIED = 8
 _TOML_CODE_POINT = re.compile(r"\\u([0-9A-Fa-f]{4})|\\U([0-9A-Fa-f]{8})|\\x([0-9A-Fa-f]{2})")
 
 
@@ -149,13 +151,15 @@ def _canonical(path: Path) -> Path:
 def mcp_servers_declaration_line(text: str) -> int | None:
     """The line of a top-level ``mcp_servers`` declaration in TOML text, or ``None``.
 
-    Text a TOML 1.0 parser reads is decided by that parse, as Codex decides it: the root
+    Text the TOML parser reads is decided by that parse, as Codex decides it: the root
     table holds the key or it does not, whatever a multi-line string or array between
     the lines holds. The line named is the first whose removal changes what the parse
-    reads as ``mcp_servers``, so never a line inside a string. Text the parser refuses,
-    TOML 1.1 syntax Codex's own parser accepts included, has no structure to trust, so
-    every line counts whose first key segment is ``mcp_servers``, a header or a key under
-    any table, toward refusing.
+    reads as ``mcp_servers``, so not a line inside a string. Each line tried costs a parse
+    of the whole file, so at most ``_LINES_TRIED`` are tried; past them the first line that
+    reads as a declaration is named, which in a file built that way can be a string's.
+    Text the parser refuses, TOML 1.1 syntax where it reads only 1.0 included, has no
+    structure to trust, so every line counts whose first key segment is ``mcp_servers``,
+    a header or a key under any table, toward refusing.
     """
     try:
         parsed = _tomllib.loads(text)
@@ -164,14 +168,16 @@ def mcp_servers_declaration_line(text: str) -> int | None:
     if "mcp_servers" not in parsed:
         return None
     lines = text.split("\n")
-    for number in _declaration_lines(text):
+    candidates = _declaration_lines(text)
+    for number in candidates[:_LINES_TRIED]:
         rest = "\n".join([*lines[: number - 1], "", *lines[number:]])
         try:
             if _tomllib.loads(rest).get("mcp_servers") != parsed["mcp_servers"]:
                 return number
         except _tomllib.TOMLDecodeError:
             return number  # the line carries structure the declaration needs
-    return 1  # the parse found it: the refusal never waits on its line
+    # the parse found it: the refusal never waits on its line
+    return candidates[0] if len(candidates) > _LINES_TRIED else 1
 
 
 def _declaration_lines(text: str) -> list[int]:

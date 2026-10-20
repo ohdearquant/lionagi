@@ -1310,13 +1310,13 @@ class CodexCodeRequest(BaseModel):
             "authentication store. The flag does not cover project layers, so a run "
             "with this set is refused when one of them declares `mcp_servers`. The user "
             "config's `sandbox_mode` and `[sandbox_workspace_write]` settings are passed "
-            "beside the flag, those that widen the sandbox only when the run's overrides "
-            "and project layers leave them unset, and its hook trust records are merged "
-            "with any the overrides write, so the hooks it trusts in CODEX_HOME/hooks.json "
-            "still run. Its `[projects]` trust decisions are merged the same way, so codex "
-            "derives a trusted project's sandbox and loads its project layers as it would "
-            "with the file. A user config that declares hooks or sets `default_permissions` "
-            "is refused, since neither can ride beside the flag."
+            "beside the flag unless the run's overrides set them, and the mode or a setting "
+            "that widens the sandbox refuses the run where a project layer sets it otherwise. "
+            "Its hook trust records and `[projects]` trust decisions are merged with any the "
+            "overrides write, so the hooks it trusts in CODEX_HOME/hooks.json still run and "
+            "codex derives a trusted project's sandbox and loads its layers as with the file. "
+            "A user config that cannot be read, declares hooks or sets `default_permissions` "
+            "is refused, since what it holds cannot ride beside the flag."
         ),
         json_schema_extra=_cli("--ignore-user-config", 64, "bool"),
     )
@@ -1992,8 +1992,8 @@ _CODEX_HOOK_EVENTS = frozenset(
 # replaces `sandbox_mode` (config_toml.rs).
 _SANDBOX_MODE_KEYS = (("sandbox_mode",), ("default_permissions",))
 # The `[sandbox_workspace_write]` settings codex reads. A carried value beats a project
-# layer's, so the first two, which widen the sandbox, ride only when no project layer sets
-# them; the last two narrow it, and ride whatever a project layer says.
+# layer's, so the first two, which widen the sandbox, ride only where no project layer sets
+# them to another value; the last two narrow it, and ride whatever a project layer says.
 _WIDENING_WORKSPACE_KEYS = ("writable_roots", "network_access")
 _NARROWING_WORKSPACE_KEYS = ("exclude_tmpdir_env_var", "exclude_slash_tmp")
 # The values of a `[projects."<dir>"]` entry's `trust_level` (config_types.rs `TrustLevel`).
@@ -2017,21 +2017,19 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
     command line. With no sandbox mode set, codex gives a directory it has a trust
     decision for workspace-write, and it loads a project layer only when trusted.
 
-    Codex reads a project layer above the user config and the command line above both,
-    so a carried value would beat a project layer's. The sandbox mode and the settings
-    that widen the sandbox therefore ride only when neither the run's overrides nor a
-    project layer set them, and a project layer whose settings cannot be read counts as
-    setting them all, which leaves codex its own default. The settings that narrow the
-    sandbox ride unless the overrides set them. The hook trust records and the project
-    trust decisions ride merged with any the overrides write, field by field and theirs
-    winning, as codex merges the user config's with the command line's; codex then
-    matches the run's directory against them itself.
+    The sandbox mode and the settings that widen the sandbox ride unless the run's
+    overrides set them, and only where no project layer sets them to another value
+    (`_refuse_project_layer_disagreement`): codex applies a project layer only when it
+    trusts the project, and a value on the command line beats the layer's. The settings
+    that narrow the sandbox ride unless the overrides set them. The hook trust records and
+    the project trust decisions ride merged with any the overrides write, field by field
+    and theirs winning, as codex merges the user config's with the command line's; codex
+    then matches the run's directory against them itself.
 
-    Two things cannot ride, and a run that would drop them is refused: hook events
-    declared in the file itself, whose trust records name a file the run does not load,
-    and `default_permissions`, a permissions profile codex applies in place of
-    `sandbox_mode`. A file that cannot be read carries nothing, and the warning says
-    what is lost.
+    What cannot ride refuses the run: hook events declared in the file itself, whose
+    trust records name a file the run does not load; `default_permissions`, a permissions
+    profile codex applies in place of `sandbox_mode`; and a file that exists but cannot be
+    read, since the hooks it declares, if any, would be dropped unseen.
     """
     config_path = codex_home_for_env(plain.env) / "config.toml"
     try:
@@ -2040,13 +2038,12 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
             raise ValueError(f"the codex config {str(config_path)!r} is not a regular file")
         config = config or {}
     except ValueError as exc:
-        log.warning(
-            "the ignored codex config cannot be read, so its sandbox settings and trust "
-            "records do not ride beside the flag, and no hook or project it trusts is "
-            "trusted: %s",
-            exc,
-        )
-        return _UserConfigCarry()
+        raise ConfigurationError(
+            f"Codex cannot start with --ignore-user-config: {exc}. The hooks it may declare "
+            "cannot be checked, and its sandbox settings and trust records cannot ride "
+            "beside the flag. Make the file one this Python's TOML parser reads, or run without "
+            "ignore_user_config."
+        ) from None
     hooks = config.get("hooks")
     hooks = hooks if isinstance(hooks, Mapping) else {}
     declared = sorted(
@@ -2077,8 +2074,13 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
             mode,
         )
         mode = None
-    if any(_sets(flags, key) for key in _SANDBOX_MODE_KEYS):
-        mode = None
+    if (
+        any(_sets(flags, key) for key in _SANDBOX_MODE_KEYS)
+        or plain.sandbox
+        or plain.full_auto
+        or plain.bypass_approvals
+    ):
+        mode = None  # the request sets the mode itself, so a carried one would not render
     table = config.get("sandbox_workspace_write")
     table = table if isinstance(table, Mapping) else {}
     widening, narrowing = (
@@ -2090,15 +2092,10 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
         }
         for names in (_WIDENING_WORKSPACE_KEYS, _NARROWING_WORKSPACE_KEYS)
     )
-    if mode is not None or widening:
-        widening_keys = tuple(("sandbox_workspace_write", name) for name in widening)
-        project = _project_layers_set(plain, cwd, (*_SANDBOX_MODE_KEYS, *widening_keys))
-        mode = None if any(key in project for key in _SANDBOX_MODE_KEYS) else mode
-        widening = {
-            name: value
-            for name, value in widening.items()
-            if ("sandbox_workspace_write", name) not in project
-        }
+    carried: dict[tuple[str, ...], Any] = {("sandbox_mode",): mode} if mode is not None else {}
+    carried.update((("sandbox_workspace_write", name), value) for name, value in widening.items())
+    if carried:
+        _refuse_project_layer_disagreement(plain, cwd, config_path, carried)
     return _UserConfigCarry(
         sandbox_mode=mode,
         workspace_write=tuple({**widening, **narrowing}.items()),
@@ -2255,11 +2252,11 @@ def _command_line_layer(plain: _PlainRequest) -> dict[str, Any]:
     """The table codex builds from the run's `-c` overrides, as its loader builds it: the
     key trimmed and split at every `.`, quotes included, and a later override replacing
     whatever an earlier one left at its key. (Codex merges instead at a few
-    `features.<name>` keys; nothing read from this table is one.) A key TOML cannot read
-    is refused, as everywhere an override's key is taken apart."""
+    `features.<name>` keys; nothing read from this table is one.) Codex reads any key
+    this way, one TOML cannot read included, such as `projects./home/u/repo.trust_level`,
+    so none is refused here."""
     root: dict[str, Any] = {}
-    for index, (key, value) in enumerate(plain.overrides):
-        _override_key_path(key, f"The key of the config override entry {index}")
+    for key, value in plain.overrides:
         *parents, last = key.strip(_TRIMMED).split(".")
         table = root
         for part in parents:
@@ -2280,24 +2277,54 @@ def _sets(table: Mapping[str, Any], key_path: Sequence[str]) -> bool:
     return True
 
 
-def _project_layers_set(
-    plain: _PlainRequest, cwd: Path, key_paths: Sequence[tuple[str, ...]]
-) -> set[tuple[str, ...]]:
-    """Which of ``key_paths`` a project layer of the run sets. A layer the TOML parser
-    refuses, and project layers that cannot be determined, count as setting them all:
-    what they set is unknown, and the check before the process starts refuses the latter."""
+def _refuse_project_layer_disagreement(
+    plain: _PlainRequest, cwd: Path, config_path: Path, carried: Mapping[tuple[str, ...], Any]
+) -> None:
+    """Refuse a run when a project layer sets a carried setting to another value.
+
+    Codex applies a project layer only when it trusts the project, and then the layer's
+    value beats the user config's; a carried value, on the command line, beats both. The
+    trust decision is codex's, made from the layer's directory, the project and repository
+    roots and managed configuration, so a carried value is exact only where no layer says
+    otherwise: a layer that sets the same value agrees whichever way codex decides. A layer
+    that sets another value, one that names a permissions profile in place of the mode,
+    one the TOML parser refuses, and project layers that cannot be determined all refuse
+    the run. Setting the key in the run's overrides keeps it from riding, and codex then
+    decides between the overrides and the layer as it does without the flag.
+    """
     try:
         layers = list(project_layers(cwd, os.environ if plain.env is None else plain.env))
-    except ConfigurationError:
-        return set(key_paths)
-    found: set[tuple[str, ...]] = set()
-    for _, text in layers:
+    except ConfigurationError as exc:
+        raise ConfigurationError(
+            f"Codex cannot start under cwd {cwd} with --ignore-user-config: {exc}."
+        ) from exc
+    for layer_path, text in layers:
         try:
-            table = _tomllib.loads(text)
+            table: Mapping[str, Any] | None = _tomllib.loads(text)
         except _tomllib.TOMLDecodeError:
-            return set(key_paths)
-        found.update(path for path in key_paths if _sets(table, path))
-    return found
+            table = None
+        for key_path, value in carried.items():
+            dotted = ".".join(key_path)
+            if table is None:
+                how = "cannot be parsed, so whether it sets it otherwise is unknown"
+            elif key_path == ("sandbox_mode",) and _sets(table, ("default_permissions",)):
+                how = "names a permissions profile in its place"
+            elif not _sets(table, key_path):
+                continue
+            else:
+                layer_value: Any = table
+                for part in key_path:
+                    layer_value = layer_value[part]
+                if layer_value == value:
+                    continue
+                how = "sets it to another value"
+            raise ConfigurationError(
+                f"Codex cannot start under cwd {cwd} with --ignore-user-config: {config_path} "
+                f"sets `{dotted}`, which rides beside the flag, and the project config "
+                f"{layer_path} {how}. Codex applies the project's setting only when it trusts "
+                f"the project, so which one the run gets is not decided here. Set `{dotted}` "
+                "in the run's config overrides."
+            )
 
 
 def refuse_declaring_project_layer(plain: _PlainRequest, cwd: Path) -> None:

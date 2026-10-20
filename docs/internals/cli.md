@@ -887,7 +887,7 @@ default for SIGINT).
 
 **`_do_engine_run` export_dir sourcing** — serializes the result to stdout as JSON.
 `export_dir`: the CLI knows what directory it passed; neither `CodeResultRecorded`
-(`lionagi/engines/coding.py:153` — fields: `passed`, `measurements`, `caveats`,
+(`lionagi/engines/coding.py:125-131` — fields: `passed`, `measurements`, `caveats`,
 `experiment_ref`, `verdict_ref`) nor the hypothesis string echo it back. `export_dir` is sourced
 from args directly for kinds that accept the flag, falling back to `result_data` for any future
 engine model that does include it.
@@ -1095,7 +1095,7 @@ LION system text. The post-factory `add_message` on the preset path is skipped t
 
 **`_run_agent` raw_body vs system_prompt** — uses `profile.raw_body` (not
 `profile.system_prompt`) to avoid duplicating `LION_SYSTEM_MESSAGE`: `_parse_profile` prepends
-it into `system_prompt` when `lion_system=True`, and `factory.py:117-125` also prepends it
+it into `system_prompt` when `lion_system=True`, and `factory.py:291-294` also prepends it
 because `spec.lion_system` remains `True`. `raw_body` is the profile body before that expansion;
 the factory adds the header exactly once. When `lion_system=False`, `raw_body == system_prompt`
 so both paths are consistent.

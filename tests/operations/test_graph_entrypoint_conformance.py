@@ -294,7 +294,7 @@ GRAPH_SURFACES: tuple[GraphSurface, ...] = (
         persistence="inherited",
         reason="registers the 'engine' operation consumed by run-workflow-def; production "
         "make_engine_operation resolves whichever engine kind the node names and calls "
-        "engine.run(...) generically (lionagi/studio/services/workflow_compile.py:613-643) — "
+        "engine.run(...) generically (lionagi/studio/services/workflow_compile.py:539-602) — "
         "the cited test drives a coding-kind engine through exactly that dispatch. Only the "
         "planning kind's engine.run subsequently reaches EngineRun.run_dag, and that further hop "
         "is covered separately by planning-engine-run and engine-run-dag, not by this row",

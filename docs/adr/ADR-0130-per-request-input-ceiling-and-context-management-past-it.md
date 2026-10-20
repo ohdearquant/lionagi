@@ -101,7 +101,7 @@ be measured, and under a ceiling are refused with that reason, never sent unmeas
 provider holds the history remotely, and whether a count it reports is for one request, is that
 provider adapter's statement, not an inference from a `resume` argument. The Codex adapter
 renders branch history for every turn and does not resume a Codex thread
-(`lionagi/providers/openai/codex.py:2379-2384`). Today no resuming adapter makes
+(`lionagi/providers/openai/codex.py:2406-2411`). Today no resuming adapter makes
 that statement: the Claude Code adapter yields only its terminal `result` usage, a total
 whenever the session ran more than one request. The run attaches that metadata to an
 `AssistantResponse` only when the turn produced text (`lionagi/operations/run/run.py:526-545`),

@@ -309,6 +309,27 @@ def test_mcp_servers_declaration_line_finds_every_top_level_form(text, line):
     assert mcp_servers_declaration_line(text) == line
 
 
+def test_the_line_search_stops_after_a_bounded_number_of_parses(monkeypatch):
+    """Each line tried is a parse of the whole file, so a file with many declaration-shaped
+    lines inside a string costs a bounded number of parses, not one per line; past the
+    bound the first such line is named, and the parse still decides the refusal."""
+    from lionagi.providers.openai import _codex_project_layers as layers
+
+    parses = []
+    loads = layers._tomllib.loads
+    monkeypatch.setattr(
+        layers._tomllib, "loads", lambda text: parses.append(1) or loads(text), raising=True
+    )
+    text = 'note = """\n' + "mcp_servers = 1\n" * 1000 + '"""\n[mcp_servers.leak]\ncommand = "y"\n'
+
+    assert mcp_servers_declaration_line(text) == 2
+    assert len(parses) == 1 + layers._LINES_TRIED
+    # the control: with as many such lines as are tried, the declaration's own line is named
+    parses.clear()
+    few = 'note = """\n' + "mcp_servers = 1\n" * (layers._LINES_TRIED - 1) + '"""\n[mcp_servers]\n'
+    assert mcp_servers_declaration_line(few) == layers._LINES_TRIED + 2
+
+
 @pytest.mark.parametrize(
     "text",
     [

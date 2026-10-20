@@ -5,13 +5,13 @@
 ``--ignore-user-config`` keeps CODEX_HOME/config.toml, and every server and profile
 it declares, out of the run. What rides with it: the user config's sandbox mode and
 the `[sandbox_workspace_write]` settings that widen the sandbox, unless the run's
-overrides or a project layer set them, the settings that narrow it, unless the
-overrides set them, and its hook trust records and project trust decisions merged with
-any the overrides write, which the flag would otherwise drop with the rest of the file;
-no effort derived from
-a file the child never reads; a refusal when the user config declares hooks or a
-permissions profile itself; and a refusal when a project layer, which the flag does
-not suppress, declares MCP servers.
+overrides set them, the settings that narrow it, unless the overrides set them, and its
+hook trust records and project trust decisions merged with any the overrides write,
+which the flag would otherwise drop with the rest of the file; no effort derived from
+a file the child never reads; a refusal when the user config cannot be read or declares
+hooks or a permissions profile itself; a refusal when a project layer sets a carried
+sandbox setting to another value; and a refusal when a project layer, which the flag
+does not suppress, declares MCP servers.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from lionagi.providers.openai.codex import CodexCodeRequest
 
 if sys.version_info >= (3, 11):
     import tomllib
-else:  # the declared `tomli`, a TOML 1.0 parser like tomllib
+else:  # the declared `tomli`; recent releases also read TOML 1.1
     import tomli as tomllib
 
 GRANT = ["-c", "sandbox_workspace_write.network_access=true"]
@@ -122,16 +122,25 @@ def test_the_grant_is_read_from_the_home_the_childs_environment_names(tmp_path, 
     assert _has_pair(args, GRANT)
 
 
-def test_an_unreadable_user_config_grants_nothing_and_says_so(codex_home, caplog):
-    (codex_home / "config.toml").write_text("[sandbox_workspace_write\n")
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[sandbox_workspace_write\n",
+        # TOML 1.1, which codex reads: a TOML 1.0 parser refuses the file, so the hook it
+        # declares cannot be seen and the file is refused as unreadable; a parser that
+        # reads TOML 1.1 (`tomli` on Python 3.10) sees the hook and refuses it as declared
+        'note = "\\x41"\n[hooks]\nPreToolUse = [{ type = "command", command = "true" }]\n',
+    ],
+    ids=["broken", "toml-1.1-with-hooks"],
+)
+def test_an_unreadable_user_config_is_refused(codex_home, text):
+    (codex_home / "config.toml").write_text(text)
 
-    with caplog.at_level(logging.WARNING, logger="codex-cli"):
-        args = CodexCodeRequest(prompt="hi", ignore_user_config=True).as_cmd_args()
+    with pytest.raises(ConfigurationError, match="cannot read the codex config|declares hooks"):
+        CodexCodeRequest(prompt="hi", ignore_user_config=True).as_cmd_args()
 
-    assert "--ignore-user-config" in args
-    assert not _has_pair(args, GRANT)
-    assert "codex config cannot be read" in caplog.text
-    assert "no hook or project it trusts is trusted" in caplog.text
+    # the control: the run that reads the user config is not checked
+    assert "--ignore-user-config" not in CodexCodeRequest(prompt="hi").as_cmd_args()
 
 
 def test_no_effort_is_derived_from_a_user_config_the_run_ignores(codex_home):
@@ -464,23 +473,36 @@ def _project_layer(directory, text: str):
 
 
 @pytest.mark.parametrize(
-    ("layer", "sandbox", "grant"),
+    ("layer", "refused"),
     [
-        ('model = "x"\n', ["danger-full-access"], True),
-        ('sandbox_mode = "read-only"\n', [], True),
-        ("[sandbox_workspace_write]\nnetwork_access = false\n", ["danger-full-access"], False),
-        ("[sandbox_workspace_write]\nwritable_roots = []\n", ["danger-full-access"], True),
-        ("sandbox_mode =\n", [], False),
+        ('model = "x"\n', False),
+        ('sandbox_mode = "danger-full-access"\n', False),
+        ("[sandbox_workspace_write]\nnetwork_access = true\n", False),
+        ("[sandbox_workspace_write]\nwritable_roots = []\n", False),
+        ('sandbox_mode = "read-only"\n', True),
+        ('default_permissions = ":read-only"\n', True),
+        ("[sandbox_workspace_write]\nnetwork_access = false\n", True),
+        ("sandbox_mode =\n", True),
     ],
-    ids=["neither", "mode", "grant", "other-field", "unparsed"],
+    ids=[
+        "neither",
+        "same-mode",
+        "same-grant",
+        "other-field",
+        "other-mode",
+        "permissions-profile",
+        "other-grant",
+        "unparsed",
+    ],
 )
 @pytest.mark.parametrize("where", ["repo", "above-the-repo"])
-def test_a_project_layer_setting_the_sandbox_keeps_the_precedence_codex_gives_it(
-    tmp_path, codex_home, layer, sandbox, grant, where
+def test_a_project_layer_setting_the_sandbox_otherwise_refuses_the_run(
+    tmp_path, codex_home, layer, refused, where
 ):
-    """Codex reads a project layer above the user config and the command line above both,
-    so a value carried on the command line would beat the project layer's. A layer above
-    the repository's root counts too: the root codex picks can be higher."""
+    """Codex applies a project layer only when it trusts the project, and a value carried
+    on the command line beats the layer's, so a carried value is exact only where no layer
+    sets it to anything else. A layer above the repository's root counts too: the root
+    codex picks can be higher."""
     (codex_home / "config.toml").write_text(
         'sandbox_mode = "danger-full-access"\n[sandbox_workspace_write]\nnetwork_access = true\n'
     )
@@ -489,15 +511,75 @@ def test_a_project_layer_setting_the_sandbox_keeps_the_precedence_codex_gives_it
     (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
     _project_layer(repo if where == "repo" else tmp_path / "outer", layer)
 
-    args = CodexCodeRequest(prompt="hi", repo=repo, ignore_user_config=True).as_cmd_args()
+    def args(**overrides):
+        return CodexCodeRequest(
+            prompt="hi", repo=repo, ignore_user_config=True, config_overrides=overrides
+        ).as_cmd_args()
 
-    assert _sandbox_values(args) == sandbox
-    assert _has_pair(args, GRANT) is grant
+    if refused:
+        with pytest.raises(ConfigurationError, match="Codex applies the project's setting"):
+            args()
+        # set in the overrides, nothing rides for the mode and the grant, and the run starts
+        settled = args(sandbox_mode="read-only", sandbox_workspace_write={"network_access": False})
+        assert _sandbox_values(settled) == []
+        assert not _has_pair(settled, GRANT)
+    else:
+        assert _sandbox_values(args()) == ["danger-full-access"]
+        assert _has_pair(args(), GRANT)
     # the control: with no project layer both ride
     (tmp_path / "bare").mkdir()
     bare = CodexCodeRequest(prompt="hi", repo=tmp_path / "bare", ignore_user_config=True)
     assert _sandbox_values(bare.as_cmd_args()) == ["danger-full-access"]
     assert _has_pair(bare.as_cmd_args(), GRANT)
+
+
+@pytest.mark.parametrize("trust", ["trusted", "untrusted", None])
+@pytest.mark.parametrize(
+    ("user", "layer"),
+    [
+        ('sandbox_mode = "read-only"\n', 'sandbox_mode = "workspace-write"\n'),
+        (
+            'sandbox_mode = "workspace-write"\n[sandbox_workspace_write]\nnetwork_access = true\n',
+            'sandbox_mode = "read-only"\n[sandbox_workspace_write]\nnetwork_access = false\n',
+        ),
+    ],
+    ids=["read-only-user", "workspace-write-user"],
+)
+def test_the_refusal_does_not_turn_on_the_trust_decision(tmp_path, codex_home, user, layer, trust):
+    """Whether codex applies the layer turns on its trust decision: trusted, the layer's
+    value; untrusted or with no decision, the user's, or a default codex derives from the
+    decision. Dropping the user's value for an untrusted layer would let codex derive
+    workspace-write past a read-only user config, and carrying it for a trusted one would
+    beat the layer, so the run is refused whatever the decision says."""
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    _project_layer(repo, layer)
+    entry = f'[projects."{repo}"]\ntrust_level = "{trust}"\n' if trust else ""
+    (codex_home / "config.toml").write_text(user + entry)
+
+    with pytest.raises(ConfigurationError, match="sets it to another value"):
+        CodexCodeRequest(prompt="hi", repo=repo, ignore_user_config=True).as_cmd_args()
+
+
+def test_a_mode_the_request_sets_itself_is_not_checked_against_a_project_layer(
+    tmp_path, codex_home
+):
+    (codex_home / "config.toml").write_text('sandbox_mode = "danger-full-access"\n')
+    repo = tmp_path / "repo"
+    _project_layer(repo, 'sandbox_mode = "read-only"\n')
+
+    for request in (
+        {"sandbox": "workspace-write"},
+        {"full_auto": True},
+        {"bypass_approvals": True},
+    ):
+        args = CodexCodeRequest(
+            prompt="hi", repo=repo, ignore_user_config=True, **request
+        ).as_cmd_args()
+        assert "danger-full-access" not in args
+    # the control: left to the user config, the mode is checked
+    with pytest.raises(ConfigurationError, match="sets it to another value"):
+        CodexCodeRequest(prompt="hi", repo=repo, ignore_user_config=True).as_cmd_args()
 
 
 def test_reading_the_overrides_leaves_them_as_written(codex_home):
@@ -565,30 +647,36 @@ def test_every_workspace_write_setting_codex_reads_rides_beside_the_flag(codex_h
             {"writable_roots", "network_access", "exclude_tmpdir_env_var", "exclude_slash_tmp"},
         ),
         (
-            "[sandbox_workspace_write]\nwritable_roots = []\nnetwork_access = false\n",
-            {"exclude_tmpdir_env_var", "exclude_slash_tmp"},
+            '[sandbox_workspace_write]\nwritable_roots = ["/srv/data"]\nnetwork_access = true\n',
+            {"writable_roots", "network_access", "exclude_tmpdir_env_var", "exclude_slash_tmp"},
         ),
         (
             "[sandbox_workspace_write]\nexclude_tmpdir_env_var = false\nexclude_slash_tmp = false\n",
             {"writable_roots", "network_access", "exclude_tmpdir_env_var", "exclude_slash_tmp"},
         ),
-        ("sandbox_workspace_write =\n", {"exclude_tmpdir_env_var", "exclude_slash_tmp"}),
+        ("[sandbox_workspace_write]\nwritable_roots = []\n", None),
+        ("[sandbox_workspace_write]\nnetwork_access = false\n", None),
+        ("sandbox_workspace_write =\n", None),
     ],
-    ids=["neither", "widening", "narrowing", "unparsed"],
+    ids=["neither", "same-widening", "narrowing", "other-roots", "other-grant", "unparsed"],
 )
-def test_a_setting_that_widens_the_sandbox_gives_way_to_a_project_layer_and_one_that_narrows_it_does_not(
+def test_a_setting_that_widens_the_sandbox_is_checked_against_a_project_layer_and_one_that_narrows_it_is_not(
     tmp_path, codex_home, layer, expected
 ):
-    """Carried on the command line, the user's value beats a project layer's. Giving way
-    leaves a widening setting at codex's default; a narrowing one given way would widen
-    the sandbox past what either file asks, so it rides."""
+    """Carried on the command line, the user's value beats a project layer's. A widening
+    setting a layer sets otherwise refuses the run (``None``); a narrowing one rides
+    whatever the layer says, since it can only tighten the sandbox. The carried roots are
+    the user's absolute ones, so a layer listing exactly those agrees."""
     (codex_home / "config.toml").write_text(WORKSPACE)
     repo = tmp_path / "repo"
     _project_layer(repo, layer)
+    request = CodexCodeRequest(prompt="hi", repo=repo, ignore_user_config=True)
 
-    args = CodexCodeRequest(prompt="hi", repo=repo, ignore_user_config=True).as_cmd_args()
-
-    assert set(_workspace_pairs(args)) == expected
+    if expected is None:
+        with pytest.raises(ConfigurationError, match="sandbox_workspace_write"):
+            request.as_cmd_args()
+    else:
+        assert set(_workspace_pairs(request.as_cmd_args())) == expected
 
 
 def test_a_workspace_write_setting_the_overrides_write_is_theirs(codex_home):
@@ -646,18 +734,6 @@ def test_a_user_config_that_sets_a_permissions_profile_is_refused(codex_home, te
     ) == ["danger-full-access"]
 
 
-def test_a_project_layer_naming_a_permissions_profile_keeps_the_mode_off_the_command_line(
-    tmp_path, codex_home
-):
-    (codex_home / "config.toml").write_text('sandbox_mode = "danger-full-access"\n')
-    repo = tmp_path / "repo"
-    _project_layer(repo, 'default_permissions = ":read-only"\n')
-
-    args = CodexCodeRequest(prompt="hi", repo=repo, ignore_user_config=True).as_cmd_args()
-
-    assert _sandbox_values(args) == []
-
-
 @pytest.mark.parametrize(
     "text",
     [
@@ -678,19 +754,17 @@ def test_a_sandbox_mode_codex_does_not_read_rides_nowhere_and_says_so(codex_home
     assert "not a mode codex reads" in caplog.text
 
 
-def test_a_user_config_that_is_not_a_regular_file_carries_nothing_and_says_so(codex_home, caplog):
+def test_a_user_config_that_is_not_a_regular_file_is_refused(codex_home, caplog):
     (codex_home / "config.toml").mkdir()
 
-    with caplog.at_level(logging.WARNING, logger="codex-cli"):
-        args = CodexCodeRequest(prompt="hi", ignore_user_config=True).as_cmd_args()
+    with pytest.raises(ConfigurationError, match="not a regular file"):
+        CodexCodeRequest(prompt="hi", ignore_user_config=True).as_cmd_args()
 
-    assert "--ignore-user-config" in args
-    assert "not a regular file" in caplog.text
     # the control: no file at all is no config, and nothing is said
     (codex_home / "config.toml").rmdir()
-    caplog.clear()
     with caplog.at_level(logging.WARNING, logger="codex-cli"):
-        CodexCodeRequest(prompt="hi", ignore_user_config=True).as_cmd_args()
+        args = CodexCodeRequest(prompt="hi", ignore_user_config=True).as_cmd_args()
+    assert "--ignore-user-config" in args
     assert caplog.text == ""
 
 
@@ -779,8 +853,14 @@ def test_a_user_config_with_no_project_entries_carries_none(codex_home):
             {f'projects."{PROJECT}".trust_level': "untrusted"},
             {PROJECT: {"trust_level": "trusted"}, '"/home/u/work': {}},
         ),
+        # a key TOML cannot read, which codex reads by the same split: an entry for
+        # `/home/u/repo`
+        (
+            {"projects./home/u/repo.trust_level": "untrusted"},
+            {PROJECT: {"trust_level": "trusted"}, "/home/u/repo": {"trust_level": "untrusted"}},
+        ),
     ],
-    ids=["empty-table", "other-entry", "same-entry", "no-level", "dotted-key"],
+    ids=["empty-table", "other-entry", "same-entry", "no-level", "dotted-key", "path-key"],
 )
 def test_projects_the_overrides_write_merge_with_the_user_configs_field_by_field(
     codex_home, overrides, expected
