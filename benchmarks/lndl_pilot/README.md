@@ -74,16 +74,34 @@ it (`lndl` 23 against ReAct 24). r5, the run ADR-0132 D4 names as deciding, fail
 3.59 requests per accepted task against ReAct 23 at 4.30. By its checks r5 meets the rule with 23
 on each side; the difference is the `lndl` answer to `t24`.
 
-The reading is one reader's judgment, made knowing which loop wrote each answer. It judges what
-each answer says to its question and did not check every side claim; each task's `truth` line is
-the source line it was read against, so another reader can redo it. Three answers to `t03`, the
-r3 ReAct, the r4 `lndl` and the r5 ReAct one, open by saying the endpoint's request model has no
-default (`lionagi/providers/anthropic/messages.py:86`) and then give 8192 as the value lionagi's
-CLI applies (`lionagi/cli/agent.py:89`, `:1027-1030`); the reading counts all three as right, since
-8192 is the value the task records. Counted wrong, r3 would be `lndl` 23 against ReAct 22 and r4
-`lndl` 22 against ReAct 24, neither outcome changing, and r5 would be 22 on each side, which meets
-the rule. r5's outcome rests on this reading of its ReAct answer to `t03`, which ends "So the
-answer is 8192 for that CLI API-launch path."
+The reading is one reader's judgment, made by the author of this change knowing which loop wrote
+each answer. It judges what each answer says to its question and did not check every side claim;
+each task's `truth` line is the source line it was read against, so another reader can redo it. An
+answer counts as right when it gives the value or name the `truth` line records, also when it
+corrects a premise of the question on the way. Two tasks turn on that rule (source lines at
+`6fa69b19`):
+
+- `t03` asks for the default `max_tokens` the Anthropic messages endpoint gets. Six accepted
+  answers say the endpoint's request model has no default of its own
+  (`lionagi/providers/anthropic/messages.py:86`) and give 8192 as the value lionagi's CLI applies
+  (`lionagi/cli/agent.py:89`, `:1027-1030`): the r3 ReAct, r4 `lndl` and r5 ReAct answers open
+  with the missing default, and the r2 ReAct, r3 `lndl` and r4 ReAct answers open with 8192. The
+  reading counts all six as right, since 8192 is the value the task records. Counted wrong, the
+  three that open with the missing default make r3 `lndl` 23 against ReAct 22 and r4 `lndl` 22
+  against ReAct 24, neither outcome changing, and r5 22 on each side, which meets the rule; all six
+  make r3 22 against 22 and r4 `lndl` 22 against ReAct 23, also unchanged. r5's outcome rests on
+  this reading of its ReAct answer to `t03`, which ends "So the answer is 8192 for that CLI
+  API-launch path."
+- `t05` asks for "the default max_tokens value for the BashTool's timeout field in milliseconds";
+  the field holds a timeout, not a token count. All eight answers give 30000 ms, the value the task
+  records (`lionagi/tools/code/bash.py:35`), and seven of them also say the question's
+  `max_tokens` does not fit the field (all but the r4 `lndl` one). Counted wrong, those seven leave
+  r2 failing the rule and r3 meeting it (22 against 22), make r4 meet it (23 against 23), and leave
+  r5 failing it (`lndl` 21 against ReAct 22).
+
+r4 and r5 each fail the rule by one task. Counting any one of r4's accepted ReAct answers wrong,
+such as its `t05` answer, would make r4 meet the rule; in r5, counting its ReAct answer to `t03`
+wrong, or its `lndl` answer to `t03` or `t24` right, would do the same.
 
 The checks are substring and regular-expression tests, so a wrong answer that repeats the expected
 words or digits can pass one, and a right answer in other words can fail it; that is why the
@@ -102,9 +120,10 @@ and `t20` checks take the answers the earlier ones rejected):
 | `t20` | r4 | `lndl` | rejected | right | The question asks which module defines the class; the answer names it by its import path, `lionagi.tools.code.search`, and says it did not open the file. The check expects the file path `lionagi/tools/code/search.py`. |
 | `t24` | r2, r3, r4, r5 | `lndl` | accepted | wrong | Each answer says `lionagi/mcp/config.py` defines no `RUNS_DIR`; line 19 of that file is `RUNS_DIR = RUNS_ROOT`. The check asks for the names `RUNS_DIR` and `JOBS_DIR`, which the question itself supplies. |
 
-The other rejected answers are wrong on reading too: the five r2 `lndl` legs that spent all 11
-requests (`t03`, `t04`, `t17`, `t18`, `t19`; ADR-0132 D4, Result) and the r3 ReAct `t04` leg, which
-made no tool call and answered that none of its tool calls returned results. So are r5's two:
+The other rejected answers are wrong on reading too (source lines here are at `6fa69b19`): the
+five r2 `lndl` legs that spent all 11 requests (`t03`, `t04`, `t17`, `t18`, `t19`; ADR-0132 D4,
+Result) and the r3 ReAct `t04` leg, which made no tool call and answered that none of its tool
+calls returned results. So are r5's two:
 the `lndl` answer to `t03` gives `32768` from another package in the read tree, where lionagi's
 CLI default is `8192` (`lionagi/cli/agent.py:89`), and the ReAct leg on `t10` called a tool named
 `grep`, which is not one of its read tools (`reader`, `search`, `context`), and then answered that
@@ -121,9 +140,10 @@ fallback with `.get`, where it calls `setdefault` (`lionagi/cli/agent.py:1028`).
 Each row gives the source line its reading used, at `6fa69b19`, the tree the legs read, and at
 `208bcc08`, the code r5 ran, and per loop what the check did and what the reading found;
 `tasks.yaml` records the rest of each task's truth. Of the 42 source-line citations in the tasks'
-`truth` lines (158 lines in all, counting `t21`'s "line 272"), 12 citations in 9 tasks (27 lines)
-hold different text at the same line numbers at `208bcc08`. Each cited line's text is present,
-unchanged and at one place only, at `208bcc08`: the line numbers moved, the cited code did not.
+`truth` lines (158 lines in all, counting `t21`'s "line 272"), 12 citations in 9 tasks (28 lines)
+hold different text at the same line numbers at `208bcc08`. Each citation's lines, taken as one
+block, are present unchanged at `208bcc08`, and at one place only: the line numbers moved, the
+cited code did not.
 
 | task | line at `6fa69b19` | line at `208bcc08` | `lndl` | ReAct |
 |---|---|---|---|---|
