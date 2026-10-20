@@ -226,6 +226,9 @@ class TestAlcallRetryTimeout:
         def slow_sync_func(x: int) -> int:  # pragma: no cover - replaced at thread seam
             return x
 
+        # A worker thread is not cancelled at the timeout, so a sync function that
+        # finishes late still returns its result. This stand-in for the thread call can
+        # be cancelled, which reaches the timeout branch the sync path shares.
         async def blocked_run_sync(*args, **kwargs):
             await anyio.sleep_forever()
 
