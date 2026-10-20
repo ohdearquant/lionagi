@@ -1155,6 +1155,8 @@ async def build_worker_branch(
         contain_account_integrations=bool(
             not env.bare and getattr(w_profile, "contain_account_integrations", False)
         ),
+        # Isolated below, so no effort is derived from the user config either.
+        ignore_user_config=True,
     )
     _isolate_worker_cli_config(w_imodel)
     worker_mcp_servers = getattr(env, "mcp_servers", None)

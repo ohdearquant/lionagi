@@ -118,6 +118,21 @@ def test_a_request_that_ignores_the_user_config_disables_nothing_by_name(codex_h
     assert kwargs["config_overrides"] == {"mcp_servers.docs.command": "docs-mcp"}
 
 
+def test_an_allowlist_naming_a_server_only_codex_declares_keeps_that_server(codex_home):
+    """An allowed name the caller did not describe stays enabled from codex's own
+    config, so an empty described set with such an allowlist is not the run that
+    ignores the user config: only the names left out are disabled."""
+    codex_home.write_config({"kept": {"command": "kept-mcp"}, "other": {"command": "other-mcp"}})
+    kwargs: dict = {}
+
+    assert apply_forwarded_mcp_servers(
+        kwargs, {}, provider="codex", exclusive=True, allowed_names=["kept"]
+    )
+
+    assert "ignore_user_config" not in kwargs
+    assert kwargs["config_overrides"] == {"mcp_servers.other.enabled": False}
+
+
 def test_secret_fields_are_refused_on_a_request_that_ignores_the_user_config(codex_home):
     """The secret fields reach codex only through a generated `-p` profile, and a
     run that ignores the user config loads no profile: the server would start
@@ -555,6 +570,36 @@ async def test_resumed_codex_leg_with_no_mcp_config_drops_the_previous_runs_serv
 
     assert seen["kwargs"]["ignore_user_config"] is True
     assert "config_overrides" not in seen["kwargs"]
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_codex_leg_given_a_set_after_an_empty_one_reads_the_user_config(
+    monkeypatch, tmp_path, codex_home
+):
+    """An earlier empty set was carried as the ignored user config. A set resolved for the
+    resume replaces it, so the leg reads the user config as a new leg with that set does."""
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+
+    codex_home.write_config({})
+    branch_id = _wire_resume_stubs(
+        monkeypatch, tmp_path, "codex", "gpt-5.3-codex", ignore_user_config=True
+    )
+
+    seen: dict = {}
+
+    async def capture(self, instruction=None, **kw):
+        seen["kwargs"] = dict(self.chat_model.endpoint.config.kwargs)
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", capture)
+    await agent_mod._run_agent(
+        None, "follow up", resume=branch_id, mcp_config=_mcp_config_file(tmp_path, SERVERS)
+    )
+
+    assert "ignore_user_config" not in seen["kwargs"]
+    ((name, server),) = SERVERS.items()
+    assert seen["kwargs"]["config_overrides"][f"mcp_servers.{name}.command"] == server["command"]
 
 
 @pytest.mark.asyncio

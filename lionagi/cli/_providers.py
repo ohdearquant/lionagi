@@ -103,8 +103,13 @@ def build_imodel_from_spec(
     fast: bool = False,
     account_connectors: tuple[str, ...] = (),
     contain_account_integrations: bool = False,
+    ignore_user_config: bool = False,
 ) -> iModel:
-    """Parse spec, build iModel. Effort in spec unless overridden."""
+    """Parse spec, build iModel. Effort in spec unless overridden.
+
+    ``ignore_user_config`` builds a codex request that loads no user config, so no
+    effort is derived from that config either.
+    """
     ms = parse_model_spec(spec)
     effort = normalize_effort(effort_override) if effort_override is not None else ms.effort
 
@@ -142,7 +147,9 @@ def build_imodel_from_spec(
         extra["verbose_output"] = True
     if theme is not None:
         extra["cli_display_theme"] = theme
-    if effort is None and provider_raw == "codex":
+    if ignore_user_config and provider_raw == "codex":
+        extra["ignore_user_config"] = True
+    if effort is None and provider_raw == "codex" and not ignore_user_config:
         effort = codex_unset_effort_default(ms.model, codex_profile_overrides)
     if effort is not None:
         kwarg = PROVIDER_EFFORT_KWARG.get(provider_raw)

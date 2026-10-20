@@ -2163,6 +2163,11 @@ async def _execute_dag(
 
         if not is_cli:
             return
+        # A spawned node is a worker the run starts: keep the user's CLI config out
+        # of it as for a planned worker. Its model is a copy (Branch.clone).
+        from ._orchestration import _isolate_worker_cli_config
+
+        _isolate_worker_cli_config(chat_model)
         # A request with no assignee is cloned from the orchestrator's branch,
         # whose request carries the run's whole set, job control included. A
         # spawned node is a leaf like a planned worker and gets the worker set

@@ -345,7 +345,7 @@ grants everything the file lists, job control included, for a worker meant to
 orchestrate in turn. A submission's snapshot is the exception: it is read as
 found even when named (above), so the policy still applies to it. Once a worker set exists it is the worker's whole set, handed over
 exclusively: the Claude CLI is run with `--strict-mcp-config`, so it adds none
-of the servers it would discover itself. Every worker is passed through
+of the servers it would discover itself. Every worker, a reactively spawned node included, is passed through
 `_isolate_worker_cli_config` before the hand-over, set or no set: a codex worker
 runs with `--ignore-user-config` and no `-p` profile, so the servers, hooks and
 profiles of the user's codex config never load and none needs disabling by

@@ -838,10 +838,11 @@ def apply_forwarded_mcp_servers(
             kwargs["strict_mcp_config"] = True
         return True
 
-    if exclusive and not servers:
+    if exclusive and not servers and not allowed_names:
         # The empty set is the hermetic codex run: the user config, and every server,
         # hook and profile it declares, is not loaded at all. Codex keeps its own
-        # authentication store under the flag.
+        # authentication store under the flag. An allowlist naming a server keeps
+        # that server, served from codex's own config, so it is not this case.
         kwargs["ignore_user_config"] = True
 
     # codex takes no JSON MCP-config input; each server is forwarded as

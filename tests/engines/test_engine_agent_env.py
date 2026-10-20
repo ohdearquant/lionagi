@@ -809,7 +809,8 @@ async def test_the_judge_refuses_over_an_ambient_config_nested_too_deep_to_parse
 ):
     """A CODEX_HOME config nested past the parser's limit must not read as a pass.
 
-    The allowlist discovery cannot parse the config, so it falls back to
+    The allowlist names a server the run does not describe, so the ambient
+    servers have to be discovered. The discovery cannot parse the config, so it falls back to
     `codex mcp list --json` (stubbed here, so no process starts); the containment
     walk then reads the same config, cannot, and refuses. The judge raises that
     refusal, and no CLI process is ever started."""
@@ -840,7 +841,7 @@ async def test_the_judge_refuses_over_an_ambient_config_nested_too_deep_to_parse
     real = run.make_agent
 
     async def make_agent(*args, **kwargs):
-        return await real(*args, mcp_servers=[], **kwargs)
+        return await real(*args, mcp_servers=["ambient"], **kwargs)
 
     monkeypatch.setattr(run, "make_agent", make_agent)
 
@@ -976,7 +977,8 @@ async def test_a_contained_judge_raises_over_a_profile_nested_too_deep_to_parse(
 
 async def test_the_judge_raises_when_an_mcp_allowlist_cannot_be_enforced(tmp_path, monkeypatch):
     """An explicit allowlist whose ambient servers cannot be discovered is a setting the
-    judge cannot carry, so it is raised with containment off too."""
+    judge cannot carry, so it is raised with containment off too. The allowlist names a
+    server: an empty one is the run that loads no user config and needs no discovery."""
     import subprocess
 
     from lionagi._errors import ConfigurationError
@@ -996,7 +998,7 @@ async def test_the_judge_raises_when_an_mcp_allowlist_cannot_be_enforced(tmp_pat
     real = run.make_agent
 
     async def make_agent(*args, **kwargs):
-        return await real(*args, mcp_servers=[], **kwargs)
+        return await real(*args, mcp_servers=["ambient"], **kwargs)
 
     monkeypatch.setattr(run, "make_agent", make_agent)
     with pytest.raises(

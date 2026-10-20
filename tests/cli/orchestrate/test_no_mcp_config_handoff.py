@@ -785,6 +785,21 @@ async def test_a_codex_worker_with_no_run_set_still_ignores_the_user_config(tmp_
 
 
 @pytest.mark.asyncio
+async def test_a_codex_worker_takes_no_effort_from_the_user_config(tmp_run, codex_home):
+    """The user config's effort is read only to keep it under the model's ceiling,
+    and a worker never loads that config, so no effort is derived from it."""
+    (codex_home.path / "config.toml").write_text('model_reasoning_effort = "high"\n')
+    env = await _setup(no_mcp_config=False)
+
+    branch, _, _, _ = await build_worker_branch(
+        env, agent_id="w1", role="implementer", model_override="codex/gpt-5.3-codex-spark"
+    )
+
+    assert branch.chat_model.endpoint.config.kwargs["ignore_user_config"] is True
+    assert "reasoning_effort" not in branch.chat_model.endpoint.config.kwargs
+
+
+@pytest.mark.asyncio
 async def test_a_claude_worker_reads_no_setting_sources(tmp_run):
     env = await _setup(no_mcp_config=False)
 
@@ -849,7 +864,7 @@ async def test_a_codex_worker_refuses_a_server_whose_secrets_it_could_not_carry(
     without them. The worker is refused, and the value is not in the refusal."""
     from lionagi._errors import ConfigurationError
 
-    secret = "sk-live-do-not-print-me"
+    secret = "secret-value-do-not-print-me"
     servers = {"knowledge": {"command": "kkernel", "env": {"KNOWLEDGE_KEY": secret}}}
     (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": servers}))
     codex_home.write_config({})

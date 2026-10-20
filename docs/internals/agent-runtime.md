@@ -87,7 +87,10 @@ and one implementation.
 - `allowed_names` is the caller's allowlist when it is wider than the set
   being forwarded — a name the caller allows but did not itself describe
   stays enabled rather than being disabled as excluded. It only matters
-  under `exclusive`.
+  under `exclusive`. An empty set with an allowlist that names a server is
+  therefore not the no-servers case: codex keeps loading its own config, so
+  the allowed server is still there, and only the names left out are
+  disabled.
 - For codex, only fields in `_CODEX_MCP_SERVER_FIELDS` (verified against the
   installed CLI: `codex mcp list --json` echoes back exactly this field set)
   are forwarded; an unsupported field is a caller mistake (loud

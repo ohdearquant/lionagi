@@ -103,6 +103,20 @@ def test_a_custom_marker_moves_the_top_of_the_walk(tmp_path, sources, env):
     assert declaring_project_layer(repo / "work", env, [".git"]) == (config_file, 1)
 
 
+def test_a_git_directory_without_head_is_not_a_root(tmp_path, sources, env):
+    """A `.git` directory marks a root only with a `HEAD` in it, so the walk passes an empty
+    one and stops at the repository above."""
+    outer = tmp_path / "outer"
+    _git_root(outer)
+    config_file = _declaring(outer)
+    inner = outer / "inner"
+    (inner / ".git").mkdir(parents=True)
+
+    assert declaring_project_layer(inner, env) == (config_file, 1)
+    (inner / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    assert declaring_project_layer(inner, env) is None
+
+
 def test_with_no_root_the_walk_is_the_directory_alone(tmp_path, sources, env):
     _, managed = sources
     _markers(managed, _MARKER)

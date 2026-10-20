@@ -711,10 +711,11 @@ async def test_execute_dag_reactive_wires_spawn_branch_setup_for_cli_workspace(t
             is_cli=True,
             endpoint=SimpleNamespace(
                 config=SimpleNamespace(
+                    provider="codex",
                     kwargs={
                         "contain_account_integrations": True,
                         "account_connectors": ["github"],
-                    }
+                    },
                 )
             ),
         )
@@ -748,6 +749,67 @@ async def test_execute_dag_reactive_wires_spawn_branch_setup_for_cli_workspace(t
     assert "/somewhere/else/emitter" not in non_cli_branch.msgs.system_text
     assert "not an assigned working directory" in non_cli_branch.msgs.system_text
     assert "It is your working directory" not in non_cli_branch.msgs.system_text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("spec", "user_key", "user_value", "flag_key", "flag_value"),
+    [
+        ("codex/gpt-5", "profile", "work", "ignore_user_config", True),
+        ("claude_code/sonnet", "settings", "settings.json", "setting_sources", ""),
+    ],
+)
+async def test_a_reactively_spawned_cli_node_runs_without_the_user_cli_config(
+    tmp_path, codex_home, spec, user_key, user_value, flag_key, flag_value
+):
+    """A spawned node is cloned from its emitter's branch, so its model starts
+    with the emitter's CLI settings. The spawn hook isolates the clone the way a
+    planned worker is isolated, and the emitter's own model keeps its settings."""
+    from lionagi.cli._providers import build_imodel_from_spec
+    from lionagi.engines import PlanningEngine
+    from lionagi.session.branch import Branch
+
+    env = _make_env(tmp_path)
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="x", assignee="researcher")],
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=[spec],
+    )
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(
+        return_value=_asyncio_coro(
+            {"operation_results": {"node-0": "planned result"}, "spawned_operations": 0}
+        )
+    )
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+    spawn_branch_setup = fake_engine_run.run_dag.call_args.kwargs["spawn_branch_setup"]
+
+    imodel = build_imodel_from_spec(spec)
+    imodel.endpoint.config.kwargs[user_key] = user_value
+    emitter = Branch(chat_model=imodel)
+    spawned = emitter.clone()
+
+    spawn_branch_setup(SimpleNamespace(metadata={"spawn_id": "spawn-1"}), spawned)
+
+    spawned_kwargs = spawned.chat_model.endpoint.config.kwargs
+    assert spawned_kwargs[flag_key] == flag_value
+    assert spawned_kwargs[user_key] is None
+    assert spawned.parse_model is spawned.chat_model
+    emitter_kwargs = emitter.chat_model.endpoint.config.kwargs
+    assert emitter_kwargs[user_key] == user_value
+    assert emitter_kwargs.get(flag_key) != flag_value
 
 
 @pytest.mark.asyncio

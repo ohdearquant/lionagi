@@ -354,8 +354,8 @@ second name from it at `lionagi/state/db.py:451`.
 | `cli/monitor.py:1197,1209,1267` | Unverified | not driven |
 | `cli/machine.py:539` | Unverified, display flag | not driven |
 | `cli/_runs.py:918,1178,1370,1665` | **Yes, by construction, and this row was wrong in an earlier draft** | read at the source: `_linked_engine_session` (`:662-688`) resolves `session_db_id(engine_session_uid)`, which is the **Claude**-mirror row and only that one, and `:918` branches on that row's terminal status while `:937` handles it being `running`. An earlier draft wrote "the claude/codex-mirror row" and that is wrong: the resolver imports `session_db_id` from `lionagi.state.claude_mirror` (`lionagi/cli/_runs.py:677`), and the Codex mirror derives its ids from a deliberately different namespace so that the two can never collide (`lionagi/state/codex_mirror.py:79-81`, which says so in a comment). A Codex-mirrored session is therefore not reachable through this consumer at all, which is a **separate gap and not a covered case**: whatever `idle` does to a linked Claude row, the equivalent Codex row is not linked here in the first place. Adding `idle` gives a linked row a third value that matches neither branch, so a session that is merely quiet falls through to the phantom `failed` the `running` branch exists to suppress. See the obligation below. Separately, and unchanged from the earlier draft: the ADR-0105 reopen path at `lionagi/cli/_runs.py:1772-1783` is keyed by a branch id, and a mirror branch id is deterministic, so a hand-typed resume against one remains an open edge case. |
-| `cli/agent.py:828,1854` | Probably not: own run's session | not driven |
-| `cli/orchestrate/_orchestration.py:2119` | Probably not: own run's session | not driven |
+| `cli/agent.py:828,1856` | Probably not: own run's session | not driven |
+| `cli/orchestrate/_orchestration.py:2121` | Probably not: own run's session | not driven |
 | `hooks/builtins.py:71,131` | Probably not: own run's session | not driven |
 
 The unverified rows are not a claim that they are safe. Each must be driven
