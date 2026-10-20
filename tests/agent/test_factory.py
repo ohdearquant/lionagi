@@ -1238,8 +1238,9 @@ async def test_forward_mcp_codex_empty_allowlist_ignores_the_ambient_config_too(
 async def test_forward_mcp_codex_empty_set_keeps_the_sandbox_and_the_hooks_the_user_config_trusts(
     tmp_path, monkeypatch
 ):
-    """An empty set ignores the user config, so its sandbox mode and the trust
-    records of its hooks.json hooks ride beside the flag while its servers stay out."""
+    """An empty set ignores the user config, so its sandbox mode, the trust records
+    of its hooks.json hooks and its project trust decisions ride beside the flag while
+    its servers stay out."""
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     codex_home = tmp_path / "codex_home"
     codex_home.mkdir()
@@ -1248,6 +1249,7 @@ async def test_forward_mcp_codex_empty_set_keeps_the_sandbox_and_the_hooks_the_u
         'sandbox_mode = "workspace-write"\n'
         '[mcp_servers.ambient-one]\ncommand = "one"\n'
         f'[hooks.state."{hook_key}"]\ntrusted_hash = "sha256:abc"\n'
+        f'[projects."{tmp_path / "elsewhere"}"]\ntrust_level = "trusted"\n'
     )
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
@@ -1261,6 +1263,7 @@ async def test_forward_mcp_codex_empty_set_keeps_the_sandbox_and_the_hooks_the_u
     assert "--ignore-user-config" in args
     assert any(args[i : i + 2] == ["-s", "workspace-write"] for i in range(len(args) - 1))
     assert [arg for arg in args if arg.startswith("hooks.state=") and hook_key in arg]
+    assert [arg for arg in args if arg.startswith("projects=") and "elsewhere" in arg]
     assert not [arg for arg in args if "ambient-" in arg]
 
 

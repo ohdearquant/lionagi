@@ -349,12 +349,14 @@ of the servers it would discover itself. Every worker, a reactively spawned node
 `_isolate_worker_cli_config` before the hand-over, set or no set: a codex worker
 runs with `--ignore-user-config` and no `-p` profile, so the servers and
 profiles of the user's codex config never load and none needs disabling by
-name. The config's sandbox mode, network grant and hook trust records ride
-beside the flag, so the hooks it trusts in `$CODEX_HOME/hooks.json` still gate
-the worker's tool calls, and a config that declares hooks itself is refused.
+name. The config's `sandbox_mode`, its `[sandbox_workspace_write]` settings,
+its hook trust records and its `[projects]` trust decisions ride beside the
+flag, so the hooks it trusts in `$CODEX_HOME/hooks.json` still gate the worker's
+tool calls and a project it trusts gets the sandbox codex derives for it; a
+config that declares hooks or sets `default_permissions` itself is refused.
 A Claude worker keeps its settings sources, whose hooks and permissions gate
 its tool calls. A worker therefore has none of the servers its CLI would load
-from its own configuration, a withheld one included; the orchestrator keeps them. The
+from `$CODEX_HOME/config.toml`, a withheld one included; the orchestrator keeps them. The
 synthesis branch starts from a copy of the orchestrator's model and is not
 isolated, so the same exclusive hand-over is what takes the orchestrator's
 servers off it: on codex, with a non-empty set, or an allowlist naming a server its

@@ -708,8 +708,8 @@ def _isolate_worker_cli_config(imodel) -> None:
     sits in their home directory, and a codex config carries MCP servers and
     profiles of its own. Codex gets ``--ignore-user-config`` and no ``-p`` profile.
     Its MCP set, model and effort are handed to it explicitly, and the user
-    config's sandbox mode, network grant and hook trust records ride beside the
-    flag, so the hooks the user trusts still gate its tool calls. A Claude worker
+    config's sandbox settings and its hook and project trust records ride beside
+    the flag (codex.py names which), so what it trusts stays trusted. A Claude worker
     keeps its settings sources, whose hooks and permissions gate its tool calls.
     Applied before the MCP hand-off, which reads the codex flag.
     """

@@ -2167,8 +2167,8 @@ async def _execute_dag(
 
         if not is_cli:
             return
-        # A spawned node is a worker the run starts: keep the user's CLI config out
-        # of it as for a planned worker. Its model is a copy (Branch.clone).
+        # A spawned node is a worker the run starts: a codex one keeps the user's
+        # CLI config out, as a planned worker does. Its model is a copy (Branch.clone).
         from ._orchestration import _isolate_worker_cli_config
 
         _isolate_worker_cli_config(chat_model)

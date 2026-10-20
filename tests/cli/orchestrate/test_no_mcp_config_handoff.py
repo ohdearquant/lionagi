@@ -820,8 +820,9 @@ async def test_a_codex_worker_with_no_run_set_still_ignores_the_user_config(tmp_
 async def test_a_codex_worker_keeps_the_sandbox_and_the_hooks_the_user_config_trusts(
     tmp_run, codex_home
 ):
-    """The user config's servers stay out, while its sandbox mode and the trust
-    records of its hooks.json hooks reach the worker beside the flag."""
+    """The user config's servers stay out, while its sandbox mode, the trust records
+    of its hooks.json hooks and its project trust decisions reach the worker beside
+    the flag."""
     hook_key = f"{codex_home.path / 'hooks.json'}:pre_tool_use:0:0"
     (codex_home.path / "config.toml").write_text(
         'sandbox_mode = "workspace-write"\n'
@@ -829,6 +830,8 @@ async def test_a_codex_worker_keeps_the_sandbox_and_the_hooks_the_user_config_tr
         'command = "ambient-mcp"\n'
         f'[hooks.state."{hook_key}"]\n'
         'trusted_hash = "sha256:abc"\n'
+        '[projects."/home/u/work.repo"]\n'
+        'trust_level = "trusted"\n'
     )
     env = await _setup(no_mcp_config=False)
 
@@ -840,6 +843,7 @@ async def test_a_codex_worker_keeps_the_sandbox_and_the_hooks_the_user_config_tr
     assert "--ignore-user-config" in args
     assert _pair_follows(args, "-s", "workspace-write")
     assert [arg for arg in args if arg.startswith("hooks.state=") and hook_key in arg]
+    assert [arg for arg in args if arg.startswith("projects=") and "work.repo" in arg]
     assert not [arg for arg in args if "ambient" in arg]
 
 

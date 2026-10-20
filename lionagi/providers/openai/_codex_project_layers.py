@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""The project config layers Codex 0.156 reads for a run, mirrored from its loader.
+"""The project config layers a Codex run can read, and the check on them.
 
 ``codex exec`` reads ``<dir>/.codex/config.toml`` as a project layer for each
 directory from its working directory up to the project root. ``--ignore-user-config``
@@ -12,14 +12,15 @@ switch to drop the project layers, so a run that promised no servers beyond its
 own set refuses one whose project layers declare ``mcp_servers``, before each
 process starts: every ``codex exec`` reads its config afresh.
 
-The walk is Codex's own: the working directory as Codex resolves ``-C`` (the
-logical path when an ancestor below the top level is a symlink, else the canonical one), the project
-root by ``project_root_markers`` (``.git`` unless the system config, the run's ``-c``
-overrides or the managed config set them), and the ``.codex`` that resolves to
-CODEX_HOME skipped. Two marker sources
-are not read: an enterprise cloud config bundle, fetched with the account's
-credentials, and macOS managed preferences. Either can set markers that put the
-root above the one found here, and then a layer above it is not checked.
+The walk starts where Codex starts: the working directory as Codex resolves ``-C``
+(the logical path when an ancestor below the top level is a symlink, else the
+canonical one), with the ``.codex`` that resolves to CODEX_HOME skipped. It does not
+stop at the project root. Codex picks the root by ``project_root_markers``, and an
+enterprise cloud config bundle, fetched with the account's credentials and not
+readable here, can set them and put the root above any root found here. So every
+directory up to the filesystem root is read: a layer above the root Codex picks
+counts too, and the check can refuse a file Codex would not read but never misses
+one it would.
 """
 
 from __future__ import annotations
@@ -27,58 +28,67 @@ from __future__ import annotations
 import os
 import re
 import stat
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
-from typing import Any
 
 from lionagi._errors import ConfigurationError
 
 try:
     import tomllib as _tomllib
 except ModuleNotFoundError:  # Python 3.10: the declared `tomli`, a TOML 1.0 parser like tomllib
-    # (`toml` 0.10 is not one: it reads a truncated `[` as an empty list, which here means no root)
     import tomli as _tomllib  # type: ignore[no-redef]
 
-__all__ = ("declaring_project_layer", "mcp_servers_declaration_line")
+__all__ = ("declaring_project_layer", "mcp_servers_declaration_line", "project_layers")
 
-# the system config, then the managed config, which wins (Unix paths, codex-rs/config loader)
-_MARKER_SOURCES = (Path("/etc/codex/config.toml"), Path("/etc/codex/managed_config.toml"))
-_DEFAULT_MARKERS = (".git",)
 _TOML_CODE_POINT = re.compile(r"\\u([0-9A-Fa-f]{4})|\\U([0-9A-Fa-f]{8})|\\x([0-9A-Fa-f]{2})")
 
 
-def declaring_project_layer(
-    cwd: str | os.PathLike[str], env: Mapping[str, str], cli_markers: Any = None
-) -> tuple[Path, int] | None:
-    """The first project-layer ``config.toml`` Codex would read for a run in ``cwd`` under
-    ``env`` that declares a top-level ``mcp_servers`` key, with its line, or ``None``.
-    ``cli_markers`` is the value a ``-c project_root_markers=...`` override of the run
-    gives, ``None`` when no override sets it.
+def project_layers(
+    cwd: str | os.PathLike[str], env: Mapping[str, str]
+) -> Iterator[tuple[Path, str]]:
+    """The project-layer ``config.toml`` files a Codex run in ``cwd`` under ``env`` can
+    read, nearest first, each with its text.
 
-    A file on the walk that exists but cannot be read, a marker source that cannot be
-    read or parsed, and a CODEX_HOME or HOME that is not absolute raise
-    ``ConfigurationError``: what Codex would load is then unknown. A layer is read as a
-    TOML parser reads it, or line by line toward refusing when the parser refuses it
-    (``mcp_servers_declaration_line``), and counts whether or not its project is trusted,
-    since trust is not fully readable here.
+    A file on the walk that exists but is not a regular file or cannot be read, and a
+    CODEX_HOME or HOME that is not absolute, raise ``ConfigurationError``: what Codex
+    would load is then unknown. The type is checked before reading, so a FIFO refuses
+    rather than blocking the spawn.
     """
     home = _codex_home(env)
     run_cwd = _config_cwd(Path(os.path.abspath(cwd)))
-    root = _project_root(run_cwd, _root_markers(cli_markers))
-    for directory in _layer_dirs(run_cwd, root):
+    for directory in (run_cwd, *run_cwd.parents):
         dot_codex = directory / ".codex"
         if _is_codex_home(dot_codex, home):
             continue
         path = dot_codex / "config.toml"
         try:
+            if not stat.S_ISREG(path.stat().st_mode):
+                raise ConfigurationError(
+                    f"the Codex project config {path} is not a regular file, so what it "
+                    "sets is unknown"
+                )
             text = path.read_text(encoding="utf-8")
         except (FileNotFoundError, NotADirectoryError):
             continue
         except (OSError, UnicodeDecodeError) as exc:
             raise ConfigurationError(
-                f"the Codex project config {path} could not be read ({exc}), so whether it "
-                "declares `mcp_servers` is unknown"
+                f"the Codex project config {path} could not be read ({exc}), so what it "
+                "sets is unknown"
             ) from exc
+        yield path, text
+
+
+def declaring_project_layer(
+    cwd: str | os.PathLike[str], env: Mapping[str, str]
+) -> tuple[Path, int] | None:
+    """The first of ``project_layers(cwd, env)`` that declares a top-level ``mcp_servers``
+    key, with its line, or ``None``.
+
+    A layer is read as a TOML parser reads it, or line by line toward refusing when the
+    parser refuses it (``mcp_servers_declaration_line``), and counts whether or not its
+    project is trusted, since trust is not fully readable here.
+    """
+    for path, text in project_layers(cwd, env):
         line_number = mcp_servers_declaration_line(text)
         if line_number is not None:
             return path, line_number
@@ -119,76 +129,6 @@ def _config_cwd(cwd: Path) -> Path:
     ):
         return logical
     return canonical
-
-
-def _root_markers(cli_markers: Any = None) -> list[str]:
-    """``project_root_markers`` as Codex merges them before it looks for the root: the
-    system config, then the run's ``-c`` override, then the managed config, the later
-    winning; else ``.git``. An empty list means no project root."""
-    system, managed = _MARKER_SOURCES
-    markers = _file_markers(system)
-    if cli_markers is not None:
-        markers = _checked_markers(cli_markers, "the -c project_root_markers override")
-    managed_markers = _file_markers(managed)
-    if managed_markers is not None:
-        markers = managed_markers
-    return list(_DEFAULT_MARKERS) if markers is None else markers
-
-
-def _file_markers(path: Path) -> list[str] | None:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (FileNotFoundError, NotADirectoryError):
-        return None
-    except (OSError, UnicodeDecodeError) as exc:
-        raise ConfigurationError(
-            f"the Codex config {path} could not be read ({exc}), so its project root markers are unknown"
-        ) from exc
-    try:
-        # a document a TOML 1.0 parser refuses refuses here, which Codex's parser might take
-        value = _tomllib.loads(text).get("project_root_markers")
-    except _tomllib.TOMLDecodeError as exc:
-        raise ConfigurationError(
-            f"the Codex config {path} could not be parsed ({exc}), so its project root markers are unknown"
-        ) from exc
-    return None if value is None else _checked_markers(value, str(path))
-
-
-def _checked_markers(value: Any, source: str) -> list[str]:
-    if not isinstance(value, list) or not all(isinstance(m, str) for m in value):
-        raise ConfigurationError(f"{source}: project_root_markers is not an array of strings")
-    return value
-
-
-def _project_root(cwd: Path, markers: list[str]) -> Path | None:
-    """The nearest of ``cwd`` and its ancestors holding a marker. A ``.git`` directory counts
-    only with a ``HEAD``; a marker that cannot be read does not, and the search goes on."""
-    for ancestor in (cwd, *cwd.parents):
-        for marker in markers:
-            path = ancestor / marker
-            try:
-                mode = os.stat(path).st_mode
-            except OSError:
-                continue
-            if marker == ".git" and stat.S_ISDIR(mode):
-                try:
-                    os.stat(path / "HEAD")
-                except OSError:
-                    continue
-            return ancestor
-    return None
-
-
-def _layer_dirs(cwd: Path, root: Path | None) -> list[Path]:
-    """``cwd`` up to ``root``, inclusive; ``cwd`` alone when there is no root."""
-    if root is None:
-        return [cwd]
-    directories = []
-    for directory in (cwd, *cwd.parents):
-        directories.append(directory)
-        if directory == root:
-            break
-    return directories
 
 
 def _is_codex_home(dot_codex: Path, codex_home: Path) -> bool:
