@@ -142,11 +142,14 @@ and r4, and `spend_lines` is at least 1 in all 144 rows. Each leg's spend lines 
   end of one comment removed (the as-run copy keeps it), the layout reformatted by ruff, and three
   changes. First, `summarize()` leaves the D4 rule unset when a leg has no spend line (above) or
   the rows are not the whole run, where the as-run copy computed it. Second, a run that stops early
-  keeps what it has (`run_one()`, `run_pair()`, `main()`): a leg whose `subprocess.run` raises
-  becomes a row with `rc` `harness-error` and no spend line, each row is appended to
-  `results.jsonl` as its leg ends, and an interrupt starts no further leg and still writes the
-  summary and table (below). Third, `main()` makes the run directory after reading the task file,
-  so a task file that cannot be read leaves none behind. Of the two files' top-level statements,
+  keeps what it has (`run_one()`, `run_pair()`, `main()`): a leg that raises in the runner, in its
+  `subprocess.run` or after it (writing its output, or running its check), becomes a row with `rc`
+  `harness-error` and no spend line; a leg that times out keeps its output so far, with any bytes
+  that do not decode replaced; each row is appended to `results.jsonl` as its leg ends; and an
+  interrupt starts no further leg and still writes the summary and table (below). Third, `main()`
+  makes the run directory only after it has checked that the read tree and `li` exist, read the
+  task file and compiled each check's regular expression, so none of those failing leaves a run
+  directory behind. Of the two files' top-level statements,
   `summarize()`, `run_one()`, `run_pair()` and `main()` are the ones whose `ast.dump` differs, and
   `run_pilot.py` adds two imports (`threading` and `collections.abc.Callable`). With `missing_spend` at 0 and every leg run in all three runs, both
   write the same `summary.json`; `tests/benchmarks/test_lndl_pilot.py` recomputes each committed
@@ -184,5 +187,8 @@ stopped on an error in the runner itself, still writes `summary.json` and `table
 it has: `summary.json` says why under `partial`, the D4 rule is `null` with the same reason in
 `d4_rule_unset`, and `table.md` lists each task with a row, marking a leg that did not run as
 `not run`. On an interrupt (Ctrl-C)
-no further leg starts and the runner waits for the legs already running; a second interrupt stops
-that wait. The runner exits 130 after an interrupt and 1 after a task stopped on an error.
+no further leg starts and the runner waits for the legs already running. A second interrupt stops
+that wait: the summary and table are written from the rows so far, `partial` says that rows of
+legs still running may follow in `results.jsonl`, and the process exits once those legs end. The
+runner exits 2, with no run directory, when the read tree or `li` is missing; 130 after an
+interrupt; and 1 when a task stopped, or a leg raised, on an error in the runner itself.

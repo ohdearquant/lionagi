@@ -71,8 +71,17 @@ def run_one(task: dict, loop: str, out: Path) -> dict:
         rc, stdout, stderr = proc.returncode, proc.stdout, proc.stderr
     except subprocess.TimeoutExpired as exc:
         rc = "harness-timeout"
-        stdout = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
-        stderr = exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+        # The output so far arrives as bytes even with text=True, and can end inside a character.
+        stdout = (
+            exc.stdout.decode(errors="replace")
+            if isinstance(exc.stdout, bytes)
+            else (exc.stdout or "")
+        )
+        stderr = (
+            exc.stderr.decode(errors="replace")
+            if isinstance(exc.stderr, bytes)
+            else (exc.stderr or "")
+        )
     except Exception as exc:  # noqa: BLE001 - one leg's failure is its own row, not the run's end
         # subprocess.run kills the child before it re-raises, so the leg's output is lost; the
         # stderr file keeps what went wrong, and with no spend line the D4 rule stays unset.
@@ -115,7 +124,26 @@ def run_pair(
         if stop.is_set():
             # Stopped between a pair's two legs: the second leg is not started.
             return
-        record(run_one(task, loop, out))
+        try:
+            row = run_one(task, loop, out)
+        except Exception as exc:  # noqa: BLE001 - raised after the leg ran: still its own row
+            # Writing the leg's output or running its check failed. The leg has no spend line
+            # here, so the D4 rule stays unset, and the run exits 1.
+            print(f"{task['id']} {loop}: {type(exc).__name__}: {exc}", file=sys.stderr)
+            row = {
+                "id": task["id"],
+                "class": task["class"],
+                "loop": loop,
+                "rc": "harness-error",
+                "requests": None,
+                "tool_calls": None,
+                "wall_seconds": None,
+                "harness_seconds": None,
+                "spend_lines": 0,
+                "accepted": False,
+                "answer_chars": 0,
+            }
+        record(row)
 
 
 def summarize(rows: list[dict], loops: list[str], partial: str = "") -> dict:
@@ -171,9 +199,20 @@ def main() -> int:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         print("ANTHROPIC_API_KEY is not set in this process; nothing run", file=sys.stderr)
         return 2
+    # Without the read tree every leg would fail to start, and without `li` the header could not
+    # be written; either way the run would record nothing worth keeping.
+    missing = [str(path) for path in (TREE, LI) if not path.exists()]
+    if missing:
+        print(f"{', '.join(missing)} not found; nothing run", file=sys.stderr)
+        return 2
     tasks_path = Path(args.tasks).resolve()
     tasks_bytes = tasks_path.read_bytes()
     tasks = yaml.safe_load(tasks_bytes)["tasks"]
+    # A check whose regular expression does not compile would fail after its legs had run.
+    for task in tasks:
+        for item in [*task["accept"].get("all_of", []), *task["accept"].get("none_of", [])]:
+            if item.startswith("re:"):
+                re.compile(item[3:])
     task_set = len(tasks)
     # Absolute: each child runs with cwd set to the read tree, so a relative path would
     # resolve there and the prompt file would not be found. Made once the task file has been
@@ -243,7 +282,7 @@ def main() -> int:
             # A future the shutdown cancelled never counts as done to cf.wait, so wait on the rest.
             cf.wait([f for f in futures if not f.cancelled()])
         except KeyboardInterrupt:
-            stopped = "interrupted twice, legs still running not waited for"
+            stopped = "interrupted twice"
     else:
         pool.shutdown()
     with lock:
@@ -258,6 +297,10 @@ def main() -> int:
         reasons.append(f"{len(failed)} task(s) stopped on a harness error")
     if stopped:
         reasons.append(f"{stopped} after {len(rows)} of {len(tasks) * len(loops)} legs")
+    if stopped == "interrupted twice":
+        # The legs still running are not waited for here, but the process exits only once they
+        # end (the executor joins its threads at exit), and each appends its row as it does.
+        reasons.append("rows of legs still running may follow in results.jsonl")
     summary = summarize(rows, loops, partial="; ".join(reasons))
     (out / "summary.json").write_text(json.dumps(summary, indent=2))
     lines = [
@@ -280,7 +323,7 @@ def main() -> int:
     print(json.dumps(summary, indent=2))
     if stopped:
         return 130
-    return 1 if failed else 0
+    return 1 if failed or any(r["rc"] == "harness-error" for r in rows) else 0
 
 
 if __name__ == "__main__":
