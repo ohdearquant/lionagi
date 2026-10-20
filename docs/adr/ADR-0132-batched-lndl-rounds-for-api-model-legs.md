@@ -2,7 +2,9 @@
 
 - **Status**: Proposed
 - **Kind**: Aspirational
-- **Implementation-status**: partial — D1-D3 are implemented; the D4 pilot has not run
+- **Implementation-status**: implemented — D1-D3 are implemented and the D4 pilot ran (D4, Result);
+  at the merged code it does not meet the rule, so `lndl` stays an opt-in setting and is not
+  recommended
 - **Area**: operations
 - **Date**: 2026-10-17
 - **Relations**: extends ADR-0024 (LNDL operate integration adapter) and ADR-0041 Amendment 1
@@ -130,6 +132,54 @@ that decides whether its answer is accepted. The result is a per-task table of r
 calls, wall time and acceptance for both loops, published with the pilot's commit. `lndl` becomes
 a recommended profile setting only if it uses fewer requests per accepted task in total and accepts
 no fewer tasks; the default stays `react` until a later decision changes it.
+
+#### Result
+
+The pilot is `benchmarks/lndl_pilot/`: 24 read-only questions about lionagi's own source, each with
+an acceptance check, on `anthropic/claude-haiku-5-5` with read tools and `max_extensions: 10`. Each
+task's two runs are adjacent in time and the loop that goes first alternates by task. The per-task
+tables of requests, tool calls, wall time and acceptance are `runs/<run>/table.md` there.
+
+| run | lionagi | loop | accepted | requests | per accepted task | tool calls |
+|---|---|---|---|---|---|---|
+| r2 | `4d373f9c` | react | 23 / 24 | 94 | 4.09 | 56 |
+| r2 | `4d373f9c` | lndl | 18 / 24 | 119 | 6.61 | 34 |
+| r3 | `aca2e2e9` | react | 22 / 24 | 95 | 4.32 | 59 |
+| r3 | `aca2e2e9` | lndl | 23 / 24 | 79 | 3.44 | 37 |
+| r4 | `d8838f28` | react | 23 / 24 | 91 | 3.96 | 59 |
+| r4 | `d8838f28` | lndl | 22 / 24 | 80 | 3.64 | 47 |
+
+r2 fails the rule and r3 passes it, and one change separates them: in r2 an `lndl` round with no
+block continued with no error, and in r3 it is the repair round D2 describes. In both runs 17 of the
+24 `lndl` runs opened with a call written as an `<invoke>` tag outside any block. In r2, 12 of those
+recovered on their own and 5 (`t03`, `t04`, `t17`, `t18`, `t19`) repeated the tag until the budget
+ran out at 11 requests and were not accepted; 64 of the 119 `lndl` requests went to rounds with no
+block. In r3 each of the 17 wrote a block in its next round, and 18 of the 79 requests went to rounds
+with no block.
+
+- In r3 the accepts clause holds by one task, and the ReAct side moved by one task between r2 and r3
+  (in r3 its `t04` run made no tool call and was not accepted), so r3 shows that `lndl` accepted no
+  fewer tasks, not that it accepts more. The request saving is the larger effect: 79 requests
+  against 95.
+- `t06`'s check expects `100000` and all four answers to it wrote `100,000`. Read as accepting that,
+  r3 is `lndl` 24 at 3.29 requests per accepted task and ReAct 23 at 4.13, and r2 still fails.
+- No `lndl` run made more than four tool calls, so no round came near the 16-call limit, and that
+  limit is still unmeasured.
+- r4 ran the merged code (`d8838f28`), whose repair round also tells the model how a block opens
+  and closes, reads indented, longer and CRLF fences, and treats an empty block as a repair round
+  (D2). It fails the rule: `lndl` used fewer requests per accepted task (80 requests, 3.64, against
+  91 and 3.96) and accepted one task fewer (22 against 23). The deciding task is `t20`: the `lndl`
+  run named the module by its import path, `lionagi.tools.code.search`, said it had not opened the
+  file, and the check asks for `lionagi/tools/code/search.py`. Read on substance, `t06` (both r4
+  answers give the cap, as `100,000` or `100_000`) adds one task to each side and the outcome is
+  the same. 17
+  of the 24 `lndl` runs again opened with an `<invoke>` tag, each wrote a block in its next round,
+  17 of the 80 requests went to rounds with no block, and no run reached the round budget.
+- r3 and r4 split the accepts clause by one task in opposite directions (`t04` on the ReAct side in
+  r3, `t20` on the `lndl` side in r4), so 24 tasks cannot settle it. The request saving held in
+  both runs: 79 requests against 95, and 80 against 91. Under D4, `lndl` is not a recommended
+  setting and the default stays `react`; a recommendation would need a larger task set and a later
+  decision.
 
 ## Consequences
 

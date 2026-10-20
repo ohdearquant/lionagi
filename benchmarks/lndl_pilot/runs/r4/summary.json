@@ -1,0 +1,24 @@
+{
+  "react": {
+    "runs": 24,
+    "accepted": 23,
+    "requests": 91,
+    "tool_calls": 59,
+    "wall_seconds": 290.7,
+    "missing_spend": 0,
+    "requests_per_accepted": 3.957
+  },
+  "lndl": {
+    "runs": 24,
+    "accepted": 22,
+    "requests": 80,
+    "tool_calls": 47,
+    "wall_seconds": 236.4,
+    "missing_spend": 0,
+    "requests_per_accepted": 3.636
+  },
+  "d4_rule": {
+    "lndl_fewer_requests_per_accepted": true,
+    "lndl_accepts_no_fewer": false
+  }
+}
