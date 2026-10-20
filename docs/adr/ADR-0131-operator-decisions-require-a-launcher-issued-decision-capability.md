@@ -34,13 +34,14 @@ no `Sec-Fetch-Site` (`lionagi/studio/app.py:77`, `:123`), so a command-line clie
 tool's HTTP request are all admitted.
 
 **P2 — a code that pairs a page can be minted by any such request.** `POST
-/api/studio/pairing-codes` (`lionagi/studio/services/pairing.py:33-58`) mints a 120-second code
-(`lionagi/studio/launch_access.py:57`, `:49`) for a request without browser provenance, and `POST
-/api/studio/pair` (`pairing.py:60-61`) redeems it for the daemon's one process-wide bearer
+/api/studio/pairing-codes` (`lionagi/studio/services/pairing.py:28-46`) mints a 120-second code
+(`lionagi/studio/launch_access.py:33`, `:49`) for a request without browser provenance, and `POST
+/api/studio/pair` (`pairing.py:48`) redeems it for the daemon's one process-wide bearer
 (`launch_access.py:43`, `:63`). A test pins that the command line can mint and that the minted code
 redeems (`tests/studio/test_hosted_hardening.py:967`). The CLI uses that route to pair a page with a
-daemon that is already running (`lionagi/studio/cli.py:280`). So pairing is not a boundary: a tool
-that can send HTTP can mint, redeem with a forged `Origin`, and decide.
+daemon that is already running (`lionagi/studio/cli.py:261`). So pairing is not a boundary: a tool
+that can send HTTP can mint, redeem with a forged `Origin`, and decide. This paragraph describes the
+daemon before the HTTP mint route was retired (line numbers at `124b14193`).
 
 **P3 — the page keeps its bearer in memory only.** The frontend holds the paired bearer in a module
 variable (`apps/studio/frontend/src/lib/pairing.ts:14`); a reload loses it. Nothing reachable over
@@ -148,7 +149,8 @@ rule and the token's narrower meaning.
   stays pending, the bridge never sees `allow`, and nothing executes. A paired page's decision is the
   positive control. Repeated for an application proposal and for an already-decided one.
 - Mint: 410 for every header combination and for the admission token; the test that pins the
-  command-line mint today (`tests/studio/test_hosted_hardening.py:967`) is replaced by this one.
+  command-line mint today (`tests/studio/test_hosted_hardening.py:967`, line numbers at `124b14193`)
+  is replaced by this one.
 - Codes: unknown, expired, wrong origin, replayed and from a previous daemon start are refused; two
   concurrent redemptions of one code yield one capability; a refused wrong-origin attempt does not
   consume a valid code.
