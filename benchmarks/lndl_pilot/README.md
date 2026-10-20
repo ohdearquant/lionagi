@@ -57,7 +57,7 @@ Each task's check (`accept` in `tasks.yaml`) is a first pass on its answer. Ever
 r2, r3 and r4, accepted by its check or not, was then read against the `truth` line `tasks.yaml`
 records for its task (written against `6fa69b19`), and ADR-0132 D4 takes the reading as the
 decision. Read that way, r2 fails the rule, r3 meets it with no margin (23 accepted tasks on each
-side), and r4, at the merged code, fails it (`lndl` 23 against ReAct 24). By the checks alone the
+side), and r4, at `d8838f28`, fails it (`lndl` 23 against ReAct 24). By the checks alone the
 outcomes are the same, r3 by one task. ADR-0132 D4 names `r5` as the run that decides.
 
 The reading is one reader's judgment, made by the author of this change knowing which loop wrote
