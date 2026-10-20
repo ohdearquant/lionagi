@@ -225,9 +225,10 @@ After r5, `tasks.yaml`'s `t24` check was changed to require the assignments them
 two names the question supplies. Run against the committed answers, it rejects all four `lndl`
 answers (r2 to r5) and accepts all four ReAct ones; no run has used it yet.
 
-Each task in the two as-run task files also has a `none_of: []` beside `accept`, which the runner
-does not read; it is kept so that each file still matches the hash in its runs' `header.json`.
-`tasks.yaml` has none, and the runner refuses a task that has a non-empty one (below).
+Each task in the two as-run task files also has a `none_of: []` beside `accept`. The runner reads
+it only to refuse a task that has a non-empty one (below), since `check_answer` reads `none_of`
+from `accept` alone; it is kept so that each file still matches the hash in its runs'
+`header.json`. `tasks.yaml` has none.
 The two as-run task files also keep two `enumerate_known_member` lines that are one line off at
 `6fa69b19`, and no check reads them: `t13`'s `system` is at `lionagi/protocols/messages/base.py:24`,
 and `t19`'s `.env` at `lionagi/libs/path_safety.py:12`. `tasks.yaml`, which no run has used, has
@@ -253,8 +254,9 @@ rows. Each leg's spend lines are in its run's `spend.jsonl`.
   ends, and the summary and table count it only once it is written there (a row that cannot be
   written stops its task on a harness error); and an interrupt starts no further leg and still
   writes the summary and table (below). Third, `main()` makes the run directory only after it has
-  checked that the read tree exists and `li` is an executable file, read the task file (a YAML
-  mapping with a `tasks` key, and no mapping in it naming a key twice), checked each task
+  checked that `ANTHROPIC_API_KEY` is set, that the read tree exists and `li` is an executable
+  file, read the task file (a file that can be read, a YAML mapping with a `tasks` key, and no
+  mapping in it naming a key twice), checked each task
   (`task_problems()`: an `id` of 1 to 100 letters, digits, `_` and `-` that no other task shares,
   letter case aside, since each leg's files are named after it; a non-empty `class` on one line
   and a non-empty `prompt`, both text that encodes as UTF-8; checks that are lists of non-empty
@@ -270,10 +272,13 @@ rows. Each leg's spend lines are in its run's `spend.jsonl`.
   exits 2, and the second removes the directories made on the way to it. Each task in the two as-run
   task files has an empty `none_of` beside its `accept`. Fourth, `main()` names a task file that is
   in this directory by its path here in `header.json`, the form `summarize.py` reads (below); it
-  finds the file by identity and writes the path as the directory lists it, so a spelling that a
-  case-insensitive volume accepts names it too. Of the files' top-level statements, `summarize()`,
-  `run_one()`, `run_pair()` and `main()` are the ones whose `ast.dump` differs, and `run_pilot.py`
-  adds two imports (`threading` and `collections.abc.Callable`), the `TASK_ID` pattern and
+  writes each part of the path as its directory lists it, taking an entry whose name differs from
+  the given one only in letter case when it is the same file, so a spelling that a
+  case-insensitive volume accepts names it too and no link beside the file is taken for it. Of the
+  files' top-level statements, `summarize()`, `run_one()`, `run_pair()` and `main()` are the ones
+  whose `ast.dump` differs, and `run_pilot.py` adds two imports (`threading` and
+  `collections.abc.Callable`), the `TASK_ID` pattern, the YAML loader that refuses a key named
+  twice (`_TaskLoader`, `_mapping_without_repeats()` and the call that registers it) and
   `task_problems()`. With `missing_spend` at 0 and every leg run in all four runs, both give the
   same totals and rule: the test loads each as-run copy, checks its sha256 against the run's
   `runner_sha256`, and recomputes the run's `summary.json` with it.
@@ -328,13 +333,14 @@ interrupt, or a task that stopped on an error in the runner itself, still writes
 `table.md` from the rows it has: `summary.json` says why under `partial` and sets the D4 rule to
 `null`, with `d4_rule_unset` giving the same reason (and the count of legs with no spend line, if
 any), and `table.md` has a line for every task the run covers, marking a leg with no recorded row as
-`not run` (it did not start, its row could not be written, or it was still running at a second
-interrupt) and a count missing from a leg's output as `-`. On an interrupt (Ctrl-C) no further leg
-starts and the runner waits for the legs already running. A second interrupt stops that wait: the
-summary and table are written from the rows so far, `partial` says that rows of legs still running
-may follow in `results.jsonl`, and the process exits once those legs end. The runner exits 2, with
-no run directory, when a check before the run fails (above); 130 after an interrupt; and 1 when a
-task stopped, or a leg raised, on an error in the runner itself.
+`not run` (it did not start, its row could not be written, or it ended after a third interrupt) and
+a count missing from a leg's output as `-`. On an interrupt (Ctrl-C) no further leg starts and the
+runner waits for the legs already running. A second interrupt stops that wait: the summary and table
+are written from the rows so far, with `partial` saying that rows of legs still running may follow
+in `results.jsonl`, and written again from all the rows once those legs end; a third interrupt keeps
+them as first written. Either way the process exits once those legs end. The runner exits 2, with no
+run directory, when a check before the run fails (above); 130 after an interrupt; and 1 when a task
+stopped, or a leg raised, on an error in the runner itself.
 
 A whole run's `summary.json` holds the runner's own summary (`d4_rule`, by the checks); once each
 answer has been read and the reading written to `runs/<name>/reading.jsonl`,

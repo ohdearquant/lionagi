@@ -564,10 +564,10 @@ def test_each_reading_covers_its_runs_rows_and_the_adr_result_table_is_its_tally
         )
 
 
-def test_the_reading_and_the_checks_differ_in_the_ten_answers_the_adr_names():
+def test_the_reading_and_the_checks_differ_in_the_eleven_answers_the_adr_names():
     differ = sorted(
         (run, r["id"], r["loop"])
-        for run in ("r2", "r3", "r4")
+        for run in ("r2", "r3", "r4", "r5")
         for r in _jsonl(PILOT / "runs" / run / "reading.jsonl")
         if (r["check"] == "accepted") != (r["reading"] == "right")
     )
@@ -582,6 +582,7 @@ def test_the_reading_and_the_checks_differ_in_the_ten_answers_the_adr_names():
         ("r4", "t06", "react"),
         ("r4", "t20", "lndl"),
         ("r4", "t24", "lndl"),
+        ("r5", "t24", "lndl"),
     ]
 
 
@@ -1095,6 +1096,60 @@ def test_a_task_file_of_another_shape_is_refused_before_anything_runs(
     assert "nothing run" in err
 
 
+@pytest.mark.parametrize("kind", ["missing", "directory", "link loop"])
+def test_a_task_file_that_cannot_be_read_is_refused_before_anything_runs(
+    monkeypatch, tmp_path, capsys, kind
+):
+    tasks_file = tmp_path / "tasks.yaml"
+    if kind == "directory":
+        tasks_file.mkdir()
+    elif kind == "link loop":
+        tasks_file.symlink_to(tasks_file)
+    out = tmp_path / "run"
+    (tmp_path / "li").touch(mode=0o755)
+    monkeypatch.setattr(runner, "TREE", tmp_path)
+    monkeypatch.setattr(runner, "LI", tmp_path / "li")
+    legs = _Legs()
+    monkeypatch.setattr(runner.subprocess, "run", legs)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
+    monkeypatch.setattr(
+        sys, "argv", ["run_pilot.py", "--tasks", str(tasks_file), "--out", str(out)]
+    )
+
+    assert runner.main() == 2
+    assert legs.legs == []
+    assert not out.exists()
+    err = capsys.readouterr().err
+    assert f"--tasks: {tasks_file} cannot be read" in err
+    assert "nothing run" in err
+
+
+@pytest.mark.parametrize("key", [None, ""])
+def test_a_run_without_an_api_key_is_refused_before_anything_runs(
+    monkeypatch, tmp_path, capsys, key
+):
+    tasks_file = tmp_path / "tasks.yaml"
+    shutil.copyfile(PILOT / "tasks.yaml", tasks_file)
+    out = tmp_path / "run"
+    (tmp_path / "li").touch(mode=0o755)
+    monkeypatch.setattr(runner, "TREE", tmp_path)
+    monkeypatch.setattr(runner, "LI", tmp_path / "li")
+    legs = _Legs()
+    monkeypatch.setattr(runner.subprocess, "run", legs)
+    if key is None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", key)
+    monkeypatch.setattr(
+        sys, "argv", ["run_pilot.py", "--tasks", str(tasks_file), "--out", str(out)]
+    )
+
+    assert runner.main() == 2
+    assert legs.legs == []
+    assert not out.exists()
+    assert "ANTHROPIC_API_KEY is not set in this process; nothing run" in capsys.readouterr().err
+
+
 def test_a_table_row_escapes_its_class_and_marks_a_missing_count(monkeypatch, tmp_path):
     real_load = runner.yaml.load
 
@@ -1421,6 +1476,89 @@ def test_a_task_file_in_the_pilot_spelled_in_another_case_is_named_as_the_direct
     assert json.loads((out / "header.json").read_text())["tasks_file"] == "runs/Tasks.yaml"
 
 
+def _header_tasks_file(monkeypatch, tmp_path, name, links, spelled, listed_last):
+    """Runs t01 with the task set at `runs/<name>` in a copy of the pilot and returns the header's
+    `tasks_file`; `links` makes the other entries, and the listing puts `listed_last` last."""
+    here = tmp_path.resolve() / "Pilot"
+    agents = here / ".lionagi" / "agents"
+    agents.mkdir(parents=True)
+    for loop in LOOPS:
+        shutil.copyfile(PILOT / ".lionagi" / "agents" / f"d4-{loop}.md", agents / f"d4-{loop}.md")
+    runs = here / "runs"
+    runs.mkdir()
+    shutil.copyfile(PILOT / "tasks.yaml", runs / name)
+    links(runs)
+    real_listdir = os.listdir
+    monkeypatch.setattr(
+        runner.os,
+        "listdir",
+        lambda path: sorted(real_listdir(path), key=lambda entry: entry == listed_last),
+    )
+    out = tmp_path / "run"
+    (tmp_path / "li").touch(mode=0o755)
+    monkeypatch.setattr(runner, "HERE", here)
+    monkeypatch.setattr(runner, "TREE", tmp_path)
+    monkeypatch.setattr(runner, "LI", tmp_path / "li")
+    monkeypatch.setattr(runner.subprocess, "run", _Legs())
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["run_pilot.py", "--tasks", str(runs / spelled), "--out", str(out), "--only", "t01"],
+    )
+    assert runner.main() == 0
+    return json.loads((out / "header.json").read_text())["tasks_file"]
+
+
+@pytest.mark.parametrize("spelled", ["Tasks.yaml", "TASKS.YAML"])
+def test_a_task_file_is_named_by_its_own_entry_and_not_by_a_link_beside_it(
+    monkeypatch, tmp_path, spelled
+):
+    def links(runs):
+        if not (runs / spelled).is_file():
+            pytest.skip("this volume tells file names apart by case")
+        (runs / "dangling.yaml").symlink_to(runs / "missing.yaml")
+        (runs / "loop.yaml").symlink_to(runs / "loop.yaml")
+        (runs / "alias.yaml").symlink_to(runs / "Tasks.yaml")
+        os.link(runs / "Tasks.yaml", runs / "hard.yaml")
+
+    # Each of the other entries is listed before the task file's own.
+    name = _header_tasks_file(monkeypatch, tmp_path, "Tasks.yaml", links, spelled, "Tasks.yaml")
+    assert name == "runs/Tasks.yaml"
+
+
+def test_a_task_file_with_a_hard_link_named_in_another_case_is_named_as_given(
+    monkeypatch, tmp_path
+):
+    def links(runs):
+        if (runs / "TASKS.yaml").exists():
+            pytest.skip("this volume does not tell file names apart by case")
+        os.link(runs / "tasks.yaml", runs / "TASKS.yaml")
+
+    name = _header_tasks_file(
+        monkeypatch, tmp_path, "tasks.yaml", links, "tasks.yaml", "tasks.yaml"
+    )
+    assert name == "runs/tasks.yaml"
+
+
+def test_a_task_file_in_a_directory_that_cannot_be_listed_keeps_the_name_given(
+    monkeypatch, tmp_path
+):
+    def links(runs):
+        runs.chmod(0o311)
+        if os.access(runs, os.R_OK):
+            runs.chmod(0o755)
+            pytest.skip("this process can list a directory without read permission")
+
+    try:
+        name = _header_tasks_file(
+            monkeypatch, tmp_path, "Tasks.yaml", links, "Tasks.yaml", "Tasks.yaml"
+        )
+    finally:
+        (tmp_path / "Pilot" / "runs").chmod(0o755)
+    assert name == "runs/Tasks.yaml"
+
+
 def test_an_interrupt_starts_no_further_leg_and_writes_a_partial_summary(monkeypatch, tmp_path):
     started, release = threading.Event(), threading.Event()
 
@@ -1470,7 +1608,8 @@ def test_a_second_interrupt_writes_the_summary_and_a_running_legs_row_follows(
         assert release.wait(10)
 
     def wait(futures, *args, **kwargs):
-        # Both waits are interrupted while the first leg runs.
+        # Every wait is interrupted while the first leg runs, the one after the second interrupt
+        # too, so the summary stays as the second interrupt wrote it.
         assert started.wait(10)
         raise KeyboardInterrupt
 
@@ -1494,3 +1633,58 @@ def test_a_second_interrupt_writes_the_summary_and_a_running_legs_row_follows(
     rows = _jsonl(out / "results.jsonl")
     assert [(r["id"], r["loop"], r["rc"]) for r in rows] == [("t01", "react", 0)]
     assert len(legs.legs) == 1
+
+
+def test_after_a_second_interrupt_the_summary_and_table_are_written_again_once_the_legs_end(
+    monkeypatch, tmp_path
+):
+    started, release = threading.Event(), threading.Event()
+
+    def leg(argv):
+        started.set()
+        assert release.wait(10)
+
+    real_wait = runner.cf.wait
+    waits, written = [], []
+
+    def wait(futures, *args, **kwargs):
+        # The first two waits are interrupted while the first leg runs; the third reads the
+        # summary and table the second interrupt wrote, then lets the leg end.
+        assert started.wait(10)
+        waits.append(len(futures))
+        if len(waits) < 3:
+            raise KeyboardInterrupt
+        run = tmp_path / "run"
+        written.append(
+            (json.loads((run / "summary.json").read_text()), (run / "table.md").read_text())
+        )
+        release.set()
+        return real_wait(futures, *args, **kwargs)
+
+    monkeypatch.setattr(runner.cf, "wait", wait)
+    legs = _Legs(leg)
+    try:
+        rc, out = _run_main(monkeypatch, tmp_path, legs, ["t01", "t02"], "--concurrency", "1")
+    finally:
+        release.set()
+
+    assert rc == 130
+    assert len(waits) == 3
+    first_summary, first_table = written[0]
+    assert first_summary["partial"] == (
+        "interrupted twice after 0 of 4 legs; "
+        "rows of legs still running may follow in results.jsonl"
+    )
+    assert first_table.splitlines()[2:] == [
+        "| t01 | lookup | not run | not run |",
+        "| t02 | lookup | not run | not run |",
+    ]
+    rows = _jsonl(out / "results.jsonl")
+    assert [(r["id"], r["loop"], r["rc"]) for r in rows] == [("t01", "react", 0)]
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["partial"] == "interrupted twice after 1 of 4 legs"
+    assert summary["d4_rule"] is None
+    assert (out / "table.md").read_text().splitlines()[2:] == [
+        "| t01 | lookup | 2 / 1 / 1.5 / yes | not run |",
+        "| t02 | lookup | not run | not run |",
+    ]
