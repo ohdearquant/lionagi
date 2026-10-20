@@ -71,9 +71,15 @@ and one implementation.
   needs `strict_mcp_config`; codex, which has no wholesale clear, gets
   `ignore_user_config` (`--ignore-user-config`), so the user config and every
   server, hook and profile it declares are not loaded at all. A codex request
-  that also names a profile is refused: the profile is user config too, which
-  the flag drops, and the by-name disables read `config.toml` alone, so a
-  server the profile's file or a project layer declares would load. A non-empty
+  that hands an exclusive set and names a profile is refused whichever form the
+  set takes: under the flag the codex provider refuses it, since the profile is
+  user config too, which the flag drops; without the flag (a non-empty set, or
+  an allowlist that keeps a server codex's config declares) the factory refuses
+  it, since the by-name disables below read `config.toml` alone and a server only
+  the profile's file declares would load. Those disables do not reach a server only
+  a project layer (`.codex/config.toml`) declares either, and only a run under the
+  flag has its project layers checked, so a run that keeps the user config is
+  exclusive only over the servers `config.toml` declares. A non-empty
   exclusive codex set instead needs each server its own config declares, and
   the set leaves out, disabled by name (see
   `_discover_ambient_codex_mcp_server_names`, which raises
@@ -86,7 +92,7 @@ and one implementation.
   request already carries — a resumed leg's request is the persisted one —
   so the Claude `mcp_servers` map, codex `mcp_servers.*` overrides (a whole
   `mcp_servers` table included) and a generated codex profile are dropped
-  first; a profile the caller named stays.
+  first; a profile the caller named is not dropped, and is refused as above.
 - `allowed_names` is the caller's allowlist when it is wider than the set
   being forwarded — a name the caller allows but did not itself describe
   stays enabled rather than being disabled as excluded. It only matters

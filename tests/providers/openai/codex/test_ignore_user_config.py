@@ -1001,8 +1001,8 @@ def test_a_profile_the_run_names_is_refused_with_the_flag(codex_home):
 @pytest.mark.parametrize(
     ("overrides", "named"),
     [
-        ({"profile": "ro"}, "profile = 'ro'"),
-        ({"profile.name": "ro"}, "a profile key of type dict"),
+        ({"profile": "ro"}, "profile = 'ro', which selects a profile, and"),
+        ({"profile.name": "ro"}, "a profile key of type dict, and"),
     ],
     ids=["selects", "dotted"],
 )
@@ -1011,7 +1011,7 @@ def test_overrides_that_select_a_profile_are_refused_with_the_flag(codex_home, o
         CodexCodeRequest(
             prompt="hi", ignore_user_config=True, config_overrides=overrides
         ).as_cmd_args()
-    assert f"the run's config overrides set {named}, which selects a profile" in str(refused.value)
+    assert f"the run's config overrides set {named}" in str(refused.value)
 
     # the control: another override starts the run
     args = CodexCodeRequest(

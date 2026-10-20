@@ -859,13 +859,26 @@ def apply_forwarded_mcp_servers(
         # authentication store under the flag. An allowlist naming a server codex's
         # own config declares keeps that server, served from that config, so it is
         # not this case; an allowlist naming none of them leaves nothing to serve.
-        # A profile the caller named is user config too, so the codex provider refuses
-        # that request: the by-name disables read config.toml alone, and a profile's
-        # file or a project layer can declare servers they would not disable.
+        # A profile the caller named is user config too, so under the flag the codex
+        # provider refuses that request.
         if allowed_names:
             configured = _discover_ambient_codex_mcp_server_names()
         if not allowed_names or not configured & set(allowed_names):
             kwargs["ignore_user_config"] = True
+
+    # A generated profile was dropped above, so a profile still here is the caller's.
+    named_profile = kwargs.get("profile")
+    if exclusive and named_profile and not kwargs.get("ignore_user_config"):
+        # Without the flag the set is made exclusive by disabling, by name, the servers
+        # codex's config.toml declares, and a profile's file can declare servers no such
+        # disable reaches. This covers a non-empty set and an allowlist that keeps a server
+        # the config declares, the two exclusive runs that load the user config.
+        raise ConfigurationError(
+            f"Cannot hand codex an exclusive MCP server set with profile={named_profile!r}: "
+            "outside the set, only the servers codex's config.toml declares are disabled by "
+            "name, and a server the profile's file declares would still load. Drop the "
+            "profile, or hand the set as an addition rather than the whole set."
+        )
 
     # codex takes no JSON MCP-config input; each server is forwarded as
     # `-c mcp_servers.<name>.<field>=<value>` overrides. A field outside the

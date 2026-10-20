@@ -149,6 +149,36 @@ def test_an_allowlist_naming_a_server_only_codex_declares_keeps_that_server(code
     assert kwargs["config_overrides"] == {"mcp_servers.other.enabled": False}
 
 
+@pytest.mark.parametrize(
+    ("servers", "allowed_names"),
+    [({}, ["kept"]), (SERVERS, None)],
+    ids=["allowlist-keeps-a-declared-server", "non-empty-set"],
+)
+def test_an_exclusive_set_that_loads_the_user_config_refuses_a_named_profile(
+    codex_home, servers, allowed_names
+):
+    """These runs keep the user config, so the set is made exclusive by disabling by name
+    the servers config.toml declares. A profile's file can declare servers no such disable
+    reaches, so a profile the caller named is refused rather than passed on with `-p`."""
+    codex_home.write_config({"kept": {"command": "kept-mcp"}, "other": {"command": "other-mcp"}})
+    kwargs: dict = {"profile": "work"}
+
+    with pytest.raises(ConfigurationError, match="profile='work'"):
+        apply_forwarded_mcp_servers(
+            kwargs, servers, provider="codex", exclusive=True, allowed_names=allowed_names
+        )
+
+    # the controls: the same set without a profile, and the profile on a set that is an addition
+    plain: dict = {}
+    assert apply_forwarded_mcp_servers(
+        plain, servers, provider="codex", exclusive=True, allowed_names=allowed_names
+    )
+    assert "ignore_user_config" not in plain
+    addition: dict = {"profile": "work"}
+    assert apply_forwarded_mcp_servers(addition, SERVERS, provider="codex")
+    assert addition["profile"] == "work"
+
+
 def test_an_allowlist_naming_no_server_codex_declares_is_the_empty_set(codex_home):
     """With nothing described and no allowed name in codex's config there is no
     server left to serve, so the run loads no user config, as the empty set does,

@@ -2052,15 +2052,15 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
         # A value that is not a string is named by its type: its content is not echoed.
         selected = flags["profile"]
         named = (
-            f"profile = {selected!r}"
+            f"profile = {selected!r}, which selects a profile"
             if isinstance(selected, str)
             else f"a profile key of type {type(selected).__name__}"
         )
         raise ConfigurationError(
             f"Codex cannot start with --ignore-user-config: the run's config overrides set "
-            f"{named}, which selects a profile, and a run that loads no user config takes its "
-            "settings from the overrides themselves. Set those settings in the overrides "
-            "directly and drop the profile key."
+            f"{named}, and a run that loads no user config takes its settings from the "
+            "overrides themselves. Set those settings in the overrides directly and drop the "
+            "profile key."
         )
     config_path = codex_home_for_env(plain.env) / "config.toml"
     try:
