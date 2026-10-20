@@ -416,7 +416,9 @@ async def _run_step(
             left = max(deadline - time.monotonic(), 0.001)
             exchange.conn.timeout = left
             sock = exchange.sock
-            if sock is not None:
+            # http.client closes the socket itself once a body that ends with the connection has
+            # been read whole; the read after that answers from the closed response.
+            if sock is not None and sock.fileno() != -1:
                 sock.settimeout(left)
         return exchange.run(step)
 
@@ -519,12 +521,15 @@ class HTTPSession:
             target += f"?{query}"
         deadline = None if self.timeout is None else time.monotonic() + self.timeout
         tls = _default_ssl_context() if parts.scheme == "https" else None
+        # Given no port, http.client reads one off the host after its last colon, which in an
+        # IPv6 literal is part of the address.
+        port = parts.port if parts.port is not None else (443 if tls is not None else 80)
         if tls is not None:
             conn: http.client.HTTPConnection = http.client.HTTPSConnection(
-                parts.hostname, parts.port, timeout=self.timeout, context=tls
+                parts.hostname, port, timeout=self.timeout, context=tls
             )
         else:
-            conn = http.client.HTTPConnection(parts.hostname, parts.port, timeout=self.timeout)
+            conn = http.client.HTTPConnection(parts.hostname, port, timeout=self.timeout)
         exchange = _Exchange(conn, tls)
         self._exchanges.append(exchange)
         method = method.upper()

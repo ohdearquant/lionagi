@@ -441,6 +441,8 @@ async def test_a_body_cut_short_is_a_transport_error(head):
     [
         pytest.param(b"Content-Length: 11\r\n", id="length"),
         pytest.param(b"Connection: close\r\n", id="until-close"),
+        # http.client closes the socket after the last byte, before the read that finds the end.
+        pytest.param(b"Content-Length: 11\r\nConnection: close\r\n", id="length-and-close"),
     ],
 )
 async def test_a_body_that_arrives_whole_ends_the_pieces(head):
@@ -494,6 +496,32 @@ async def test_a_malformed_request_is_refused_before_it_connects(kwargs, message
     async with HTTPSession() as session:
         with pytest.raises(ValueError, match=message):
             await session.request("POST", url, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("url", "host", "port"),
+    [
+        ("http://[::1]/v1", "::1", 80),
+        ("https://[2001:db8::1]/v1", "2001:db8::1", 443),
+        ("http://[::1]:8443/v1", "::1", 8443),
+        ("http://example.com/v1", "example.com", 80),
+    ],
+)
+async def test_a_url_with_no_port_connects_to_its_host_on_the_schemes_port(
+    monkeypatch, url, host, port
+):
+    seen = []
+
+    def send(self, *args):
+        seen.append((self.conn.host, self.conn.port))
+        raise ConnectionRefusedError("not connecting")
+
+    monkeypatch.setattr(_http._Exchange, "send", send)
+    async with HTTPSession() as session:
+        with pytest.raises(TransportError):
+            await session.request("GET", url)
+
+    assert seen == [(host, port)]
 
 
 async def test_a_request_stopped_while_connecting_is_never_sent():
