@@ -101,26 +101,16 @@ async def _end_invocation(
             # The row is already in the status this call requested, so there is
             # no status or end time to move. A --metadata payload is still the
             # closer's to record, merged onto the row as it now stands.
-            if metadata is not None:
-                await _merge_invocation_metadata(db, invocation_id, metadata)
-            return InvocationEnd(row=await db.get_invocation(invocation_id), applied=True)
         if metadata is not None:
             # Merge: preserve any metadata the skill wrote during the run,
-            # overwrite per-key with the closer's payload.
-            await _merge_invocation_metadata(db, invocation_id, metadata)
+            # overwrite per-key with the closer's payload. The merge happens
+            # inside a single UPDATE, so a second closer's payload landing
+            # between this close's read and its write is merged with rather
+            # than overwritten: there is no read-modify-write in Python and
+            # nothing to retry. The payload lands with the write or the write
+            # fails, and a failure propagates rather than reporting it saved.
+            await db.merge_invocation_node_metadata(invocation_id, metadata)
         return InvocationEnd(row=await db.get_invocation(invocation_id), applied=True)
-
-
-async def _merge_invocation_metadata(db, invocation_id: str, metadata: dict) -> None:
-    """Merge ``metadata`` over the row's stored node_metadata, in the database.
-
-    ``StateDB.merge_invocation_node_metadata`` merges inside a single UPDATE, so
-    a second closer's payload landing between this close's read and its write is
-    merged with rather than overwritten: there is no read-modify-write in Python
-    and nothing to retry. The payload therefore lands with the write or the write
-    fails, and a failure propagates rather than reporting the payload saved.
-    """
-    await db.merge_invocation_node_metadata(invocation_id, metadata)
 
 
 async def _list_invocations(*, skill: str | None, status: str | None, limit: int) -> list[dict]:

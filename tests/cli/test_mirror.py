@@ -850,7 +850,7 @@ async def test_one_pass_non_completed_terminal_reactivation_does_not_crash(
             actor="test",
         )
         _write_session_file(root / "-w-proj" / f"{uid}.jsonl", uid, age_secs=5)
-        await _one_pass(db, root, {}, {}, since=None, live_window=300)
+        await _one_pass(db, root, {}, since=None, live_window=300)
         row = await db.get_session(session_db_id(uid))
     assert row["status"] == "running"
 
@@ -892,7 +892,7 @@ async def test_one_pass_terminal_reactivation_does_not_skip_later_uid_or_lineage
                 _lineage_event(b, "b-2", "b-1", "assistant", "picking it up"),
             ],
         )
-        await _one_pass(db, root, {}, {}, since=None, live_window=300)
+        await _one_pass(db, root, {}, since=None, live_window=300)
         terminal_row = await db.get_session(session_db_id(terminal_uid))
         child = await db.get_session(session_db_id(b))
     assert terminal_row["status"] == "running"
@@ -986,7 +986,7 @@ async def test_multifile_session_stays_running_when_any_file_is_fresh(
     _write_session_file(root / "-work-acme" / "old.jsonl", uid, age_secs=7200)
     _write_session_file(root / "-work-acme" / "fresh.jsonl", uid, age_secs=5)
     async with StateDB() as db:
-        await _one_pass(db, root, {}, {}, since=None, live_window=300)
+        await _one_pass(db, root, {}, since=None, live_window=300)
         row = await db.get_session(session_db_id(uid))
     assert row is not None
     assert row["status"] == "running"
@@ -1001,7 +1001,7 @@ async def test_multifile_session_completes_when_all_files_idle(
     _write_session_file(root / "-work-acme" / "a.jsonl", uid, age_secs=7200)
     _write_session_file(root / "-work-acme" / "b.jsonl", uid, age_secs=3600)
     async with StateDB() as db:
-        await _one_pass(db, root, {}, {}, since=None, live_window=300)
+        await _one_pass(db, root, {}, since=None, live_window=300)
         row = await db.get_session(session_db_id(uid))
     assert row is not None
     assert row["status"] == "completed"
@@ -1050,8 +1050,8 @@ async def test_idle_transcript_status_reconciliation_quiesces_after_cold_pass(
         _record_reconcile,
     )
 
-    await _one_pass(None, root, states, {}, since=None, live_window=300)
-    await _one_pass(None, root, states, {}, since=None, live_window=300)
+    await _one_pass(None, root, states, since=None, live_window=300)
+    await _one_pass(None, root, states, since=None, live_window=300)
 
     assert calls == expected_uids
 
@@ -1095,13 +1095,13 @@ async def test_live_transcript_reconciles_until_one_final_idle_check(
 
     # Still live according to the persisted message clock: keep observing even
     # though the file itself already looks old.
-    await _one_pass(None, root, states, {}, since=None, live_window=300)
-    await _one_pass(None, root, states, {}, since=None, live_window=300)
+    await _one_pass(None, root, states, since=None, live_window=300)
+    await _one_pass(None, root, states, since=None, live_window=300)
     # The DB reports the final idle transition as settled.  Later unchanged
     # polls are quiescent.
     settled["value"] = True
-    await _one_pass(None, root, states, {}, since=None, live_window=300)
-    await _one_pass(None, root, states, {}, since=None, live_window=300)
+    await _one_pass(None, root, states, since=None, live_window=300)
+    await _one_pass(None, root, states, since=None, live_window=300)
 
     assert calls == [uid, uid, uid]
 
@@ -1151,7 +1151,7 @@ async def test_an_unwindowed_pass_does_not_stat_for_a_window_it_will_not_read(
         stats.clear()
         monkeypatch.setattr(Path, "stat", _counting_stat)
         try:
-            await _one_pass(None, root, states, {}, since=since, live_window=300)
+            await _one_pass(None, root, states, since=since, live_window=300)
         finally:
             monkeypatch.setattr(Path, "stat", real_stat)
         return len(stats)
@@ -1206,7 +1206,7 @@ async def test_an_unwindowed_codex_pass_does_not_stat_for_the_window_either(
         monkeypatch.setattr(Path, "stat", _counting_stat)
         try:
             await mirror_mod._codex_pass(
-                None, tmp_path, states, {}, since=since, live_window=300, threads={}
+                None, tmp_path, states, since=since, live_window=300, threads={}
             )
         finally:
             monkeypatch.setattr(Path, "stat", real_stat)
@@ -1248,12 +1248,8 @@ async def test_idle_codex_rollout_status_reconciliation_also_quiesces(
         _record_reconcile,
     )
 
-    await mirror_mod._codex_pass(
-        None, tmp_path, states, {}, since=None, live_window=300, threads={}
-    )
-    await mirror_mod._codex_pass(
-        None, tmp_path, states, {}, since=None, live_window=300, threads={}
-    )
+    await mirror_mod._codex_pass(None, tmp_path, states, since=None, live_window=300, threads={})
+    await mirror_mod._codex_pass(None, tmp_path, states, since=None, live_window=300, threads={})
 
     assert calls == [uid]
 
@@ -1281,16 +1277,17 @@ async def test_one_pass_reprocesses_batch_when_write_fails(
 
     monkeypatch.setattr("lionagi.state.claude_mirror.mirror_session", _maybe_fail)
 
-    offsets: dict[str, int] = {}
+    states: dict[str, _FileState] = {}
     async with StateDB() as db:
         # Pass 1: the write fails; the cursor must NOT be persisted past the batch.
-        await _one_pass(db, root, {}, offsets, since=None, live_window=300)
+        await _one_pass(db, root, states, since=None, live_window=300)
         assert await db.get_session(session_db_id(uid)) is None
-        assert offsets == {}  # cursor never advanced past the unmirrored batch
+        # cursor never advanced past the unmirrored batch
+        assert [state.offset for state in states.values()] == [0]
 
         # Pass 2: write restored; the same batch is mirrored, not lost.
         fail["on"] = False
-        await _one_pass(db, root, {}, offsets, since=None, live_window=300)
+        await _one_pass(db, root, states, since=None, live_window=300)
         row = await db.get_session(session_db_id(uid))
         msgs = await db.get_progression(row["progression_id"])
     assert row is not None
@@ -1582,7 +1579,7 @@ async def test_lineage_links_continued_session(temp_db_path: Path, tmp_path: Pat
         ],
     )
     async with StateDB() as db:
-        await _one_pass(db, root, {}, {}, since=None, live_window=300)
+        await _one_pass(db, root, {}, since=None, live_window=300)
         child = await db.get_session(session_db_id(b))
     lineage = child["node_metadata"]["lineage"]
     assert lineage["parent_session_id"] == session_db_id(a)
@@ -1602,7 +1599,7 @@ async def test_no_lineage_for_self_rooted_session(temp_db_path: Path, tmp_path: 
         ],
     )
     async with StateDB() as db:
-        await _one_pass(db, root, {}, {}, since=None, live_window=300)
+        await _one_pass(db, root, {}, since=None, live_window=300)
         row = await db.get_session(session_db_id(s))
     assert "lineage" not in (row["node_metadata"] or {})
 
@@ -1628,7 +1625,7 @@ async def test_no_lineage_for_same_session_across_files(temp_db_path: Path, tmp_
         ],
     )
     async with StateDB() as db:
-        await _one_pass(db, root, {}, {}, since=None, live_window=300)
+        await _one_pass(db, root, {}, since=None, live_window=300)
         row = await db.get_session(session_db_id(s))
     assert "lineage" not in (row["node_metadata"] or {})
 
@@ -1665,8 +1662,8 @@ async def test_idle_session_backfilled_with_project(temp_db_path: Path, tmp_path
         await mirror_session(db, session_uid=uid, events=events, tool_names={}, project=None)
         assert (await db.get_session(session_db_id(uid)))["project"] is None
         # Idle pass: file already fully read (offset at EOF) -> no streamed events.
-        offsets = {str(path): path.stat().st_size}
-        await _one_pass(db, root, {}, offsets, since=None, live_window=300)
+        states = {str(path): _FileState(session_uid="", offset=path.stat().st_size)}
+        await _one_pass(db, root, states, since=None, live_window=300)
         row = await db.get_session(session_db_id(uid))
     assert row["project"] == "ghost-proj"
     assert row["project_source"] == "cwd_dir"
@@ -1698,8 +1695,8 @@ async def test_idle_session_backfilled_with_artifacts_path_even_when_project_alr
         before = await db.get_session(session_db_id(uid))
         assert before["project"] == "ghost-proj-2"
         assert before["artifacts_path"] is None
-        offsets = {str(path): path.stat().st_size}
-        await _one_pass(db, root, {}, offsets, since=None, live_window=300)
+        states = {str(path): _FileState(session_uid="", offset=path.stat().st_size)}
+        await _one_pass(db, root, states, since=None, live_window=300)
         row = await db.get_session(session_db_id(uid))
     assert row["artifacts_path"] == str(work)
     assert row["project"] == "ghost-proj-2"
@@ -1742,16 +1739,15 @@ async def test_attr_peeked_flag_not_set_on_backfill_failure(
         await mirror_session(db, session_uid=uid, events=events, tool_names={}, project=None)
         assert (await db.get_session(session_db_id(uid)))["project"] is None
 
-        offsets = {str(path): path.stat().st_size}
-        states: dict[str, _FileState] = {}
+        states = {str(path): _FileState(session_uid="", offset=path.stat().st_size)}
         # _one_pass's own per-transcript exception handler swallows the raise.
-        await _one_pass(db, root, states, offsets, since=None, live_window=300)
+        await _one_pass(db, root, states, since=None, live_window=300)
         state = states[str(path)]
         assert not state.attr_peeked, (
             "the flag was set even though the backfill raised, so no later pass will retry it"
         )
 
-        await _one_pass(db, root, states, offsets, since=None, live_window=300)
+        await _one_pass(db, root, states, since=None, live_window=300)
         row = await db.get_session(session_db_id(uid))
     assert state.attr_peeked
     assert row["project"] == "ghost-proj-flaky"
@@ -1775,8 +1771,8 @@ async def test_peek_head_skips_non_dict_head_line(temp_db_path: Path, tmp_path: 
         assert (await db.get_session(session_db_id(uid)))["status"] == "running"
         # Idle pass: file already fully read (offset at EOF) -> no streamed events,
         # so _peek_head scans the head and hits the `[]` line.
-        offsets = {str(path): path.stat().st_size}
-        await _one_pass(db, root, {}, offsets, since=None, live_window=300)
+        states = {str(path): _FileState(session_uid="", offset=path.stat().st_size)}
+        await _one_pass(db, root, states, since=None, live_window=300)
         row = await db.get_session(session_db_id(uid))
     assert row["status"] == "completed"
 
@@ -1805,17 +1801,16 @@ async def test_tool_name_survives_restart_between_use_and_result(
         # Pass 1: mirror the tool_use, persist the cursor + tool_names, then drop
         # all in-memory state — a restart.
         states1: dict[str, _FileState] = {}
-        await _one_pass(db, root, states1, {}, since=None, live_window=300)
+        await _one_pass(db, root, states1, since=None, live_window=300)
         _save_states(states1)
 
         # Restart: state comes back from disk only.
         states2 = _load_states()
-        offsets2 = {k: s.offset for k, s in states2.items()}
 
         # The tool_result lands after the restart.
         with path.open("a") as fh:
             fh.write(json.dumps(_tool_result("u2", "tool_1", "total 0")) + "\n")
-        await _one_pass(db, root, states2, offsets2, since=None, live_window=300)
+        await _one_pass(db, root, states2, since=None, live_window=300)
 
         row = await db.get_session(session_db_id(SID))
         contents = []
@@ -1857,7 +1852,7 @@ async def test_a_failed_batch_is_re_read_with_the_tool_names_it_consumed(
     )
     async with StateDB() as db:
         states: dict[str, _FileState] = {}
-        await _one_pass(db, root, states, {}, since=None, live_window=300)
+        await _one_pass(db, root, states, since=None, live_window=300)
         state = states[str(path)]
         assert state.tool_names == {"tool_1": "Bash"}
         offset_before = state.offset
@@ -1870,11 +1865,11 @@ async def test_a_failed_batch_is_re_read_with_the_tool_names_it_consumed(
 
         with monkeypatch.context() as m:
             m.setattr(db, "insert_messages", _fail)
-            await _one_pass(db, root, states, {}, since=None, live_window=300)
+            await _one_pass(db, root, states, since=None, live_window=300)
         assert state.offset == offset_before
         assert state.tool_names == {"tool_1": "Bash"}
 
-        await _one_pass(db, root, states, {}, since=None, live_window=300)
+        await _one_pass(db, root, states, since=None, live_window=300)
         assert state.tool_names == {}
         contents = await _session_contents(db)
     assert _response_functions(contents) == ["Bash"]
@@ -2225,12 +2220,11 @@ async def test_lineage_resolves_after_restart(
     async with StateDB() as db:
         # Pass 1: mirror only the parent; persist its leaf index, then restart.
         states1: dict[str, _FileState] = {}
-        await _one_pass(db, root, states1, {}, since=None, live_window=300)
+        await _one_pass(db, root, states1, since=None, live_window=300)
         _save_states(states1)
 
         # Restart: rebuild states + re-seed the leaf index from disk only.
         states2 = _load_states()
-        offsets2 = {k: s.offset for k, s in states2.items()}
         lineage2 = _Lineage()
         _seed_lineage(lineage2, states2)
 
@@ -2242,7 +2236,7 @@ async def test_lineage_resolves_after_restart(
                 _lineage_event(b, "b-2", "b-1", "assistant", "picking it up"),
             ],
         )
-        await _one_pass(db, root, states2, offsets2, since=None, live_window=300, lineage=lineage2)
+        await _one_pass(db, root, states2, since=None, live_window=300, lineage=lineage2)
         child = await db.get_session(session_db_id(b))
     lineage = child["node_metadata"]["lineage"]
     assert lineage["parent_session_uid"] == a
@@ -2765,7 +2759,7 @@ async def test_cli_tail_loop_retries_a_failed_backfill(tmp_path, monkeypatch):
         attempts.append(True)
         return len(attempts) >= 2  # first sweep fails, second is clean
 
-    async def fake_codex_pass(db, root, states, offsets, *, since, live_window, threads):
+    async def fake_codex_pass(db, root, states, *, since, live_window, threads):
         return 0
 
     class _Stop(Exception):
@@ -3381,7 +3375,7 @@ async def test_live_claude_ingest_bounds_oversized_message_via_one_pass(
     path = _claude_oversized_file(root, uid)
 
     async with StateDB() as db:
-        await _one_pass(db, root, {}, {}, since=None, live_window=300)
+        await _one_pass(db, root, {}, since=None, live_window=300)
         branch_id = _det(uid, "branch")
         rows = await db.get_branch_messages(branch_id)
 
