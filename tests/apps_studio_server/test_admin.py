@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import subprocess
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -1060,7 +1061,7 @@ _STALL_TOLERANCE = _BLOCK_SECONDS / 2
 
 
 async def _max_loop_stall(coro, during: list[tuple[float, float]] | None = None) -> float:
-    """Run *coro*, returning the longest the loop went without giving a turn.
+    """Run *coro*, returning the longest stall, over the run or inside *during*.
 
     Counting turns is not enough, and the difference is not academic: a
     coroutine that is slow for legitimate reasons accumulates plenty of turns
@@ -1100,7 +1101,7 @@ async def _max_loop_stall(coro, during: list[tuple[float, float]] | None = None)
 @pytest.mark.parametrize(
     "endpoint", ["list_phantom_sessions", "health_report", "transition_sessions"]
 )
-def test_a_lock_scan_does_not_block_the_loop_that_serves_every_other_request(
+def test_a_lock_scan_walks_off_the_loop_that_serves_every_other_request(
     tmp_path, monkeypatch, endpoint
 ):
     """The artifact walk runs off the event loop, so other requests keep moving.
@@ -1114,6 +1115,8 @@ def test_a_lock_scan_does_not_block_the_loop_that_serves_every_other_request(
     Two arms: the loop is never held for long while a walk is deliberately
     blocked, and a walk really ran (otherwise a scan that reached no row at
     all would leave the loop idle and pass the first assertion vacuously).
+    Only the walk is measured: the scan's other work on the loop (the per-row
+    liveness probe, opening the store, writing the transition) is not.
 
     Every coroutine that walks is covered, not just the one the defect was
     first noticed in -- they offload at separate call sites, so a guard on
@@ -1157,8 +1160,10 @@ def test_a_lock_scan_does_not_block_the_loop_that_serves_every_other_request(
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
 
     walks: list[tuple[float, float]] = []
+    walk_threads: list[int] = []
 
     def slow_walk(root, *, cutoff, budget=None):
+        walk_threads.append(threading.get_ident())
         start = time.perf_counter()
         time.sleep(_BLOCK_SECONDS)
         walks.append((start, time.perf_counter()))
@@ -1175,6 +1180,7 @@ def test_a_lock_scan_does_not_block_the_loop_that_serves_every_other_request(
     else:
         subject = getattr(admin_svc, endpoint)()
 
+    loop_thread = threading.get_ident()  # `_run` drives the loop on this thread
     stall = _run(_max_loop_stall(subject, during=walks))
 
     assert walks, (
@@ -1185,11 +1191,13 @@ def test_a_lock_scan_does_not_block_the_loop_that_serves_every_other_request(
         f"the loop was held for {stall:.3f}s during a {_BLOCK_SECONDS}s walk: "
         "the scan is back on the event loop and other requests are queueing"
     )
-    # The stall above is measured only inside the recorded intervals, so an
-    # interval that does not cover the block would let an on-loop walk pass.
+    # The stall above is measured only inside the recorded intervals, so a short
+    # interval would let an on-loop walk pass; and since a full-length interval
+    # recorded in the wrong place would too, where the walk ran is checked by thread.
     assert all(end - start >= _BLOCK_SECONDS - _TICK_SECONDS for start, end in walks), (
         f"a recorded walk interval is shorter than the {_BLOCK_SECONDS}s block: {walks}"
     )
+    assert loop_thread not in walk_threads, "a walk ran on the event loop's own thread"
 
 
 @pytest.mark.parametrize("windowed", [False, True], ids=["whole-run", "inside-the-walk"])
@@ -1214,6 +1222,36 @@ def test_the_stall_probe_would_have_caught_a_walk_left_on_the_loop(windowed):
         f"only {stall:.3f}s measured while the loop was deliberately held for "
         f"{_BLOCK_SECONDS}s: the probe is not measuring loop availability"
     )
+
+
+def test_the_windowed_probe_leaves_out_loop_work_around_the_walk():
+    """Inside *during*, on-loop work before an offloaded walk is not counted.
+
+    The sensitivity test above holds the loop inside the interval, where a window
+    read too wide measures the same as a correct one. Here the loop is held just
+    before the walk, so a window ignored or an overlap computed from the gap alone
+    reads the whole hold. The same run measured whole is the control: the hold is
+    really there.
+    """
+
+    def run(windowed: bool) -> float:
+        walks: list[tuple[float, float]] = []
+
+        def walk():
+            start = time.perf_counter()
+            time.sleep(_BLOCK_SECONDS)
+            walks.append((start, time.perf_counter()))
+
+        async def holds_then_offloads():
+            time.sleep(_BLOCK_SECONDS)
+            await asyncio.to_thread(walk)
+
+        stall = _run(_max_loop_stall(holds_then_offloads(), during=walks if windowed else None))
+        assert walks, "the walk did not run"
+        return stall
+
+    assert run(windowed=False) >= _STALL_TOLERANCE
+    assert run(windowed=True) < _STALL_TOLERANCE
 
 
 def test_a_scan_that_runs_out_of_time_says_so_instead_of_reporting_clean(tmp_path, monkeypatch):

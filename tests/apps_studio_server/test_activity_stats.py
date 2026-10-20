@@ -32,7 +32,7 @@ async def _seed_session(
         "ended_at": ended_at,
     }
     # Left out unless given: the store stamps a missing created_at with its own
-    # clock, and an explicit None would store no creation time at all.
+    # clock, and an explicit None would violate the column's NOT NULL constraint.
     if created_at is not None:
         session["created_at"] = created_at
     async with StateDB(db_path) as db:
