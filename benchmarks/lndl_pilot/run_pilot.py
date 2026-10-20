@@ -342,24 +342,28 @@ def main() -> int:
     if len({loop.lower() for loop in loops}) < len(loops):
         # A loop named twice would run each task's leg twice into the same files.
         problems.append(f"--loops: {args.loops!r} names a loop twice, ignoring letter case")
-    # resolve() reads a `..` after a missing part as text, where the OS refuses the path, so the
-    # two agree on where --out lies only when the part before each `..` exists.
+    # resolve() reads a `..` as text, where the OS goes up only from a directory it can look up,
+    # so the two agree on where --out lies only when the OS resolves the path up to each `..`.
     parts = Path(args.out).parts
-    gone = next(
-        (
-            Path(*parts[:i])
-            for i, part in enumerate(parts)
-            if part == ".." and not os.path.lexists(Path(*parts[:i]))
-        ),
-        None,
-    )
+    up = None
+    for i, part in enumerate(parts):
+        if part != "..":
+            continue
+        try:
+            os.stat(Path(*parts[: i + 1]))
+        except FileNotFoundError:
+            up = f"goes up from {Path(*parts[:i])}, which does not exist"
+        except OSError as exc:
+            up = f"goes up from {Path(*parts[:i])}, which cannot be looked up: {exc.strerror}"
+        if up is not None:
+            break
     if not args.out:
         problems.append("--out is empty")
     elif os.path.lexists(Path(args.out)):
         # Through Path, which drops a trailing slash: with one, lstat follows a dangling link.
         problems.append(f"--out: {args.out} already exists")
-    elif gone is not None:
-        problems.append(f"--out: {args.out} goes up from {gone}, which does not exist")
+    elif up is not None:
+        problems.append(f"--out: {args.out} {up}")
     else:
         try:
             # Absolute: each child runs with cwd set to the read tree, so a relative path would
@@ -371,7 +375,9 @@ def main() -> int:
             parent = Path(args.out).absolute().parent
             while not os.path.lexists(parent) and parent != parent.parent:
                 parent = parent.parent
-            if not os.path.isdir(os.path.realpath(parent, strict=True)):
+            # isdir() asks the OS, which before Python 3.13 can disagree with realpath(): a link
+            # whose target goes up out of a file (`F/../D`) resolves there as text.
+            if not (os.path.isdir(os.path.realpath(parent, strict=True)) and os.path.isdir(parent)):
                 problems.append(f"--out: {args.out} is under {parent}, which is not a directory")
         # resolve() raises RuntimeError on a link loop before Python 3.13; realpath raises OSError.
         except (OSError, RuntimeError) as exc:
@@ -429,10 +435,22 @@ def main() -> int:
     }
     # Made once everything above has been checked and `git` and `li` have answered for the
     # header, so a refused run, or an `li` that cannot start, leaves no run directory behind.
+    # The ancestors mkdir would create, deepest first, so that a failure part way removes them.
+    missing = []
+    for ancestor in out.parents:
+        if os.path.lexists(ancestor):
+            break
+        missing.append(ancestor)
     try:
         out.mkdir(parents=True, exist_ok=False)
     except OSError as exc:
-        # An ancestor without search permission or on a read-only file system shows only here.
+        # An ancestor without search permission or on a read-only file system shows only here, and
+        # so does a name the file system refuses, once the ancestors before it have been made.
+        for ancestor in missing:
+            try:
+                ancestor.rmdir()
+            except OSError:
+                pass
         print(f"--out: {args.out} cannot be created: {exc}", file=sys.stderr)
         print("nothing run", file=sys.stderr)
         return 2

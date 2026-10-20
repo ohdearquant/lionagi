@@ -703,6 +703,91 @@ def test_an_out_going_up_from_a_missing_directory_is_refused(monkeypatch, tmp_pa
     )
 
 
+@pytest.mark.parametrize("tail", ["U/../run", "U/M/../run"])
+def test_an_out_going_up_through_a_directory_that_cannot_be_searched_is_refused(
+    monkeypatch, tmp_path, capsys, tail
+):
+    closed = tmp_path / "P" / "U"
+    closed.mkdir(parents=True)
+    closed.chmod(0o600)
+    out = f"{tmp_path}/P/{tail}"
+    try:
+        if os.access(closed / ".", os.X_OK):
+            pytest.skip("this user can search a directory without search permission")
+        legs = _Legs()
+        rc, _ = _run_main(monkeypatch, tmp_path, legs, ["t01"], "--out", out)
+    finally:
+        closed.chmod(0o700)
+
+    assert rc == 2
+    assert legs.legs == []
+    assert not (tmp_path / "P" / "run").exists()
+    up_from = Path(out).parent.parent
+    assert f"--out: {out} goes up from {up_from}, which cannot be looked up:" in (
+        capsys.readouterr().err
+    )
+
+
+def test_an_out_through_a_link_whose_target_goes_up_out_of_a_file_is_refused(
+    monkeypatch, tmp_path, capsys
+):
+    (tmp_path / "P").mkdir()
+    (tmp_path / "P" / "F").write_text("")
+    (tmp_path / "P" / "D").mkdir()
+    (tmp_path / "P" / "L").symlink_to("F/../D")
+    out = tmp_path / "P" / "L" / "run"
+    legs = _Legs()
+    rc, _ = _run_main(monkeypatch, tmp_path, legs, ["t01"], "--out", str(out))
+
+    assert rc == 2
+    assert legs.legs == []
+    assert not (tmp_path / "P" / "D" / "run").exists()
+    err = capsys.readouterr().err
+    assert f"--out: {out} " in err
+    assert "does not resolve" in err or "which is not a directory" in err
+
+
+def test_an_out_under_a_dangling_link_is_refused_before_anything_runs(
+    monkeypatch, tmp_path, capsys
+):
+    (tmp_path / "dang").symlink_to(tmp_path / "elsewhere")
+    out = tmp_path / "dang" / "run"
+    legs = _Legs()
+    rc, _ = _run_main(monkeypatch, tmp_path, legs, ["t01"], "--out", str(out))
+
+    assert rc == 2
+    assert legs.legs == []
+    assert not (tmp_path / "elsewhere").exists()
+    assert f"--out: {out} does not resolve" in capsys.readouterr().err
+
+
+def test_an_out_going_up_out_of_a_link_to_a_directory_runs_where_the_os_puts_it(
+    monkeypatch, tmp_path
+):
+    (tmp_path / "real" / "D").mkdir(parents=True)
+    (tmp_path / "V").symlink_to(tmp_path / "real" / "D")
+    legs = _Legs()
+    rc, _ = _run_main(monkeypatch, tmp_path, legs, ["t01"], "--out", f"{tmp_path}/V/../run")
+
+    assert rc == 0
+    assert len(legs.legs) == 2
+    assert (tmp_path / "real" / "run" / "header.json").is_file()
+    assert not (tmp_path / "run").exists()
+
+
+def test_an_out_whose_name_the_file_system_refuses_leaves_no_directory_behind(
+    monkeypatch, tmp_path, capsys
+):
+    out = tmp_path / "a" / "b" / ("n" * 300)
+    legs = _Legs()
+    rc, _ = _run_main(monkeypatch, tmp_path, legs, ["t01"], "--out", str(out))
+
+    assert rc == 2
+    assert legs.legs == []
+    assert not (tmp_path / "a").exists()
+    assert f"--out: {out} cannot be created:" in capsys.readouterr().err
+
+
 def test_an_out_that_cannot_be_created_is_refused_before_anything_runs(
     monkeypatch, tmp_path, capsys
 ):

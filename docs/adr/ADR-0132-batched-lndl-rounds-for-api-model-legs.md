@@ -5,7 +5,8 @@
 - **Implementation-status**: partial — D1-D3 are implemented. D4 is open: three pilot runs are
   recorded (D4, Result), and read against the source r3 meets the rule and r2 and r4 (`d8838f28`)
   do not, so no recorded run decides it. A fourth run, `r5`, ran before the rule that the reading
-  decides was adopted, and its record is added in a later change. Until D4 is settled `lndl` stays
+  decides was adopted, and is recorded in the change that decides D4 on it, beside the times each
+  form of the rule took effect. Until D4 is settled `lndl` stays
   an opt-in setting and is not recommended, and the default stays `react`
 - **Area**: operations
 - **Date**: 2026-10-17
@@ -137,10 +138,11 @@ the check rejects and the reading finds right is. The result is a per-task table
 calls, wall time and acceptance for both loops, published with the pilot's commit, and a per-task
 record of each answer's reading beside its check. The pilot can run more than once as the code
 changes, and each run is recorded in the Result. r2, r3 and r4 are recorded there and do not settle
-the rule. A fourth run, `r5`, ran on 2026-10-20 from 02:09 to 02:12 UTC with lionagi installed from
-`208bcc08`; the rule that the reading decides was adopted after it, at 03:10 UTC. r5's record is
-added to the Result in a later change, and no run recorded here decides D4. Once a recorded run
-decides it, no later run reopens D4: a different outcome takes a new decision. The reading is one
+the rule. A fourth run, `r5`, ran before the rule that the reading decides was adopted. It is
+recorded in the change that decides D4 on it, beside the times at which each form of the rule took
+effect, so that its outcome is read knowing which rule was in force when it ran; no run recorded
+here decides D4. Once a recorded run decides it, no later run reopens D4: a different outcome takes
+a new decision. The reading is one
 reader's judgment, made knowing which loop wrote each answer, and no blind second reading was
 done; it judges what each answer says to its question and counts
 an answer right when it gives the value or name its task records, also when it corrects a premise
@@ -227,7 +229,7 @@ the 17 wrote a block in its next round, and 18 of the 79 requests went to rounds
   rounds with no block, and no run reached the round budget.
 - On reading, r3 ties the accepts clause and r4 misses it by one task, so these runs do not settle
   it. The request saving held in both runs: 79 requests against 95, and 80 against 91. `r5` ran
-  before the reading rule was adopted (D4), and its record is added in a later change. Every
+  before the reading rule was adopted, and is recorded where D4 is decided on it (D4). Every
   answer is committed with the runs (`answers.jsonl`), beside each leg's spend line (`spend.jsonl`)
   and its reading (`reading.jsonl`), and the README lists the ten answers where the reading and the
   checks differ and the answers to `t03` and `t05` whose count turns on the reading rule.
