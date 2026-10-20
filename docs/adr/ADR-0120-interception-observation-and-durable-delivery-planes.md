@@ -612,7 +612,7 @@ uses it as migration evidence.
 ## Amendment 1 (2026-10-16) — an observing subscriber is woken at a boundary, not per row
 
 D3 makes `SessionObserver` an observation façade and leaves subscription delivery as it stands: a
-handler runs inside `emit`, once per fact it matches (`lionagi/session/observer.py:357-394`). This record
+handler runs inside `emit`, once per fact it matches (`lionagi/session/observer.py:359-396`). This record
 did not decide how often a subscriber that is a process rather than an in-process callable should
 run, and the cheapest reading of D3's dispatch, one run per matching fact, is the one to refuse.
 One attempt of `ReactiveExecutor` emits a different fact per node transition, from `NodeQueued`
@@ -691,8 +691,8 @@ closure is a prerequisite delta below. At most `max_wakes_per_attempt - 1` inter
 batch are minted; closure wakes only for remaining admitted facts. Closure drains admitted
 emissions and persistence before recording its cutoff; observer unbinding is cleanup, not
 settlement, and `unbind_db_persistence` is synchronous and detaches the sink handler before the
-writes it tracked are known to have finished (`lionagi/session/observer.py:581-598`), ahead of the
-CLI and Studio closing the store (`lionagi/cli/_runs.py:1476`,
+writes it tracked are known to have finished (`lionagi/session/observer.py:597-614`), ahead of the
+CLI and Studio closing the store (`lionagi/cli/_runs.py:1572`,
 `lionagi/studio/services/workflow_run.py:110`). `retryable` closing work waits durably;
 `best_effort` drops and counts queue overflow. A hung invocation remains pending; restart recovers
 durable work without inventing a successful settlement.
@@ -720,11 +720,11 @@ sink did not confirm is not a committed row and is no durable subscriber's sourc
 `best_effort` subscribers only. The sanitizer drops `emitter_role`, so a role filter cannot be
 replayed from the row (`lionagi/session/observer.py:55-57`, `:69`), truncates an oversized payload
 behind a marker (`:112-142`), and wraps a non-Signal emit as `Signal(data=event)`
-(`:335-336`), losing payload type; the writer lock refusal skips writes for the window
-(`:40`, `:549`), and a sink bound without a store or read while unbound counts nothing
-(`:267-268`, `:493-495`). `persist_dropped` is therefore binding-local dropped-plus-in-flight
+(`:337-338`), losing payload type; the writer lock refusal skips writes for the window
+(`:40`, `:556`), and a sink bound without a store or read while unbound counts nothing
+(`:269-270`, `:500-502`). `persist_dropped` is therefore binding-local dropped-plus-in-flight
 accounting, not a durable gap ledger: it equals `dropped + in_flight`, and zero does not prove
-completeness (`lionagi/session/observer.py:217-220`, `:294`). Known capture degradation is recorded
+completeness (`lionagi/session/observer.py:219-222`, `:296`). Known capture degradation is recorded
 when storage recovers; unbound, absent-store and crash intervals may remain unknown.
 
 ### What this changes in this record
@@ -749,7 +749,7 @@ when storage recovers; unbound, absent-store and crash intervals may remain unkn
   `state/adapters/` signal persistence, message writes and terminal delivery (`:563`).
 - **Phase 2 gains a clause.** Phase 2's target is to make `SessionObservation` signal-only; today
   the observer's gate is still applied inside `emit`, before routes and before subscribers
-  (`lionagi/session/observer.py:363-372`). The phase now also owes the durable-subscriber shape: a
+  (`lionagi/session/observer.py:365-374`). The phase now also owes the durable-subscriber shape: a
   subscriber that runs a process must be told which boundary wakes it, and a `best_effort` drop is
   not an ordinary isolated handler failure. Phase 2's third gate arm (a gate that raises still
   persists the audit record) is unaffected; this clause is additive.
@@ -801,7 +801,7 @@ everything since; facts past the range belong to the next wake.
 
 - `SessionObserver.observe` and `emit` subscribe and dispatch per matched fact inside `emit`, with
   no boundary notion, no batching and no per-subscriber cursor
-  (`lionagi/session/observer.py:296-320`, `:333-370`).
+  (`lionagi/session/observer.py:298-322`, `:335-372`).
 - No durable wake path exists. Runs are spawned in-process today: the hypothesis, review and
   research operations call `run.spawn` for follow-up work inside their own run
   (`lionagi/engines/hypothesis.py:887-958`, `lionagi/engines/review.py:616`,
@@ -826,7 +826,7 @@ everything since; facts past the range belong to the next wake.
   (`lionagi/state/schema.sql:797-801`; writer `lionagi/state/db.py:7181-7191`; forward reader
   `lionagi/state/db.py:7206-7223`).
 - The one existing dropped-and-counted precedent is the persistence sink's own drop accounting,
-  and it counts a drop on the writer, not on a wake (`lionagi/session/observer.py:287-294`).
+  and it counts a drop on the writer, not on a wake (`lionagi/session/observer.py:289-296`).
 - `verdict` and `budget` each lack a session lifecycle Signal. `verdict` names the `Verdict` cast
   (`lionagi/casts/emission.py:152`); the review operation emits a `ReviewVerdict` into the session
   observer (`lionagi/engines/review.py:281`, `:842`), which is one emit site, but a `Verdict` cast
@@ -967,8 +967,8 @@ The gate for this phase has three arms, and the third is the one current code fa
 3. **a gate that raises still persists the audit record.**
 
 Arm 3 is separate because `SessionObserver.emit` wraps the gate call in
-`except Exception: allowed = False` (`lionagi/session/observer.py:367-368`) and then returns at
-`:372`, before routes and before subscribers. `bind_db_persistence()` registers the durable write
+`except Exception: allowed = False` (`lionagi/session/observer.py:369-370`) and then returns at
+`:374`, before routes and before subscribers. `bind_db_persistence()` registers the durable write
 as a subscriber, so a gate that merely throws suppresses the audit trail with no signal at all.
 Fail-closed is correct for authorization and wrong for audit, and a test that only exercises
 explicit denial passes while a buggy gate silently empties the record.

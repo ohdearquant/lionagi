@@ -787,7 +787,7 @@ then report it:
 | `terminal` | `true` |
 | `outcome` | `indeterminate` |
 | `reason_code` | `process_gone_without_outcome` |
-| `reason_detail` | `persistence_degraded` or `null` |
+| `reason_detail` | `terminal_write_lost`, `persistence_degraded`, `signal_persistence_degraded` or `null` |
 | `terminal_source` | `mcp_orphan_reaper` |
 
 `outcome: "indeterminate"` means the process is conclusively gone and **no authoritative
