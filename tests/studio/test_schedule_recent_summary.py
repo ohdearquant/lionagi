@@ -271,6 +271,29 @@ async def test_100_schedules_use_three_batched_reads_and_no_history_reads(isolat
 
 
 @pytest.mark.asyncio
+async def test_skip_reasons_for_100_schedules_are_read_in_one_snapshot(isolated_db, monkeypatch):
+    async with StateDB() as db:
+        for index in range(100):
+            sid = f"schedule-{index}"
+            await create_schedule(db, sid)
+            await create_run(db, sid, f"run-{index}", status="skipped", error_detail=None)
+
+    opened = []
+    original = StateDB.read_snapshot
+
+    def read_snapshot(db):
+        opened.append(db)
+        return original(db)
+
+    monkeypatch.setattr(StateDB, "read_snapshot", read_snapshot)
+    rows = await list_rows()
+    assert len(rows) == 100
+    assert all(row["recent_runs_summary"]["runs"][0]["status"] == "skipped" for row in rows)
+    # The skip reasons of every listed run come from one read, never one per run.
+    assert len(opened) == 1
+
+
+@pytest.mark.asyncio
 async def test_status_fields_and_reconciled_error_class_match_history(isolated_db):
     statuses = ["running", "completed", "failed", "skipped", "cancelled", "timed_out"]
     async with StateDB() as db:

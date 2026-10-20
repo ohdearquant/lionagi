@@ -586,7 +586,9 @@ def _run_trigger_facts(row: dict[str, Any]) -> dict[str, Any]:
     if isinstance(context, str):
         try:
             context = json.loads(context)
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):
+            # ValueError: malformed JSON, or an integer past the interpreter's digit limit.
+            # RecursionError: nesting past the parser's depth. Neither is a context.
             context = None
     if not isinstance(context, dict):
         context = {}
@@ -607,7 +609,8 @@ def _run_trigger_facts(row: dict[str, Any]) -> dict[str, Any]:
         except OverflowError:
             pass
         else:
-            if math.isfinite(candidate):
+            # Only a value the float holds exactly: an integer past 2**53 would be served rounded.
+            if math.isfinite(candidate) and candidate == value:
                 missed_fire_at = candidate
     return {"scheduled": scheduled, "missed_fire_at": missed_fire_at}
 
@@ -647,7 +650,7 @@ def _recent_run_keys_sql(dialect: str) -> str:
             " occurrence.invocation_id, occurrence.action_kind, occurrence.status,"
             " occurrence.exit_code, occurrence.chain_depth, occurrence.fired_at,"
             " occurrence.ended_at, occurrence.error_detail,"
-            " occurrence.trigger_context, occurrence.chain_parent_id"
+            " occurrence.trigger_context"
             " FROM json_each(?) AS definition"
             " JOIN json_each((SELECT json_group_array(id) FROM ("
             " SELECT id FROM schedule_runs WHERE schedule_id = definition.value"
@@ -661,7 +664,7 @@ def _recent_run_keys_sql(dialect: str) -> str:
         " occurrence.invocation_id, occurrence.action_kind, occurrence.status,"
         " occurrence.exit_code, occurrence.chain_depth, occurrence.fired_at,"
         " occurrence.ended_at, occurrence.error_detail,"
-        " occurrence.trigger_context, occurrence.chain_parent_id"
+        " occurrence.trigger_context"
         " FROM jsonb_array_elements_text(CAST(? AS jsonb)) AS definition(value)"
         " JOIN LATERAL ("
         " SELECT jsonb_agg(ordered.id ORDER BY ordered.fired_at DESC, ordered.id DESC) AS ids"

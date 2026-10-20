@@ -71,11 +71,13 @@ flags and output are defined in `lionagi/studio/cli.py`. Keep the daemon
 running for automatic fires.
 
 Run lists, recent-run summaries and single-run records include `scheduled` and
-`missed_fire_at`. `scheduled` is true only for the schedule's own on-time cron or
-interval fire; manual fires, the late run of a missed fire under
-`missed_fire_policy=run_once`, and chain children are false. For a missed-fire skip,
-`missed_fire_at` is the stored intended fire time as epoch seconds, including its
-fractional part; otherwise it is null. The underlying trigger payload remains private.
+`missed_fire_at`. `scheduled` is true only for a fire of the schedule's own timer
+(cron, interval or `at`), including that fire dispatched again after a daemon
+restart; manual fires, repository-event fires (`github_poll`), the late run of a
+missed fire under `missed_fire_policy=run_once`, and chain children are false. For a
+missed-fire skip, `missed_fire_at` is the stored intended fire time as epoch seconds,
+including its fractional part, when a float holds it exactly; otherwise it is null.
+The underlying trigger payload remains private.
 
 ## Other trigger and safety options
 

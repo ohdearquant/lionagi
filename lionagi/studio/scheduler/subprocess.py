@@ -241,14 +241,15 @@ def _render_command_arg(template: str, context: dict) -> str:
     rendered = _render_template(template, context)
     if rendered.startswith("-"):
         raise ValueError(
-            f"action_command_args template {template!r} rendered to "
-            f"{rendered!r}, which starts with '-' and would inject a flag "
-            "into the spawned command."
+            # The rendered value is left out: it can carry a trigger event's payload, and this
+            # message is stored on the run and served with it.
+            f"action_command_args template {template!r} rendered to a value that starts "
+            "with '-' and would inject a flag into the spawned command."
         )
     if not _ENGINE_OPT_VALUE_RE.match(rendered):
         raise ValueError(
-            f"action_command_args template {template!r} rendered to "
-            f"{rendered!r}, which contains characters not allowed. Allowed "
+            f"action_command_args template {template!r} rendered to a value that "
+            "contains characters not allowed. Allowed "
             f"charset: {_ENGINE_OPT_VALUE_RE.pattern}"
         )
     return rendered

@@ -33,10 +33,22 @@ from lionagi.studio.services import schedules
             id="missed-fraction",
         ),
         pytest.param(
+            {"missed_fire_at": 1700000000.1234567},
+            {"reason_code": "schedule.skipped.missed_fire"},
+            (False, 1700000000.1234567),
+            id="missed-seven-fraction-digits",
+        ),
+        pytest.param(
             {"missed_fire_at": 1700000000},
             {"reason_code": "schedule.skipped.missed_fire"},
             (False, 1700000000.0),
             id="missed-integer",
+        ),
+        pytest.param(
+            {"missed_fire_at": 2**53},
+            {"reason_code": "schedule.skipped.missed_fire"},
+            (False, float(2**53)),
+            id="missed-largest-exact-integer",
         ),
         pytest.param(
             {"missed_fire_at": 1700000000.125},
@@ -61,7 +73,8 @@ def test_trigger_facts_are_identical_for_native_and_text_context(
 
 
 @pytest.mark.parametrize(
-    "value", [True, "1700000000", float("nan"), float("inf"), -float("inf"), None, 10**400]
+    "value",
+    [True, "1700000000", float("nan"), float("inf"), -float("inf"), None, 10**400, 2**53 + 1],
 )
 @pytest.mark.parametrize("encoded", [False, True], ids=["native-json", "sqlite-text"])
 def test_invalid_missed_fire_times_are_null_and_json_safe(value, encoded):
@@ -77,7 +90,19 @@ def test_invalid_missed_fire_times_are_null_and_json_safe(value, encoded):
         json.dumps(result, allow_nan=False)
 
 
-@pytest.mark.parametrize("row", [{}, {"trigger_context": "{"}, {"trigger_context": '"text"'}])
+@pytest.mark.parametrize(
+    "row",
+    [
+        {},
+        {"trigger_context": "{"},
+        {"trigger_context": '"text"'},
+        # An integer past the interpreter's digit limit, and nesting past the parser's depth:
+        # neither text is a context, and neither may fail the read.
+        {"trigger_context": '{"n": 1' + "0" * 4999 + "}"},
+        {"trigger_context": "[" * 100_000},
+    ],
+    ids=["absent", "truncated", "string", "digit-limit", "nesting"],
+)
 def test_absent_and_malformed_context_has_both_default_facts(row):
     for project in (schedules._run_view, schedules._run_summary, schedules._run_record):
         result = project(row)
@@ -101,6 +126,18 @@ def test_trigger_payload_does_not_leak_from_any_projection_or_chain_child():
     assert record["chain_children"][0]["missed_fire_at"] is None
     for private in ("trigger_context", "event", "token", "private-payload-value"):
         assert private not in json.dumps(record)
+
+
+@pytest.mark.parametrize("value", ["--payload-value", "Fix: x_y!"], ids=["flag", "charset"])
+def test_a_refused_command_arg_render_does_not_carry_the_rendered_value(value):
+    """The refusal is stored on the run as its error and served with it, so it names the
+    template and never the trigger value it rendered to."""
+    from lionagi.studio.scheduler.subprocess import _render_command_arg
+
+    with pytest.raises(ValueError) as raised:
+        _render_command_arg("{{title}}", {"title": value})
+    assert "{{title}}" in str(raised.value)
+    assert value not in str(raised.value)
 
 
 @pytest.fixture
