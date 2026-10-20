@@ -256,12 +256,66 @@ def test_oldest_bucket_boundary_is_included(tmp_path, monkeypatch, now):
     assert data["buckets"][0]["failed"] == 1
 
 
+def test_row_one_second_before_the_24h_window_is_excluded(tmp_path, monkeypatch, now):
+    db_path = tmp_path / "state.db"
+    oldest_start = (int(now) // 3600) * 3600 - 23 * 3600
+
+    async def seed():
+        await _seed_session(db_path, status="completed", ended_at=float(oldest_start - 1))
+
+    import asyncio
+
+    asyncio.run(seed())
+
+    client = _make_client(monkeypatch, db_path)
+    data = client.get("/api/stats/activity?window=24h").json()
+
+    assert data["total"] == 0
+    assert data["completion_rate"] is None
+    assert all(b["completed"] == 0 for b in data["buckets"])
+
+
+def test_end_time_anchors_the_bucket_when_both_timestamps_are_set(tmp_path, monkeypatch, now):
+    db_path = tmp_path / "state.db"
+
+    async def seed():
+        await _seed_session(db_path, status="completed", started_at=now - 7200, ended_at=now)
+
+    import asyncio
+
+    asyncio.run(seed())
+
+    client = _make_client(monkeypatch, db_path)
+    data = client.get("/api/stats/activity?window=24h").json()
+
+    assert data["buckets"][-1]["completed"] == 1
+    assert data["buckets"][-3]["completed"] == 0
+
+
+def test_route_buckets_from_the_clock_the_now_fixture_pins(tmp_path, monkeypatch):
+    # The `now` fixture holds only while the route reads the time through the
+    # stats module's `time` attribute. An instant two days back shows which
+    # clock the route actually read.
+    import types
+
+    import lionagi.studio.services.stats as stats_mod
+
+    pinned = float((int(time.time()) // 3600) * 3600 - 2 * 86400 + 1800)
+    monkeypatch.setattr(stats_mod, "time", types.SimpleNamespace(time=lambda: pinned))
+
+    client = _make_client(monkeypatch, tmp_path / "state.db")
+    data = client.get("/api/stats/activity?window=24h").json()
+
+    assert data["buckets"][-1]["t"] == int(pinned) // 3600 * 3600
+
+
 def test_running_session_with_only_created_at_anchors_to_creation(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
-    # The store stamps created_at from the wall clock, so the route's clock
-    # cannot be pinned to it; keep clear of an hour rollover instead.
-    if time.time() % 3600 > 3570:
-        time.sleep(3600 - time.time() % 3600 + 1)
+    # The store stamps created_at from its own clock, which the `now` fixture
+    # does not pin, so this test keeps clear of an hour rollover instead.
+    now_wall = time.time()
+    if now_wall % 3600 > 3570:
+        time.sleep(3600 - now_wall % 3600 + 1)
 
     async def seed():
         await _seed_session(db_path, status="running")
