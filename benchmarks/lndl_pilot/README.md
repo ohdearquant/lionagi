@@ -116,38 +116,39 @@ fallback with `.get`, where it calls `setdefault` (`lionagi/cli/agent.py:1028`).
 
 ### r5, task by task
 
-Each row gives the source line its reading used and, per loop, what the check did and what the
-reading found; `tasks.yaml` records the rest of each task's truth. The lines are cited at
-`6fa69b19`, the tree the legs read: of the 42 source-line citations in the tasks' `truth` lines
-(158 lines in all, counting `t21`'s "line 272"), 12 citations in 9 tasks (27 lines) hold
-different text at `208bcc08`, the code r5 ran.
+Each row gives the source line its reading used, at `6fa69b19`, the tree the legs read, and at
+`208bcc08`, the code r5 ran, and per loop what the check did and what the reading found;
+`tasks.yaml` records the rest of each task's truth. Of the 42 source-line citations in the tasks'
+`truth` lines (158 lines in all, counting `t21`'s "line 272"), 12 citations in 9 tasks (27 lines)
+hold different text at the same line numbers at `208bcc08`. Each cited line's text is present,
+unchanged and at one place only, at `208bcc08`: the line numbers moved, the cited code did not.
 
-| task | source line | `lndl` | ReAct |
-|---|---|---|---|
-| `t01` | `lionagi/_spec_limits.py:11` | accepted, right | accepted, right |
-| `t02` | `lionagi/version.py:1` | accepted, right | accepted, right |
-| `t03` | `lionagi/cli/agent.py:89` | rejected, wrong | accepted, right |
-| `t04` | `lionagi/cli/agent.py:87` | accepted, right | accepted, right |
-| `t05` | `lionagi/tools/code/bash.py:35` | accepted, right | accepted, right |
-| `t06` | `lionagi/tools/_subprocess.py:20` | accepted, right | accepted, right |
-| `t07` | `lionagi/tools/file/reader.py:24` | accepted, right | accepted, right |
-| `t08` | `lionagi/cli/agent.py:83` | accepted, right | accepted, right |
-| `t09` | `lionagi/agent/permissions.py:83-88` | accepted, right | accepted, right |
-| `t10` | `lionagi/hooks/bus.py:71` | accepted, right | rejected, wrong |
-| `t11` | `lionagi/tools/coding.py:286-294` | accepted, right | accepted, right |
-| `t12` | `lionagi/dispatch/outbox.py:48` | accepted, right | accepted, right |
-| `t13` | `lionagi/protocols/messages/base.py:21-28` | accepted, right | accepted, right |
-| `t14` | `lionagi/protocols/generic/event.py:30-39` | accepted, right | accepted, right |
-| `t15` | `lionagi/session/control.py:13-17` | accepted, right | accepted, right |
-| `t16` | `lionagi/service/providers.py:34-43` | accepted, right | accepted, right |
-| `t17` | `lionagi/work/form.py:40` | accepted, right | accepted, right |
-| `t18` | `lionagi/engines/__init__.py:10-59` | accepted, right | accepted, right |
-| `t19` | `lionagi/libs/path_safety.py:11-13` | accepted, right | accepted, right |
-| `t20` | `lionagi/agent/factory.py:512-519` | accepted, right | accepted, right |
-| `t21` | `lionagi/cli/agent.py:265-271` | accepted, right | accepted, right |
-| `t22` | `lionagi/agent/spec.py:48-56` | accepted, right | accepted, right |
-| `t23` | `lionagi/mcp/config.py:35` | accepted, right | accepted, right |
-| `t24` | `lionagi/mcp/config.py:19` | **accepted, wrong** | accepted, right |
+| task | line at `6fa69b19` | line at `208bcc08` | `lndl` | ReAct |
+|---|---|---|---|---|
+| `t01` | `lionagi/_spec_limits.py:11` | `lionagi/_spec_limits.py:11` | accepted, right | accepted, right |
+| `t02` | `lionagi/version.py:1` | `lionagi/version.py:1` | accepted, right | accepted, right |
+| `t03` | `lionagi/cli/agent.py:89` | `lionagi/cli/agent.py:109` | rejected, wrong | accepted, right |
+| `t04` | `lionagi/cli/agent.py:87` | `lionagi/cli/agent.py:93` | accepted, right | accepted, right |
+| `t05` | `lionagi/tools/code/bash.py:35` | `lionagi/tools/code/bash.py:35` | accepted, right | accepted, right |
+| `t06` | `lionagi/tools/_subprocess.py:20` | `lionagi/tools/_subprocess.py:21` | accepted, right | accepted, right |
+| `t07` | `lionagi/tools/file/reader.py:24` | `lionagi/tools/file/reader.py:25` | accepted, right | accepted, right |
+| `t08` | `lionagi/cli/agent.py:83` | `lionagi/cli/agent.py:89` | accepted, right | accepted, right |
+| `t09` | `lionagi/agent/permissions.py:83-88` | `lionagi/agent/permissions.py:83-88` | accepted, right | accepted, right |
+| `t10` | `lionagi/hooks/bus.py:71` | `lionagi/hooks/bus.py:71` | accepted, right | rejected, wrong |
+| `t11` | `lionagi/tools/coding.py:286-294` | `lionagi/tools/coding.py:287-295` | accepted, right | accepted, right |
+| `t12` | `lionagi/dispatch/outbox.py:48` | `lionagi/dispatch/outbox.py:48` | accepted, right | accepted, right |
+| `t13` | `lionagi/protocols/messages/base.py:21-28` | `lionagi/protocols/messages/base.py:21-28` | accepted, right | accepted, right |
+| `t14` | `lionagi/protocols/generic/event.py:30-39` | `lionagi/protocols/generic/event.py:30-39` | accepted, right | accepted, right |
+| `t15` | `lionagi/session/control.py:13-17` | `lionagi/session/control.py:13-17` | accepted, right | accepted, right |
+| `t16` | `lionagi/service/providers.py:34-43` | `lionagi/service/providers.py:34-43` | accepted, right | accepted, right |
+| `t17` | `lionagi/work/form.py:40` | `lionagi/work/form.py:40` | accepted, right | accepted, right |
+| `t18` | `lionagi/engines/__init__.py:10-59` | `lionagi/engines/__init__.py:10-59` | accepted, right | accepted, right |
+| `t19` | `lionagi/libs/path_safety.py:11-13` | `lionagi/libs/path_safety.py:11-13` | accepted, right | accepted, right |
+| `t20` | `lionagi/agent/factory.py:512-519` | `lionagi/agent/factory.py:512-519` | accepted, right | accepted, right |
+| `t21` | `lionagi/cli/agent.py:265-271` | `lionagi/cli/agent.py:305-311` | accepted, right | accepted, right |
+| `t22` | `lionagi/agent/spec.py:48-56` | `lionagi/agent/spec.py:48-56` | accepted, right | accepted, right |
+| `t23` | `lionagi/mcp/config.py:35` | `lionagi/mcp/config.py:35` | accepted, right | accepted, right |
+| `t24` | `lionagi/mcp/config.py:19` | `lionagi/mcp/config.py:19` | **accepted, wrong** | accepted, right |
 
 `t20`'s `lndl` answer names the module by its import path and says it did not open the file; the
 question asks for the module, so it is right. `t03`'s ReAct answer is the one r5's outcome rests
