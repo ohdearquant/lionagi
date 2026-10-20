@@ -141,7 +141,7 @@ def main() -> int:
         print("ANTHROPIC_API_KEY is not set in this process; nothing run", file=sys.stderr)
         return 2
     # Absolute: each child runs with cwd set to the read tree, so a relative path would
-    # resolve there and the prompt file would not be found (r1).
+    # resolve there and the prompt file would not be found.
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=False)
     tasks_path = Path(args.tasks).resolve()

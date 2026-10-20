@@ -4,7 +4,8 @@
 - **Kind**: Aspirational
 - **Implementation-status**: implemented — D1-D3 are implemented and the D4 pilot ran (D4, Result);
   at the merged code it does not meet the rule by the checks fixed before the run, and would by a
-  substance reading of one check, so `lndl` stays an opt-in setting and is not recommended
+  substance reading of one check. `lndl` stays an opt-in setting and is not recommended, the
+  default stays `react`, and D4's outcome waits on a further run, `r5` (D4, Result)
 - **Area**: operations
 - **Date**: 2026-10-17
 - **Relations**: extends ADR-0024 (LNDL operate integration adapter) and ADR-0041 Amendment 1
@@ -149,20 +150,25 @@ tables of requests, tool calls, wall time and acceptance are `runs/<run>/table.m
 | r4 | `d8838f28` | react | 23 / 24 | 91 | 3.96 | 59 |
 | r4 | `d8838f28` | lndl | 22 / 24 | 80 | 3.64 | 47 |
 
-r2 fails the rule and r3 passes it, and one change to the Python package separates them: in r2 an `lndl` round with no
-block continued with no error, and in r3 it is the repair round D2 describes. In both runs 17 of the
-24 `lndl` runs opened with a call written as an `<invoke>` tag outside any block. In r2, 12 of those
-recovered on their own and 5 (`t03`, `t04`, `t17`, `t18`, `t19`) kept writing the tag and, in the
-eleventh and last round, whose notice asks for the answer, answered that they could not verify it
-(`t03` had run one tool call, the other four none); none was accepted. 64 of the 119 `lndl` requests
-went to rounds with no block. In r3 each of the 17 wrote a block in its next round, and 18 of the 79 requests went to rounds
-with no block.
+r2 fails the rule and r3 passes it, and one change to the Python package separates them: in r2 an
+`lndl` round with no block continued with no error, and in r3 it is the repair round D2 describes.
+Read from each leg's conversation, which the pilot does not commit (see below), in both runs 17 of
+the 24 `lndl` runs opened with a call written as an `<invoke>` tag outside any block. In r2, 12 of
+those recovered on their own and 5 (`t03`, `t04`, `t17`, `t18`, `t19`) kept writing the tag and, in
+the eleventh and last round, whose notice asks for the answer, answered that they could not verify
+it (`t03` had run one tool call, the other four none); none was accepted. Those four describe reads
+and searches that returned nothing usable (`t18`: "Five read attempts and two grep attempts on that
+file returned no usable content"), but none of those calls ran: what they report as tool results is
+the model's account of calls it wrote as tags outside a block. 64 of the 119 `lndl` requests went to
+rounds with no block. In r3 each of the 17 wrote a block in its next round, and 18 of the 79
+requests went to rounds with no block.
 
 - In r3 the accepts clause holds by one task, and the ReAct side moved by one task between r2 and r3
   (in r3 its `t04` run made no tool call and was not accepted), so r3 shows that `lndl` accepted no
   fewer tasks, not that it accepts more. The request saving is the larger effect: 79 requests
   against 95.
-- `t06`'s check expects `100000` and all four answers to it wrote `100,000`. Read as accepting that,
+- `t06`'s check expects `100000`, and none of the four answers to it contains that string: each
+  gives the cap as `100,000` and quotes `_MAX_OUTPUT_BYTES = 100_000`. Read as accepting that,
   r3 is `lndl` 24 at 3.29 requests per accepted task and ReAct 23 at 4.13, and r2 still fails.
 - The tool calls counted are the calls that ran. The most any `lndl` run made was four in r2, three
   in r3 and five in r4 (`t21` and `t22`). A round that declares more than 16 calls is refused and
@@ -185,10 +191,10 @@ with no block.
 - r3 and r4 split the accepts clause by one task in opposite directions (`t04` on the ReAct side in
   r3, `t20` on the `lndl` side in r4), so 24 tasks cannot settle it, and in r4 the split rests on how
   one check reads one answer. The request saving held in both runs: 79 requests against 95, and 80
-  against 91. D4 fixes each task's check before the first run and lets it decide, so under D4 `lndl`
-  is not a recommended setting and the default stays `react`. A recommendation needs a run whose
-  `t06` and `t20` checks accept the answer's substance, fixed before that run starts, or a larger
-  task set, and a later decision.
+  against 91. D4 fixes each task's check before the first run and lets it decide, so `lndl` is not
+  recommended and the default stays `react`. D4's outcome is pending: a further run, `r5`, at the
+  merged code, with `t06` and `t20` checks that accept the answer's substance and are fixed before
+  it starts, decides it, and its result is recorded in a later change.
 - The checks are substring checks, so a wrong answer that contains the expected words can pass. The
   answers where that is easiest, the 24 accepted answers to `t09`, `t11`, `t12` and `t22` (both
   loops, all three runs), were read by hand, and all of them are correct. Every answer is committed
@@ -197,11 +203,12 @@ with no block.
   block are read from each leg's conversation, which `li agent` keeps under the run's home directory
   and the pilot does not commit; the committed files give the per-task requests, tool calls,
   acceptance and answers.
-- All 144 legs exited 0 and none exhausted its round budget. The five r2 `lndl` legs that spent all
-  11 requests returned an answer in their last round; an exhausted budget raises `LNDLError`, which
-  `li agent` records as the run's failure and re-raises, so such a leg would have exited non-zero.
-  No `lndl` leg in r3 or r4 spent more than 5. The pilot therefore does not exercise D2's
-  exhausted-turn exit.
+- All 144 legs exited 0 and none exhausted its round budget, which D2 defines as spending it without
+  an accepted `OUT{}`. The five r2 `lndl` legs that spent all 11 requests returned an `OUT{}` the
+  loop accepted in their last round (their answers then failed the task checks, as above); an
+  exhausted budget raises `LNDLError`, which `li agent` records as the run's failure and re-raises,
+  so such a leg would have exited non-zero. No `lndl` leg in r3 or r4 spent more than 5. The pilot
+  therefore does not exercise D2's exhausted-turn exit.
 
 ## Consequences
 

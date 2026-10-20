@@ -51,11 +51,12 @@ environments after the runs.
 | r4 | lndl | 22 / 24 | 80 | 3.64 | 47 | 236.4 s |
 
 By the checks in `tasks.yaml`, r2 fails the rule, r3 passes it, and r4, at the merged code, fails it
-by one accepted task (`t20`). ADR-0132 D4 reads them together.
+by one accepted task (`t20`). ADR-0132 D4 reads them together, recommends nothing yet, and waits
+on a further run, `r5`, with the `t06` and `t20` checks below fixed before it starts.
 
-`t06`'s check expects `100000`. Every answer to it in r2 and r3, in both loops, wrote `100,000`,
-and in r4 the ReAct answer wrote `100_000` and the `lndl` answer `100,000`, so it is rejected in
-all six. With that one check read as
+`t06`'s check expects `100000`. None of the six answers to it (one per loop in each run) contains
+that string: each names `_MAX_OUTPUT_BYTES` and writes its value `100_000`, and all but the r4
+ReAct answer also give the cap as `100,000`, so all six are rejected. With that one check read as
 accepting the answer, r2 is react 24, lndl 19, r3 is react 23 at 4.13 requests per accepted task,
 lndl 24 at 3.29, and r4 is react 24 at 3.79, lndl 23 at 3.48; no run's outcome changes. The committed `tasks.yaml` is the file the runs used, unchanged.
 
