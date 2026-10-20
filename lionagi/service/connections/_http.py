@@ -322,12 +322,21 @@ class HTTPResponse:
         body = await self.read()
         return _json.loads(body) if body.strip() else None
 
+    def _read_piece(self) -> bytes:
+        chunk = self._raw.read1(_READ_SIZE)
+        if not chunk and self._raw.length:
+            # read1 answers b"" both at the body's end and when the peer closes early; with part of
+            # the declared Content-Length still owed the body was cut, which read() reports too.
+            raise http.client.IncompleteRead(b"", self._raw.length)
+        return chunk
+
     async def iter_chunks(self) -> AsyncIterator[bytes]:
         """The body in the pieces it arrives in, as bytes; a piece can end inside a line or a
-        character."""
+        character. A body that ends before its declared ``Content-Length`` raises
+        ``TransportError``, as ``read()`` does."""
         try:
             while True:
-                chunk = await self._step(lambda: self._raw.read1(_READ_SIZE))
+                chunk = await self._step(self._read_piece)
                 if not chunk:
                     return
                 yield chunk

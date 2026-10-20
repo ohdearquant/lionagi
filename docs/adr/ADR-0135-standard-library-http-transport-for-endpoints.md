@@ -144,7 +144,11 @@ Exact semantics:
   until the attempt ends, so such threads are not counted against `MAX_REQUESTS_IN_FLIGHT`.
 - `iter_chunks` yields what each `read1(65536)` returns. A piece can end inside a line or inside a
   UTF-8 character; the endpoint's stream parser decodes incrementally (`codecs` incremental decoder)
-  and splits lines itself.
+  and splits lines itself. `read1` answers an empty read both at the body's end and when the peer
+  closes early, so while part of a declared `Content-Length` is still owed `iter_chunks` raises
+  `TransportError` (from `http.client.IncompleteRead`), as `read()` does; a stream cut short never
+  ends as if it had arrived whole. A chunked body cut before its last chunk raises the same way from
+  `http.client` itself.
 - `json()` decodes the body as JSON without checking `Content-Type`. A 200 response is therefore
   decoded whatever type it declares: a JSON body served as `text/plain` now succeeds, and a body
   that is not JSON raises `json.JSONDecodeError` (a `ValueError`), which no retry path retries.
@@ -310,7 +314,7 @@ keeping `aiohttp` installed for it, which is what this record removes.
 
 - A base install is 30 packages. A vulnerability in `aiohttp` or its dependencies no longer reaches a
   user who has not installed the `sandbox` extra.
-- HTTP behaviour is now lionagi's to maintain: about 490 lines in `_http.py` and the tests that pin
+- HTTP behaviour is now lionagi's to maintain: about 500 lines in `_http.py` and the tests that pin
   them. A defect in chunked decoding or TLS is `http.client`'s and arrives with interpreter updates;
   a defect in deadlines, cancellation or headers is ours.
 - Each request in flight holds a worker thread, at most 256 per event loop. A process that runs more

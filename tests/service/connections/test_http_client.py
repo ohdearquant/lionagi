@@ -11,6 +11,7 @@ import email.parser
 import email.policy
 import http.client
 import io
+import re
 import socket
 import time
 from contextlib import asynccontextmanager
@@ -25,6 +26,8 @@ from lionagi.service.connections._http import (
     TransportError,
     check_client_options,
 )
+from lionagi.service.connections.endpoint import Endpoint
+from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.resilience import APIClientError
 from tests._local_http import (
     Application,
@@ -347,6 +350,102 @@ async def test_a_response_that_is_not_http_is_a_transport_error():
     finally:
         server.close()
         await server.wait_closed()
+
+
+@asynccontextmanager
+async def answering(wire: bytes):
+    """A server that reads one request whole, writes *wire* as it is, and closes."""
+
+    async def answer(reader, writer):
+        head = await reader.readuntil(b"\r\n\r\n")
+        # The request body is read too: closing with it unread would reset the connection
+        # rather than end it.
+        length = re.search(rb"(?im)^content-length:[ \t]*(\d+)", head)
+        if length:
+            await reader.readexactly(int(length.group(1)))
+        writer.write(wire)
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(answer, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        yield f"http://127.0.0.1:{port}/v1"
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+_PIECE = b"data: one\n\n"
+
+
+@pytest.mark.parametrize(
+    "head",
+    [
+        pytest.param(b"Content-Length: 40\r\nConnection: close\r\n", id="length-connection-close"),
+        pytest.param(b"Content-Length: 40\r\n", id="length-keep-alive"),
+        pytest.param(b"Transfer-Encoding: chunked\r\n", id="chunked"),
+    ],
+)
+async def test_a_body_cut_short_is_a_transport_error(head):
+    body = b"b\r\n" + _PIECE + b"\r\n" if b"chunked" in head else _PIECE
+    async with (
+        answering(b"HTTP/1.1 200 OK\r\n" + head + b"\r\n" + body) as url,
+        HTTPSession(timeout=5) as session,
+    ):
+        response = await session.request("POST", url, json={})
+        pieces = []
+        with pytest.raises(TransportError, match=re.escape(f"POST {url}: IncompleteRead")):
+            async for piece in response.iter_chunks():
+                pieces.append(piece)
+
+    assert b"".join(pieces) == _PIECE
+    assert response.closed
+
+
+@pytest.mark.parametrize(
+    "head",
+    [
+        pytest.param(b"Content-Length: 11\r\n", id="length"),
+        pytest.param(b"Connection: close\r\n", id="until-close"),
+    ],
+)
+async def test_a_body_that_arrives_whole_ends_the_pieces(head):
+    async with (
+        answering(b"HTTP/1.1 200 OK\r\n" + head + b"\r\n" + _PIECE) as url,
+        HTTPSession(timeout=5) as session,
+    ):
+        response = await session.request("POST", url, json={})
+        pieces = [piece async for piece in response.iter_chunks()]
+
+    assert b"".join(pieces) == _PIECE
+    assert response.closed
+
+
+async def test_an_endpoint_stream_cut_short_raises_rather_than_ending():
+    whole = b'data: {"choices":[{"delta":{"content":"hel"}}]}\n\n'
+    cut = b'data: {"choices":[{"delta":{"content":"lo'
+    head = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: %d\r\n\r\n"
+    async with answering(head % (len(whole) + len(cut) + 20) + whole + cut) as url:
+        endpoint = Endpoint(
+            config=EndpointConfig(
+                name="cut_stream",
+                provider="openai",
+                endpoint="chat",
+                base_url=url,
+                api_key="dummy-key-cut",
+                allow_local_network=True,
+                timeout=5,
+                max_retries=1,
+            )
+        )
+        chunks = []
+        with pytest.raises(TransportError, match="IncompleteRead"):
+            async for chunk in endpoint.stream({"model": "m", "messages": []}):
+                chunks.append(chunk)
+
+    # The cut event is never handed on as if it had arrived whole.
+    assert [chunk.content for chunk in chunks] == ["hel"]
 
 
 @pytest.mark.parametrize(
