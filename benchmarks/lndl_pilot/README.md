@@ -31,28 +31,29 @@ accepts no fewer tasks.
   time and their order alternates by task, four tasks in flight. Requests, tool calls and wall time
   come from the `[api] spend:` line `li agent` prints (ADR-0132 D3); the task's own check is the
   first pass on acceptance, and the reading below decides.
-- `runs/r2/`, `runs/r3/`, `runs/r4/`, `runs/r5/`: `header.json` (hashes of the runner, task set and
-  profiles, the read tree's commit, the `li` version), `results.jsonl` (one row per leg),
-  `summary.json` (totals and the D4 rule), `table.md` (the per-task table) and `answers.jsonl` (each
-  run's answer, the leg's stdout with surrounding whitespace removed, as the check read it; its
-  length is that row's `answer_chars`) and `reading.jsonl` (the reading of each answer: one row per
-  leg with `id`, `loop`, `check`, the check's result as run, `reading`, `right` or `wrong`, and the
-  source line the reading used at `6fa69b19` and at `208bcc08`). `results.jsonl`, `table.md` and
-  the totals in `summary.json` count acceptance by the checks as run; the tables below add
-  acceptance on reading. `summary.json` gives the D4 rule both ways: `d4_rule_by_checks` on the
-  checks' acceptance and `d4_rule_by_substance` on the reading, which is the one ADR-0132 D4 decides
-  by (its Amendment 1). Three files were added after each run: `spend.jsonl` (each leg's
-  `[api] spend:` lines from its stderr; the last one gives the row's requests, tool calls and wall
-  time), `rounds.jsonl` (for each `lndl` leg, the syntax each round used, read from its
-  conversation: `F` an `lndl` fence, `L` an `<lact` tag, `I` an `<invoke` tag, `O` an `OUT{`, `-`
-  none of them) and `environment.json` (the lionagi checkout the run's environment installed and the
-  read tree's checkout, read after the run).
+- `runs/r2/`, `runs/r3/`, `runs/r4/`, `runs/r5/`: the runner wrote `header.json` (hashes of the
+  runner, task set and profiles, the read tree's commit, the `li` version), `results.jsonl` (one
+  row per leg), `summary.json` (totals and the D4 rule) and `table.md` (the per-task table); the
+  committed `summary.json` is the one `summarize.py` writes in its place (below). `results.jsonl`,
+  `table.md` and the totals in `summary.json` count acceptance by the checks as run; the tables
+  below add acceptance on reading. `summary.json` gives the D4 rule both ways: `d4_rule_by_checks`
+  on the checks' acceptance and `d4_rule_by_substance` on the reading, which is the one ADR-0132 D4
+  decides by (its Amendment 1). Five files were added after each run: `answers.jsonl` (each run's
+  answer, the leg's stdout with surrounding whitespace removed, as the check read it; its length is
+  that row's `answer_chars`), `reading.jsonl` (the reading of each answer: one row per leg with
+  `id`, `loop`, `check`, the check's result as run, `reading`, `right` or `wrong`, and the source
+  line the reading used at `6fa69b19` and at `208bcc08`), `spend.jsonl` (each leg's `[api] spend:`
+  lines from its stderr; the last one gives the row's requests, tool calls and wall time),
+  `rounds.jsonl` (for each `lndl` leg, the syntax each round used, read from its conversation: `F`
+  an `lndl` fence, `L` an `<lact` tag, `I` an `<invoke` tag, `O` an `OUT{`, `-` none of them) and
+  `environment.json` (the lionagi checkout the run's environment installed and the read tree's
+  checkout, read after the run).
 - `runs/run_pilot.as-run.py.txt`: the runner exactly as r2, r3 and r4 ran it, byte for byte
   (sha256 `911c41cd…`, the `runner_sha256` in their `header.json`).
 - `runs/r5/run_pilot.as-run.py.txt`: the runner exactly as r5 ran it, byte for byte (sha256
   `46234f89…`, r5's `runner_sha256`). The two as-run copies parse to the same syntax tree.
-  `run_pilot.py` differs from r5's copy in one comment, in `summarize()` and in `main()`, and from
-  the r2-r4 copy also in its `noqa` comments and layout (below).
+  `run_pilot.py` differs from r5's copy in one comment, in its imports and in the functions named
+  below, and from the r2-r4 copy also in its `noqa` comments and layout (below).
 - `runs/tasks.r2-r4.yaml` and `runs/tasks.r5.yaml`: the task set exactly as those runs ran it,
   byte for byte (sha256 `3c29864d…` and `e969e5a3…`, the `tasks_sha256` in their `header.json`).
 
@@ -142,8 +143,9 @@ reading decides. `t04`'s check accepts "20 extensions, not 10", `t11`'s accepts 
 RUNS_ROOT", and it would accept a denial that quotes both. Every answer in r2 to r5 was read, so each
 answer a check misjudged is among the differences listed below.
 
-In r2, r3 and r4 the reading and the checks differ in ten answers, and in r5 in one (r5's `t06`
-and `t20` checks take the answers the earlier ones rejected):
+The reading and the checks differ in the `reading.jsonl` rows whose `check` and `reading`
+disagree: ten answers in r2, r3 and r4, and one in r5 (r5's `t06` and `t20` checks take the
+answers the earlier ones rejected):
 
 | task | runs | loop | check | reading | why |
 |---|---|---|---|---|---|
@@ -238,15 +240,21 @@ rows. Each leg's spend lines are in its run's `spend.jsonl`.
 ## How the committed files differ from the runs' output
 
 - `run_pilot.py` is `runs/run_pilot.as-run.py.txt` with `noqa` comments added, the `(r1)` at the
-  end of one comment removed (both as-run copies keep it), the layout reformatted by ruff, and two
-  changes. `summarize()` leaves the D4 rule unset when a leg had no spend line, where the as-run
-  copies computed it (above). `main()` refuses a task file in which a task has a non-empty
-  `none_of` beside its `accept` block, which `check_answer` would ignore, before it creates the
-  output directory; each task in the two as-run task files has an empty one. Of the files' top-level
-  statements, `summarize()` and `main()` are the only ones whose `ast.dump` differs. With
-  `missing_spend` at 0 in all four runs, both give the same totals and rule: the test loads each
-  as-run copy, checks its sha256 against the run's `runner_sha256`, and recomputes the run's
-  `summary.json` with it.
+  end of one comment removed (both as-run copies keep it), the layout reformatted by ruff, and four
+  changes. First, `summarize()` leaves the D4 rule unset when a leg had no spend line (above) or
+  the rows are not the whole run, where the as-run copies computed it. Second, a run that stops
+  early keeps what it has (`run_one()`, `run_pair()`, `main()`): a leg whose `subprocess.run`
+  raises becomes a row with `rc` `harness-error` and no spend line, each row is appended to
+  `results.jsonl` as its leg ends, and an interrupt starts no further leg and still writes the
+  summary and table (below). Third, `main()` makes the run directory after reading the task file,
+  so a task file that cannot be read leaves none behind. Fourth, `main()` refuses a task file in
+  which a task has a non-empty `none_of` beside its `accept` block, which `check_answer` would
+  ignore, before it makes the run directory; each task in the two as-run task files has an empty
+  one. Of the files' top-level statements, `summarize()`, `run_one()`, `run_pair()` and `main()`
+  are the ones whose `ast.dump` differs, and `run_pilot.py` adds two imports (`threading` and
+  `collections.abc.Callable`). With `missing_spend` at 0 and every leg run in all four runs, both
+  give the same totals and rule: the test loads each as-run copy, checks its sha256 against the
+  run's `runner_sha256`, and recomputes the run's `summary.json` with it.
 - In each `header.json`, `tasks_file` was the absolute path the runner writes
   (`Path(args.tasks).resolve()`, line 141 of `runs/run_pilot.as-run.py.txt` and line 147 of r5's
   copy). It was replaced by `tasks.yaml` before the first commit and now names the copy of the
@@ -258,7 +266,9 @@ rows. Each leg's spend lines are in its run's `spend.jsonl`.
   `d4_rule_by_checks` are the runner's own summary of `results.jsonl` (its `d4_rule`, renamed), and
   `d4_rule_by_substance` is the same summary with each leg accepted as `reading.jsonl` reads it. The
   two agree in r2, r3 and r4. In r5, `lndl_accepts_no_fewer` is true by the checks and false on
-  reading (22 against 23). `summarize.py --check` passes on all four runs.
+  reading (22 against 23). `summarize.py --check` passes on all four runs: for each run it checks
+  that `reading.jsonl` has one row for each leg and that its `check` column is the run's
+  `accepted`, and the tests check the counts in ADR-0132's Result table against it.
 - Apart from those two edits and a final newline added to the JSON files, the files in `runs/`
   are as the runner wrote them: each run's `results.jsonl` and `table.md` are unchanged since their
   first commit. Each run's `answers.jsonl`, `reading.jsonl`, `spend.jsonl`, `rounds.jsonl` and
@@ -274,17 +284,28 @@ rows. Each leg's spend lines are in its run's `spend.jsonl`.
 
 The runner expects, beside it, `tree/` (a checkout of `6fa69b19`), `venv/` (an environment with
 the lionagi to measure installed, so `venv/bin/li` exists), `home/` (an empty directory: the
-runner sets `HOME` to it and `LIONAGI_HOME` to `home/.lionagi`, so no user configuration is read)
-and `ANTHROPIC_API_KEY` in its environment. `.gitignore` beside the runner keeps those three
-directories, and the prompt, stdout and stderr files the runner writes for each leg, out of a
-commit. Then:
+runner sets `HOME` to it and `LIONAGI_HOME` to `home/.lionagi`, so the configuration in the real
+home directory is not read) and `ANTHROPIC_API_KEY` in its environment. `.gitignore` beside the
+runner keeps those three directories, and the prompt, stdout and stderr files the runner writes for
+each leg, out of a commit. Each leg runs in `tree/`, and `li agent` looks for its profile in a
+`.lionagi/agents/` in `tree/` and then in each directory above it, which is how it finds the
+profiles beside the runner; a profile of the same name in a directory nearer to `tree/` would be
+taken first. Then:
 
 ```bash
 venv/bin/python run_pilot.py --tasks runs/tasks.r5.yaml --out runs/<name>
 ```
 
 This repeats r5 with the task set it ran; `--tasks tasks.yaml` runs the current set, whose `t24`
-check no run has used. A run is 48 `li agent` legs, two per task. Its `summary.json` then holds the
-runner's own summary (`d4_rule`, by the checks); once each answer has been read and the reading
-written to `runs/<name>/reading.jsonl`, `venv/bin/python summarize.py runs/<name>` writes the
-summary with both rules.
+check no run has used. A run is 48 `li agent` legs, two per task. `--only t01,t02` runs part of
+the task set. A run that does not cover every leg of the whole task set, because of `--only`, an
+interrupt, or a task that stopped on an error in the runner itself, still writes `summary.json`
+and `table.md` from the rows it has: `summary.json` says why under `partial`, the D4 rule is `null`
+with the same reason in `d4_rule_unset`, and `table.md` lists each task with a row, marking a leg
+that did not run as `not run`. On an interrupt (Ctrl-C) no further leg starts and the runner waits
+for the legs already running; a second interrupt stops that wait. The runner exits 130 after an
+interrupt and 1 after a task stopped on an error.
+
+A whole run's `summary.json` holds the runner's own summary (`d4_rule`, by the checks); once each
+answer has been read and the reading written to `runs/<name>/reading.jsonl`,
+`venv/bin/python summarize.py runs/<name>` writes the summary with both rules.

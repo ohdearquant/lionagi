@@ -39,11 +39,12 @@ from it and the run's results (`d4_rule_by_checks` and `d4_rule_by_substance` in
 
 An API-model `li agent` leg runs lionagi's own tool loop, `Branch.ReAct(tools=True,
 max_extensions=N)` (`lionagi/cli/agent.py:395-399`, ADR-0041 Amendment 1). Each ReAct analysis round
-is at least one model request (a reply that fails to parse is asked for again), and a round's tool
-calls run through `act()`, concurrently unless the model asks for them in sequence
-(`lionagi/operations/ReAct/ReAct.py:98`, `:205`, `:542`). After the last analysis round ReAct always
-makes one more request for the answer (`ReAct.py:631-684`). A ReAct turn therefore costs its
-analysis rounds plus one. A model that asks for a read cannot see the result in that round, so it
+is at least one model request, and a reply that fails to parse costs more, since it is sent back to
+the model to be reformatted (`lionagi/operations/communicate/communicate.py:119-128`,
+`lionagi/operations/parse/parse.py:186-217`). A round's tool calls run through `act()`, concurrently
+unless the model asks for them in sequence (`lionagi/operations/ReAct/ReAct.py:98`, `:205`,
+`:542`). After the last analysis round ReAct always makes one more request for the answer
+(`ReAct.py:631-684`). A ReAct turn therefore costs its analysis rounds plus one. A model that asks for a read cannot see the result in that round, so it
 usually asks for another round to look at it before saying it is done: the leg's own test of a
 one-read task scripts three requests, the read round, a round that sees the result and stops, and
 the answer (`tests/cli/test_agent_api_provider.py:172`).
@@ -155,16 +156,17 @@ first run and has at least 20 read-only tasks of the kind the leg is used for, e
 that marks its answer accepted or rejected as a first pass. Every answer is then read against the
 source, and the reading decides: an answer the check accepts and the reading finds wrong is not accepted, and one
 the check rejects and the reading finds right is. The result is a per-task table of requests, tool
-calls, wall time and acceptance for both loops, published with the pilot's commit. The pilot can
-run more than once as the code changes, and each run is recorded in the Result. r2, r3 and r4 did
-not settle the rule (Result); after r4 the run that decides was named as `r5`. r5 ran with
-lionagi installed from `208bcc08`, the `main` commit current when it started (read from its
-environment after the run, `benchmarks/lndl_pilot/runs/r5/environment.json`), and read the source
-at `6fa69b19`, as r2 to r4 did. It asks the same questions against the same source lines, with the
-`t06` and `t20` checks corrected; those two changes, and the `t24` check changed after r5, which no
-run has used, depart from the clause above that the task set is fixed before the first run. r5 is
-read by the rule Amendment 1 records. The rule that the reading decides was written into D4 after
-r5 had run, so r5 is reported under the checks and under the reading; its task file
+calls, wall time and acceptance for both loops, published with the pilot's commit, and a per-task
+record of each answer's reading beside its check. The pilot can run more than once as the code
+changes, and each run is recorded in the Result. r2, r3 and r4 did not settle the rule (Result);
+after r4 the run that decides was named as `r5`. r5 ran on 2026-10-20 from 02:09 to 02:12 UTC with
+lionagi installed from `208bcc08`, a commit on `main` and the head of its environment's checkout
+(`benchmarks/lndl_pilot/runs/r5/environment.json`), and read the source at `6fa69b19`, as r2 to r4
+did. It asks the same questions against the same source lines, with the `t06` and `t20` checks
+corrected; those two changes, and the `t24` check changed after r5, which no run has used, depart
+from the clause above that the task set is fixed before the first run. r5 is read by the rule
+Amendment 1 records. The rule that the reading decides was written into D4 after r5 had run, at
+03:10 UTC, so r5 is reported under the checks and under the reading; its task file
 (`benchmarks/lndl_pilot/runs/tasks.r5.yaml`), rows and reading (`benchmarks/lndl_pilot/runs/r5/`)
 are recorded with its result below. No later run reopens D4: a different outcome takes a new
 decision. The reading is one reader's judgment, made knowing which loop wrote each answer, and no
@@ -183,8 +185,9 @@ The pilot is `benchmarks/lndl_pilot/`: 24 read-only questions about lionagi's ow
 an acceptance check, on `anthropic/claude-haiku-5-5` with read tools and `max_extensions: 10`. Each
 task's two runs are adjacent in time and the loop that goes first alternates by task. The per-task
 tables of requests, tool calls, wall time and acceptance by the checks are `runs/<run>/table.md`
-there, and its test, `tests/benchmarks/test_lndl_pilot.py`, recomputes the figures below and the
-ones this record gives for r3, r4 and r5 from the runs' files.
+there, each answer's reading, beside its check and the source line it was read against, is
+`runs/<run>/reading.jsonl`, and the pilot's test, `tests/benchmarks/test_lndl_pilot.py`, recomputes
+the figures below and the ones this record gives for r3, r4 and r5 from the runs' files.
 
 | run | lionagi | loop | accepted by the checks | accepted on reading | requests | per accepted task | tool calls |
 |---|---|---|---|---|---|---|---|
