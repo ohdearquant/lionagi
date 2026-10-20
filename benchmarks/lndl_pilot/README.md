@@ -158,10 +158,10 @@ and r4, and `spend_lines` is at least 1 in all 144 rows. Each leg's spend lines 
   and a non-empty `prompt`, both text that encodes as UTF-8; checks that are lists of non-empty
   strings with a non-empty `all_of`, each encoding as UTF-8; each regular expression compiling, not blank, and not matching an empty answer), checked
   `--concurrency`, `--loops` (each 1 to 100 letters, digits, `_` and `-`, the name of a profile beside the runner, letter case included,
-  and none named twice), `--only`, that no two legs would write the same files, and that `--out` is not empty, resolves, lies under a directory, and that nothing, a dangling link included, is at it yet,
+  and none named twice), `--only`, that no two legs would write the same files, and that `--out` is not empty, resolves, goes up (`..`) only out of a part that exists, lies under a directory, and that nothing, a dangling link included, is at it yet,
   and started `git`
   and `li --version` for the header, so none of those checks failing, and neither program failing
-  to start, leaves a run directory behind; a failed check exits 2. Of the two files' top-level
+  to start, leaves a run directory behind; a failed check, or a run directory that cannot be created, exits 2. Of the two files' top-level
   statements,
   `summarize()`, `run_one()`, `run_pair()` and `main()` are the ones whose `ast.dump` differs, and
   `run_pilot.py` adds two imports (`threading` and `collections.abc.Callable`), the `TASK_ID`

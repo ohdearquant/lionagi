@@ -342,11 +342,24 @@ def main() -> int:
     if len({loop.lower() for loop in loops}) < len(loops):
         # A loop named twice would run each task's leg twice into the same files.
         problems.append(f"--loops: {args.loops!r} names a loop twice, ignoring letter case")
+    # resolve() reads a `..` after a missing part as text, where the OS refuses the path, so the
+    # two agree on where --out lies only when the part before each `..` exists.
+    parts = Path(args.out).parts
+    gone = next(
+        (
+            Path(*parts[:i])
+            for i, part in enumerate(parts)
+            if part == ".." and not os.path.lexists(Path(*parts[:i]))
+        ),
+        None,
+    )
     if not args.out:
         problems.append("--out is empty")
     elif os.path.lexists(Path(args.out)):
         # Through Path, which drops a trailing slash: with one, lstat follows a dangling link.
         problems.append(f"--out: {args.out} already exists")
+    elif gone is not None:
+        problems.append(f"--out: {args.out} goes up from {gone}, which does not exist")
     else:
         try:
             # Absolute: each child runs with cwd set to the read tree, so a relative path would
@@ -416,7 +429,13 @@ def main() -> int:
     }
     # Made once everything above has been checked and `git` and `li` have answered for the
     # header, so a refused run, or an `li` that cannot start, leaves no run directory behind.
-    out.mkdir(parents=True, exist_ok=False)
+    try:
+        out.mkdir(parents=True, exist_ok=False)
+    except OSError as exc:
+        # An ancestor without search permission or on a read-only file system shows only here.
+        print(f"--out: {args.out} cannot be created: {exc}", file=sys.stderr)
+        print("nothing run", file=sys.stderr)
+        return 2
     (out / "header.json").write_text(json.dumps(header, indent=2))
     recorded: list[dict] = []
     lock = threading.Lock()

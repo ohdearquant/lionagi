@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -678,6 +679,48 @@ def test_an_out_under_a_file_is_refused_before_anything_runs(monkeypatch, tmp_pa
     assert legs.legs == []
     err = capsys.readouterr().err
     assert f"--out: {tmp_path / 'afile' / 'run'} is under {tmp_path / 'afile'}, which is not" in err
+
+
+@pytest.mark.parametrize("kind", ["missing", "dangling", "file", "loop"])
+def test_an_out_going_up_from_a_missing_directory_is_refused(monkeypatch, tmp_path, capsys, kind):
+    (tmp_path / "P").mkdir()
+    target = tmp_path / "P" / "G"
+    if kind == "dangling":
+        target.symlink_to(tmp_path / "target_missing" / "deep")
+    elif kind == "file":
+        target.write_text("")
+    elif kind == "loop":
+        target.symlink_to(target)
+    out = f"{tmp_path}/P/M/../G/run"
+    legs = _Legs()
+    rc, _ = _run_main(monkeypatch, tmp_path, legs, ["t01"], "--out", out)
+
+    assert rc == 2
+    assert legs.legs == []
+    assert not (tmp_path / "target_missing").exists()
+    assert f"--out: {out} goes up from {tmp_path / 'P' / 'M'}, which does not exist" in (
+        capsys.readouterr().err
+    )
+
+
+def test_an_out_that_cannot_be_created_is_refused_before_anything_runs(
+    monkeypatch, tmp_path, capsys
+):
+    closed = tmp_path / "closed"
+    closed.mkdir()
+    closed.chmod(0o600)
+    try:
+        if os.access(closed / ".", os.X_OK):
+            pytest.skip("this user can search a directory without search permission")
+        legs = _Legs()
+        rc, _ = _run_main(monkeypatch, tmp_path, legs, ["t01"], "--out", str(closed / "run"))
+    finally:
+        closed.chmod(0o700)
+
+    assert rc == 2
+    assert legs.legs == []
+    assert not (closed / "run").exists()
+    assert f"--out: {closed / 'run'} cannot be created:" in capsys.readouterr().err
 
 
 def test_an_li_that_cannot_start_leaves_no_run_directory(monkeypatch, tmp_path):
