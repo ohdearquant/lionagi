@@ -86,9 +86,11 @@ corrects a premise of the question on the way. Two tasks turn on that rule (sour
   changes.
 - `t05` asks for "the default max_tokens value for the BashTool's timeout field in milliseconds";
   the field holds a timeout, not a token count. All six answers give 30000 ms, the value the task
-  records (`lionagi/tools/code/bash.py:35`), and five of them also say the question's `max_tokens`
-  does not fit the field (the r2 ReAct, r2 `lndl`, r3 ReAct, r3 `lndl` and r4 ReAct answers). Counted wrong, those five leave r2 failing the
-  rule and r3 meeting it (22 against 22), and make r4 meet it (23 against 23).
+  records (`lionagi/tools/code/bash.py:35`). Four of them also say the question's `max_tokens`
+  does not fit the field (the r2 ReAct, r2 `lndl`, r3 ReAct and r4 ReAct answers), and the r3
+  `lndl` answer says "It is a time limit, not a token count." Counted wrong, those four leave r2
+  failing the rule and r3 meeting it (`lndl` 23 against ReAct 22), and make r4 meet it (23 against
+  23); counting the r3 `lndl` answer wrong too leaves r3 at 22 against 22, which still meets it.
 
 r4 fails the rule by one task, so counting any one of its accepted ReAct answers wrong, such as its
 `t05` answer, would make it meet the rule.
@@ -99,7 +101,7 @@ The reading and the checks differ in ten answers:
 |---|---|---|---|---|---|
 | `t06` | r2, r3, r4 | both | rejected | right | The check expects `100000`. Each answer writes the cap as `100_000`, all but the r4 ReAct answer also as `100,000`, and names `_MAX_OUTPUT_BYTES` and `_SHELL_CONTROL` (`lionagi/tools/_subprocess.py:18`, `:20`). |
 | `t20` | r4 | `lndl` | rejected | right | The question asks which module defines the class; the answer names it by its import path, `lionagi.tools.code.search`, and says it did not open the file. The check expects the file path; the class is defined at `lionagi/tools/code/search.py:193`. |
-| `t24` | r2, r3, r4 | `lndl` | accepted | wrong | Each answer gives `RUNS_ROOT` in place of a `RUNS_DIR` it says `lionagi/mcp/config.py` does not define: r3 says no `RUNS_DIR` exists, r2 that its grep shows none, and r4 that the module defines none, adding that it read the file only in part and does not rule one out. Line 19 of that file is `RUNS_DIR = RUNS_ROOT`. The check asks for `.lionagi`, the default the question asks for, and the names `RUNS_DIR` and `JOBS_DIR`, which the question itself supplies, so it accepts these answers. |
+| `t24` | r2, r3, r4 | `lndl` | accepted | wrong | Each answer gives `RUNS_ROOT` in place of `RUNS_DIR`: r3 says no `RUNS_DIR` exists, r2 that its grep shows none in `lionagi/mcp/config.py`, and r4 that the module defines none, adding that it read the file only in part and does not rule one out. Line 19 of that file is `RUNS_DIR = RUNS_ROOT`. The check asks for `.lionagi`, the default the question asks for, and the names `RUNS_DIR` and `JOBS_DIR`, which the question itself supplies, so it accepts these answers. |
 
 The other rejected answers are not right on reading either: the five r2 `lndl` legs that spent all
 11 requests (`t03`, `t04`, `t17`, `t18`, `t19`; ADR-0132 D4, Result) give no value, each saying it
@@ -133,8 +135,7 @@ and r4, and `spend_lines` is at least 1 in all 144 rows. Each leg's spend lines 
 ## How the committed files differ from the runs' output
 
 - `run_pilot.py` is `runs/run_pilot.as-run.py.txt` with `noqa` comments added, the `(r1)` at the
-  end of one comment removed (the as-run copy keeps it; `r1` was an earlier run, not published, in
-  which the relative path that comment describes failed), the layout reformatted by ruff, and one
+  end of one comment removed (the as-run copy keeps it), the layout reformatted by ruff, and one
   change to `summarize()`: the as-run copy computed the D4 rule even when a leg had no spend line,
   and `run_pilot.py` leaves it unset (above). Of the two files' top-level statements, `summarize()`
   is the only one whose `ast.dump` differs. With `missing_spend` at 0 in all three runs, both write

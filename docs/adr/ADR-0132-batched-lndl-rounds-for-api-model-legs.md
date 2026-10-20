@@ -192,9 +192,10 @@ the 17 wrote a block in its next round, and 18 of the 79 requests went to rounds
   `lndl` answer to `t20` is right and was rejected: the question asks which module defines the
   class, the answer names it by its import path, `lionagi.tools.code.search`, and says it did not
   open the file, and the check asks for the file path. The `lndl` answers to `t24` in all three runs
-  are wrong and were accepted: each gives `RUNS_ROOT` in place of a `RUNS_DIR` it says
-  `lionagi/mcp/config.py` does not define (the r4 answer adds that it read the file only in part and
-  does not rule one out), and line 19 of that file is `RUNS_DIR = RUNS_ROOT`; the check asks for `.lionagi`, the default the question
+  are wrong and were accepted: each gives `RUNS_ROOT` in place of `RUNS_DIR` (r3 says no
+  `RUNS_DIR` exists, r2 that its grep shows none in `lionagi/mcp/config.py`, and r4 that the module
+  defines none, adding that it read the file only in part and does not rule one out), and line 19
+  of that file is `RUNS_DIR = RUNS_ROOT`; the check asks for `.lionagi`, the default the question
   asks for, and the names `RUNS_DIR` and `JOBS_DIR`, which the question itself supplies, so it
   accepts these answers. Every other answer agrees with its check.
 - On reading, r3 meets the rule with no margin: 23 tasks accepted on each side, and `lndl` used 79
@@ -202,9 +203,10 @@ the 17 wrote a block in its next round, and 18 of the 79 requests went to rounds
   between r2 and r3 (its r3 `t04` leg above), so r3 shows that `lndl` accepted no fewer tasks, not
   that it accepts more. This counts both r3 answers to `t03` as right (each says the endpoint's
   request model has no default and gives 8192, the value lionagi's CLI applies and the line the
-  task records) and both r3 answers to `t05` (each says the question's `max_tokens` does not fit
-  the timeout field and gives its default, 30000 ms). Counting either pair wrong leaves r3 at 22
-  against 22, which still meets the rule.
+  task records) and both r3 answers to `t05` (each gives the timeout field's default, 30000 ms; the
+  ReAct answer says BashTool has no `max_tokens` field, and the `lndl` answer that the field is a
+  time limit, not a token count). Counting either pair wrong leaves r3 at 22 against 22, which still
+  meets the rule.
 - The tool calls counted are the calls that ran. The most any `lndl` run made was four in r2, three
   in r3 and five in r4 (`t21` and `t22`). A round that declares more than 16 calls is refused and
   none of its calls runs (D2), so these counts cannot show whether a round reached the limit, and
