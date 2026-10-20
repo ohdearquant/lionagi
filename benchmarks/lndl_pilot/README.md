@@ -110,7 +110,9 @@ and line it names are the definition the task records and only the verb is loose
 
 The committed `tasks.yaml` is the file the runs used, unchanged. Each task also has a `none_of: []`
 beside `accept`, which the runner does not read; it is left as it was so that `tasks.yaml` still
-matches the hash in each `header.json`.
+matches the hash in each `header.json`. Two `enumerate_known_member` lines in it are one line off
+at `6fa69b19`, and no check reads them: `t13`'s `system` is at
+`lionagi/protocols/messages/base.py:24`, and `t19`'s `.env` at `lionagi/libs/path_safety.py:12`.
 
 `run_pilot.py` takes each leg's requests from its spend line and counts a leg with none as zero
 requests. `summary.json` records how many legs that was (`missing_spend`). The D4 rule it computes

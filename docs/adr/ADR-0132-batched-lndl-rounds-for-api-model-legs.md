@@ -134,10 +134,12 @@ source, and the reading decides: an answer the check accepts and the reading fin
 the check rejects and the reading finds right is. The result is a per-task table of requests, tool
 calls, wall time and acceptance for both loops, published with the pilot's commit. The pilot can
 run more than once as the code changes, and each run is recorded in the Result. r2, r3 and r4 did
-not settle the rule (Result); after r4 the run that decides was named as `r5`, at the merged code,
-and it ran at the `main` commit current when it started. r5 asks the same questions against the
-same source lines, with the `t06` and `t20` checks corrected, and is read by the same rule; its task
-file, rows and reading are recorded with its result, not here. No later run reopens D4: a different outcome takes
+not settle the rule (Result); after r4 the run that decides was named as `r5`, and it ran at
+`208bcc08`, the `main` commit current when it started. r5 asks the same questions against the
+same source lines, with the `t06` and `t20` checks corrected, and is read by the same rule. The
+rule that the reading decides was written into D4 after r5 had run, so r5 is reported under the
+checks and under the reading. r5's task file, rows and reading are not on `main` yet; they land
+with its result in a later change. No later run reopens D4: a different outcome takes
 a new decision. The reading is one reader's judgment, made knowing which loop wrote each answer,
 and no blind second reading was done; it judges what each answer says to its question and counts
 an answer right when it gives the value or name its task records, also when it corrects a premise
