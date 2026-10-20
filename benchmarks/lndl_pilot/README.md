@@ -194,6 +194,10 @@ answers (r2 to r5) and accepts all four ReAct ones; no run has used it yet.
 
 Each task also has a `none_of: []` beside `accept`, which the runner does not read; it is left as
 it was so that each task file still matches the hash in its runs' `header.json`.
+The two as-run task files also keep two `enumerate_known_member` lines that are one line off at
+`6fa69b19`, and no check reads them: `t13`'s `system` is at `lionagi/protocols/messages/base.py:24`,
+and `t19`'s `.env` at `lionagi/libs/path_safety.py:12`. `tasks.yaml`, which no run has used, has
+them corrected.
 
 `run_pilot.py` takes each leg's requests from its spend line and counts a leg with none as zero
 requests. `summary.json` records how many legs that was (`missing_spend`). The D4 rule it computes
@@ -211,7 +215,7 @@ all 192 rows.
 - In each `header.json`, `tasks_file` was an absolute path on the machine that ran it and now
   names the copy of the task set that run used, `runs/tasks.r2-r4.yaml` or `runs/tasks.r5.yaml`,
   whose sha256 is the header's `tasks_sha256`. `tasks.yaml` beside the runner is the task set as
-  it is now (sha256 `ac93dff3…`), which no run used.
+  it is now (sha256 `aa04d3fd…`), which no run used.
 - Each `summary.json` is written by `summarize.py`, not by the runner: the totals and
   `d4_rule_by_checks` are the runner's own summary of `results.jsonl` (its `d4_rule`, renamed), and
   `d4_rule_by_substance` applies the same two D4 conditions to the counts in `reading.jsonl`. The

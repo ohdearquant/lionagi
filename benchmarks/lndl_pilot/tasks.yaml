@@ -171,7 +171,7 @@ tasks:
   decoy_answer: 'MessageRole has 4 members: system, user, assistant, tool.'
   enumerate_command: git -C tree grep -n 'class MessageRole' lionagi/protocols/messages/base.py; then
     sed -n '21,28p' lionagi/protocols/messages/base.py
-  enumerate_known_member: system (lionagi/protocols/messages/base.py:23)
+  enumerate_known_member: system (lionagi/protocols/messages/base.py:24)
 - id: t14
   class: enumerate
   prompt: List all the members of the EventStatus enum from lionagi/protocols/generic/event.py.
@@ -284,7 +284,7 @@ tasks:
   reference_answer: 'DENIED_NAMES has 6 entries: .env, .netrc, id_rsa, id_ed25519, id_ecdsa, .htpasswd.'
   decoy_answer: 'DENIED_NAMES has 5 entries: .env, .netrc, id_rsa, id_ed25519, .htpasswd.'
   enumerate_command: sed -n '12,14p' lionagi/libs/path_safety.py
-  enumerate_known_member: .env (lionagi/libs/path_safety.py:13)
+  enumerate_known_member: .env (lionagi/libs/path_safety.py:12)
 - id: t20
   class: trace
   prompt: When the agent factory encounters tool_spec == 'search' in _register_tools, what class does
