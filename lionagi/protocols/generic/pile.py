@@ -80,7 +80,7 @@ def _validate_item_type(value, /) -> set[type[T]] | None:
     value = [value] if isinstance(value, str) else to_list_type(value)
     resolved = []
 
-    from lionagi._class_registry import get_class
+    from lionagi._class_registry import _cut, get_class
 
     for i in value:
         pending = [i]
@@ -91,24 +91,24 @@ def _validate_item_type(value, /) -> set[type[T]] | None:
                     i,
                     expected="A type.",
                     message=(
-                        f"item_type {i!r} names no module: pass the class itself or its "
-                        "dotted path, such as 'lionagi.protocols.generic.element.Element'"
+                        f"item_type {_cut(repr(i))} names no module: pass the class itself or "
+                        "its dotted path, such as 'lionagi.protocols.generic.element.Element'"
                     ),
                 )
-            try:
-                # Imports no module outside the allowed prefixes.
+            try:  # Imports a module only under an allowed prefix, with its parents.
                 pending = [get_class(i)]
             except Exception as e:
                 raise ValidationError.from_value(i, message=str(e), cause=e) from e
-        # A union counts as each member, nested ones too; never None, a ForwardRef or a generic.
+        # A union counts as each member, nested ones too; never None, Any, a ForwardRef, a generic.
         while pending:
             m = pending.pop()
             if is_union_type(m):
                 pending.extend(union_members(m))
-            elif isinstance(m, type) and m is not type(None) and get_origin(m) is None:
+            elif isinstance(m, type) and m not in (type(None), Any) and get_origin(m) is None:
                 resolved.append(m)
             else:
-                raise ValidationError.from_value(i, expected="A type.")
+                refused = f"item_type cannot hold {_cut(repr(m))}"
+                raise ValidationError.from_value(i, expected="A type.", message=refused)
 
     # Compared once resolved and unions expanded: a type and its name, two names
     # for one class, or a type and a union holding it repeat one item type.

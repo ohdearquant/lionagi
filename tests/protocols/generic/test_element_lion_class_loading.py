@@ -1,13 +1,13 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Element.from_dict resolves ``lion_class`` without importing modules outside the
-allowed prefixes, and only to Element subclasses."""
+"""Element.from_dict resolves ``lion_class`` importing a module only under an allowed
+prefix, and only to Element subclasses."""
 
 from __future__ import annotations
 
 import sys
 import types
-from typing import Annotated, ForwardRef, Literal, Optional, Union
+from typing import Annotated, Any, ForwardRef, Literal, Optional, Union
 
 import pytest
 
@@ -85,10 +85,14 @@ def test_a_module_under_an_allowed_prefix_that_fails_to_import_says_why(tmp_path
         with pytest.raises(
             ValueError,
             match="cannot be loaded: .*loading it failed: .*needs an optional dependency",
-        ):
+        ) as raised:
             Element.from_dict(_dumped(f"{broken}.Thing"))
     finally:
         sys.modules.pop(broken, None)
+    # Chained from get_class's own error, which holds the remedy and the reason.
+    cause = raised.value.__cause__
+    assert isinstance(cause, ValueError)
+    assert str(raised.value).endswith(str(cause))
 
 
 def test_an_element_subclass_already_imported_still_round_trips():
@@ -126,13 +130,25 @@ def test_a_dotted_name_outside_the_prefixes_does_not_fall_back_to_its_short_name
     assert "lion_class_unimported_zz" not in sys.modules
 
 
-def test_a_lionagi_class_whose_module_moved_still_resolves_by_its_short_name():
+def test_a_built_in_lionagi_class_whose_module_moved_still_resolves_by_its_short_name():
     from lionagi.protocols.messages.instruction import Instruction
 
     assert get_class("lionagi.no_such_module_zz.Instruction") is Instruction
 
 
-@pytest.mark.parametrize("lion_class", ["", ".", "untrusted.", "lionagi.", ".Foo", ".LocalElement"])
+@pytest.mark.parametrize(
+    "lion_class",
+    [
+        "",
+        ".",
+        "untrusted.",
+        "lionagi.",
+        ".Foo",
+        ".LocalElement",
+        "lionagi..Element",
+        "probe..LocalElement",
+    ],
+)
 def test_a_name_with_an_empty_module_or_class_part_is_refused(lion_class, monkeypatch):
     monkeypatch.setitem(LION_CLASS_REGISTRY, "probe.", LocalElement)
     monkeypatch.setitem(LION_CLASS_REGISTRY, "probe.LocalElement", LocalElement)
@@ -375,11 +391,12 @@ def test_a_union_nested_in_a_union_counts_as_each_of_its_members():
         list[Element],
         LocalElement | None,
         Optional[LocalElement],
+        Any,
     ],
-    ids=["forward-refs", "literal", "generic-member", "generic", "none", "optional"],
+    ids=["forward-refs", "literal", "generic-member", "generic", "none", "optional", "any"],
 )
 def test_an_item_type_that_is_not_a_class_is_refused(item_type):
-    with pytest.raises(ValidationError) as exc:
+    with pytest.raises(ValidationError, match="item_type cannot hold ") as exc:
         Pile(item_type=[item_type])
     assert exc.value.details.get("expected") == "A type."
 
@@ -427,3 +444,81 @@ def test_the_not_found_remedy_fits_the_shape_of_the_name(name, says, probe_modul
     if not says.startswith("allow"):
         assert "register_type_prefix" not in str(raised.value)
     assert not probe_module.exists()
+
+
+def test_typing_any_as_an_item_type_is_refused_by_name():
+    # A class from Python 3.11 on, which isinstance() refuses, so it could admit nothing.
+    with pytest.raises(ValidationError, match=r"item_type cannot hold typing\.Any"):
+        Pile(item_type=Any)
+
+
+def test_a_name_under_a_subpackage_prefix_imports_the_packages_above_it(tmp_path, monkeypatch):
+    top = "lion_class_parent_zz"
+    (tmp_path / top / "sub").mkdir(parents=True)
+    (tmp_path / top / "__init__.py").write_text("")
+    (tmp_path / top / "sub" / "__init__.py").write_text("")
+    (tmp_path / top / "sub" / "thing.py").write_text(
+        "from lionagi.protocols.generic.element import Element\nclass Thing(Element):\n    pass\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(_utils, "_ALLOWED_MODULE_PREFIXES", set(_utils._DEFAULT_ALLOWED_PREFIXES))
+    monkeypatch.setattr(_utils, "_TYPE_CACHE", {})
+    _utils.register_type_prefix(f"{top}.sub.")
+    loaded = [top, f"{top}.sub", f"{top}.sub.thing"]
+    try:
+        assert not any(name in sys.modules for name in loaded)
+        assert get_class(f"{top}.sub.thing.Thing").__name__ == "Thing"
+        # Python imports a module's parent packages first, the one above the prefix too.
+        assert all(name in sys.modules for name in loaded)
+    finally:
+        for name in loaded:
+            sys.modules.pop(name, None)
+
+
+def test_the_remedy_fits_a_nested_class_a_module_getattr_and_a_moved_class(monkeypatch):
+    class Outer:
+        class Inner(LocalElement):
+            pass
+
+    def supply(name):
+        return LocalElement
+
+    nest = types.ModuleType("lion_class_nest_zz")
+    nest.Outer = Outer
+    lazy = types.ModuleType("lion_class_getattr_zz")
+    lazy.__getattr__ = supply
+    monkeypatch.setitem(sys.modules, "lion_class_nest_zz", nest)
+    monkeypatch.setitem(sys.modules, "lion_class_getattr_zz", lazy)
+    monkeypatch.setattr(_utils, "_ALLOWED_MODULE_PREFIXES", set(_utils._DEFAULT_ALLOWED_PREFIXES))
+    monkeypatch.setattr(_utils, "_TYPE_CACHE", {})
+    remedies = {
+        "lion_class_nest_zz.Outer.Inner": "add a nested class to LION_CLASS_REGISTRY",
+        "lion_class_getattr_zz.Thing": "module-level __getattr__",
+        "lionagi.no_such_mod_zz.Thing": "give its current dotted path",
+        "lion_class_unimported_zz.old.Thing": "give its current dotted path",
+    }
+    for name, remedy in remedies.items():
+        with pytest.raises(ValueError) as raised:
+            get_class(name)
+        assert remedy in str(raised.value), name
+
+    # Each remedy works: a prefix does not reach the nested class, a registry entry does.
+    _utils.register_type_prefix("lion_class_nest_zz.")
+    with pytest.raises(ValueError, match="add a nested class to LION_CLASS_REGISTRY"):
+        get_class("lion_class_nest_zz.Outer.Inner")
+    monkeypatch.setitem(LION_CLASS_REGISTRY, "lion_class_nest_zz.Outer.Inner", Outer.Inner)
+    assert get_class("lion_class_nest_zz.Outer.Inner") is Outer.Inner
+    _utils.register_type_prefix("lion_class_getattr_zz.")
+    assert get_class("lion_class_getattr_zz.Thing") is LocalElement
+
+
+def test_a_long_name_is_cut_short_in_each_error():
+    long_name = "lionagi." + "x" * 5000 + ".Thing"
+    with pytest.raises(ValueError) as raised:
+        Element.from_dict(_dumped(long_name))
+    assert len(str(raised.value)) < 1000
+    assert "more characters]" in str(raised.value)
+    for item_type in (long_name, "x" * 5000):
+        with pytest.raises(ValidationError) as refused:
+            Pile(item_type=item_type)
+        assert len(str(refused.value)) < 1000

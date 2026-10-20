@@ -179,7 +179,7 @@ class Element(BaseModel):
             if subcls != Element.class_name(full=True):
                 # get_class resolves both fully-qualified names and legacy
                 # short names (data persisted before full-name adoption), and
-                # imports no module outside the allowed prefixes.
+                # imports a module only under an allowed prefix, with its parents.
                 subcls_type = _lion_class_type(subcls)
                 # Delegate to a custom from_dict, or when the concrete
                 # type differs so model_validate uses the right schema.
@@ -225,8 +225,9 @@ def _lion_class_type(lion_class: Any) -> type[Element]:
     try:
         resolved = get_class(lion_class)
     except ValueError as exc:
-        # get_class's message carries the remedy and, when loading failed, the reason.
-        raise ValueError(f"metadata lion_class {lion_class!r} cannot be loaded: {exc}") from exc
+        # get_class's message names the class, cut short, and carries the remedy
+        # and, when loading failed, the reason; the name is not repeated here.
+        raise ValueError(f"metadata lion_class cannot be loaded: {exc}") from exc
     if not (isinstance(resolved, type) and issubclass(resolved, Element)):
         raise ValueError(f"metadata lion_class {lion_class!r} is not an Element subclass")
     return resolved

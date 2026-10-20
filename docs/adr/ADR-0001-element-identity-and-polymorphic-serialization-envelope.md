@@ -39,8 +39,9 @@ describes: a third-party class is readable once its package is admitted, and unr
 
 Limits: a module that is already imported counts as admitted, so the allow-list bounds which modules
 deserialization imports, while dispatch to a loaded class is bounded only by the `Element` subclass
-check. Delta 1's registration half, third-party models round-tripping without being admitted
-first, stays open.
+check. Importing a module also imports its parent packages, so a prefix that names a subpackage
+(`pkg.sub.`) lets deserialization import the packages above it (`pkg`) as well. Delta 1's
+registration half, third-party models round-tripping without being admitted first, stays open.
 
 ## Context
 

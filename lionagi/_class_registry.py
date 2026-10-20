@@ -44,12 +44,43 @@ _BARE = (
     "a bare name resolves only to a class in lionagi's built-in modules or in "
     "LION_CLASS_REGISTRY; give its dotted path"
 )
-_UNDER_PREFIX = "no class of that name loads from that module path"
-_IMPORTED = "its module is imported and holds no class of that name"
-_OUTSIDE = (
-    "its module is outside the allowed prefixes; import that module first, or allow "
+_MOVED = "if the class has moved, give its current dotted path"
+_UNDER_PREFIX = f"no class of that name loads from that module path; {_MOVED}"
+_IMPORTED = f"its module is imported and holds no class of that name; {_MOVED}"
+_LAZY = (
+    "its module is imported and may supply the name through a module-level "
+    "__getattr__, which is called only for a module under an allowed prefix; allow "
     "its package with lionagi.ln.register_type_prefix()"
 )
+_NESTED = (
+    "its path runs through a class, which a dotted path does not reach into; add a "
+    "nested class to LION_CLASS_REGISTRY under this name"
+)
+_OUTSIDE = (
+    "its module is outside the allowed prefixes; import that module first, allow its "
+    f"package with lionagi.ln.register_type_prefix(), or, {_MOVED}"
+)
+# How much of a name, or of why it failed to load, an error message repeats: the
+# name comes from serialized data and can be any length.
+_SHOWN = 160
+
+
+def _cut(text: str) -> str:
+    if len(text) <= _SHOWN:
+        return text
+    return f"{text[:_SHOWN]}... [{len(text) - _SHOWN:,} more characters]"
+
+
+def _nested(class_name: str) -> bool:
+    """Whether the name runs through a class held by an imported module, as the
+    path of a class nested in another class does."""
+    parts = class_name.split(".")
+    for end in range(len(parts) - 2, 0, -1):
+        module = sys.modules.get(".".join(parts[:end]))
+        if isinstance(module, types.ModuleType):
+            # The namespace, not getattr: a module-level __getattr__ can import.
+            return isinstance(vars(module).get(parts[end]), type)
+    return False
 
 
 def get_class(class_name: str) -> type:
@@ -62,14 +93,15 @@ def get_class(class_name: str) -> type:
     steps resolves raises instead of falling back to its short name, and one
     under an allowed prefix falls back only to a class defined under an
     allowed prefix that the name itself starts with; a bare short name
-    resolves only to a lionagi class or a registered one. A module outside the
-    allowed prefixes is never imported here. Raises ValueError if not found,
-    chained from the import failure when loading a dotted name failed.
+    resolves only to a lionagi class or a registered one. A module is imported
+    here only under an allowed prefix, with the parent packages Python imports
+    first. Raises ValueError if not found, chained from the import failure
+    when loading a dotted name failed.
     """
     if not class_name:
         # Reject empty names here: the suffix-match fallback below would
         # otherwise match any registry key ending in a bare ".".
-        raise ValueError(_NOT_FOUND.format(repr(class_name), _MALFORMED))
+        raise ValueError(_NOT_FOUND.format(_cut(repr(class_name)), _MALFORMED))
 
     if class_name in LION_CLASS_REGISTRY:
         return LION_CLASS_REGISTRY[class_name]
@@ -83,9 +115,10 @@ def get_class(class_name: str) -> type:
     prefixes: tuple[str, ...] = ("lionagi.",)
     if "." in class_name:
         mod, _, name = class_name.rpartition(".")
-        # An empty short name ("pkg.") would match every registry key ending in ".".
-        if not mod or not name:
-            raise ValueError(_NOT_FOUND.format(class_name, _MALFORMED))
+        # An empty part (".Foo", "pkg..Foo", "pkg.") names no module or class, and an
+        # empty short name would match every registry key ending in ".".
+        if not name or "" in mod.split("."):
+            raise ValueError(_NOT_FOUND.format(_cut(repr(class_name)), _MALFORMED))
         module = sys.modules.get(mod)
         if isinstance(module, types.ModuleType):
             # The module's own namespace, not getattr: a module-level
@@ -104,8 +137,12 @@ def get_class(class_name: str) -> type:
         allowed = _ln_utils._ALLOWED_MODULE_PREFIXES
         prefixes = tuple(p for p in allowed if class_name.startswith(p))
         if not prefixes:
-            hint = _IMPORTED if isinstance(module, types.ModuleType) else _OUTSIDE
-            raise ValueError(_NOT_FOUND.format(class_name, hint)) from load_error
+            if isinstance(module, types.ModuleType):
+                hint = _LAZY if "__getattr__" in vars(module) else _IMPORTED
+            else:
+                hint = _NESTED if _nested(class_name) else _OUTSIDE
+            shown = _cut(repr(class_name))
+            raise ValueError(_NOT_FOUND.format(shown, hint)) from load_error
 
     for mod_name in _BUILTIN_MODULES:
         try:
@@ -130,9 +167,16 @@ def get_class(class_name: str) -> type:
             if "." not in class_name or f"{defined_in}.".startswith(prefixes):
                 return cls
 
-    message = _NOT_FOUND.format(class_name, _UNDER_PREFIX if "." in class_name else _BARE)
+    if "." not in class_name:
+        hint = _BARE
+    else:
+        hint = _NESTED if _nested(class_name) else _UNDER_PREFIX
+    message = _NOT_FOUND.format(_cut(repr(class_name)), hint)
     if load_error is not None:
         # The name is under an allowed prefix, so loading it was already tried:
         # say why it failed (a module that raises on import, a missing name).
-        message = f"{message} (loading it failed: {load_error})"
+        # load_type_from_string's message repeats the whole name; the error it
+        # wraps says only what failed.
+        reason = _cut(str(load_error.__cause__ or load_error))
+        message = f"{message} (loading it failed: {reason})"
     raise ValueError(message) from load_error
