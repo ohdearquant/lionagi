@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import contextlib
-import copy
 import functools
 import html.entities
 import json
@@ -36,6 +35,7 @@ from lionagi._errors import CLIInputRefusedError, ConfigurationError, Containmen
 from lionagi.libs.path_safety import check_add_dirs_safe as check_add_dir_entries_safe
 from lionagi.libs.path_safety import check_path_safe, check_paths_safe
 from lionagi.libs.path_safety import contain_paths_in_root as contain_paths_in_repo
+from lionagi.ln import copy
 from lionagi.ln.concurrency import current_time
 from lionagi.ln.concurrency.utils import maybe_await
 from lionagi.providers._agentic_handlers import AgenticHandlersMixin
@@ -2266,7 +2266,7 @@ def _command_line_layer(plain: _PlainRequest) -> dict[str, Any]:
             if not isinstance(table.get(part), dict):
                 table[part] = {}
             table = table[part]
-        table[last] = copy.deepcopy(value)  # a later dotted key writes into it
+        table[last] = copy(value)  # a later dotted key writes into it
     return root
 
 
