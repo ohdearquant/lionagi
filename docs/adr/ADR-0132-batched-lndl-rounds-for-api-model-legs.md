@@ -285,9 +285,9 @@ the 17 wrote a block in its next round, and 18 of the 79 requests went to rounds
   the reading rule, and gives r5 task by task, each with the source line its reading used. After r5 the `t24` check was changed to require the two assignments themselves; run
   against the committed r5 answers, it rejects the `lndl` answer and accepts the ReAct one.
 - The counts of runs that opened with an `<invoke>` tag and of requests that went to rounds with no
-  block are read from each leg's conversation, which `li agent` keeps under the run's home directory.
-  The pilot commits what was read from them, the syntax each `lndl` round used (`rounds.jsonl`), and
-  not the conversations.
+  block are read from each leg's conversation, which `li agent` keeps under the one home directory
+  every run shares. The pilot commits what was read from them, the syntax each `lndl` round used
+  (`rounds.jsonl`), and not the conversations.
 - All 192 legs exited 0 and none exhausted its round budget, which D2 defines as spending it without
   an accepted `OUT{}`. The five r2 `lndl` legs that spent all 11 requests wrote an `OUT{}` in their
   last round (`rounds.jsonl`) and exited 0, so the loop accepted it (their answers gave no value, as
