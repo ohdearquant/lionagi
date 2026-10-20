@@ -90,7 +90,9 @@ past `4d373f9c`, and the only file in the Python package it changes from `4d373f
 
 Requests per accepted task divides a run's requests by the tasks accepted on reading.
 `summary.json` stores it to three places, as the runner does (`3.435` for 79 over 23); the tables
-here give two places computed from the counts (3.43), not the stored value rounded again.
+here give two places computed from the counts (3.43), not the stored value rounded again. Wall time
+is the sum of the legs' own `wall_seconds`; each run had up to four legs going at once
+(`--concurrency 4`), so it is not the time the run took.
 `tests/benchmarks/test_lndl_pilot.py` recomputes these tables, the counts below that decide each
 run, and the figures ADR-0132 gives for the runs, from each run's files.
 
@@ -240,22 +242,30 @@ rows. Each leg's spend lines are in its run's `spend.jsonl`.
 ## How the committed files differ from the runs' output
 
 - `run_pilot.py` is `runs/run_pilot.as-run.py.txt` with `noqa` comments added, the `(r1)` at the
-  end of one comment removed (both as-run copies keep it), the layout reformatted by ruff, and five
+  end of one comment removed (both as-run copies keep it), the layout reformatted by ruff, and four
   changes. First, `summarize()` leaves the D4 rule unset when a leg had no spend line (above) or
   the rows are not the whole run, where the as-run copies computed it. Second, a run that stops
-  early keeps what it has (`run_one()`, `run_pair()`, `main()`): a leg whose `subprocess.run`
-  raises becomes a row with `rc` `harness-error` and no spend line, each row is appended to
-  `results.jsonl` as its leg ends, and an interrupt starts no further leg and still writes the
-  summary and table (below). Third, `main()` makes the run directory after reading the task file,
-  so a task file that cannot be read leaves none behind. Fourth, `main()` refuses a task file in
-  which a task has a non-empty `none_of` beside its `accept` block, which `check_answer` would
-  ignore, before it makes the run directory; each task in the two as-run task files has an empty
-  one. Fifth, `main()` names a task file that is in this directory by its path here in
-  `header.json`, the form `summarize.py` reads (below). Of the files' top-level statements, `summarize()`, `run_one()`, `run_pair()` and `main()`
-  are the ones whose `ast.dump` differs, and `run_pilot.py` adds two imports (`threading` and
-  `collections.abc.Callable`). With `missing_spend` at 0 and every leg run in all four runs, both
-  give the same totals and rule: the test loads each as-run copy, checks its sha256 against the
-  run's `runner_sha256`, and recomputes the run's `summary.json` with it.
+  early keeps what it has (`run_one()`, `run_pair()`, `main()`): a leg that raises in the runner, in
+  its `subprocess.run` or after it (writing its output, or running its check), becomes a row with
+  `rc` `harness-error` and no spend line; a leg that times out keeps its output so far, and bytes
+  that do not decode are replaced in any leg's output; each row is appended to `results.jsonl` as
+  its leg ends, and the summary and table count it only once it is written there (a row that
+  cannot be written stops its task on a harness error); and an interrupt starts no further leg and
+  still writes the summary and table (below). Third, `main()` makes the run directory only after it
+  has checked that the read tree exists and `li` exists and is executable, read the task file,
+  checked each task (`task_problems()`: an `id` of letters, digits, `_` and `-` that does not
+  repeat, a non-empty `class` and `prompt`, checks that are lists of non-empty strings with a
+  non-empty `all_of`, each regular expression compiling, and no non-empty `none_of` beside the
+  `accept` block, which `check_answer` would ignore) and checked `--concurrency`, `--loops` and
+  `--only`, so none of those failing leaves a run directory behind; a failed check exits 2. Each
+  task in the two as-run task files has an empty `none_of` beside its `accept`. Fourth, `main()`
+  names a task file that is in this directory by its path here in `header.json`, the form
+  `summarize.py` reads (below). Of the files' top-level statements, `summarize()`, `run_one()`,
+  `run_pair()` and `main()` are the ones whose `ast.dump` differs, and `run_pilot.py` adds two
+  imports (`threading` and `collections.abc.Callable`), the `TASK_ID` pattern and
+  `task_problems()`. With `missing_spend` at 0 and every leg run in all four runs, both give the
+  same totals and rule: the test loads each as-run copy, checks its sha256 against the run's
+  `runner_sha256`, and recomputes the run's `summary.json` with it.
 - In each `header.json`, `tasks_file` was the absolute path the runner as run wrote
   (`Path(args.tasks).resolve()`, line 141 of `runs/run_pilot.as-run.py.txt` and line 147 of r5's
   copy). It was replaced by `tasks.yaml` before the first commit and now names the copy of the
@@ -305,10 +315,13 @@ check no run has used. A run is 48 `li agent` legs, two per task. `--only t01,t0
 the task set. A run that does not cover every leg of the whole task set, because of `--only`, an
 interrupt, or a task that stopped on an error in the runner itself, still writes `summary.json`
 and `table.md` from the rows it has: `summary.json` says why under `partial`, the D4 rule is `null`
-with the same reason in `d4_rule_unset`, and `table.md` lists each task with a row, marking a leg
-that did not run as `not run`. On an interrupt (Ctrl-C) no further leg starts and the runner waits
-for the legs already running; a second interrupt stops that wait. The runner exits 130 after an
-interrupt and 1 after a task stopped on an error.
+with the same reason in `d4_rule_unset`, and `table.md` has a line for every task the run covers,
+marking a leg that did not run as `not run`. On an interrupt (Ctrl-C) no further leg starts and
+the runner waits for the legs already running. A second interrupt stops that wait: the summary and
+table are written from the rows so far, `partial` says that rows of legs still running may follow
+in `results.jsonl`, and the process exits once those legs end. The runner exits 2, with no run
+directory, when a check before the run fails (above); 130 after an interrupt; and 1 when a task
+stopped, or a leg raised, on an error in the runner itself.
 
 A whole run's `summary.json` holds the runner's own summary (`d4_rule`, by the checks); once each
 answer has been read and the reading written to `runs/<name>/reading.jsonl`,
