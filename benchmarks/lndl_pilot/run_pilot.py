@@ -30,6 +30,8 @@ LI = HERE / "venv" / "bin" / "li"
 SCRATCH_HOME = HERE / "home"
 SPEND = re.compile(r"\[api\] spend: (\d+) request\(s\), (\d+) tool call\(s\), ([0-9.]+)s")
 RUN_TIMEOUT_S = 420
+# A task id names the leg's files in the run directory, so it may not reach outside it.
+TASK_ID = re.compile(r"[A-Za-z0-9_-]+")
 
 
 def _matches(text: str, item: str) -> bool:
@@ -66,7 +68,13 @@ def run_one(task: dict, loop: str, out: Path) -> dict:
     started = time.monotonic()
     try:
         proc = subprocess.run(  # noqa: S603 - argv built here from fixed paths
-            argv, cwd=TREE, env=env, capture_output=True, text=True, timeout=RUN_TIMEOUT_S
+            argv,
+            cwd=TREE,
+            env=env,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=RUN_TIMEOUT_S,
         )
         rc, stdout, stderr = proc.returncode, proc.stdout, proc.stderr
     except subprocess.TimeoutExpired as exc:
@@ -146,6 +154,47 @@ def run_pair(
         record(row)
 
 
+def task_problems(tasks: object) -> list[str]:
+    """What in the task set would fail, or pass an answer unchecked, once legs had run."""
+    if not isinstance(tasks, list) or not tasks:
+        return ["`tasks` is not a non-empty list"]
+    problems = []
+    seen = set()
+    for n, task in enumerate(tasks, 1):
+        tid = task.get("id") if isinstance(task, dict) else None
+        name = tid if isinstance(tid, str) else f"task {n}"
+        if not isinstance(task, dict):
+            problems.append(f"{name}: not a mapping")
+            continue
+        if not isinstance(tid, str) or not TASK_ID.fullmatch(tid):
+            problems.append(f"{name}: `id` is not letters, digits, `_` and `-`")
+        elif tid in seen:
+            problems.append(f"{name}: `id` repeats")
+        seen.add(tid)
+        for key in ("class", "prompt"):
+            if not isinstance(task.get(key), str) or not task[key]:
+                problems.append(f"{name}: `{key}` is not a non-empty string")
+        accept = task.get("accept")
+        if not isinstance(accept, dict) or set(accept) - {"all_of", "none_of"}:
+            problems.append(f"{name}: `accept` is not a mapping of `all_of` and `none_of`")
+            continue
+        items = {key: accept.get(key, []) for key in ("all_of", "none_of")}
+        for key, value in items.items():
+            if not isinstance(value, list) or not all(isinstance(i, str) and i for i in value):
+                problems.append(f"{name}: `accept.{key}` is not a list of non-empty strings")
+                continue
+            for item in value:
+                if item.startswith("re:"):
+                    try:
+                        re.compile(item[3:])
+                    except re.error as exc:
+                        problems.append(f"{name}: `{item}` does not compile: {exc}")
+        if items["all_of"] == []:
+            # With nothing required, an empty answer would be accepted.
+            problems.append(f"{name}: `accept.all_of` is empty")
+    return problems
+
+
 def summarize(rows: list[dict], loops: list[str], partial: str = "") -> dict:
     """Totals per loop and the D4 rule. `partial` names why the rows are not the whole run."""
     summary = {}
@@ -208,21 +257,34 @@ def main() -> int:
     tasks_path = Path(args.tasks).resolve()
     tasks_bytes = tasks_path.read_bytes()
     tasks = yaml.safe_load(tasks_bytes)["tasks"]
-    # A check whose regular expression does not compile would fail after its legs had run.
-    for task in tasks:
-        for item in [*task["accept"].get("all_of", []), *task["accept"].get("none_of", [])]:
-            if item.startswith("re:"):
-                re.compile(item[3:])
-    task_set = len(tasks)
+    task_set = len(tasks) if isinstance(tasks, list) else 0
+    loops = args.loops.split(",")
+    # Each of these would otherwise surface only once legs had run, or after the run directory
+    # had been made.
+    problems = task_problems(tasks)
+    if not os.access(LI, os.X_OK):
+        problems.append(f"{LI} is not executable")
+    if args.concurrency < 1:
+        problems.append(f"--concurrency {args.concurrency} is below 1")
+    for loop in loops:
+        if not (HERE / ".lionagi" / "agents" / f"d4-{loop}.md").is_file():
+            problems.append(f"--loops: no profile d4-{loop}.md")
+    if args.only:
+        wanted = args.only.split(",")
+        known = {t.get("id") for t in tasks if isinstance(t, dict)} if task_set else set()
+        problems += [f"--only: no task {tid!r}" for tid in wanted if tid not in known]
+    if problems:
+        for problem in problems:
+            print(problem, file=sys.stderr)
+        print("nothing run", file=sys.stderr)
+        return 2
+    if args.only:
+        tasks = [t for t in tasks if t["id"] in wanted]
     # Absolute: each child runs with cwd set to the read tree, so a relative path would
-    # resolve there and the prompt file would not be found. Made once the task file has been
-    # read, so a task file that cannot be read leaves no run directory behind.
+    # resolve there and the prompt file would not be found. Made once everything above has been
+    # checked, so a refused run leaves no run directory behind.
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=False)
-    if args.only:
-        wanted = set(args.only.split(","))
-        tasks = [t for t in tasks if t["id"] in wanted]
-    loops = args.loops.split(",")
     header = {
         "tasks_file": str(tasks_path),
         "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -258,11 +320,13 @@ def main() -> int:
     lock = threading.Lock()
 
     def record(row: dict) -> None:
-        # Written as each leg ends, so a stopped run keeps the rows of the legs that finished.
+        # Written as each leg ends, so a stopped run keeps the rows of the legs that finished. The
+        # summary and table count a row only once it is in results.jsonl; a row that cannot be
+        # written stops its task on a harness error.
         with lock:
-            recorded.append(row)
             with (out / "results.jsonl").open("a") as fh:
                 fh.write(json.dumps(row) + "\n")
+            recorded.append(row)
             print(json.dumps(row), flush=True)
 
     stop = threading.Event()
@@ -307,7 +371,9 @@ def main() -> int:
         "| id | class | " + " | ".join(f"{l} req / tools / wall / ok" for l in loops) + " |",  # noqa: E741
         "|---|---|" + "---|" * len(loops),
     ]
-    for tid in sorted({r["id"] for r in rows}):
+    # Every task the run covers has a line, so a leg that never started reads `not run`.
+    for task in sorted(tasks, key=lambda t: t["id"]):
+        tid = task["id"]
         cells = []
         for loop in loops:
             r = next((x for x in rows if x["id"] == tid and x["loop"] == loop), None)
@@ -317,8 +383,7 @@ def main() -> int:
             cells.append(
                 f"{r['requests']} / {r['tool_calls']} / {r['wall_seconds']} / {'yes' if r['accepted'] else 'no'}"
             )
-        cls = next(x for x in rows if x["id"] == tid)["class"]
-        lines.append(f"| {tid} | {cls} | " + " | ".join(cells) + " |")
+        lines.append(f"| {tid} | {task['class']} | " + " | ".join(cells) + " |")
     (out / "table.md").write_text("\n".join(lines) + "\n")
     print(json.dumps(summary, indent=2))
     if stopped:

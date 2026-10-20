@@ -61,7 +61,9 @@ it changes from `4d373f9c` is `lionagi/operations/lndl_middle/lndl_middle.py`.
 | r4 | react | 23 / 24 | 24 / 24 | 91 | 3.79 | 59 | 290.7 s |
 | r4 | lndl | 22 / 24 | 23 / 24 | 80 | 3.48 | 47 | 236.4 s |
 
-Requests per accepted task divides a run's requests by the tasks accepted on reading.
+Requests per accepted task divides a run's requests by the tasks accepted on reading. Wall time is
+the sum of the legs' own `wall_seconds`; each run had up to four legs going at once
+(`--concurrency 4`), so it is not the time the run took.
 
 Each task's check (`accept` in `tasks.yaml`) is a first pass on its answer. Every answer in
 r2, r3 and r4, accepted by its check or not, was then read against the `truth` line `tasks.yaml`
@@ -144,14 +146,20 @@ and r4, and `spend_lines` is at least 1 in all 144 rows. Each leg's spend lines 
   the rows are not the whole run, where the as-run copy computed it. Second, a run that stops early
   keeps what it has (`run_one()`, `run_pair()`, `main()`): a leg that raises in the runner, in its
   `subprocess.run` or after it (writing its output, or running its check), becomes a row with `rc`
-  `harness-error` and no spend line; a leg that times out keeps its output so far, with any bytes
-  that do not decode replaced; each row is appended to `results.jsonl` as its leg ends; and an
+  `harness-error` and no spend line; a leg that times out keeps its output so far, and bytes that do
+  not decode are replaced in any leg's output; each row is appended to `results.jsonl` as its leg
+  ends, and the summary and table count it only once it is written there (a row that cannot be
+  written stops its task on a harness error); and an
   interrupt starts no further leg and still writes the summary and table (below). Third, `main()`
-  makes the run directory only after it has checked that the read tree and `li` exist, read the
-  task file and compiled each check's regular expression, so none of those failing leaves a run
-  directory behind. Of the two files' top-level statements,
+  makes the run directory only after it has checked that the read tree exists and `li` exists and
+  is executable, read the task file, checked each task (`task_problems()`: an `id` of letters,
+  digits, `_` and `-` that does not repeat, a non-empty `class` and `prompt`, checks that are
+  lists of non-empty strings with a non-empty `all_of`, each regular expression compiling) and
+  checked `--concurrency`, `--loops` and `--only`, so none of those failing leaves a run directory
+  behind; a failed check exits 2. Of the two files' top-level statements,
   `summarize()`, `run_one()`, `run_pair()` and `main()` are the ones whose `ast.dump` differs, and
-  `run_pilot.py` adds two imports (`threading` and `collections.abc.Callable`). With `missing_spend` at 0 and every leg run in all three runs, both
+  `run_pilot.py` adds two imports (`threading` and `collections.abc.Callable`), the `TASK_ID`
+  pattern and `task_problems()`. With `missing_spend` at 0 and every leg run in all three runs, both
   write the same `summary.json`; `tests/benchmarks/test_lndl_pilot.py` recomputes each committed
   summary from its run's `results.jsonl`.
 - In each `header.json`, `tasks_file` was an absolute path on the machine that ran it and now
@@ -185,8 +193,8 @@ A run is 48 `li agent` legs, two per task. `--only t01,t02` runs part of the tas
 does not cover every leg of the whole task set, because of `--only`, an interrupt, or a task that
 stopped on an error in the runner itself, still writes `summary.json` and `table.md` from the rows
 it has: `summary.json` says why under `partial`, the D4 rule is `null` with the same reason in
-`d4_rule_unset`, and `table.md` lists each task with a row, marking a leg that did not run as
-`not run`. On an interrupt (Ctrl-C)
+`d4_rule_unset`, and `table.md` has a line for every task the run covers, marking a leg that did not
+run as `not run`. On an interrupt (Ctrl-C)
 no further leg starts and the runner waits for the legs already running. A second interrupt stops
 that wait: the summary and table are written from the rows so far, `partial` says that rows of
 legs still running may follow in `results.jsonl`, and the process exits once those legs end. The

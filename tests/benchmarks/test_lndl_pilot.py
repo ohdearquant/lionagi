@@ -161,7 +161,7 @@ def _run_main(monkeypatch, tmp_path, legs, ids, *flags, accept=None):
             "id": tid,
             "class": "lookup",
             "prompt": f"question {tid}",
-            "accept": accept or {"all_of": ["42"]},
+            "accept": {"all_of": ["42"]} if accept is None else accept,
         }
         for tid in ids
     ]
@@ -169,7 +169,7 @@ def _run_main(monkeypatch, tmp_path, legs, ids, *flags, accept=None):
     tasks_file.write_text(json.dumps({"tasks": tasks}))
     out = tmp_path / "run"
     # The read tree and `li` are made on the machine that runs the pilot, not committed.
-    (tmp_path / "li").touch()
+    (tmp_path / "li").touch(mode=0o755)
     monkeypatch.setattr(runner, "TREE", tmp_path)
     monkeypatch.setattr(runner, "LI", tmp_path / "li")
     monkeypatch.setattr(runner.subprocess, "run", legs)
@@ -256,24 +256,150 @@ def test_a_leg_whose_check_raises_after_it_ran_is_its_own_row(monkeypatch, tmp_p
 @pytest.mark.parametrize(
     ("accept", "refused"),
     [
-        ({"all_of": ["re:("]}, True),
-        ({"all_of": ["42"], "none_of": ["re:4["]}, True),
-        ({"all_of": ["re:4(2)"]}, False),
+        ({"all_of": ["re:("]}, "`re:(` does not compile"),
+        ({"all_of": ["42"], "none_of": ["re:4["]}, "`re:4[` does not compile"),
+        # Each of these would accept an answer its check never looked at.
+        ({}, "`accept.all_of` is empty"),
+        ({"all_of": []}, "`accept.all_of` is empty"),
+        ({"all_of": [""]}, "`accept.all_of` is not a list of non-empty strings"),
+        ({"all_of": "42"}, "`accept.all_of` is not a list of non-empty strings"),
+        (
+            {"all_of": ["42"], "none_of": "24"},
+            "`accept.none_of` is not a list of non-empty strings",
+        ),
+        (
+            {"all_of": ["42"], "any_of": ["24"]},
+            "`accept` is not a mapping of `all_of` and `none_of`",
+        ),
+        ({"all_of": ["re:4(2)"]}, None),
     ],
 )
-def test_a_check_whose_pattern_does_not_compile_is_refused_before_anything_runs(
-    monkeypatch, tmp_path, accept, refused
+def test_a_check_that_would_fail_or_pass_unchecked_is_refused_before_anything_runs(
+    monkeypatch, tmp_path, capsys, accept, refused
 ):
     legs = _Legs()
-    if refused:
-        with pytest.raises(re.error):
-            _run_main(monkeypatch, tmp_path, legs, ["t01"], accept=accept)
-        assert legs.legs == []
-        assert not (tmp_path / "run").exists()
-        return
     rc, out = _run_main(monkeypatch, tmp_path, legs, ["t01"], accept=accept)
+    if refused:
+        assert rc == 2
+        assert legs.legs == []
+        assert not out.exists()
+        assert f"t01: {refused}" in capsys.readouterr().err
+        return
     assert rc == 0
     assert [r["accepted"] for r in _jsonl(out / "results.jsonl")] == [True, True]
+
+
+@pytest.mark.parametrize(
+    ("edit", "refused"),
+    [
+        (lambda tasks: tasks[0].pop("class"), "t01: `class` is not a non-empty string"),
+        (lambda tasks: tasks[0].update(prompt=""), "t01: `prompt` is not a non-empty string"),
+        (
+            lambda tasks: tasks[0].update(id="../t01"),
+            "../t01: `id` is not letters, digits, `_` and `-`",
+        ),
+        (lambda tasks: tasks[1].update(id="t01"), "t01: `id` repeats"),
+        (lambda tasks: tasks.__setitem__(1, "t02"), "task 2: not a mapping"),
+    ],
+)
+def test_a_malformed_task_is_refused_before_anything_runs(
+    monkeypatch, tmp_path, capsys, edit, refused
+):
+    real_load = runner.yaml.safe_load
+
+    def safe_load(data):
+        loaded = real_load(data)
+        edit(loaded["tasks"])
+        return loaded
+
+    monkeypatch.setattr(runner.yaml, "safe_load", safe_load)
+    legs = _Legs()
+    rc, out = _run_main(monkeypatch, tmp_path, legs, ["t01", "t02"])
+
+    assert rc == 2
+    assert legs.legs == []
+    assert not out.exists()
+    assert refused in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("flags", "refused"),
+    [
+        (["--loops", "react,foo"], "--loops: no profile d4-foo.md"),
+        (["--concurrency", "0"], "--concurrency 0 is below 1"),
+        (["--only", "t01,t99"], "--only: no task 't99'"),
+        (["--only", "t01,"], "--only: no task ''"),
+        ([], "is not executable"),
+    ],
+)
+def test_an_unusable_argument_is_refused_before_anything_runs(
+    monkeypatch, tmp_path, capsys, flags, refused
+):
+    real_main = runner.main
+
+    def main():
+        if not flags:
+            runner.LI.chmod(0o644)
+        return real_main()
+
+    monkeypatch.setattr(runner, "main", main)
+    legs = _Legs()
+    rc, out = _run_main(monkeypatch, tmp_path, legs, ["t01", "t02"], *flags)
+
+    assert rc == 2
+    assert legs.legs == []
+    assert not out.exists()
+    assert refused in capsys.readouterr().err
+
+
+def test_a_leg_whose_output_does_not_decode_keeps_its_row(monkeypatch, tmp_path):
+    real_run = subprocess.run
+    script = tmp_path / "leg.sh"
+    # Exits 0 with a byte that is not UTF-8 in its answer.
+    script.write_text(
+        "#!/bin/sh\n"
+        "printf 'the answer is 42 \\377\\n'\n"
+        "printf '[api] spend: 2 request(s), 1 tool call(s), 1.5s\\n' >&2\n"
+    )
+    script.chmod(0o755)
+    legs = _Legs()
+
+    def run(argv, **kwargs):
+        # The header's probes are stubbed; each leg runs for real, as the script in place of
+        # `li`, with the arguments the runner passes.
+        if argv[1:2] != ["agent"]:
+            return legs(argv, **kwargs)
+        legs.legs.append(argv)
+        return real_run([str(script)], **kwargs)  # noqa: S603
+
+    rc, out = _run_main(monkeypatch, tmp_path, run, ["t01"])
+
+    assert rc == 0
+    assert len(legs.legs) == 2
+    rows = _jsonl(out / "results.jsonl")
+    assert [(r["rc"], r["accepted"], r["spend_lines"]) for r in rows] == [(0, True, 1)] * 2
+    assert (out / "t01-react.stdout.txt").read_text() == "the answer is 42 \ufffd\n"
+
+
+def test_a_row_that_cannot_be_written_is_not_counted(monkeypatch, tmp_path):
+    def leg(argv):
+        # results.jsonl cannot be opened for appending once a directory holds its name.
+        (tmp_path / "run" / "results.jsonl").mkdir(exist_ok=True)
+
+    legs = _Legs(leg)
+    rc, out = _run_main(monkeypatch, tmp_path, legs, ["t01", "t02"], "--concurrency", "1")
+
+    assert rc == 1
+    # Each pair stops after its first leg, whose row could not be written.
+    assert len(legs.legs) == 2
+    summary = json.loads((out / "summary.json").read_text())
+    assert [summary[loop]["runs"] for loop in LOOPS] == [0, 0]
+    assert summary["partial"] == "2 task(s) stopped on a harness error"
+    table = (out / "table.md").read_text().splitlines()[2:]
+    assert table == [
+        "| t01 | lookup | not run | not run |",
+        "| t02 | lookup | not run | not run |",
+    ]
 
 
 @pytest.mark.parametrize("missing", ["TREE", "LI"])
@@ -355,7 +481,12 @@ def test_an_interrupt_starts_no_further_leg_and_writes_a_partial_summary(monkeyp
     summary = json.loads((out / "summary.json").read_text())
     assert summary["partial"] == "interrupted after 1 of 6 legs"
     assert summary["d4_rule"] is None
-    assert "| t01 | lookup | 2 / 1 / 1.5 / yes | not run |" in (out / "table.md").read_text()
+    # Every task the run covers has a line, the ones never started included.
+    assert (out / "table.md").read_text().splitlines()[2:] == [
+        "| t01 | lookup | 2 / 1 / 1.5 / yes | not run |",
+        "| t02 | lookup | not run | not run |",
+        "| t03 | lookup | not run | not run |",
+    ]
 
 
 def test_a_second_interrupt_writes_the_summary_and_a_running_legs_row_follows(
@@ -375,9 +506,9 @@ def test_a_second_interrupt_writes_the_summary_and_a_running_legs_row_follows(
     monkeypatch.setattr(runner.cf, "wait", wait)
     before = set(threading.enumerate())
     legs = _Legs(leg)
-    rc, out = _run_main(monkeypatch, tmp_path, legs, ["t01", "t02"], "--concurrency", "1")
 
     try:
+        rc, out = _run_main(monkeypatch, tmp_path, legs, ["t01", "t02"], "--concurrency", "1")
         assert rc == 130
         summary = json.loads((out / "summary.json").read_text())
         assert summary["partial"] == (
