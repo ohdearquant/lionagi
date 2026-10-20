@@ -258,6 +258,9 @@ def test_a_leg_whose_check_raises_after_it_ran_is_its_own_row(monkeypatch, tmp_p
     [
         ({"all_of": ["re:("]}, "`re:(` does not compile"),
         ({"all_of": ["42"], "none_of": ["re:4["]}, "`re:4[` does not compile"),
+        # These two raise OverflowError and RecursionError rather than re.error.
+        ({"all_of": ["re:4{4294967296}"]}, "`re:4{4294967296}` does not compile"),
+        ({"all_of": ["re:" + "(" * 3000 + "4" + ")" * 3000]}, "does not compile"),
         # Each of these would accept an answer its check never looked at.
         ({}, "`accept.all_of` is empty"),
         ({"all_of": []}, "`accept.all_of` is empty"),
@@ -283,7 +286,9 @@ def test_a_check_that_would_fail_or_pass_unchecked_is_refused_before_anything_ru
         assert rc == 2
         assert legs.legs == []
         assert not out.exists()
-        assert f"t01: {refused}" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert err.startswith("t01: ")
+        assert refused in err
         return
     assert rc == 0
     assert [r["accepted"] for r in _jsonl(out / "results.jsonl")] == [True, True]
@@ -299,6 +304,13 @@ def test_a_check_that_would_fail_or_pass_unchecked_is_refused_before_anything_ru
             "../t01: `id` is not letters, digits, `_` and `-`",
         ),
         (lambda tasks: tasks[1].update(id="t01"), "t01: `id` repeats"),
+        # Each leg's files are named after its id; on a volume that ignores letter case these
+        # two would write the same files.
+        (lambda tasks: tasks[1].update(id="T01"), "T01: `id` repeats, ignoring letter case"),
+        (
+            lambda tasks: tasks[0].update(id=["t01"]),
+            "task 1: `id` is not letters, digits, `_` and `-`",
+        ),
         (lambda tasks: tasks.__setitem__(1, "t02"), "task 2: not a mapping"),
     ],
 )
@@ -329,6 +341,8 @@ def test_a_malformed_task_is_refused_before_anything_runs(
         (["--concurrency", "0"], "--concurrency 0 is below 1"),
         (["--only", "t01,t99"], "--only: no task 't99'"),
         (["--only", "t01,"], "--only: no task ''"),
+        (["--loops", "react,react"], "--loops: 'react,react' names a loop twice"),
+        (["--loops", "react,REACT"], "--loops: 'react,REACT' names a loop twice"),
         ([], "is not executable"),
     ],
 )
@@ -420,6 +434,56 @@ def test_a_missing_read_tree_or_li_is_refused_before_anything_runs(
     assert legs.legs == []
     assert not out.exists()
     assert f"{tmp_path / 'absent'} not found; nothing run" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("case", ["out-exists", "li-is-a-directory"])
+def test_an_existing_out_or_an_li_that_is_not_a_file_is_refused_before_anything_runs(
+    monkeypatch, tmp_path, capsys, case
+):
+    real_main = runner.main
+
+    def main():
+        if case == "out-exists":
+            (tmp_path / "run").mkdir()
+        else:
+            runner.LI.unlink()
+            runner.LI.mkdir()
+        return real_main()
+
+    monkeypatch.setattr(runner, "main", main)
+    legs = _Legs()
+    rc, out = _run_main(monkeypatch, tmp_path, legs, ["t01"])
+
+    assert rc == 2
+    assert legs.legs == []
+    err = capsys.readouterr().err
+    if case == "out-exists":
+        assert f"--out: {out} already exists" in err
+        assert list(out.iterdir()) == []
+    else:
+        assert f"{runner.LI} is not executable" in err
+        assert not out.exists()
+
+
+def test_an_li_that_cannot_start_leaves_no_run_directory(monkeypatch, tmp_path):
+    legs = _Legs()
+
+    def run(argv, **kwargs):
+        if argv[1:] == ["--version"]:
+            raise FileNotFoundError(2, "No such file or directory", argv[0])
+        return legs(argv, **kwargs)
+
+    real_main = runner.main
+
+    def main():
+        monkeypatch.setattr(runner.subprocess, "run", run)
+        return real_main()
+
+    monkeypatch.setattr(runner, "main", main)
+    with pytest.raises(FileNotFoundError):
+        _run_main(monkeypatch, tmp_path, legs, ["t01"])
+    assert legs.legs == []
+    assert not (tmp_path / "run").exists()
 
 
 def test_a_task_file_that_cannot_be_read_leaves_no_run_directory(monkeypatch, tmp_path):

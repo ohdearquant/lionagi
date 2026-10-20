@@ -168,9 +168,12 @@ def task_problems(tasks: object) -> list[str]:
             continue
         if not isinstance(tid, str) or not TASK_ID.fullmatch(tid):
             problems.append(f"{name}: `id` is not letters, digits, `_` and `-`")
-        elif tid in seen:
-            problems.append(f"{name}: `id` repeats")
-        seen.add(tid)
+        elif tid.lower() in seen:
+            # Each leg's files are named after its id, so on a volume that ignores letter case
+            # two ids that differ only in case would write the same files.
+            problems.append(f"{name}: `id` repeats, ignoring letter case")
+        else:
+            seen.add(tid.lower())
         for key in ("class", "prompt"):
             if not isinstance(task.get(key), str) or not task[key]:
                 problems.append(f"{name}: `{key}` is not a non-empty string")
@@ -187,7 +190,9 @@ def task_problems(tasks: object) -> list[str]:
                 if item.startswith("re:"):
                     try:
                         re.compile(item[3:])
-                    except re.error as exc:
+                    # A repeat count past the engine's limit raises OverflowError, and deep
+                    # nesting RecursionError, rather than re.error.
+                    except (re.error, OverflowError, RecursionError) as exc:
                         problems.append(f"{name}: `{item}` does not compile: {exc}")
         if items["all_of"] == []:
             # With nothing required, an empty answer would be accepted.
@@ -262,13 +267,18 @@ def main() -> int:
     # Each of these would otherwise surface only once legs had run, or after the run directory
     # had been made.
     problems = task_problems(tasks)
-    if not os.access(LI, os.X_OK):
+    if not LI.is_file() or not os.access(LI, os.X_OK):
         problems.append(f"{LI} is not executable")
     if args.concurrency < 1:
         problems.append(f"--concurrency {args.concurrency} is below 1")
     for loop in loops:
         if not (HERE / ".lionagi" / "agents" / f"d4-{loop}.md").is_file():
             problems.append(f"--loops: no profile d4-{loop}.md")
+    if len({loop.lower() for loop in loops}) < len(loops):
+        # A loop named twice would run each task's leg twice into the same files.
+        problems.append(f"--loops: {args.loops!r} names a loop twice, ignoring letter case")
+    if Path(args.out).exists():
+        problems.append(f"--out: {args.out} already exists")
     if args.only:
         wanted = args.only.split(",")
         known = {t.get("id") for t in tasks if isinstance(t, dict)} if task_set else set()
@@ -281,10 +291,8 @@ def main() -> int:
     if args.only:
         tasks = [t for t in tasks if t["id"] in wanted]
     # Absolute: each child runs with cwd set to the read tree, so a relative path would
-    # resolve there and the prompt file would not be found. Made once everything above has been
-    # checked, so a refused run leaves no run directory behind.
+    # resolve there and the prompt file would not be found.
     out = Path(args.out).resolve()
-    out.mkdir(parents=True, exist_ok=False)
     header = {
         "tasks_file": str(tasks_path),
         "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -315,6 +323,9 @@ def main() -> int:
         "concurrency": args.concurrency,
         "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+    # Made once everything above has been checked and `git` and `li` have answered for the
+    # header, so a refused run, or an `li` that cannot start, leaves no run directory behind.
+    out.mkdir(parents=True, exist_ok=False)
     (out / "header.json").write_text(json.dumps(header, indent=2))
     recorded: list[dict] = []
     lock = threading.Lock()

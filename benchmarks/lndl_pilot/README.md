@@ -151,12 +151,15 @@ and r4, and `spend_lines` is at least 1 in all 144 rows. Each leg's spend lines 
   ends, and the summary and table count it only once it is written there (a row that cannot be
   written stops its task on a harness error); and an
   interrupt starts no further leg and still writes the summary and table (below). Third, `main()`
-  makes the run directory only after it has checked that the read tree exists and `li` exists and
-  is executable, read the task file, checked each task (`task_problems()`: an `id` of letters,
-  digits, `_` and `-` that does not repeat, a non-empty `class` and `prompt`, checks that are
-  lists of non-empty strings with a non-empty `all_of`, each regular expression compiling) and
-  checked `--concurrency`, `--loops` and `--only`, so none of those failing leaves a run directory
-  behind; a failed check exits 2. Of the two files' top-level statements,
+  makes the run directory only after it has checked that the read tree exists and `li` is an
+  executable file, read the task file, checked each task (`task_problems()`: an `id` of letters,
+  digits, `_` and `-` that no other task shares, letter case aside, since each leg's files are
+  named after it; a non-empty `class` and `prompt`; checks that are lists of non-empty strings
+  with a non-empty `all_of`; each regular expression compiling), checked `--concurrency`,
+  `--loops` (no loop named twice), `--only` and that `--out` does not exist yet, and started `git`
+  and `li --version` for the header, so none of those checks failing, and neither program failing
+  to start, leaves a run directory behind; a failed check exits 2. Of the two files' top-level
+  statements,
   `summarize()`, `run_one()`, `run_pair()` and `main()` are the ones whose `ast.dump` differs, and
   `run_pilot.py` adds two imports (`threading` and `collections.abc.Callable`), the `TASK_ID`
   pattern and `task_problems()`. With `missing_spend` at 0 and every leg run in all three runs, both
