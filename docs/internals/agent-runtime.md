@@ -78,7 +78,11 @@ and one implementation.
   an allowlist that keeps a server codex's config declares) the factory refuses
   it, since the by-name disables below take their server list from `config.toml`
   (or from `codex mcp list --json` when that file cannot be read) and a server only
-  the profile declares would load. Those disables do not reach a server only
+  the profile declares would load. Without the flag the factory refuses a root
+  `profile` key in that `config.toml` the same way, since codex before 0.135
+  makes it the active profile when no `-p` is given; a key in a `config.toml`
+  its TOML parser cannot read is not seen, and that file's server list comes
+  from the fallback. Those disables do not reach a server only
   a project layer (`.codex/config.toml`) declares either, and only a run under the
   flag has its project layers checked, so a run that keeps the user config is
   exclusive only over the servers `config.toml` declares. A non-empty

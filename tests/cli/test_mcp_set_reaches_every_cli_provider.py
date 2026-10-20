@@ -258,6 +258,95 @@ def test_a_string_flag_is_read_as_the_codex_request_reads_it(codex_home):
         CodexCodeRequest(prompt="hi", **refused)
 
 
+@pytest.mark.parametrize("value", ["", "maybe", [], {}], ids=["empty", "maybe", "list", "dict"])
+def test_a_flag_value_the_request_refuses_is_not_replaced_on_an_empty_set(codex_home, value):
+    """A falsy value the request's field refuses is not the flag's absence: the empty set
+    leaves it for the request to refuse rather than replacing it with the flag."""
+    from pydantic import ValidationError
+
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    codex_home.write_config({"kept": {"command": "kept-mcp"}})
+    kwargs: dict = {"ignore_user_config": value}
+
+    assert apply_forwarded_mcp_servers(kwargs, {}, provider="codex", exclusive=True)
+
+    assert kwargs["ignore_user_config"] == value
+    with pytest.raises(ValidationError):
+        CodexCodeRequest(prompt="hi", **kwargs)
+
+
+def test_an_override_key_is_read_as_an_exact_string(codex_home):
+    """A `str` subclass key is read through `str.__str__`, as the codex request reads it, so
+    an override of its own `strip` cannot hide the `profile` key."""
+
+    class _Key(str):
+        def strip(self, chars=None):
+            return "x"
+
+    codex_home.write_config({"kept": {"command": "kept-mcp"}})
+    kwargs: dict = {"config_overrides": {_Key("profile"): "work"}}
+
+    with pytest.raises(ConfigurationError, match="profile='work'"):
+        apply_forwarded_mcp_servers(kwargs, SERVERS, provider="codex", exclusive=True)
+
+
+_ROOT_PROFILE_CONFIG = """\
+profile = "work"
+
+[mcp_servers.kept]
+command = "kept-mcp"
+
+[profiles.work.mcp_servers.leak]
+command = "leak-mcp"
+"""
+
+
+@pytest.mark.parametrize(
+    ("servers", "allowed_names"),
+    [({}, ["kept"]), (SERVERS, None)],
+    ids=["allowlist-keeps-a-declared-server", "non-empty-set"],
+)
+def test_an_exclusive_set_that_loads_the_user_config_refuses_its_root_profile_key(
+    codex_home, servers, allowed_names
+):
+    """With no `-p`, codex before 0.135 makes a root `profile` key the active profile, and
+    a server that profile declares is out of reach of the by-name disables."""
+    (codex_home.path / "config.toml").write_text(_ROOT_PROFILE_CONFIG)
+    kwargs: dict = {}
+
+    with pytest.raises(ConfigurationError, match="profile='work'") as refused:
+        apply_forwarded_mcp_servers(
+            kwargs, servers, provider="codex", exclusive=True, allowed_names=allowed_names
+        )
+
+    assert "Remove the root `profile` key from" in str(refused.value)
+    # the controls: the same set when the key is gone, and the key under a set that is an addition
+    codex_home.write_config({"kept": {"command": "kept-mcp"}})
+    plain: dict = {}
+    assert apply_forwarded_mcp_servers(
+        plain, servers, provider="codex", exclusive=True, allowed_names=allowed_names
+    )
+    (codex_home.path / "config.toml").write_text(_ROOT_PROFILE_CONFIG)
+    addition: dict = {}
+    assert apply_forwarded_mcp_servers(addition, SERVERS, provider="codex")
+
+
+def test_the_root_profile_key_is_read_from_the_config_the_childs_environment_names(
+    codex_home, tmp_path
+):
+    """A request's env replaces the child's environment, so the config the child reads is
+    under the `CODEX_HOME` that env names, not this process's."""
+    codex_home.write_config({"kept": {"command": "kept-mcp"}})
+    child_home = tmp_path / "child-codex-home"
+    child_home.mkdir()
+    (child_home / "config.toml").write_text(_ROOT_PROFILE_CONFIG)
+    kwargs: dict = {"env": {"CODEX_HOME": str(child_home), "PATH": "/usr/bin:/bin"}}
+
+    with pytest.raises(ConfigurationError, match=re.escape(str(child_home / "config.toml"))):
+        apply_forwarded_mcp_servers(kwargs, SERVERS, provider="codex", exclusive=True)
+
+
 def test_an_allowlist_naming_no_server_codex_declares_is_the_empty_set(codex_home):
     """With nothing described and no allowed name in codex's config there is no
     server left to serve, so the run loads no user config, as the empty set does,

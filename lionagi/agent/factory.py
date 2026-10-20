@@ -867,14 +867,16 @@ def apply_forwarded_mcp_servers(
 
     # Discovered once: the allowlist check below and the by-name disables share it.
     configured: set[str] | None = None
-    if exclusive and not servers and not kwargs.get("ignore_user_config"):
+    flag = kwargs.get("ignore_user_config")
+    if exclusive and not servers and (flag is None or flag is False):
         # The empty set is the hermetic codex run: the user config, and every server,
         # hook and profile it declares, is not loaded at all. Codex keeps its own
         # authentication store under the flag. An allowlist naming a server codex's
         # own config declares keeps that server, served from that config, so it is
         # not this case; an allowlist naming none of them leaves nothing to serve.
         # A profile the caller named is user config too, so under the flag the codex
-        # provider refuses that request.
+        # provider refuses that request. A flag value the request refuses is not
+        # replaced here: it is left for the request to refuse.
         if allowed_names:
             configured = _discover_ambient_codex_mcp_server_names()
         if not allowed_names or not configured & set(allowed_names):
@@ -882,14 +884,39 @@ def apply_forwarded_mcp_servers(
 
     # A generated profile was dropped above, so a profile still here is the caller's: on the
     # request, or selected by an override (`-c profile=...`), whose key codex trims and
-    # splits at every `.` before reading it.
+    # splits at every `.` before reading it. With neither, a root `profile` key in codex's
+    # config.toml selects one: codex before 0.135, given no `-p`, makes it the active
+    # profile (from 0.135 codex refuses the key itself).
     named_profile = kwargs.get("profile")
+    remedy = "Drop the profile"
     if named_profile is None and exclusive and not kwargs.get("ignore_user_config"):
+        from lionagi.providers._cli_subprocess import reveal_redacted
+        from lionagi.providers.openai._codex_profile import (
+            codex_home_for_env,
+            configured_codex_profile,
+        )
         from lionagi.providers.openai.codex import _TRIMMED
 
         for key, value in (kwargs.get("config_overrides") or {}).items():
-            if isinstance(key, str) and key.strip(_TRIMMED).split(".")[0] == "profile":
+            # Read through `str.__str__`, as the codex request reads an override key.
+            if isinstance(key, str) and str.__str__(key).strip(_TRIMMED).split(".")[0] == "profile":
                 named_profile = value
+        if named_profile is None:
+            # The config the child reads is the one its own environment names.
+            env = reveal_redacted(kwargs.get("env"))
+            env = env if isinstance(env, Mapping) else None
+            try:
+                named_profile = configured_codex_profile(env)
+            except ValueError:
+                # A file this parser cannot read is left to the discovery below, as before: its
+                # server list falls back to `codex mcp list --json`, and a root key in it is
+                # not seen here.
+                named_profile = None
+            if named_profile is not None:
+                remedy = (
+                    "Remove the root `profile` key from "
+                    f"{str(codex_home_for_env(env) / 'config.toml')!r}"
+                )
     if exclusive and named_profile is not None and not kwargs.get("ignore_user_config"):
         # Without the flag the set is made exclusive by disabling, by name, the servers
         # codex's config.toml declares, and a profile (its own file, or its table in
@@ -905,7 +932,7 @@ def apply_forwarded_mcp_servers(
         raise ConfigurationError(
             f"Cannot hand codex an exclusive MCP server set with {named}: outside the set, "
             "only the servers codex's config.toml declares are disabled by name, and a server "
-            "the profile declares would still load. Drop the profile, or hand the set as an "
+            f"the profile declares would still load. {remedy}, or hand the set as an "
             "addition rather than the whole set."
         )
 
