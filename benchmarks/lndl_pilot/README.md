@@ -124,17 +124,22 @@ at `6fa69b19`, and no check reads them: `t13`'s `system` is at
 `lionagi/protocols/messages/base.py:24`, and `t19`'s `.env` at `lionagi/libs/path_safety.py:12`.
 
 `run_pilot.py` takes each leg's requests from its spend line and counts a leg with none as zero
-requests. `summary.json` records how many legs that was (`missing_spend`). The D4 rule it computes
-does not read that number, but a leg counted as zero lowers its loop's requests, so the rule's
-inputs are complete only while it is 0. It is 0 in r2, r3 and r4, and `spend_lines` is at least 1
-in all 144 rows. Each leg's spend lines are in its run's `spend.jsonl`.
+requests. `summary.json` records how many legs that was (`missing_spend`). A leg counted as zero
+lowers its loop's requests, so the runner computes the D4 rule only while that number is 0 for both
+loops; otherwise it writes `d4_rule` as `null` and says why in `d4_rule_unset`. It is 0 in r2, r3
+and r4, and `spend_lines` is at least 1 in all 144 rows. Each leg's spend lines are in its run's
+`spend.jsonl`.
 
-## What was changed for this directory
+## How the committed files differ from the runs' output
 
 - `run_pilot.py` is `runs/run_pilot.as-run.py.txt` with `noqa` comments added, the `(r1)` at the
   end of one comment removed (the as-run copy keeps it; `r1` was an earlier run, not published, in
-  which the relative path that comment describes failed), and the layout reformatted by ruff. The two parse to the same syntax
-  tree: `ast.dump(ast.parse(...))` of each file gives identical output.
+  which the relative path that comment describes failed), the layout reformatted by ruff, and one
+  change to `summarize()`: the as-run copy computed the D4 rule even when a leg had no spend line,
+  and `run_pilot.py` leaves it unset (above). Of the two files' top-level statements, `summarize()`
+  is the only one whose `ast.dump` differs. With `missing_spend` at 0 in all three runs, both write
+  the same `summary.json`; `tests/benchmarks/test_lndl_pilot.py` recomputes each committed summary
+  from its run's `results.jsonl`.
 - In each `header.json`, `tasks_file` was an absolute path on the machine that ran it and now
   reads `tasks.yaml`. Nothing else in `runs/` was changed, apart from a final newline added to the
   JSON files; `answers.jsonl`, `spend.jsonl`, `rounds.jsonl` and `environment.json` were added.

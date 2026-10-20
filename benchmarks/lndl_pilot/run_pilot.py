@@ -117,6 +117,12 @@ def summarize(rows: list[dict], loops: list[str]) -> dict:
         }
     if set(loops) == {"react", "lndl"}:
         react, lndl = summary["react"], summary["lndl"]
+        missing = react["missing_spend"] + lndl["missing_spend"]
+        if missing:
+            # A leg with no spend line counts as zero requests, so the rule's inputs are incomplete.
+            summary["d4_rule"] = None
+            summary["d4_rule_unset"] = f"{missing} leg(s) have no spend line"
+            return summary
         summary["d4_rule"] = {
             "lndl_fewer_requests_per_accepted": (
                 lndl["requests_per_accepted"] is not None
