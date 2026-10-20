@@ -22,20 +22,23 @@ async def _seed_session(
     status: str | None,
     ended_at: float | None = None,
     started_at: float | None = None,
+    created_at: float | None = None,
 ) -> None:
+    session = {
+        "id": str(uuid.uuid4()),
+        "name": "test-session",
+        "status": status,
+        "started_at": started_at,
+        "ended_at": ended_at,
+    }
+    # Left out unless given: the store stamps a missing created_at with its own
+    # clock, and an explicit None would store no creation time at all.
+    if created_at is not None:
+        session["created_at"] = created_at
     async with StateDB(db_path) as db:
         pid = str(uuid.uuid4())
         await db.create_progression(pid)
-        await db.create_session(
-            {
-                "id": str(uuid.uuid4()),
-                "progression_id": pid,
-                "name": "test-session",
-                "status": status,
-                "started_at": started_at,
-                "ended_at": ended_at,
-            }
-        )
+        await db.create_session({**session, "progression_id": pid})
 
 
 @pytest.fixture
@@ -279,7 +282,13 @@ def test_end_time_anchors_the_bucket_when_both_timestamps_are_set(tmp_path, monk
     db_path = tmp_path / "state.db"
 
     async def seed():
-        await _seed_session(db_path, status="completed", started_at=now - 7200, ended_at=now)
+        await _seed_session(
+            db_path,
+            status="completed",
+            created_at=now - 5 * 3600,
+            started_at=now - 7200,
+            ended_at=now,
+        )
 
     import asyncio
 
@@ -288,8 +297,11 @@ def test_end_time_anchors_the_bucket_when_both_timestamps_are_set(tmp_path, monk
     client = _make_client(monkeypatch, db_path)
     data = client.get("/api/stats/activity?window=24h").json()
 
+    # Three timestamps in three different buckets, so a bucket anchored on the
+    # start or the creation time shows up as a count in the wrong one.
     assert data["buckets"][-1]["completed"] == 1
     assert data["buckets"][-3]["completed"] == 0
+    assert data["buckets"][-6]["completed"] == 0
 
 
 def test_route_buckets_from_the_clock_the_now_fixture_pins(tmp_path, monkeypatch):

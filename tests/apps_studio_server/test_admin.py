@@ -1066,18 +1066,19 @@ async def _max_loop_stall(coro, during: list[tuple[float, float]] | None = None)
     coroutine that is slow for legitimate reasons accumulates plenty of turns
     around its blocking section, so the count comes out healthy whether or not
     the blocking work was offloaded. An earlier version of this helper counted,
-    and one of the two endpoints below passed under a deliberately reintroduced
+    and one of the endpoints below passed under a deliberately reintroduced
     defect because of it.
 
-    The longest gap does not dilute with the coroutine's total length. It is
-    also the number another in-flight request actually experiences, which is
-    what the property is about.
+    Without *during*, the result is the longest gap anywhere in the run. It
+    does not dilute with the coroutine's total length, and it is the number
+    another in-flight request actually experiences.
 
     With *during*, a list of ``(start, end)`` intervals filled in while *coro*
-    runs, only the part of each gap that overlaps one of them counts. A walk
-    left on the loop leaves no turn anywhere inside its interval, so it still
-    measures the whole block; the coroutine's own work before and after the
-    walk (opening the store, writing the transition) is not what is measured.
+    runs, the result is the largest overlap of one gap with one interval, so
+    on-loop work outside every interval is not measured. A walk left on the
+    loop leaves no turn anywhere inside its interval, so it still measures the
+    whole block; the coroutine's own work before and after the walk (opening
+    the store, classifying the row, writing the transition) does not count.
     """
     ticks = [time.perf_counter()]
     task = asyncio.ensure_future(coro)
@@ -1118,7 +1119,7 @@ def test_a_lock_scan_does_not_block_the_loop_that_serves_every_other_request(
     first noticed in -- they offload at separate call sites, so a guard on
     one says nothing about the others. The instrument's own sensitivity is
     checked separately by
-    ``test_the_tick_counter_would_have_caught_a_walk_left_on_the_loop``.
+    ``test_the_stall_probe_would_have_caught_a_walk_left_on_the_loop``.
     """
     import lionagi.state.db as state_db_mod
     import lionagi.studio.services.admin as admin_svc
@@ -1184,21 +1185,31 @@ def test_a_lock_scan_does_not_block_the_loop_that_serves_every_other_request(
         f"the loop was held for {stall:.3f}s during a {_BLOCK_SECONDS}s walk: "
         "the scan is back on the event loop and other requests are queueing"
     )
+    # The stall above is measured only inside the recorded intervals, so an
+    # interval that does not cover the block would let an on-loop walk pass.
+    assert all(end - start >= _BLOCK_SECONDS - _TICK_SECONDS for start, end in walks), (
+        f"a recorded walk interval is shorter than the {_BLOCK_SECONDS}s block: {walks}"
+    )
 
 
-def test_the_stall_probe_would_have_caught_a_walk_left_on_the_loop():
+@pytest.mark.parametrize("windowed", [False, True], ids=["whole-run", "inside-the-walk"])
+def test_the_stall_probe_would_have_caught_a_walk_left_on_the_loop(windowed):
     """The measurement above can fail, on a subject that has the defect.
 
     A healthy subject looks the same under a working probe and a broken one, so
     the passing test says something about the loop only if the same instrument
     reports a stall on a coroutine that holds it. This is that subject: the
-    identical block, run inline.
+    identical block, run inline, measured over the whole run and, as the
+    endpoint test measures it, only inside the block's recorded interval.
     """
+    walks: list[tuple[float, float]] = []
 
     async def holds_the_loop():
+        start = time.perf_counter()
         time.sleep(_BLOCK_SECONDS)
+        walks.append((start, time.perf_counter()))
 
-    stall = _run(_max_loop_stall(holds_the_loop()))
+    stall = _run(_max_loop_stall(holds_the_loop(), during=walks if windowed else None))
     assert stall >= _STALL_TOLERANCE, (
         f"only {stall:.3f}s measured while the loop was deliberately held for "
         f"{_BLOCK_SECONDS}s: the probe is not measuring loop availability"
