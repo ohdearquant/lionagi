@@ -695,7 +695,10 @@ class _PlainRequest:
     workload: str
 
     def contains_account_integrations(self) -> bool:
-        return self.contain_account_integrations and not self.account_connectors
+        # A light request is contained whatever it set: its sandbox keeps the network out,
+        # and the account's apps and plugins reach past it.
+        contained = self.contain_account_integrations or self.workload == "light"
+        return contained and not self.account_connectors
 
     def updates(self) -> dict[str, Any]:
         """The snapshot's values for the fields the declarative renderer reads, for the
@@ -834,6 +837,8 @@ def _refuse_light_escape(plain: _PlainRequest) -> None:
         reasons.append("sandbox='danger-full-access' turns the sandbox off")
     if plain.add_dir:
         reasons.append("add_dir makes directories outside the working directory writable")
+    if plain.account_connectors:
+        reasons.append("account_connectors turns the account's apps and plugins on")
     if plain.profile is not None and not is_generated_codex_profile(plain.profile):
         reasons.append(f"profile={plain.profile!r} can set the sandbox the light workload pins")
     widening: set[str] = set()
@@ -1351,7 +1356,9 @@ class CodexCodeRequest(BaseModel):
             "be resolved or does not exist -- is refused too, since containment cannot "
             "be enforced without knowing which configs apply. "
             "Off by default: the request reaches whatever the account and the "
-            "config give it. Lifted by naming `account_connectors`."
+            "config give it. Lifted by naming `account_connectors`. A `light` "
+            "request is contained whether or not this is set, and refuses "
+            "`account_connectors`."
         ),
     )
     account_connectors: list[str] | None = Field(
@@ -1509,8 +1516,10 @@ class CodexCodeRequest(BaseModel):
         description=(
             "'light' runs codex in its workspace-write sandbox (writable in its working "
             "directory and the temporary directories that sandbox keeps writable) with no "
-            "network, and counts against the total and codex agent caps. The MCP servers it "
-            "is given run outside that sandbox. 'heavy' (the default) keeps the configured "
+            "network, with the account's apps and plugins turned off as "
+            "`contain_account_integrations` turns them off, and counts against the total and "
+            "codex agent caps. The MCP servers it is given run outside that sandbox. 'heavy' "
+            "(the default) keeps the configured "
             "sandbox and also counts against the heavy cap."
         ),
     )

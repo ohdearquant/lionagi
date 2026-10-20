@@ -811,6 +811,51 @@ def test_reconstruct_spawned_nodes_marks_failed_child_terminal_not_rerun():
     assert child.execution.response == {"error": "boom"}
 
 
+@pytest.mark.parametrize("retry_failed", [False, True])
+def test_a_failed_unassigned_spawn_a_light_worker_asked_for_is_not_rerun_at_another_class(
+    retry_failed,
+):
+    """Rebuilt with no assignee, the node would run again on the orchestrator's branch with
+    the orchestrator's class. --retry-failed refuses it; a plain resume keeps it failed."""
+    builder, parent_id, worker_branch = _real_planned_node("worker")
+    env = SimpleNamespace(builder=builder)
+    dag_state = _DagState(
+        node_ids=[parent_id],
+        known_nodes={parent_id},
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"worker": worker_branch},
+        worker_models=[],
+    )
+    plan_result, checkpoint_ops = _terminal_plan_and_ops("worker", parent_id)
+    child_id = str(uuid4())
+    checkpoint_spawned = [
+        {
+            "node_id": child_id,
+            "status": "failed",
+            "response": {"error": "boom"},
+            "operation": "operate",
+            "assignee": None,
+            "instruction": "check the result",
+            "parent_id": None,
+            "spawn_id": "spawn-3",
+            "emitter_workload": "light",
+        }
+    ]
+
+    if retry_failed:
+        with pytest.raises(FlowResumeError, match=rf"{child_id} \(light\)"):
+            _reconstruct_spawned_nodes(
+                env, plan_result, dag_state, checkpoint_ops, checkpoint_spawned, retry_failed=True
+            )
+        assert UUID(child_id) not in builder.get_graph().internal_nodes
+        return
+    _reconstruct_spawned_nodes(env, plan_result, dag_state, checkpoint_ops, checkpoint_spawned)
+    child = builder.get_graph().internal_nodes[UUID(child_id)]
+    assert child.execution.status == EventStatus.FAILED
+
+
 def test_reconstruct_spawned_nodes_chains_through_another_reconstructed_spawn():
     """A grandchild spawn resolves its parent against the other entries in the same checkpoint_spawned batch, not just the statically planned nodes."""
     builder = OperationGraphBuilder()
@@ -1220,8 +1265,9 @@ async def test_checkpoint_spawned_node_name_collision_does_not_overwrite_planned
     ]
 
 
+@pytest.mark.parametrize("emitter_workload", [None, "light"])
 async def test_checkpoint_record_captures_spawn_id_from_live_role_routed_graph_node(
-    tmp_path: Path,
+    tmp_path: Path, emitter_workload
 ):
     """Write-side counterpart: role_node_builder stamps spawn_id unconditionally on a spawned node's metadata, so _checkpoint_record must capture it off the live graph node the same way it captures assignee, for reconstruction's assignee-without-spawn_id check."""
     builder, parent_id, worker_branch = _real_planned_node("worker")
@@ -1254,6 +1300,8 @@ async def test_checkpoint_record_captures_spawn_id_from_live_role_routed_graph_n
     spawned_node.metadata["assignee"] = "worker"
     spawned_node.metadata["spawn_id"] = "spawn-7"
     spawned_node.metadata["reference_id"] = "spawn-7"
+    if emitter_workload is not None:
+        spawned_node.metadata["emitter_workload"] = emitter_workload
     builder.get_graph().add_node(spawned_node)
     spawned_id_str = str(spawned_node.id)
 
@@ -1306,6 +1354,7 @@ async def test_checkpoint_record_captures_spawn_id_from_live_role_routed_graph_n
             "parent_id": str(parent_id),
             "spawn_id": "spawn-7",
             "context": None,
+            **({"emitter_workload": emitter_workload} if emitter_workload else {}),
         }
     ]
 

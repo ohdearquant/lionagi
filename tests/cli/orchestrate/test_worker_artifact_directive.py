@@ -697,6 +697,7 @@ async def _spawned_branch_kwargs(
     from_orchestrator: bool = False,
     provider: str = "codex",
     emitted_by: str | None = None,
+    emitter_provider: str | None = None,
 ) -> dict:
     """Run a reactively spawned branch through the setup `_execute_dag` hands the DAG
     runner, and return the request kwargs it leaves on the branch. The spawn is a clone
@@ -704,7 +705,8 @@ async def _spawned_branch_kwargs(
     *workload*. When *emitted_by* names a class, the spawn is an independent request
     naming no assignee, built by the run's node builder for a worker of that class (or
     for the orchestrator itself, when it is "orchestrator") and cloned from the
-    orchestrator's branch, as the executor clones it."""
+    orchestrator's branch, as the executor clones it. *emitter_provider* puts that worker
+    on another engine than the orchestrator's."""
     import lionagi.engines as engines_mod
     from lionagi import Branch, iModel
     from lionagi.casts.emission import SpawnRequest
@@ -734,9 +736,14 @@ async def _spawned_branch_kwargs(
     monkeypatch.setattr(flow_mod, "_persist_control_poller_state_bounded", _noop)
     monkeypatch.setattr(flow_mod, "_hand_mcp_servers", lambda *a, **k: None)
 
-    def _branch(name: str, branch_workload: str = workload) -> Branch:
-        chat_model = iModel(provider=provider, model="gpt-5.5" if provider == "codex" else "sonnet")
-        _add_workload_kwarg(chat_model.endpoint.config.kwargs, provider, branch_workload)
+    def _branch(
+        name: str, branch_workload: str = workload, branch_provider: str = provider
+    ) -> Branch:
+        chat_model = iModel(
+            provider=branch_provider,
+            model="gpt-5.5" if branch_provider == "codex" else "sonnet",
+        )
+        _add_workload_kwarg(chat_model.endpoint.config.kwargs, branch_provider, branch_workload)
         return Branch(
             system=bare_worker_system(artifact_dir=tmp_path / "artifacts" / name),
             chat_model=chat_model,
@@ -777,7 +784,9 @@ async def _spawned_branch_kwargs(
     else:
         emitter = SimpleNamespace(id="emitter-op")
         emitter_branch = (
-            orchestrator if emitted_by == "orchestrator" else _branch("emitter", emitted_by)
+            orchestrator
+            if emitted_by == "orchestrator"
+            else _branch("emitter", emitted_by, emitter_provider or provider)
         )
         captured["executor_ref"]["executor"] = SimpleNamespace(
             operation_branches={emitter.id: emitter_branch}
@@ -879,6 +888,45 @@ async def test_an_independent_spawn_a_heavy_worker_asks_for_runs_heavy(tmp_path,
 
     assert kwargs["add_dir"] == [str(tmp_path.resolve())]
     assert CodexCodeRequest(prompt="work", **kwargs).workload == DEFAULT_WORKLOAD
+
+
+@pytest.mark.asyncio
+async def test_an_independent_spawn_a_light_worker_asks_for_on_another_engine_is_refused(
+    tmp_path, monkeypatch
+):
+    """Under a Claude Code orchestrator, a light codex worker's independent request naming
+    no assignee would run as a Claude Code agent, where light removes only the file-writing
+    tools and Bash can still write anywhere. It is refused before any node exists."""
+    from lionagi._errors import CLIInputRefusedError
+
+    with pytest.raises(CLIInputRefusedError) as refused:
+        await _spawned_branch_kwargs(
+            tmp_path,
+            monkeypatch,
+            DEFAULT_WORKLOAD,
+            provider="claude_code",
+            emitted_by="light",
+            emitter_provider="codex",
+        )
+    message = str(refused.value)
+    assert "orchestrator's engine (claude_code)" in message
+    assert "runs on codex" in message
+
+
+@pytest.mark.asyncio
+async def test_an_independent_spawn_a_heavy_worker_asks_for_on_another_engine_runs_heavy(
+    tmp_path, monkeypatch
+):
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by=DEFAULT_WORKLOAD,
+        emitter_provider="codex",
+    )
+
+    assert "workload" not in kwargs
 
 
 @pytest.mark.asyncio

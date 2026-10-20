@@ -247,7 +247,7 @@ every CLI request model (`exclude=True`, never serialized):
 
 | Engine | `light` |
 |--------|---------|
-| codex | `--sandbox workspace-write` (or `read-only` when asked), `-c sandbox_workspace_write.writable_roots=[]`, `-c sandbox_workspace_write.network_access=false`, and no linked-worktree `--add-dir`. `bypass_approvals`, `sandbox='danger-full-access'`, `add_dir` and any `config_overrides` key under `sandbox_mode` or `sandbox_workspace_write` are refused with `CLIInputRefusedError`, at construction and again where the process would start. The sandbox keeps the temporary directories writable, and codex starts the MCP servers it is given outside it |
+| codex | `--sandbox workspace-write` (or `read-only` when asked), `-c sandbox_workspace_write.writable_roots=[]`, `-c sandbox_workspace_write.network_access=false`, no linked-worktree `--add-dir`, and the account's apps and plugins turned off as `contain_account_integrations` turns them off. `account_connectors`, `bypass_approvals`, `sandbox='danger-full-access'`, `add_dir` and any `config_overrides` key under `sandbox_mode` or `sandbox_workspace_write` are refused with `CLIInputRefusedError`, at construction and again where the process would start. The sandbox keeps the temporary directories writable, and codex starts the MCP servers it is given outside it |
 | claude_code | `Edit`, `Write` and `NotebookEdit` are added to `--disallowedTools`, merged with the caller's list into one flag. Bash stays. Claude Code has no filesystem sandbox, so this is a tool-list boundary only: a command run through Bash can still write |
 | gemini-cli | `--sandbox`, always |
 | pi | refused before the process starts: Pi has no sandbox lionagi can pin |
@@ -273,14 +273,19 @@ The class is chosen as follows:
   worker's branch, an independent one from the orchestrator's branch and then given the emitting
   worker's class, so asking for an unnamed agent does not lift a `light` worker's confinement.
   That clone keeps the orchestrator's other settings, so one a `light` agent cannot have refuses
-  the spawn before its process starts. A request no worker emitted (the orchestrator's
+  the spawn before its process starts. When the orchestrator runs on another CLI engine than the
+  `light` worker that asked, the independent request is refused with `CLIInputRefusedError`
+  before any node exists, since each engine's `light` confines an agent differently; the worker
+  names an assignee, or asks for a dependent agent, which runs on its own engine. A request no worker emitted (the orchestrator's
   own, or one with no emitter) runs `heavy`, as a bare worker does: the orchestrator's class
   confines only its own process. An escalation retry is cloned from the branch of the node it
   retries and keeps that node's class.
 - A spawned node that a resume runs again (`--retry-failed`) is rebuilt from the checkpoint
   without that setup: with an assignee it runs on that worker's branch and class, without one on
-  the orchestrator's branch or a clone of it, with the orchestrator's class, whichever worker
-  asked for it.
+  the orchestrator's branch or a clone of it, with the orchestrator's class. The checkpoint
+  records the class of a `light` worker that asked for a node naming no assignee, and
+  `--retry-failed` refuses with `FlowResumeError` to run such a node again. A checkpoint written
+  before that record existed carries no class, and its nodes run again as described.
 - A `light` codex worker is handed no `add_dir`, so its one writable root is its working
   directory, the worker's artifact directory; the project-root `add_dir` every other CLI worker
   is handed is unchanged. A codex worker in team mode needs the team directory writable, so a `light` codex
@@ -347,7 +352,10 @@ class NestedAgentRefusedError(ProviderError):   # lionagi/providers/_provider_er
   environment cannot be read (another user's, one that exited, or on macOS a platform binary such
   as `/bin/sh`) is passed over; the agent CLIs that carry the depth are not such binaries.
 - **Refused at every entry, before anything starts.** `ndjson_from_cli()` checks first, before
-  admission, so a nested agent never waits for a slot an ancestor holds. `li agent` (API-model
+  admission, so a nested agent never waits for a slot an ancestor holds. An agent handed depth
+  `0` may start others, so its children pass that check; an admission that finds a pool full of
+  slots held for its own ancestors is refused at once, since those slots free only when the
+  ancestor ends. `li agent` (API-model
   legs included), `li o flow` and `li o fanout` check before they stamp their own depth
   and before any run exists.
 - **Checked where the request is made, before anything detaches.** `li o flow --background` and

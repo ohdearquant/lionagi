@@ -197,7 +197,8 @@ The refusal is `NestedAgentRefusedError`, a provider error that is not retryable
 answers with a `conflict` error and starts no job. A session nobody started through
 lionagi (a Claude Code or Codex session opened by hand) carries no depth and starts agents as
 before, and so does an agent launched with a profile named in `LIONAGI_SEAT_PROFILES`, which
-starts at depth `0`. The caps bound how many agents run; this bounds how deep they start each
+starts at depth `0`. An agent such a profile starts waits for no slot its own ancestors hold:
+when they fill the pool, it is refused at once. The caps bound how many agents run; this bounds how deep they start each
 other, whether or not a cap is set.
 
 `--workload` (or a profile's `workload`) sets the class:
@@ -205,7 +206,7 @@ other, whether or not a cap is set.
 | Workload | Counts against | Worker confinement |
 |----------|----------------|--------------------|
 | `heavy` (default) | the total cap, the heavy cap and its engine cap | as configured (`--yolo`, `--bypass`, profile settings) |
-| `light` | the total cap and its engine cap | codex: `--sandbox workspace-write` with no extra writable roots and no network, and settings that would lift the sandbox are refused; the sandbox still keeps the temporary directories writable, and the MCP servers the leg is given run outside it; gemini: `--sandbox`; claude: runs without `Edit`, `Write` and `NotebookEdit` (Bash stays, and Claude Code has no filesystem sandbox, so this is a tool-list boundary only: a Bash command can still write anywhere); pi: refused, it has no sandbox lionagi can pin |
+| `light` | the total cap and its engine cap | codex: `--sandbox workspace-write` with no extra writable roots, no network, and the account's apps and plugins turned off, and settings that would lift the sandbox, `account_connectors` among them, are refused; the sandbox still keeps the temporary directories writable, and the MCP servers the leg is given run outside it; gemini: `--sandbox`; claude: runs without `Edit`, `Write` and `NotebookEdit` (Bash stays, and Claude Code has no filesystem sandbox, so this is a tool-list boundary only: a Bash command can still write anywhere); pi: refused, it has no sandbox lionagi can pin |
 
 A resumed leg (`-r`, `-c`) runs with the class this launch resolves: `--workload`, else the
 profile's, else `heavy`. Resuming a `light` leg without `-a` or `--workload light` therefore runs
@@ -213,7 +214,10 @@ it `heavy`; pass the flag again to keep it light.
 
 In `li o flow` and `li o fanout` each worker takes its own profile's class, whatever the
 orchestrator's. A `light` codex worker is given no extra writable directory, so it writes only
-its artifact directory, and under `--team-mode` it is refused before it starts.
+its artifact directory, and under `--team-mode` it is refused before it starts. An independent
+agent a `light` worker asks for without naming an assignee runs on the orchestrator's engine with
+the worker's class; when that engine is another CLI engine the request is refused, and
+`--retry-failed` refuses to run such an agent again.
 
 `li monitor` prints the held slots per pool under its table, for example
 `subagents: all 3/30, heavy 1/6, codex 2/4`, using the caps in its own environment, and

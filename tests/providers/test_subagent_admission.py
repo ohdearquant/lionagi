@@ -119,6 +119,44 @@ async def test_the_wait_ends_in_a_refusal_when_nothing_frees(home):
     assert time.monotonic() - started >= 0.3
 
 
+@pytest.mark.asyncio
+async def test_a_pool_full_of_slots_held_for_this_processs_ancestors_is_refused_without_waiting(
+    home,
+):
+    env = {"LIONAGI_MAX_SUBAGENTS": "1", "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "5"}
+    first = await _admit(env)
+    # The slot's child is this process's parent: the agent that started this one.
+    first.record_child(os.getppid(), process_create_time(os.getppid())[1])
+    started = time.monotonic()
+    try:
+        with pytest.raises(SubagentAdmissionRefusedError) as refused:
+            await _admit(env)
+    finally:
+        first.release()
+    assert time.monotonic() - started < 2
+    message = str(refused.value)
+    assert "waited" not in message
+    assert (
+        f"the agent that started this one holds it (pid {os.getpid()} (child {os.getppid()}))"
+        in message
+    )
+    assert refused.value.pool == "all"
+
+
+@pytest.mark.asyncio
+async def test_a_full_pool_with_room_beyond_its_ancestors_slots_is_waited_on(home):
+    env = {"LIONAGI_MAX_SUBAGENTS": "2", "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0.3"}
+    first = await _admit(env)
+    first.record_child(os.getppid(), process_create_time(os.getppid())[1])
+    second = await _admit(env)
+    try:
+        with pytest.raises(SubagentAdmissionRefusedError, match="waited 0.3s"):
+            await _admit(env)
+    finally:
+        second.release()
+        first.release()
+
+
 _HOLDER = textwrap.dedent(
     """
     import sys, time, anyio

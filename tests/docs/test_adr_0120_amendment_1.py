@@ -101,7 +101,7 @@ def test_team_round_batches_pending_targets_per_completion() -> None:
         _line("lionagi/cli/orchestrate/_orchestration.py", 1386)
     )
     assert "def build_round_operations" in _line("lionagi/cli/orchestrate/_orchestration.py", 1422)
-    assert "def _on_team_op_complete" in _line("lionagi/cli/orchestrate/flow.py", 1986)
+    assert "def _on_team_op_complete" in _line("lionagi/cli/orchestrate/flow.py", 2006)
 
 
 def test_signal_rows_and_schedule_cursor_citations_point_at_their_code() -> None:
@@ -260,7 +260,7 @@ def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are
     )
     assert "ADR-0070, Accepted" in flat
     assert "per-completion batch of targets, not a per-subscriber position" in flat
-    assert "lionagi/cli/orchestrate/flow.py:1986-2031" in flat
+    assert "lionagi/cli/orchestrate/flow.py:2006-2051" in flat
     assert "It is one position per schedule, not per observing subscriber" in flat
 
 

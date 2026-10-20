@@ -46,7 +46,9 @@ A CLI agent lionagi started cannot start another through lionagi: the spawning
 process of such an agent would hold its slots while it waited on the child, and
 nothing would bound how deep agents start agents. :func:`refuse_nested_agent` is
 that check; the spawn calls it before any admission, so a nested agent is refused at
-once rather than after the wait.
+once rather than after the wait. An agent started at depth 0 may start others, and it
+holds its slots while its own children wait too, so an admission that finds a pool full
+of slots held for its own ancestors is refused at once as well.
 """
 
 from __future__ import annotations
@@ -154,6 +156,31 @@ def _ancestor_agent_depth() -> tuple[int, int | None]:
         except psutil.Error:
             break
     return deepest, at
+
+
+def _ancestor_pids() -> frozenset[int]:
+    """The pids of this process's ancestors below pid 1; the walk ends at one it cannot read."""
+    import psutil
+
+    pids: set[int] = set()
+    try:
+        process = psutil.Process().parent()
+    except psutil.Error:
+        return frozenset()
+    while process is not None and process.pid > 1 and process.pid not in pids:
+        pids.add(process.pid)
+        try:
+            process = process.parent()
+        except psutil.Error:
+            break
+    return frozenset(pids)
+
+
+def _held_for_ancestor(record: dict[str, Any], ancestors: frozenset[int]) -> bool:
+    return any(
+        isinstance(pid, int) and not isinstance(pid, bool) and pid in ancestors
+        for pid in (record.get("holder_pid"), record.get("child_pid"))
+    )
 
 
 def refuse_nested_agent(engine: str | None = None) -> None:
@@ -549,6 +576,12 @@ def _holder_text(records: list[dict[str, Any]]) -> str:
     return ", ".join(parts) or "unreadable"
 
 
+def _full_text(cap: int, effective: int, variable: str) -> str:
+    if effective < cap:
+        return f"at a cap of {effective} a holder read ({variable}={cap} here)"
+    return f"at its cap of {cap} ({variable})"
+
+
 async def admit_subagent(
     *,
     engine: str | None,
@@ -587,6 +620,7 @@ async def admit_subagent(
     }
     quick_rereads = 0
     slept = False
+    ancestors: frozenset[int] | None = None
     while True:
         lease = SubagentLease()
         locks: list[int] = []
@@ -606,6 +640,22 @@ async def admit_subagent(
                 held, free, unrecorded = _read_pool(pool_dir)
                 effective = _effective_cap(cap, held)
                 if len(held) >= effective:
+                    # Slots held for this process's own ancestors free only when that
+                    # ancestor ends, and it waits on this agent: no wait can free them.
+                    if ancestors is None:
+                        ancestors = _ancestor_pids()
+                    own = [r for r in held if _held_for_ancestor(r, ancestors)]
+                    if len(own) >= effective:
+                        raise SubagentAdmissionRefusedError(
+                            f"subagent admission refused: pool '{pool}' is "
+                            f"{_full_text(cap, effective, variable)}, and the agent that "
+                            f"started this one holds it (pid {_holder_text(own)}), which "
+                            "frees it only once this agent ends; raise the cap or start "
+                            "this agent from outside that one",
+                            pool=pool,
+                            cap=effective,
+                            holders=tuple(r.get("holder_pid") for r in held),
+                        )
                     full = (pool, variable, cap, effective, held)
                     # Worth a quick look again only if the recorded holders leave room.
                     clearing = unrecorded > 0 and len(held) - unrecorded < effective
@@ -652,13 +702,10 @@ async def admit_subagent(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             what = f"{engine} " if engine else ""
-            if effective < cap:
-                at = f"at a cap of {effective} a holder read ({variable}={cap} here)"
-            else:
-                at = f"at its cap of {cap} ({variable})"
             raise SubagentAdmissionRefusedError(
                 f"subagent admission refused: {workload} {what}agent waited {wait:g}s; "
-                f"pool '{pool}' is {at}, held by pid {_holder_text(holders)}",
+                f"pool '{pool}' is {_full_text(cap, effective, variable)}, held by pid "
+                f"{_holder_text(holders)}",
                 pool=pool,
                 cap=effective,
                 holders=tuple(r.get("holder_pid") for r in holders),

@@ -40,6 +40,15 @@ def test_a_light_codex_agent_is_sandboxed_to_its_cwd_with_no_network(tmp_path, k
     assert "--add-dir" not in args
 
 
+@pytest.mark.parametrize("kw", [{}, {"enable_features": ["apps", "plugins"]}])
+def test_a_light_codex_agent_runs_with_the_accounts_apps_and_plugins_off(tmp_path, kw):
+    args = _codex(tmp_path, workload="light", **kw)
+    assert {"apps", "plugins"} <= set(_pairs(args, "--disable"))
+    assert {"apps", "plugins"}.isdisjoint(_pairs(args, "--enable"))
+    heavy = _codex(tmp_path, **kw)
+    assert {"apps", "plugins"}.isdisjoint(_pairs(heavy, "--disable"))
+
+
 def test_a_light_codex_agent_asked_for_read_only_stays_read_only(tmp_path):
     args = _codex(tmp_path, workload="light", sandbox="read-only")
     assert _pairs(args, "--sandbox") == ["read-only"]
@@ -69,6 +78,7 @@ def test_a_light_codex_agent_in_a_linked_worktree_gets_no_writable_git_dir(tmp_p
         ({"config_overrides": {"sandbox_workspace_write.network_access": True}}, "network_access"),
         ({"config_overrides": {"sandbox_workspace_write": {"writable_roots": ["/"]}}}, "sandbox_"),
         ({"config_overrides": {"sandbox_mode": "danger-full-access"}}, "sandbox_mode"),
+        ({"account_connectors": ["calendar"]}, "account_connectors"),
     ],
 )
 def test_a_light_codex_agent_that_could_write_elsewhere_is_refused_at_construction(

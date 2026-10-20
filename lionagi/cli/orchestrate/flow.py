@@ -1255,6 +1255,25 @@ def _reconstruct_spawned_nodes(
             "and cannot be soundly rebuilt. Re-run the flow from scratch."
         )
 
+    # A node naming no assignee is rebuilt on the orchestrator's branch, with the
+    # orchestrator's class, and not with the class of the worker that asked for it.
+    reclassed = [
+        f"{e['node_id']} ({e['emitter_workload']})"
+        for e in checkpoint_spawned
+        if retry_failed
+        and e.get("status") == "failed"
+        and not e.get("assignee")
+        and e.get("emitter_workload") is not None
+    ]
+    if reclassed:
+        raise FlowResumeError(
+            "Resume refused for reactively spawned node(s) "
+            f"[{', '.join(reclassed)}]: a worker of the class shown asked for them "
+            "naming no assignee, and --retry-failed would run them again with the "
+            "orchestrator's class. Resume without --retry-failed, or re-run the flow "
+            "from scratch."
+        )
+
     known_ids = {str(n) for n in dag_state.node_ids}
     candidate_ids = {e["node_id"] for e in checkpoint_spawned}
     replayable = ("completed",) if retry_failed else ("completed", "failed")
@@ -1855,6 +1874,7 @@ async def _execute_dag(
                         if isinstance(params, dict)
                         else getattr(params, "context", None)
                     )
+                    spawn_fields["emitter_workload"] = spawned_node.metadata.get("emitter_workload")
             _checkpoint_tasks.append(
                 _asyncio.ensure_future(
                     _checkpoint_writer.record_spawned(
@@ -2164,6 +2184,25 @@ async def _execute_dag(
             if emitter_branch is not env.orc_branch and emitter_model is not None:
                 workload = emitter_model.endpoint.config.kwargs.get("workload")
                 if workload is not None:
+                    # An independent one runs on the orchestrator's engine, and a class
+                    # confines each engine differently: on another CLI engine it would not
+                    # be held as the worker that asked is.
+                    orc_model = getattr(env.orc_branch, "chat_model", None)
+                    asked_on = emitter_model.endpoint.config.provider
+                    runs_on = orc_model.endpoint.config.provider if orc_model is not None else None
+                    if (
+                        getattr(req, "independent", False)
+                        and getattr(orc_model, "is_cli", False)
+                        and runs_on != asked_on
+                    ):
+                        raise CLIInputRefusedError(
+                            f"spawn refused: an independent agent naming no assignee runs on "
+                            f"the orchestrator's engine ({runs_on}), and the {workload} "
+                            f"worker that asked for it runs on {asked_on}, where {workload} "
+                            "confines an agent differently. Name an assignee from the roster, "
+                            "or ask for a dependent agent, which runs on the asking worker's "
+                            "engine."
+                        )
                     node.metadata["emitter_workload"] = workload
         return node
 
