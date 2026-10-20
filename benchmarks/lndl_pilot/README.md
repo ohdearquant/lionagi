@@ -99,7 +99,7 @@ The reading and the checks differ in ten answers:
 
 | task | runs | loop | check | reading | why |
 |---|---|---|---|---|---|
-| `t06` | r2, r3, r4 | both | rejected | right | The check expects `100000`. Each answer writes the cap as `100_000`, all but the r4 ReAct answer also as `100,000`, and names `_MAX_OUTPUT_BYTES` and `_SHELL_CONTROL` (`lionagi/tools/_subprocess.py:18`, `:20`). |
+| `t06` | r2, r3, r4 | both | rejected | right | The check expects `100000`. Each answer writes the cap as `100_000`, all but the r4 ReAct answer also as `100,000`, and names `_MAX_OUTPUT_BYTES` and `_SHELL_CONTROL` (`lionagi/tools/_subprocess.py:20`, `:18`). |
 | `t20` | r4 | `lndl` | rejected | right | The question asks which module defines the class; the answer names it by its import path, `lionagi.tools.code.search`, and says it did not open the file. The check expects the file path; the class is defined at `lionagi/tools/code/search.py:193`. |
 | `t24` | r2, r3, r4 | `lndl` | accepted | wrong | Each answer gives `RUNS_ROOT` in place of `RUNS_DIR`: r3 says no `RUNS_DIR` exists, r2 that its grep shows none in `lionagi/mcp/config.py`, and r4 that the module defines none, adding that it read the file only in part and does not rule one out. Line 19 of that file is `RUNS_DIR = RUNS_ROOT`. The check asks for `.lionagi`, the default the question asks for, and the names `RUNS_DIR` and `JOBS_DIR`, which the question itself supplies, so it accepts these answers. |
 
