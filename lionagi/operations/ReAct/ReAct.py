@@ -63,76 +63,36 @@ async def ReAct(  # noqa: N802  # public name is the ReAct acronym
         verbose_analysis = kwargs.pop("verbose")
 
     instruct_dict = instruct.to_dict() if isinstance(instruct, Instruct) else dict(instruct)
-
-    intp_param = None
-    if interpret:
-        intp_param = InterpretParam(
-            domain=interpret_domain or "general",
-            style=interpret_style or "concise",
-            sample_writing=interpret_sample or "",
-            imodel=interpret_model or analysis_model or branch.chat_model,
-            imodel_kw=interpret_kwargs or {},
-        )
-
-    chat_param = ChatParam.from_branch(
+    prepared = prepare_react_kw(
         branch,
-        guidance=instruct_dict.get("guidance"),
-        context=instruct_dict.get("context"),
-        tool_schemas=tool_schemas or [],
-        include_token_usage_to_model=include_token_usage_to_model,
-        imodel=analysis_model or branch.chat_model,
-        imodel_kw=kwargs,
-    )
-
-    action_param = None
-    # A branch with registered tools is given them on the first analysis too, not
-    # only on extension rounds. The first round is where the model answers
-    # `extension_needed`, so withholding schemas there lets it conclude it has no
-    # tools, answer False, and end the loop before the round that would show it any.
-    if tools is not None or tool_schemas is not None or branch.acts.registry:
-        from ..act.act import _get_default_call_params
-
-        action_param = ActionParam(
-            action_call_params=_get_default_call_params(),
-            tools=tools or True,
-            strategy="concurrent",
-            suppress_errors=True,
-            verbose_action=False,
-        )
-
-    parse_param = make_parse_param(
-        ReActAnalysis,
-        analysis_model or branch.chat_model,
-        handle_validation="return_value",
-    )
-
-    resp_ctx = response_kwargs or {}
-    if response_format:
-        resp_ctx["response_format"] = response_format
-
-    return await ReAct_v1(
-        branch,
-        instruction=instruct_dict.get("instruction", str(instruct)),
-        chat_param=chat_param,
-        action_param=action_param,
-        parse_param=parse_param,
-        intp_param=intp_param,
-        resp_ctx=resp_ctx,
-        reasoning_effort=reasoning_effort,
-        reason=True,
-        field_models=None,
-        handle_validation="return_value",
-        invoke_actions=True,
-        clear_messages=False,
+        instruct_dict,
+        instruction_fallback=str(instruct),
+        interpret=interpret,
+        interpret_domain=interpret_domain,
+        interpret_style=interpret_style,
+        interpret_sample=interpret_sample,
+        interpret_model=interpret_model,
+        interpret_kwargs=interpret_kwargs,
+        tools=tools,
+        tool_schemas=tool_schemas,
+        response_format=response_format,
         intermediate_response_options=intermediate_response_options,
         intermediate_listable=intermediate_listable,
-        intermediate_nullable=False,
-        max_extensions=max_extensions,
+        reasoning_effort=reasoning_effort,
         extension_allowed=extension_allowed,
-        verbose_analysis=verbose_analysis,
+        max_extensions=max_extensions,
+        response_kwargs=response_kwargs,
         display_as=display_as,
+        analysis_model=analysis_model,
+        verbose_analysis=verbose_analysis,
         verbose_length=verbose_length,
+        include_token_usage_to_model=include_token_usage_to_model,
         continue_after_failed_response=continue_after_failed_response,
+        imodel_kw=kwargs,
+    )
+    return await ReAct_v1(
+        branch,
+        **prepared,
         return_analysis=return_analysis,
         between_rounds=kwargs.get("between_rounds"),
     )

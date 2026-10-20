@@ -174,7 +174,7 @@ Amends ADR-0007 D1 (the tool definitions' lifetime and the transient set), its D
 instruction and render once in the stable segment, as a section of the system block (D3). They are
 the conversation's tool set — the tools the Branch exposes to the operation — not the per-call
 `action_param`. A call that requests no action, such as `ReAct`'s final answer
-(`operations/ReAct/ReAct.py:658` sets `action_param` None), still carries the same tool section in
+(`operations/ReAct/ReAct.py:618` sets `action_param` None), still carries the same tool section in
 the stable segment; its turn content says that no action is requested. A plain `operate()` whose
 tool set differs from the previous call's is therefore a counted stable-segment change (D6).
 
