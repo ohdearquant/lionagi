@@ -82,7 +82,11 @@ and one implementation.
   `profile` key in that `config.toml` the same way, since codex before 0.135
   makes it the active profile when no `-p` is given; a key in a `config.toml`
   its TOML parser cannot read is not seen, and that file's server list comes
-  from the fallback. Those disables do not reach a server only
+  from the fallback. The TOML parsers these reads use accept TOML 1.0 at most,
+  while codex 0.162.1 parses its config with a TOML 1.1 parser, so a file that
+  uses 1.1-only syntax (an `\e` escape, an inline table across lines or with a
+  trailing comma, a time without seconds) is one such file.
+  Those disables do not reach a server only
   a project layer (`.codex/config.toml`) declares either, and only a run under the
   flag has its project layers checked, so a run that keeps the user config is
   exclusive only over the servers `config.toml` declares. A non-empty
