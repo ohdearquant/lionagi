@@ -283,16 +283,26 @@ def main() -> int:
         return 2
     if args.only:
         tasks = [t for t in tasks if t["id"] in wanted]
+    # Relative to this directory, as summarize.py reads it, when the task file is in it. Found by
+    # file identity and spelled as the directory lists it, so a spelling that a case-insensitive
+    # volume accepts (`--tasks TASKS.yaml`) still names the file here.
+    tasks_file = str(tasks_path)
+    for parent in tasks_path.parents:
+        if os.path.samefile(parent, HERE):
+            spelled = HERE
+            for part in tasks_path.relative_to(parent).parts:
+                spelled /= next(
+                    n for n in os.listdir(spelled) if os.path.samefile(spelled / n, spelled / part)
+                )
+            tasks_file = str(spelled.relative_to(HERE))
+            break
     # Absolute: each child runs with cwd set to the read tree, so a relative path would
     # resolve there and the prompt file would not be found. Made once everything above has been
     # checked, so a refused run leaves no run directory behind.
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=False)
     header = {
-        # Relative to this directory, as summarize.py reads it, when the task file is in it.
-        "tasks_file": str(
-            tasks_path.relative_to(HERE) if tasks_path.is_relative_to(HERE) else tasks_path
-        ),
+        "tasks_file": tasks_file,
         "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "tasks_sha256": hashlib.sha256(tasks_bytes).hexdigest(),
         "task_count": len(tasks),

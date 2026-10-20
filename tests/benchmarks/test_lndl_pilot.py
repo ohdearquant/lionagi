@@ -233,6 +233,37 @@ def test_a_path_that_leaves_the_pilot_and_comes_back_is_read(r5_copy):
     assert pilot.build_summary(r5_copy) == committed
 
 
+@pytest.mark.parametrize("linked", [True, False])
+def test_a_task_file_in_the_pilot_that_links_out_of_it_is_refused(
+    r5_copy, tmp_path, monkeypatch, linked
+):
+    here = tmp_path.resolve() / "lndl_pilot"
+    (here / "runs").mkdir(parents=True)
+    named = here / "runs" / "tasks.r5.yaml"
+    if linked:
+        outside = tmp_path / "tasks.r5.yaml"
+        shutil.copyfile(PILOT / "runs" / "tasks.r5.yaml", outside)
+        named.symlink_to(outside)
+    else:
+        shutil.copyfile(PILOT / "runs" / "tasks.r5.yaml", named)
+    monkeypatch.setattr(pilot, "HERE", here)
+    if linked:
+        with pytest.raises(ValueError, match="runs/tasks.r5.yaml is not in lndl_pilot/"):
+            pilot.build_summary(r5_copy)
+    else:
+        committed = json.loads((PILOT / "runs" / "r5" / "summary.json").read_text())
+        assert pilot.build_summary(r5_copy) == committed
+
+
+def test_summarize_loads_the_runner_beside_it_without_the_pilot_on_the_import_path(monkeypatch):
+    monkeypatch.setattr(sys, "path", [p for p in sys.path if Path(p or ".").resolve() != PILOT])
+    for name in ("run_pilot", "summarize"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    loaded = _load("lndl_pilot_summarize_alone", PILOT / "summarize.py")
+    assert loaded.summarize.__module__ == "lndl_pilot_run_pilot"
+    assert "run_pilot" not in sys.modules
+
+
 def _duplicate_a_result(run_dir: Path) -> None:
     rows = _jsonl(run_dir / "results.jsonl")
     _write_jsonl(run_dir / "results.jsonl", [*rows, rows[0]])
@@ -550,6 +581,39 @@ def test_the_reading_and_the_checks_differ_in_the_ten_answers_the_adr_names():
         ("r4", "t20", "lndl"),
         ("r4", "t24", "lndl"),
     ]
+
+
+def test_the_t05_answers_the_readme_names_say_max_tokens_does_not_fit_the_field():
+    answers = {
+        (run, r["loop"]): r["answer"]
+        for run in RUNS
+        for r in _jsonl(PILOT / "runs" / run / "answers.jsonl")
+        if r["id"] == "t05"
+    }
+    assert len(answers) == 8
+    # A sentence of the answer names `max_tokens` and says it is not there or does not match.
+    says_so = {
+        key
+        for key, answer in answers.items()
+        if any(
+            "max_tokens" in sentence and re.search(r"\b(?:no|not)\b", sentence)
+            for sentence in re.split(r"(?<=[.;])\s+", answer)
+        )
+    }
+    assert says_so == {
+        ("r2", "react"),
+        ("r2", "lndl"),
+        ("r3", "react"),
+        ("r4", "react"),
+        ("r5", "react"),
+        ("r5", "lndl"),
+    }
+    assert "It is a time limit, not a token count." in answers[("r3", "lndl")]
+    readme = " ".join((PILOT / "README.md").read_text().split())
+    assert (
+        "Six of them also say the question's `max_tokens` does not fit the field (the r2 ReAct, "
+        "r2 `lndl`, r3 ReAct and r4 ReAct answers and both r5 answers)"
+    ) in readme
 
 
 _R5_ROW = re.compile(
@@ -920,6 +984,33 @@ def test_the_header_names_a_task_file_in_the_pilot_by_its_path_there(monkeypatch
     assert runner.main() == 0
     header = json.loads((out / "header.json").read_text())
     assert header["tasks_file"] == ("tasks.yaml" if inside else str(tasks_file.resolve()))
+
+
+def test_a_task_file_in_the_pilot_spelled_in_another_case_is_named_as_the_directory_lists_it(
+    monkeypatch, tmp_path
+):
+    here = tmp_path.resolve() / "Pilot"
+    agents = here / ".lionagi" / "agents"
+    agents.mkdir(parents=True)
+    for loop in LOOPS:
+        shutil.copyfile(PILOT / ".lionagi" / "agents" / f"d4-{loop}.md", agents / f"d4-{loop}.md")
+    (here / "runs").mkdir()
+    shutil.copyfile(PILOT / "tasks.yaml", here / "runs" / "Tasks.yaml")
+    spelled = tmp_path / "PILOT" / "RUNS" / "TASKS.YAML"
+    if not spelled.is_file():
+        pytest.skip("this volume tells file names apart by case")
+    out = tmp_path / "run"
+    (tmp_path / "li").touch(mode=0o755)
+    monkeypatch.setattr(runner, "HERE", here)
+    monkeypatch.setattr(runner, "TREE", tmp_path)
+    monkeypatch.setattr(runner, "LI", tmp_path / "li")
+    monkeypatch.setattr(runner.subprocess, "run", _Legs())
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
+    monkeypatch.setattr(
+        sys, "argv", ["run_pilot.py", "--tasks", str(spelled), "--out", str(out), "--only", "t01"]
+    )
+    assert runner.main() == 0
+    assert json.loads((out / "header.json").read_text())["tasks_file"] == "runs/Tasks.yaml"
 
 
 def test_an_interrupt_starts_no_further_leg_and_writes_a_partial_summary(monkeypatch, tmp_path):

@@ -179,12 +179,13 @@ and line it names are the definition the task records and only the verb is loose
 Each row gives the source line its reading used, at `6fa69b19`, the tree the legs read, and at
 `208bcc08`, the code r5 ran, and per loop what the check did and what the reading found;
 `tasks.yaml` records the rest of each task's truth. Of the 42 source-line citations in the tasks'
-`truth` lines (158 lines in all), 12 citations in 9 tasks (28 lines)
-hold different text at the same line numbers at `208bcc08`. Each citation's lines, taken as one
-block, are present unchanged at `208bcc08`, and at one place only: the line numbers moved, the
-cited code did not. Those counts take `t21`'s "line 272" as a citation and not its "line 271",
-which is inside the `265-271` it cites, and read `t18`'s five citations by file name, such as
-`review.py:516`, as the files beside the `lionagi/engines/__init__.py` it cites.
+`truth` lines (158 lines in all), 12 citations in 9 tasks (28 lines) hold different text at the same
+line numbers at `208bcc08`. Each citation's lines, taken as one block, are present unchanged at
+`208bcc08`, and at one place only: the line numbers moved, the cited code did not. Those counts take
+`t21`'s "line 272" as a citation and not its "line 271", which is inside the `265-271` it cites, and
+read `t18`'s five citations by file name, such as `review.py:516`, as the files beside the
+`lionagi/engines/__init__.py` it cites. These counts, and where each block was found, were taken by
+hand at both commits; the tests do not read either commit, so none checks them (#3678).
 
 | task | line at `6fa69b19` | line at `208bcc08` | `lndl` | ReAct |
 |---|---|---|---|---|
@@ -241,28 +242,29 @@ rows. Each leg's spend lines are in its run's `spend.jsonl`.
 
 ## How the committed files differ from the runs' output
 
-- `run_pilot.py` is `runs/run_pilot.as-run.py.txt` with `noqa` comments added, the `(r1)` at the
-  end of one comment removed (both as-run copies keep it), the layout reformatted by ruff, and four
-  changes. First, `summarize()` leaves the D4 rule unset when a leg had no spend line (above) or
-  the rows are not the whole run, where the as-run copies computed it. Second, a run that stops
-  early keeps what it has (`run_one()`, `run_pair()`, `main()`): a leg that raises in the runner, in
-  its `subprocess.run` or after it (writing its output, or running its check), becomes a row with
-  `rc` `harness-error` and no spend line; a leg that times out keeps its output so far, and bytes
-  that do not decode are replaced in any leg's output; each row is appended to `results.jsonl` as
-  its leg ends, and the summary and table count it only once it is written there (a row that
-  cannot be written stops its task on a harness error); and an interrupt starts no further leg and
-  still writes the summary and table (below). Third, `main()` makes the run directory only after it
-  has checked that the read tree exists and `li` exists and is executable, read the task file,
-  checked each task (`task_problems()`: an `id` of letters, digits, `_` and `-` that does not
-  repeat, a non-empty `class` and `prompt`, checks that are lists of non-empty strings with a
-  non-empty `all_of`, each regular expression compiling, and no non-empty `none_of` beside the
-  `accept` block, which `check_answer` would ignore) and checked `--concurrency`, `--loops` and
-  `--only`, so none of those failing leaves a run directory behind; a failed check exits 2. Each
-  task in the two as-run task files has an empty `none_of` beside its `accept`. Fourth, `main()`
-  names a task file that is in this directory by its path here in `header.json`, the form
-  `summarize.py` reads (below). Of the files' top-level statements, `summarize()`, `run_one()`,
-  `run_pair()` and `main()` are the ones whose `ast.dump` differs, and `run_pilot.py` adds two
-  imports (`threading` and `collections.abc.Callable`), the `TASK_ID` pattern and
+- `run_pilot.py` is `runs/run_pilot.as-run.py.txt` with `noqa` comments added, the `(r1)` at the end
+  of one comment removed (both as-run copies keep it), the layout reformatted by ruff, and four
+  changes. First, `summarize()` leaves the D4 rule unset when a leg had no spend line (above) or the
+  rows are not the whole run, where the as-run copies computed it. Second, a run that stops early
+  keeps what it has (`run_one()`, `run_pair()`, `main()`): a leg that raises in the runner, in its
+  `subprocess.run` or after it (writing its output, or running its check), becomes a row with `rc`
+  `harness-error` and no spend line; a leg that times out keeps its output so far, and bytes that do
+  not decode are replaced in any leg's output; each row is appended to `results.jsonl` as its leg
+  ends, and the summary and table count it only once it is written there (a row that cannot be
+  written stops its task on a harness error); and an interrupt starts no further leg and still
+  writes the summary and table (below). Third, `main()` makes the run directory only after it has
+  checked that the read tree exists and `li` exists and is executable, read the task file, checked
+  each task (`task_problems()`: an `id` of letters, digits, `_` and `-` that does not repeat, a
+  non-empty `class` and `prompt`, checks that are lists of non-empty strings with a non-empty
+  `all_of`, each regular expression compiling, and no non-empty `none_of` beside the `accept` block,
+  which `check_answer` would ignore) and checked `--concurrency`, `--loops` and `--only`, so none of
+  those failing leaves a run directory behind; a failed check exits 2. Each task in the two as-run
+  task files has an empty `none_of` beside its `accept`. Fourth, `main()` names a task file that is
+  in this directory by its path here in `header.json`, the form `summarize.py` reads (below); it
+  finds the file by identity and writes the path as the directory lists it, so a spelling that a
+  case-insensitive volume accepts names it too. Of the files' top-level statements, `summarize()`,
+  `run_one()`, `run_pair()` and `main()` are the ones whose `ast.dump` differs, and `run_pilot.py`
+  adds two imports (`threading` and `collections.abc.Callable`), the `TASK_ID` pattern and
   `task_problems()`. With `missing_spend` at 0 and every leg run in all four runs, both give the
   same totals and rule: the test loads each as-run copy, checks its sha256 against the run's
   `runner_sha256`, and recomputes the run's `summary.json` with it.
