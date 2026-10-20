@@ -20,7 +20,11 @@ accepts no fewer tasks.
   check.
 - `runs/r2/`, `runs/r3/`, `runs/r4/`: `header.json` (hashes of the runner, task set and profiles, the read
   tree's commit, the `li` version), `results.jsonl` (one row per run), `summary.json` (totals and
-  the D4 rule) and `table.md` (the per-task table).
+  the D4 rule), `table.md` (the per-task table) and `answers.jsonl` (each run's answer, the leg's
+  stdout with surrounding whitespace removed, as the check read it; its length is that row's
+  `answer_chars`).
+- `runs/run_pilot.as-run.py.txt`: the runner exactly as it ran, byte for byte (sha256
+  `911c41cd…`, the `runner_sha256` in each `header.json`).
 
 ## Runs
 
@@ -29,6 +33,13 @@ accepts no fewer tasks.
 | r2 | `4d373f9c` | continues with no error |
 | r3 | `aca2e2e9` | a repair round that says nothing ran (ADR-0132 D2) |
 | r4 | `d8838f28` | as r3; the repair round also says how a block opens and closes, the reader takes indented, longer and CRLF fences, and an empty block is a repair round |
+
+Each run's environment had lionagi installed in editable mode from a checkout of the commit in the
+table: `4d373f9c94f646fe894b111071609461c9198301`, `aca2e2e9ab3f8000af3db0dfd0f7c2206640859c` and
+`d8838f28ed9b3e218dcf834ff2048c5fb016139e`. Each checkout was moved to its commit before its run
+started and has not moved since, and its working tree reads clean. All three report version 0.35.5,
+which is all `header.json` records (`runner_li`), so the commits are recorded here, read from those
+environments after the runs.
 
 | run | loop | accepted | requests | requests per accepted | tool calls | wall time |
 |---|---|---|---|---|---|---|
@@ -55,9 +66,12 @@ accepting the import path, r4 is react 23 at 3.96, lndl 23 at 3.48, and meets th
 read the same way as well, react 24 at 3.79, lndl 24 at 3.33. r4's outcome therefore rests on
 this one check, and r2's and r3's do not change under either reading.
 
-The checks are substring checks (`all_of` and `none_of` in `tasks.yaml`), so a wrong answer that
-contains the expected words can pass. The 24 accepted answers to `t09`, `t11`, `t12` and `t22`
-(both loops, all three runs), where that is easiest, were read by hand, and all are correct.
+The checks are substring checks (`all_of` and `none_of` under `accept` in `tasks.yaml`), so a wrong
+answer that contains the expected words can pass. The 24 accepted answers to `t09`, `t11`, `t12` and
+`t22` (both loops, all three runs), where that is easiest, were read by hand, and all are correct;
+they are in `answers.jsonl`. Each task also has a `none_of: []` beside `accept`,
+which the runner does not read; it is left as it was so that `tasks.yaml` still matches the hash in
+each `header.json`.
 
 `run_pilot.py` takes each leg's requests from its spend line, counts a leg with none as zero
 requests, and computes the D4 rule in `summary.json` without checking that every leg reported one.
@@ -65,15 +79,17 @@ Every leg in r2, r3 and r4 did (`spend_lines` is at least 1 in all 144 rows).
 
 ## What was changed for this directory
 
-- `run_pilot.py` is the runner that produced the runs (sha256 `911c41cd…`, recorded in each
-  `header.json`), with `noqa` comments added and the layout reformatted by ruff. Its syntax tree
-  is identical to the original's.
+- `run_pilot.py` is `runs/run_pilot.as-run.py.txt` with `noqa` comments added and the layout
+  reformatted by ruff. The two parse to the same syntax tree: `ast.dump(ast.parse(...))` of each
+  file gives identical output.
 - In each `header.json`, `tasks_file` was an absolute path on the machine that ran it and now
   reads `tasks.yaml`. Nothing else in `runs/` was changed, apart from a final newline added to the
-  JSON files.
-- The runner also writes each leg's prompt, stdout and stderr beside its results. Those are not
-  committed; the counts in ADR-0132 of runs that opened with an `<invoke>` tag and of requests that
-  went to rounds with no block are read from them.
+  JSON files; `answers.jsonl` was added.
+- The runner also writes each leg's prompt, stdout and stderr beside its results, and `li agent`
+  keeps each leg's conversation under the run's `home/`. Of those, only the stdout is committed, as
+  `answers.jsonl`. The counts in ADR-0132 of
+  runs that opened with an `<invoke>` tag and of requests that went to rounds with no block are read
+  from the conversations.
 
 ## Running it
 

@@ -152,9 +152,10 @@ tables of requests, tool calls, wall time and acceptance are `runs/<run>/table.m
 r2 fails the rule and r3 passes it, and one change to the Python package separates them: in r2 an `lndl` round with no
 block continued with no error, and in r3 it is the repair round D2 describes. In both runs 17 of the
 24 `lndl` runs opened with a call written as an `<invoke>` tag outside any block. In r2, 12 of those
-recovered on their own and 5 (`t03`, `t04`, `t17`, `t18`, `t19`) repeated the tag until the budget
-ran out at 11 requests and were not accepted; 64 of the 119 `lndl` requests went to rounds with no
-block. In r3 each of the 17 wrote a block in its next round, and 18 of the 79 requests went to rounds
+recovered on their own and 5 (`t03`, `t04`, `t17`, `t18`, `t19`) kept writing the tag and, in the
+eleventh and last round, whose notice asks for the answer, answered that they could not verify it
+(`t03` had run one tool call, the other four none); none was accepted. 64 of the 119 `lndl` requests
+went to rounds with no block. In r3 each of the 17 wrote a block in its next round, and 18 of the 79 requests went to rounds
 with no block.
 
 - In r3 the accepts clause holds by one task, and the ReAct side moved by one task between r2 and r3
@@ -190,13 +191,17 @@ with no block.
   task set, and a later decision.
 - The checks are substring checks, so a wrong answer that contains the expected words can pass. The
   answers where that is easiest, the 24 accepted answers to `t09`, `t11`, `t12` and `t22` (both
-  loops, all three runs), were read by hand, and all of them are correct.
+  loops, all three runs), were read by hand, and all of them are correct. Every answer is committed
+  with the runs (`answers.jsonl`).
 - The counts of runs that opened with an `<invoke>` tag and of requests that went to rounds with no
-  block are read from each leg's own output, which the pilot writes beside its results and does not
-  commit; the committed files give the per-task requests, tool calls and acceptance.
-- All 144 legs exited 0. In r2 five `lndl` legs spent all 11 requests, on the code before the repair
-  round; whether that code ended such a turn `failed`, as D2 now requires, has not been traced. No
-  leg in r3 or r4 reached the budget, so the pilot does not exercise D2's exhausted-turn exit.
+  block are read from each leg's conversation, which `li agent` keeps under the run's home directory
+  and the pilot does not commit; the committed files give the per-task requests, tool calls,
+  acceptance and answers.
+- All 144 legs exited 0 and none exhausted its round budget. The five r2 `lndl` legs that spent all
+  11 requests returned an answer in their last round; an exhausted budget raises `LNDLError`, which
+  `li agent` records as the run's failure and re-raises, so such a leg would have exited non-zero.
+  No `lndl` leg in r3 or r4 spent more than 5. The pilot therefore does not exercise D2's
+  exhausted-turn exit.
 
 ## Consequences
 
