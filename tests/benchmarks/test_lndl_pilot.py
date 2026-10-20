@@ -261,6 +261,9 @@ def test_a_leg_whose_check_raises_after_it_ran_is_its_own_row(monkeypatch, tmp_p
         # These two raise OverflowError and RecursionError rather than re.error.
         ({"all_of": ["re:4{4294967296}"]}, "`re:4{4294967296}` does not compile"),
         ({"all_of": ["re:" + "(" * 3000 + "4" + ")" * 3000]}, "does not compile"),
+        # An empty pattern matches every answer: all_of would accept anything, none_of nothing.
+        ({"all_of": ["re:"]}, "`accept.all_of` has an empty `re:` pattern"),
+        ({"all_of": ["42"], "none_of": ["re:"]}, "`accept.none_of` has an empty `re:` pattern"),
         # Each of these would accept an answer its check never looked at.
         ({}, "`accept.all_of` is empty"),
         ({"all_of": []}, "`accept.all_of` is empty"),
@@ -301,7 +304,7 @@ def test_a_check_that_would_fail_or_pass_unchecked_is_refused_before_anything_ru
         (lambda tasks: tasks[0].update(prompt=""), "t01: `prompt` is not a non-empty string"),
         (
             lambda tasks: tasks[0].update(id="../t01"),
-            "../t01: `id` is not letters, digits, `_` and `-`",
+            "../t01: `id` is not 1 to 100 letters, digits, `_` and `-`",
         ),
         (lambda tasks: tasks[1].update(id="t01"), "t01: `id` repeats"),
         # Each leg's files are named after its id; on a volume that ignores letter case these
@@ -309,9 +312,21 @@ def test_a_check_that_would_fail_or_pass_unchecked_is_refused_before_anything_ru
         (lambda tasks: tasks[1].update(id="T01"), "T01: `id` repeats, ignoring letter case"),
         (
             lambda tasks: tasks[0].update(id=["t01"]),
-            "task 1: `id` is not letters, digits, `_` and `-`",
+            "task 1: `id` is not 1 to 100 letters, digits, `_` and `-`",
         ),
         (lambda tasks: tasks.__setitem__(1, "t02"), "task 2: not a mapping"),
+        # Each of these would pass as a string and fail only once its leg's files were written.
+        (lambda tasks: tasks[0].update(id="t" * 101), "`id` is not 1 to 100 letters"),
+        (lambda tasks: tasks[0].update(prompt="q\ud800"), "t01: `prompt` is not valid UTF-8 text"),
+        (
+            lambda tasks: tasks[0].update({"class": "\ud800"}),
+            "t01: `class` is not valid UTF-8 text",
+        ),
+        # A table row is one line.
+        (
+            lambda tasks: tasks[0].update({"class": "look\nup"}),
+            "t01: `class` holds a line break or another control character",
+        ),
     ],
 )
 def test_a_malformed_task_is_refused_before_anything_runs(
@@ -343,6 +358,8 @@ def test_a_malformed_task_is_refused_before_anything_runs(
         (["--only", "t01,"], "--only: no task ''"),
         (["--loops", "react,react"], "--loops: 'react,react' names a loop twice"),
         (["--loops", "react,REACT"], "--loops: 'react,REACT' names a loop twice"),
+        # On a volume that ignores letter case d4-REACT.md opens d4-react.md.
+        (["--loops", "REACT,lndl"], "--loops: no profile d4-REACT.md"),
         ([], "is not executable"),
     ],
 )
@@ -436,7 +453,7 @@ def test_a_missing_read_tree_or_li_is_refused_before_anything_runs(
     assert f"{tmp_path / 'absent'} not found; nothing run" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("case", ["out-exists", "li-is-a-directory"])
+@pytest.mark.parametrize("case", ["out-exists", "out-dangling-link", "li-is-a-directory"])
 def test_an_existing_out_or_an_li_that_is_not_a_file_is_refused_before_anything_runs(
     monkeypatch, tmp_path, capsys, case
 ):
@@ -445,6 +462,8 @@ def test_an_existing_out_or_an_li_that_is_not_a_file_is_refused_before_anything_
     def main():
         if case == "out-exists":
             (tmp_path / "run").mkdir()
+        elif case == "out-dangling-link":
+            (tmp_path / "run").symlink_to(tmp_path / "elsewhere")
         else:
             runner.LI.unlink()
             runner.LI.mkdir()
@@ -460,9 +479,92 @@ def test_an_existing_out_or_an_li_that_is_not_a_file_is_refused_before_anything_
     if case == "out-exists":
         assert f"--out: {out} already exists" in err
         assert list(out.iterdir()) == []
+    elif case == "out-dangling-link":
+        assert f"--out: {out} already exists" in err
+        assert out.is_symlink()
+        assert not (tmp_path / "elsewhere").exists()
     else:
         assert f"{runner.LI} is not executable" in err
         assert not out.exists()
+
+
+def test_only_beside_an_id_that_is_not_text_is_refused_before_anything_runs(
+    monkeypatch, tmp_path, capsys
+):
+    real_load = runner.yaml.safe_load
+
+    def safe_load(data):
+        loaded = real_load(data)
+        loaded["tasks"][0]["id"] = ["t01"]
+        loaded["tasks"][1]["id"] = {"t02": 1}
+        return loaded
+
+    monkeypatch.setattr(runner.yaml, "safe_load", safe_load)
+    legs = _Legs()
+    rc, out = _run_main(monkeypatch, tmp_path, legs, ["t01", "t02"], "--only", "t01")
+
+    assert rc == 2
+    assert legs.legs == []
+    assert not out.exists()
+    err = capsys.readouterr().err
+    assert "task 1: `id` is not 1 to 100" in err
+    assert "task 2: `id` is not 1 to 100" in err
+    assert "--only: no task 't01'" in err
+
+
+@pytest.mark.parametrize(
+    ("content", "refused"),
+    [
+        ("- t01\n", "has no top-level `tasks`"),
+        ("{}\n", "has no top-level `tasks`"),
+        ("", "has no top-level `tasks`"),
+        ("tasks: [t01\n", "is not YAML"),
+    ],
+)
+def test_a_task_file_of_another_shape_is_refused_before_anything_runs(
+    monkeypatch, tmp_path, capsys, content, refused
+):
+    tasks_file = tmp_path / "tasks.yaml"
+    tasks_file.write_text(content)
+    out = tmp_path / "run"
+    (tmp_path / "li").touch(mode=0o755)
+    monkeypatch.setattr(runner, "TREE", tmp_path)
+    monkeypatch.setattr(runner, "LI", tmp_path / "li")
+    legs = _Legs()
+    monkeypatch.setattr(runner.subprocess, "run", legs)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
+    monkeypatch.setattr(
+        sys, "argv", ["run_pilot.py", "--tasks", str(tasks_file), "--out", str(out)]
+    )
+
+    assert runner.main() == 2
+    assert legs.legs == []
+    assert not out.exists()
+    err = capsys.readouterr().err
+    assert f"{tasks_file} {refused}" in err
+    assert "nothing run" in err
+
+
+def test_a_table_row_escapes_its_class_and_marks_a_missing_count(monkeypatch, tmp_path):
+    real_load = runner.yaml.safe_load
+
+    def safe_load(data):
+        loaded = real_load(data)
+        loaded["tasks"][0]["class"] = "look|up"
+        return loaded
+
+    def no_spend(argv, **kwargs):
+        if argv[1:2] != ["agent"]:
+            return subprocess.CompletedProcess(argv, 0, stdout="probe\n", stderr="")
+        return subprocess.CompletedProcess(argv, 0, stdout="the answer is 42\n", stderr="")
+
+    monkeypatch.setattr(runner.yaml, "safe_load", safe_load)
+    rc, out = _run_main(monkeypatch, tmp_path, no_spend, ["t01"])
+
+    assert rc == 0
+    assert (out / "table.md").read_text().splitlines()[2:] == [
+        "| t01 | look\\|up | - / - / - / yes | - / - / - / yes |",
+    ]
 
 
 def test_an_li_that_cannot_start_leaves_no_run_directory(monkeypatch, tmp_path):

@@ -30,8 +30,9 @@ LI = HERE / "venv" / "bin" / "li"
 SCRATCH_HOME = HERE / "home"
 SPEND = re.compile(r"\[api\] spend: (\d+) request\(s\), (\d+) tool call\(s\), ([0-9.]+)s")
 RUN_TIMEOUT_S = 420
-# A task id names the leg's files in the run directory, so it may not reach outside it.
-TASK_ID = re.compile(r"[A-Za-z0-9_-]+")
+# A task id names the leg's files in the run directory, so it may not reach outside it, and
+# with its longest suffix it must fit a file name.
+TASK_ID = re.compile(r"[A-Za-z0-9_-]{1,100}")
 
 
 def _matches(text: str, item: str) -> bool:
@@ -167,7 +168,7 @@ def task_problems(tasks: object) -> list[str]:
             problems.append(f"{name}: not a mapping")
             continue
         if not isinstance(tid, str) or not TASK_ID.fullmatch(tid):
-            problems.append(f"{name}: `id` is not letters, digits, `_` and `-`")
+            problems.append(f"{name}: `id` is not 1 to 100 letters, digits, `_` and `-`")
         elif tid.lower() in seen:
             # Each leg's files are named after its id, so on a volume that ignores letter case
             # two ids that differ only in case would write the same files.
@@ -175,8 +176,19 @@ def task_problems(tasks: object) -> list[str]:
         else:
             seen.add(tid.lower())
         for key in ("class", "prompt"):
-            if not isinstance(task.get(key), str) or not task[key]:
+            value = task.get(key)
+            if not isinstance(value, str) or not value:
                 problems.append(f"{name}: `{key}` is not a non-empty string")
+                continue
+            try:
+                # The prompt file and the table are written as UTF-8 once legs have run.
+                value.encode("utf-8")
+            except UnicodeEncodeError:
+                problems.append(f"{name}: `{key}` is not valid UTF-8 text")
+                continue
+            if key == "class" and not value.isprintable():
+                # A table row is one line; a `|` is escaped where the row is written.
+                problems.append(f"{name}: `class` holds a line break or another control character")
         accept = task.get("accept")
         if not isinstance(accept, dict) or set(accept) - {"all_of", "none_of"}:
             problems.append(f"{name}: `accept` is not a mapping of `all_of` and `none_of`")
@@ -187,7 +199,10 @@ def task_problems(tasks: object) -> list[str]:
                 problems.append(f"{name}: `accept.{key}` is not a list of non-empty strings")
                 continue
             for item in value:
-                if item.startswith("re:"):
+                if item == "re:":
+                    # An empty pattern matches every answer, so it would decide nothing.
+                    problems.append(f"{name}: `accept.{key}` has an empty `re:` pattern")
+                elif item.startswith("re:"):
                     try:
                         re.compile(item[3:])
                     # A repeat count past the engine's limit raises OverflowError, and deep
@@ -261,7 +276,15 @@ def main() -> int:
         return 2
     tasks_path = Path(args.tasks).resolve()
     tasks_bytes = tasks_path.read_bytes()
-    tasks = yaml.safe_load(tasks_bytes)["tasks"]
+    try:
+        loaded = yaml.safe_load(tasks_bytes)
+    except yaml.YAMLError as exc:
+        print(f"{tasks_path} is not YAML: {exc}\nnothing run", file=sys.stderr)
+        return 2
+    if not isinstance(loaded, dict) or "tasks" not in loaded:
+        print(f"{tasks_path} has no top-level `tasks`; nothing run", file=sys.stderr)
+        return 2
+    tasks = loaded["tasks"]
     task_set = len(tasks) if isinstance(tasks, list) else 0
     loops = args.loops.split(",")
     # Each of these would otherwise surface only once legs had run, or after the run directory
@@ -271,17 +294,23 @@ def main() -> int:
         problems.append(f"{LI} is not executable")
     if args.concurrency < 1:
         problems.append(f"--concurrency {args.concurrency} is below 1")
+    # Read from the listing, so the name must match in letter case on any volume.
+    profiles = {p.name for p in (HERE / ".lionagi" / "agents").glob("d4-*.md") if p.is_file()}
     for loop in loops:
-        if not (HERE / ".lionagi" / "agents" / f"d4-{loop}.md").is_file():
+        if f"d4-{loop}.md" not in profiles:
             problems.append(f"--loops: no profile d4-{loop}.md")
     if len({loop.lower() for loop in loops}) < len(loops):
         # A loop named twice would run each task's leg twice into the same files.
         problems.append(f"--loops: {args.loops!r} names a loop twice, ignoring letter case")
-    if Path(args.out).exists():
+    if os.path.lexists(args.out):
         problems.append(f"--out: {args.out} already exists")
     if args.only:
         wanted = args.only.split(",")
-        known = {t.get("id") for t in tasks if isinstance(t, dict)} if task_set else set()
+        known = (
+            {t["id"] for t in tasks if isinstance(t, dict) and isinstance(t.get("id"), str)}
+            if task_set
+            else set()
+        )
         problems += [f"--only: no task {tid!r}" for tid in wanted if tid not in known]
     if problems:
         for problem in problems:
@@ -382,7 +411,7 @@ def main() -> int:
         "| id | class | " + " | ".join(f"{l} req / tools / wall / ok" for l in loops) + " |",  # noqa: E741
         "|---|---|" + "---|" * len(loops),
     ]
-    # Every task the run covers has a line, so a leg that never started reads `not run`.
+    # Every task the run covers has a line, so a leg with no recorded row reads `not run`.
     for task in sorted(tasks, key=lambda t: t["id"]):
         tid = task["id"]
         cells = []
@@ -391,10 +420,13 @@ def main() -> int:
             if r is None:
                 cells.append("not run")
                 continue
-            cells.append(
-                f"{r['requests']} / {r['tool_calls']} / {r['wall_seconds']} / {'yes' if r['accepted'] else 'no'}"
-            )
-        lines.append(f"| {tid} | {task['class']} | " + " | ".join(cells) + " |")
+            counts = [
+                "-" if r[k] is None else str(r[k])
+                for k in ("requests", "tool_calls", "wall_seconds")
+            ]
+            cells.append(" / ".join([*counts, "yes" if r["accepted"] else "no"]))
+        cls = task["class"].replace("|", "\\|")
+        lines.append(f"| {tid} | {cls} | " + " | ".join(cells) + " |")
     (out / "table.md").write_text("\n".join(lines) + "\n")
     print(json.dumps(summary, indent=2))
     if stopped:
