@@ -20,7 +20,7 @@ from starlette.staticfiles import StaticFiles
 from lionagi._errors import LionError
 from lionagi.version import __version__
 
-from ._host import normalize_host
+from ._host import admitted_host_names, normalize_host
 from ._traceback_dump import arm_traceback_dump, disarm_traceback_dump
 from .config import CORS_ORIGINS, HOST
 from .launch_access import (
@@ -423,26 +423,6 @@ def _parse_host_authority(raw_host: str) -> str | None:
     return host.lower() if host else None
 
 
-def _is_unspecified_bind_host(bind_host: str) -> bool:
-    """Whether *bind_host* names every interface rather than one address.
-
-    A wildcard (`0.0.0.0`, `::`, or an IPv6 spelling of one) binds all of them, so
-    it is not an address a page is opened at and must not widen the admitted Host
-    set. Judged by `ipaddress` on the canonical form, not by matching the literal
-    `0.0.0.0`: `::` binds the same interfaces and the string test let it through.
-    A blank value is unspecified too -- there is no name to admit. A value that is
-    not an address at all is left to the caller, which admits it as the operator's
-    chosen name.
-    """
-    host = normalize_host(bind_host)
-    if not host:
-        return True
-    try:
-        return ipaddress.ip_address(host).is_unspecified
-    except ValueError:
-        return False
-
-
 async def validate_host_header(request: Request, call_next):
     """Reject requests whose Host header doesn't match an expected value —
     defends against DNS rebinding; see docs/internals/studio.md.
@@ -455,10 +435,7 @@ async def validate_host_header(request: Request, call_next):
     # for that very address was refused.
     if hostname is not None:
         hostname = normalize_host(hostname)
-    bind_host = normalize_host(os.getenv("LIONAGI_STUDIO_HOST", HOST))
-    allowed_hosts = {"localhost", "127.0.0.1", "::1"}
-    if not _is_unspecified_bind_host(bind_host):
-        allowed_hosts.add(bind_host)
+    allowed_hosts = admitted_host_names(os.getenv("LIONAGI_STUDIO_HOST", HOST))
     if hostname is None or hostname not in allowed_hosts:
         return JSONResponse(
             {"detail": f"Invalid Host header: {request.headers.get('host', '')!r}"},

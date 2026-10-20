@@ -28,7 +28,7 @@ from lionagi.cli._argtypes import JsonArgument
 from lionagi.cli._logging import log_error, warn
 from lionagi.ln import now_utc
 from lionagi.state.db import SCHEDULE_RUN_TERMINAL_STATUSES
-from lionagi.studio._host import normalize_host
+from lionagi.studio._host import admitted_host_names, is_unspecified_host, normalize_host
 
 _STUDIO_IMAGE = "ghcr.io/ohdearquant/lion-studio:latest"
 _HOSTED_URL = "https://lion-studio.khive.ai"
@@ -260,20 +260,42 @@ class _PairingRefusedError(Exception):
 
 
 def _daemon_health(
-    port: int, challenge: str | None = None, *, host: str = "127.0.0.1"
+    port: int, challenge: str | None = None, *, host: str = "127.0.0.1", deadline_s: float = 3.0
 ) -> dict[str, Any] | None:
-    """What a lionagi daemon on ``host`` and ``port`` answers at ``/health``, or None."""
+    """What a lionagi daemon on ``host`` and ``port`` answers at ``/health``, or None.
+
+    The socket timeout bounds each read, not the exchange: a peer that sends a
+    byte at a time holds ``urlopen`` and ``read`` for as long as it keeps going.
+    So the exchange runs on a worker and an answer later than *deadline_s* is
+    None, the same as no answer. The abandoned worker is a daemon thread and
+    ends when that peer stops or closes.
+    """
+    import http.client
     import urllib.parse
     import urllib.request
 
     url = f"http://{_url_authority(host)}:{port}/health"
     if challenge is not None:
         url += "?" + urllib.parse.urlencode({"challenge": challenge})
-    try:
-        with urllib.request.urlopen(url, timeout=2) as resp:  # noqa: S310
-            health = json.loads(resp.read())
-    except (OSError, ValueError):
+    outcome: list[object] = []
+
+    def _probe() -> None:
+        try:
+            with urllib.request.urlopen(url, timeout=2) as resp:  # noqa: S310
+                outcome.append(json.loads(resp.read()))
+        except (OSError, ValueError, http.client.HTTPException):
+            outcome.append(None)
+        except Exception as exc:
+            outcome.append(exc)
+
+    worker = threading.Thread(target=_probe, name="studio-health-probe", daemon=True)
+    worker.start()
+    worker.join(deadline_s)
+    if worker.is_alive() or not outcome:
         return None
+    health = outcome[0]
+    if isinstance(health, Exception):
+        raise health
     if isinstance(health, dict) and health.get("status") == "ok":
         return health
     return None
@@ -370,6 +392,35 @@ def _dev_pairing_line(frontend_url: str) -> str:
     )
 
 
+def _dev_pairing_origin(frontend_url: str, bind_host: str) -> str | None:
+    """The origin a dev page pairs from, or None when no page this daemon serves can.
+
+    Vite forwards the page's own Host to the daemon, and the daemon refuses every
+    request whose Host it does not admit, the pairing request included. The page
+    Vite reported is used when its host is admitted. A wildcard bind admits only
+    loopback names and Vite serves the same port on loopback, so the link moves to
+    ``localhost``, the name Vite prints as that bind's Local address. Any other
+    refused host gets no link.
+    """
+    from urllib.parse import urlsplit
+
+    from lionagi.studio.launch_access import _canonical_origin
+
+    origin = _canonical_origin(frontend_url)
+    try:
+        parts = urlsplit(origin)
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return None
+    if normalize_host(parts.hostname) in admitted_host_names(bind_host):
+        return origin
+    if is_unspecified_host(bind_host):
+        return f"{parts.scheme}://localhost" + (f":{port}" if port else "")
+    return None
+
+
 def _ignore_sigpipe() -> None:
     """Let a write to a peer that already closed raise BrokenPipeError in the daemon.
 
@@ -430,9 +481,12 @@ def _start_backend_only(host: str, port: int) -> int:
     # Set before uvicorn.run: the app is loaded via import string and reads this from env.
     os.environ["LIONAGI_STUDIO_HOST"] = host
     _ignore_sigpipe()
-    # One process: the pairing codes this launch minted live in it, so a worker
-    # count from WEB_CONCURRENCY would serve the pairing route from a process
-    # that never issued them.
+    # One process: a pairing code lives in the process that minted it, whether a
+    # hosted launch minted it before calling here or a later `li studio` asks
+    # the reconnect socket for one, and every worker starts its own reconnect
+    # channel and mints into its own memory. A worker count from WEB_CONCURRENCY
+    # would serve the pairing route from a process that never issued the code,
+    # so a --no-frontend start, which mints nothing itself, runs one worker too.
     uvicorn.run("lionagi.studio.app:app", host=host, port=port, workers=1)
     return 0
 
@@ -675,13 +729,20 @@ def _start_local(
             frontend_proc, frontend_url = launched
             if frontend_url:
                 print(f"Lion Studio UI (dev):  {frontend_url}")
-                if _proxy_reaches_daemon(proxied_to, host, port):
-                    print(f"  {_dev_pairing_line(frontend_url)}")
-                else:
+                pairing_origin = _dev_pairing_origin(frontend_url, host)
+                if not _proxy_reaches_daemon(proxied_to, host, port):
                     warn(
                         f"STUDIO_API_URL sends the dev page's API calls to {proxied_to}, "
                         f"which cannot redeem a code this launch mints; no pairing link."
                     )
+                elif pairing_origin is None:
+                    warn(
+                        f"The daemon refuses the Host a page at {frontend_url} sends, so "
+                        f"that page cannot pair; no pairing link. Bind --host to the "
+                        f"address you open the page at."
+                    )
+                else:
+                    print(f"  {_dev_pairing_line(pairing_origin)}")
             # else: _launch_vite_dev already printed a specific, actionable
             # warning (early exit / stream end / timeout) with captured output.
         print(f"Lion Studio API:       http://{host}:{port}")

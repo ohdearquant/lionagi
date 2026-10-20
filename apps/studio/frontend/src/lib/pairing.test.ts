@@ -8,6 +8,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
 import {
+  PAIRING_TIMEOUT_MS,
   clearDecisionToken,
   hasPendingPairingCode,
   pairedBearer,
@@ -129,6 +130,96 @@ describe("redeemPairingCode", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(pairedBearer(BASE)).toBe("launch-bearer");
     expect(hasPendingPairingCode()).toBe(false);
+  });
+
+  it("reports a code as pending until its exchange settles", async () => {
+    let finish: (body: unknown) => void = () => {};
+    let reading = false;
+    fetchMock.mockResolvedValue({
+      status: 200,
+      ok: true,
+      json: () => {
+        reading = true;
+        return new Promise((resolve) => (finish = resolve));
+      },
+    } as unknown as Response);
+
+    const result = redeemPairingCode(BASE);
+    await vi.waitFor(() => expect(reading).toBe(true));
+    expect(hasPendingPairingCode()).toBe(true);
+    finish({ token: "launch-bearer" });
+
+    expect(await result).toBe("paired");
+    expect(hasPendingPairingCode()).toBe(false);
+  });
+
+  it("gives up on an exchange that gets no answer, keeps the code and lets a retry pair", async () => {
+    vi.useFakeTimers();
+    try {
+      fetchMock
+        .mockImplementationOnce(
+          (_url: string, init: RequestInit) =>
+            new Promise<Response>((_resolve, reject) => {
+              init.signal?.addEventListener("abort", () =>
+                reject(new DOMException("aborted", "AbortError")),
+              );
+            }),
+        )
+        .mockResolvedValue(respond(200, { token: "launch-bearer" }));
+
+      let settled = false;
+      const first = redeemPairingCode(BASE).finally(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(PAIRING_TIMEOUT_MS - 1);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(await first).toBe("unreachable");
+      expect(hasPendingPairingCode()).toBe(true);
+      expect(await redeemPairingCode(BASE)).toBe("paired");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a code read from the address bar while an exchange was in flight", async () => {
+    let answer: (response: Response) => void = () => {};
+    fetchMock
+      .mockReturnValueOnce(new Promise<Response>((resolve) => (answer = resolve)))
+      .mockResolvedValue(respond(200, { token: "launch-bearer" }));
+
+    const first = redeemPairingCode(BASE);
+    pendingPage("#pair=second-code");
+    answer(respond(401, { detail: "used" }));
+
+    expect(await first).toBe("refused");
+    expect(hasPendingPairingCode()).toBe(true);
+    expect(await redeemPairingCode(BASE)).toBe("paired");
+    const [, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({ code: "second-code" });
+  });
+
+  it("does not hand one daemon's exchange to a caller asking another", async () => {
+    const other = "http://127.0.0.1:8766";
+    let answer: (response: Response) => void = () => {};
+    fetchMock
+      .mockReturnValueOnce(new Promise<Response>((resolve) => (answer = resolve)))
+      .mockResolvedValueOnce(respond(401, { detail: "not issued here" }));
+
+    const first = redeemPairingCode(BASE);
+    const second = redeemPairingCode(other);
+    answer(respond(200, { token: "launch-bearer" }));
+
+    expect(await second).toBe("refused");
+    expect(await first).toBe("paired");
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      `${BASE}/api/studio/pair`,
+      `${other}/api/studio/pair`,
+    ]);
+    expect(pairedBearer(other)).toBeUndefined();
+    expect(pairedBearer(BASE)).toBe("launch-bearer");
   });
 
   it("keeps the decision capability in sessionStorage for that daemon only", async () => {

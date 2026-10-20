@@ -1067,6 +1067,133 @@ def test_a_dev_launch_whose_page_address_is_unknown_mints_no_code(
     assert not fresh_launch._launch_origins
 
 
+def _host_guard_status(host_header: str) -> int:
+    """The status the daemon's Host guard gives *host_header* under the bind in the env."""
+    pytest.importorskip("fastapi", reason="studio extra not installed")
+    import asyncio
+
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+
+    from lionagi.studio.app import validate_host_header
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/pair",
+            "headers": [(b"host", host_header.encode())],
+        }
+    )
+
+    async def call_next(_request):
+        return JSONResponse({"ok": True})
+
+    return asyncio.run(validate_host_header(request, call_next)).status_code
+
+
+@pytest.mark.parametrize(
+    ("bind", "reported", "origin"),
+    [
+        ("0.0.0.0", "http://192.168.1.5:3000/", "http://localhost:3000"),
+        ("::", "http://192.168.1.5:3000/", "http://localhost:3000"),
+        ("::", "http://[fe80::1]:3000/", "http://localhost:3000"),
+        ("0.0.0.0", "http://127.0.0.1:3000/", "http://127.0.0.1:3000"),
+        ("192.168.1.5", "http://192.168.1.5:3000/", "http://192.168.1.5:3000"),
+        ("192.168.1.5", "http://10.0.0.7:3000/", None),
+    ],
+)
+def test_a_dev_link_opens_its_page_at_a_host_the_daemon_answers(
+    tmp_path, monkeypatch, capsys, caplog, fresh_launch, bind, reported, origin
+):
+    from urllib.parse import urlsplit
+
+    monkeypatch.delenv("STUDIO_API_URL", raising=False)
+    monkeypatch.setenv("LIONAGI_STUDIO_HOST", bind)
+    with caplog.at_level(logging.WARNING):
+        assert _dev_launch(tmp_path, monkeypatch, reported, host=bind) == 0
+
+    links = [text for text in capsys.readouterr().out.splitlines() if "#pair=" in text]
+    reported_host = urlsplit(reported).netloc
+    if origin is None:
+        assert links == []
+        assert fresh_launch._codes == {}
+        assert "no pairing link" in caplog.text
+        assert _host_guard_status(reported_host) == 400
+        return
+    (line,) = links
+    assert f"once: {origin}/#pair=" in line
+    assert _host_guard_status(urlsplit(origin).netloc) == 200
+    if origin != reported.rstrip("/"):
+        assert _host_guard_status(reported_host) == 400
+    code = line.split("#pair=", 1)[1]
+    assert fresh_launch.redeem_pairing_grant(code, origin=origin) is not None
+
+
+def test_the_health_probe_gives_up_on_a_daemon_that_trickles_its_answer():
+    import threading
+
+    import lionagi.studio.cli as studio_mod
+
+    stop = threading.Event()
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+
+    def trickle():
+        try:
+            conn, _ = server.accept()
+        except OSError:
+            return
+        with conn:
+            conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 64\r\n\r\n")
+            while not stop.wait(0.2):
+                try:
+                    conn.sendall(b" ")
+                except OSError:
+                    return
+
+    feeder = threading.Thread(target=trickle, daemon=True)
+    feeder.start()
+    try:
+        started = time.monotonic()
+        assert studio_mod._daemon_health(port, deadline_s=0.5) is None
+        assert time.monotonic() - started < 2.0
+    finally:
+        stop.set()
+        server.close()
+        feeder.join(5)
+
+
+def test_the_health_probe_reads_a_malformed_http_answer_as_no_daemon(monkeypatch):
+    import http.client
+    import urllib.request
+
+    import lionagi.studio.cli as studio_mod
+
+    def malformed(target, timeout=None):
+        raise http.client.BadStatusLine("not http")
+
+    monkeypatch.setattr(urllib.request, "urlopen", malformed)
+
+    assert studio_mod._daemon_health(8765) is None
+
+
+def test_the_health_probe_still_raises_an_error_it_does_not_expect(monkeypatch):
+    import urllib.request
+
+    import lionagi.studio.cli as studio_mod
+
+    def broken(target, timeout=None):
+        raise RuntimeError("not a network failure")
+
+    monkeypatch.setattr(urllib.request, "urlopen", broken)
+
+    with pytest.raises(RuntimeError, match="not a network failure"):
+        studio_mod._daemon_health(8765)
+
+
 def test_launch_vite_dev_passes_selected_backend_to_proxy_env(tmp_path, monkeypatch):
     """The backend selected by ``li studio --dev`` must become Vite's proxy target."""
     import lionagi.studio.cli as studio_mod

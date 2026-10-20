@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import ipaddress
 
-__all__ = ("normalize_host",)
+__all__ = ("admitted_host_names", "is_unspecified_host", "normalize_host")
 
 
 def normalize_host(raw: str) -> str:
@@ -47,3 +47,36 @@ def normalize_host(raw: str) -> str:
     except ValueError:
         return host
     return str(getattr(address, "ipv4_mapped", None) or address)
+
+
+def is_unspecified_host(bind_host: str) -> bool:
+    """Whether *bind_host* names every interface rather than one address.
+
+    A wildcard (`0.0.0.0`, `::`, or an IPv6 spelling of one) binds all of them, so
+    it is not an address a page is opened at and must not widen the admitted Host
+    set. Judged by `ipaddress` on the canonical form, not by matching the literal
+    `0.0.0.0`: `::` binds the same interfaces and the string test let it through.
+    A blank value is unspecified too -- there is no name to admit. A value that is
+    not an address at all is left to the caller, which admits it as the operator's
+    chosen name.
+    """
+    host = normalize_host(bind_host)
+    if not host:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_unspecified
+    except ValueError:
+        return False
+
+
+def admitted_host_names(bind_host: str) -> frozenset[str]:
+    """The Host names a daemon bound to *bind_host* answers, in canonical form.
+
+    The loopback names always, and the bind address itself when it is one
+    address. A page served under any other name gets every request refused,
+    so the CLI reads this same set before it prints a link to a page.
+    """
+    names = {"localhost", "127.0.0.1", "::1"}
+    if not is_unspecified_host(bind_host):
+        names.add(normalize_host(bind_host))
+    return frozenset(names)

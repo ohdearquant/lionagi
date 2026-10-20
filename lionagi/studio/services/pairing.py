@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from ..config import CORS_ORIGINS
 from ..launch_access import (
     DECISION_TOKEN_HEADER,
+    _canonical_origin,
     is_launch_origin,
     redeem_pairing_grant,
     revoke_decision_capability,
@@ -63,10 +64,15 @@ async def redeem_pairing_code_route(request: Request, body: PairRequest) -> dict
     """Spend a pairing code for the bearer a page on an allowed origin sends, and a
     decision capability bound to that origin."""
     # Only a page on an origin CORS admits (by default the hosted app), or on an
-    # origin a launcher in this process named for its page, may pair; any other
-    # page that came by a code is refused before the code is spent.
+    # origin a launcher in this process named for its page and asking through
+    # that page's own server, may pair. CORS answers no other page, so it could
+    # not read what this route returns; any such page is refused before the
+    # code is spent.
     origin = request.headers.get("origin")
-    if origin is None or (origin not in CORS_ORIGINS and not is_launch_origin(origin)):
+    if origin is None or (
+        origin not in CORS_ORIGINS
+        and not (is_launch_origin(origin) and _is_same_origin_request(origin, request))
+    ):
         raise HTTPException(
             status_code=403,
             detail="pairing is open only to a page on an origin this daemon allows",
@@ -84,6 +90,21 @@ async def redeem_pairing_code_route(request: Request, body: PairRequest) -> dict
         "token": os.getenv("LIONAGI_STUDIO_AUTH_TOKEN") or grant.bearer,
         "decision_token": grant.capability,
     }
+
+
+def _is_same_origin_request(origin: str, request: Request) -> bool:
+    """Whether *request* was sent to the address *origin* names.
+
+    A dev server's proxy passes its page's own Host on, so a page that asks
+    through it sends a same-origin request, which needs no CORS answer. A page
+    that asks the daemon directly sends the daemon's Host, and only CORS lets it
+    read the reply.
+    """
+    host = request.headers.get("host")
+    if not host:
+        return False
+    scheme = origin.split("://", 1)[0]
+    return _canonical_origin(origin) == _canonical_origin(f"{scheme}://{host}")
 
 
 @studio_route(
