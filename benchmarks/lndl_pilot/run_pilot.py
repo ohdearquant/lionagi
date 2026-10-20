@@ -17,7 +17,9 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import yaml
@@ -71,6 +73,11 @@ def run_one(task: dict, loop: str, out: Path) -> dict:
         rc = "harness-timeout"
         stdout = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
         stderr = exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+    except Exception as exc:  # noqa: BLE001 - one leg's failure is its own row, not the run's end
+        # subprocess.run kills the child before it re-raises, so the leg's output is lost; the
+        # stderr file keeps what went wrong, and with no spend line the D4 rule stays unset.
+        rc = "harness-error"
+        stdout, stderr = "", f"{type(exc).__name__}: {exc}\n"
     elapsed = round(time.monotonic() - started, 3)
     stem.with_suffix(".stdout.txt").write_text(stdout)
     stem.with_suffix(".stderr.txt").write_text(stderr)
@@ -95,12 +102,24 @@ def run_one(task: dict, loop: str, out: Path) -> dict:
     }
 
 
-def run_pair(index: int, task: dict, loops: list[str], out: Path) -> list[dict]:
+def run_pair(
+    index: int,
+    task: dict,
+    loops: list[str],
+    out: Path,
+    stop: threading.Event,
+    record: Callable[[dict], None],
+) -> None:
     order = loops if index % 2 == 0 else list(reversed(loops))
-    return [run_one(task, loop, out) for loop in order]
+    for loop in order:
+        if stop.is_set():
+            # Stopped between a pair's two legs: the second leg is not started.
+            return
+        record(run_one(task, loop, out))
 
 
-def summarize(rows: list[dict], loops: list[str]) -> dict:
+def summarize(rows: list[dict], loops: list[str], partial: str = "") -> dict:
+    """Totals per loop and the D4 rule. `partial` names why the rows are not the whole run."""
     summary = {}
     for loop in loops:
         mine = [r for r in rows if r["loop"] == loop]
@@ -115,13 +134,19 @@ def summarize(rows: list[dict], loops: list[str]) -> dict:
             "missing_spend": sum(r["spend_lines"] == 0 for r in mine),
             "requests_per_accepted": round(requests / accepted, 3) if accepted else None,
         }
+    if partial:
+        summary["partial"] = partial
     if set(loops) == {"react", "lndl"}:
         react, lndl = summary["react"], summary["lndl"]
         missing = react["missing_spend"] + lndl["missing_spend"]
+        # The rule is read over the whole task set, and a leg with no spend line counts as zero
+        # requests, so either one leaves the rule's inputs incomplete.
+        unset = [partial] if partial else []
         if missing:
-            # A leg with no spend line counts as zero requests, so the rule's inputs are incomplete.
+            unset.append(f"{missing} leg(s) have no spend line")
+        if unset:
             summary["d4_rule"] = None
-            summary["d4_rule_unset"] = f"{missing} leg(s) have no spend line"
+            summary["d4_rule_unset"] = "; ".join(unset)
             return summary
         summary["d4_rule"] = {
             "lndl_fewer_requests_per_accepted": (
@@ -146,13 +171,15 @@ def main() -> int:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         print("ANTHROPIC_API_KEY is not set in this process; nothing run", file=sys.stderr)
         return 2
-    # Absolute: each child runs with cwd set to the read tree, so a relative path would
-    # resolve there and the prompt file would not be found.
-    out = Path(args.out).resolve()
-    out.mkdir(parents=True, exist_ok=False)
     tasks_path = Path(args.tasks).resolve()
     tasks_bytes = tasks_path.read_bytes()
     tasks = yaml.safe_load(tasks_bytes)["tasks"]
+    task_set = len(tasks)
+    # Absolute: each child runs with cwd set to the read tree, so a relative path would
+    # resolve there and the prompt file would not be found. Made once the task file has been
+    # read, so a task file that cannot be read leaves no run directory behind.
+    out = Path(args.out).resolve()
+    out.mkdir(parents=True, exist_ok=False)
     if args.only:
         wanted = set(args.only.split(","))
         tasks = [t for t in tasks if t["id"] in wanted]
@@ -188,17 +215,50 @@ def main() -> int:
         "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     (out / "header.json").write_text(json.dumps(header, indent=2))
-    rows: list[dict] = []
-    with cf.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
-        futures = [pool.submit(run_pair, i, t, loops, out) for i, t in enumerate(tasks)]
-        for fut in cf.as_completed(futures):
-            for row in fut.result():
-                rows.append(row)
-                with (out / "results.jsonl").open("a") as fh:
-                    fh.write(json.dumps(row) + "\n")
-                print(json.dumps(row), flush=True)
-    rows.sort(key=lambda r: (r["id"], r["loop"]))
-    summary = summarize(rows, loops)
+    recorded: list[dict] = []
+    lock = threading.Lock()
+
+    def record(row: dict) -> None:
+        # Written as each leg ends, so a stopped run keeps the rows of the legs that finished.
+        with lock:
+            recorded.append(row)
+            with (out / "results.jsonl").open("a") as fh:
+                fh.write(json.dumps(row) + "\n")
+            print(json.dumps(row), flush=True)
+
+    stop = threading.Event()
+    stopped = ""
+    pool = cf.ThreadPoolExecutor(max_workers=args.concurrency)
+    futures = [pool.submit(run_pair, i, t, loops, out, stop, record) for i, t in enumerate(tasks)]
+    try:
+        cf.wait(futures)
+    except KeyboardInterrupt:
+        # Queued pairs are cancelled and a running pair starts no second leg. An interrupt from
+        # the terminal reaches the running legs' `li agent` processes too, so they end and their
+        # rows are kept; a second interrupt stops the wait for them.
+        stop.set()
+        pool.shutdown(wait=False, cancel_futures=True)
+        stopped = "interrupted"
+        try:
+            # A future the shutdown cancelled never counts as done to cf.wait, so wait on the rest.
+            cf.wait([f for f in futures if not f.cancelled()])
+        except KeyboardInterrupt:
+            stopped = "interrupted twice, legs still running not waited for"
+    else:
+        pool.shutdown()
+    with lock:
+        rows = sorted(recorded, key=lambda r: (r["id"], r["loop"]))
+    failed = [f for f in futures if f.done() and not f.cancelled() and f.exception() is not None]
+    for fut in failed:
+        print(f"a task stopped on a harness error: {fut.exception()!r}", file=sys.stderr)
+    reasons = []
+    if len(tasks) < task_set:
+        reasons.append(f"the run covers {len(tasks)} of {task_set} tasks (--only)")
+    if failed:
+        reasons.append(f"{len(failed)} task(s) stopped on a harness error")
+    if stopped:
+        reasons.append(f"{stopped} after {len(rows)} of {len(tasks) * len(loops)} legs")
+    summary = summarize(rows, loops, partial="; ".join(reasons))
     (out / "summary.json").write_text(json.dumps(summary, indent=2))
     lines = [
         "| id | class | " + " | ".join(f"{l} req / tools / wall / ok" for l in loops) + " |",  # noqa: E741
@@ -207,7 +267,10 @@ def main() -> int:
     for tid in sorted({r["id"] for r in rows}):
         cells = []
         for loop in loops:
-            r = next(x for x in rows if x["id"] == tid and x["loop"] == loop)
+            r = next((x for x in rows if x["id"] == tid and x["loop"] == loop), None)
+            if r is None:
+                cells.append("not run")
+                continue
             cells.append(
                 f"{r['requests']} / {r['tool_calls']} / {r['wall_seconds']} / {'yes' if r['accepted'] else 'no'}"
             )
@@ -215,7 +278,9 @@ def main() -> int:
         lines.append(f"| {tid} | {cls} | " + " | ".join(cells) + " |")
     (out / "table.md").write_text("\n".join(lines) + "\n")
     print(json.dumps(summary, indent=2))
-    return 0
+    if stopped:
+        return 130
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

@@ -18,17 +18,19 @@ accepts no fewer tasks.
   time and their order alternates by task, four tasks in flight. Requests, tool calls and wall time
   come from the `[api] spend:` line `li agent` prints (ADR-0132 D3); the task's own check is the
   first pass on acceptance, and the reading below decides.
-- `runs/r2/`, `runs/r3/`, `runs/r4/`: `header.json` (hashes of the runner, task set and profiles, the read
-  tree's commit, the `li` version), `results.jsonl` (one row per run), `summary.json` (totals and
-  the D4 rule), `table.md` (the per-task table) and `answers.jsonl` (each run's answer, the leg's
-  stdout with surrounding whitespace removed, as the check read it; its length is that row's
-  `answer_chars`). `results.jsonl`, `summary.json` and `table.md` count acceptance by the checks
-  as run; the tables below add acceptance on reading. Three files were added after each run:
-  `spend.jsonl` (each leg's `[api] spend:` lines from its stderr; the last one gives the row's
-  requests, tool calls and wall time), `rounds.jsonl` (for each `lndl` leg, the syntax each round
-  used, read from its conversation: `F` an `lndl` fence, `L` an `<lact` tag, `I` an `<invoke` tag,
-  `O` an `OUT{`, `-` none of them) and `environment.json` (the lionagi checkout the run's
-  environment installed and the read tree's checkout, read after the run).
+- `runs/r2/`, `runs/r3/`, `runs/r4/`: the runner wrote `header.json` (hashes of the runner, task
+  set and profiles, the read tree's commit, the `li` version), `results.jsonl` (one row per run),
+  `summary.json` (totals and the D4 rule) and `table.md` (the per-task table). These count
+  acceptance by the checks as run; the tables below add acceptance on reading. Five files were
+  added after each run: `answers.jsonl` (each run's answer, the leg's stdout with surrounding
+  whitespace removed, as the check read it; its length is that row's `answer_chars`),
+  `reading.jsonl` (each answer's reading: `check` as the run recorded it, `reading` `right` or
+  `wrong`, and `source_6fa69b19`, the source line it was read against), `spend.jsonl` (each leg's
+  `[api] spend:` lines from its stderr; the last one gives the row's requests, tool calls and wall
+  time), `rounds.jsonl` (for each `lndl` leg, the syntax each round used, read from its
+  conversation: `F` an `lndl` fence, `L` an `<lact` tag, `I` an `<invoke` tag, `O` an `OUT{`, `-`
+  none of them) and `environment.json` (the lionagi checkout the run's environment installed and
+  the read tree's checkout, read after the run).
 - `runs/run_pilot.as-run.py.txt`: the runner exactly as it ran, byte for byte (sha256
   `911c41cd…`, the `runner_sha256` in each `header.json`).
 
@@ -66,7 +68,8 @@ r2, r3 and r4, accepted by its check or not, was then read against the `truth` l
 records for its task (written against `6fa69b19`), and ADR-0132 D4 takes the reading as the
 decision. Read that way, r2 fails the rule, r3 meets it with no margin (23 accepted tasks on each
 side), and r4, at `d8838f28`, fails it (`lndl` 23 against ReAct 24). By the checks alone the
-outcomes are the same, r3 by one task. ADR-0132 D4 names `r5` as the run that decides.
+outcomes are the same, r3 by one task. A fourth run, `r5`, ran before the reading rule was
+adopted (ADR-0132 D4); its record is added in a later change, and no run recorded here decides D4.
 
 The reading is one reader's judgment, made by the author of this change knowing which loop wrote
 each answer; no blind second reading was done. It judges what each answer says to its question and did not check every side claim;
@@ -95,7 +98,8 @@ corrects a premise of the question on the way. Two tasks turn on that rule (sour
 r4 fails the rule by one task, so counting any one of its accepted ReAct answers wrong, such as its
 `t05` answer, would make it meet the rule.
 
-The reading and the checks differ in ten answers:
+The reading and the checks differ in ten answers, the `reading.jsonl` rows whose `check` and
+`reading` disagree:
 
 | task | runs | loop | check | reading | why |
 |---|---|---|---|---|---|
@@ -135,15 +139,24 @@ and r4, and `spend_lines` is at least 1 in all 144 rows. Each leg's spend lines 
 ## How the committed files differ from the runs' output
 
 - `run_pilot.py` is `runs/run_pilot.as-run.py.txt` with `noqa` comments added, the `(r1)` at the
-  end of one comment removed (the as-run copy keeps it), the layout reformatted by ruff, and one
-  change to `summarize()`: the as-run copy computed the D4 rule even when a leg had no spend line,
-  and `run_pilot.py` leaves it unset (above). Of the two files' top-level statements, `summarize()`
-  is the only one whose `ast.dump` differs. With `missing_spend` at 0 in all three runs, both write
-  the same `summary.json`; `tests/benchmarks/test_lndl_pilot.py` recomputes each committed summary
-  from its run's `results.jsonl`.
+  end of one comment removed (the as-run copy keeps it), the layout reformatted by ruff, and three
+  changes. First, `summarize()` leaves the D4 rule unset when a leg has no spend line (above) or
+  the rows are not the whole run, where the as-run copy computed it. Second, a run that stops early
+  keeps what it has (`run_one()`, `run_pair()`, `main()`): a leg whose `subprocess.run` raises
+  becomes a row with `rc` `harness-error` and no spend line, each row is appended to
+  `results.jsonl` as its leg ends, and an interrupt starts no further leg and still writes the
+  summary and table (below). Third, `main()` makes the run directory after reading the task file,
+  so a task file that cannot be read leaves none behind. Of the two files' top-level statements,
+  `summarize()`, `run_one()`, `run_pair()` and `main()` are the ones whose `ast.dump` differs, and
+  `run_pilot.py` adds two imports (`threading` and `collections.abc.Callable`). With `missing_spend` at 0 and every leg run in all three runs, both
+  write the same `summary.json`; `tests/benchmarks/test_lndl_pilot.py` recomputes each committed
+  summary from its run's `results.jsonl`.
 - In each `header.json`, `tasks_file` was an absolute path on the machine that ran it and now
   reads `tasks.yaml`. Nothing else in `runs/` was changed, apart from a final newline added to the
-  JSON files; `answers.jsonl`, `spend.jsonl`, `rounds.jsonl` and `environment.json` were added.
+  JSON files; `answers.jsonl`, `reading.jsonl`, `spend.jsonl`, `rounds.jsonl` and
+  `environment.json` were added. `tests/benchmarks/test_lndl_pilot.py` checks that each
+  `reading.jsonl` has one row for each row of its run, that its `check` column is the run's
+  `accepted`, and that the counts in ADR-0132's Result table are its tally.
 - The runner also writes each leg's prompt, stdout and stderr beside its results, and `li agent`
   keeps each leg's conversation under the run's `home/`. Of those, the stdout is committed as
   `answers.jsonl`, the stderr's spend lines as `spend.jsonl`, and the syntax of each round of each
@@ -155,11 +168,21 @@ and r4, and `spend_lines` is at least 1 in all 144 rows. Each leg's spend lines 
 
 The runner expects, beside it, `tree/` (a checkout of `6fa69b19`), `venv/` (an environment with
 the lionagi to measure installed, so `venv/bin/li` exists), `home/` (an empty directory: the
-runner sets `HOME` to it and `LIONAGI_HOME` to `home/.lionagi`, so no user configuration is read)
-and `ANTHROPIC_API_KEY` in its environment. Then:
+runner sets `HOME` to it and `LIONAGI_HOME` to `home/.lionagi`, so the configuration in the real
+home directory is not read) and `ANTHROPIC_API_KEY` in its environment. Each leg runs in `tree/`,
+and `li agent` looks for its profile in a `.lionagi/agents/` in `tree/` and then in each directory
+above it, which is how it finds the profiles beside the runner; a profile of the same name in a
+directory nearer to `tree/` would be taken first. Then:
 
 ```bash
 venv/bin/python run_pilot.py --tasks tasks.yaml --out runs/<name>
 ```
 
-A run is 48 `li agent` legs, two per task.
+A run is 48 `li agent` legs, two per task. `--only t01,t02` runs part of the task set. A run that
+does not cover every leg of the whole task set, because of `--only`, an interrupt, or a task that
+stopped on an error in the runner itself, still writes `summary.json` and `table.md` from the rows
+it has: `summary.json` says why under `partial`, the D4 rule is `null` with the same reason in
+`d4_rule_unset`, and `table.md` lists each task with a row, marking a leg that did not run as
+`not run`. On an interrupt (Ctrl-C)
+no further leg starts and the runner waits for the legs already running; a second interrupt stops
+that wait. The runner exits 130 after an interrupt and 1 after a task stopped on an error.

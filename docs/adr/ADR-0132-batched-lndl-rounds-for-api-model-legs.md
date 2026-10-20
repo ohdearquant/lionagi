@@ -2,10 +2,11 @@
 
 - **Status**: Proposed
 - **Kind**: Aspirational
-- **Implementation-status**: partial — D1-D3 are implemented. D4 is open: its pilot ran three
-  times (D4, Result), and read against the source r3 meets the rule and r2 and r4 (`d8838f28`) do
-  not, so these runs do not settle it; `r5`, the run D4 names, has not been recorded. Until D4 is
-  settled `lndl` stays an opt-in setting and is not recommended, and the default stays `react`
+- **Implementation-status**: partial — D1-D3 are implemented. D4 is open: three pilot runs are
+  recorded (D4, Result), and read against the source r3 meets the rule and r2 and r4 (`d8838f28`)
+  do not, so no recorded run decides it. A fourth run, `r5`, ran before the rule that the reading
+  decides was adopted, and its record is added in a later change. Until D4 is settled `lndl` stays
+  an opt-in setting and is not recommended, and the default stays `react`
 - **Area**: operations
 - **Date**: 2026-10-17
 - **Relations**: extends ADR-0024 (LNDL operate integration adapter) and ADR-0041 Amendment 1
@@ -16,11 +17,12 @@
 
 An API-model `li agent` leg runs lionagi's own tool loop, `Branch.ReAct(tools=True,
 max_extensions=N)` (`lionagi/cli/agent.py:395-399`, ADR-0041 Amendment 1). Each ReAct analysis round
-is at least one model request (a reply that fails to parse is asked for again), and a round's tool
-calls run through `act()`, concurrently unless the model asks for them in sequence
-(`lionagi/operations/ReAct/ReAct.py:98`, `:205`, `:542`). After the last analysis round ReAct always
-makes one more request for the answer (`ReAct.py:631-684`). A ReAct turn therefore costs its
-analysis rounds plus one. A model that asks for a read cannot see the result in that round, so it
+is at least one model request, and a reply that fails to parse costs more, since it is sent back to
+the model to be reformatted (`lionagi/operations/communicate/communicate.py:119-128`,
+`lionagi/operations/parse/parse.py:186-217`). A round's tool calls run through `act()`, concurrently
+unless the model asks for them in sequence (`lionagi/operations/ReAct/ReAct.py:98`, `:205`,
+`:542`). After the last analysis round ReAct always makes one more request for the answer
+(`ReAct.py:631-684`). A ReAct turn therefore costs its analysis rounds plus one. A model that asks for a read cannot see the result in that round, so it
 usually asks for another round to look at it before saying it is done: the leg's own test of a
 one-read task scripts three requests, the read round, a round that sees the result and stops, and
 the answer (`tests/cli/test_agent_api_provider.py:172`).
@@ -132,12 +134,15 @@ first run and has at least 20 read-only tasks of the kind the leg is used for, e
 that marks its answer accepted or rejected as a first pass. Every answer is then read against the
 source, and the reading decides: an answer the check accepts and the reading finds wrong is not accepted, and one
 the check rejects and the reading finds right is. The result is a per-task table of requests, tool
-calls, wall time and acceptance for both loops, published with the pilot's commit. The pilot can
-run more than once as the code changes, and each run is recorded in the Result. r2, r3 and r4 did
-not settle the rule (Result); after r4 the run that decides was named as `r5`, and its record
-and result land in a later change. No later run reopens D4: a different outcome takes
-a new decision. The reading is one reader's judgment, made knowing which loop wrote each answer,
-and no blind second reading was done; it judges what each answer says to its question and counts
+calls, wall time and acceptance for both loops, published with the pilot's commit, and a per-task
+record of each answer's reading beside its check. The pilot can run more than once as the code
+changes, and each run is recorded in the Result. r2, r3 and r4 are recorded there and do not settle
+the rule. A fourth run, `r5`, ran on 2026-10-20 from 02:09 to 02:12 UTC with lionagi installed from
+`208bcc08`; the rule that the reading decides was adopted after it, at 03:10 UTC. r5's record is
+added to the Result in a later change, and no run recorded here decides D4. Once a recorded run
+decides it, no later run reopens D4: a different outcome takes a new decision. The reading is one
+reader's judgment, made knowing which loop wrote each answer, and no blind second reading was
+done; it judges what each answer says to its question and counts
 an answer right when it gives the value or name its task records, also when it corrects a premise
 of the question on the way. `tasks.yaml` gives each task's source line (its `truth`), and the
 pilot's README names the answers whose count turns on that rule, so that another reader can redo
@@ -152,7 +157,8 @@ The pilot is `benchmarks/lndl_pilot/`: 24 read-only questions about lionagi's ow
 an acceptance check, on `anthropic/claude-haiku-5-5` with read tools and `max_extensions: 10`. Each
 task's two runs are adjacent in time and the loop that goes first alternates by task. The per-task
 tables of requests, tool calls, wall time and acceptance by the checks are `runs/<run>/table.md`
-there.
+there, and each answer's reading, beside its check and the source line it was read against, is
+`runs/<run>/reading.jsonl`.
 
 | run | lionagi | loop | accepted by the checks | accepted on reading | requests | per accepted task | tool calls |
 |---|---|---|---|---|---|---|---|
@@ -220,10 +226,11 @@ the 17 wrote a block in its next round, and 18 of the 79 requests went to rounds
   opened with an `<invoke>` tag, each wrote a block in its next round, 17 of the 80 requests went to
   rounds with no block, and no run reached the round budget.
 - On reading, r3 ties the accepts clause and r4 misses it by one task, so these runs do not settle
-  it. The request saving held in both runs: 79 requests against 95, and 80 against 91. The result
-  of `r5`, the run D4 names, is recorded in a later change. Every answer is committed with the runs
-  (`answers.jsonl`), beside each leg's spend line (`spend.jsonl`), and the README lists the ten answers where the reading and the checks differ
-  and the answers to `t03` and `t05` whose count turns on the reading rule.
+  it. The request saving held in both runs: 79 requests against 95, and 80 against 91. `r5` ran
+  before the reading rule was adopted (D4), and its record is added in a later change. Every
+  answer is committed with the runs (`answers.jsonl`), beside each leg's spend line (`spend.jsonl`)
+  and its reading (`reading.jsonl`), and the README lists the ten answers where the reading and the
+  checks differ and the answers to `t03` and `t05` whose count turns on the reading rule.
 - The counts of runs that opened with an `<invoke>` tag and of requests that went to rounds with no
   block are read from each leg's conversation, which `li agent` keeps under the run's home directory.
   The pilot commits what was read from them, the syntax each `lndl` round used (`rounds.jsonl`), and
