@@ -351,11 +351,11 @@ runs with `--ignore-user-config` and no `-p` profile, so the servers and
 profiles of the user's codex config never load and none needs disabling by
 name. The config's `sandbox_mode`, its `[sandbox_workspace_write]` settings,
 its hook trust records and its `[projects]` trust decisions ride beside the
-flag, so the hooks it trusts in `$CODEX_HOME/hooks.json` still gate the worker's
-tool calls and a project it trusts gets the sandbox codex derives for it; a
+flag, so the hooks it trusts in `$CODEX_HOME/hooks.json` still run for the
+worker and a project it trusts gets the sandbox codex derives for it; a
 config that declares hooks or sets `default_permissions` itself is refused.
-A Claude worker keeps its settings sources, whose hooks and permissions gate
-its tool calls. A worker therefore has none of the servers its CLI would load
+A Claude worker is not isolated here and keeps its settings sources, as an
+interactive run does. A worker therefore has none of the servers its CLI would load
 from `$CODEX_HOME/config.toml`, a withheld one included; the orchestrator keeps them. The
 synthesis branch starts from a copy of the orchestrator's model and is not
 isolated, so the same exclusive hand-over is what takes the orchestrator's

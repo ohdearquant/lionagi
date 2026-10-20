@@ -710,7 +710,7 @@ def _isolate_worker_cli_config(imodel) -> None:
     Its MCP set, model and effort are handed to it explicitly, and the user
     config's sandbox settings and its hook and project trust records ride beside
     the flag (codex.py names which), so what it trusts stays trusted. A Claude worker
-    keeps its settings sources, whose hooks and permissions gate its tool calls.
+    is not isolated here and keeps its settings sources.
     Applied before the MCP hand-off, which reads the codex flag.
     """
     if not getattr(imodel, "is_cli", False):
