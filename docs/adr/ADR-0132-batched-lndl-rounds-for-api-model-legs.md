@@ -134,14 +134,16 @@ source, and the reading decides: an answer the check accepts and the reading fin
 the check rejects and the reading finds right is. The result is a per-task table of requests, tool
 calls, wall time and acceptance for both loops, published with the pilot's commit. The pilot can
 run more than once as the code changes, and each run is recorded in the Result. r2, r3 and r4 did
-not settle the rule (Result); after r4, and before it started, the run that decides was named as
-`r5`, at the merged code. r5 asks the same questions against the same source lines, with the `t06`
-and `t20` checks corrected, and is read by the same rule. No later run reopens D4: a different
-outcome takes a new decision. The reading is one reader's judgment, made knowing which loop wrote
-each answer; it judges what each answer says to its question and counts an answer right when it
-gives the value or name its task records, also when it corrects a premise of the question on the
-way. The pilot's README gives the source line for each task, and names the answers whose count
-turns on that rule, so that another reader can redo it. Because the reading decides, a check corrected between runs changes
+not settle the rule (Result); after r4 the run that decides was named as `r5`, at the merged code,
+and it ran at the `main` commit current when it started. r5 asks the same questions against the
+same source lines, with the `t06` and `t20` checks corrected, and is read by the same rule; its task
+file, rows and reading are recorded with its result, not here. No later run reopens D4: a different outcome takes
+a new decision. The reading is one reader's judgment, made knowing which loop wrote each answer,
+and no blind second reading was done; it judges what each answer says to its question and counts
+an answer right when it gives the value or name its task records, also when it corrects a premise
+of the question on the way. `tasks.yaml` gives each task's source line (its `truth`), and the
+pilot's README names the answers whose count turns on that rule, so that another reader can redo
+it. Because the reading decides, a check corrected between runs changes
 the first pass and not the outcome. `lndl` becomes a recommended profile setting only if it uses
 fewer requests per accepted task in total and accepts no fewer tasks; the default stays `react`
 until a later decision changes it.
@@ -189,8 +191,9 @@ the 17 wrote a block in its next round, and 18 of the 79 requests went to rounds
   class, the answer names it by its import path, `lionagi.tools.code.search`, and says it did not
   open the file, and the check asks for the file path. The `lndl` answers to `t24` in all three runs
   are wrong and were accepted: each says `lionagi/mcp/config.py` defines no `RUNS_DIR`, and line 19
-  of that file is `RUNS_DIR = RUNS_ROOT`; the check asked only for the names `RUNS_DIR` and
-  `JOBS_DIR`, which the question itself supplies. Every other answer agrees with its check.
+  of that file is `RUNS_DIR = RUNS_ROOT`; the check asks for `.lionagi`, the default the question
+  asks for, and the names `RUNS_DIR` and `JOBS_DIR`, which the question itself supplies, so it
+  accepts these answers. Every other answer agrees with its check.
 - On reading, r3 meets the rule with no margin: 23 tasks accepted on each side, and `lndl` used 79
   requests against 95 (3.43 per accepted task against 4.13). The ReAct side moved by one task
   between r2 and r3 (its r3 `t04` leg above), so r3 shows that `lndl` accepted no fewer tasks, not
