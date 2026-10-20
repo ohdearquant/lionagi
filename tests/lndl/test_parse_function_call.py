@@ -78,3 +78,15 @@ class TestParseBatchFunctionCalls:
         assert results[0]["service"] == "memory"
         assert results[0]["action"] == "recall"
         assert "service" not in results[1]
+
+    def test_batch_elements_match_single_call_parses(self):
+        calls = ['a(from="x", n=1)', 'svc.b([1, 2], d={"k": null}, flag=true)', "c()"]
+        results = parse_batch_function_calls("[" + ", ".join(calls) + "]")
+        assert results == [parse_function_call(call) for call in calls]
+        assert results[0]["arguments"] == {"from_": "x", "n": 1}
+
+    def test_batch_does_not_rewrite_a_decoded_literal_into_a_keyword(self):
+        """A string whose escapes decode to ``from=`` keeps that text in a batch."""
+        call = r'fn(x="\x66rom=1")'
+        assert parse_function_call(call)["arguments"] == {"x": "from=1"}
+        assert parse_batch_function_calls(f"[{call}]")[0]["arguments"] == {"x": "from=1"}
