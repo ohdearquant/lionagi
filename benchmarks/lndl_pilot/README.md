@@ -60,14 +60,30 @@ decision. Read that way, r2 fails the rule, r3 meets it with no margin (23 accep
 side), and r4, at the merged code, fails it (`lndl` 23 against ReAct 24). By the checks alone the
 outcomes are the same, r3 by one task. ADR-0132 D4 names `r5` as the run that decides.
 
-The reading is one reader's judgment, made knowing which loop wrote each answer. It judges what
-each answer says to its question and did not check every side claim; each task's `truth` line is
-the source line it was read against, so another reader can redo it. Two answers to `t03`, the r3
-ReAct and the r4 `lndl` one, open by saying the endpoint's request model has no default
-(`lionagi/providers/anthropic/messages.py:86`) and then give 8192 as the value lionagi's CLI
-applies (`lionagi/cli/agent.py:89`, `:1027-1030`); the reading counts both as right, since 8192 is
-the value the task records. Counted wrong, r3 would be `lndl` 23 against ReAct 22 and r4 `lndl` 22
-against ReAct 24, and neither outcome would change.
+The reading is one reader's judgment, made by the author of this change knowing which loop wrote
+each answer. It judges what each answer says to its question and did not check every side claim;
+each task's `truth` line is the source line it was read against, so another reader can redo it. An
+answer counts as right when it gives the value or name the `truth` line records, also when it
+corrects a premise of the question on the way. Two tasks turn on that rule (source lines at
+`6fa69b19`):
+
+- `t03` asks for the default `max_tokens` the Anthropic messages endpoint gets. Five accepted
+  answers say the endpoint's request model has no default of its own
+  (`lionagi/providers/anthropic/messages.py:86`) and give 8192 as the value lionagi's CLI applies
+  (`lionagi/cli/agent.py:89`, `:1027-1030`): the r3 ReAct and r4 `lndl` answers open with the
+  missing default, and the r2 ReAct, r3 `lndl` and r4 ReAct answers open with 8192. The reading
+  counts all five as right, since 8192 is the value the task records. Counted wrong, the two that
+  open with the missing default make r3 `lndl` 23 against ReAct 22 and r4 `lndl` 22 against ReAct
+  24; all five make r3 `lndl` 22 against ReAct 22 and r4 `lndl` 22 against ReAct 23. No outcome
+  changes.
+- `t05` asks for "the default max_tokens value for the BashTool's timeout field in milliseconds";
+  the field holds a timeout, not a token count. All six answers give 30000 ms, the value the task
+  records (`lionagi/tools/code/bash.py:35`), and five of them also say the question's `max_tokens`
+  does not fit the field (all but the r4 `lndl` one). Counted wrong, those five leave r2 failing the
+  rule and r3 meeting it (22 against 22), and make r4 meet it (23 against 23).
+
+r4 fails the rule by one task, so counting any one of its accepted ReAct answers wrong, such as its
+`t05` answer, would make it meet the rule.
 
 The reading and the checks differ in ten answers:
 

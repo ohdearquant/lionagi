@@ -135,10 +135,13 @@ the check rejects and the reading finds right is. The result is a per-task table
 calls, wall time and acceptance for both loops, published with the pilot's commit. The pilot can
 run more than once as the code changes, and each run is recorded in the Result. r2, r3 and r4 did
 not settle the rule (Result); after r4, and before it started, the run that decides was named as
-`r5`, at the merged code. No later run reopens D4: a different outcome takes a new decision. The
-reading is one reader's judgment, made knowing which loop wrote each answer; it judges what each
-answer says to its question, and the pilot's README gives the source line for each task so that
-another reader can redo it. Because the reading decides, a check corrected between runs changes
+`r5`, at the merged code. r5 asks the same questions against the same source lines, with the `t06`
+and `t20` checks corrected, and is read by the same rule. No later run reopens D4: a different
+outcome takes a new decision. The reading is one reader's judgment, made knowing which loop wrote
+each answer; it judges what each answer says to its question and counts an answer right when it
+gives the value or name its task records, also when it corrects a premise of the question on the
+way. The pilot's README gives the source line for each task, and names the answers whose count
+turns on that rule, so that another reader can redo it. Because the reading decides, a check corrected between runs changes
 the first pass and not the outcome. `lndl` becomes a recommended profile setting only if it uses
 fewer requests per accepted task in total and accepts no fewer tasks; the default stays `react`
 until a later decision changes it.
@@ -162,9 +165,10 @@ there.
 
 Requests per accepted task divides a run's requests by the tasks accepted on reading.
 
-On reading, r2 fails the rule and r3 meets it with no margin, and one change to the Python package
-separates them: in r2 an
-`lndl` round with no block continued with no error, and in r3 it is the repair round D2 describes.
+On reading, r2 fails the rule and r3 meets it with no margin. One change to the Python package
+lies between them: in r2 an `lndl` round with no block continued with no error, and in r3 it is the
+repair round D2 describes. With one run of each, the pilot cannot show that this change caused the
+difference; the ReAct side, which the change does not touch, also moved by one task.
 Read from each leg's conversation, which the pilot does not commit (see below), in both runs 17 of
 the 24 `lndl` runs opened with a call written as an `<invoke>` tag outside any block. In r2, 12 of
 those recovered on their own and 5 (`t03`, `t04`, `t17`, `t18`, `t19`) kept writing the tag and, in
@@ -190,9 +194,11 @@ the 17 wrote a block in its next round, and 18 of the 79 requests went to rounds
 - On reading, r3 meets the rule with no margin: 23 tasks accepted on each side, and `lndl` used 79
   requests against 95 (3.43 per accepted task against 4.13). The ReAct side moved by one task
   between r2 and r3 (its r3 `t04` leg above), so r3 shows that `lndl` accepted no fewer tasks, not
-  that it accepts more. This counts the r3 ReAct answer to `t03` as right: it opens by saying the
-  endpoint's request model has no default and then gives 8192 as the value lionagi's CLI applies,
-  the line the task records. Counted wrong, r3 would be `lndl` 23 against ReAct 22.
+  that it accepts more. This counts both r3 answers to `t03` as right (each says the endpoint's
+  request model has no default and gives 8192, the value lionagi's CLI applies and the line the
+  task records) and both r3 answers to `t05` (each says the question's `max_tokens` does not fit
+  the timeout field and gives its default, 30000 ms). Counting either pair wrong leaves r3 at 22
+  against 22, which still meets the rule.
 - The tool calls counted are the calls that ran. The most any `lndl` run made was four in r2, three
   in r3 and five in r4 (`t21` and `t22`). A round that declares more than 16 calls is refused and
   none of its calls runs (D2), so these counts cannot show whether a round reached the limit, and
@@ -200,14 +206,16 @@ the 17 wrote a block in its next round, and 18 of the 79 requests went to rounds
 - r4 ran the merged code (`d8838f28`), whose repair round also tells the model how a block opens
   and closes, reads indented, longer and CRLF fences, and treats an empty block as a repair round
   (D2). On reading it fails the rule: `lndl` used fewer requests per accepted task (80 requests,
-  3.48, against 91 and 3.79) and accepted one task fewer (23 against 24). The checks give the same
-  outcome through different tasks (22 against 23). 17 of the 24 `lndl` runs again opened with an
-  `<invoke>` tag, each wrote a block in its next round, 17 of the 80 requests went to rounds with no
-  block, and no run reached the round budget.
+  3.48, against 91 and 3.79) and accepted one task fewer (23 against 24), so counting any one
+  accepted ReAct answer wrong, such as its `t05` answer, would make r4 meet the rule. The checks
+  give the same outcome through different tasks (22 against 23). 17 of the 24 `lndl` runs again
+  opened with an `<invoke>` tag, each wrote a block in its next round, 17 of the 80 requests went to
+  rounds with no block, and no run reached the round budget.
 - On reading, r3 ties the accepts clause and r4 misses it by one task, so these runs do not settle
   it. The request saving held in both runs: 79 requests against 95, and 80 against 91. The result
   of `r5`, the run D4 names, is recorded in a later change. Every answer is committed with the runs
-  (`answers.jsonl`), and the README lists the ten answers where the reading and the checks differ.
+  (`answers.jsonl`), and the README lists the ten answers where the reading and the checks differ
+  and the answers to `t03` and `t05` whose count turns on the reading rule.
 - The counts of runs that opened with an `<invoke>` tag and of requests that went to rounds with no
   block are read from each leg's conversation, which `li agent` keeps under the run's home directory
   and the pilot does not commit; the committed files give the per-task requests, tool calls,
