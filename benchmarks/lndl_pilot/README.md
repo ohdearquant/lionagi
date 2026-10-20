@@ -75,7 +75,7 @@ it (`lndl` 23 against ReAct 24). r5, the run ADR-0132 D4 names as deciding, fail
 on each side; the difference is the `lndl` answer to `t24`.
 
 The reading is one reader's judgment, made by the author of this change knowing which loop wrote
-each answer. It judges what each answer says to its question and did not check every side claim;
+each answer; no blind second reading was done. It judges what each answer says to its question and did not check every side claim;
 each task's `truth` line is the source line it was read against, so another reader can redo it. An
 answer counts as right when it gives the value or name the `truth` line records, also when it
 corrects a premise of the question on the way. Two tasks turn on that rule (source lines at
@@ -95,7 +95,8 @@ corrects a premise of the question on the way. Two tasks turn on that rule (sour
 - `t05` asks for "the default max_tokens value for the BashTool's timeout field in milliseconds";
   the field holds a timeout, not a token count. All eight answers give 30000 ms, the value the task
   records (`lionagi/tools/code/bash.py:35`), and seven of them also say the question's
-  `max_tokens` does not fit the field (all but the r4 `lndl` one). Counted wrong, those seven leave
+  `max_tokens` does not fit the field (the r2, r3 and r5 answers on both loops and the r4
+  ReAct answer). Counted wrong, those seven leave
   r2 failing the rule and r3 meeting it (22 against 22), make r4 meet it (23 against 23), and leave
   r5 failing it (`lndl` 21 against ReAct 22).
 
@@ -117,8 +118,8 @@ and `t20` checks take the answers the earlier ones rejected):
 | task | runs | loop | check | reading | why |
 |---|---|---|---|---|---|
 | `t06` | r2, r3, r4 | both | rejected | right | The check expects `100000`. Each answer writes the cap as `100_000`, all but the r4 ReAct answer also as `100,000`, and names `_MAX_OUTPUT_BYTES` and `_SHELL_CONTROL` (`lionagi/tools/_subprocess.py:18`, `:20`). |
-| `t20` | r4 | `lndl` | rejected | right | The question asks which module defines the class; the answer names it by its import path, `lionagi.tools.code.search`, and says it did not open the file. The check expects the file path `lionagi/tools/code/search.py`. |
-| `t24` | r2, r3, r4, r5 | `lndl` | accepted | wrong | Each answer says `lionagi/mcp/config.py` defines no `RUNS_DIR`; line 19 of that file is `RUNS_DIR = RUNS_ROOT`. The check asks for the names `RUNS_DIR` and `JOBS_DIR`, which the question itself supplies. |
+| `t20` | r4 | `lndl` | rejected | right | The question asks which module defines the class; the answer names it by its import path, `lionagi.tools.code.search`, and says it did not open the file. The check expects the file path; the class is defined at `lionagi/tools/code/search.py:193`. |
+| `t24` | r2, r3, r4, r5 | `lndl` | accepted | wrong | Each answer says `lionagi/mcp/config.py` defines no `RUNS_DIR`; line 19 of that file is `RUNS_DIR = RUNS_ROOT`. The check these runs used asks for `.lionagi`, the default the question asks for, and the names `RUNS_DIR` and `JOBS_DIR`, which the question itself supplies, so it accepts these answers. |
 
 The other rejected answers are wrong on reading too (source lines here are at `6fa69b19`): the
 five r2 `lndl` legs that spent all 11 requests (`t03`, `t04`, `t17`, `t18`, `t19`; ADR-0132 D4,
@@ -133,7 +134,10 @@ not touch what the question asks: the r4 `lndl` answer to `t22` says the questio
 (the rest of the answer matches `lionagi/agent/spec.py:48-56`); the r2 ReAct answer to `t05` says
 `BashTool.call` substitutes the default, where the method is `handle_request`
 (`lionagi/tools/code/bash.py:111`); and the r4 `lndl` answer to `t03` says the CLI applies the
-fallback with `.get`, where it calls `setdefault` (`lionagi/cli/agent.py:1028`).
+fallback with `.get`, where it calls `setdefault` (`lionagi/cli/agent.py:1028`). The r2 ReAct answer to `t21` says `_wire_secure_guards` is
+"imported from lionagi/agent/spec.py line 44"; that line is where the function is defined, and the
+import is at `lionagi/cli/agent.py:266`. The reading does not count it as a fourth, since the module
+and line it names are the definition the task records and only the verb is loose.
 
 ### r5, task by task
 
