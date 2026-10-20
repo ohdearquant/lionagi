@@ -13,6 +13,12 @@ lionagi starts `claude` and `codex` processes for every CLI agent it runs. This 
 the only place the hooks those processes run are declared, and makes it impossible for a spawn to
 start without them.
 
+The first hook it carries serves one redaction requirement: secret values are replaced by tokens
+from a single redaction table before they reach the model's context and before the engine writes
+its transcript, and because neither engine exposes a hook that runs before it persists a tool
+result, D7 meets the transcript half by substituting at the pre-tool hook and scrubbing the
+transcript at stop and at exit.
+
 ## Context
 
 A CLI agent is a separate program with its own hook system. Claude Code reads hook definitions from
