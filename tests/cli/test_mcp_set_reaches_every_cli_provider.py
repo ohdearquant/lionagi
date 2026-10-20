@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import stat
 from pathlib import Path
 from types import SimpleNamespace
@@ -177,6 +178,84 @@ def test_an_exclusive_set_that_loads_the_user_config_refuses_a_named_profile(
     addition: dict = {"profile": "work"}
     assert apply_forwarded_mcp_servers(addition, SERVERS, provider="codex")
     assert addition["profile"] == "work"
+
+
+@pytest.mark.parametrize("key", ["profile", " profile\t"])
+@pytest.mark.parametrize(
+    ("servers", "allowed_names"),
+    [({}, ["kept"]), (SERVERS, None)],
+    ids=["allowlist-keeps-a-declared-server", "non-empty-set"],
+)
+def test_an_exclusive_set_that_loads_the_user_config_refuses_a_profile_its_overrides_select(
+    codex_home, servers, allowed_names, key
+):
+    """`-c profile=...` selects a profile as `-p` does: codex trims an override's key and
+    reads it as the same `profile` key."""
+    codex_home.write_config({"kept": {"command": "kept-mcp"}, "other": {"command": "other-mcp"}})
+    kwargs: dict = {"config_overrides": {key: "work"}}
+
+    with pytest.raises(ConfigurationError, match="profile='work'"):
+        apply_forwarded_mcp_servers(
+            kwargs, servers, provider="codex", exclusive=True, allowed_names=allowed_names
+        )
+
+    # the controls: overrides that only define a profile, and the selecting key on an addition
+    defines: dict = {"config_overrides": {"profiles.work.model": "gpt-5.3-codex"}}
+    assert apply_forwarded_mcp_servers(
+        defines, servers, provider="codex", exclusive=True, allowed_names=allowed_names
+    )
+    addition: dict = {"config_overrides": {"profile": "work"}}
+    assert apply_forwarded_mcp_servers(addition, SERVERS, provider="codex")
+    assert addition["config_overrides"]["profile"] == "work"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "named"),
+    [
+        ({"profile": ""}, "profile=''"),
+        ({"profile": ["secret-name"]}, "a profile of type list"),
+        ({"config_overrides": {"profile": {"secret": "name"}}}, "a profile of type dict"),
+    ],
+    ids=["empty-string", "list", "override-table"],
+)
+def test_an_empty_or_non_string_profile_on_such_a_set_is_refused(codex_home, kwargs, named):
+    """An empty name still reaches the command line (`-p ''`), and a value that is not a
+    string is named by its type, its content not echoed."""
+    codex_home.write_config({"kept": {"command": "kept-mcp"}})
+
+    with pytest.raises(ConfigurationError, match=re.escape(named)) as refused:
+        apply_forwarded_mcp_servers(kwargs, SERVERS, provider="codex", exclusive=True)
+
+    assert "secret" not in str(refused.value)
+
+
+def test_a_string_flag_is_read_as_the_codex_request_reads_it(codex_home):
+    """The request's field reads `"false"` as False, so the hand-off does too: the profile is
+    refused, and an empty set takes the flag. A value the field refuses is left for it."""
+    from pydantic import ValidationError
+
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    codex_home.write_config({"kept": {"command": "kept-mcp"}})
+
+    named: dict = {"ignore_user_config": "false", "profile": "work"}
+    with pytest.raises(ConfigurationError, match="profile='work'"):
+        apply_forwarded_mcp_servers(named, SERVERS, provider="codex", exclusive=True)
+
+    empty: dict = {"ignore_user_config": "false"}
+    assert apply_forwarded_mcp_servers(empty, {}, provider="codex", exclusive=True)
+    assert empty == {"ignore_user_config": True}
+
+    on: dict = {"ignore_user_config": "true"}
+    assert apply_forwarded_mcp_servers(on, SERVERS, provider="codex", exclusive=True)
+    assert on["ignore_user_config"] is True
+    assert "mcp_servers.kept.enabled" not in on["config_overrides"]
+
+    refused: dict = {"ignore_user_config": "maybe"}
+    assert apply_forwarded_mcp_servers(refused, SERVERS, provider="codex", exclusive=True)
+    assert refused["ignore_user_config"] == "maybe"
+    with pytest.raises(ValidationError):
+        CodexCodeRequest(prompt="hi", **refused)
 
 
 def test_an_allowlist_naming_no_server_codex_declares_is_the_empty_set(codex_home):

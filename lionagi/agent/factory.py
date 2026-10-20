@@ -851,6 +851,20 @@ def apply_forwarded_mcp_servers(
             kwargs["strict_mcp_config"] = True
         return True
 
+    flag = kwargs.get("ignore_user_config")
+    if flag is not None and not isinstance(flag, bool):
+        # Read as the codex request's own field reads it (`"false"` is False there), so the
+        # checks below and the command line agree. A value that field refuses is left for
+        # it to refuse.
+        from pydantic import ValidationError
+
+        from lionagi.providers.openai.codex import _BOOL_ADAPTER
+
+        try:
+            kwargs["ignore_user_config"] = _BOOL_ADAPTER.validate_python(flag)
+        except ValidationError:
+            pass
+
     # Discovered once: the allowlist check below and the by-name disables share it.
     configured: set[str] | None = None
     if exclusive and not servers and not kwargs.get("ignore_user_config"):
@@ -866,18 +880,33 @@ def apply_forwarded_mcp_servers(
         if not allowed_names or not configured & set(allowed_names):
             kwargs["ignore_user_config"] = True
 
-    # A generated profile was dropped above, so a profile still here is the caller's.
+    # A generated profile was dropped above, so a profile still here is the caller's: on the
+    # request, or selected by an override (`-c profile=...`), whose key codex trims and
+    # splits at every `.` before reading it.
     named_profile = kwargs.get("profile")
-    if exclusive and named_profile and not kwargs.get("ignore_user_config"):
+    if named_profile is None and exclusive and not kwargs.get("ignore_user_config"):
+        from lionagi.providers.openai.codex import _TRIMMED
+
+        for key, value in (kwargs.get("config_overrides") or {}).items():
+            if isinstance(key, str) and key.strip(_TRIMMED).split(".")[0] == "profile":
+                named_profile = value
+    if exclusive and named_profile is not None and not kwargs.get("ignore_user_config"):
         # Without the flag the set is made exclusive by disabling, by name, the servers
-        # codex's config.toml declares, and a profile's file can declare servers no such
-        # disable reaches. This covers a non-empty set and an allowlist that keeps a server
-        # the config declares, the two exclusive runs that load the user config.
+        # codex's config.toml declares, and a profile (its own file, or its table in
+        # config.toml) can declare servers no such disable reaches. This covers a non-empty
+        # set and an allowlist that keeps a server the config declares, the two exclusive
+        # runs that load the user config.
+        # A value that is not a string is named by its type: its content is not echoed.
+        named = (
+            f"profile={named_profile!r}"
+            if isinstance(named_profile, str)
+            else f"a profile of type {type(named_profile).__name__}"
+        )
         raise ConfigurationError(
-            f"Cannot hand codex an exclusive MCP server set with profile={named_profile!r}: "
-            "outside the set, only the servers codex's config.toml declares are disabled by "
-            "name, and a server the profile's file declares would still load. Drop the "
-            "profile, or hand the set as an addition rather than the whole set."
+            f"Cannot hand codex an exclusive MCP server set with {named}: outside the set, "
+            "only the servers codex's config.toml declares are disabled by name, and a server "
+            "the profile declares would still load. Drop the profile, or hand the set as an "
+            "addition rather than the whole set."
         )
 
     # codex takes no JSON MCP-config input; each server is forwarded as

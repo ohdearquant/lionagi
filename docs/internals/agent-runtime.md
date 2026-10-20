@@ -71,12 +71,14 @@ and one implementation.
   needs `strict_mcp_config`; codex, which has no wholesale clear, gets
   `ignore_user_config` (`--ignore-user-config`), so the user config and every
   server, hook and profile it declares are not loaded at all. A codex request
-  that hands an exclusive set and names a profile is refused whichever form the
-  set takes: under the flag the codex provider refuses it, since the profile is
-  user config too, which the flag drops; without the flag (a non-empty set, or
+  that hands an exclusive set and names a profile, or whose config overrides
+  select one (`profile`), is refused whichever form the set takes: under the
+  flag the codex provider refuses it, since the profile is user config too,
+  which the flag drops; without the flag (a non-empty set, or
   an allowlist that keeps a server codex's config declares) the factory refuses
-  it, since the by-name disables below read `config.toml` alone and a server only
-  the profile's file declares would load. Those disables do not reach a server only
+  it, since the by-name disables below take their server list from `config.toml`
+  (or from `codex mcp list --json` when that file cannot be read) and a server only
+  the profile declares would load. Those disables do not reach a server only
   a project layer (`.codex/config.toml`) declares either, and only a run under the
   flag has its project layers checked, so a run that keeps the user config is
   exclusive only over the servers `config.toml` declares. A non-empty
