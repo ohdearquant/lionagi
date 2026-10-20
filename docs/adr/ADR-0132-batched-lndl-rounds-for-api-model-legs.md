@@ -157,9 +157,10 @@ source, and the reading decides: an answer the check accepts and the reading fin
 the check rejects and the reading finds right is. The result is a per-task table of requests, tool
 calls, wall time and acceptance for both loops, published with the pilot's commit. The pilot can
 run more than once as the code changes, and each run is recorded in the Result. r2, r3 and r4 did
-not settle the rule (Result); after r4 the run that decides was named as `r5`, and it ran at
-`208bcc08`, the `main` commit current when it started. r5 asks the same questions against the
-same source lines, with the `t06` and `t20` checks corrected, and is read by the rule Amendment 1
+not settle the rule (Result); after r4 the run that decides was named as `r5`. r5 ran with
+lionagi installed from `208bcc08`, the `main` commit current when it started (read from its
+environment after the run), and read the source at `6fa69b19`, as r2 to r4 did. It asks the same
+questions against the same source lines, with the `t06` and `t20` checks corrected, and is read by the rule Amendment 1
 records. The rule that the reading decides was written into D4 after r5 had run, so r5 is reported
 under the checks and under the reading; its task file, rows and reading are recorded with its
 result below. No later run reopens D4: a different
