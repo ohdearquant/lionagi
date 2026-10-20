@@ -1130,6 +1130,8 @@ def test_a_dev_link_opens_its_page_at_a_host_the_daemon_answers(
     assert fresh_launch.redeem_pairing_grant(code, origin=origin) is not None
 
 
+# A probe that waited for the whole body would block here, so the test bounds itself.
+@pytest.mark.timeout(10, method="signal")
 def test_the_health_probe_gives_up_on_a_daemon_that_trickles_its_answer():
     import threading
 

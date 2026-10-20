@@ -553,7 +553,7 @@ class TestAuthenticatedIdentity:
 _HOSTED = "https://lion-studio.khive.ai"
 # A dev page's address as Vite reports it; not one of the default CORS origins.
 _DEV_PAGE = "http://127.0.0.1:3000"
-# The Host a dev page's requests carry: Vite's proxy passes the page's own Host on.
+# The Host a dev page's requests carry: Vite's proxy (changeOrigin false) keeps the page's Host.
 _DEV_PAGE_HOST = "127.0.0.1:3000"
 _LOOPBACK = {"Host": "127.0.0.1:8765"}
 # No route answers here, so an accepted request is a 404 and a refused one is a 401.
