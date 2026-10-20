@@ -364,8 +364,8 @@ config declares, every server its config declares outside the set is disabled by
 name, read from codex's own server list (`$CODEX_HOME/config.toml`, else
 `codex mcp list --json`), and its build fails rather than leave them enabled when
 neither can be read. An empty set whose allowlist names none of those servers
-carries `--ignore-user-config` instead, and nothing is disabled by name, unless the
-model names a codex profile, which the flag would drop. A
+carries `--ignore-user-config` instead, and nothing is disabled by name; if the
+model also names a codex profile, which the flag drops, its build is refused. A
 worker whose provider has no transport for the set is warned
 about, naming the worker (`label`) since a run's workers can resolve
 different providers. `{}` (an explicit empty set) and `None` (no set at all)

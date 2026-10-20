@@ -83,18 +83,20 @@ def test_an_empty_exclusive_set_ignores_the_codex_user_config(codex_home):
     assert kwargs == {"ignore_user_config": True}
 
 
-def test_an_empty_exclusive_set_keeps_a_profile_the_caller_named(codex_home):
-    """A profile is user config too, so the flag would load it as empty: a request that
-    names one keeps loading the user config, and its servers are disabled by name."""
+def test_an_empty_exclusive_set_with_a_named_profile_is_refused(codex_home):
+    """A profile is user config too, and the by-name disables read config.toml alone, so a
+    server the profile's file or a project layer declares would load. The empty set still
+    takes the flag, and the codex request refuses the profile under it."""
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
     codex_home.write_config({"khive": {"command": "kkernel"}})
     kwargs: dict = {"profile": "work"}
 
     assert apply_forwarded_mcp_servers(kwargs, {}, provider="codex", exclusive=True)
 
-    assert kwargs == {
-        "profile": "work",
-        "config_overrides": {"mcp_servers.khive.enabled": False},
-    }
+    assert kwargs == {"profile": "work", "ignore_user_config": True}
+    with pytest.raises(ConfigurationError, match="and profile='work'"):
+        CodexCodeRequest(prompt="hi", **kwargs).as_cmd_args()
 
 
 def test_an_exclusive_caller_with_no_set_is_strict_for_the_claude_transport():

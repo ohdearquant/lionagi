@@ -853,19 +853,15 @@ def apply_forwarded_mcp_servers(
 
     # Discovered once: the allowlist check below and the by-name disables share it.
     configured: set[str] | None = None
-    if (
-        exclusive
-        and not servers
-        and not kwargs.get("ignore_user_config")
-        and not kwargs.get("profile")
-    ):
+    if exclusive and not servers and not kwargs.get("ignore_user_config"):
         # The empty set is the hermetic codex run: the user config, and every server,
         # hook and profile it declares, is not loaded at all. Codex keeps its own
         # authentication store under the flag. An allowlist naming a server codex's
         # own config declares keeps that server, served from that config, so it is
         # not this case; an allowlist naming none of them leaves nothing to serve.
-        # A profile the caller named is user config too, which the flag would drop,
-        # so that request keeps the by-name disables below.
+        # A profile the caller named is user config too, so the codex provider refuses
+        # that request: the by-name disables read config.toml alone, and a profile's
+        # file or a project layer can declare servers they would not disable.
         if allowed_names:
             configured = _discover_ambient_codex_mcp_server_names()
         if not allowed_names or not configured & set(allowed_names):

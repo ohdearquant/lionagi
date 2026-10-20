@@ -933,7 +933,7 @@ def test_a_dangling_user_config_symlink_is_no_config(codex_home, tmp_path):
     ids=["profile-sandbox", "profile-permissions", "profile-only", "not-a-string"],
 )
 def test_a_root_profile_in_the_user_config_refuses_the_run(tmp_path, codex_home, text, named):
-    """Codex 0.162.1 reports a root `profile` key as no longer supported, and earlier codex,
+    """Codex 0.162.1 reports a root `profile` key as no longer supported, and codex 0.130.0,
     given no -p, applies that profile's sandbox settings in place of the root ones. The flag
     hides the key, so a trusted project would otherwise run workspace-write where the profile
     chose read-only."""
@@ -999,15 +999,19 @@ def test_a_profile_the_run_names_is_refused_with_the_flag(codex_home):
 
 
 @pytest.mark.parametrize(
-    "overrides",
-    [{"profile": "ro"}, {"profiles.ro.sandbox_mode": "read-only"}],
-    ids=["selects", "defines"],
+    ("overrides", "named"),
+    [
+        ({"profile": "ro"}, "profile = 'ro'"),
+        ({"profile.name": "ro"}, "a profile key of type dict"),
+    ],
+    ids=["selects", "dotted"],
 )
-def test_overrides_that_select_or_define_a_profile_are_refused_with_the_flag(codex_home, overrides):
-    with pytest.raises(ConfigurationError, match="select or define a profile"):
+def test_overrides_that_select_a_profile_are_refused_with_the_flag(codex_home, overrides, named):
+    with pytest.raises(ConfigurationError) as refused:
         CodexCodeRequest(
             prompt="hi", ignore_user_config=True, config_overrides=overrides
         ).as_cmd_args()
+    assert f"the run's config overrides set {named}, which selects a profile" in str(refused.value)
 
     # the control: another override starts the run
     args = CodexCodeRequest(
@@ -1016,31 +1020,28 @@ def test_overrides_that_select_or_define_a_profile_are_refused_with_the_flag(cod
     assert "--ignore-user-config" in args
 
 
-def test_a_project_layer_root_profile_refuses_a_carried_setting(tmp_path, codex_home):
-    """Where codex applies a layer's root `profile`, the profile's sandbox settings replace
-    the root ones, and the carried mode on the command line would beat them."""
+def test_overrides_that_define_a_profile_without_selecting_it_start_with_the_flag(codex_home):
+    """A profile table nothing selects is never applied, so it does not refuse the run."""
+    args = CodexCodeRequest(
+        prompt="hi",
+        ignore_user_config=True,
+        config_overrides={"profiles.ro.sandbox_mode": "read-only"},
+    ).as_cmd_args()
+    assert "--ignore-user-config" in args
+
+
+def test_a_project_layer_root_profile_does_not_refuse_a_carried_setting(tmp_path, codex_home):
+    """Codex drops `profile` and `profiles` from project layers, so a layer's root profile
+    selects nothing and the carried mode applies as it would without the flag."""
     (codex_home / "config.toml").write_text('sandbox_mode = "danger-full-access"\n')
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
     _project_layer(repo, 'profile = "ro"\n[profiles.ro]\nsandbox_mode = "read-only"\n')
 
-    with pytest.raises(ConfigurationError) as refused:
-        CodexCodeRequest(prompt="hi", repo=repo, ignore_user_config=True).as_cmd_args()
-    assert "sets a root `profile` key" in str(refused.value)
-    assert "`sandbox_mode`" in str(refused.value)
-
-    # the controls: with the mode set by the run, nothing is carried and the run starts;
-    # with no setting to carry, the layer is codex's to apply
-    args = CodexCodeRequest(
-        prompt="hi",
-        repo=repo,
-        ignore_user_config=True,
-        config_overrides={"sandbox_mode": "read-only"},
-    ).as_cmd_args()
-    assert "--ignore-user-config" in args
-    (codex_home / "config.toml").unlink()
     args = CodexCodeRequest(prompt="hi", repo=repo, ignore_user_config=True).as_cmd_args()
+
     assert "--ignore-user-config" in args
+    assert _sandbox_values(args) == ["danger-full-access"]
 
 
 @pytest.mark.skipif(

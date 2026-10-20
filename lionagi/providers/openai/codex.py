@@ -1317,9 +1317,8 @@ class CodexCodeRequest(BaseModel):
             "codex derives a trusted project's sandbox and loads its layers as with the file. "
             "A user config that cannot be read, declares hooks, sets a root `profile` key or "
             "sets `default_permissions` is refused, since what it holds cannot ride beside the "
-            "flag, and so is a project layer that sets a root `profile` key beside a carried "
-            "setting. A `profile`, or overrides that select or define one, are refused with "
-            "the flag, since codex then loads no profile."
+            "flag. A `profile`, or overrides that select one, are refused with the flag, since "
+            "codex then loads no profile."
         ),
         json_schema_extra=_cli("--ignore-user-config", 64, "bool"),
     )
@@ -2031,10 +2030,12 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
 
     What cannot ride refuses the run: hook events declared in the file itself, whose
     trust records name a file the run does not load; a root `profile` key, which codex
-    0.162.1 reports as no longer supported and which earlier codex, given no `-p`, makes the
-    active profile, whose sandbox settings replace the root ones; `default_permissions`, a
-    permissions profile codex applies in place of `sandbox_mode`; and a file that exists but
-    cannot be read, since the hooks it declares, if any, would be dropped unseen. So does a
+    0.162.1 reports as no longer supported and which codex 0.130.0, given no `-p`, makes the
+    active profile, whose sandbox settings replace the root ones (read at that tag:
+    `get_config_profile` falls back to the key, and the profile's `sandbox_mode` is taken
+    before the root's); `default_permissions`, a permissions profile codex applies in place
+    of `sandbox_mode`; and a file that exists but cannot be read, since the hooks it
+    declares, if any, would be dropped unseen. So does a
     profile the run itself names, on the request or in its overrides: codex loads no user
     config under the flag, and a profile is user config.
     """
@@ -2047,11 +2048,19 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
             "run without ignore_user_config."
         )
     flags = _command_line_layer(plain)
-    if _sets(flags, ("profile",)) or _sets(flags, ("profiles",)):
+    if _sets(flags, ("profile",)):
+        # A value that is not a string is named by its type: its content is not echoed.
+        selected = flags["profile"]
+        named = (
+            f"profile = {selected!r}"
+            if isinstance(selected, str)
+            else f"a profile key of type {type(selected).__name__}"
+        )
         raise ConfigurationError(
-            "Codex cannot start with --ignore-user-config: the run's config overrides select "
-            "or define a profile, and a run that loads no user config takes its settings from "
-            "the overrides themselves. Set those settings in the overrides directly."
+            f"Codex cannot start with --ignore-user-config: the run's config overrides set "
+            f"{named}, which selects a profile, and a run that loads no user config takes its "
+            "settings from the overrides themselves. Set those settings in the overrides "
+            "directly and drop the profile key."
         )
     config_path = codex_home_for_env(plain.env) / "config.toml"
     try:
@@ -2099,7 +2108,7 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
         )
         raise ConfigurationError(
             f"Codex cannot start with --ignore-user-config: {config_path} sets {named}. Codex "
-            "0.162.1 reports a root profile key as no longer supported, and earlier codex, "
+            "0.162.1 reports a root profile key as no longer supported, and codex 0.130.0, "
             "given no -p, makes it the active profile, whose sandbox settings replace the root "
             "ones. The flag hides the key, so the run would start without what codex does with "
             "it. Remove the key, and set the sandbox in the run's config overrides."
@@ -2337,9 +2346,9 @@ def _refuse_project_layer_disagreement(
     that sets another value, one that names a permissions profile in place of the mode,
     one the TOML parser refuses, and project layers that cannot be determined all refuse
     the run. Setting the key in the run's overrides keeps it from riding, and codex then
-    decides between the overrides and the layer as it does without the flag. A layer that
-    sets a root `profile` key refuses the run too: where codex applies it, it selects a
-    profile whose sandbox settings replace the root ones, and a carried value would beat them.
+    decides between the overrides and the layer as it does without the flag. A layer's root
+    `profile` key is no concern here: codex drops `profile` and `profiles` from project
+    layers (its project-local denylist, read at the 0.130.0 to 0.162.1 tags).
     """
     try:
         layers = list(project_layers(cwd, os.environ if plain.env is None else plain.env))
@@ -2352,16 +2361,6 @@ def _refuse_project_layer_disagreement(
             table: Mapping[str, Any] | None = _tomllib.loads(text)
         except _tomllib.TOMLDecodeError:
             table = None
-        if table is not None and _sets(table, ("profile",)):
-            settings = ", ".join(f"`{'.'.join(key_path)}`" for key_path in carried)
-            raise ConfigurationError(
-                f"Codex cannot start under cwd {cwd} with --ignore-user-config: {config_path} "
-                f"sets {settings}, which ride beside the flag, and the project config "
-                f"{layer_path} sets a root `profile` key. Where codex applies that key it selects "
-                "a profile whose sandbox settings replace the root ones, and a value on the "
-                "command line beats them, so the run would not get the profile's sandbox. Set "
-                f"{settings} in the run's config overrides."
-            )
         for key_path, value in carried.items():
             dotted = ".".join(key_path)
             if table is None:
