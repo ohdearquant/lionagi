@@ -793,7 +793,7 @@ async def test_a_codex_worker_takes_no_effort_from_the_user_config(tmp_run, code
     """The user config's effort is read only to keep it under the model's ceiling,
     and a worker never loads that config, so no effort is derived from it."""
     (codex_home.path / "config.toml").write_text('model_reasoning_effort = "high"\n')
-    env = await _setup(no_mcp_config=False)
+    env = await _setup(no_mcp_config=False, model_spec="codex/gpt-5.3-codex-spark")
 
     branch, _, _, _ = await build_worker_branch(
         env, agent_id="w1", role="implementer", model_override="codex/gpt-5.3-codex-spark"
@@ -830,6 +830,64 @@ async def test_a_requested_run_effort_still_reaches_a_codex_worker(tmp_run, code
         env, agent_id="w1", role="implementer", model_override="codex/gpt-5.3-codex-spark"
     )
     assert branch.chat_model.endpoint.config.kwargs["reasoning_effort"] == "low"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("effort", [None, "low"])
+async def test_a_codex_orchestrator_handed_an_empty_set_takes_no_effort_from_the_ignored_config(
+    tmp_run, codex_home, effort
+):
+    """An empty set leaves the orchestrator's own request carrying the flag, so it
+    loads no user config and the effort it derived from that config goes. An
+    effort the run asked for stays."""
+    (codex_home.path / "config.toml").write_text('model_reasoning_effort = "high"\n')
+    env = await _setup(no_mcp_config=True, model_spec="codex/gpt-5.3-codex-spark", effort=effort)
+
+    kwargs = env.orc_branch.chat_model.endpoint.config.kwargs
+    assert kwargs["ignore_user_config"] is True
+    assert kwargs.get("reasoning_effort") == effort
+    assert env.orc_effort == effort
+    assert env.effort == effort
+
+
+class _RecordReached(Exception):
+    pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pattern", ["flow", "fanout"])
+@pytest.mark.parametrize(("effort", "recorded_effort"), [(None, "high"), ("low", "low")])
+async def test_the_run_record_stores_the_orchestrators_own_effort(
+    tmp_run, codex_home, monkeypatch, pattern, effort, recorded_effort
+):
+    """The record keeps the effort the orchestrator runs at: the one a codex
+    orchestrator derived when the run asked for none, which no worker takes, and
+    the one the run asked for."""
+    from unittest.mock import AsyncMock
+
+    from lionagi.cli.orchestrate import fanout, flow
+
+    (codex_home.path / "config.toml").write_text('model_reasoning_effort = "high"\n')
+    env = await _setup(no_mcp_config=False, model_spec="codex/gpt-5.3-codex-spark", effort=effort)
+    recorded: dict = {}
+
+    async def _start(env, **kwargs):
+        recorded.update(kwargs)
+        raise _RecordReached
+
+    module = flow if pattern == "flow" else fanout
+    monkeypatch.setattr(module, "setup_orchestration", AsyncMock(return_value=env))
+    monkeypatch.setattr(module, "start_live_persist", _start)
+    monkeypatch.setattr(module, "stamp_worker_depth", lambda: 1)
+    monkeypatch.setattr(
+        "lionagi.state.lifecycle.notify_settings.register_run_notify_outcome_scope",
+        lambda *args, **kwargs: None,
+    )
+    run = flow._run_flow if pattern == "flow" else fanout._run_fanout
+    with pytest.raises(_RecordReached):
+        await run("codex/gpt-5.3-codex-spark", "work")
+
+    assert recorded["effort"] == recorded_effort
 
 
 @pytest.mark.asyncio

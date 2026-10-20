@@ -869,6 +869,18 @@ async def test_a_spawn_cloned_from_the_orchestrator_drops_its_derived_effort(tmp
     env.effort = "high"
     assert _spawn(env.orc_branch, "spawn-3")["reasoning_effort"] == "high"
 
+    # A codex profile the orchestrator's spec names pins its effort as an override;
+    # the clone drops that too, and the orchestrator keeps its own.
+    (codex_home.path / "work.config.toml").write_text(
+        'model = "gpt-5.3-codex-spark"\nmodel_reasoning_effort = "medium"\n'
+    )
+    env.effort = None
+    env.orc_branch = Branch(chat_model=build_imodel_from_spec("codex/work"))
+    orc_kwargs = env.orc_branch.chat_model.endpoint.config.kwargs
+    assert orc_kwargs["config_overrides"]["model_reasoning_effort"] == "medium"
+    assert "model_reasoning_effort" not in _spawn(env.orc_branch, "spawn-4")["config_overrides"]
+    assert orc_kwargs["config_overrides"]["model_reasoning_effort"] == "medium"
+
 
 @pytest.mark.asyncio
 async def test_a_reactive_run_refuses_a_set_a_codex_orchestrator_clone_cannot_take(

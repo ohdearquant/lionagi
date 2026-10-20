@@ -2185,6 +2185,13 @@ async def _execute_dag(
             )
             if effort_kwarg:
                 chat_model.endpoint.config.kwargs.pop(effort_kwarg, None)
+            # A codex profile the orchestrator's spec names carries its effort as an
+            # override instead. A new dict, so the orchestrator's own stays as it is.
+            overrides = chat_model.endpoint.config.kwargs.get("config_overrides")
+            if isinstance(overrides, dict) and "model_reasoning_effort" in overrides:
+                chat_model.endpoint.config.kwargs["config_overrides"] = {
+                    k: v for k, v in overrides.items() if k != "model_reasoning_effort"
+                }
         # A request with no assignee is cloned from the orchestrator's branch,
         # whose request carries the run's whole set, job control included. A
         # spawned node is a leaf like a planned worker and gets the worker set

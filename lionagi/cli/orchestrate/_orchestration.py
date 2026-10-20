@@ -905,11 +905,22 @@ async def setup_orchestration(
     )
     _orc_provider = orc_imodel.endpoint.config.provider
     _hand_mcp_servers(orc_imodel, run_mcp_servers, label="orchestrator")
+    effort_requested = effort is not None or parse_model_spec(model_spec).effort is not None
+    if not effort_requested and orc_imodel.endpoint.config.kwargs.get("ignore_user_config"):
+        # An empty set left the orchestrator loading no user config, so the effort
+        # build_imodel_from_spec derived from that config goes too (create_agent
+        # drops it the same way).
+        from lionagi.agent.factory import _canonical_provider
+        from lionagi.service.providers import PROVIDER_EFFORT_KWARG
+
+        effort_kwarg = PROVIDER_EFFORT_KWARG.get(_canonical_provider(_orc_provider))
+        if effort_kwarg:
+            orc_imodel.endpoint.config.kwargs.pop(effort_kwarg, None)
     orc_effort = resolve_persisted_effort(_orc_provider, orc_imodel, effort)
     # Workers load no user config, so a run-wide effort reaches them only when one
     # was asked for. Asked for nothing, a codex orchestrator derives its own effort
     # from that config (build_imodel_from_spec), and that effort stays its own.
-    if effort is not None or parse_model_spec(model_spec).effort is not None:
+    if effort_requested:
         effort = orc_effort
     if cwd:
         orc_imodel.endpoint.config.kwargs.setdefault("repo", Path(cwd))
