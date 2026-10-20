@@ -202,6 +202,32 @@ class TestAlcallRetryTimeout:
         assert results == ["timeout"]
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize("is_coro", [True, False])
+    async def test_alcall_timeout_without_a_default_raises_timeout_error(
+        self, monkeypatch, is_coro
+    ):
+
+        async def slow_async_func(x: int) -> int:
+            await anyio.sleep_forever()
+            return x
+
+        def slow_sync_func(x: int) -> int:  # pragma: no cover - replaced at thread seam
+            return x
+
+        async def blocked_run_sync(*args, **kwargs):
+            await anyio.sleep_forever()
+
+        monkeypatch.setattr("lionagi.ln._async_call.run_sync", blocked_run_sync)
+
+        with pytest.raises(TimeoutError, match="timed out after 0s"):
+            await alcall(
+                [1],
+                slow_async_func if is_coro else slow_sync_func,
+                retry_timeout=0,
+                retry_attempts=0,
+            )
+
+    @pytest.mark.anyio
     async def test_alcall_retry_backoff(self):
         with patch("anyio.sleep", new_callable=AsyncMock) as mock_sleep:
             inputs = [3]  # Only one item that triggers error

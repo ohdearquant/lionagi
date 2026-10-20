@@ -102,7 +102,7 @@ def _dataclass_content_key(value: DataClass) -> int | None:
         return None
 
 
-def _own_content_key(value: DataClass) -> int | None:
+def _own_content_key(value: Any) -> int | None:
     """A value's own hash, or ``None`` when the value reports itself unhashable.
 
     Only ``TypeError`` means "unhashable, use the equality path", exactly as the ``i not
@@ -222,14 +222,7 @@ def _operation_content_key(value: Any) -> int | None:
     """
     if isinstance(value, _MAP_LIKE):
         return None
-    try:
-        return hash(value)
-    except TypeError:
-        return None
-    except ValueError as exc:
-        if _is_memoryview_hash_refusal(exc):
-            return None
-        raise
+    return _own_content_key(value)
 
 
 def to_list(
