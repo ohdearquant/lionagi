@@ -457,6 +457,62 @@ async def test_a_body_that_arrives_whole_ends_the_pieces(head):
     assert response.closed
 
 
+async def test_a_body_ending_with_the_connection_stopped_midway_raises_rather_than_ending():
+    released = asyncio.Event()
+
+    async def answer(reader, writer):
+        head = await reader.readuntil(b"\r\n\r\n")
+        length = re.search(rb"(?im)^content-length:[ \t]*(\d+)", head)
+        if length:
+            await reader.readexactly(int(length.group(1)))
+        writer.write(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nfirst")
+        await writer.drain()
+        await reader.read()
+        released.set()
+        writer.close()
+
+    server = await asyncio.start_server(answer, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        session = HTTPSession()
+        response = await session.request("POST", f"http://127.0.0.1:{port}/v1", json={})
+        task = asyncio.create_task(response.read())
+        await asyncio.sleep(0.2)
+        session.close()
+        with pytest.raises(TransportError):
+            await asyncio.wait_for(task, timeout=3)
+        await asyncio.wait_for(released.wait(), timeout=3)
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+async def test_a_header_value_beyond_latin_1_goes_out_as_its_utf_8_bytes():
+    heads = []
+
+    async def answer(reader, writer):
+        head = await reader.readuntil(b"\r\n\r\n")
+        heads.append(head)
+        writer.write(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(answer, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        async with HTTPSession(headers={"X-Title": "中文"}) as session:
+            response = await session.request(
+                "GET", f"http://127.0.0.1:{port}/v1", headers={"X-Name": "é"}
+            )
+            await response.read()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert "X-Title: 中文\r\n".encode() in heads[0]
+    assert "X-Name: é\r\n".encode() in heads[0]
+
+
 async def test_an_endpoint_stream_cut_short_raises_rather_than_ending():
     whole = b'data: {"choices":[{"delta":{"content":"hel"}}]}\n\n'
     cut = b'data: {"choices":[{"delta":{"content":"lo'

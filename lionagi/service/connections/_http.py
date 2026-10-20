@@ -259,12 +259,18 @@ class _Exchange:
                 raise TransportError("the request was stopped")
             self._busy = True
         try:
-            return step()
+            result = step()
         finally:
             with self._lock:
                 self._busy = False
-                if self._stopped:
+                stopped = self._stopped
+                if stopped:
                     self._close()
+        if stopped:
+            # A read the stop cut short returns what had arrived, as a body that ends with the
+            # connection would: it is not the whole body.
+            raise TransportError("the request was stopped")
+        return result
 
     def _publish(self, sock: socket.socket) -> None:
         with self._lock:
@@ -273,7 +279,7 @@ class _Exchange:
             if self._stopped:
                 raise TransportError("the request was stopped")
 
-    def send(self, method: str, target: str, body: bytes | None, headers: dict[str, str]):
+    def send(self, method: str, target: str, body: bytes | None, headers: dict[str, Any]):
         if self._tls is None:
             self.conn.connect()
             self._publish(self.conn.sock)
@@ -533,9 +539,15 @@ class HTTPSession:
         exchange = _Exchange(conn, tls)
         self._exchanges.append(exchange)
         method = method.upper()
+        # http.client writes a str header value as latin-1 and refuses any other character; a
+        # value goes out as its UTF-8 bytes instead, as aiohttp's did.
+        wire_headers = {
+            name: value.encode("utf-8") if isinstance(value, str) else value
+            for name, value in send_headers.items()
+        }
         raw = await _run_step(
             exchange,
-            lambda: exchange.send(method, target, body, send_headers),
+            lambda: exchange.send(method, target, body, wire_headers),
             method=method,
             url=url,
             deadline=deadline,
