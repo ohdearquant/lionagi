@@ -23,6 +23,7 @@ from ._json_dump import (
     make_options,
     raise_if_non_finite,
 )
+from ._json_load import JSONDecodeError, json_loads
 from ._lazy_init import LazyInit, lazy_import
 from ._list_call import lcall
 from ._ssrf import is_ssrf_safe
@@ -155,6 +156,8 @@ __all__ = (
     "hash_obj",
     "get_orjson_default",
     "json_dumps",
+    "json_loads",
+    "JSONDecodeError",
     "make_options",
     "json_dumpb",
     "json_lines_iter",

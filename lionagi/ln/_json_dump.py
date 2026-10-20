@@ -260,21 +260,7 @@ def _project_json_value(
             }
         finally:
             active.remove(identity)
-    if isinstance(obj, list | tuple):
-        identity = _enter_json_projection(obj, active)
-        try:
-            return [
-                _project_json_value(
-                    value,
-                    substrate_types,
-                    active,
-                    f"{path}[{index}]",
-                )
-                for index, value in enumerate(obj)
-            ]
-        finally:
-            active.remove(identity)
-    if isinstance(obj, set | frozenset):
+    if isinstance(obj, list | tuple | set | frozenset):
         identity = _enter_json_projection(obj, active)
         try:
             return [

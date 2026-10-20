@@ -235,25 +235,16 @@ def test_from_dict_images_default_detail():
     assert content.image_detail == "auto"
 
 
-def test_from_dict_with_pydantic_model_instance():
-    """from_dict with Pydantic model class for response_format"""
-    # Pass the CLASS to from_dict for proper schema generation
+def test_from_dict_with_pydantic_model_class():
+    """Class input preserves its structure base and derives a model schema."""
     data = {"instruction": "Test", "response_format": SampleRequestModel}
     content = InstructionContent.from_dict(data)
 
     assert content.response_format == SampleRequestModel
     assert content._structure_instance is not None
     assert content._structure_instance.base == SampleRequestModel
-
-
-def test_from_dict_with_pydantic_model_class():
-    """from_dict with Pydantic model class for response_format"""
-    data = {"instruction": "Test", "response_format": SampleRequestModel}
-    content = InstructionContent.from_dict(data)
-
-    assert content.response_format == SampleRequestModel
-    assert content._structure_instance is not None
     schema = content._structure_instance.request_schema()
+    assert isinstance(schema, type)
     assert "name" in schema.model_fields
     assert "age" in schema.model_fields
 
@@ -267,18 +258,6 @@ def test_from_dict_with_nested_pydantic_model():
     assert content._structure_instance is not None
     schema = content._structure_instance.request_schema()
     assert "user" in schema.model_fields
-
-
-def test_from_dict_pydantic_model_auto_derives_response_format():
-    """from_dict derives schema via structure from Pydantic model"""
-    data = {"instruction": "Test", "response_format": SampleRequestModel}
-    content = InstructionContent.from_dict(data)
-
-    assert content.response_format == SampleRequestModel
-    assert content._structure_instance is not None
-    schema = content._structure_instance.request_schema()
-    assert isinstance(schema, type)
-    assert "name" in schema.model_fields
 
 
 def test_from_dict_with_dict_response_schema():

@@ -192,11 +192,6 @@ def test_loopback_blocked_by_default():
         assert is_ssrf_safe("localhost") is False
 
 
-def test_localhost_blocked_by_default():
-    """'localhost' is blocked when allow_local is not set (backward-compatible)."""
-    assert is_ssrf_safe("localhost") is False
-
-
 def test_endpoint_config_allow_local_network_defaults_false():
     """allow_local_network defaults to False — safe by default."""
     config = EndpointConfig(

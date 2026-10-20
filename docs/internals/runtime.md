@@ -39,11 +39,13 @@ now carries a 1-2 line pointer; this file carries the substance. Organized by mo
   raised. The driver's statement cache is off (`cached_statements=0`) because the authorizer runs
   only when SQLite prepares a statement, and one of its decisions (no COMMIT of a transaction in
   which a statement was denied) depends on the transaction, not on the statement text.
-- `has_wal_reset_fix()` — SQLite documents a data race between a starting checkpoint and a
+- `has_wal_reset_fix()` — [SQLite's WAL-reset documentation](https://www.sqlite.org/wal.html#walresetbug)
+  describes a data race between a starting checkpoint and a
   commit that resets the WAL file: the checkpoint misses the reset, mis-sets a WAL-index
   header field, and a later checkpoint then skips part of the committed transaction,
-  corrupting the database. It reaches every WAL-mode release from 3.7.0 up to and including
-  3.51.2, fixed in 3.51.3 with backports on the 3.44 and 3.50 branches. Exposure needs two
+  corrupting the database. SQLite identifies the likely affected range as 3.7.0 through
+  3.51.2. The [3.51.3 release notes](https://www.sqlite.org/releaselog/3_51_3.html)
+  record the fix; the WAL documentation also names backports 3.44.6 and 3.50.7. Exposure needs two
   connections writing or checkpointing at the same instant, which is exactly what this store
   does — hence the startup warning when an unfixed SQLite is linked.
 

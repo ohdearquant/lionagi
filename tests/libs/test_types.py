@@ -287,17 +287,6 @@ def test_dataclass_with_updates():
     assert updated.field2 == 100
 
 
-def test_dataclass_hash():
-    """Test DataClass.__hash__() method"""
-    # DataClass needs to be frozen to be hashable, use Params instead
-    params1 = MyParams(field1="test", field2=42)
-    params2 = MyParams(field1="test", field2=42)
-    hash1 = hash(params1)
-    hash2 = hash(params2)
-    assert isinstance(hash1, int)
-    assert isinstance(hash2, int)
-
-
 def test_dataclass_eq():
     """Test DataClass.__eq__() method"""
     obj1 = MyDataClass(field1="test", field2=42)

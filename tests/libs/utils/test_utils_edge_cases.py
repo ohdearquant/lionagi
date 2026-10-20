@@ -101,6 +101,11 @@ class TestExtractTypes:
         result = extract_types({Union[int, str]})
         assert result == {int, str}
 
+    def test_tuple_and_frozenset_are_one_item(self):
+        # a tuple or a frozenset is one item; a set or a list is unpacked into its members
+        assert extract_types((int, str)) == {(int, str)}
+        assert extract_types(frozenset({int, str})) == {frozenset({int, str})}
+
 
 class TestToUuid:
     def test_passthrough_uuid(self):
