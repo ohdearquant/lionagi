@@ -363,15 +363,15 @@ def _refuse_oversized_command(cmd: list[str]) -> None:
 
 def _contain_override(key: str, value: Any, what: str) -> tuple[bool, Any]:
     """Whether account-integration containment keeps the override ``key=value``, and the
-    value it keeps: an override under `features.apps` or `features.plugins` is dropped, and
-    those keys leave an inline `features` table, which is dropped when nothing is left.
-
-    Reads the normalized snapshot: ``key`` is plain text and an inline table is a plain
-    ``dict`` whose switch names are plain text, so the name this check compares is the
-    name the table renders. ``what`` names the key in a refusal, so the key itself is
-    never printed.
-    """
+    value it keeps: an override under a top-level `apps` or `plugins` table, or under
+    `features.apps` or `features.plugins`, is dropped, and those keys leave an inline
+    `features` table, which is dropped when nothing is left. Reads the normalized snapshot:
+    ``key`` is plain text and an inline table is a plain ``dict`` whose switch names are
+    plain text, so the name this check compares is the name the table renders. ``what``
+    names the key in a refusal, so the key itself is never printed."""
     path = _override_key_path(key, what)
+    if path[0] in _ACCOUNT_INTEGRATION_FEATURES:
+        return False, value
     if path[0] == "features":
         if len(path) >= 2 and path[1] in _ACCOUNT_INTEGRATION_FEATURES:
             return False, value

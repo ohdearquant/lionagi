@@ -273,10 +273,11 @@ The class is chosen as follows:
   worker's branch, an independent one from the orchestrator's branch and then given the emitting
   worker's class, so asking for an unnamed agent does not lift a `light` worker's confinement.
   That clone keeps the orchestrator's other settings, so one a `light` agent cannot have refuses
-  the spawn before its process starts. When the orchestrator runs on another CLI engine than the
-  `light` worker that asked, the independent request is refused with `CLIInputRefusedError`
-  before any node exists, since each engine's `light` confines an agent differently; the worker
-  names an assignee, or asks for a dependent agent, which runs on its own engine. A request no worker emitted (the orchestrator's
+  the spawn before its process starts. When the orchestrator runs on another engine than the
+  `light` worker that asked, an API model included, the independent request is refused with
+  `CLIInputRefusedError` before any node exists, since `light` confines an agent differently on
+  each engine and not at all on an API model; the worker names an assignee, or asks for a
+  dependent agent, which runs on its own engine. A request no worker emitted (the orchestrator's
   own, or one with no emitter) runs `heavy`, as a bare worker does: the orchestrator's class
   confines only its own process. An escalation retry is cloned from the branch of the node it
   retries and keeps that node's class.
@@ -284,8 +285,10 @@ The class is chosen as follows:
   without that setup: with an assignee it runs on that worker's branch and class, without one on
   the orchestrator's branch or a clone of it, with the orchestrator's class. The checkpoint
   records the class of a `light` worker that asked for a node naming no assignee, and
-  `--retry-failed` refuses with `FlowResumeError` to run such a node again. A checkpoint written
-  before that record existed carries no class, and its nodes run again as described.
+  `--retry-failed` refuses with `FlowResumeError` to run such a node again. A resume without the
+  flag refuses every failed node, so a run in which such a node failed is re-run from scratch. A
+  checkpoint written before that record existed carries no class, and its nodes run again as
+  described.
 - A `light` codex worker is handed no `add_dir`, so its one writable root is its working
   directory, the worker's artifact directory; the project-root `add_dir` every other CLI worker
   is handed is unchanged. A codex worker in team mode needs the team directory writable, so a `light` codex

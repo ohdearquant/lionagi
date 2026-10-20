@@ -698,6 +698,8 @@ async def _spawned_branch_kwargs(
     provider: str = "codex",
     emitted_by: str | None = None,
     emitter_provider: str | None = None,
+    independent: bool = True,
+    expected: list | None = None,
 ) -> dict:
     """Run a reactively spawned branch through the setup `_execute_dag` hands the DAG
     runner, and return the request kwargs it leaves on the branch. The spawn is a clone
@@ -706,7 +708,9 @@ async def _spawned_branch_kwargs(
     naming no assignee, built by the run's node builder for a worker of that class (or
     for the orchestrator itself, when it is "orchestrator") and cloned from the
     orchestrator's branch, as the executor clones it. *emitter_provider* puts that worker
-    on another engine than the orchestrator's."""
+    on another engine than the orchestrator's. With *independent* false the request is a
+    dependent one, cloned from that worker's branch. *expected* collects the spawn ids
+    the run is told to expect a worker for."""
     import lionagi.engines as engines_mod
     from lionagi import Branch, iModel
     from lionagi.casts.emission import SpawnRequest
@@ -741,7 +745,8 @@ async def _spawned_branch_kwargs(
     ) -> Branch:
         chat_model = iModel(
             provider=branch_provider,
-            model="gpt-5.5" if branch_provider == "codex" else "sonnet",
+            model={"codex": "gpt-5.5", "openai": "gpt-4.1-mini"}.get(branch_provider, "sonnet"),
+            **({"api_key": "dummy-key"} if branch_provider == "openai" else {}),
         )
         _add_workload_kwarg(chat_model.endpoint.config.kwargs, branch_provider, branch_workload)
         return Branch(
@@ -761,7 +766,7 @@ async def _spawned_branch_kwargs(
         _live_persist=None,
         team_data=team_data,
         exchange=None,
-        expect_worker=lambda spawn_id: None,
+        expect_worker=(lambda spawn_id: None) if expected is None else expected.append,
     )
     dag_state = SimpleNamespace(
         reactive=True,
@@ -791,10 +796,10 @@ async def _spawned_branch_kwargs(
         captured["executor_ref"]["executor"] = SimpleNamespace(
             operation_branches={emitter.id: emitter_branch}
         )
-        request = SpawnRequest(instruction="check the result", independent=True)
+        request = SpawnRequest(instruction="check the result", independent=independent)
         operation = captured["node_builder"](request, emitter)
         assert operation.branch_id is None
-        source = orchestrator
+        source = orchestrator if independent else emitter_branch
     orchestrator_kwargs = dict(orchestrator.chat_model.endpoint.config.kwargs)
     branch = source.clone()
     captured["setup"](operation, branch)
@@ -899,6 +904,7 @@ async def test_an_independent_spawn_a_light_worker_asks_for_on_another_engine_is
     tools and Bash can still write anywhere. It is refused before any node exists."""
     from lionagi._errors import CLIInputRefusedError
 
+    expected: list = []
     with pytest.raises(CLIInputRefusedError) as refused:
         await _spawned_branch_kwargs(
             tmp_path,
@@ -907,10 +913,55 @@ async def test_an_independent_spawn_a_light_worker_asks_for_on_another_engine_is
             provider="claude_code",
             emitted_by="light",
             emitter_provider="codex",
+            expected=expected,
         )
     message = str(refused.value)
     assert "orchestrator's engine (claude_code)" in message
     assert "runs on codex" in message
+    # Refused before the node is built, so the run expects no worker for it.
+    assert expected == []
+
+
+@pytest.mark.asyncio
+async def test_an_independent_spawn_a_light_worker_asks_for_under_an_api_orchestrator_is_refused(
+    tmp_path, monkeypatch
+):
+    """Under an API orchestrator the request would run as an API call, which the light
+    class does not confine at all, so it is refused as under another CLI engine."""
+    from lionagi._errors import CLIInputRefusedError
+
+    with pytest.raises(CLIInputRefusedError, match=r"orchestrator's engine \(openai\)"):
+        await _spawned_branch_kwargs(
+            tmp_path,
+            monkeypatch,
+            DEFAULT_WORKLOAD,
+            provider="openai",
+            emitted_by="light",
+            emitter_provider="codex",
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_dependent_spawn_a_light_worker_asks_for_on_another_engine_runs_light_on_its_own(
+    tmp_path, monkeypatch
+):
+    """A dependent request naming no assignee is cloned from the branch of the worker that
+    asked, so under a Claude Code orchestrator a light codex worker's request runs as a
+    light codex agent and is not refused."""
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by="light",
+        emitter_provider="codex",
+        independent=False,
+    )
+
+    assert kwargs.get("add_dir", []) == []
+    assert CodexCodeRequest(prompt="work", **kwargs).workload == "light"
 
 
 @pytest.mark.asyncio

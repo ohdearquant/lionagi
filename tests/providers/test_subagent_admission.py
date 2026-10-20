@@ -144,6 +144,23 @@ async def test_a_pool_full_of_slots_held_for_this_processs_ancestors_is_refused_
 
 
 @pytest.mark.asyncio
+async def test_a_slot_whose_recorded_child_ended_is_not_an_ancestors_by_its_pid(home):
+    """A pid a recorded child held can be taken by a later process, here this one's
+    parent. The slot is then the holder's alone, so the admission waits for it."""
+    env = {"LIONAGI_MAX_SUBAGENTS": "1", "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0.3"}
+    first = await _admit(env)
+    started = process_create_time(os.getppid())[1]
+    assert started is not None
+    # Recorded as started an hour before the parent was: a child that has ended.
+    first.record_child(os.getppid(), started - 3600)
+    try:
+        with pytest.raises(SubagentAdmissionRefusedError, match="waited 0.3s"):
+            await _admit(env)
+    finally:
+        first.release()
+
+
+@pytest.mark.asyncio
 async def test_a_full_pool_with_room_beyond_its_ancestors_slots_is_waited_on(home):
     env = {"LIONAGI_MAX_SUBAGENTS": "2", "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS": "0.3"}
     first = await _admit(env)

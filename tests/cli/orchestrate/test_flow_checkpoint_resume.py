@@ -816,7 +816,8 @@ def test_a_failed_unassigned_spawn_a_light_worker_asked_for_is_not_rerun_at_anot
     retry_failed,
 ):
     """Rebuilt with no assignee, the node would run again on the orchestrator's branch with
-    the orchestrator's class. --retry-failed refuses it; a plain resume keeps it failed."""
+    the orchestrator's class, so --retry-failed refuses it, and a resume without the flag
+    refuses every failed node. The retry refusal says to re-run the flow from scratch."""
     builder, parent_id, worker_branch = _real_planned_node("worker")
     env = SimpleNamespace(builder=builder)
     dag_state = _DagState(
@@ -844,16 +845,23 @@ def test_a_failed_unassigned_spawn_a_light_worker_asked_for_is_not_rerun_at_anot
         }
     ]
 
+    with pytest.raises(FlowResumeError) as refused:
+        _apply_checkpoint_precompletion(
+            env,
+            plan_result,
+            dag_state,
+            checkpoint_ops,
+            allow_degraded_context=False,
+            retry_failed=retry_failed,
+            checkpoint_spawned=checkpoint_spawned,
+        )
+    assert UUID(child_id) not in builder.get_graph().internal_nodes
+    message = str(refused.value)
     if retry_failed:
-        with pytest.raises(FlowResumeError, match=rf"{child_id} \(light\)"):
-            _reconstruct_spawned_nodes(
-                env, plan_result, dag_state, checkpoint_ops, checkpoint_spawned, retry_failed=True
-            )
-        assert UUID(child_id) not in builder.get_graph().internal_nodes
-        return
-    _reconstruct_spawned_nodes(env, plan_result, dag_state, checkpoint_ops, checkpoint_spawned)
-    child = builder.get_graph().internal_nodes[UUID(child_id)]
-    assert child.execution.status == EventStatus.FAILED
+        assert f"{child_id} (light)" in message
+        assert message.endswith("Re-run the flow from scratch.")
+    else:
+        assert f"recorded [{child_id}] as failed" in message
 
 
 def test_reconstruct_spawned_nodes_chains_through_another_reconstructed_spawn():

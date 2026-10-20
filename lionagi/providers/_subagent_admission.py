@@ -177,9 +177,13 @@ def _ancestor_pids() -> frozenset[int]:
 
 
 def _held_for_ancestor(record: dict[str, Any], ancestors: frozenset[int]) -> bool:
+    # The recorded child counts only while it is still the process recorded: a pid an
+    # ancestor took over after that child ended does not make the slot the ancestor's.
+    pids = [record.get("holder_pid")]
+    if _recorded_child_runs(record):
+        pids.append(record.get("child_pid"))
     return any(
-        isinstance(pid, int) and not isinstance(pid, bool) and pid in ancestors
-        for pid in (record.get("holder_pid"), record.get("child_pid"))
+        isinstance(pid, int) and not isinstance(pid, bool) and pid in ancestors for pid in pids
     )
 
 

@@ -216,8 +216,9 @@ In `li o flow` and `li o fanout` each worker takes its own profile's class, what
 orchestrator's. A `light` codex worker is given no extra writable directory, so it writes only
 its artifact directory, and under `--team-mode` it is refused before it starts. An independent
 agent a `light` worker asks for without naming an assignee runs on the orchestrator's engine with
-the worker's class; when that engine is another CLI engine the request is refused, and
-`--retry-failed` refuses to run such an agent again.
+the worker's class; when that engine is another one, an API model included, the request is
+refused. `--retry-failed` refuses to run such an agent again, and a resume without the flag
+refuses every failed node, so a run in which one failed is re-run from scratch.
 
 `li monitor` prints the held slots per pool under its table, for example
 `subagents: all 3/30, heavy 1/6, codex 2/4`, using the caps in its own environment, and

@@ -49,6 +49,22 @@ def test_a_light_codex_agent_runs_with_the_accounts_apps_and_plugins_off(tmp_pat
     assert {"apps", "plugins"}.isdisjoint(_pairs(heavy, "--disable"))
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"plugins.x.enabled": True},
+        {'"plugins"."x@y".enabled': True},
+        {"apps.x.enabled": True},
+        {"plugins": {"x": {"enabled": True}}},
+    ],
+)
+def test_a_light_codex_agent_drops_a_setting_under_the_apps_or_plugins_table(tmp_path, overrides):
+    light = _pairs(_codex(tmp_path, workload="light", config_overrides=overrides), "-c")
+    assert not any("enabled" in o for o in light)
+    heavy = _pairs(_codex(tmp_path, config_overrides=overrides), "-c")
+    assert any("enabled" in o for o in heavy)
+
+
 def test_a_light_codex_agent_asked_for_read_only_stays_read_only(tmp_path):
     args = _codex(tmp_path, workload="light", sandbox="read-only")
     assert _pairs(args, "--sandbox") == ["read-only"]
