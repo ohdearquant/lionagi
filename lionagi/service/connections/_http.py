@@ -9,9 +9,11 @@ thread under a limiter of this module's own, so HTTP requests never take threads
 default pool other code in the process waits on. A request that is cancelled, or that runs past
 its session's timeout, shuts its socket down, which ends the blocked step and frees the thread;
 a request whose connection is still being opened when it is stopped is never sent. A TLS
-handshake is ended the same way, but the TCP connect before it cannot be, so the thread doing it
-stays until the attempt ends: the time the request had left bounds the connect, but not the
-address lookup before it, and such a thread no longer counts against ``MAX_REQUESTS_IN_FLIGHT``.
+handshake is ended the same way, and the TCP connect before it looks every twentieth of a
+second whether its request was stopped, so the time the request had left bounds the connect as
+a whole, across all of the host's addresses. The address lookup before the connect cannot be
+ended: a thread in it stays until the lookup returns, and such a thread no longer counts against
+``MAX_REQUESTS_IN_FLIGHT``.
 
 A URL's path and query are sent percent-encoded: a character that cannot appear in a request
 line (a space, a non-ASCII letter) is encoded, and an escape already in the URL is kept.
@@ -29,6 +31,8 @@ import base64
 import codecs
 import http.client
 import json as _json
+import os
+import selectors
 import socket
 import ssl
 import threading
@@ -56,11 +60,13 @@ __all__ = (
 T = TypeVar("T")
 
 #: The most HTTP requests in flight at once in one event loop. Each holds a worker thread while
-#: it waits on the network, so this bounds those threads, apart from those still in the TCP
-#: connect of a request that was stopped (module docstring); a request past it waits for a
+#: it waits on the network, so this bounds those threads, apart from those still in the address
+#: lookup of a request that was stopped (module docstring); a request past it waits for a
 #: slot, and the wait counts against its timeout.
 MAX_REQUESTS_IN_FLIGHT = 256
 _READ_SIZE = 65536
+# How often a TCP connect in progress looks whether its request was stopped, in seconds.
+_CONNECT_POLL = 0.05
 _USER_AGENT = f"lionagi/{__version__}"
 # RFC 3986 pchar plus "/" and "%", and for the query "?" as well.
 _PATH_SAFE = "/%:@!$&'()*+,;=-._~"
@@ -79,7 +85,7 @@ class TransportError(ConnectionError):
 
 
 # What a request past its deadline raises. On Python 3.10 ``asyncio.TimeoutError`` is a class of
-# its own, and ``aiohttp``'s timeout derived from it, so there this one derives from both.
+# its own, so there this one derives from both, and code that catches either catches it.
 if asyncio.TimeoutError is TimeoutError:
     _RequestTimeoutError = TimeoutError
 else:  # Python 3.10
@@ -202,7 +208,7 @@ class MultipartForm:
                 value = value.read()
             if isinstance(value, str):
                 value = value.encode("utf-8")
-                # A text part says so, as aiohttp wrote it.
+                # A text part declares its charset.
                 content_type = content_type or "text/plain; charset=utf-8"
             elif not isinstance(value, (bytes, bytearray)):
                 raise TypeError(f"form field {name!r} must be str, bytes or a file object")
@@ -232,6 +238,8 @@ class _Exchange:
         self._lock = threading.Lock()
         self._stopped = False
         self._busy = False
+        # http.client opens its socket through this attribute.
+        conn._create_connection = self._connect
 
     def stop(self) -> None:
         """End the exchange: a step running now fails at once, and no request is sent after."""
@@ -272,6 +280,51 @@ class _Exchange:
             # connection would: it is not the whole body.
             raise TransportError("the request was stopped")
         return result
+
+    def _connect(
+        self,
+        address: tuple[str, int],
+        timeout: float | None,
+        source_address: tuple[str, int] | None = None,
+    ) -> socket.socket:
+        """What ``socket.create_connection`` does, with each connect polled so that a stop ends it.
+
+        The deadline stops a request like any other stop, so the time the request had left bounds
+        the connect as a whole, across all of the host's addresses, not each address in turn. The
+        address lookup before it cannot be ended this way.
+        """
+        host, port = address
+        failure: OSError | None = None
+        for family, kind, proto, _, peer in socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM):
+            if self._stopped:
+                raise TransportError("the request was stopped")
+            sock = None
+            try:
+                sock = socket.socket(family, kind, proto)
+                if source_address:
+                    sock.bind(source_address)
+                sock.setblocking(False)
+                try:
+                    sock.connect(peer)
+                except (BlockingIOError, InterruptedError):
+                    with selectors.DefaultSelector() as selector:
+                        selector.register(sock, selectors.EVENT_WRITE)
+                        while not selector.select(_CONNECT_POLL):
+                            if self._stopped:
+                                raise TransportError("the request was stopped") from None
+                    code = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+                    if code:
+                        raise OSError(code, os.strerror(code)) from None
+                sock.settimeout(timeout)
+                return sock
+            except BaseException as exc:
+                if sock is not None:
+                    sock.close()
+                # The next address is tried only after a failed connect, never after a stop.
+                if isinstance(exc, TransportError) or not isinstance(exc, OSError):
+                    raise
+                failure = exc
+        raise failure if failure is not None else OSError("getaddrinfo returns an empty list")
 
     def _publish(self, sock: socket.socket) -> None:
         with self._lock:
@@ -332,6 +385,7 @@ class HTTPResponse:
         self.headers: http.client.HTTPMessage = raw.headers
         self._deadline = deadline
         self._timeout = timeout
+        self._body: bytes | None = None
         self.closed = False
 
     async def _step(self, step: Callable[[], T]) -> T:
@@ -345,11 +399,14 @@ class HTTPResponse:
         )
 
     async def read(self) -> bytes:
-        """The whole body; the connection is closed once it is read."""
-        try:
-            return await self._step(self._raw.read)
-        finally:
-            self.close()
+        """The whole body; the connection is closed once it is read, and a later call returns the
+        same bytes."""
+        if self._body is None:
+            try:
+                self._body = await self._step(self._raw.read)
+            finally:
+                self.close()
+        return self._body
 
     def _charset(self) -> str | None:
         """The codec of the charset ``Content-Type`` declares; ``None`` when it declares none
@@ -418,8 +475,9 @@ async def _run_step(
 ) -> T:
     def blocking() -> T:
         if deadline is not None:
-            # Bounds each blocking socket operation, opening the connection included, by the time
-            # the request has left; time spent waiting for a slot is not left any more.
+            # Bounds each blocking socket operation by the time the request has left, the TCP
+            # connect through the stop at the deadline; time spent waiting for a slot is not left
+            # any more.
             left = max(deadline - time.monotonic(), 0.001)
             exchange.conn.timeout = left
             sock = exchange.sock
@@ -459,7 +517,6 @@ class HTTPSession:
     """
 
     def __init__(self, *, timeout: float | None = None, headers: Any = None):
-        # aiohttp armed no timer for a total of 0 or less either.
         self.timeout = timeout if timeout is not None and timeout > 0 else None
         self.headers = headers
         self._responses: list[HTTPResponse] = []
@@ -502,8 +559,8 @@ class HTTPSession:
             {"User-Agent": _USER_AGENT, "Accept": "*/*"}, self.headers, headers
         )
         names = {name.lower() for name in send_headers}
-        # A user and password in the URL go out as Basic credentials, decoded and encoded as
-        # latin-1 as aiohttp did, and never in the request line.
+        # A user and password in the URL go out as Basic credentials, percent-decoded and encoded
+        # as latin-1, and never in the request line.
         if parts.username is not None or parts.password is not None:
             if "authorization" in names:
                 raise ValueError("pass credentials in the URL or an Authorization header, not both")
@@ -551,7 +608,7 @@ class HTTPSession:
         self._exchanges.append(exchange)
         method = method.upper()
         # http.client writes a str header value as latin-1 and refuses any other character; a
-        # value goes out as its UTF-8 bytes instead, as aiohttp's did.
+        # value goes out as its UTF-8 bytes instead.
         wire_headers = {
             name: value.encode("utf-8") if isinstance(value, str) else value
             for name, value in send_headers.items()

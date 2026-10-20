@@ -119,8 +119,8 @@ class HTTPResponse:
     method: str
     url: str
     closed: bool
-    async def read(self) -> bytes: ...
-    async def text(self, encoding: str = "utf-8") -> str: ...
+    async def read(self) -> bytes: ...   # the whole body; a later call returns it again
+    async def text(self, encoding: str | None = None) -> str: ...
     async def json(self) -> Any: ...
     async def iter_chunks(self) -> AsyncIterator[bytes]: ...   # pieces as they arrive
     def close(self) -> None: ...
@@ -140,10 +140,10 @@ Exact semantics:
   that other code waits on.
 - A step waiting for a slot is waiting inside its request's deadline (D3).
 - `anyio` releases a slot as soon as the waiting task is cancelled, while an abandoned thread runs
-  on. D4 makes that thread end promptly once its TCP connection is open; a thread still in the TCP
-  connect runs until the attempt ends, so such threads are not counted against
+  on. D4 makes that thread end promptly, in the TCP connect too; a thread still in the address
+  lookup before the connect runs until the lookup returns, so such threads are not counted against
   `MAX_REQUESTS_IN_FLIGHT`. The limit bounds requests in flight, and threads only while no stopped
-  request is still connecting.
+  request is still looking up its host.
 - `iter_chunks` yields what each `read1(65536)` returns. A piece can end inside a line or inside a
   UTF-8 character; the endpoint's stream parser decodes incrementally (`codecs` incremental decoder)
   and splits lines itself. `read1` answers an empty read both at the body's end and when the peer
@@ -156,7 +156,8 @@ Exact semantics:
   `json.loads` reads the bytes and detects UTF-8, UTF-16 or UTF-32 itself. `text()` takes the
   declared charset too, else UTF-8. Because the media type is not checked, a 200 response is
   decoded whatever type it declares: a JSON body served as `text/plain` now succeeds, and a body
-  that is not JSON raises `json.JSONDecodeError` (a `ValueError`), which no retry path retries.
+  that is not JSON raises `json.JSONDecodeError`, or `UnicodeDecodeError` when its bytes do not
+  decode (both are `ValueError`), which no retry path retries.
   `aiohttp`'s `json()` raised `ContentTypeError` for any type other than `application/...json`, and
   as a `ClientError` that was retried by the native path. The endpoint's error-body read for a
   non-200 status already caught any failure and falls back to a message without the body. An empty
@@ -220,8 +221,12 @@ The `_Exchange` object owns one connection and the socket it opened:
   the server sent something.
 - A stop that arrives while the connection is still being opened is seen before anything is sent:
   `send()` checks when it publishes the socket and raises `TransportError("the request was
-  stopped")`. The TCP connect itself runs until it completes or its timeout, the time the request
-  had left when the step began (D3), expires; the address lookup before it has no bound.
+  stopped")`. The TCP connect itself is the exchange's own: `http.client` opens its socket through
+  `HTTPConnection._create_connection`, which the exchange sets to a method that does what
+  `socket.create_connection` does with a non-blocking connect, polled every 0.05 s for the stop.
+  A stop, the deadline's included, therefore ends the connect within one poll, and the time the
+  request had left bounds the connect as a whole, across all of the host's addresses, not each
+  address in turn. The address lookup before it cannot be ended and has no bound.
 - A cancelled task, an expired deadline, and a step that fails all call `stop()`. `HTTPResponse`
   `close()` calls it too, and `HTTPSession.close()` calls it for each response still open and each
   request still waiting for its response, so the peer sees the connection end when the caller is
@@ -230,7 +235,9 @@ The `_Exchange` object owns one connection and the socket it opened:
 Tests (`tests/service/connections/test_http_client.py`) run the timeout, cancel and close cases
 against a local server that answers once with `Connection: close` and once without it, and require
 the server to see the connection end; the stop-while-connecting case runs against a stand-in
-connection that records whether a request was sent. A cancel and a session close during a TLS
+connection that records whether a request was sent. A timeout, a cancel and a session close during
+a TCP connect that never completes must stop its polling, and a host whose first address refuses
+must be reached at its next. A cancel and a session close during a TLS
 handshake the server never answers must end the connection within 3 s of a 10 s timeout, and a
 stop right after the TLS socket is published must fail the handshake with a socket error.
 
@@ -332,13 +339,13 @@ keeping `aiohttp` installed for it, which is what this record removes.
 
 - A base install is 30 packages. A vulnerability in `aiohttp` or its dependencies no longer reaches a
   user who has not installed the `sandbox` extra.
-- HTTP behaviour is now lionagi's to maintain: about 550 lines in `_http.py` and the tests that pin
+- HTTP behaviour is now lionagi's to maintain: about 640 lines in `_http.py` and the tests that pin
   them. A defect in chunked decoding or TLS is `http.client`'s and arrives with interpreter updates;
   a defect in deadlines, cancellation or headers is ours.
 - Each request in flight holds a worker thread, at most 256 per event loop. A process that runs more
   requests than that at once queues them, and the queueing counts against their deadlines.
-- A request stopped while its TCP connection is being opened leaves its thread in the connect
-  until the connect finishes or times out; nothing is sent on that connection.
+- A request stopped while its host's address is being looked up leaves its thread in the lookup
+  until the lookup returns; nothing is sent.
 - Responses arrive uncompressed. Large non-streamed JSON responses cost more bytes on the wire than
   under `aiohttp`, which asked for gzip.
 - Code that configured `client_kwargs` beyond headers, passed `aiohttp` request options, caught
@@ -351,7 +358,7 @@ keeping `aiohttp` installed for it, which is what this record removes.
 
 - **Keep `aiohttp` and keep raising its floor.** No code change, and connection handling stays with a
   widely used library. It lost on P1: three floor raises in one year for features lionagi never calls,
-  each a forced upgrade for every user, and nine transitive packages that exist only to support it.
+  each a forced upgrade for every user, and eight transitive packages that exist only to support it.
 - **`httpx`.** A maintained client with an `anyio`-based async transport, timeouts, and no thread per
   request. It would add `httpx`, `httpcore` and `h11` (none are in the base closure today), so it moves
   the surface rather than removing it, and its release cadence would again set ours.

@@ -13,7 +13,9 @@ import email.policy
 import http.client
 import io
 import re
+import selectors
 import socket
+import threading
 import time
 from contextlib import asynccontextmanager
 
@@ -140,6 +142,18 @@ async def test_a_json_body_with_nothing_in_it_reads_as_none(body):
     async with serving(handler) as base, HTTPSession(timeout=5) as session:
         response = await session.request("GET", base)
         assert await response.json() is None
+
+
+@framings
+async def test_a_body_read_twice_comes_back_the_same(announce_close):
+    async def handler(request: Request):
+        return json_response({"ok": True})
+
+    async with serving(handler, announce_close) as base, HTTPSession(timeout=5) as session:
+        response = await session.request("GET", base)
+        body = await response.read()
+        assert await response.read() == body
+        assert await response.json() == {"ok": True}
 
 
 async def test_a_request_header_replaces_a_session_header_of_any_case():
@@ -354,6 +368,93 @@ async def test_opening_a_connection_is_bounded_by_the_time_the_request_has_left(
     assert 4.9 < first <= 5
     # The half second spent waiting for the slot is not left for the connect.
     assert second < 4.6
+
+
+@pytest.mark.parametrize("stop", ["timeout", "cancel", "close"])
+async def test_a_tcp_connect_in_progress_stops_soon_after_its_request_is_stopped(monkeypatch, stop):
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        target = ("127.0.0.1", probe.getsockname()[1])
+    connect = socket.socket.connect
+
+    def in_progress(sock, address):
+        # A host that does not answer: the connect never completes.
+        if address == target:
+            raise BlockingIOError("connecting")
+        return connect(sock, address)
+
+    polls = []
+    done = threading.Event()
+
+    class Unanswered:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+        def register(self, *args):
+            pass
+
+        def select(self, timeout):
+            if done.is_set():
+                raise OSError("the test is over")
+            time.sleep(timeout)
+            polls.append(time.monotonic())
+            return []
+
+    monkeypatch.setattr(socket.socket, "connect", in_progress)
+    monkeypatch.setattr(selectors, "DefaultSelector", Unanswered)
+    url = f"http://{target[0]}:{target[1]}/v1"
+    try:
+        session = HTTPSession(timeout=0.3 if stop == "timeout" else None)
+        task = asyncio.create_task(session.request("GET", url))
+        if stop == "timeout":
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(task, timeout=3)
+        else:
+            await asyncio.sleep(0.3)
+            if stop == "cancel":
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, timeout=3)
+            else:
+                session.close()
+                with pytest.raises(TransportError):
+                    await asyncio.wait_for(task, timeout=3)
+        await asyncio.sleep(0.2)
+        settled = len(polls)
+        await asyncio.sleep(0.3)
+        # The connect was in progress, and its thread stopped looking once the request was stopped.
+        assert settled > 0
+        assert len(polls) == settled
+        session.close()
+    finally:
+        done.set()
+
+
+async def test_a_host_whose_first_address_refuses_is_reached_at_its_next(monkeypatch):
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        refused = probe.getsockname()[1]
+    lookup = socket.getaddrinfo
+
+    async def handler(request: Request):
+        return json_response({"host": request.headers["Host"]})
+
+    async with serving(handler) as base:
+        port = int(base.rsplit(":", 1)[1].split("/", 1)[0])
+
+        def two_addresses(host, *args, **kwargs):
+            if host != "two.test":
+                return lookup(host, *args, **kwargs)
+            tcp = (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "")
+            return [(*tcp, ("127.0.0.1", refused)), (*tcp, ("127.0.0.1", port))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", two_addresses)
+        async with HTTPSession(timeout=5) as session:
+            response = await session.request("GET", f"http://two.test:{port}/v1")
+            assert await response.json() == {"host": f"two.test:{port}"}
 
 
 async def test_a_refused_connection_is_a_transport_error():
@@ -692,9 +793,12 @@ def test_a_stop_right_after_the_tls_socket_is_published_fails_the_handshake_as_a
             exchange.stop()
 
         monkeypatch.setattr(exchange, "_publish", publish_then_stop)
+        start = time.monotonic()
         # A socket error, which the client reports as a transport failure, never an AttributeError.
         with pytest.raises(OSError):
             exchange.run(lambda: exchange.send("GET", "/", None, {}))
+        # Well inside the socket's 5 s timeout, so the stop's shutdown ended the handshake.
+        assert time.monotonic() - start < 2
 
 
 def test_a_multipart_form_reads_back_through_the_standard_library_parser():
