@@ -16,8 +16,8 @@ accepts no fewer tasks.
   read tools, `max_extensions: 10`, `timeout: 300`.
 - `run_pilot.py`: the runner. Each task runs once per loop; the two runs of a task are adjacent in
   time and their order alternates by task, four tasks in flight. Requests, tool calls and wall time
-  come from the `[api] spend:` line `li agent` prints (ADR-0132 D3); acceptance is the task's own
-  check.
+  come from the `[api] spend:` line `li agent` prints (ADR-0132 D3); the task's own check is the
+  first pass on acceptance, and the reading below decides.
 - `runs/r2/`, `runs/r3/`, `runs/r4/`: `header.json` (hashes of the runner, task set and profiles, the read
   tree's commit, the `li` version), `results.jsonl` (one row per run), `summary.json` (totals and
   the D4 rule), `table.md` (the per-task table) and `answers.jsonl` (each run's answer, the leg's
@@ -41,48 +41,53 @@ started and has not moved since, and its working tree reads clean. All three rep
 which is all `header.json` records (`runner_li`), so the commits are recorded here, read from those
 environments after the runs.
 
-| run | loop | accepted | requests | requests per accepted | tool calls | wall time |
-|---|---|---|---|---|---|---|
-| r2 | react | 23 / 24 | 94 | 4.09 | 56 | 295.9 s |
-| r2 | lndl | 18 / 24 | 119 | 6.61 | 34 | 330.4 s |
-| r3 | react | 22 / 24 | 95 | 4.32 | 59 | 315.9 s |
-| r3 | lndl | 23 / 24 | 79 | 3.43 | 37 | 210.5 s |
-| r4 | react | 23 / 24 | 91 | 3.96 | 59 | 290.7 s |
-| r4 | lndl | 22 / 24 | 80 | 3.64 | 47 | 236.4 s |
+| run | loop | accepted by the checks | accepted on reading | requests | requests per accepted | tool calls | wall time |
+|---|---|---|---|---|---|---|---|
+| r2 | react | 23 / 24 | 24 / 24 | 94 | 3.92 | 56 | 295.9 s |
+| r2 | lndl | 18 / 24 | 18 / 24 | 119 | 6.61 | 34 | 330.4 s |
+| r3 | react | 22 / 24 | 23 / 24 | 95 | 4.13 | 59 | 315.9 s |
+| r3 | lndl | 23 / 24 | 23 / 24 | 79 | 3.43 | 37 | 210.5 s |
+| r4 | react | 23 / 24 | 24 / 24 | 91 | 3.79 | 59 | 290.7 s |
+| r4 | lndl | 22 / 24 | 23 / 24 | 80 | 3.48 | 47 | 236.4 s |
 
-By the checks in `tasks.yaml`, r2 fails the rule, r3 passes it, and r4, at the merged code, fails it
-by one accepted task (`t20`). ADR-0132 D4 reads them together, recommends nothing yet, and waits
-on a further run, `r5`, with the `t06` and `t20` checks below fixed before it starts.
+Requests per accepted task divides a run's requests by the tasks accepted on reading.
 
-`t06`'s check expects `100000`. None of the six answers to it (one per loop in each run) contains
-that string: each names `_MAX_OUTPUT_BYTES` and writes its value `100_000`, and all but the r4
-ReAct answer also give the cap as `100,000`, so all six are rejected. With that one check read as
-accepting the answer, r2 is react 24, lndl 19, r3 is react 23 at 4.13 requests per accepted task,
-lndl 24 at 3.29, and r4 is react 24 at 3.79, lndl 23 at 3.48; no run's outcome changes. The committed `tasks.yaml` is the file the runs used, unchanged.
+Each task's check (`accept` in `tasks.yaml`) is a first pass on its answer. Every answer in
+r2, r3 and r4, accepted by its check or not, was then read against the `truth` line `tasks.yaml`
+records for its task (written against `6fa69b19`), and ADR-0132 D4 takes the reading as the
+decision. Read that way, r2 fails the rule, r3 meets it with no margin (23 accepted tasks on each
+side), and r4, at the merged code, fails it (`lndl` 23 against ReAct 24). By the checks alone the
+outcomes are the same, r3 by one task. The run that decides D4 is `r5`.
 
-`t20` asks which module defines the class the factory imports, and its check expects the file path
-`lionagi/tools/code/search.py`. The r4 `lndl` answer named the module by its import path,
-`lionagi.tools.code.search`, and was rejected; no other answer to `t20` was. With that check read as
-accepting the import path, r4 is react 23 at 3.96, lndl 23 at 3.48, and meets the rule; with `t06`
-read the same way as well, react 24 at 3.79, lndl 24 at 3.33. r4's outcome therefore rests on
-this one check, and r2's and r3's do not change under either reading.
+The reading and the checks differ in ten answers:
 
-The checks are substring checks (`all_of` and `none_of` under `accept` in `tasks.yaml`), so a wrong
-answer that contains the expected words can pass. The 24 accepted answers to `t09`, `t11`, `t12` and
-`t22` (both loops, all three runs), where that is easiest, were read by hand, and all are correct;
-they are in `answers.jsonl`. Each task also has a `none_of: []` beside `accept`,
-which the runner does not read; it is left as it was so that `tasks.yaml` still matches the hash in
-each `header.json`.
+| task | runs | loop | check | reading | why |
+|---|---|---|---|---|---|
+| `t06` | r2, r3, r4 | both | rejected | right | The check expects `100000`. Each answer writes the cap as `100_000`, all but the r4 ReAct answer also as `100,000`, and names `_MAX_OUTPUT_BYTES` and `_SHELL_CONTROL` (`lionagi/tools/_subprocess.py:18`, `:20`). |
+| `t20` | r4 | `lndl` | rejected | right | The question asks which module defines the class; the answer names it by its import path, `lionagi.tools.code.search`, and says it did not open the file. The check expects the file path `lionagi/tools/code/search.py`. |
+| `t24` | r2, r3, r4 | `lndl` | accepted | wrong | Each answer says `lionagi/mcp/config.py` defines no `RUNS_DIR`; line 19 of that file is `RUNS_DIR = RUNS_ROOT`. The check asks for the names `RUNS_DIR` and `JOBS_DIR`, which the question itself supplies. |
 
-`run_pilot.py` takes each leg's requests from its spend line, counts a leg with none as zero
-requests, and computes the D4 rule in `summary.json` without checking that every leg reported one.
-Every leg in r2, r3 and r4 did (`spend_lines` is at least 1 in all 144 rows).
+The other rejected answers are wrong on reading too: the five r2 `lndl` legs that spent the round
+budget (`t03`, `t04`, `t17`, `t18`, `t19`; ADR-0132 D4, Result) and the r3 ReAct `t04` leg, which
+made no tool call and answered that none of its tool calls returned results. One accepted answer
+carries an error that does not touch what the question asks: the r4 `lndl` answer to `t22` says
+the question gives `_wire_secure_guards` the signature `(spec: AgentSpec, hooks: dict)`, which the
+question does not; the rest of the answer matches `lionagi/agent/spec.py:48-56`.
+
+The committed `tasks.yaml` is the file the runs used, unchanged. Each task also has a `none_of: []`
+beside `accept`, which the runner does not read; it is left as it was so that `tasks.yaml` still
+matches the hash in each `header.json`.
+
+`run_pilot.py` takes each leg's requests from its spend line and counts a leg with none as zero
+requests. `summary.json` records how many legs that was (`missing_spend`), and the D4 rule it
+computes does not depend on that number. It is 0 in r2, r3 and r4, and `spend_lines` is at least 1
+in all 144 rows.
 
 ## What was changed for this directory
 
-- `run_pilot.py` is `runs/run_pilot.as-run.py.txt` with `noqa` comments added and the layout
-  reformatted by ruff. The two parse to the same syntax tree: `ast.dump(ast.parse(...))` of each
-  file gives identical output.
+- `run_pilot.py` is `runs/run_pilot.as-run.py.txt` with `noqa` comments added, the `(r1)` at the
+  end of one comment removed, and the layout reformatted by ruff. The two parse to the same syntax
+  tree: `ast.dump(ast.parse(...))` of each file gives identical output.
 - In each `header.json`, `tasks_file` was an absolute path on the machine that ran it and now
   reads `tasks.yaml`. Nothing else in `runs/` was changed, apart from a final newline added to the
   JSON files; `answers.jsonl` was added.
