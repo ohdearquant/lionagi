@@ -1012,6 +1012,33 @@ describe("OperatorPanel", () => {
       expect(container.querySelector("ul")?.textContent).toContain(firstRow.title);
     });
 
+    it.each([
+      [50, false],
+      [200, true],
+    ])(
+      "against an archive at 100, a pending read's row from %i is shown: %s",
+      async (snapshotAt, shown) => {
+        await mount();
+        await openList();
+        const pending = deferred<OperatorConversation[]>();
+        api.listOperatorConversations.mockReturnValueOnce(pending.promise);
+        await clickFilter("Active");
+        api.updateOperatorConversation.mockResolvedValueOnce({
+          ...firstRow,
+          status: "archived",
+          updatedAt: 100,
+        });
+        const archive = container.querySelector(
+          'ul li button[aria-label="Archive"]',
+        ) as HTMLButtonElement;
+        await act(async () => archive.click());
+        expect(container.querySelector("ul")?.textContent).not.toContain(firstRow.title);
+        // The server unarchived the row after the archive and before this snapshot.
+        await act(async () => pending.resolve([{ ...firstRow, updatedAt: snapshotAt }]));
+        expect(container.querySelector("ul")?.textContent?.includes(firstRow.title)).toBe(shown);
+      },
+    );
+
     it.each(["initial", "manual"])(
       "ignores the %s list result after its filter changes",
       async (source) => {
@@ -1122,6 +1149,41 @@ describe("OperatorPanel", () => {
         );
       },
     );
+
+    it("reports a failed draft send in the conversation created for it", async () => {
+      api.listOperatorConversations.mockResolvedValueOnce([]);
+      api.createOperatorConversation.mockResolvedValueOnce(firstRow);
+      api.submitOperatorTurn.mockRejectedValueOnce(new Error("Draft send failed"));
+      await mount();
+      await sendInstruction();
+
+      expect(container.textContent).toContain("Draft send failed");
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe(firstRow.id);
+    });
+
+    it("does not report a failed draft send in the conversation selected meanwhile", async () => {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([]);
+      api.createOperatorConversation.mockResolvedValueOnce(firstRow);
+      const pending = deferred<{ requestId: string }>();
+      api.submitOperatorTurn.mockReturnValueOnce(pending.promise);
+      await mount();
+      await sendInstruction();
+      await openList();
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      await clickFilter("Active");
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      const select = [...container.querySelectorAll("ul li button")].find(
+        (button) => button.textContent === other.title,
+      ) as HTMLButtonElement;
+      await act(async () => select.click());
+
+      await act(async () => pending.reject(new Error("Draft send failed")));
+
+      expect(container.textContent).not.toContain("Draft send failed");
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe(other.id);
+    });
 
     it("shows a conversation description beneath its title and in the tooltip", async () => {
       const description = "Review scheduler retries and release decisions";

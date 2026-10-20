@@ -818,11 +818,16 @@ export default function OperatorPanel({ open, onClose }: Props) {
             .map((item) => [item.id, item]),
         );
         for (const item of available) rows.set(item.id, item);
-        // An archive completed during this read must not be undone by its snapshot.
+        // An archive completed during this read must not be undone by its snapshot,
+        // unless the snapshot holds a later change the server made to that row.
         for (const [id, updated] of archiveResultsRef.current) {
-          if (archivedBefore.get(id) !== updated && rows.has(id)) {
-            rows.set(id, { ...rows.get(id)!, status: updated.status });
-          }
+          const row = rows.get(id);
+          if (archivedBefore.get(id) === updated || row === undefined) continue;
+          const snapshotIsNewer =
+            row.updatedAt !== undefined &&
+            updated.updatedAt !== undefined &&
+            row.updatedAt > updated.updatedAt;
+          if (!snapshotIsNewer) rows.set(id, { ...row, status: updated.status });
         }
         return [...rows.values()].filter((item) => item.status === listFilterRef.current);
       },
@@ -1249,12 +1254,17 @@ export default function OperatorPanel({ open, onClose }: Props) {
     if (!trimmed || sending || state.activeRequestId) return;
     setSending(true);
     setActionError(null);
+    // The conversation this send is for: the one shown when it started, or, for
+    // a draft, the one created for it. A failure is reported only while it is
+    // still the one selected.
+    let sentTo = state.conversation?.id ?? selectedConversationIdRef.current;
     try {
       let conversation = state.conversation;
       if (!conversation) {
         conversation = await createOperatorConversation();
         createdConversationIdsRef.current.add(conversation.id);
         selectedConversationIdRef.current = conversation.id;
+        sentTo = conversation.id;
         window.localStorage.setItem(STORAGE_KEY, conversation.id);
         setConversations((current) => [
           conversation as OperatorConversation,
@@ -1285,7 +1295,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
       setInstruction("");
       nearBottomRef.current = true;
     } catch (error) {
-      if (state.conversation && selectedConversationIdRef.current !== state.conversation.id) return;
+      if (selectedConversationIdRef.current !== sentTo) return;
       const message = error instanceof Error ? error.message : t("errors.send");
       setActionError(message);
       if (
