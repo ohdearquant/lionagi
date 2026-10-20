@@ -144,6 +144,28 @@ function readStoredConversation(): string | null {
   return value || null;
 }
 
+// A rename, pin or archive this panel wrote while a read was pending must not be
+// undone by the read's older snapshot of that row. The server stamps updatedAt on
+// every write, so a snapshot stamped later already holds the write.
+function keepWrite(row: OperatorConversation, written: OperatorConversation): OperatorConversation {
+  const snapshotIsNewer =
+    row.updatedAt !== undefined &&
+    written.updatedAt !== undefined &&
+    row.updatedAt > written.updatedAt;
+  if (snapshotIsNewer) return row;
+  return {
+    ...row,
+    title: written.title,
+    pinned: written.pinned,
+    status: written.status,
+    updatedAt: written.updatedAt,
+  };
+}
+
+function byPinThenRecency(a: OperatorConversation, b: OperatorConversation): number {
+  return Number(b.pinned) - Number(a.pinned) || (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
+}
+
 function conversationLabel(conversation: OperatorConversation): string {
   const title = conversation.title?.trim();
   if (title) return title;
@@ -786,7 +808,8 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const selectedConversationIdRef = useRef<string | null>(null);
   const listFilterRef = useRef<"active" | "archived">("active");
   const createdConversationIdsRef = useRef(new Set<string>());
-  const archiveResultsRef = useRef(new Map<string, OperatorConversation>());
+  // The latest rename, pin or archive result this panel wrote, per conversation.
+  const writeResultsRef = useRef(new Map<string, OperatorConversation>());
   const metadataRefreshRef = useRef<{
     conversationId: string;
     sequence: number;
@@ -806,7 +829,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
 
   const readConversationList = useCallback(async (status: "active" | "archived") => {
     const createdBefore = new Set(createdConversationIdsRef.current);
-    const archivedBefore = new Map(archiveResultsRef.current);
+    const writtenBefore = new Map(writeResultsRef.current);
     const available = await listOperatorConversations({ status });
     return {
       available,
@@ -822,18 +845,18 @@ export default function OperatorPanel({ open, onClose }: Props) {
             .map((item) => [item.id, item]),
         );
         for (const item of available) rows.set(item.id, item);
-        // An archive completed during this read must not be undone by its snapshot,
-        // unless the snapshot holds a later change the server made to that row.
-        for (const [id, updated] of archiveResultsRef.current) {
+        // A write completed during this read is kept over the read's snapshot of its row.
+        let kept = false;
+        for (const [id, written] of writeResultsRef.current) {
           const row = rows.get(id);
-          if (archivedBefore.get(id) === updated || row === undefined) continue;
-          const snapshotIsNewer =
-            row.updatedAt !== undefined &&
-            updated.updatedAt !== undefined &&
-            row.updatedAt > updated.updatedAt;
-          if (!snapshotIsNewer) rows.set(id, { ...row, status: updated.status });
+          if (writtenBefore.get(id) === written || row === undefined) continue;
+          const next = keepWrite(row, written);
+          kept ||= next !== row;
+          rows.set(id, next);
         }
-        return [...rows.values()].filter((item) => item.status === listFilterRef.current);
+        const merged = [...rows.values()].filter((item) => item.status === listFilterRef.current);
+        // The server lists pinned rows first, newest first; a kept pin is placed the same way.
+        return kept ? merged.sort(byPinThenRecency) : merged;
       },
     };
   }, []);
@@ -842,6 +865,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
     async (conversationId: string) => {
       const read = ++metadataReadCountRef.current;
       const superseded = () => (metadataReadAppliedRef.current.get(conversationId) ?? 0) > read;
+      const writtenBefore = writeResultsRef.current.get(conversationId);
       try {
         const [snapshot, list] = await Promise.all([
           getOperatorConversation(conversationId),
@@ -849,7 +873,14 @@ export default function OperatorPanel({ open, onClose }: Props) {
         ]);
         if (selectedConversationIdRef.current !== conversationId || superseded()) return;
         metadataReadAppliedRef.current.set(conversationId, read);
-        dispatch({ type: "UPDATE_CONVERSATION", conversation: snapshot.conversation });
+        const written = writeResultsRef.current.get(conversationId);
+        dispatch({
+          type: "UPDATE_CONVERSATION",
+          conversation:
+            written === undefined || written === writtenBefore
+              ? snapshot.conversation
+              : keepWrite(snapshot.conversation, written),
+        });
         setConversations(list.merge);
       } catch (error) {
         if (
@@ -1440,6 +1471,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         const updated = await updateOperatorConversation(conversationId, {
           title: trimmed.length > 0 ? trimmed : null,
         });
+        writeResultsRef.current.set(updated.id, updated);
         setConversations((current) =>
           current.map((item) => (item.id === updated.id ? updated : item)),
         );
@@ -1461,13 +1493,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
         const updated = await updateOperatorConversation(conversation.id, {
           pinned: !conversation.pinned,
         });
+        writeResultsRef.current.set(updated.id, updated);
         setConversations((current) =>
-          current
-            .map((item) => (item.id === updated.id ? updated : item))
-            .sort(
-              (a, b) =>
-                Number(b.pinned) - Number(a.pinned) || (b.updatedAt ?? 0) - (a.updatedAt ?? 0),
-            ),
+          current.map((item) => (item.id === updated.id ? updated : item)).sort(byPinThenRecency),
         );
         if (selectedConversationIdRef.current === updated.id) {
           dispatch({ type: "UPDATE_CONVERSATION", conversation: updated });
@@ -1490,7 +1518,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         const updated = await updateOperatorConversation(conversation.id, {
           status: nextStatus,
         });
-        archiveResultsRef.current.set(updated.id, updated);
+        writeResultsRef.current.set(updated.id, updated);
         setConversations((current) =>
           updated.status === listFilterRef.current
             ? current.map((item) => (item.id === updated.id ? updated : item))

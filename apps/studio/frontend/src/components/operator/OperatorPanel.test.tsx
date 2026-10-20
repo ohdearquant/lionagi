@@ -6,6 +6,7 @@ import enMessages from "@/messages/en.json";
 import { ApiError } from "@/lib/api";
 import type {
   OperatorConversation,
+  OperatorConversationSnapshot,
   OperatorFrame,
   OperatorModelCatalogEntry,
   OperatorTruncationPayload,
@@ -928,13 +929,13 @@ describe("OperatorPanel", () => {
       });
     });
 
-    const firstRow: OperatorConversation = {
+    const firstRow = {
       id: "conversation-1",
       title: "Scheduler check",
       status: "active",
       pinned: false,
       activeRequestId: null,
-    };
+    } satisfies OperatorConversation;
     const archivedRow: OperatorConversation = {
       ...firstRow,
       id: "archived-1",
@@ -1035,7 +1036,7 @@ describe("OperatorPanel", () => {
         expect(container.querySelector("ul")?.textContent).not.toContain(firstRow.title);
         // The server unarchived the row after the archive and before this snapshot.
         await act(async () => pending.resolve([{ ...firstRow, updatedAt: snapshotAt }]));
-        expect(container.querySelector("ul")?.textContent?.includes(firstRow.title!)).toBe(shown);
+        expect(container.querySelector("ul")?.textContent?.includes(firstRow.title)).toBe(shown);
       },
     );
 
@@ -1363,6 +1364,88 @@ describe("OperatorPanel", () => {
         expect(container.querySelector("ul")?.textContent).toContain(other.title);
       });
 
+      async function holdMetadataRead() {
+        const mounted = await mountMetadataConversation();
+        const snapshot = deferred<OperatorConversationSnapshot>();
+        const list = deferred<OperatorConversation[]>();
+        api.getOperatorConversation.mockReturnValueOnce(snapshot.promise);
+        api.listOperatorConversations.mockReturnValueOnce(list.promise);
+        await mounted.emit(metadataCall(1), metadataResult(2));
+        const settle = async (
+          conversation: typeof mounted.conversation,
+          rows: OperatorConversation[],
+        ) => {
+          await act(async () => {
+            snapshot.resolve({ conversation, frames: [] });
+            list.resolve(rows);
+          });
+        };
+        return { ...mounted, settle };
+      }
+
+      async function renameRow(from: string, to: string) {
+        const titleButton = [...container.querySelectorAll("ul li button")].find((button) =>
+          button.querySelector("span")?.textContent?.endsWith(from),
+        ) as HTMLButtonElement;
+        await act(async () => {
+          titleButton.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+        });
+        const input = container.querySelector("ul li input") as HTMLInputElement;
+        const setNativeValue = Object.getOwnPropertyDescriptor(
+          window.HTMLInputElement.prototype,
+          "value",
+        )!.set!;
+        await act(async () => {
+          setNativeValue.call(input, to);
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          input.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+          await Promise.resolve();
+        });
+      }
+
+      it("keeps a pin written while a metadata refresh is pending, placed as the server lists it", async () => {
+        const { conversation, other, settle } = await holdMetadataRead();
+        api.updateOperatorConversation.mockResolvedValueOnce({
+          ...other,
+          pinned: true,
+          updatedAt: 30,
+        });
+        const pin = container.querySelector('ul li button[aria-label="Pin"]') as HTMLButtonElement;
+        await act(async () => pin.click());
+        await settle(conversation, [conversation, other]);
+        const rows = [...container.querySelectorAll("ul li")];
+        expect(rows.map((row) => row.querySelector("button span")?.textContent)).toEqual([
+          "★ Other conversation",
+          "★ Scheduler check",
+        ]);
+        expect(rows[0].querySelector('button[aria-label="Unpin"]')).not.toBeNull();
+      });
+
+      it("keeps a rename written while a metadata refresh is pending", async () => {
+        const { conversation, other, settle } = await holdMetadataRead();
+        api.updateOperatorConversation.mockResolvedValueOnce({
+          ...conversation,
+          title: "Renamed check",
+        });
+        await renameRow("Scheduler check", "Renamed check");
+        expectMetadata("Renamed check", "Original scope");
+        await settle(conversation, [conversation, other]);
+        expectMetadata("Renamed check", "Original scope");
+      });
+
+      it("takes a refresh that holds a later server change over a rename written during it", async () => {
+        const { conversation, other, settle } = await holdMetadataRead();
+        api.updateOperatorConversation.mockResolvedValueOnce({
+          ...conversation,
+          title: "Renamed check",
+          updatedAt: 10,
+        });
+        await renameRow("Scheduler check", "Renamed check");
+        const later = { ...conversation, title: "Server title", updatedAt: 20 };
+        await settle(later, [later, other]);
+        expectMetadata("Server title", "Original scope");
+      });
+
       it("rereads on done when the provider never reports the metadata call result", async () => {
         const { conversation, other, emit } = await mountMetadataConversation();
         const updated = { ...conversation, title: "Durable title", description: "Durable scope" };
@@ -1451,12 +1534,13 @@ describe("OperatorPanel", () => {
         expect(container.querySelector("ul")?.textContent).not.toContain("Delayed title");
       });
 
-      async function mountTwoMetadataReads() {
+      // Starts two metadata reads and returns settle(index, ...), where index is the order
+      // the reads started in: each read takes the next queued mock.
+      async function startTwoMetadataReads() {
         const mounted = await mountMetadataConversation();
         const { conversation, other, emit } = mounted;
-        type Snapshot = { conversation: typeof conversation; frames: OperatorFrame[] };
         const reads = [1, 2].map(() => ({
-          snapshot: deferred<Snapshot>(),
+          snapshot: deferred<OperatorConversationSnapshot>(),
           list: deferred<OperatorConversation[]>(),
         }));
         for (const read of reads) {
@@ -1477,7 +1561,7 @@ describe("OperatorPanel", () => {
       }
 
       it("keeps a newer metadata read when an older one settles after it", async () => {
-        const settle = await mountTwoMetadataReads();
+        const settle = await startTwoMetadataReads();
         await settle(1, "Newer title", "Newer scope");
         expectMetadata("Newer title", "Newer scope");
         await settle(0, "Older title", "Older scope");
@@ -1486,7 +1570,7 @@ describe("OperatorPanel", () => {
       });
 
       it("applies metadata reads that settle in the order they started", async () => {
-        const settle = await mountTwoMetadataReads();
+        const settle = await startTwoMetadataReads();
         await settle(0, "Older title", "Older scope");
         expectMetadata("Older title", "Older scope");
         await settle(1, "Newer title", "Newer scope");
