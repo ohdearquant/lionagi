@@ -105,28 +105,20 @@ async def _call_with_timeout(
     **kwargs,
 ) -> Any:
     """Invoke function with optional timeout, handling both sync and async."""
-    if is_coro:
-        if timeout is not None:
-            with move_on_after(timeout) as cancel_scope:
-                result = await func(item, **kwargs)
-            if cancel_scope.cancelled_caught:
-                raise TimeoutError(f"Function call timed out after {timeout}s")
-            return result
-        return await func(item, **kwargs)
-    else:
-        if timeout is not None:
-            with move_on_after(timeout) as cancel_scope:
-                result = await run_sync(func, item, **kwargs)
-            if cancel_scope.cancelled_caught:
-                raise TimeoutError(f"Function call timed out after {timeout}s")
-            return result
-        return await run_sync(func, item, **kwargs)
+    scope = move_on_after(timeout) if timeout is not None else nullcontext()
+    with scope as cancel_scope:
+        if is_coro:
+            result = await func(item, **kwargs)
+        else:
+            result = await run_sync(func, item, **kwargs)
+    if cancel_scope is not None and cancel_scope.cancelled_caught:
+        raise TimeoutError(f"Function call timed out after {timeout}s")
+    return result
 
 
 async def _execute_with_retry(
     func: Callable,
     item: Any,
-    index: int,
     *,
     is_coro: bool,
     timeout: float | None,
@@ -135,16 +127,15 @@ async def _execute_with_retry(
     max_attempts: int,
     default: Any,
     **kwargs,
-) -> tuple[int, Any]:
-    """Execute function with exponential backoff retry; returns (index, result) to
-    preserve ordering. Cancellation is never retried (respects structured concurrency)."""
+) -> Any:
+    """Execute function with exponential backoff retry; returns the result or the
+    default. Cancellation is never retried (respects structured concurrency)."""
     attempts = 0
     current_delay = initial_delay
 
     while True:
         try:
-            result = await _call_with_timeout(func, item, is_coro, timeout, **kwargs)
-            return index, result
+            return await _call_with_timeout(func, item, is_coro, timeout, **kwargs)
 
         except get_cancelled_exc_class():
             raise
@@ -157,7 +148,7 @@ async def _execute_with_retry(
                     current_delay *= backoff
             else:
                 if not_sentinel(default):
-                    return index, default
+                    return default
                 raise
 
 
@@ -210,10 +201,9 @@ async def alcall(
         try:
             ctx = semaphore if semaphore is not None else nullcontext()
             async with ctx:
-                _, result = await _execute_with_retry(
+                result = await _execute_with_retry(
                     func,
                     item,
-                    idx,
                     is_coro=is_coro,
                     timeout=retry_timeout,
                     initial_delay=retry_initial_delay,

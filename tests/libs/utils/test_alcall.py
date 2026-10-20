@@ -60,6 +60,18 @@ class TestAlcallBasic:
         results = await alcall([], async_func)
         assert results == []
 
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("is_coro", [True, False])
+    async def test_alcall_passes_a_keyword_named_index_to_func(self, is_coro):
+        async def add_index_async(value: int, *, index: int) -> int:
+            return value + index
+
+        def add_index_sync(value: int, *, index: int) -> int:
+            return value + index
+
+        func = add_index_async if is_coro else add_index_sync
+        assert await alcall([1, 2], func, index=40) == [41, 42]
+
 
 class TestAlcallFuncValidation:
     @pytest.mark.anyio
@@ -200,6 +212,35 @@ class TestAlcallRetryTimeout:
             retry_attempts=0,
         )
         assert results == ["timeout"]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("is_coro", [True, False])
+    async def test_alcall_timeout_without_a_default_raises_timeout_error(
+        self, monkeypatch, is_coro
+    ):
+
+        async def slow_async_func(x: int) -> int:
+            await anyio.sleep_forever()
+            return x
+
+        def slow_sync_func(x: int) -> int:  # pragma: no cover - replaced at thread seam
+            return x
+
+        # A worker thread is not cancelled at the timeout, so a sync function that
+        # finishes late still returns its result. This stand-in for the thread call can
+        # be cancelled, which reaches the timeout branch the sync path shares.
+        async def blocked_run_sync(*args, **kwargs):
+            await anyio.sleep_forever()
+
+        monkeypatch.setattr("lionagi.ln._async_call.run_sync", blocked_run_sync)
+
+        with pytest.raises(TimeoutError, match="timed out after 0s"):
+            await alcall(
+                [1],
+                slow_async_func if is_coro else slow_sync_func,
+                retry_timeout=0,
+                retry_attempts=0,
+            )
 
     @pytest.mark.anyio
     async def test_alcall_retry_backoff(self):
