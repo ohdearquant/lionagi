@@ -12,18 +12,26 @@
   ADR-0094 (automated PR review pipeline)
 
 lionagi starts `claude` and `codex` processes for every CLI agent it runs. This record makes lionagi
-the only place the hooks those processes run are declared, and makes it impossible for a `claude` or
-`codex` spawn to start without them. Other engines lionagi spawns have no renderer; a required entry
-that names them refuses their spawn (D8).
+the only place the hooks those processes run are declared, and makes every agent turn lionagi
+starts through its CLI providers, which all pass one spawn function, compile those hooks and carry
+them; a turn that cannot is refused before it starts (D3, D6). Every spawn applies its declared
+hooks, and a deployment that declares a hooks requirement cannot silently lose its required
+baseline (D1). Other engines lionagi spawns have no renderer; a required entry that names them or
+omits `engines` refuses their spawn. Processes that do not pass the spawn function, such as a
+command an agent's own shell tool runs, are outside this record (D8).
 
 The first hook it carries serves one redaction requirement: secret values are replaced by tokens
-from a single redaction table before they reach the model's context and before the engine writes
-its transcript. D7 meets it on the two paths lionagi can see. lionagi redacts the prompt text it
-hands the engine before the spawn. A tool result is redacted at the pre-tool hook, which either
-routes the call's result through the redactor or denies the call, because neither engine is known
-to call a hook before it persists a tool result. Post-tool, stop and exit scans check and scrub what
-substitution missed. A value that reaches the engine by neither path, such as an instruction file
-the engine loads on its own, is found by the stop and exit scans of the transcript, not prevented.
+from the run's redaction table before they reach the model's context and before the engine writes
+its transcript. D7 meets it on the routes lionagi mediates. lionagi redacts the prompt text it hands
+the engine before the spawn. A tool call runs only on a route that redacts its output before the
+engine receives it (a read the hook performs under the run's read policy, a shell command whose
+output passes the redactor, an MCP call through a redacting proxy bound to the run), and every
+other tool is denied, because neither engine is known to call a hook before it persists a tool
+result. The post-tool hook blocks a result the model would see with a raw value in it; the stop and
+exit scans find raw values in the engine's transcript, and the exit scan scrubs them; no hook
+scrubs lionagi's own stored messages or stream log. A value that reaches the engine by no mediated
+route, such as an instruction file the engine loads on its own, is found by those scans, not
+prevented.
 
 ## Context
 
@@ -48,7 +56,8 @@ declares `mcp_servers`; it does not look at hooks a project layer declares. Two 
 opposite in sign: an interactive hook the user wrote for themselves runs inside every automated
 agent, and a cloned repository's own hook files execute commands in an agent lionagi started. Once
 spawned agents are isolated from the user layer (which they must be, for P1's first half), a Claude
-agent runs with no hooks at all and a Codex agent runs only the hooks of a trusted project layer
+agent runs no hooks from the user, project or local sources and a Codex agent runs only the hooks of
+a trusted project layer
 until D5's refusal lands; either way a guard the operator relies on disappears without a message.
 
 **P2 — the declaration surfaces that exist do not reach spawned agents.**
@@ -107,13 +116,13 @@ needs to refuse a target that cannot provide it.
 
 | Concern | Decision |
 |---------|----------|
-| Where a hook for a spawned agent is declared | D1: one registry, `LIONAGI_HOME/hooks/agents.json`, over the existing library; later layers add, never remove |
+| Where a hook for a spawned agent is declared | D1: one registry, `LIONAGI_HOME/hooks/agents.json`, over the existing library; later layers add, never remove; a deployment requirement held outside `LIONAGI_HOME` makes the baseline mandatory; every attached command needs an approval of its final argv |
 | Event vocabulary and what an entry may require | D2: neutral events plus engine-labeled events per ADR-0120 D6; each target publishes a capability table proven by conformance; entries declare `requires` |
-| Where the render happens | D3: one compiler, required by each CLI provider's spawn; `ndjson_from_cli()` refuses an agentic spawn that carries no compiled render |
-| Claude render | D4: a per-run settings file under `LIONAGI_HOME`, emitted by the spawn, with setting sources empty |
+| Where the render happens | D3: one compiler, required by each CLI provider's spawn; `ndjson_from_cli()` takes the render as a required argument and starts only the binary it was compiled for |
+| Claude render | D4: a per-call settings file under `LIONAGI_HOME`, emitted by the spawn, with setting sources empty and only lionagi's MCP servers |
 | Codex render | D5: an inline config layer, user config ignored, hook-declaring project layers refused, trust by computed records |
-| Failure policy | D6: every failure before the spawn refuses it with a typed refusal; no hook-less fallback |
-| What the redaction entry guarantees and how | D7: write-time protection is lionagi's own prompt redaction plus pre-tool substitution or denial; post-tool, turn-end and a lionagi-fired exit event verify and scrub |
+| Failure policy | D6: every failure before the spawn refuses it with a typed refusal, a missing required registry and a missing approval included; no hook-less fallback |
+| What the redaction entry guarantees and how | D7: prevention is lionagi's own prompt redaction plus mediated tool routes (a hook-performed read, redacted shell output, a redacting MCP proxy) with every other tool denied; post-tool blocks, the stop scan counts, and a lionagi-fired exit event scans, scrubs and checks receipts |
 | Scope | D8: every Claude and Codex spawn through `ndjson_from_cli()`; other engines refuse required entries they cannot render |
 
 Out of scope:
@@ -122,6 +131,11 @@ Out of scope:
   registry into those seams is DEFERRED (D8).
 - Programs a schedule's `command` action starts directly: they are outside lionagi. They are covered
   exactly when they start their agents through lionagi (`li agent`), and not otherwise.
+- Processes that do not pass `ndjson_from_cli()`: a command an agent's own shell tool runs (an
+  API-model agent's Bash tool can run `claude -p` or `codex exec`), the agent factory's
+  `codex mcp list --json` probe, which lists servers and starts no agent turn, and D2's version
+  probe. Under a redaction baseline the shell route's support matrix (D7) decides whether a CLI
+  agent may run such a command at all.
 - Engine-managed policy (an organization's managed settings): lionagi cannot disable it. Acceptance
   A4 records what it injects; this ADR makes no claim over it.
 - What the redaction hook does inside its own process: the hook is a separate program. This ADR fixes
@@ -134,6 +148,23 @@ Out of scope:
 The registry is `LIONAGI_HOME/hooks/agents.json`. It is an assembly over the hook library, in the
 same attachment shape the Operator already uses, plus four fields: `required`, `engines`, `args`
 and `requires` (D2).
+
+Absence and the deployment requirement. An installation that has not declared a registry
+requirement may start with no registry and an empty attachment set. Its spawns still apply the
+engine isolation of D4 and D5, and each records the resolved registry path and that it was absent,
+with a notice on stderr. A present registry is validated and its content digest recorded; an
+unreadable or invalid registry is never treated as absent. A deployment that requires hooks
+declares a requirement: the expected absolute registry path and its mandatory attachments, each
+given by hook, event, matcher, engines, args and `requires`. The launcher names the requirement
+file by an absolute path in `LIONAGI_HOOKS_REQUIREMENT`, set by the service definition, the
+schedule or the job that starts lionagi, and lionagi never looks for it under `LIONAGI_HOME`, so a
+run that resolves a different home still finds it. The requirement accompanies every admitted job,
+worker, continuation and resumed invocation, each of which records it and hands it on explicitly,
+and no profile or request can weaken it. A registry at a different path, an absent required
+registry, or a missing or weakened mandatory attachment refuses the spawn (D6, A6). An empty registry
+satisfies only a requirement whose mandatory set is empty, and first use never creates a registry.
+The compiler checks the registry against the requirement; the requirement is never a second source
+the render is built from.
 
 ```json
 {
@@ -158,8 +189,10 @@ and `requires` (D2).
 ```
 
 A library entry that the registry attaches carries `argv` (a non-empty list of non-empty strings,
-the rule ADR-0048 D4 applies to external hook commands; ADR-0120 D6 types `command` as argv) and may
-carry `pin`, a map from file path to SHA-256 that must match at every spawn:
+the rule ADR-0048 D4 applies to external hook commands; ADR-0120 D6 types `command` as argv), whose
+first element is an absolute path, so the executable that runs does not depend on the engine's
+`PATH` or working directory. It may carry `pin`, a map from file path to SHA-256 that must match at
+every spawn:
 
 ```json
 {"hooks": {"redact": {
@@ -179,18 +212,37 @@ Exact semantics:
   ambiguous and ADR-0120 D6 requires argv. The Operator's existing string entries keep working for
   the Operator until they are translated, as ADR-0120 D6 (the legacy shell executor is "translated/
   deprecated and then deleted") and its Phase 5 (external schema authority) provide.
-- The library schema gains `argv` and `pin`. Today the library validator accepts only
-  `description`, `command` and `timeout` on an entry, and one refused entry fails the whole
-  library, which for the Operator is a hook-less turn (P4). The schema change therefore lands
-  before, or with, the first library entry that carries either field.
-- Trust tier. Registry and library entries are user-authored in ADR-0048 D7's terms: they live
-  under `LIONAGI_HOME` and are written by the operator, by hand or through the Studio hooks API.
-  Neither `li hooks import` nor a plugin bundle writes them, and this record adds no import path
-  into them, so ADR-0048 D7's `trusted_hook_commands` approval does not gate them. `pin` is not a
-  trust record. It checks that the files an entry runs are still the files the operator pinned, and
-  it is checked when a spawn is compiled, not when the engine later runs the hook for each event.
-  D6 therefore also refuses a pinned file, or its directory, that anyone other than its owner can
-  write.
+- The library schema gains `argv` and `pin`, `timeout` becomes a positive number of seconds (a
+  boolean is refused) that an entry attached to `agent_prompt`, `pre_tool` or `agent_exit` must
+  carry, and the Operator's materializer changes with it.
+  Today the library validator accepts only `description`, `command` and `timeout` on an entry, one
+  refused entry fails the whole library, and the materializer reads `command` alone, so an
+  argv-only entry raises `KeyError`, which the engine call site's catch-all turns into a hook-less
+  Operator turn (P4). The materializer therefore renders an argv entry as D4 does
+  (`command` = `shlex.join(argv)`), and any failure to materialize, of any exception type, refuses
+  the Operator turn (D6). Both changes land before, or with, the first library entry that carries
+  either field.
+- Command approval. Registry and library files take no trust tier from where they live: ADR-0048
+  D7 assigns tiers to hook entries in its own settings files, by provenance and defining file, and
+  these files are neither. Every command attached to a spawned agent, by the registry, a profile or
+  the Operator, needs an explicit approval of its final argv: the library entry's `argv` followed by
+  the attachment's `args`, after `{engine}` is substituted. Since `argv[0]` is an absolute path, the
+  executable approved is the executable that runs. The approval uses ADR-0048 D7's hash rule,
+  `sha256(json.dumps(argv))`, recorded in `trusted_hook_commands` in the user settings file that
+  rule names, through the same trust workflow (`li hooks trust`), which lists every concrete argv
+  the registry and its layers attach. A project's settings file cannot supply the approval, and the
+  compiler never records one. A missing approval, an approval store that cannot be read, or a
+  changed argv refuses the spawn (D6, A7). Codex trust records (D5) are generated only after this check
+  and do not replace it. An entry that carries imported provenance needs the same approval, never a
+  weaker one.
+- `pin` and the owner-only checks are integrity checks, not approval: an approval names an
+  invocation and does not show that the files it runs, or their dependencies, are unchanged. A pin
+  checks that the files an entry runs are still the files the operator pinned, when a spawn is
+  compiled, not when the engine later runs the hook for each event. D6 also refuses a pinned file,
+  the registry, the library or the approval store, or a directory holding one, that anyone other
+  than its owner can write. A pin does not freeze a file: a process of the same account, an agent's
+  own shell command included, can change it between the compile and an event, and the next compile
+  is where the pin sees the change (Consequences).
 - `engines` absent means every CLI engine lionagi spawns. D8 decides what that does to an engine
   with no renderer.
 - `required: true` marks the baseline. Profiles and the Operator may add attachments. No layer
@@ -200,11 +252,18 @@ Exact semantics:
 - Layers, in order: the registry, then the agent profile's `hooks` assembly (which stops being a
   warning and starts applying), then the Operator's assembly for Operator spawns. Duplicates, equal
   on (hook, event, matcher, argv), collapse to the first.
+- In a spawn whose baseline holds a required attachment for its engine, a later layer may add an
+  attachment only on an event the engine's table lists in `inert_events` (D2), an event whose hooks
+  can neither change a tool's input nor add to the model's context. Until the conformance suite
+  lists one, later layers add nothing to such a spawn, and a layer that tries refuses it (D6). An
+  added rewriter could otherwise undo the redaction route after it ran, or an added context hook
+  hand the model a raw value, with every required attachment still present.
 - The automated PR review pipeline's agents (ADR-0094) use the registry as is. There is no
   daemon-scoped overlay; if a later need is shown for one, it is another additive layer under the
   same no-removal rule.
-- Swapping the hook implementation is an edit to the library entry's `argv` and `pin`. Once the
-  schema change above has landed, no lionagi code changes.
+- Swapping the hook implementation is an edit to the library entry's `argv` and `pin` and a new
+  approval of the changed argv. Once the schema and materializer changes above have landed, no
+  further lionagi code changes.
 
 Why this way. The library already holds definitions by name and the Operator already attaches by
 name, so the registry adds no second definition surface. A separate file, rather than a scope key
@@ -233,6 +292,8 @@ class EngineHookCapabilities:
     events: frozenset[str]           # events the adapter renders, plus agent_prompt and agent_exit
     capabilities: frozenset[str]     # see below
     settings_keys: frozenset[str]    # caller settings keys the Claude render may merge (D4)
+    project_layer_keys: frozenset[str]  # keys a Codex project layer may set (D5)
+    inert_events: frozenset[str]     # events whose hooks cannot change a tool's input or add model context (D1)
 ```
 
 | Capability | Meaning |
@@ -245,17 +306,23 @@ class EngineHookCapabilities:
 | `all_tools_gated` | every tool that returns bytes to the model passes the pre-tool hook, including MCP tools and incremental input to a running command |
 
 An attachment may declare `requires: [<capability>, ...]`. The table for a version contains only
-what the conformance suite (Acceptance A1-A4) showed at that version, and `settings_keys` only keys
-the suite showed run no command. A version with no table has no capabilities, so a spawn of it
-refuses every attachment that requires one. Reading the version: the adapter runs the resolved
-engine binary with `--version` once and caches the answer by the binary's resolved path, inode, size
-and modification time.
+what the conformance suite (Acceptance A1-A4, A8) showed at that version. `settings_keys` and
+`project_layer_keys` hold only keys the suite showed run no command, widen no permission, and set
+no environment value, credential or endpoint, and `inert_events` only events the suite showed
+neither rewrite a tool's input nor add to the model's context. A version with no table has no
+capabilities, so a spawn of it refuses every attachment that requires one. Reading the version: the
+adapter resolves the engine binary once to an absolute path and runs that path with `--version`,
+with no shell, the spawn's environment, an empty stdin and a 10-second bound. That probe starts no
+agent turn and does not pass `ndjson_from_cli()` (D8). The answer is cached by the path, inode, size
+and modification time, and the spawn runs that same path (D3), so the table chosen is the table of
+the binary that runs.
 
 Rollout order. The conformance suite and the first capability table land before `agents.json`
 carries any required attachment. A required attachment against a version with no table refuses
 every spawn of that engine on the machine, so the other order stops every agent until the suite
 catches up. The suite's first run also records whether a Claude agent with empty setting sources
-still discovers `CLAUDE.md` files (A4), and D4 states the measured answer, never an assumed one.
+still discovers `CLAUDE.md` files (A4), and D4 records that answer when A4 runs, never an assumed
+one.
 
 Why this way. The alternative of adding `stop` to the neutral vocabulary with a per-target check
 would make a Claude-specific behavior look portable, which ADR-0120 D6 already rejected. Dropping
@@ -271,9 +338,10 @@ One function compiles the layers for one spawn:
 def compile_agent_hooks(
     *,
     engine: Literal["claude", "codex", "gemini", "pi"],
+    engine_binary: Path,             # absolute; the path whose version was read (D2)
     engine_version: str,
     cwd: Path,
-    run_id: str,
+    requirement: HooksRequirement | None,  # the launcher's requirement (D1), or none declared
     profile_attachments: Sequence[Attachment] = (),
     operator_attachments: Sequence[Attachment] = (),
     snapshot: HooksSnapshot | None = None,
@@ -282,9 +350,11 @@ def compile_agent_hooks(
 @dataclass(frozen=True, slots=True)
 class RenderedHooks:
     engine: str
-    snapshot: HooksSnapshot          # registry + library content and digest, read once per run
+    binary: Path                     # the only first element ndjson_from_cli() accepts
+    run_id: str                      # minted by the compiler, one per provider call
+    snapshot: HooksSnapshot          # registry path, content and digest (or its absence), read once per provider call
     argv_additions: tuple[str, ...]  # flags the spawn appends
-    files: tuple[Path, ...]          # files the spawn owns and removes when the run ends
+    files: tuple[Path, ...]          # the render file and D7's run files, removed when the provider call returns
 ```
 
 Exact semantics:
@@ -292,15 +362,18 @@ Exact semantics:
 - Each CLI provider's `_ndjson_from_cli` calls `compile_agent_hooks` after the request is final and
   before it builds `cmd`, and passes the result to `ndjson_from_cli()`, unless the request already
   carries a `RenderedHooks` (the continuation below), which it passes instead.
-- `ndjson_from_cli()` gains a keyword-only `hooks: RenderedHooks | NoAgentHooks`. A call without it
-  raises `TypeError`. `NoAgentHooks` exists for non-agent subprocesses that share the function and
-  is refused when the command's first element resolves to an agentic engine binary: the resolved
-  path equals the resolved binary of one of lionagi's CLI providers, today `claude`, `codex`,
-  `gemini` and `pi`. A new provider, or a new path to an existing one, therefore cannot spawn
-  without passing the compiler.
-- `run_id` is a fresh identifier the compiler mints for each provider call, so two calls never
-  share a render path. A provider call is one request handed to a provider, including any
-  continuation the provider starts on its own.
+- `ndjson_from_cli()` gains a required keyword-only `hooks: RenderedHooks`; a call without it
+  raises `TypeError`. There is no opt-out value: every caller of the function is a CLI provider's
+  `_ndjson_from_cli` (four today: Claude, Codex, Gemini and Pi), and a subprocess that is not an
+  agent turn uses another function. `ndjson_from_cli()` also refuses a command whose first element
+  is not `hooks.binary`, so the binary that starts is the one the render and its capability table
+  were compiled for, and a wrapper in front of it (`env claude ...`, a shell string) is refused. A
+  new provider therefore cannot call the spawn function without a render; code that starts an
+  engine some other way does not pass the function and is outside this record (D8), and A5
+  enumerates the function's callers so that a new one is seen.
+- `run_id` is a fresh identifier the compiler mints for each provider call and returns on
+  `RenderedHooks`; no caller supplies it, so two calls never share a render path. A provider call
+  is one request handed to a provider, including any continuation the provider starts on its own.
 - The snapshot is read once per provider call, unless the caller passes one (the fan-out below).
   The request carries the compiled `RenderedHooks` as a runtime-only field, excluded from
   serialization like `env` and `on_spawn`. The `auto_finish` continuation restores that field by
@@ -319,11 +392,15 @@ through it" into a type error for the path that does not.
 
 ### D4 — Claude render
 
-- The spawn appends `--setting-sources ""` and `--settings <file>`, where `<file>` is
-  `LIONAGI_HOME/run/hooks/<run_id>-<snapshot digest, 12 hex>.json`, created with exclusive create
-  and mode 0600, holding `{"hooks": ...}` rendered from the compiled attachments. An existing file
-  at that path is a refusal, never an overwrite. The `auto_finish` continuation passes the same
-  file (D3) and writes none.
+- The spawn appends `--setting-sources ""`, `--strict-mcp-config` and `--settings <file>`, where
+  `<file>` is `LIONAGI_HOME/run/hooks/<run_id>.settings.json`, created with exclusive create and
+  mode 0600, holding `{"hooks": ...}` rendered from the compiled attachments. An existing file at
+  that path is a refusal, never an overwrite. The `auto_finish` continuation passes the same file
+  (D3) and writes none.
+- `--strict-mcp-config` makes the MCP servers lionagi passes the only servers the agent loads, so a
+  repository's `.mcp.json`, whose stdio servers are commands, starts nothing (A4). For an agent
+  spawn the compiler sets `ClaudeCodeRequest.strict_mcp_config` and a caller cannot unset it. Under
+  a redaction entry the servers lionagi passes are the run's proxies (D7).
 - The rendered path is absolute and outside the repository. It is not a request field: the
   repository-containment rule (P5) guards paths a caller supplies, and this one is produced by the
   compiler after validation. `LIONAGI_HOME` is set by the environment, so the compiler checks the
@@ -331,53 +408,70 @@ through it" into a type error for the path that does not.
 - A caller-supplied `settings` file is still accepted when every top-level key it holds is in the
   `settings_keys` the adapter publishes for that engine version (D2). The compiler merges those keys
   into the rendered file, so the spawn passes exactly one `--settings`. `hooks`, `disableAllHooks`
-  and any key that makes the engine run a command are never in that set, and a file holding any key
-  outside it is refused.
+  and any key that runs a command, widens a permission or sets an environment value, credential or
+  endpoint are never in that set, and a file holding any key outside it is refused.
 - A caller-supplied `setting_sources` other than empty is refused. A spawned agent never reads the
   user, project or local settings files.
 - Each attachment's argv becomes the hook's `command` string by `shlex.join`, so the shell the
   engine runs it through sees exactly that argv. ADR-0120 D6 keeps lionagi's own hook executor off
   the shell ("`command` is argv and never reaches a shell"); Claude's hook `command` is a string the
   engine runs through a shell, so this is the one place an argv is turned into shell text, by
-  quoting alone, at the engine boundary. Nothing else in the render is shell text.
-- The render's files are removed when the provider call returns, after any continuation.
+  quoting alone, at the engine boundary. Since `argv[0]` is an absolute path (D1), the shell
+  resolves no name. Nothing else in the render is shell text.
+- Under a redaction entry lionagi chooses the engine's session id before the spawn and passes it
+  (`ClaudeCodeRequest.session_id`, `--session-id`), so the transcript `agent_exit` scans is known
+  even when the child dies before its first event (D7). A caller-supplied session id is used the
+  same way.
+- The render file, and D7's run files when the redaction entry applies, are removed when the
+  provider call returns, after any continuation and after `agent_exit`.
 
 What an agent loses with setting sources empty: user and project permissions, environment entries,
 model defaults, plugin enablement and hooks. Whether the CLI still discovers `CLAUDE.md` files is a
 property of the engine version; Acceptance A4 measures it and the implementing PR records the
 answer here. Anything an agent needs from those sources is passed explicitly by lionagi, as MCP
-servers already are.
+servers already are, and under a redaction entry those servers are reached through D7's proxies.
 
 Why this way. Empty setting sources is the only switch that keeps both the user's interactive file
-and a repository's own files out, and it already works for the Operator. A file rather than an
-inline JSON string keeps the rendered hooks out of the process's argv and gives A5 a digest to read
-back (Alternatives). Merging the caller's file through an allow-list, rather than refusing caller
-files or filtering by a deny-list, keeps today's callers working while a key a later engine version
-adds, possibly one that runs a command, stays out until the suite has looked at it.
+and a repository's own files out, and it already works for the Operator. With the settings files
+out, a repository's `.mcp.json` is the one command surface it may still control, and
+`--strict-mcp-config` closes it. A file rather than an inline JSON string keeps the rendered hooks
+out of the process's argv and gives A5 a digest to read back (Alternatives). Merging the caller's
+file through an allow-list, rather than refusing caller files or filtering by a deny-list, keeps
+today's callers working while a key a later engine version adds stays out until the suite has
+looked at it (A8).
 
 ### D5 — Codex render
 
-- The spawn passes `--ignore-user-config`, so the user's `config.toml` and `hooks.json` are not read.
+- The spawn passes `--ignore-user-config`. Codex documents that the flag skips the user's
+  `config.toml`; whether the user's `hooks.json` is skipped too is measured by A4's canary, and a
+  version whose user `hooks.json` still runs gets no capability table (D2).
   `CodexCodeRequest.ignore_user_config` (#3671) carries the flag; for an agent spawn the compiler
   sets it and a caller cannot unset it.
 - The flag empties the user layer only: a project layer still loads when a trust source outside the
   user config marks the project trusted. The change in #3671 walks the same layers Codex would, from
   the working directory to the project root (`lionagi/providers/openai/_codex_project_layers.py`),
-  and refuses a flagged spawn when any of them declares MCP servers. The compiler extends that refusal
-  to a layer that declares hooks (inline or a `hooks.json`). When the set of layers cannot be
-  established (an unreadable directory, a symlinked root outside the tree), the spawn refuses.
+  and refuses a flagged spawn when any of them declares MCP servers. The compiler extends that
+  refusal to a layer that declares hooks (inline or a `hooks.json`) and to a layer that sets a key
+  outside the version's `project_layer_keys` (D2). When the set of layers cannot be established (an
+  unreadable directory, a symlinked root outside the tree), the spawn refuses.
 - The rendered hooks ride as `-c` overrides in one inline layer, generated from the compiled
-  attachments.
-- Trust: the adapter computes Codex's trust record for each rendered hook and passes it in the same
-  layer, in the form the pinned Codex version reads. A Codex version whose trust scheme the adapter
-  does not know has no capability table (D2) and refuses any required attachment. The bypass flag
-  is never passed.
+  attachments. Under a redaction entry the MCP servers in that layer are the run's proxies (D7);
+  with the user layer ignored and project-layer servers refused, they are the only servers the
+  agent loads.
+- Trust: after the command approval of D1, the adapter computes Codex's trust record for each
+  rendered hook and passes it in the same layer, in the form the Codex version the table names
+  reads. A trust record is the engine's consent to run the hook and never stands in for the
+  approval. A Codex version whose trust scheme the adapter does not know has no capability table
+  (D2) and refuses any required attachment. The bypass flag is never passed.
+- Codex reports its session id on its first event. D7 says what `agent_exit` does when a child
+  exits before one arrived.
 
 Why trust records and not the bypass flag. The flag trusts every enabled hook in the invocation,
 whatever its source. With records, a source lionagi failed to detect (a layer the walk missed, a
 plugin, a source a later Codex version adds) still meets Codex's own trust step and does not run.
 The records' weakness is coupling to Codex's hash scheme; the version-keyed table turns a scheme
-change into a refusal at the first spawn, rather than hooks that silently stop running.
+change into a refusal at the first spawn, and a record that does not match at run time is found by
+the receipts check of D7, which fails the run.
 
 ### D6 — Fail closed
 
@@ -385,89 +479,177 @@ Before the spawn, each of these raises `AgentHooksRefused`, a typed refusal a la
 the agent's own failure:
 
 - the registry or library is missing a referenced entry, unreadable, or invalid;
+- a declared requirement (D1) is not met: the registry is absent or at another path, a mandatory
+  attachment is missing or weakened, or the file `LIONAGI_HOOKS_REQUIREMENT` names is missing,
+  unreadable or invalid;
+- an attached command has no approval of its final argv, the approval store cannot be read, or the
+  argv changed since it was approved (D1);
 - an attachment names an unknown event, an event its target does not render, or a capability its
-  target's table lacks;
-- a `pin` digest does not match, a pinned file is missing, or a pinned file or its directory can be
-  written by anyone other than its owner;
-- an attachment's `argv[0]` does not resolve to an executable file;
-- a caller supplied hooks of its own (D4, D5), a settings key outside the version's `settings_keys`,
-  or a non-empty Claude setting source;
-- a Codex project layer declares hooks or MCP servers, or the layer set cannot be established;
-- the render path resolves under the agent's working tree;
-- writing the render failed;
-- an `agent_prompt` hook failed, timed out or returned output that is not the redacted text (D7).
+  target's table lacks, or a later layer adds an attachment outside `inert_events` to a spawn whose
+  baseline holds a required attachment (D1);
+- an attached library entry has no `argv`, an `argv[0]` that is not an absolute path to an
+  executable file, or, attached to `agent_prompt`, `pre_tool` or `agent_exit`, no positive
+  `timeout`;
+- a `pin` digest does not match, a pinned file is missing, or a pinned file, the registry, the
+  library or the approval store, or a directory holding one, can be written by anyone other than
+  its owner;
+- a caller supplied hooks of its own (D4, D5), a settings key outside the version's
+  `settings_keys`, a non-empty Claude setting source, or a Claude spawn without
+  `--strict-mcp-config`;
+- a Codex project layer declares hooks or MCP servers or sets a key outside `project_layer_keys`,
+  or the layer set cannot be established;
+- under a redaction entry: a prompt-file field (`system_prompt_file`, `append_system_prompt_file`),
+  a native resume of a session that did not start under the same redaction baseline, or an MCP
+  server that cannot be put behind a proxy (D7);
+- the render path resolves under the agent's working tree, or writing the render or one of D7's run
+  files failed;
+- `ndjson_from_cli()` was handed a command whose first element is not `hooks.binary` (D3);
+- an `agent_prompt` hook failed, timed out or returned a reply that fails D7's check.
 
 There is no fallback that spawns without hooks. A refused fan-out worker fails that worker and the
-work that depends on it; workers already admitted finish under their snapshot. A scheduled run or
-review-pipeline job that is refused records a refusal outcome and is not retried until its
-configuration changes. The Operator's current behavior, a hook-less turn on a broken config, is
-replaced by the same refusal; the repair path is the Studio hooks API, which starts no agent.
+work that depends on it; workers already admitted finish under their snapshot. A scheduled run or a
+review-pipeline job that is refused records a refusal outcome with its cause, as any failed run
+does; its next scheduled run or pass is admitted or refused on its own, so a repair takes effect at
+the next one and nothing retries in between. The Operator's current behavior, a hook-less turn on a
+broken config or on a materializer error of any type, is replaced by the same refusal; the repair
+path is the Studio hooks API, which starts no agent.
 
 What happens after the spawn is the engine's: a hook that crashes or times out is handled by the
 engine's own rules. A hook entry that must hold under those failures requires `pre_tool.fail_closed`
 (D2), which the conformance suite grants only after injecting a crash, a timeout and malformed
 output (A2); an engine version that runs the tool when its pre-tool hook fails does not receive it,
-so a spawn of that version with the redaction entry is refused here.
+so a spawn of that version with the redaction entry is refused here. A required hook that the
+engine silently does not load or does not trust (a Codex trust record that does not match, say) is
+not visible before the spawn. The conformance suite grants a version its table only after showing
+the render loads and runs (A4), and at run time `agent_exit` finds a tool call that no pre-tool hook
+saw and fails the run (D7). For a version whose loading changed without a new version string, that
+is detection after the call, not prevention.
 
 Why this way. Each check above is one whose failure would otherwise start an agent with fewer hooks
 than its configuration says, which is the silent removal P4 records. Refusing before the spawn costs
 a run; a hook-less run of a redaction entry costs the secret, and the codebase already judged a
 guard that silently does not run to be worse than none (P2). The repair paths (editing the
-registry or library, the Studio hooks API) start no agent, so a refusal never blocks its own repair.
+registry, the library or the requirement, approving a command, the Studio hooks API) start no agent,
+so a refusal never blocks its own repair.
 
 ### D7 — The redaction entry's contract
 
-What "at transcript write time" means here. Neither engine is known to call a hook before it
-persists a tool result. The only points before any raw bytes exist inside the engine are lionagi's
-own hand-off of the prompt and the pre-tool hook. So the redaction entry protects the context and
-the transcript by substitution at those two points:
+What "before the engine writes its transcript" means here. Neither engine is known to call a hook
+before it persists a tool result. So the redaction entry keeps a value out of the context and the
+transcript by substitution before the engine holds the bytes: in lionagi's own hand-off of the
+prompt, and on a small set of tool routes the entry mediates. Every other tool is denied, and what
+still reaches the engine by another way is found afterwards.
+
+The run's files. For a provider call with the redaction entry, lionagi creates three files beside
+the render, each by exclusive create with mode 0600, and removes them when the call returns, after
+`agent_exit`. It passes their paths to every hook process in the environment
+(`LIONAGI_HOOK_TABLE`, `LIONAGI_HOOK_RECEIPTS`, `LIONAGI_HOOK_POLICY`), never in argv, so the
+approved argv is the same for every call.
+
+- The redaction table. Which values are secret is the hook's own configuration, not lionagi's. The
+  hook writes each value it replaces into the table, keyed by its token. lionagi only reads the
+  table, for the checks below. The table holds raw values: it is the one run file A1 excludes, and
+  it never leaves `LIONAGI_HOME/run/hooks`.
+- The read policy: the directories and deny rules the run's own permissions apply to reads, written
+  by lionagi from the final request. A read the hook performs for the model obeys it.
+- The receipts: one JSON line per hook invocation, appended by the hook, naming the event, the
+  engine's tool-call id where there is one, and the route taken or the denial.
+
+The events:
 
 - `agent_prompt`: fired by lionagi, not by the engine, in the provider's `_ndjson_from_cli` on the
-  final request, before the spawn, for every spawn including the `auto_finish` continuation. It
-  receives every text lionagi hands the engine as model input (the prompt, a system prompt or its
-  appendix, and the earlier turns lionagi replays when it resumes no engine thread) and returns it
-  redacted; the spawn carries the returned text. Its failure refuses the spawn (D6).
+  final request, before the spawn, for every spawn including the `auto_finish` continuation.
+  lionagi runs the entry's argv with `{"version": 1, "run_id": ..., "engine": ..., "texts":
+  [{"channel": ..., "text": ...}, ...]}` on stdin and reads one JSON object, `{"texts": [...]}`,
+  from stdout, with the same channels in the same order. The channels are every text lionagi hands
+  the engine as model input: the prompt, the system prompt and its appendix, the prompt and
+  description of each `agents` entry, and the earlier turns lionagi replays when it resumes no
+  engine thread. A prompt-file field is refused instead (D6), because the engine reads that file
+  itself. The check: the hook exited 0 within its timeout, the reply has that shape, and no
+  returned text contains a raw value the table holds. Otherwise the spawn is refused; when the
+  check passes, the spawn carries the returned texts.
 - `pre_tool` (requires `pre_tool.deny`, `pre_tool.rewrite`, `pre_tool.fail_closed`,
-  `all_tools_gated`): for each call, the hook either arranges that the result passes its redactor
-  before the engine receives it (it performs the read itself and returns the redacted text as the
-  deny reason, or rewrites a shell command so its output passes through the redactor), or it denies
-  the call. A call it cannot route through the redactor is denied, never allowed. The engine then
-  never holds a raw value, so it has none to persist.
+  `all_tools_gated`): the entry admits only a call whose output is mediated before the engine
+  receives it, on one of three routes.
+  - A read the hook performs. For a file-read tool the hook reads the file itself, where the read
+    policy admits it, and returns the redacted text as the deny reason the model sees. A read the
+    policy refuses is denied.
+  - A shell command whose output passes the redactor. The hook rewrites the command so its standard
+    output and standard error pass through the redactor. The rewritten input never carries a raw
+    value: where a command needs a secret, the redactor's process supplies it, and the engine sees
+    only the token. The command's own file effects are outside the route: a command that copies a
+    secret into a file leaves it there, and a later read of that file is mediated like any read.
+  - An MCP call through a redacting proxy. For the run, lionagi replaces the complete MCP server set
+    the engine sees with proxies bound to that run and to the upstream configuration the request
+    carried, and the hook admits an MCP call only when its server is one of them. Each proxy redacts
+    every message it forwards to the engine with the run's table: discovery metadata and schemas,
+    results, structured results and errors. A message form it does not support, or output that
+    cannot be redacted and still satisfy its schema, becomes a sanitized failure. A proxy failure
+    never connects the engine to the upstream server directly and never repeats a call that may
+    have completed. The proxy keeps each server's authorization as it was; redaction grants no
+    permission.
+
+  Every other tool is denied, native search, edit and write tools and nested agents included, until
+  the conformance suite shows a route for it at that engine version.
 - `post_tool` (requires `post_tool.block`): checks the result the model is about to see and blocks
   it if a raw value is present. This protects the model's view when substitution missed; it does
   not undo what the engine already wrote.
-- `claude:Stop` / `codex:Stop`: scans the session's transcript and scrubs any raw value, and reports
-  failure if it found one.
-- `agent_exit`: fired by lionagi, not by the engine, from `ndjson_from_cli()` after the child exits
-  for any reason (success, error, signal, timeout, cancellation). It receives the engine, the
-  engine's session id from the stream, and the transcript path the adapter derives from it. It runs
-  the same scan and scrub, so an engine that died before `Stop` is still scrubbed. It runs under the
-  library entry's `timeout`; a timeout, a crash or a non-zero exit is a failure and marks the run
-  failed. A cancelled run waits for the scan, shielded from the cancellation, up to that bound, and
-  then reports the run failed with the scan unfinished.
+- `claude:Stop` / `codex:Stop`: scans the session's transcript for raw values the table holds and
+  reports failure if it found one. It counts and does not rewrite, because the engine is still
+  running and may append to the file.
+- `agent_exit`: fired by lionagi, not by the engine, from `ndjson_from_cli()` after each child exits
+  for any reason (success, error, signal, timeout, cancellation). Its unit is the child process, so
+  a provider call with an `auto_finish` continuation fires it twice, and either failure fails the
+  provider call. lionagi runs the entry's argv with `{"version": 1, "run_id": ..., "engine": ...,
+  "child": <n>, "exit": {"code": ...} | {"signal": ...}, "session_id": ... | null, "transcript":
+  <absolute path> | null}` on stdin. The hook scrubs the transcript, which no longer races the
+  engine's appends, and checks the receipts: a tool call in the transcript with no pre-tool receipt
+  fails the run, because a hook the engine did not run saw nothing. For Claude, lionagi chose the
+  session id before the spawn (D4), so the transcript is known whenever the child started. For
+  Codex the id comes from the stream; when none arrived the payload carries no transcript, the hook
+  scans nothing, and the run fails with its transcript unidentified. The hook runs under the library
+  entry's `timeout`; a timeout, a crash or a non-zero exit is a failure and fails the run. A
+  cancelled run waits for the scan, shielded from the cancellation, up to that bound, and then
+  reports the run failed with the scan unfinished.
 
-The guarantee holds for lionagi's own prompt text and for every call the pre-tool hook can see.
-`all_tools_gated` is the capability that says the hook sees every call, and the conformance suite
-is the only thing that grants it, per engine version. A value that reaches the engine by neither
-path (an instruction file the engine loads on its own, say) is found by the stop and exit scans of
-the engine's transcript, not prevented; the post-tool hook sees tool results only. lionagi's own
-stores (its stored messages, the stream log) receive what the model then writes as the engine
-emitted it, and no hook scrubs them.
+Native resume. Under the redaction entry lionagi resumes an engine session only when its own run
+record shows that the session started under the same redaction baseline (the same redaction
+attachments, by digest). Any other resume is refused (D6), because the engine would load history
+that no hook saw. The `auto_finish` continuation resumes its own first turn's session and meets
+this.
+
+A parent that dies. If lionagi's own process dies before a child exits, `agent_exit` does not fire.
+The render, table and receipts files left under `LIONAGI_HOME/run/hooks` then mark that call's
+transcript as unscanned, and the table still holds raw values. This record does not recover them
+(Consequences).
+
+The guarantee. Prompt redaction and the mediated routes are prevention, for the texts and calls they
+cover. `all_tools_gated` is the capability that says the pre-tool hook sees every call, and the
+conformance suite is the only thing that grants it, per engine version. The post-tool, stop and exit
+steps are detection and cleanup. A value that reaches the engine by no mediated route (an
+instruction file the engine loads on its own, say) is found by the stop and exit scans of the
+engine's transcript, not prevented; the post-tool hook sees tool results only. lionagi's own stores
+(its stored messages, the stream log) then hold it as the engine emitted it, and no hook scrubs
+them. Attaching the redaction entry restricts an agent's tools to the routes above and puts its MCP
+access behind the proxy.
 
 Why this way. lionagi's prompt hand-off and the pre-tool hook are the only points at which the
 engine has not yet held the bytes, so substitution there is the only mechanism that keeps a value
 out of the context and the transcript rather than removing it afterwards. The prompt is lionagi's
-own text, so lionagi redacts it itself and needs no engine hook for it. Denial is allowed beside
-substitution because a call the hook cannot route through the redactor must fail closed, and
-refusing it is the only closed outcome. The later scans stay because substitution can miss, and a
-miss found and scrubbed at stop or exit is better than a miss kept. The exit event is lionagi's own
-because only the spawning process sees every way an engine run ends.
+own text, so lionagi redacts it itself and needs no engine hook for it. The proxy exists because an
+agent needs its MCP servers and the engine connects to them itself: only a transport the engine
+actually connects to can mediate what it returns, and a server name or a tool-name prefix is not
+proof of routing. Denial covers everything else because a call the entry cannot mediate must fail
+closed. The stop scan counts and the exit hook scrubs because a rewrite is safe only after the
+engine has exited. The table and the receipts are files because a hook runs as a new process for
+each event, and lionagi needs the table to check `agent_prompt`'s reply and the receipts to find a
+call the engine ran without its hook.
 
 ### D8 — Scope
 
 - In scope: every process lionagi spawns through `ndjson_from_cli()` whose binary is `claude` or
   `codex`, by every path in P3, including the Operator, the `auto_finish` continuation and resumed
-  turns.
+  turns. Processes that do not pass that function are outside this record (Context, Out of scope).
 - `gemini` and `pi` agents spawn through the same function but have no renderer. An attachment whose
   `engines` includes them, or names no engines, refuses their spawn when it is `required`. A
   registry that wants those engines to run lists `["claude", "codex"]` explicitly, which records
@@ -489,50 +671,132 @@ than a borrowed one.
 
 The implementing PRs carry these, each with the artifact that shows it.
 
-- **A1 — redaction end to end.** A fixture of secret values, given in the prompt and read through
-  tools by a Claude agent and a Codex agent that lionagi spawned, comes back as tokens. Zero raw
+- **A1 — redaction end to end, on the mediated paths.** A fixture of secret values, given in each
+  prompt channel D7 names and read through each route (a file read, a shell command, a read-only MCP
+  call) by a Claude agent and a Codex agent that lionagi spawned, comes back as tokens. Zero raw
   values in: what the model saw, the engine's native transcript or rollout, lionagi's own stored
-  messages, the stream log, stderr, temporary and spilled files, and the run's artifacts. Checked
-  during the run, not only after `Stop`. Only the fixture's input file, the token vault and
-  lionagi's record of the caller's instruction as the caller sent it are excluded.
-- **A2 — failure injection.** A failing `agent_prompt` hook; pre-tool hook timeout, crash and
-  malformed output (the evidence for `pre_tool.fail_closed`); an exit hook that times out; the
-  engine killed mid-run, a resumed run, a Claude `auto_finish` continuation, two concurrent runs, a
-  registry edited during a run, a missing hook command, an unsupported event. Each either refuses
-  before the spawn or leaves zero raw values, and the exit-hook timeout marks the run failed.
-- **A3 — every tool path.** Native file reads, a shell command writing to stderr, incremental input
-  to a running command, an MCP tool, and a nested agent call, each checked for what the model saw
-  and what was persisted, separately.
+  messages, the stream log, stderr, and the run's artifacts. Checked during the run, not only after
+  `Stop`. Excluded: the fixture's input files, the redaction table, and lionagi's record of the
+  caller's instruction as the caller sent it. Two fixtures are recorded and not required clean,
+  because D7 names them as outside prevention: a shell command that copies a fixture file to a new
+  workspace file (the copy holds raw values, and a later read of it comes back as tokens), and a
+  fixture value in an instruction file the engine loads on its own (the stop and exit scans find
+  it, and lionagi's stores hold it).
+- **A2 — failure injection.** An `agent_prompt` hook that fails, times out, replies in another shape
+  or returns a raw value; pre-tool hook timeout, crash and malformed output (the evidence for
+  `pre_tool.fail_closed`); an exit hook that times out; the engine killed mid-run and before its
+  first event; lionagi's own process killed mid-run (the leftover files D7 names); a resumed run,
+  and a native resume of a session started without the entry; a Claude `auto_finish` continuation
+  (two exit events, one run outcome); two concurrent runs; a registry edited during a run; a
+  missing hook command, a relative `argv[0]`, an exit or pre-tool entry with no `timeout`, and an
+  unsupported event; a Codex trust record that does not match; an Operator turn whose assembly
+  attaches an argv entry, and one whose materializer raises. Each either refuses before the spawn or
+  leaves zero raw values on the mediated paths; the exit-hook timeout and the unmatched trust record
+  fail the run.
+- **A3 — every tool path, each one useful.** A file read inside the read policy returns its text
+  with tokens, and one outside it is denied. A shell command writing to stdout and stderr, and
+  incremental input to a running command. A read-only MCP call returns a tokenized secret with its
+  other fields intact, and an authorized mutating call runs exactly once, also when the proxy fails
+  after the upstream call. Fixture values placed separately in MCP discovery metadata, a structured
+  result, an error, a notification and split transport chunks come back as tokens or as a
+  sanitized failure. With the proxy killed, a direct endpoint under the same server name and a
+  caller-supplied server override reach the engine with nothing. Native search, edit and write
+  tools and a nested agent are denied. A representative MCP-dependent task runs to completion, so
+  a blanket denial cannot pass. What the model saw and what was persisted are checked separately.
 - **A4 — isolation canaries.** A hook in the user's Claude settings, a hook in a repository's
-  `.claude/settings.json`, a Codex user `hooks.json`, a Codex project layer with hooks, a symlinked
-  project root and an organization-managed setting. The first five never run (the Codex project
-  layer refuses the spawn); the sixth is recorded. The implementing PR also records whether
-  `CLAUDE.md` is still discovered with setting sources empty (D4).
+  `.claude/settings.json`, a stdio server in a repository's `.mcp.json`, a Codex user `hooks.json`,
+  a Codex project layer with hooks, a symlinked project root and an organization-managed setting.
+  The first six never run (the Codex project layer refuses the spawn); the seventh is recorded. At
+  each version the suite also shows that the render loads and runs (a pre-tool receipt for the
+  first tool call), and the implementing PR records whether `CLAUDE.md` is still discovered with
+  setting sources empty (D4).
 - **A5 — every path renders.** One agent started by each path in P3 (`li agent` new and resumed, flow,
   fan-out worker and synthesis, play, each MCP submit verb, an agent schedule, the review pipeline,
   the Operator, an engine agent and an orchestration-pattern agent built by `create_agent`, and a
   Claude `auto_finish` continuation) shows the rendered flags in its own argv, read from the running
-  process, and the rendered file's digest matches its snapshot.
+  process, and the rendered file's digest matches its snapshot. A test lists the callers of
+  `ndjson_from_cli()` and fails when one is added that is not a CLI provider's `_ndjson_from_cli`,
+  and a wrapper command (`env claude ...`) is refused.
+- **A6 — the deployment requirement.** The same launcher runs against two homes. With no
+  requirement and no registry, both launches succeed under isolation, create no registry, and
+  record the resolved path and its absence. With a requirement naming the first home's registry and
+  its redaction attachments, the first launch succeeds; changing the home, deleting the registry,
+  replacing it with an empty one, or weakening a mandatory attachment each refuses before the
+  engine starts. An invalid present registry refuses in both modes. Every A5 path carries the
+  requirement, and a child that drops or weakens it is refused.
+- **A7 — command approval.** The same command attached by hand in the registry, through the Studio
+  library API, through a profile and through the Operator refuses without the approval of its final
+  argv and runs after it. A pasted plugin command with no provenance field is treated the same.
+  Changing the arguments or the `{engine}` substitution needs a new approval; moving an unchanged
+  entry between files neither grants nor revokes one. An approval in a project's settings file and
+  a precomputed Codex trust record authorize nothing. A missing or unreadable approval store
+  refuses, and a changed pinned file under an unchanged argv is refused by the pin, separately from
+  the approval. `li hooks trust` lists every concrete argv before enrollment.
+- **A8 — what the tables list.** Each key in `settings_keys` and `project_layer_keys`, set by a
+  caller or by a project layer, is shown by a fixture at that engine version to run no command,
+  widen no permission and set no environment value, credential or endpoint; each event in
+  `inert_events` is shown to neither rewrite a tool's input nor add to the model's context. A key
+  or event without that fixture stays out of the table, and a later layer that adds a rewriting
+  pre-tool hook to a spawn with a required baseline is refused.
 
 ## Consequences
 
-- Every Claude and Codex agent lionagi starts runs the same baseline, declared in one file. Changing
-  the redaction implementation is a library edit.
+- Every Claude and Codex agent lionagi starts runs the hooks declared in one file, and a deployment
+  that declares a requirement runs its baseline or nothing. Changing the redaction implementation is
+  a library edit and a new approval.
 - Spawned agents stop seeing the user's interactive engine configuration. Anything they relied on
   from it (permissions, plugins, MCP servers, model defaults) has to be passed by lionagi
   explicitly, and some will be found missing after the change. That is the intended direction;
   the cost lands once.
 - Agents become refusable for configuration reasons. A broken registry stops every spawn on the
-  machine until it is repaired, the Operator included. A hook guard that silently stops guarding is
-  the failure this trades away.
+  machine until it is repaired, the Operator included; an absent one does not, unless the
+  deployment declared a requirement. A hook guard that silently stops guarding is the failure this
+  trades away.
+- Every command attached to a spawned agent needs an operator's approval of its final argv, so
+  enrolling the baseline, and any change to an attachment's arguments, is an operator step. An
+  approval is not immutability: a pin is checked when a spawn is compiled, and a process of the
+  same account can change the files between the compile and an event.
+- Attaching the redaction entry restricts an agent to the mediated routes. Native search, edit and
+  write tools and nested agents are denied until a route is shown for them, and every MCP server is
+  reached through a per-call proxy, which costs availability and turns unsupported message forms
+  into failures.
+- What the redaction entry does not prevent, named so that nothing else claims it: a shell
+  command's own file effects; a value the engine takes in by itself (instruction files), which the
+  scans find afterwards and lionagi's stores keep; a lionagi process that dies, which leaves its
+  call's transcript unscanned and its table, holding raw values, on disk; an engine version whose
+  hook loading changed without a new version string, found after the call by the receipts check;
+  lionagi's record of the caller's instruction as sent, which holds the raw prompt.
 - An engine upgrade stops the agents that require a capability until the conformance suite runs
   against the new version. Pinning engine versions becomes part of operating lionagi.
-- `ndjson_from_cli()` gains a required argument; every caller changes once.
+- `ndjson_from_cli()` gains a required argument and refuses a command its render was not compiled
+  for; every caller changes once.
 - Reversal: D1-D3 are cheap to reverse (the registry can hold zero attachments). D4 and D5's
   isolation is the expensive part to reverse, because once agents run without the user layer,
   configurations that only worked through it are gone from use.
 
 ## Alternatives considered
+
+### Refuse every spawn while the registry is absent
+
+It would catch a home that resolved to the wrong place. It also refuses the first agent of every
+installation that never declared hooks, which an upgrade must not do. Creating an empty registry on
+first use is worse: it makes a lost registry look intended. Absence alone cannot tell a new
+installation from a wrong home, so D1 takes that knowledge from a requirement the launcher names
+outside `LIONAGI_HOME`, and a requirement file under `LIONAGI_HOME` would vanish with the home it
+is meant to check.
+
+### Deny MCP calls under the redaction entry, or scrub them afterwards
+
+Denying every MCP call is honest and simple, and a protected agent that needs one server query then
+fails its task while A3's leakage check still passes. Letting the calls run and scrubbing the
+transcript later keeps MCP usable, and the model has already seen the value by then. D7 puts MCP
+behind a redacting proxy and keeps denial for every tool that has no route.
+
+### Give the registry and library a trust tier of their own
+
+An owner-only file under `LIONAGI_HOME` could be trusted as user-authored. A plugin command pasted
+into it would then run with no approval, and ADR-0048 D7 gives no tier by location. D1 asks for an
+approval of each final argv instead.
 
 ### Scopes inside `operator_hooks.json` (operator / agents / review)
 
@@ -588,10 +852,13 @@ harder to read back. Kept as a fallback if the file path proves unworkable.
 
 - Measured at lionagi `main` 208bcc08: no spawn path other than the Operator sets
   `setting_sources`; `CodexCodeRequest` has no user-config isolation field; the library maps
-  `post_response` to `Stop`. The change in #3671 (open) changes the first two: flow and fan-out
-  workers run Claude with empty setting sources and Codex with `--ignore-user-config`, and the
-  field exists. This record builds on that change and merges after it.
-- Engine behaviors this record relies on (Claude's `--setting-sources`, Codex's `--ignore-user-config`,
-  project layers, hook trust records, hook decision shapes) are taken from each vendor's
-  documentation and are not yet measured at a pinned version. D2's capability tables exist so that
-  nothing depends on them until the conformance suite has measured them.
+  `post_response` to `Stop`; the library validator accepts `description`, `command` and `timeout`
+  only, with `timeout` optional and unchecked for sign. The change in #3671 (open) changes the
+  first two: flow and fan-out workers run Claude with empty setting sources and Codex with
+  `--ignore-user-config`, and the field exists. This record builds on that change and merges after
+  it.
+- Engine behaviors this record relies on (Claude's `--setting-sources`, `--strict-mcp-config` and
+  `--session-id`, Codex's `--ignore-user-config`, project layers, hook trust records, hook decision
+  shapes) are taken from each vendor's documentation and are not yet measured at a pinned version.
+  D2's capability tables exist so that nothing depends on them until the conformance suite has
+  measured them.
