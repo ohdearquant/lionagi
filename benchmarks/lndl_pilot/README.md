@@ -17,6 +17,8 @@ accepts no fewer tasks.
   and this file then changes the `t24` check (below).
 - `.lionagi/agents/d4-react.md`, `d4-lndl.md`: the profile pair, `anthropic/claude-haiku-5-5`,
   read tools, `max_extensions: 10`, `timeout: 300`.
+- `summarize.py`: writes a run's `summary.json` from its `results.jsonl` and its `reading.jsonl`;
+  `--check` exits 1 when the committed file differs from what it computes.
 - `run_pilot.py`: the runner. Each task runs once per loop; the two runs of a task are adjacent in
   time and their order alternates by task, four tasks in flight. Requests, tool calls and wall time
   come from the `[api] spend:` line `li agent` prints (ADR-0132 D3); the task's own check is the
@@ -25,10 +27,13 @@ accepts no fewer tasks.
   profiles, the read tree's commit, the `li` version), `results.jsonl` (one row per run),
   `summary.json` (totals and the D4 rule), `table.md` (the per-task table) and `answers.jsonl` (each
   run's answer, the leg's stdout with surrounding whitespace removed, as the check read it; its
-  length is that row's `answer_chars`). `results.jsonl`, `table.md` and the totals in
-  `summary.json` count acceptance by the checks as run; the tables below add acceptance on reading.
-  `summary.json` gives the D4 rule both ways: `d4_rule_by_checks` on the checks' acceptance and
-  `d4_rule_by_substance` on acceptance on reading, which is the one ADR-0132 D4 decides by.
+  length is that row's `answer_chars`) and `reading.jsonl` (the reading of each answer: one row per
+  leg with `id`, `loop`, `check`, the check's result as run, `reading`, `right` or `wrong`, and the
+  source line the reading used at `6fa69b19` and at `208bcc08`). `results.jsonl`, `table.md` and
+  the totals in `summary.json` count acceptance by the checks as run; the tables below add
+  acceptance on reading. `summary.json` gives the D4 rule both ways: `d4_rule_by_checks` on the
+  checks' acceptance and `d4_rule_by_substance` on the reading, which is the one ADR-0132 D4 decides
+  by (its Amendment 1).
 - `runs/run_pilot.as-run.py.txt`: the runner exactly as r2, r3 and r4 ran it, byte for byte
   (sha256 `911c41cd…`, the `runner_sha256` in their `header.json`).
 - `runs/r5/run_pilot.as-run.py.txt`: the runner exactly as r5 ran it, byte for byte (sha256
@@ -89,9 +94,9 @@ corrects a premise of the question on the way. Two tasks turn on that rule (sour
   reading counts all six as right, since 8192 is the value the task records. Counted wrong, the
   three that open with the missing default make r3 `lndl` 23 against ReAct 22 and r4 `lndl` 22
   against ReAct 24, neither outcome changing, and r5 22 on each side, which meets the rule; all six
-  make r3 22 against 22 and r4 `lndl` 22 against ReAct 23, also unchanged. r5's outcome rests on
-  this reading of its ReAct answer to `t03`, which ends "So the answer is 8192 for that CLI
-  API-launch path."
+  make r3 22 against 22 and r4 `lndl` 22 against ReAct 23, also unchanged. r5's outcome turns on
+  this reading of its ReAct answer to `t03`, among others (below), which ends "So the answer is
+  8192 for that CLI API-launch path."
 - `t05` asks for "the default max_tokens value for the BashTool's timeout field in milliseconds";
   the field holds a timeout, not a token count. All eight answers give 30000 ms, the value the task
   records (`lionagi/tools/code/bash.py:35`), and seven of them also say the question's
@@ -101,8 +106,9 @@ corrects a premise of the question on the way. Two tasks turn on that rule (sour
   r5 failing it (`lndl` 21 against ReAct 22).
 
 r4 and r5 each fail the rule by one task. Counting any one of r4's accepted ReAct answers wrong,
-such as its `t05` answer, would make r4 meet the rule; in r5, counting its ReAct answer to `t03`
-wrong, or its `lndl` answer to `t03` or `t24` right, would do the same.
+such as its `t05` answer, would make r4 meet the rule; in r5, counting any one of its accepted ReAct
+answers wrong, such as its `t03` answer, or either `lndl` answer read as wrong (`t03`, `t24`) right,
+would do the same.
 
 The checks are substring and regular-expression tests, so a wrong answer that repeats the expected
 words or digits can pass one, and a right answer in other words can fail it; that is why the
@@ -206,13 +212,14 @@ all 192 rows.
   names the copy of the task set that run used, `runs/tasks.r2-r4.yaml` or `runs/tasks.r5.yaml`,
   whose sha256 is the header's `tasks_sha256`. `tasks.yaml` beside the runner is the task set as
   it is now (sha256 `ac93dff3…`), which no run used.
-- In each `summary.json`, the key the runner writes as `d4_rule` is renamed `d4_rule_by_checks`,
-  and `d4_rule_by_substance` was added beside it: the accepted counts from the "accepted on
-  reading" column above, requests per accepted task on those counts, and the two D4 conditions on
-  them. The two agree in r2, r3 and r4. In r5, `lndl_accepts_no_fewer` is true by the checks and
-  false on reading (22 against 23).
+- Each `summary.json` is written by `summarize.py`, not by the runner: the totals and
+  `d4_rule_by_checks` are the runner's own summary of `results.jsonl` (its `d4_rule`, renamed), and
+  `d4_rule_by_substance` applies the same two D4 conditions to the counts in `reading.jsonl`. The
+  two agree in r2, r3 and r4. In r5, `lndl_accepts_no_fewer` is true by the checks and false on
+  reading (22 against 23). `summarize.py --check` passes on all four runs.
 - Nothing else in `runs/` was changed, apart from a final newline added to the JSON files; each
-  run's `answers.jsonl`, r5's copy of the runner and those two task files were added.
+  run's `answers.jsonl` and `reading.jsonl`, r5's copy of the runner and those two task files were
+  added.
 - The runner also writes each leg's prompt, stdout and stderr beside its results, and `li agent`
   keeps each leg's conversation under the run's `home/`. Of those, only the stdout is committed, as
   `answers.jsonl`. The counts in ADR-0132 of
@@ -227,7 +234,11 @@ runner sets `HOME` to it and `LIONAGI_HOME` to `home/.lionagi`, so no user confi
 and `ANTHROPIC_API_KEY` in its environment. Then:
 
 ```bash
-venv/bin/python run_pilot.py --tasks tasks.yaml --out runs/<name>
+venv/bin/python run_pilot.py --tasks runs/tasks.r5.yaml --out runs/<name>
 ```
 
-A run is 48 `li agent` legs, two per task.
+This repeats r5 with the task set it ran; `--tasks tasks.yaml` runs the current set, whose `t24`
+check no run has used. A run is 48 `li agent` legs, two per task. Its `summary.json` then holds the
+runner's own summary (`d4_rule`, by the checks); once each answer has been read and the reading
+written to `runs/<name>/reading.jsonl`, `venv/bin/python summarize.py runs/<name>` writes the
+summary with both rules.

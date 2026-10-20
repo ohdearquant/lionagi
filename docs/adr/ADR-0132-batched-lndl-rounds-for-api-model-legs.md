@@ -3,14 +3,37 @@
 - **Status**: Proposed
 - **Kind**: Aspirational
 - **Implementation-status**: implemented — D1-D3 are implemented and the D4 pilot ran four times
-  (D4, Result); read against the source, `r5`, the run that decides, does not meet the rule: `lndl`
-  accepted one task fewer than ReAct, a margin that rests on the reading of one answer (D4,
-  Result). `lndl` stays an opt-in setting and is not recommended, and the default stays `react`
+  (D4, Result); read against the source (Amendment 1), `r5`, the run that decides, does not meet
+  the rule: `lndl` accepted one task fewer than ReAct, a margin that one answer read the other way
+  would reverse (D4, Result). `lndl` stays an opt-in setting and is not recommended, and the default stays `react`
 - **Area**: operations
 - **Date**: 2026-10-17
 - **Relations**: extends ADR-0024 (LNDL operate integration adapter) and ADR-0041 Amendment 1
   (API-model `li agent` legs); read with ADR-0051 (LNDL language boundary) and ADR-0130 (per-request
   input ceiling)
+
+## Amendment 1 (2026-10-19): the reading of each answer decides acceptance
+
+As first written, D4 had each task's check decide whether its answer is accepted. The checks are
+substring and regular-expression tests, so they accept a wrong answer that repeats the expected
+words and reject a right answer written in other words, and r2 to r4 had shown both (D4, Result).
+D4 now treats each check as a first pass, and reading the answer against its task's source line
+decides. The change was made after r5 had run, when its result had first been written as meeting
+the rule, and it decides r5:
+
+| rule | `lndl` accepted | ReAct accepted | `lndl` per accepted task | ReAct per accepted task | D4 |
+|---|---|---|---|---|---|
+| each task's check, as r5 ran them | 23 / 24 | 23 / 24 | 3.43 | 4.30 | met |
+| the reading | 22 / 24 | 23 / 24 | 3.59 | 4.30 | not met |
+
+The two differ in one answer, the `lndl` answer to `t24`, which says `lionagi/mcp/config.py`
+defines no `RUNS_DIR`, where line 19 of that file is `RUNS_DIR = RUNS_ROOT`; its check accepted it.
+After r5 the `t24` check was also corrected to require the assignments themselves. Run against the
+committed r5 answers, the corrected checks reject that answer and agree with r5's checks on every
+other one, so the checks as they now stand give 22 against 23 as well. Each run's `reading.jsonl`
+records the reading answer by answer, and the pilot's `summarize.py` computes the rule both ways
+from it and the run's results (`d4_rule_by_checks` and `d4_rule_by_substance` in each run's
+`summary.json`).
 
 ## Context
 
@@ -136,7 +159,8 @@ calls, wall time and acceptance for both loops, published with the pilot's commi
 run more than once as the code changes, and each run is recorded in the Result. r2, r3 and r4 did
 not settle the rule (Result); after r4 the run that decides was named as `r5`, at the merged code,
 and it ran at the `main` commit current when it started. r5 asks the same questions against the
-same source lines, with the `t06` and `t20` checks corrected, and is read by the same rule; its task
+same source lines, with the `t06` and `t20` checks corrected, and is read by the rule Amendment 1
+records; its task
 file, rows and reading are recorded with its result below. No later run reopens D4: a different
 outcome takes a new decision. The reading is one reader's judgment, made knowing which loop wrote each answer,
 and no blind second reading was done; it judges what each answer says to its question and counts
@@ -230,12 +254,16 @@ the 17 wrote a block in its next round, and 18 of the 79 requests went to rounds
   stays `react`. The other two rejected answers are wrong on reading too: the `lndl` answer to `t03`
   gives a default from another package in the read tree, and the ReAct leg on `t10` called a tool
   it does not have and then answered that it could not find the constants.
-- r5's outcome rests on one reading. Its ReAct answer to `t03` opens by saying the endpoint's
-  request model has no default of its own and then answers 8192 for the CLI's API launch path, the
-  value the task records; it is read as right, like the r3 ReAct answer above. Counted wrong, r5
-  would be 22 tasks on each side, and `lndl` would meet the rule; counting its `lndl` answer to
-  `t03` or `t24` right would make it 23 on each side, with the same result.
-- Every answer is committed with the runs (`answers.jsonl`). The README lists the eleven answers
+- r5's outcome is one task wide: any one of its accepted ReAct answers counted wrong, or either
+  `lndl` answer read as wrong (`t03`, `t24`) counted right, would make `lndl` meet the rule. ReAct's
+  answer to `t03` is one of those: it opens by saying the endpoint's request model has no default
+  of its own and then answers 8192 for the CLI's API launch path, the value the task records, and it
+  is read as right, like the r3 ReAct answer above. Counted
+  wrong, r5 would be 22 tasks on each side; counting the `lndl` answer to `t03` or `t24` right
+  would make it 23 on each side.
+- Every answer is committed with the runs (`answers.jsonl`), and so is its reading, with the source
+  line the reading used (`reading.jsonl`); the pilot's `summarize.py` writes each run's
+  `summary.json` from that file and the run's results. The README lists the eleven answers
   where the reading and the checks differ and the answers to `t03` and `t05` whose count turns on
   the reading rule, and gives r5 task by task, each with the source line its reading used. After r5 the `t24` check was changed to require the two assignments themselves; run
   against the committed r5 answers, it rejects the `lndl` answer and accepts the ReAct one.
