@@ -98,6 +98,7 @@ def run_one(task: dict, loop: str, out: Path) -> dict:
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             errors="replace",
             timeout=RUN_TIMEOUT_S,
         )
@@ -343,14 +344,23 @@ def main() -> int:
         problems.append(f"--loops: {args.loops!r} names a loop twice, ignoring letter case")
     if not args.out:
         problems.append("--out is empty")
-    elif os.path.lexists(args.out):
+    elif os.path.lexists(Path(args.out)):
+        # Through Path, which drops a trailing slash: with one, lstat follows a dangling link.
         problems.append(f"--out: {args.out} already exists")
     else:
         try:
             # Absolute: each child runs with cwd set to the read tree, so a relative path would
             # resolve there and the prompt file would not be found.
             out = Path(args.out).resolve()
-        # A link loop on the way raises RuntimeError before Python 3.13 and OSError from it.
+            # From Python 3.13 resolve() returns through a link loop instead of raising, so the
+            # deepest part of the path that exists is resolved strictly: a loop, a dangling link
+            # or a file on the way is refused here, not by mkdir once the run has begun.
+            parent = Path(args.out).absolute().parent
+            while not os.path.lexists(parent) and parent != parent.parent:
+                parent = parent.parent
+            if not os.path.isdir(os.path.realpath(parent, strict=True)):
+                problems.append(f"--out: {args.out} is under {parent}, which is not a directory")
+        # resolve() raises RuntimeError on a link loop before Python 3.13; realpath raises OSError.
         except (OSError, RuntimeError) as exc:
             problems.append(f"--out: {args.out} does not resolve: {exc}")
     if args.only:

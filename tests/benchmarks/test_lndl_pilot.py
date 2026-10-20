@@ -654,6 +654,32 @@ def test_an_out_through_a_link_loop_is_refused_before_anything_runs(monkeypatch,
     assert f"--out: {tmp_path / 'loop' / 'run'} does not resolve" in capsys.readouterr().err
 
 
+def test_an_out_naming_a_dangling_link_with_a_trailing_slash_is_refused(
+    monkeypatch, tmp_path, capsys
+):
+    (tmp_path / "dang").symlink_to(tmp_path / "elsewhere")
+    legs = _Legs()
+    rc, _ = _run_main(monkeypatch, tmp_path, legs, ["t01"], "--out", f"{tmp_path / 'dang'}/")
+
+    assert rc == 2
+    assert legs.legs == []
+    assert not (tmp_path / "elsewhere").exists()
+    assert f"--out: {tmp_path / 'dang'}/ already exists" in capsys.readouterr().err
+
+
+def test_an_out_under_a_file_is_refused_before_anything_runs(monkeypatch, tmp_path, capsys):
+    (tmp_path / "afile").write_text("")
+    legs = _Legs()
+    rc, _ = _run_main(
+        monkeypatch, tmp_path, legs, ["t01"], "--out", str(tmp_path / "afile" / "run")
+    )
+
+    assert rc == 2
+    assert legs.legs == []
+    err = capsys.readouterr().err
+    assert f"--out: {tmp_path / 'afile' / 'run'} is under {tmp_path / 'afile'}, which is not" in err
+
+
 def test_an_li_that_cannot_start_leaves_no_run_directory(monkeypatch, tmp_path):
     legs = _Legs()
 
