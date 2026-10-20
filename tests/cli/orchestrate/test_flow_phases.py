@@ -869,8 +869,8 @@ async def test_a_spawn_cloned_from_the_orchestrator_drops_its_derived_effort(tmp
     env.effort = "high"
     assert _spawn(env.orc_branch, "spawn-3")["reasoning_effort"] == "high"
 
-    # A codex profile the orchestrator's spec names pins its effort as an override;
-    # the clone drops that too, and the orchestrator keeps its own.
+    # A codex profile the orchestrator's spec names pins its effort as an override.
+    # A planned worker built from that spec keeps it, and so does the clone.
     (codex_home.path / "work.config.toml").write_text(
         'model = "gpt-5.3-codex-spark"\nmodel_reasoning_effort = "medium"\n'
     )
@@ -878,7 +878,11 @@ async def test_a_spawn_cloned_from_the_orchestrator_drops_its_derived_effort(tmp
     env.orc_branch = Branch(chat_model=build_imodel_from_spec("codex/work"))
     orc_kwargs = env.orc_branch.chat_model.endpoint.config.kwargs
     assert orc_kwargs["config_overrides"]["model_reasoning_effort"] == "medium"
-    assert "model_reasoning_effort" not in _spawn(env.orc_branch, "spawn-4")["config_overrides"]
+    planned = build_imodel_from_spec("codex/work", ignore_user_config=True)
+    assert planned.endpoint.config.kwargs["config_overrides"]["model_reasoning_effort"] == "medium"
+    assert (
+        _spawn(env.orc_branch, "spawn-4")["config_overrides"]["model_reasoning_effort"] == "medium"
+    )
     assert orc_kwargs["config_overrides"]["model_reasoning_effort"] == "medium"
 
 

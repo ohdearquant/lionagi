@@ -354,10 +354,12 @@ file. A worker therefore has none of the servers its CLI would load from its
 own configuration, a withheld one included; the orchestrator keeps them. The
 synthesis branch starts from a copy of the orchestrator's model and is not
 isolated, so the same exclusive hand-over is what takes the orchestrator's
-servers off it: on codex, with a non-empty set or an allowlist, every server its config
-declares outside the set is disabled by name, read from codex's own server
-list (`$CODEX_HOME/config.toml`, else `codex mcp list --json`), and its build
-fails rather than leave them enabled when neither can be read. A
+servers off it: on codex, with a non-empty set, or an allowlist naming a server its
+config declares, every server its config declares outside the set is disabled by
+name, read from codex's own server list (`$CODEX_HOME/config.toml`, else
+`codex mcp list --json`), and its build fails rather than leave them enabled when
+neither can be read. An empty set whose allowlist names none of those servers
+carries `--ignore-user-config` instead, and nothing is disabled by name. A
 worker whose provider has no transport for the set is warned
 about, naming the worker (`label`) since a run's workers can resolve
 different providers. `{}` (an explicit empty set) and `None` (no set at all)

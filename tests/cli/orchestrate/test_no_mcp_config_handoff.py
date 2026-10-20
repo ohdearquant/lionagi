@@ -654,6 +654,34 @@ async def test_a_codex_synthesis_branch_drops_the_orchestrators_job_control(tmp_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("effort", [None, "low"])
+async def test_a_codex_synthesis_branch_handed_an_empty_set_takes_no_effort_from_the_ignored_config(
+    tmp_run, codex_home, effort
+):
+    """When the run found only job control, the orchestrator keeps it and loads the
+    user config, while the synthesis copy is handed the empty worker set and loads
+    none. The effort the orchestrator derived from that config stays its own; an
+    effort the run asked for reaches both."""
+    from lionagi.cli.orchestrate.fanout import _fresh_synthesis_branch
+
+    control = {"control": _CONTROL_AND_KNOWLEDGE["control"]}
+    (tmp_run / ".mcp.json").write_text(json.dumps({"mcpServers": control}))
+    (codex_home.path / "config.toml").write_text('model_reasoning_effort = "high"\n')
+    env = await _setup(no_mcp_config=False, model_spec="codex/gpt-5.3-codex-spark", effort=effort)
+    assert env.mcp_servers == {}
+    orchestrator = env.orc_branch.chat_model.endpoint.config.kwargs
+    assert not orchestrator.get("ignore_user_config")
+    assert orchestrator["reasoning_effort"] == (effort or "high")
+
+    branch = await _fresh_synthesis_branch(env)
+
+    kwargs = branch.chat_model.endpoint.config.kwargs
+    assert kwargs["ignore_user_config"] is True
+    assert kwargs.get("reasoning_effort") == effort
+    assert orchestrator["reasoning_effort"] == (effort or "high")
+
+
+@pytest.mark.asyncio
 async def test_a_codex_synthesis_branch_does_not_inherit_account_connectors(tmp_run, codex_home):
     from lionagi.cli.orchestrate.fanout import _fresh_synthesis_branch
     from lionagi.providers.openai.codex import CodexCodeRequest
@@ -833,21 +861,28 @@ async def test_a_requested_run_effort_still_reaches_a_codex_worker(tmp_run, code
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("effort", [None, "low"])
+@pytest.mark.parametrize(
+    ("model_spec", "effort", "expected"),
+    [
+        ("codex/gpt-5.3-codex-spark", None, None),
+        ("codex/gpt-5.3-codex-spark", "low", "low"),
+        ("codex/gpt-5.3-codex-spark-low", None, "low"),
+    ],
+)
 async def test_a_codex_orchestrator_handed_an_empty_set_takes_no_effort_from_the_ignored_config(
-    tmp_run, codex_home, effort
+    tmp_run, codex_home, model_spec, effort, expected
 ):
     """An empty set leaves the orchestrator's own request carrying the flag, so it
     loads no user config and the effort it derived from that config goes. An
-    effort the run asked for stays."""
+    effort the run asked for stays, whether passed or named on the model spec."""
     (codex_home.path / "config.toml").write_text('model_reasoning_effort = "high"\n')
-    env = await _setup(no_mcp_config=True, model_spec="codex/gpt-5.3-codex-spark", effort=effort)
+    env = await _setup(no_mcp_config=True, model_spec=model_spec, effort=effort)
 
     kwargs = env.orc_branch.chat_model.endpoint.config.kwargs
     assert kwargs["ignore_user_config"] is True
-    assert kwargs.get("reasoning_effort") == effort
-    assert env.orc_effort == effort
-    assert env.effort == effort
+    assert kwargs.get("reasoning_effort") == expected
+    assert env.orc_effort == expected
+    assert env.effort == expected
 
 
 class _RecordReached(Exception):
