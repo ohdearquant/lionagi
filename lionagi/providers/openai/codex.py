@@ -2027,16 +2027,15 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
     then matches the run's directory against them itself.
 
     What cannot ride refuses the run: hook events declared in the file itself, whose
-    trust records name a file the run does not load; `default_permissions`, a permissions
-    profile codex applies in place of `sandbox_mode`; and a file that exists but cannot be
-    read, since the hooks it declares, if any, would be dropped unseen.
+    trust records name a file the run does not load; a root `profile` key, which selects
+    sandbox settings in place of the root ones (codex before 0.135) or which codex refuses
+    (from 0.135); `default_permissions`, a permissions profile codex applies in place of
+    `sandbox_mode`; and a file that exists but cannot be read, since the hooks it declares,
+    if any, would be dropped unseen.
     """
     config_path = codex_home_for_env(plain.env) / "config.toml"
     try:
         config = _read_codex_config(config_path)
-        if config is None and os.path.lexists(config_path):
-            raise ValueError(f"the codex config {str(config_path)!r} is not a regular file")
-        config = config or {}
     except ValueError as exc:
         raise ConfigurationError(
             f"Codex cannot start with --ignore-user-config: {exc}. The hooks it may declare "
@@ -2044,6 +2043,16 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
             "beside the flag. Make the file one this Python's TOML parser reads, or run without "
             "ignore_user_config."
         ) from None
+    # A dangling symlink is no file, as codex sees it; a directory or a FIFO is a file
+    # codex fails to read.
+    if config is None and os.path.exists(config_path):
+        raise ConfigurationError(
+            f"Codex cannot start with --ignore-user-config: the codex config "
+            f"{str(config_path)!r} is not a regular file, so the hooks it may declare cannot be "
+            "checked and its settings cannot ride beside the flag. Replace it with a regular "
+            "file, or remove it."
+        )
+    config = config or {}
     hooks = config.get("hooks")
     hooks = hooks if isinstance(hooks, Mapping) else {}
     declared = sorted(
@@ -2057,6 +2066,21 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
             "which codex reads under the flag, they run once trusted."
         )
     flags = _command_line_layer(plain)
+    profile = config.get("profile")
+    if profile is not None:
+        # A key that is not a string is named by its type: its content is not echoed.
+        named = (
+            f"profile = {profile!r}"
+            if isinstance(profile, str)
+            else f"a root profile key of type {type(profile).__name__}"
+        )
+        raise ConfigurationError(
+            f"Codex cannot start with --ignore-user-config: {config_path} sets {named}. With "
+            "no -p, codex before 0.135 makes it the active profile, whose sandbox settings "
+            "replace the root ones, and from 0.135 codex refuses the key itself; the flag "
+            "hides it either way, so the run would start under a sandbox the file did not "
+            "choose. Remove the key, and set the sandbox in the run's config overrides."
+        )
     if config.get("default_permissions") is not None and not _sets(flags, ("default_permissions",)):
         raise ConfigurationError(
             f"Codex cannot start with --ignore-user-config: {config_path} sets "
@@ -2317,13 +2341,13 @@ def _refuse_project_layer_disagreement(
                     layer_value = layer_value[part]
                 if layer_value == value:
                     continue
-                how = "sets it to another value"
+                how = f"sets it to another value, {layer_value!r}"
             raise ConfigurationError(
                 f"Codex cannot start under cwd {cwd} with --ignore-user-config: {config_path} "
-                f"sets `{dotted}`, which rides beside the flag, and the project config "
-                f"{layer_path} {how}. Codex applies the project's setting only when it trusts "
-                f"the project, so which one the run gets is not decided here. Set `{dotted}` "
-                "in the run's config overrides."
+                f"sets `{dotted}` to {value!r}, which rides beside the flag, and the project "
+                f"config {layer_path} {how}. Codex applies the project's setting only when it "
+                f"trusts the project, so which one the run gets is not decided here. Set "
+                f"`{dotted}` in the run's config overrides."
             )
 
 

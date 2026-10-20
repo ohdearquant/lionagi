@@ -9,7 +9,7 @@ overrides set them, the settings that narrow it, unless the overrides set them, 
 hook trust records and project trust decisions merged with any the overrides write,
 which the flag would otherwise drop with the rest of the file; no effort derived from
 a file the child never reads; a refusal when the user config cannot be read or declares
-hooks or a permissions profile itself; a refusal when a project layer sets a carried
+hooks, a root profile or a permissions profile itself; a refusal when a project layer sets a carried
 sandbox setting to another value; and a refusal when a project layer, which the flag
 does not suppress, declares MCP servers.
 """
@@ -757,8 +757,10 @@ def test_a_sandbox_mode_codex_does_not_read_rides_nowhere_and_says_so(codex_home
 def test_a_user_config_that_is_not_a_regular_file_is_refused(codex_home, caplog):
     (codex_home / "config.toml").mkdir()
 
-    with pytest.raises(ConfigurationError, match="not a regular file"):
+    with pytest.raises(ConfigurationError, match="not a regular file") as refused:
         CodexCodeRequest(prompt="hi", ignore_user_config=True).as_cmd_args()
+    assert "Replace it with a regular file" in str(refused.value)
+    assert "TOML parser" not in str(refused.value)
 
     # the control: no file at all is no config, and nothing is said
     (codex_home / "config.toml").rmdir()
@@ -906,3 +908,55 @@ def test_projects_overrides_codex_cannot_read_are_refused_beside_carried_entries
         prompt="hi", ignore_user_config=True, config_overrides=overrides
     ).as_cmd_args()
     assert "--ignore-user-config" in args
+
+
+def test_a_dangling_user_config_symlink_is_no_config(codex_home, tmp_path):
+    """Codex finds no file behind a dangling symlink, so neither does the carry."""
+    (codex_home / "config.toml").symlink_to(tmp_path / "missing.toml")
+
+    args = CodexCodeRequest(prompt="hi", ignore_user_config=True).as_cmd_args()
+
+    assert "--ignore-user-config" in args
+    assert _sandbox_values(args) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "named"),
+    [
+        ('profile = "ro"\n[profiles.ro]\nsandbox_mode = "read-only"\n', "profile = 'ro'"),
+        ('profile = "ro"\n[profiles.ro]\ndefault_permissions = ":read-only"\n', "profile = 'ro'"),
+        ('profile = "ro"\n', "profile = 'ro'"),
+        ("profile = 1\n", "a root profile key of type int"),
+    ],
+    ids=["profile-sandbox", "profile-permissions", "profile-only", "not-a-string"],
+)
+def test_a_root_profile_in_the_user_config_refuses_the_run(tmp_path, codex_home, text, named):
+    """With no -p, codex before 0.135 applies the root `profile`'s sandbox settings in place
+    of the root ones, and from 0.135 refuses the key. The flag hides the key, so a trusted
+    project would otherwise run workspace-write where the profile chose read-only."""
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    trusted = f'[projects."{repo}"]\ntrust_level = "trusted"\n'
+    (codex_home / "config.toml").write_text(text + trusted)
+
+    with pytest.raises(ConfigurationError, match="root profile|profile = ") as refused:
+        CodexCodeRequest(prompt="hi", repo=repo, ignore_user_config=True).as_cmd_args()
+    assert named in str(refused.value)
+
+    # the control: the same file without the selector starts, and the trust decision rides
+    (codex_home / "config.toml").write_text(text.split("\n", 1)[1] + trusted)
+    args = CodexCodeRequest(prompt="hi", repo=repo, ignore_user_config=True).as_cmd_args()
+    assert "--ignore-user-config" in args
+    assert any(str(repo) in a and "trusted" in a for a in args)
+
+
+def test_the_disagreement_refusal_names_both_values(tmp_path, codex_home):
+    (codex_home / "config.toml").write_text('sandbox_mode = "danger-full-access"\n')
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    _project_layer(repo, 'sandbox_mode = "read-only"\n')
+
+    with pytest.raises(ConfigurationError) as refused:
+        CodexCodeRequest(prompt="hi", repo=repo, ignore_user_config=True).as_cmd_args()
+    assert "`sandbox_mode` to 'danger-full-access'" in str(refused.value)
+    assert "sets it to another value, 'read-only'" in str(refused.value)
