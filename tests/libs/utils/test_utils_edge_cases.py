@@ -102,7 +102,7 @@ class TestExtractTypes:
         assert result == {int, str}
 
     def test_tuple_and_frozenset_are_one_item(self):
-        # only a set or a list is unpacked; a tuple or a frozenset is one item
+        # a tuple or a frozenset is one item; a set or a list is unpacked into its members
         assert extract_types((int, str)) == {(int, str)}
         assert extract_types(frozenset({int, str})) == {frozenset({int, str})}
 
