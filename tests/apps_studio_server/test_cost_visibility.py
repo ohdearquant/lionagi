@@ -370,3 +370,33 @@ def test_rollup_limit_is_bounded_server_side(tmp_path, monkeypatch):
 
     rows = _run(rollup_direct())
     assert len(rows) == StateDB._SPEND_ROLLUP_MAX_LIMIT
+
+
+def test_rollup_window_matches_spend_stats_boundary(tmp_path, monkeypatch):
+    db_path = tmp_path / "state.db"
+    now = time.time()
+    _run(_seed_session(db_path, ended_at=now, project="inside", total_cost_usd=7.0))
+    # Outside the 24h window entirely.
+    _run(_seed_session(db_path, ended_at=now - 30 * 3600, project="outside", total_cost_usd=99.0))
+    client = _make_client(monkeypatch, db_path)
+
+    spend = client.get("/api/stats/spend?window=24h").json()
+    rollup = client.get("/api/stats/spend/rollup?window=24h").json()
+    assert spend["total_count"] == 1
+    assert [row["key"] for row in rollup["by_project"]] == ["inside"]
+
+
+@pytest.mark.parametrize(
+    ("window", "expected"),
+    [("24h", (3600, 24, 90000 - 23 * 3600)), ("7d", (86400, 7, 86400 - 6 * 86400))],
+)
+def test_window_bounds_end_at_the_bucket_holding_now(monkeypatch, window, expected):
+    import lionagi.studio.services.stats as stats_mod
+
+    class _Clock:
+        @staticmethod
+        def time() -> float:
+            return 90000.5
+
+    monkeypatch.setattr(stats_mod, "time", _Clock)
+    assert stats_mod._window_bounds(window) == expected
