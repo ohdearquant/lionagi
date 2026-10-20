@@ -792,6 +792,10 @@ export default function OperatorPanel({ open, onClose }: Props) {
     sequence: number;
     pending: Map<string, Set<string>>;
   } | null>(null);
+  // Refresh reads can settle out of order. Each read takes the next number, and
+  // a read applies only when no later read of that conversation has applied.
+  const metadataReadCountRef = useRef(0);
+  const metadataReadAppliedRef = useRef(new Map<string, number>());
 
   useEffect(
     () => () => {
@@ -836,18 +840,22 @@ export default function OperatorPanel({ open, onClose }: Props) {
 
   const refreshConversationMetadata = useCallback(
     async (conversationId: string) => {
+      const read = ++metadataReadCountRef.current;
+      const superseded = () => (metadataReadAppliedRef.current.get(conversationId) ?? 0) > read;
       try {
         const [snapshot, list] = await Promise.all([
           getOperatorConversation(conversationId),
           readConversationList(listFilter),
         ]);
-        if (selectedConversationIdRef.current !== conversationId) return;
+        if (selectedConversationIdRef.current !== conversationId || superseded()) return;
+        metadataReadAppliedRef.current.set(conversationId, read);
         dispatch({ type: "UPDATE_CONVERSATION", conversation: snapshot.conversation });
         setConversations(list.merge);
       } catch (error) {
         if (
           selectedConversationIdRef.current !== conversationId ||
-          listFilterRef.current !== listFilter
+          listFilterRef.current !== listFilter ||
+          superseded()
         )
           return;
         setActionError(error instanceof Error ? error.message : t("errors.load"));

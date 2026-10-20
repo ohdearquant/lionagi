@@ -1035,7 +1035,7 @@ describe("OperatorPanel", () => {
         expect(container.querySelector("ul")?.textContent).not.toContain(firstRow.title);
         // The server unarchived the row after the archive and before this snapshot.
         await act(async () => pending.resolve([{ ...firstRow, updatedAt: snapshotAt }]));
-        expect(container.querySelector("ul")?.textContent?.includes(firstRow.title)).toBe(shown);
+        expect(container.querySelector("ul")?.textContent?.includes(firstRow.title!)).toBe(shown);
       },
     );
 
@@ -1449,6 +1449,48 @@ describe("OperatorPanel", () => {
         ).toBe("Conversations: Other conversation");
         expect(container.querySelector("ul")?.textContent).toContain("Scheduler check");
         expect(container.querySelector("ul")?.textContent).not.toContain("Delayed title");
+      });
+
+      async function mountTwoMetadataReads() {
+        const mounted = await mountMetadataConversation();
+        const { conversation, other, emit } = mounted;
+        type Snapshot = { conversation: typeof conversation; frames: OperatorFrame[] };
+        const reads = [1, 2].map(() => ({
+          snapshot: deferred<Snapshot>(),
+          list: deferred<OperatorConversation[]>(),
+        }));
+        for (const read of reads) {
+          api.getOperatorConversation.mockReturnValueOnce(read.snapshot.promise);
+          api.listOperatorConversations.mockReturnValueOnce(read.list.promise);
+        }
+        await emit(metadataCall(1), metadataResult(2));
+        await emit(metadataCall(3, "request-2"), metadataResult(4, "request-2"));
+        expect(api.getOperatorConversation).toHaveBeenCalledTimes(3);
+        const settle = async (index: number, title: string, description: string) => {
+          const updated = { ...conversation, title, description };
+          await act(async () => {
+            reads[index].snapshot.resolve({ conversation: updated, frames: [] });
+            reads[index].list.resolve([updated, other]);
+          });
+        };
+        return settle;
+      }
+
+      it("keeps a newer metadata read when an older one settles after it", async () => {
+        const settle = await mountTwoMetadataReads();
+        await settle(1, "Newer title", "Newer scope");
+        expectMetadata("Newer title", "Newer scope");
+        await settle(0, "Older title", "Older scope");
+        expectMetadata("Newer title", "Newer scope");
+        expect(container.querySelector("ul")?.textContent).not.toContain("Older title");
+      });
+
+      it("applies metadata reads that settle in the order they started", async () => {
+        const settle = await mountTwoMetadataReads();
+        await settle(0, "Older title", "Older scope");
+        expectMetadata("Older title", "Older scope");
+        await settle(1, "Newer title", "Newer scope");
+        expectMetadata("Newer title", "Newer scope");
       });
     });
 
