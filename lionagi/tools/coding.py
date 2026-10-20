@@ -6,7 +6,7 @@ from __future__ import annotations
 import base64
 import logging
 import re
-import shlex
+import warnings
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -19,10 +19,10 @@ from lionagi.ln.concurrency import run_sync
 from lionagi.ln.types import Enum
 from lionagi.protocols.action.tool import Tool
 
-from ._subprocess import _SHELL_CONTROL, _subprocess_sync
+from ._subprocess import _subprocess_sync
 from .base import LionTool
 from .code.ast_search import AstSearchRequest, _ast_search_sync
-from .code.bash import BashRequest
+from .code.bash import BashRequest, _run_bash
 from .code.check import CodeCheckRequest, _resolve_check_paths, _ruff_check_sync
 from .code.nav import NavRequest, _find_definition_sync, _find_references_sync, _outline_sync
 from .code.search import SearchAction as SearchAction  # re-export: preserves the public API
@@ -363,8 +363,8 @@ class CodingToolkit(LionTool):
     def __init__(
         self,
         notify: bool = True,
-        notify_threshold: float = 0.7,
-        notify_max_tokens: int = 200_000,
+        notify_threshold: float | None = None,
+        notify_max_tokens: int | None = None,
         workspace_root: str | Path | None = None,
         tools: Sequence[str] | None = None,
         nudge_engine: NudgeEngine | None = None,
@@ -382,8 +382,19 @@ class CodingToolkit(LionTool):
         self._post_hooks: dict[str, list[Callable]] = {}
         self._error_hooks: dict[str, list[Callable]] = {}
         self.notify = notify
-        self.notify_threshold = notify_threshold
-        self.notify_max_tokens = notify_max_tokens
+        for name, value in (
+            ("notify_threshold", notify_threshold),
+            ("notify_max_tokens", notify_max_tokens),
+        ):
+            if value is not None:
+                warnings.warn(
+                    f"CodingToolkit({name}=...) has no effect and is deprecated; "
+                    "it will be removed in a future minor release.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+        self.notify_threshold = 0.7 if notify_threshold is None else notify_threshold
+        self.notify_max_tokens = 200_000 if notify_max_tokens is None else notify_max_tokens
         self.workspace_root = _resolve_workspace_root(workspace_root)
         self.sandbox_allow_protected = sandbox_allow_protected
         self.seatbelt = seatbelt
@@ -572,40 +583,12 @@ class CodingToolkit(LionTool):
             """Execute a single shell command and return stdout, stderr, and return code.
             One command per call — shell operators (&&, ||, |, ;, redirects, backticks, $(...)) are rejected. Commands run in the workspace root; pass cwd= (relative to it, or absolute) to run in another directory. Output is truncated if it exceeds 100 KB per stream.
             """
-            timeout_ms = max(1, min(timeout or 30000, 300000))
-            timeout_s = timeout_ms / 1000.0
-
-            if _SHELL_CONTROL.search(command):
-                return {
-                    "stdout": "",
-                    "stderr": (
-                        f"Shell control operators are not supported: {command!r}. "
-                        "Run one command per call; use cwd= instead of `cd x && cmd`."
-                    ),
-                    "return_code": -1,
-                    "timed_out": False,
-                }
-            try:
-                cmd = shlex.split(command)
-            except ValueError as exc:
-                return {
-                    "stdout": "",
-                    "stderr": f"Malformed command: {exc}",
-                    "return_code": -1,
-                    "timed_out": False,
-                }
-            if seatbelt is not None:
-                cmd = seatbelt.wrap(cmd)
-
             # Without this the command would run in whatever directory the host
             # process was started from, which is not the workspace the other tools
             # read and write; a relative cwd= is likewise taken from the workspace.
             run_cwd = str(workspace_root / cwd) if cwd else str(workspace_root)
-            result = await run_sync(_subprocess_sync, cmd, False, timeout_s, run_cwd)
-
-            result.setdefault("timed_out", False)
-            result["return_code"] = result.pop("returncode", -1)
-            return result
+            wrap = seatbelt.wrap if seatbelt is not None else None
+            return (await _run_bash(command, timeout, run_cwd, wrap=wrap)).model_dump()
 
         async def search(
             action: str,

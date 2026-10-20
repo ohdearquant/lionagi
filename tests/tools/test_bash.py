@@ -520,3 +520,45 @@ async def test_docstring_recovery_advice_is_executable(tmp_path):
         assert not resp.timed_out, (
             f"{template!r} was refused before execution, so it cannot have timed out"
         )
+
+
+def _toolkit_bash(tmp_path):
+    from lionagi.session.branch import Branch
+    from lionagi.tools.coding import CodingToolkit
+
+    toolkit = CodingToolkit(notify=False, workspace_root=str(tmp_path), tools=["bash"])
+    return next(t for t in toolkit.bind(Branch()) if t.func_callable.__name__ == "bash")
+
+
+@pytest.mark.parametrize(
+    ("timeout", "expected_ms"),
+    [(None, 30_000), (0, 1), (-5, 1), (100, 100), (900_000, 300_000)],
+)
+async def test_toolkit_and_standalone_bash_clamp_the_timeout_the_same_way(
+    tmp_path, monkeypatch, timeout, expected_ms
+):
+    import lionagi.tools.code.bash as bash_mod
+
+    seen = []
+
+    def run(cmd, shell, timeout_sec, timeout_ms, cwd):
+        seen.append((cmd, shell, timeout_sec, timeout_ms, cwd))
+        return BashResponse(stdout="ok", return_code=0)
+
+    monkeypatch.setattr(bash_mod, "_subprocess_sync", run)
+    toolkit_bash = _toolkit_bash(tmp_path).func_callable
+
+    standalone = await BashTool().handle_request(BashRequest(command="echo hi", timeout=timeout))
+    from_toolkit = await toolkit_bash(command="echo hi", timeout=timeout)
+
+    assert from_toolkit == standalone.model_dump()
+    assert seen == [(["echo", "hi"], False, expected_ms / 1000.0, expected_ms, None)] * 2
+
+
+@pytest.mark.parametrize("command", ["echo hi && echo there", "echo 'unterminated"])
+async def test_toolkit_bash_refuses_as_the_standalone_tool_does(tmp_path, command):
+    standalone = await BashTool().handle_request(BashRequest(command=command))
+    from_toolkit = await _toolkit_bash(tmp_path).func_callable(command=command)
+
+    assert standalone.return_code == -1
+    assert from_toolkit == standalone.model_dump()

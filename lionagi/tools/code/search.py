@@ -91,13 +91,13 @@ class SearchResponse(BaseModel):
     )
 
 
-def _validate_search_path(path: str, workspace_root: str | None) -> tuple[str, str | None]:
+def _validate_search_path(path: str, workspace_root: str | None) -> str:
     if workspace_root is not None:
         root = Path(workspace_root).resolve()
         resolved = _resolve_workspace_path(path, root)
     else:
         resolved = Path(path).resolve()
-    return str(resolved), None
+    return str(resolved)
 
 
 def _visible_grep_lines(stdout: str) -> list[str]:
@@ -131,9 +131,7 @@ def _grep_sync(
     max_results: int,
     workspace_root: str | None,
 ) -> SearchResponse:
-    resolved_path, err = _validate_search_path(path, workspace_root)
-    if err:
-        return SearchResponse(success=False, error=err, count=0)
+    resolved_path = _validate_search_path(path, workspace_root)
 
     # -e: a pattern that starts with "-" is a pattern, never an option.
     # --null ends each file name with a NUL, so a row's file is read exactly.
@@ -168,9 +166,7 @@ def _find_sync(
     max_results: int,
     workspace_root: str | None,
 ) -> SearchResponse:
-    resolved_path, err = _validate_search_path(path, workspace_root)
-    if err:
-        return SearchResponse(success=False, error=err, count=0)
+    resolved_path = _validate_search_path(path, workspace_root)
 
     cmd = ["find", resolved_path, "-name", pattern]
 

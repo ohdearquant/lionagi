@@ -113,6 +113,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - An Anthropic API-model `li agent` leg whose model names no output limit sends
   `max_tokens=32768`, thinking included, where it sent the provider default of 8,192.
 
+- `CodingToolkit`'s bash tool runs through the same code as `BashTool`. An explicit
+  `timeout=0` is clamped to 1 ms, as `BashTool` already did; the toolkit used to read it as the
+  30-second default. A timed-out command now reports its limit in milliseconds, and refusals of
+  shell control operators and malformed quoting use `BashTool`'s wording.
+
+### Deprecated
+
+- `CodingToolkit(notify_threshold=..., notify_max_tokens=...)` now emits a
+  `DeprecationWarning` when either is passed. Neither value was ever read: the toolkit's nudge
+  engine does not take them. The attributes keep 0.7 and 200,000 when the arguments are
+  omitted. Both will be removed in a future minor release.
+
 ### Fixed
 
 - The declared secret lookup no longer fills a routed account's key (`ANTHROPIC_ACCOUNTS`
