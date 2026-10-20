@@ -23,7 +23,12 @@ accepts no fewer tasks.
   the D4 rule), `table.md` (the per-task table) and `answers.jsonl` (each run's answer, the leg's
   stdout with surrounding whitespace removed, as the check read it; its length is that row's
   `answer_chars`). `results.jsonl`, `summary.json` and `table.md` count acceptance by the checks
-  as run; the tables below add acceptance on reading.
+  as run; the tables below add acceptance on reading. Three files were added after each run:
+  `spend.jsonl` (each leg's `[api] spend:` lines from its stderr; the last one gives the row's
+  requests, tool calls and wall time), `rounds.jsonl` (for each `lndl` leg, the syntax each round
+  used, read from its conversation: `F` an `lndl` fence, `L` an `<lact` tag, `I` an `<invoke` tag,
+  `O` an `OUT{`, `-` none of them) and `environment.json` (the lionagi checkout the run's
+  environment installed and the read tree's checkout, read after the run).
 - `runs/run_pilot.as-run.py.txt`: the runner exactly as it ran, byte for byte (sha256
   `911c41cd…`, the `runner_sha256` in each `header.json`).
 
@@ -37,10 +42,13 @@ accepts no fewer tasks.
 
 Each run's environment had lionagi installed in editable mode from a checkout of the commit in the
 table: `4d373f9c94f646fe894b111071609461c9198301`, `aca2e2e9ab3f8000af3db0dfd0f7c2206640859c` and
-`d8838f28ed9b3e218dcf834ff2048c5fb016139e`. Each checkout was moved to its commit before its run
-started and has not moved since, and its working tree reads clean. All three report version 0.35.5,
-which is all `header.json` records (`runner_li`), so the commits are recorded here, read from those
-environments after the runs.
+`d8838f28ed9b3e218dcf834ff2048c5fb016139e`. All three report version 0.35.5, which is all
+`header.json` records (`runner_li`), so each run's `environment.json` records the commit, read from
+its checkout after the run: the checkout's HEAD, the time its reflog last moved HEAD (before the
+run's `started_utc` in each run) and its count of changed or untracked files (0 in each). The read
+tree's checkout is recorded the same way. `aca2e2e9` is not on `main`: it is a commit of the branch
+merged as `d8838f28` (#3640), two commits past `4d373f9c`, and the only file in the Python package
+it changes from `4d373f9c` is `lionagi/operations/lndl_middle/lndl_middle.py`.
 
 | run | loop | accepted by the checks | accepted on reading | requests | requests per accepted | tool calls | wall time |
 |---|---|---|---|---|---|---|---|
@@ -91,11 +99,12 @@ The reading and the checks differ in ten answers:
 |---|---|---|---|---|---|
 | `t06` | r2, r3, r4 | both | rejected | right | The check expects `100000`. Each answer writes the cap as `100_000`, all but the r4 ReAct answer also as `100,000`, and names `_MAX_OUTPUT_BYTES` and `_SHELL_CONTROL` (`lionagi/tools/_subprocess.py:18`, `:20`). |
 | `t20` | r4 | `lndl` | rejected | right | The question asks which module defines the class; the answer names it by its import path, `lionagi.tools.code.search`, and says it did not open the file. The check expects the file path; the class is defined at `lionagi/tools/code/search.py:193`. |
-| `t24` | r2, r3, r4 | `lndl` | accepted | wrong | Each answer says `lionagi/mcp/config.py` defines no `RUNS_DIR`; line 19 of that file is `RUNS_DIR = RUNS_ROOT`. The check asks for `.lionagi`, the default the question asks for, and the names `RUNS_DIR` and `JOBS_DIR`, which the question itself supplies, so it accepts these answers. |
+| `t24` | r2, r3, r4 | `lndl` | accepted | wrong | Each answer gives `RUNS_ROOT` in place of a `RUNS_DIR` it says `lionagi/mcp/config.py` does not define: r3 says no `RUNS_DIR` exists, r2 that its grep shows none, and r4 that the module defines none, adding that it read the file only in part and does not rule one out. Line 19 of that file is `RUNS_DIR = RUNS_ROOT`. The check asks for `.lionagi`, the default the question asks for, and the names `RUNS_DIR` and `JOBS_DIR`, which the question itself supplies, so it accepts these answers. |
 
-The other rejected answers are wrong on reading too: the five r2 `lndl` legs that spent all 11
-requests (`t03`, `t04`, `t17`, `t18`, `t19`; ADR-0132 D4, Result) and the r3 ReAct `t04` leg, which
-made no tool call and answered that none of its tool calls returned results. Three accepted
+The other rejected answers are not right on reading either: the five r2 `lndl` legs that spent all
+11 requests (`t03`, `t04`, `t17`, `t18`, `t19`; ADR-0132 D4, Result) give no value, each saying it
+could not confirm, list or determine what was asked, and the r3 ReAct `t04` leg made no tool call
+and answered that none of its tool calls returned results. Three accepted
 answers carry an error in a side claim that does not touch what the question asks (source lines
 at `6fa69b19`): the r4 `lndl`
 answer to `t22` says the question gives `_wire_secure_guards` the signature
@@ -118,7 +127,7 @@ at `6fa69b19`, and no check reads them: `t13`'s `system` is at
 requests. `summary.json` records how many legs that was (`missing_spend`). The D4 rule it computes
 does not read that number, but a leg counted as zero lowers its loop's requests, so the rule's
 inputs are complete only while it is 0. It is 0 in r2, r3 and r4, and `spend_lines` is at least 1
-in all 144 rows.
+in all 144 rows. Each leg's spend lines are in its run's `spend.jsonl`.
 
 ## What was changed for this directory
 
@@ -128,12 +137,13 @@ in all 144 rows.
   tree: `ast.dump(ast.parse(...))` of each file gives identical output.
 - In each `header.json`, `tasks_file` was an absolute path on the machine that ran it and now
   reads `tasks.yaml`. Nothing else in `runs/` was changed, apart from a final newline added to the
-  JSON files; `answers.jsonl` was added.
+  JSON files; `answers.jsonl`, `spend.jsonl`, `rounds.jsonl` and `environment.json` were added.
 - The runner also writes each leg's prompt, stdout and stderr beside its results, and `li agent`
-  keeps each leg's conversation under the run's `home/`. Of those, only the stdout is committed, as
-  `answers.jsonl`. The counts in ADR-0132 of
-  runs that opened with an `<invoke>` tag and of requests that went to rounds with no block are read
-  from the conversations.
+  keeps each leg's conversation under the run's `home/`. Of those, the stdout is committed as
+  `answers.jsonl`, the stderr's spend lines as `spend.jsonl`, and the syntax of each round of each
+  `lndl` conversation as `rounds.jsonl`, from which ADR-0132 counts the runs that opened with an
+  `<invoke>` tag and the requests that went to rounds with no block. The prompts, the rest of the
+  stderr and the conversations are not committed.
 
 ## Running it
 

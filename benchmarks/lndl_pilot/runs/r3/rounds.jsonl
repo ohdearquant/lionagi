@@ -1,0 +1,24 @@
+{"id": "t02", "loop": "lndl", "rounds": ["I", "FL", "FO"]}
+{"id": "t01", "loop": "lndl", "rounds": ["I", "FL", "FO"]}
+{"id": "t03", "loop": "lndl", "rounds": ["I", "FL", "FL", "FO"]}
+{"id": "t06", "loop": "lndl", "rounds": ["I", "FL", "FO"]}
+{"id": "t05", "loop": "lndl", "rounds": ["I", "FLI", "FL", "FO"]}
+{"id": "t04", "loop": "lndl", "rounds": ["I", "FL", "FL", "FO"]}
+{"id": "t08", "loop": "lndl", "rounds": ["FL", "FO"]}
+{"id": "t10", "loop": "lndl", "rounds": ["FL", "FO"]}
+{"id": "t09", "loop": "lndl", "rounds": ["I", "FL", "FL", "FL", "FO"]}
+{"id": "t07", "loop": "lndl", "rounds": ["I", "FLI", "FL", "FO"]}
+{"id": "t11", "loop": "lndl", "rounds": ["FL", "FL", "FO"]}
+{"id": "t14", "loop": "lndl", "rounds": ["I", "FL", "FO"]}
+{"id": "t15", "loop": "lndl", "rounds": ["I", "FL", "FO"]}
+{"id": "t13", "loop": "lndl", "rounds": ["I", "FLI", "FL", "FO"]}
+{"id": "t12", "loop": "lndl", "rounds": ["I", "FLI", "FO"]}
+{"id": "t17", "loop": "lndl", "rounds": ["I", "FLI", "FO"]}
+{"id": "t19", "loop": "lndl", "rounds": ["FL", "FO"]}
+{"id": "t16", "loop": "lndl", "rounds": ["-", "FL", "FL", "FO"]}
+{"id": "t18", "loop": "lndl", "rounds": ["I", "FL", "FL", "FO"]}
+{"id": "t20", "loop": "lndl", "rounds": ["FL", "FL", "FO"]}
+{"id": "t23", "loop": "lndl", "rounds": ["I", "FL", "FO"]}
+{"id": "t21", "loop": "lndl", "rounds": ["FL", "FL", "FO"]}
+{"id": "t22", "loop": "lndl", "rounds": ["I", "FLI", "FL", "FO"]}
+{"id": "t24", "loop": "lndl", "rounds": ["I", "FLI", "FO"]}

@@ -2,10 +2,10 @@
 
 - **Status**: Proposed
 - **Kind**: Aspirational
-- **Implementation-status**: implemented — D1-D3 are implemented and the D4 pilot ran three times
-  (D4, Result); read against the source, r3 meets the rule and r2 and r4 (`d8838f28`) do not,
-  so these runs do not settle it (D4, Result). Until it is settled `lndl` stays an opt-in setting
-  and is not recommended, and the default stays `react`
+- **Implementation-status**: partial — D1-D3 are implemented. D4 is open: its pilot ran three
+  times (D4, Result), and read against the source r3 meets the rule and r2 and r4 (`d8838f28`) do
+  not, so these runs do not settle it; `r5`, the run D4 names, has not been recorded. Until D4 is
+  settled `lndl` stays an opt-in setting and is not recommended, and the default stays `react`
 - **Area**: operations
 - **Date**: 2026-10-17
 - **Relations**: extends ADR-0024 (LNDL operate integration adapter) and ADR-0041 Amendment 1
@@ -134,13 +134,8 @@ source, and the reading decides: an answer the check accepts and the reading fin
 the check rejects and the reading finds right is. The result is a per-task table of requests, tool
 calls, wall time and acceptance for both loops, published with the pilot's commit. The pilot can
 run more than once as the code changes, and each run is recorded in the Result. r2, r3 and r4 did
-not settle the rule (Result); after r4 the run that decides was named as `r5`. r5 ran with
-lionagi installed from `208bcc08`, the `main` commit current when it started (read from its
-environment after the run), and read the source at `6fa69b19`, as r2 to r4 did. It asks the same
-questions against the same source lines, with the `t06` and `t20` checks corrected, and is read by the same rule. The
-rule that the reading decides was written into D4 after r5 had run, so the change that carries
-r5 reports it under the checks and under the reading. r5's task file, rows and reading are not on `main` yet; they land
-with its result in a later change. No later run reopens D4: a different outcome takes
+not settle the rule (Result); after r4 the run that decides was named as `r5`, and its record
+and result land in a later change. No later run reopens D4: a different outcome takes
 a new decision. The reading is one reader's judgment, made knowing which loop wrote each answer,
 and no blind second reading was done; it judges what each answer says to its question and counts
 an answer right when it gives the value or name its task records, also when it corrects a premise
@@ -168,18 +163,22 @@ there.
 | r4 | `d8838f28` | react | 23 / 24 | 24 / 24 | 91 | 3.79 | 59 |
 | r4 | `d8838f28` | lndl | 22 / 24 | 23 / 24 | 80 | 3.48 | 47 |
 
-Requests per accepted task divides a run's requests by the tasks accepted on reading.
+Requests per accepted task divides a run's requests by the tasks accepted on reading. The lionagi
+column is the commit each run's environment had installed, read from its checkout after the run
+(`runs/<run>/environment.json`), and requests, tool calls and wall time come from each leg's spend
+line (`runs/<run>/spend.jsonl`).
 
 On reading, r2 fails the rule and r3 meets it with no margin. One change to the Python package
 lies between them: in r2 an `lndl` round with no block continued with no error, and in r3 it is the
 repair round D2 describes. With one run of each, the pilot cannot show that this change caused the
 difference; the ReAct side, which the change does not touch, also moved by one task.
-Read from each leg's conversation, which the pilot does not commit (see below), in both runs 17 of
-the 24 `lndl` runs opened with a call written as an `<invoke>` tag outside any block. In r2, 12 of
-those recovered on their own and 5 (`t03`, `t04`, `t17`, `t18`, `t19`) kept writing the tag and, in
-the eleventh and last round, whose notice asks for the answer, answered that they could not verify
-it (`t03` had run one tool call, the other four none); none was accepted. Those four describe reads
-and searches that returned nothing usable (`t18`: "Five read attempts and two grep attempts on that
+Read from each leg's conversation (each run's `rounds.jsonl` records the syntax every `lndl` round
+used), in both runs 17 of the 24 `lndl` runs opened with a call written as an `<invoke>` tag outside
+any block. In r2, 12 of those wrote a block by their fifth round, and 5 (`t03`, `t04`, `t17`, `t18`,
+`t19`) wrote none before their tenth: `t03` wrote one in its tenth round, which ran its one tool
+call, and the other four first wrote one in the eleventh and last round, whose notice asks for the
+answer. All five answered that they could not confirm, list or determine what was asked, and none
+was accepted. The other four describe reads and searches that returned nothing usable (`t18`: "Five read attempts and two grep attempts on that
 file returned no usable content"), but none of those calls ran: what they report as tool results is
 the model's account of calls it wrote as tags outside a block. The r3 ReAct `t04` leg is the same
 case on the other loop: it made no tool call in its 3 requests and answered that none of its tool
@@ -193,8 +192,9 @@ the 17 wrote a block in its next round, and 18 of the 79 requests went to rounds
   `lndl` answer to `t20` is right and was rejected: the question asks which module defines the
   class, the answer names it by its import path, `lionagi.tools.code.search`, and says it did not
   open the file, and the check asks for the file path. The `lndl` answers to `t24` in all three runs
-  are wrong and were accepted: each says `lionagi/mcp/config.py` defines no `RUNS_DIR`, and line 19
-  of that file is `RUNS_DIR = RUNS_ROOT`; the check asks for `.lionagi`, the default the question
+  are wrong and were accepted: each gives `RUNS_ROOT` in place of a `RUNS_DIR` it says
+  `lionagi/mcp/config.py` does not define (the r4 answer adds that it read the file only in part and
+  does not rule one out), and line 19 of that file is `RUNS_DIR = RUNS_ROOT`; the check asks for `.lionagi`, the default the question
   asks for, and the names `RUNS_DIR` and `JOBS_DIR`, which the question itself supplies, so it
   accepts these answers. Every other answer agrees with its check.
 - On reading, r3 meets the rule with no margin: 23 tasks accepted on each side, and `lndl` used 79
@@ -209,7 +209,7 @@ the 17 wrote a block in its next round, and 18 of the 79 requests went to rounds
   in r3 and five in r4 (`t21` and `t22`). A round that declares more than 16 calls is refused and
   none of its calls runs (D2), so these counts cannot show whether a round reached the limit, and
   the limit is still unmeasured.
-- r4 ran the merged code (`d8838f28`), whose repair round also tells the model how a block opens
+- r4 ran `d8838f28`, whose repair round also tells the model how a block opens
   and closes, reads indented, longer and CRLF fences, and treats an empty block as a repair round
   (D2). On reading it fails the rule: `lndl` used fewer requests per accepted task (80 requests,
   3.48, against 91 and 3.79) and accepted one task fewer (23 against 24), so counting any one
@@ -220,15 +220,16 @@ the 17 wrote a block in its next round, and 18 of the 79 requests went to rounds
 - On reading, r3 ties the accepts clause and r4 misses it by one task, so these runs do not settle
   it. The request saving held in both runs: 79 requests against 95, and 80 against 91. The result
   of `r5`, the run D4 names, is recorded in a later change. Every answer is committed with the runs
-  (`answers.jsonl`), and the README lists the ten answers where the reading and the checks differ
+  (`answers.jsonl`), beside each leg's spend line (`spend.jsonl`), and the README lists the ten answers where the reading and the checks differ
   and the answers to `t03` and `t05` whose count turns on the reading rule.
 - The counts of runs that opened with an `<invoke>` tag and of requests that went to rounds with no
-  block are read from each leg's conversation, which `li agent` keeps under the run's home directory
-  and the pilot does not commit; the committed files give the per-task requests, tool calls,
-  acceptance and answers.
+  block are read from each leg's conversation, which `li agent` keeps under the run's home directory.
+  The pilot commits what was read from them, the syntax each `lndl` round used (`rounds.jsonl`), and
+  not the conversations.
 - All 144 legs exited 0 and none exhausted its round budget, which D2 defines as spending it without
-  an accepted `OUT{}`. The five r2 `lndl` legs that spent all 11 requests returned an `OUT{}` the
-  loop accepted in their last round (their answers then failed the task checks, as above); an
+  an accepted `OUT{}`. The five r2 `lndl` legs that spent all 11 requests wrote an `OUT{}` in their
+  last round (`rounds.jsonl`) and exited 0, so the loop accepted it (their answers gave no value, as
+  above); an
   exhausted budget raises `LNDLError`, which `li agent` records as the run's failure and re-raises,
   so such a leg would have exited non-zero. No `lndl` leg in r3 or r4 spent more than 5. The pilot
   therefore does not exercise D2's exhausted-turn exit.
