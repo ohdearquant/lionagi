@@ -181,6 +181,13 @@ A slot is the file `$LIONAGI_HOME/leases/subagents/<pool>/<index>.lock`, `index`
   that is full only because of one is re-read within milliseconds, up to 25 times, before any
   wait; a slot counted free and found locked when taken is treated the same. Without this an
   admission with a wait of 0 could be refused for a slot that was freeing that instant.
+- **A record that cannot be read is no record.** A file over 64 KiB, nested past the JSON
+  parser's depth, holding anything but a JSON object, or failing to read reads as no record, as
+  the empty file a release leaves does. A free slot with such a record is free even when the
+  child it names still runs: the process-table rule above is about a probe that could not look,
+  and holding the slot on a record nobody can read would keep it taken until the file was
+  deleted by hand. A locked slot with one still counts, as a lock with no record, but no cap is
+  read from it, so that holder's cap no longer lowers the pool's limit.
 - A pool directory that cannot be created or written refuses the agent.
 - On a platform without `flock` (Windows) an uncapped agent runs as before and a configured cap
   refuses, because nothing could hold the slot it would count.
@@ -259,10 +266,21 @@ The class is chosen as follows:
   worker's class, so a `light` orchestrator can plan `heavy` workers from its roster. This is
   deliberate. The roster is the caller's grant, the orchestrator cannot start an agent itself
   (D7), and a caller who wants only `light` workers hands a roster of `light` profiles.
-- A node spawned during the run is cloned from its assignee's branch, else from the branch of
-  the node that emitted it, and keeps that worker's class. A spawn with neither (an independent
-  request naming no assignee) is cloned from the orchestrator's branch and runs `heavy`, as a
-  bare worker does: the orchestrator's class confines only its own process.
+- A node spawned during the run takes its class from a worker. A request naming an assignee is
+  cloned from that worker's branch and keeps its class, as a planned worker would, so a `light`
+  worker can name a `heavy` one from the roster just as the orchestrator can plan one. A request
+  naming none takes the class of the worker that emitted it: a dependent one is cloned from that
+  worker's branch, an independent one from the orchestrator's branch and then given the emitting
+  worker's class, so asking for an unnamed agent does not lift a `light` worker's confinement.
+  That clone keeps the orchestrator's other settings, so one a `light` agent cannot have refuses
+  the spawn before its process starts. A request no worker emitted (the orchestrator's
+  own, or one with no emitter) runs `heavy`, as a bare worker does: the orchestrator's class
+  confines only its own process. An escalation retry is cloned from the branch of the node it
+  retries and keeps that node's class.
+- A spawned node that a resume runs again (`--retry-failed`) is rebuilt from the checkpoint
+  without that setup: with an assignee it runs on that worker's branch and class, without one on
+  the orchestrator's branch or a clone of it, with the orchestrator's class, whichever worker
+  asked for it.
 - A `light` codex worker is handed no `add_dir`, so its one writable root is its working
   directory, the worker's artifact directory; the project-root `add_dir` every other CLI worker
   is handed is unchanged. A codex worker in team mode needs the team directory writable, so a `light` codex

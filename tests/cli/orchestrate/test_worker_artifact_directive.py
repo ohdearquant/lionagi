@@ -696,13 +696,18 @@ async def _spawned_branch_kwargs(
     *,
     from_orchestrator: bool = False,
     provider: str = "codex",
+    emitted_by: str | None = None,
 ) -> dict:
     """Run a reactively spawned branch through the setup `_execute_dag` hands the DAG
     runner, and return the request kwargs it leaves on the branch. The spawn is a clone
     of a worker's branch, or of the orchestrator's when *from_orchestrator*; both carry
-    *workload*."""
+    *workload*. When *emitted_by* names a class, the spawn is an independent request
+    naming no assignee, built by the run's node builder for a worker of that class (or
+    for the orchestrator itself, when it is "orchestrator") and cloned from the
+    orchestrator's branch, as the executor clones it."""
     import lionagi.engines as engines_mod
     from lionagi import Branch, iModel
+    from lionagi.casts.emission import SpawnRequest
     from lionagi.cli.orchestrate import flow as flow_mod
 
     class _Captured(Exception):
@@ -713,6 +718,8 @@ async def _spawned_branch_kwargs(
     class _Run:
         async def run_dag(self, *args, **kwargs):
             captured["setup"] = kwargs["spawn_branch_setup"]
+            captured["node_builder"] = kwargs["node_builder"]
+            captured["executor_ref"] = kwargs["executor_ref"]
             raise _Captured
 
     class _Engine:
@@ -727,9 +734,9 @@ async def _spawned_branch_kwargs(
     monkeypatch.setattr(flow_mod, "_persist_control_poller_state_bounded", _noop)
     monkeypatch.setattr(flow_mod, "_hand_mcp_servers", lambda *a, **k: None)
 
-    def _branch(name: str) -> Branch:
+    def _branch(name: str, branch_workload: str = workload) -> Branch:
         chat_model = iModel(provider=provider, model="gpt-5.5" if provider == "codex" else "sonnet")
-        _add_workload_kwarg(chat_model.endpoint.config.kwargs, provider, workload)
+        _add_workload_kwarg(chat_model.endpoint.config.kwargs, provider, branch_workload)
         return Branch(
             system=bare_worker_system(artifact_dir=tmp_path / "artifacts" / name),
             chat_model=chat_model,
@@ -747,6 +754,7 @@ async def _spawned_branch_kwargs(
         _live_persist=None,
         team_data=team_data,
         exchange=None,
+        expect_worker=lambda spawn_id: None,
     )
     dag_state = SimpleNamespace(
         reactive=True,
@@ -763,10 +771,24 @@ async def _spawned_branch_kwargs(
     with pytest.raises(_Captured):
         await flow_mod._execute_dag(env, plan, dag_state, max_concurrent=1, max_ops=5)
 
-    source = orchestrator if from_orchestrator else _branch("emitter")
+    if emitted_by is None:
+        source = orchestrator if from_orchestrator else _branch("emitter")
+        operation = SimpleNamespace(metadata={"spawn_id": "spawn-1"})
+    else:
+        emitter = SimpleNamespace(id="emitter-op")
+        emitter_branch = (
+            orchestrator if emitted_by == "orchestrator" else _branch("emitter", emitted_by)
+        )
+        captured["executor_ref"]["executor"] = SimpleNamespace(
+            operation_branches={emitter.id: emitter_branch}
+        )
+        request = SpawnRequest(instruction="check the result", independent=True)
+        operation = captured["node_builder"](request, emitter)
+        assert operation.branch_id is None
+        source = orchestrator
     orchestrator_kwargs = dict(orchestrator.chat_model.endpoint.config.kwargs)
     branch = source.clone()
-    captured["setup"](SimpleNamespace(metadata={"spawn_id": "spawn-1"}), branch)
+    captured["setup"](operation, branch)
     kwargs = branch.chat_model.endpoint.config.kwargs
     assert kwargs["repo"] == tmp_path / "artifacts" / "spawn-1"
     # The spawn's setup changes the clone's request, never the orchestrator's own.
@@ -811,17 +833,52 @@ async def test_a_spawned_heavy_codex_team_worker_gets_the_teams_directory(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_an_unassigned_spawn_of_a_light_orchestrator_runs_heavy(tmp_path, monkeypatch):
-    """An independent spawn with no assignee is cloned from the orchestrator's branch. The
-    orchestrator's class confines only its own process, so the spawn runs as a bare worker:
-    heavy, with the project root, while a spawn cloned from a light worker stays light."""
+@pytest.mark.parametrize("emitted_by", [None, "orchestrator"])
+async def test_an_unassigned_spawn_of_a_light_orchestrator_runs_heavy(
+    tmp_path, monkeypatch, emitted_by
+):
+    """A spawn with no assignee and no worker behind it, asked for by nobody or by the
+    orchestrator itself, is cloned from the orchestrator's branch. The orchestrator's class
+    confines only its own process, so the spawn runs as a bare worker: heavy, with the
+    project root."""
     from lionagi.providers.openai.codex import CodexCodeRequest
 
-    kwargs = await _spawned_branch_kwargs(tmp_path, monkeypatch, "light", from_orchestrator=True)
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path, monkeypatch, "light", from_orchestrator=True, emitted_by=emitted_by
+    )
 
     assert "workload" not in kwargs
     assert kwargs["add_dir"] == [str(tmp_path.resolve())]
-    CodexCodeRequest(prompt="work", **kwargs)
+    assert CodexCodeRequest(prompt="work", **kwargs).workload == DEFAULT_WORKLOAD
+
+
+@pytest.mark.asyncio
+async def test_an_independent_spawn_a_light_worker_asks_for_stays_light(tmp_path, monkeypatch):
+    """An independent request naming no assignee is cloned from the orchestrator's branch,
+    here a heavy one. The worker that asked is light, so the spawn is light too: asking for
+    an agent is not a way out of the asking worker's class."""
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path, monkeypatch, DEFAULT_WORKLOAD, emitted_by="light"
+    )
+
+    assert kwargs.get("add_dir", []) == []
+    assert CodexCodeRequest(prompt="work", **kwargs).workload == "light"
+
+
+@pytest.mark.asyncio
+async def test_an_independent_spawn_a_heavy_worker_asks_for_runs_heavy(tmp_path, monkeypatch):
+    """The same request from a heavy worker under a light orchestrator runs heavy, with the
+    project root: the orchestrator's class does not reach the agents its workers ask for."""
+    from lionagi.providers.openai.codex import CodexCodeRequest
+
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path, monkeypatch, "light", emitted_by=DEFAULT_WORKLOAD
+    )
+
+    assert kwargs["add_dir"] == [str(tmp_path.resolve())]
+    assert CodexCodeRequest(prompt="work", **kwargs).workload == DEFAULT_WORKLOAD
 
 
 @pytest.mark.asyncio

@@ -2140,6 +2140,33 @@ async def _execute_dag(
         env.expect_worker(spawn_id)
         return f"{req.instruction}\n\n{note}"
 
+    _role_spawn_node = (
+        role_node_builder(
+            role_base,
+            decorate_instruction=_decorate_spawn_instruction,
+            role_aliases=role_by_worker,
+            start=_spawn_seq_start,
+        )
+        if reactive
+        else None
+    )
+
+    def _build_spawn_node(req: SpawnRequest, emitter: Any) -> Any:
+        node = _role_spawn_node(req, emitter)
+        # A request naming no assignee can be cloned from the orchestrator's
+        # branch (an independent one always is), so the class of the worker that
+        # emitted it is recorded for _spawn_branch_setup. A heavy worker carries
+        # no key, and nothing is recorded for its spawn.
+        executor = _executor_ref.get("executor")
+        if node.branch_id is None and emitter is not None and executor is not None:
+            emitter_branch = executor.operation_branches.get(emitter.id)
+            emitter_model = getattr(emitter_branch, "chat_model", None)
+            if emitter_branch is not env.orc_branch and emitter_model is not None:
+                workload = emitter_model.endpoint.config.kwargs.get("workload")
+                if workload is not None:
+                    node.metadata["emitter_workload"] = workload
+        return node
+
     def _spawn_branch_setup(operation: Any, branch: Any) -> None:
         """Assign a spawned node its artifact destination.
 
@@ -2163,10 +2190,9 @@ async def _execute_dag(
 
         if not is_cli:
             return
-        # A request with no assignee is cloned from the orchestrator's branch,
-        # whose request carries the run's whole set, job control included. A
-        # spawned node is a leaf like a planned worker and gets the worker set
-        # the same way, as its whole set.
+        # A clone of the orchestrator's branch would carry the run's whole set,
+        # job control included. A spawned node is a leaf like a planned worker
+        # and gets the worker set the same way, as its whole set.
         worker_mcp_servers = getattr(env, "mcp_servers", None)
         _hand_mcp_servers(
             chat_model,
@@ -2176,12 +2202,17 @@ async def _execute_dag(
         )
         kwargs = chat_model.endpoint.config.kwargs
         kwargs.pop("account_connectors", None)
-        # A request with no assignee and no emitter branch (an independent one) is
-        # cloned from the orchestrator's branch. The orchestrator's class confines
-        # only its own process, so the spawn runs as a bare worker does: heavy, the
-        # class an absent key means.
+        # A clone of the orchestrator's branch takes the class of the worker that
+        # asked for it, recorded by _build_spawn_node, so a light worker cannot
+        # obtain a heavy agent. The orchestrator's own class confines only its own
+        # process: with no worker behind the request, the spawn runs as a bare
+        # worker does, heavy, the class an absent key means.
         if branch.metadata.get("clone_from") is env.orc_branch:
-            kwargs.pop("workload", None)
+            emitter_workload = operation.metadata.get("emitter_workload")
+            if emitter_workload is None:
+                kwargs.pop("workload", None)
+            else:
+                kwargs["workload"] = emitter_workload
         kwargs["repo"] = artifact_dir
         project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
         add_dir = kwargs.setdefault("add_dir", [])
@@ -2213,16 +2244,7 @@ async def _execute_dag(
             env.builder.get_graph(),
             reactive=reactive,
             spawn_type=SpawnRequest if reactive else None,
-            node_builder=(
-                role_node_builder(
-                    role_base,
-                    decorate_instruction=_decorate_spawn_instruction,
-                    role_aliases=role_by_worker,
-                    start=_spawn_seq_start,
-                )
-                if reactive
-                else None
-            ),
+            node_builder=_build_spawn_node if reactive else None,
             max_spawn=max_spawn,
             max_concurrent=conc,
             verbose=env.verbose,
