@@ -2000,7 +2000,7 @@ async def test_resumed_checkpoint_carries_restored_flow_context_across_zero_comp
     assert data["flow_context"] == {"shared_note": "value-from-completed-op"}
 
 
-async def test_resume_refuses_checkpoint_with_spawned_entries(tmp_path: Path):
+async def test_resume_refuses_checkpoint_with_version_1_spawned_entries(tmp_path: Path):
     """Version-1 spawned entries lack the operation and parent evidence needed
     for reconstruction. Refuse this incomplete checkpoint rather than drop
     completed work; reconstructable version-2 entries are covered separately.
