@@ -30,13 +30,13 @@ as `Ordering[T]`.
 
 **P2 — uniqueness holds only where Pile's own code enforces it.** `Pile`'s constructor rejects a
 duplicate id in a supplied order (`lionagi/protocols/generic/pile.py:139-148`), `include` adds only
-ids absent from the order (`:303-307`), and `_insert` (`:826-835`) and `_setitem` (`:707-747`) raise
+ids absent from the order (`:313-317`), and `_insert` (`:836-845`) and `_setitem` (`:717-757`) raise
 `ItemExistsError` for an id already resident. The rule therefore lives in the collection's methods
 rather than in the ordering type, and the ordering type's own mutators are free to break the
 collection's invariant whenever a caller holds the order directly.
 
 **P3 — a caller-supplied order is aliased, not copied.** `_validate_progression` returns the
-`Progression` instance it was given (`pile.py:133-135`, `:138`), so `Pile(order=prog)` installs the
+`Progression` instance it was given (`pile.py:133-135`, `:148`), so `Pile(order=prog)` installs the
 caller's object as the collection's order, and `Element.model_config`
 (`lionagi/protocols/generic/element.py:36-41`) neither revalidates nor copies an instance assigned
 to a model-typed field. A caller that keeps `prog` can append a second position for a resident id
@@ -49,14 +49,14 @@ AnyIO lock and then spins on the RLock with a non-blocking acquire and a 0.5 ms 
 `_both_locks` context manager (`pile.py:565-574`) does the same for an unscoped region. The two
 locks therefore do exclude each other: an async method and a `@synchronized` method on the same
 `Pile` never run together, in one thread or across threads, and ADR-0002 D6 records the mechanism.
-`@synchronized` decorates 19 methods: `__setitem__` (`pile.py:284`), `pop` (`:282`), `include`
-(`:303`), `exclude` (`:309`), `clear` (`:323`), `update` (`:328`), `insert` (`:341`), `append`
-(`:345`), `get` (`:349`), `keys` (`:358`), `values` (`:362`), `items` (`:366`), `is_empty` (`:370`),
-`size` (`:374`), `__getitem__` (`:394`), `__contains__` (`:398`), `__len__` (`:402`), `__bool__`
-(`:407`), and `filter` (`:643`). `@async_synchronized` decorates 8: `asetitem` (`:566`), `apop`
-(`:575`), `aremove` (`:584`), `ainclude` (`:592`), `aexclude` (`:602`), `aclear` (`:610`), `aupdate`
-(`:614`), and `aget` (`:622`). The undecorated helpers `_setitem` (`:707`), `_get` (`:749`), `_pop`
-(`:782`), and `_insert` (`:826`) are not lock sites of their own. `Flow` owns a third RLock for its
+`@synchronized` decorates 19 methods: `__setitem__` (`pile.py:284`), `pop` (`:292`), `include`
+(`:313`), `exclude` (`:319`), `clear` (`:333`), `update` (`:338`), `insert` (`:351`), `append`
+(`:355`), `get` (`:359`), `keys` (`:368`), `values` (`:372`), `items` (`:376`), `is_empty` (`:380`),
+`size` (`:384`), `__getitem__` (`:404`), `__contains__` (`:408`), `__len__` (`:412`), `__bool__`
+(`:417`), and `filter` (`:653`). `@async_synchronized` decorates 8: `asetitem` (`:576`), `apop`
+(`:585`), `aremove` (`:594`), `ainclude` (`:602`), `aexclude` (`:612`), `aclear` (`:620`), `aupdate`
+(`:624`), and `aget` (`:632`). The undecorated helpers `_setitem` (`:717`), `_get` (`:759`), `_pop`
+(`:792`), and `_insert` (`:836`) are not lock sites of their own. `Flow` owns a third RLock for its
 own methods (`lionagi/protocols/generic/flow.py:36-41`, rebuilt at `:132`). What a per-method lock
 still cannot do is make a caller's read-then-act sequence atomic.
 
@@ -123,8 +123,8 @@ is never handed the other by accident.
   and equality between the store's keys and the order is the type's invariant rather than the
   constructor's check.
 - Both construction and every mutator of the unique order reject a second position for a resident id
-  with the error the collection raises today (`pile.py:139-148` for construction, `:826-835` and
-  `:707-747` for the mutators); construction is named because it is the one path that stores a
+  with the error the collection raises today (`pile.py:139-148` for construction, `:836-845` and
+  `:717-757` for the mutators); construction is named because it is the one path that stores a
   supplied sequence after checking only the collection's own keys.
 - The repeated order stores a second position for `append`, `extend`, `insert`, `+=`, and positional
   assignment, and construction, membership, and serialization agree with that rule; this is the
@@ -136,7 +136,7 @@ is never handed the other by accident.
   builds its own order from the supplied ids instead of adopting the instance. A caller that keeps
   the ordering it passed to `Pile(order=...)` therefore cannot append a position to the collection's
   order. This is the target that closes P3, and it supersedes `_validate_progression` returning its
-  argument (`pile.py:133-135`, `:138`).
+  argument (`pile.py:133-135`, `:148`).
 - Serialization follows the type: a unique order serializes as one position per id, a repeated order
   keeps repeated ids. Existing serialized standalone sequences already contain repeated ids and stay
   readable; the payload's class name is the ordering type's own change.
@@ -158,17 +158,17 @@ holder's, exercised where the holder lives.
 **The contract**:
 
 - `Pile` exposes no lock. The private pair (`pile.py:218-219`), the `lock` and `async_lock`
-  properties (`:538-547`), the both-lock context manager with its synchronous spin (`:549-564`), and
+  properties (`:548-557`), the both-lock context manager with its synchronous spin (`:559-574`), and
   the decorators that take them are removed, together with the async entry protocol that exists only
-  to hold them (`:857-875`).
+  to hold them (`:867-885`).
 - The snapshot value is a **tuple of ids in order**: `Pile.snapshot() -> tuple[UUID, ...]`, read
   once without a lock. It replaces the two informal order snapshots the code takes today
-  (`pile.py:388-396` for iteration, `:631-637` for async iteration) and it is the value a caller
+  (`pile.py:388-396` for iteration, `:641-647` for async iteration) and it is the value a caller
   keeps instead of holding the collection open. A caller that also needs items reads them through
   `Pile.__getitem__` on the ids, which is what `keys`, `values`, and `items` do inside the lock
-  today (`:358-368`).
+  today (`:368-378`).
 - `adump`'s critical sections become plain reads of the ids and the records it is already ordered by
-  (`:994-1013`).
+  (`:1004-1023`).
 - `Flow` drops its RLock (`flow.py:36-41`, `:132`). Its methods — `add_progression` (`:138-151`),
   `remove_progression` (`:159-171`), `get_progression` (`:173-202`), `add_item` (`:206-229`),
   `remove_item` (`:231-240`), `clear` (`:242-247`) — become ordinary methods, and `Flow` is a holder
@@ -224,12 +224,12 @@ holder's, exercised where the holder lives.
 
 | View | Where the code is | Class |
 |------|-------------------|-------|
-| A collection's default order (`Pile.progression`) | `pile.py:198-201`; uniqueness enforced today at `:129-138`, `:303-307`, `:826-835`, `:707-747` | unique |
+| A collection's default order (`Pile.progression`) | `pile.py:198-201`; uniqueness enforced today at `:139-148`, `:313-317`, `:836-845`, `:717-757` | unique |
 | `Flow` views appended by `add_item` | `flow.py:206-229`; ADR-0002 D5 records that repeated calls append the same id repeatedly | repeated |
 | `Executor.pending` | `processor.py:197`, `:238` (`pending.include(event)`) | repeated type, used set-like: this call site stores at most one position per id |
 | `Executor.pile` | `processor.py:199-202` | unique |
-| `MessageManager.messages` | `manager.py:47-52` | unique |
-| `MessageManager` typed views (`assistant_responses`, `actions`, `action_requests`, `action_responses`, `instructions`) | `manager.py:453-490` | unique: each access builds a fresh filtered Pile (`pile.py:1025-1063`) whose own default order is a unique order |
+| `MessageManager.messages` | `manager.py:75-80` | unique |
+| `MessageManager` typed views (`assistant_responses`, `actions`, `action_requests`, `action_responses`, `instructions`) | `manager.py:467-504` | unique: each access builds a fresh filtered Pile (`pile.py:1025-1063`) whose own default order is a unique order |
 | `Branch.progression`, both forms | `branch.py:247-254`: the `metadata["current_progression"]` subset, built at `lionagi/tools/context/context.py:142-149`, or `MessageManager.progression` when it is unset | unique: the subset is seeded from the full order and the context tool never appends a duplicate to it (`context.py:334-335` skips ids already active before `:343`), `branch.py:249` calls it a subset, and ADR-0007 D2 rejects a duplicate id in the selected history (`docs/adr/ADR-0007-canonical-turn-request-compilation-boundary.md:218-219`) |
 | `Exchange` mailbox views `outbox` and `inbox_<sender>` | `exchange.py:53`, `:148-153` | repeated: standalone orders held by per-owner Flows; the `progressions` Pile that indexes them is itself a collection, and therefore unique over the view objects |
 
