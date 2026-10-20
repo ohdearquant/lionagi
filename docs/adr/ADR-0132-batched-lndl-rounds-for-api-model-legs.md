@@ -2,9 +2,10 @@
 
 - **Status**: Proposed
 - **Kind**: Aspirational
-- **Implementation-status**: implemented — D1-D3 are implemented and the D4 pilot ran (D4, Result);
-  at the merged code, with each task's check fixed before the run, `r5` meets the rule, so `lndl` is
-  a recommended profile setting for API-model legs and the default stays `react` (D4, Result)
+- **Implementation-status**: implemented — D1-D3 are implemented and the D4 pilot ran four times
+  (D4, Result); read against the source, `r5`, the run that decides, does not meet the rule: `lndl`
+  accepted one task fewer than ReAct. `lndl` stays an opt-in setting and is not recommended, and
+  the default stays `react`
 - **Area**: operations
 - **Date**: 2026-10-17
 - **Relations**: extends ADR-0024 (LNDL operate integration adapter) and ADR-0041 Amendment 1
@@ -128,8 +129,13 @@ comparison reads two records and never an estimate.
 The pilot runs one task set twice, once per loop, with the same model, tool set, bound and
 instructions, on one profile pair that differs only in `api_loop`. The task set is fixed before the
 first run and has at least 20 read-only tasks of the kind the leg is used for, each with a check
-that decides whether its answer is accepted. The result is a per-task table of requests, tool
-calls, wall time and acceptance for both loops, published with the pilot's commit. `lndl` becomes
+that marks its answer accepted or rejected as a first pass. Every answer is then read against the
+source, and the reading decides: an answer the check accepts and the reading finds wrong is not accepted, and one
+the check rejects and the reading finds right is. The result is a per-task table of requests, tool
+calls, wall time and acceptance for both loops, published with the pilot's commit. The pilot can
+run more than once as the code changes; each run is recorded in the Result, which names the run
+that decides. Because the reading decides, a check corrected between runs changes the first pass
+and not the outcome. `lndl` becomes
 a recommended profile setting only if it uses fewer requests per accepted task in total and accepts
 no fewer tasks; the default stays `react` until a later decision changes it.
 
@@ -140,16 +146,18 @@ an acceptance check, on `anthropic/claude-haiku-5-5` with read tools and `max_ex
 task's two runs are adjacent in time and the loop that goes first alternates by task. The per-task
 tables of requests, tool calls, wall time and acceptance are `runs/<run>/table.md` there.
 
-| run | lionagi | loop | accepted | requests | per accepted task | tool calls |
-|---|---|---|---|---|---|---|
-| r2 | `4d373f9c` | react | 23 / 24 | 94 | 4.09 | 56 |
-| r2 | `4d373f9c` | lndl | 18 / 24 | 119 | 6.61 | 34 |
-| r3 | `aca2e2e9` | react | 22 / 24 | 95 | 4.32 | 59 |
-| r3 | `aca2e2e9` | lndl | 23 / 24 | 79 | 3.43 | 37 |
-| r4 | `d8838f28` | react | 23 / 24 | 91 | 3.96 | 59 |
-| r4 | `d8838f28` | lndl | 22 / 24 | 80 | 3.64 | 47 |
-| r5 | `208bcc08` | react | 23 / 24 | 99 | 4.30 | 65 |
-| r5 | `208bcc08` | lndl | 23 / 24 | 79 | 3.43 | 43 |
+| run | lionagi | loop | accepted by the checks | accepted on reading | requests | per accepted task | tool calls |
+|---|---|---|---|---|---|---|---|
+| r2 | `4d373f9c` | react | 23 / 24 | 24 / 24 | 94 | 3.92 | 56 |
+| r2 | `4d373f9c` | lndl | 18 / 24 | 18 / 24 | 119 | 6.61 | 34 |
+| r3 | `aca2e2e9` | react | 22 / 24 | 23 / 24 | 95 | 4.13 | 59 |
+| r3 | `aca2e2e9` | lndl | 23 / 24 | 23 / 24 | 79 | 3.43 | 37 |
+| r4 | `d8838f28` | react | 23 / 24 | 24 / 24 | 91 | 3.79 | 59 |
+| r4 | `d8838f28` | lndl | 22 / 24 | 23 / 24 | 80 | 3.48 | 47 |
+| r5 | `208bcc08` | react | 23 / 24 | 23 / 24 | 99 | 4.30 | 65 |
+| r5 | `208bcc08` | lndl | 23 / 24 | 22 / 24 | 79 | 3.59 | 43 |
+
+Requests per accepted task divides a run's requests by the tasks accepted on reading.
 
 r2 fails the rule and r3 passes it, and one change to the Python package separates them: in r2 an
 `lndl` round with no block continued with no error, and in r3 it is the repair round D2 describes.
@@ -160,56 +168,54 @@ the eleventh and last round, whose notice asks for the answer, answered that the
 it (`t03` had run one tool call, the other four none); none was accepted. Those four describe reads
 and searches that returned nothing usable (`t18`: "Five read attempts and two grep attempts on that
 file returned no usable content"), but none of those calls ran: what they report as tool results is
-the model's account of calls it wrote as tags outside a block. 64 of the 119 `lndl` requests went to
-rounds with no block. In r3 each of the 17 wrote a block in its next round, and 18 of the 79
-requests went to rounds with no block.
+the model's account of calls it wrote as tags outside a block. The r3 ReAct `t04` leg is the same
+case on the other loop: it made no tool call in its 3 requests and answered that none of its tool
+calls returned results. 64 of the 119 `lndl` requests went to rounds with no block. In r3 each of
+the 17 wrote a block in its next round, and 18 of the 79 requests went to rounds with no block.
 
-- In r3 the accepts clause holds by one task, and the ReAct side moved by one task between r2 and r3
-  (in r3 its `t04` run made no tool call and was not accepted), so r3 shows that `lndl` accepted no
-  fewer tasks, not that it accepts more. The request saving is the larger effect: 79 requests
-  against 95.
-- `t06`'s check expects `100000`, and none of the four answers to it contains that string: each
-  gives the cap as `100,000` and quotes `_MAX_OUTPUT_BYTES = 100_000`. Read as accepting that,
-  r3 is `lndl` 24 at 3.29 requests per accepted task and ReAct 23 at 4.13, and r2 still fails.
+- Every answer in r2, r3 and r4, accepted by its check or not, was read against the source line
+  `tasks.yaml` records for its task. In these three runs the reading and the checks differ in ten
+  answers. All six answers to `t06` are right and were rejected: the check expects `100000`, and
+  each answer gives the cap as `100,000` or `100_000` and names `_MAX_OUTPUT_BYTES` and `_SHELL_CONTROL`. The r4
+  `lndl` answer to `t20` is right and was rejected: the question asks which module defines the
+  class, the answer names it by its import path, `lionagi.tools.code.search`, and says it did not
+  open the file, and the check asks for the file path. The `lndl` answers to `t24` in all three runs
+  are wrong and were accepted: each says `lionagi/mcp/config.py` defines no `RUNS_DIR`, and line 19
+  of that file is `RUNS_DIR = RUNS_ROOT`; the check asked only for the names `RUNS_DIR` and
+  `JOBS_DIR`, which the question itself supplies. Every other answer agrees with its check.
+- On reading, r3 meets the rule with no margin: 23 tasks accepted on each side, and `lndl` used 79
+  requests against 95 (3.43 per accepted task against 4.13). The ReAct side moved by one task
+  between r2 and r3 (its r3 `t04` leg above), so r3 shows that `lndl` accepted no fewer tasks, not
+  that it accepts more.
 - The tool calls counted are the calls that ran. The most any `lndl` run made was four in r2, three
   in r3, five in r4 (`t21` and `t22`) and three in r5. A round that declares more than 16 calls is
   refused and none of its calls runs (D2), so these counts cannot show whether a round reached the
   limit, and the limit is still unmeasured.
 - r4 ran the merged code (`d8838f28`), whose repair round also tells the model how a block opens
   and closes, reads indented, longer and CRLF fences, and treats an empty block as a repair round
-  (D2). By the checks fixed before the first run, it fails the rule: `lndl` used fewer requests per
-  accepted task (80 requests, 3.64, against 91 and 3.96) and accepted one task fewer (22 against
-  23). The deciding task is `t20`, and the outcome rests on its check. The question asks which
-  module; the `lndl` run named it by its import path, `lionagi.tools.code.search`, and said it had
-  not opened the file, and the check asks for the file path `lionagi/tools/code/search.py`. Read on
-  substance, `t20` alone makes r4 meet the rule (`lndl` 23 at 3.48 requests per accepted task
-  against ReAct 23 at 3.96). `t06` alone (both r4 answers name `_SHELL_CONTROL` and give the cap, as
-  `100,000` or `100_000`) adds one task to each side and leaves the outcome as it is; with both,
-  `lndl` is 24 at 3.33 against 24 at 3.79. r2 fails and r3 passes under every one of these
-  readings. 17 of the 24 `lndl` runs again opened with an `<invoke>` tag, each wrote a block in its
-  next round, 17 of the 80 requests went to rounds with no block, and no run reached the round
-  budget.
-- r3 and r4 split the accepts clause by one task in opposite directions (`t04` on the ReAct side in
-  r3, `t20` on the `lndl` side in r4), so 24 tasks cannot settle it, and in r4 the split rests on how
-  one check reads one answer. The request saving held in both runs: 79 requests against 95, and 80
-  against 91. D4 fixes each task's check before the first run and lets it decide, so after r4 `lndl` was
-  not recommended and D4's outcome was left to a further run, `r5`, at the merged code, with `t06`
-  and `t20` checks that accept the answer's substance, fixed before it started.
-- r5 ran the merged code (`208bcc08`, 13 commits past `d8838f28`, none of them in the LNDL Middle;
-  both loops ran that same code) with `t06` accepting the value in any of its spellings and `t20`
-  accepting the module by its file or its import path, both committed before the run started. It
-  meets the rule: `lndl` used 79 requests against 99 (3.43 per accepted task against 4.30) and
-  accepted 23 tasks, as ReAct did. Its two rejections are a wrong `lndl` answer to `t03`, a default
-  taken from another package in the read tree, and a ReAct leg on `t10` that called a tool it does
-  not have and then answered that it could not find the constants. By D4, `lndl` is now a
-  recommended profile setting for API-model legs, and the default stays `react` until a later
-  decision changes it. The accepts clause holds with no margin: r3 and r4 split it by one task in
-  opposite directions and r5 ties it, so 24 tasks do not show `lndl` accepting more or fewer tasks
-  than ReAct. The request saving held in every run since r3: 79 against 95, 80 against 91
-  and 79 against 99.
-- The checks are substring checks, so a wrong answer that contains the expected words can pass. The answers where that is easiest, the 32 accepted answers to `t09`, `t11`, `t12` and `t22` (both
-  loops, all four runs), were read by hand, and all of them are correct. Every answer is committed
-  with the runs (`answers.jsonl`).
+  (D2). On reading it fails the rule: `lndl` used fewer requests per accepted task (80 requests,
+  3.48, against 91 and 3.79) and accepted one task fewer (23 against 24). The checks give the same
+  outcome through different tasks (22 against 23). 17 of the 24 `lndl` runs again opened with an
+  `<invoke>` tag, each wrote a block in its next round, 17 of the 80 requests went to rounds with no
+  block, and no run reached the round budget.
+- On reading, r3 ties the accepts clause and r4 misses it by one task, so these runs do not settle
+  it. The request saving held in both: 79 requests against 95, and 80 against 91.
+- The run that decides D4 is `r5`, at the merged code (`208bcc08`, 13 commits past `d8838f28`, none
+  of which changes `lionagi/lndl/` or the LNDL Middle; both loops ran that same code). Before it
+  started, the `t06` check was changed to accept the value in any of its spellings and the `t20`
+  check to accept the module by its file or its import path. Its checks accept 23 tasks on each
+  side. Every answer was read against the source as above, and the reading differs from the checks
+  in one: the `lndl` answer to `t24` again says `lionagi/mcp/config.py` defines no `RUNS_DIR`, and
+  its check accepted it. Read that way, `lndl` accepted 22 tasks at 3.59 requests per accepted task
+  (79 requests) and ReAct 23 at 4.30 (99 requests). `lndl` used fewer requests per accepted task and
+  accepted one task fewer, so r5 does not meet the rule: `lndl` is not recommended, and the default
+  stays `react`. The other two rejected answers are wrong on reading too: the `lndl` answer to `t03`
+  gives a default from another package in the read tree, and the ReAct leg on `t10` called a tool
+  it does not have and then answered that it could not find the constants.
+- Every answer is committed with the runs (`answers.jsonl`). The README lists the eleven answers
+  where the reading and the checks differ and gives r5 task by task, each with the source line its
+  reading used. After r5 the `t24` check was changed to require the two assignments themselves; run
+  against the committed r5 answers, it rejects the `lndl` answer and accepts the ReAct one.
 - The counts of runs that opened with an `<invoke>` tag and of requests that went to rounds with no
   block are read from each leg's conversation, which `li agent` keeps under the run's home directory
   and the pilot does not commit; the committed files give the per-task requests, tool calls,
@@ -218,8 +224,8 @@ requests went to rounds with no block.
   an accepted `OUT{}`. The five r2 `lndl` legs that spent all 11 requests returned an `OUT{}` the
   loop accepted in their last round (their answers then failed the task checks, as above); an
   exhausted budget raises `LNDLError`, which `li agent` records as the run's failure and re-raises,
-  so such a leg would have exited non-zero. No `lndl` leg in r3, r4 or r5 spent more than 5. The pilot
-  therefore does not exercise D2's exhausted-turn exit.
+  so such a leg would have exited non-zero. No `lndl` leg in r3, r4 or r5 spent more than 5. The
+  pilot therefore does not exercise D2's exhausted-turn exit.
 
 ## Consequences
 
@@ -231,8 +237,8 @@ requests went to rounds with no block.
 - The expected saving is small: at most one request per turn, the answer request ReAct makes after
   the model has stopped. If models seldom take ReAct's extra round, the pilot will show no saving and
   the default stays as it is.
-- The 16-call limit is a starting value with no measurement behind it; the pilot's tables report it
-  as unmeasured and are the evidence for changing it.
+- The 16-call limit is a starting value with no measurement behind it; the D4 Result reports it as
+  unmeasured, and a pilot that measures it is the evidence for changing it.
 
 ## Alternatives considered
 
