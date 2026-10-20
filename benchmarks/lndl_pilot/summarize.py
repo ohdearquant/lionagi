@@ -37,7 +37,10 @@ def _rows(path: Path) -> list[dict]:
 
 def _task_truths(run_dir: Path) -> dict[str, str]:
     header = json.loads((run_dir / "header.json").read_text())
-    tasks_bytes = (HERE / header["tasks_file"]).read_bytes()
+    tasks_path = HERE / header["tasks_file"]
+    if not tasks_path.is_file():
+        raise ValueError(f"{run_dir.name}: {header['tasks_file']} is not in {HERE.name}/")
+    tasks_bytes = tasks_path.read_bytes()
     if hashlib.sha256(tasks_bytes).hexdigest() != header["tasks_sha256"]:
         raise ValueError(f"{run_dir.name}: {header['tasks_file']} is not the task set the run used")
     return {task["id"]: str(task["truth"]) for task in yaml.safe_load(tasks_bytes)["tasks"]}
@@ -46,6 +49,8 @@ def _task_truths(run_dir: Path) -> dict[str, str]:
 def _cited(truth: str, source: str) -> bool:
     """Whether ``truth`` cites ``source`` (``path:line``), by its path or, where the truth
     names that path elsewhere, by the file's name alone (``config.py:19``)."""
+    if not re.fullmatch(r"[\w./-]+\.py:\d+(?:-\d+)?", source):
+        return False
     path, _, lines = source.rpartition(":")
     forms = [source]
     if path in truth:
@@ -87,6 +92,10 @@ def build_summary(run_dir: Path) -> dict:
 
     summary = summarize(sorted(results, key=lambda r: (r["id"], r["loop"])), LOOPS)
     summary["d4_rule_by_checks"] = summary.pop("d4_rule")
+    if summary["d4_rule_by_checks"] is None:
+        # The request counts are incomplete for the reading too.
+        summary["d4_rule_by_substance"] = None
+        return summary
     right = {
         loop: sum(row["reading"] == "right" for row in reading if row["loop"] == loop)
         for loop in LOOPS

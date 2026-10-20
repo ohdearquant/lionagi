@@ -159,14 +159,16 @@ calls, wall time and acceptance for both loops, published with the pilot's commi
 run more than once as the code changes, and each run is recorded in the Result. r2, r3 and r4 did
 not settle the rule (Result); after r4 the run that decides was named as `r5`. r5 ran with
 lionagi installed from `208bcc08`, the `main` commit current when it started (read from its
-environment after the run), and read the source at `6fa69b19`, as r2 to r4 did. It asks the same
-questions against the same source lines, with the `t06` and `t20` checks corrected; those two
-changes, and the `t24` check changed after r5, which no run has used, depart from the clause above
-that the task set is fixed before the first run. r5 is read by the rule Amendment 1 records. The
-rule that the reading decides was written into D4 after r5 had run, so r5 is reported under the
-checks and under the reading; its task file, rows and reading are recorded with its result below. No later run reopens D4: a different
-outcome takes a new decision. The reading is one reader's judgment, made knowing which loop wrote each answer,
-and no blind second reading was done; it judges what each answer says to its question and counts
+environment after the run, `benchmarks/lndl_pilot/runs/r5/environment.json`), and read the source
+at `6fa69b19`, as r2 to r4 did. It asks the same questions against the same source lines, with the
+`t06` and `t20` checks corrected; those two changes, and the `t24` check changed after r5, which no
+run has used, depart from the clause above that the task set is fixed before the first run. r5 is
+read by the rule Amendment 1 records. The rule that the reading decides was written into D4 after
+r5 had run, so r5 is reported under the checks and under the reading; its task file
+(`benchmarks/lndl_pilot/runs/tasks.r5.yaml`), rows and reading (`benchmarks/lndl_pilot/runs/r5/`)
+are recorded with its result below. No later run reopens D4: a different outcome takes a new
+decision. The reading is one reader's judgment, made knowing which loop wrote each answer, and no
+blind second reading was done; it judges what each answer says to its question and counts
 an answer right when it gives the value or name its task records, also when it corrects a premise
 of the question on the way. `tasks.yaml` gives each task's source line (its `truth`), and the
 pilot's README names the answers whose count turns on that rule, so that another reader can redo
@@ -194,18 +196,22 @@ there.
 | r5 | `208bcc08` | react | 23 / 24 | 23 / 24 | 99 | 4.30 | 65 |
 | r5 | `208bcc08` | lndl | 23 / 24 | 22 / 24 | 79 | 3.59 | 43 |
 
-Requests per accepted task divides a run's requests by the tasks accepted on reading.
+Requests per accepted task divides a run's requests by the tasks accepted on reading. The lionagi
+column is the commit each run's environment had installed, read from its checkout after the run
+(`runs/<run>/environment.json`), and requests, tool calls and wall time come from each leg's spend
+line (`runs/<run>/spend.jsonl`).
 
 On reading, r2 fails the rule and r3 meets it with no margin. One change to the Python package
 lies between them: in r2 an `lndl` round with no block continued with no error, and in r3 it is the
 repair round D2 describes. With one run of each, the pilot cannot show that this change caused the
 difference; the ReAct side, which the change does not touch, also moved by one task.
-Read from each leg's conversation, which the pilot does not commit (see below), in both runs 17 of
-the 24 `lndl` runs opened with a call written as an `<invoke>` tag outside any block. In r2, 12 of
-those recovered on their own and 5 (`t03`, `t04`, `t17`, `t18`, `t19`) kept writing the tag and, in
-the eleventh and last round, whose notice asks for the answer, answered that they could not verify
-it (`t03` had run one tool call, the other four none); none was accepted. Those four describe reads
-and searches that returned nothing usable (`t18`: "Five read attempts and two grep attempts on that
+Read from each leg's conversation (each run's `rounds.jsonl` records the syntax every `lndl` round
+used), in both runs 17 of the 24 `lndl` runs opened with a call written as an `<invoke>` tag outside
+any block. In r2, 12 of those wrote a block by their fifth round, and 5 (`t03`, `t04`, `t17`, `t18`,
+`t19`) wrote none before their tenth: `t03` wrote one in its tenth round, which ran its one tool
+call, and the other four first wrote one in the eleventh and last round, whose notice asks for the
+answer. All five answered that they could not confirm, list or determine what was asked, and none
+was accepted. The other four describe reads and searches that returned nothing usable (`t18`: "Five read attempts and two grep attempts on that
 file returned no usable content"), but none of those calls ran: what they report as tool results is
 the model's account of calls it wrote as tags outside a block. The r3 ReAct `t04` leg is the same
 case on the other loop: it made no tool call in its 3 requests and answered that none of its tool
@@ -219,18 +225,21 @@ the 17 wrote a block in its next round, and 18 of the 79 requests went to rounds
   `lndl` answer to `t20` is right and was rejected: the question asks which module defines the
   class, the answer names it by its import path, `lionagi.tools.code.search`, and says it did not
   open the file, and the check asks for the file path. The `lndl` answers to `t24` in all three runs
-  are wrong and were accepted: each says `lionagi/mcp/config.py` defines no `RUNS_DIR`, and line 19
-  of that file is `RUNS_DIR = RUNS_ROOT`; the check these runs used asks for `.lionagi`, the default
-  the question asks for, and the names `RUNS_DIR` and `JOBS_DIR`, which the question itself supplies, so it
+  are wrong and were accepted: each gives `RUNS_ROOT` in place of a `RUNS_DIR` it says
+  `lionagi/mcp/config.py` does not define (the r4 answer adds that it read the file only in part and
+  does not rule one out), and line 19 of that file is `RUNS_DIR = RUNS_ROOT`; the check these runs
+  used asks for `.lionagi`, the default the question asks for, and the names `RUNS_DIR` and
+  `JOBS_DIR`, which the question itself supplies, so it
   accepts these answers. Every other answer agrees with its check.
 - On reading, r3 meets the rule with no margin: 23 tasks accepted on each side, and `lndl` used 79
   requests against 95 (3.43 per accepted task against 4.13). The ReAct side moved by one task
   between r2 and r3 (its r3 `t04` leg above), so r3 shows that `lndl` accepted no fewer tasks, not
   that it accepts more. This counts both r3 answers to `t03` as right (each says the endpoint's
   request model has no default and gives 8192, the value lionagi's CLI applies and the line the
-  task records) and both r3 answers to `t05` (each says the question's `max_tokens` does not fit
-  the timeout field and gives its default, 30000 ms). Counting either pair wrong leaves r3 at 22
-  against 22, which still meets the rule.
+  task records) and both r3 answers to `t05` (each gives the timeout field's default, 30000 ms,
+  and sets aside the question's `max_tokens`: the ReAct answer says the tool has no such field, the
+  `lndl` answer that the timeout "is a time limit, not a token count"). Counting either pair wrong
+  leaves r3 at 22 against 22, which still meets the rule.
 - The tool calls counted are the calls that ran. The most any `lndl` run made was four in r2, three
   in r3, five in r4 (`t21` and `t22`) and three in r5. A round that declares more than 16 calls is
   refused and none of its calls runs (D2), so these counts cannot show whether a round reached the
@@ -264,19 +273,20 @@ the 17 wrote a block in its next round, and 18 of the 79 requests went to rounds
   is read as right, like the r3 ReAct answer above. Counted
   wrong, r5 would be 22 tasks on each side; counting the `lndl` answer to `t03` or `t24` right
   would make it 23 on each side.
-- Every answer is committed with the runs (`answers.jsonl`), and so is its reading, with the source
-  line the reading used (`reading.jsonl`); the pilot's `summarize.py` writes each run's
+- Every answer is committed with the runs (`answers.jsonl`), beside each leg's spend line
+  (`spend.jsonl`), and so is its reading, with the source line the reading used (`reading.jsonl`); the pilot's `summarize.py` writes each run's
   `summary.json` from that file and the run's results. The README lists the eleven answers
   where the reading and the checks differ and the answers to `t03` and `t05` whose count turns on
   the reading rule, and gives r5 task by task, each with the source line its reading used. After r5 the `t24` check was changed to require the two assignments themselves; run
   against the committed r5 answers, it rejects the `lndl` answer and accepts the ReAct one.
 - The counts of runs that opened with an `<invoke>` tag and of requests that went to rounds with no
-  block are read from each leg's conversation, which `li agent` keeps under the run's home directory
-  and the pilot does not commit; the committed files give the per-task requests, tool calls,
-  acceptance and answers.
+  block are read from each leg's conversation, which `li agent` keeps under the run's home directory.
+  The pilot commits what was read from them, the syntax each `lndl` round used (`rounds.jsonl`), and
+  not the conversations.
 - All 192 legs exited 0 and none exhausted its round budget, which D2 defines as spending it without
-  an accepted `OUT{}`. The five r2 `lndl` legs that spent all 11 requests returned an `OUT{}` the
-  loop accepted in their last round (their answers then failed the task checks, as above); an
+  an accepted `OUT{}`. The five r2 `lndl` legs that spent all 11 requests wrote an `OUT{}` in their
+  last round (`rounds.jsonl`) and exited 0, so the loop accepted it (their answers gave no value, as
+  above); an
   exhausted budget raises `LNDLError`, which `li agent` records as the run's failure and re-raises,
   so such a leg would have exited non-zero. No `lndl` leg in r3, r4 or r5 spent more than 5. The
   pilot therefore does not exercise D2's exhausted-turn exit.
