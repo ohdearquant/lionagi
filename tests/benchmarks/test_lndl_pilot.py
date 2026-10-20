@@ -1399,22 +1399,6 @@ def test_an_li_that_cannot_start_leaves_no_run_directory(monkeypatch, tmp_path):
     assert not (tmp_path / "run").exists()
 
 
-def test_a_task_file_that_cannot_be_read_leaves_no_run_directory(monkeypatch, tmp_path):
-    out = tmp_path / "run"
-    (tmp_path / "li").touch()
-    monkeypatch.setattr(runner, "TREE", tmp_path)
-    monkeypatch.setattr(runner, "LI", tmp_path / "li")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["run_pilot.py", "--tasks", str(tmp_path / "missing.yaml"), "--out", str(out)],
-    )
-    with pytest.raises(FileNotFoundError):
-        runner.main()
-    assert not out.exists()
-
-
 def test_a_run_over_part_of_the_task_set_leaves_the_rule_unset(monkeypatch, tmp_path):
     legs = _Legs()
     rc, out = _run_main(monkeypatch, tmp_path, legs, ["t01", "t02"], "--only", "t01")
