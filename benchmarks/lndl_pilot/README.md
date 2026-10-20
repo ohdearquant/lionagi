@@ -25,6 +25,8 @@ accepts no fewer tasks.
   `answer_chars`).
 - `runs/run_pilot.as-run.py.txt`: the runner exactly as it ran, byte for byte (sha256
   `911c41cd…`, the `runner_sha256` in each `header.json`).
+- `runs/tasks.r2-r4.yaml`: the task set exactly as r2, r3 and r4 ran it, byte for byte (sha256
+  `3c29864d…`, the `tasks_sha256` in their `header.json`).
 
 ## Runs
 
