@@ -50,8 +50,9 @@ accepts no fewer tasks.
 - `runs/run_pilot.as-run.py.txt`: the runner exactly as r2, r3 and r4 ran it, byte for byte
   (sha256 `911c41cd…`, the `runner_sha256` in their `header.json`).
 - `runs/r5/run_pilot.as-run.py.txt`: the runner exactly as r5 ran it, byte for byte (sha256
-  `46234f89…`, r5's `runner_sha256`). The two as-run copies parse to the same syntax tree;
-  `run_pilot.py` differs from them in one comment and in `summarize()` (below).
+  `46234f89…`, r5's `runner_sha256`). The two as-run copies parse to the same syntax tree.
+  `run_pilot.py` differs from r5's copy in one comment, in `summarize()` and in `main()`, and from
+  the r2-r4 copy also in its `noqa` comments and layout (below).
 - `runs/tasks.r2-r4.yaml` and `runs/tasks.r5.yaml`: the task set exactly as those runs ran it,
   byte for byte (sha256 `3c29864d…` and `e969e5a3…`, the `tasks_sha256` in their `header.json`).
 
@@ -89,6 +90,8 @@ past `4d373f9c`, and the only file in the Python package it changes from `4d373f
 Requests per accepted task divides a run's requests by the tasks accepted on reading.
 `summary.json` stores it to three places, as the runner does (`3.435` for 79 over 23); the tables
 here give two places computed from the counts (3.43), not the stored value rounded again.
+`tests/benchmarks/test_lndl_pilot.py` recomputes these tables, the counts below that decide each
+run, and the figures ADR-0132 gives for the runs, from each run's files.
 
 Each task's check (`accept` in its task file) is a first pass on its answer. Every answer in r2
 to r5, accepted by its check or not, was then read against the `truth` line its task records (at
@@ -234,11 +237,15 @@ rows. Each leg's spend lines are in its run's `spend.jsonl`.
 ## How the committed files differ from the runs' output
 
 - `run_pilot.py` is `runs/run_pilot.as-run.py.txt` with `noqa` comments added, the `(r1)` at the
-  end of one comment removed (both as-run copies keep it), the layout reformatted by ruff, and one
-  change to `summarize()`: the as-run copies computed the D4 rule even when a leg had no spend line,
-  and `run_pilot.py` leaves it unset (above). Of the files' top-level statements, `summarize()` is
-  the only one whose `ast.dump` differs. With `missing_spend` at 0 in all four runs, both give the
-  same totals and rule.
+  end of one comment removed (both as-run copies keep it), the layout reformatted by ruff, and two
+  changes. `summarize()` leaves the D4 rule unset when a leg had no spend line, where the as-run
+  copies computed it (above). `main()` refuses a task file in which a task has a non-empty
+  `none_of` beside its `accept` block, which `check_answer` would ignore, before it creates the
+  output directory; each task in the three task files has an empty one. Of the files' top-level
+  statements, `summarize()` and `main()` are the only ones whose `ast.dump` differs. With
+  `missing_spend` at 0 in all four runs, both give the same totals and rule: the test loads each
+  as-run copy, checks its sha256 against the run's `runner_sha256`, and recomputes the run's
+  `summary.json` with it.
 - In each `header.json`, `tasks_file` was the absolute path the runner writes
   (`Path(args.tasks).resolve()`, line 141 of `runs/run_pilot.as-run.py.txt` and line 147 of r5's
   copy). It was replaced by `tasks.yaml` before the first commit and now names the copy of the
@@ -247,7 +254,7 @@ rows. Each leg's spend lines are in its run's `spend.jsonl`.
   it is now (sha256 `aa04d3fd…`), which no run used.
 - Each `summary.json` is written by `summarize.py`, not by the runner: the totals and
   `d4_rule_by_checks` are the runner's own summary of `results.jsonl` (its `d4_rule`, renamed), and
-  `d4_rule_by_substance` applies the same two D4 conditions to the counts in `reading.jsonl`. The
+  `d4_rule_by_substance` is the same summary with each leg accepted as `reading.jsonl` reads it. The
   two agree in r2, r3 and r4. In r5, `lndl_accepts_no_fewer` is true by the checks and false on
   reading (22 against 23). `summarize.py --check` passes on all four runs.
 - Apart from those two edits and a final newline added to the JSON files, the files in `runs/`

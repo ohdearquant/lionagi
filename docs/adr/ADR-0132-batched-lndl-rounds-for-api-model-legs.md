@@ -183,7 +183,8 @@ The pilot is `benchmarks/lndl_pilot/`: 24 read-only questions about lionagi's ow
 an acceptance check, on `anthropic/claude-haiku-5-5` with read tools and `max_extensions: 10`. Each
 task's two runs are adjacent in time and the loop that goes first alternates by task. The per-task
 tables of requests, tool calls, wall time and acceptance by the checks are `runs/<run>/table.md`
-there.
+there, and its test, `tests/benchmarks/test_lndl_pilot.py`, recomputes the figures below and the
+ones this record gives for r3, r4 and r5 from the runs' files.
 
 | run | lionagi | loop | accepted by the checks | accepted on reading | requests | per accepted task | tool calls |
 |---|---|---|---|---|---|---|---|

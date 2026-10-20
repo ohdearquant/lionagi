@@ -9,8 +9,8 @@ Both files must hold one row per task in the run's task file (named in its
 `header.json` and matching its `tasks_sha256`) and per loop, and each reading's
 `6fa69b19` source line must be one its task's `truth` cites.
 The totals and `d4_rule_by_checks` are `run_pilot.summarize` on the results;
-`d4_rule_by_substance` applies the same rule to the reading, which is the one
-ADR-0132 D4 decides by.
+`d4_rule_by_substance` is `run_pilot.summarize` on the same rows with each leg
+accepted as its reading says, which is the rule ADR-0132 D4 decides by.
 
     python summarize.py runs/r5            # write runs/r5/summary.json
     python summarize.py runs/r5 --check    # exit 1 if the committed file differs
@@ -47,11 +47,13 @@ def _task_truths(run_dir: Path) -> dict[str, str]:
 
 
 def _cited(truth: str, source: str) -> bool:
-    """Whether ``truth`` cites ``source`` (``path:line``), by its path or, where the truth
-    names that path elsewhere, by the file's name alone (``config.py:19``)."""
+    """Whether ``truth`` cites ``source`` (a full ``path:line``), by its path or, where the
+    truth names that path elsewhere, by the file's name alone (``config.py:19``)."""
     if not re.fullmatch(r"[\w./-]+\.py:\d+(?:-\d+)?", source):
         return False
     path, _, lines = source.rpartition(":")
+    if "/" not in path:
+        return False
     forms = [source]
     if path in truth:
         forms.append(f"{Path(path).name}:{lines}")
@@ -90,31 +92,26 @@ def build_summary(run_dir: Path) -> dict:
                 "the reading row says otherwise"
             )
 
-    summary = summarize(sorted(results, key=lambda r: (r["id"], r["loop"])), LOOPS)
+    results = sorted(results, key=lambda r: (r["id"], r["loop"]))
+    summary = summarize(results, LOOPS)
     summary["d4_rule_by_checks"] = summary.pop("d4_rule")
     if summary["d4_rule_by_checks"] is None:
         # The request counts are incomplete for the reading too.
         summary["d4_rule_by_substance"] = None
         return summary
-    right = {
-        loop: sum(row["reading"] == "right" for row in reading if row["loop"] == loop)
-        for loop in LOOPS
-    }
-    per_accepted = {
-        loop: round(summary[loop]["requests"] / right[loop], 3) if right[loop] else None
-        for loop in LOOPS
-    }
+    by_reading = summarize(
+        [
+            dict(r, accepted=read_by_key[(r["id"], r["loop"])]["reading"] == "right")
+            for r in results
+        ],
+        LOOPS,
+    )
     summary["d4_rule_by_substance"] = {
-        "react_accepted": right["react"],
-        "lndl_accepted": right["lndl"],
-        "react_requests_per_accepted": per_accepted["react"],
-        "lndl_requests_per_accepted": per_accepted["lndl"],
-        "lndl_fewer_requests_per_accepted": (
-            per_accepted["lndl"] is not None
-            and per_accepted["react"] is not None
-            and per_accepted["lndl"] < per_accepted["react"]
-        ),
-        "lndl_accepts_no_fewer": right["lndl"] >= right["react"],
+        "react_accepted": by_reading["react"]["accepted"],
+        "lndl_accepted": by_reading["lndl"]["accepted"],
+        "react_requests_per_accepted": by_reading["react"]["requests_per_accepted"],
+        "lndl_requests_per_accepted": by_reading["lndl"]["requests_per_accepted"],
+        **by_reading["d4_rule"],
     }
     return summary
 

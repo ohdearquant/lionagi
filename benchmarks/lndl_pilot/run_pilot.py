@@ -146,13 +146,19 @@ def main() -> int:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         print("ANTHROPIC_API_KEY is not set in this process; nothing run", file=sys.stderr)
         return 2
+    tasks_path = Path(args.tasks).resolve()
+    tasks_bytes = tasks_path.read_bytes()
+    tasks = yaml.safe_load(tasks_bytes)["tasks"]
+    # check_answer reads `none_of` from a task's `accept` block only, so a non-empty one
+    # beside the block would be ignored; refuse it before anything runs.
+    misplaced = [t["id"] for t in tasks if t.get("none_of")]
+    if misplaced:
+        print(f"none_of outside accept in {', '.join(misplaced)}; nothing run", file=sys.stderr)
+        return 2
     # Absolute: each child runs with cwd set to the read tree, so a relative path would
     # resolve there and the prompt file would not be found.
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=False)
-    tasks_path = Path(args.tasks).resolve()
-    tasks_bytes = tasks_path.read_bytes()
-    tasks = yaml.safe_load(tasks_bytes)["tasks"]
     if args.only:
         wanted = set(args.only.split(","))
         tasks = [t for t in tasks if t["id"] in wanted]
