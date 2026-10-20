@@ -83,6 +83,14 @@ CLI applies (`lionagi/cli/agent.py:89`, `:1027-1030`); the reading counts all th
 the rule. r5's outcome rests on this reading of its ReAct answer to `t03`, which ends "So the
 answer is 8192 for that CLI API-launch path."
 
+The checks are substring and regular-expression tests, so a wrong answer that repeats the expected
+words or digits can pass one, and a right answer in other words can fail it; that is why the
+reading decides. `t04`'s check accepts "20 extensions, not 10", `t11`'s accepts "7 tools (lines
+286-294) ... does not include context", and `t12`'s accepts "5 (not 8) ... 15.0 (not 10.0) ... 60
+(not 30)". The `t24` check as changed after r5 rejects "RUNS_DIR is an alias of RUNS_ROOT" and
+accepts a denial that quotes `RUNS_DIR = RUNS_ROOT`. Every answer in r2 to r5 was read, so each
+answer a check misjudged is among the differences listed below.
+
 In r2, r3 and r4 the reading and the checks differ in ten answers, and in r5 in one (r5's `t06`
 and `t20` checks take the answers the earlier ones rejected):
 
@@ -110,8 +118,9 @@ fallback with `.get`, where it calls `setdefault` (`lionagi/cli/agent.py:1028`).
 
 Each row gives the source line its reading used and, per loop, what the check did and what the
 reading found; `tasks.yaml` records the rest of each task's truth. The lines are cited at
-`6fa69b19`, the tree the legs read: of the 32 source lines `tasks.yaml` records, ten hold different
-text at `208bcc08`, the code r5 ran.
+`6fa69b19`, the tree the legs read: of the 42 source-line citations in the tasks' `truth` lines
+(158 lines in all, counting `t21`'s "line 272"), 12 citations in 9 tasks (27 lines) hold
+different text at `208bcc08`, the code r5 ran.
 
 | task | source line | `lndl` | ReAct |
 |---|---|---|---|
@@ -167,10 +176,10 @@ all 192 rows.
   The two parse to the same syntax tree: `ast.dump(ast.parse(...))` of each file gives identical
   output.
 - In each `header.json`, `tasks_file` was an absolute path on the machine that ran it and now
-  reads `tasks.yaml`, the file's name when the run used it; the contents each run used are
-  `runs/tasks.r2-r4.yaml` and `runs/tasks.r5.yaml`, which match its `tasks_sha256`. Nothing else
-  in `runs/` was changed, apart from a final newline added to the JSON files; each run's
-  `answers.jsonl`, r5's copy of the runner and those two task files were added.
+  names the copy of the task set that run used, `runs/tasks.r2-r4.yaml` or `runs/tasks.r5.yaml`,
+  whose sha256 is the header's `tasks_sha256`. Nothing else in `runs/` was changed, apart from a
+  final newline added to the JSON files; each run's `answers.jsonl`, r5's copy of the runner and
+  those two task files were added.
 - The runner also writes each leg's prompt, stdout and stderr beside its results, and `li agent`
   keeps each leg's conversation under the run's `home/`. Of those, only the stdout is committed, as
   `answers.jsonl`. The counts in ADR-0132 of
