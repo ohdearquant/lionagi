@@ -39,7 +39,7 @@ tool's HTTP request are all admitted.
 /api/studio/pair` (`pairing.py:48`) redeems it for the daemon's one process-wide bearer
 (`launch_access.py:43`, `:63`). A test pins that the command line can mint and that the minted code
 redeems (`tests/studio/test_hosted_hardening.py:967`). The CLI uses that route to pair a page with a
-daemon that is already running (`lionagi/studio/cli.py:265`). So pairing is not a boundary: a tool
+daemon that is already running (`lionagi/studio/cli.py:262`). So pairing is not a boundary: a tool
 that can send HTTP can mint, redeem with a forged `Origin`, and decide.
 
 **P3 — the page keeps its bearer in memory only.** The frontend holds the paired bearer in a module
