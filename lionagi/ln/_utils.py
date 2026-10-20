@@ -375,15 +375,7 @@ def extract_types(item_type: Any) -> set[type]:
 
     extracted: set[type] = set()
 
-    if isinstance(item_type, set):
-        for t in item_type:
-            if is_union(t):
-                extracted.update(get_args(t))
-            else:
-                extracted.add(t)
-        return extracted
-
-    if isinstance(item_type, list):
+    if isinstance(item_type, set | list):
         for t in item_type:
             if is_union(t):
                 extracted.update(get_args(t))

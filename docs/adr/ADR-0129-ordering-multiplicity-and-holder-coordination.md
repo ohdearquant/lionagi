@@ -44,7 +44,7 @@ with `prog.append(uid)` and change the collection's order without touching the c
 
 **P4 — every collection type carries locks its holder cannot see the cost of.** `Pile` owns an RLock
 and an AnyIO lock (`pile.py:208-209`) and reaches them through three shapes: `@synchronized`
-(`lionagi/ln/_utils.py:458-467`) takes the RLock alone, `@async_synchronized` (`:470-499`) takes the
+(`lionagi/ln/_utils.py:450-459`) takes the RLock alone, `@async_synchronized` (`:462-491`) takes the
 AnyIO lock and then spins on the RLock with a non-blocking acquire and a 0.5 ms sleep, and the
 `_both_locks` context manager (`pile.py:555-564`) does the same for an unscoped region. The two
 locks therefore do exclude each other: an async method and a `@synchronized` method on the same
