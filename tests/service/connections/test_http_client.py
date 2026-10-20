@@ -7,6 +7,7 @@ back, and how a request ends when it is cancelled or runs out of time."""
 from __future__ import annotations
 
 import asyncio
+import base64
 import email.parser
 import email.policy
 import http.client
@@ -511,6 +512,46 @@ async def test_a_header_value_beyond_latin_1_goes_out_as_its_utf_8_bytes():
 
     assert "X-Title: 中文\r\n".encode() in heads[0]
     assert "X-Name: é\r\n".encode() in heads[0]
+
+
+async def test_a_user_and_password_in_the_url_go_out_as_basic_credentials():
+    heads = []
+
+    async def answer(reader, writer):
+        heads.append(await reader.readuntil(b"\r\n\r\n"))
+        writer.write(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(answer, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        async with HTTPSession() as session:
+            response = await session.request("GET", f"http://us%40er:p%3Ass@127.0.0.1:{port}/v1")
+            await response.read()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    expected = base64.b64encode(b"us@er:p:ss").decode()
+    assert f"Authorization: Basic {expected}\r\n".encode() in heads[0]
+    assert heads[0].startswith(b"GET /v1 HTTP/1.1\r\n")
+    assert b"us%40er" not in heads[0]
+
+
+@pytest.mark.parametrize(
+    ("url", "headers", "named"),
+    [
+        ("http://user:pw@127.0.0.1:9/v1", {"Authorization": "Bearer x"}, "not both"),
+        ("http://us%3Aer:pw@127.0.0.1:9/v1", None, "Basic login"),
+    ],
+)
+async def test_url_credentials_that_cannot_go_out_as_basic_are_refused_before_connecting(
+    url, headers, named
+):
+    async with HTTPSession() as session:
+        with pytest.raises(ValueError, match=named):
+            await session.request("GET", url, headers=headers)
 
 
 async def test_an_endpoint_stream_cut_short_raises_rather_than_ending():

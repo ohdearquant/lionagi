@@ -25,6 +25,7 @@ bodies arrive uncompressed. A ``timeout`` of 0 or less sets no bound, as ``None`
 from __future__ import annotations
 
 import asyncio
+import base64
 import codecs
 import http.client
 import json as _json
@@ -35,7 +36,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from typing import Any, TypeVar
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import quote, unquote, urlencode, urlsplit
 
 import anyio
 import anyio.lowlevel
@@ -501,6 +502,16 @@ class HTTPSession:
             {"User-Agent": _USER_AGENT, "Accept": "*/*"}, self.headers, headers
         )
         names = {name.lower() for name in send_headers}
+        # A user and password in the URL go out as Basic credentials, decoded and encoded as
+        # latin-1 as aiohttp did, and never in the request line.
+        if parts.username is not None or parts.password is not None:
+            if "authorization" in names:
+                raise ValueError("pass credentials in the URL or an Authorization header, not both")
+            login = unquote(parts.username or "")
+            if ":" in login:
+                raise ValueError('a ":" is not allowed in a Basic login (RFC 7617 section 2)')
+            credentials = f"{login}:{unquote(parts.password or '')}".encode("latin-1")
+            send_headers["Authorization"] = "Basic " + base64.b64encode(credentials).decode()
         body: bytes | None
         if json is not None:
             body = _json.dumps(json).encode("utf-8")
