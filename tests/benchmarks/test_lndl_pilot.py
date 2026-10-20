@@ -394,7 +394,9 @@ def test_a_none_of_outside_the_check_is_refused_before_anything_runs(
         else:
             with pytest.raises(_Reached):
                 runner.main()
-    assert out.exists() is not misplaced
+    # The run directory is made after the header's calls, so neither arm leaves one: a task set
+    # that passes the checks shows it by reaching the first of them.
+    assert not out.exists()
     if misplaced:
         assert "t01: `none_of` outside `accept`\nnothing run" in capsys.readouterr().err
 
