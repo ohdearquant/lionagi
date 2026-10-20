@@ -17,8 +17,16 @@
     "missing_spend": 0,
     "requests_per_accepted": 3.435
   },
-  "d4_rule": {
+  "d4_rule_by_checks": {
     "lndl_fewer_requests_per_accepted": true,
     "lndl_accepts_no_fewer": true
+  },
+  "d4_rule_by_substance": {
+    "react_accepted": 23,
+    "lndl_accepted": 22,
+    "react_requests_per_accepted": 4.304,
+    "lndl_requests_per_accepted": 3.591,
+    "lndl_fewer_requests_per_accepted": true,
+    "lndl_accepts_no_fewer": false
   }
 }

@@ -25,8 +25,10 @@ accepts no fewer tasks.
   profiles, the read tree's commit, the `li` version), `results.jsonl` (one row per run),
   `summary.json` (totals and the D4 rule), `table.md` (the per-task table) and `answers.jsonl` (each
   run's answer, the leg's stdout with surrounding whitespace removed, as the check read it; its
-  length is that row's `answer_chars`). `results.jsonl`, `summary.json` and `table.md` count
-  acceptance by the checks as run; the tables below add acceptance on reading.
+  length is that row's `answer_chars`). `results.jsonl`, `table.md` and the totals in
+  `summary.json` count acceptance by the checks as run; the tables below add acceptance on reading.
+  `summary.json` gives the D4 rule both ways: `d4_rule_by_checks` on the checks' acceptance and
+  `d4_rule_by_substance` on acceptance on reading, which is the one ADR-0132 D4 decides by.
 - `runs/run_pilot.as-run.py.txt`: the runner exactly as r2, r3 and r4 ran it, byte for byte
   (sha256 `911c41cd…`, the `runner_sha256` in their `header.json`).
 - `runs/r5/run_pilot.as-run.py.txt`: the runner exactly as r5 ran it, byte for byte (sha256
@@ -178,9 +180,15 @@ all 192 rows.
   output.
 - In each `header.json`, `tasks_file` was an absolute path on the machine that ran it and now
   names the copy of the task set that run used, `runs/tasks.r2-r4.yaml` or `runs/tasks.r5.yaml`,
-  whose sha256 is the header's `tasks_sha256`. Nothing else in `runs/` was changed, apart from a
-  final newline added to the JSON files; each run's `answers.jsonl`, r5's copy of the runner and
-  those two task files were added.
+  whose sha256 is the header's `tasks_sha256`. `tasks.yaml` beside the runner is the task set as
+  it is now (sha256 `ac93dff3…`), which no run used.
+- In each `summary.json`, the key the runner writes as `d4_rule` is renamed `d4_rule_by_checks`,
+  and `d4_rule_by_substance` was added beside it: the accepted counts from the "accepted on
+  reading" column above, requests per accepted task on those counts, and the two D4 conditions on
+  them. The two agree in r2, r3 and r4. In r5, `lndl_accepts_no_fewer` is true by the checks and
+  false on reading (22 against 23).
+- Nothing else in `runs/` was changed, apart from a final newline added to the JSON files; each
+  run's `answers.jsonl`, r5's copy of the runner and those two task files were added.
 - The runner also writes each leg's prompt, stdout and stderr beside its results, and `li agent`
   keeps each leg's conversation under the run's `home/`. Of those, only the stdout is committed, as
   `answers.jsonl`. The counts in ADR-0132 of
