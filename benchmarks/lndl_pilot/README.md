@@ -25,7 +25,8 @@ accepts no fewer tasks.
   profiles, the read tree's commit, the `li` version), `results.jsonl` (one row per run),
   `summary.json` (totals and the D4 rule), `table.md` (the per-task table) and `answers.jsonl` (each
   run's answer, the leg's stdout with surrounding whitespace removed, as the check read it; its
-  length is that row's `answer_chars`).
+  length is that row's `answer_chars`). `results.jsonl`, `summary.json` and `table.md` count
+  acceptance by the checks as run; the tables below add acceptance on reading.
 - `runs/run_pilot.as-run.py.txt`: the runner exactly as r2, r3 and r4 ran it, byte for byte
   (sha256 `911c41cd…`, the `runner_sha256` in their `header.json`).
 - `runs/r5/run_pilot.as-run.py.txt`: the runner exactly as r5 ran it, byte for byte (sha256
@@ -67,9 +68,20 @@ Each task's check (`accept` in its task file) is a first pass on its answer. Eve
 to r5, accepted by its check or not, was then read against the `truth` line its task records (at
 `6fa69b19`, the tree the runs read), and ADR-0132 D4 takes the reading as the decision. Read that
 way, r2 fails the rule, r3 meets it with no margin (23 accepted tasks on each side), and r4 fails
-it (`lndl` 23 against ReAct 24). r5, the run that decides D4, fails it: `lndl` 22 at 3.59 requests
-per accepted task against ReAct 23 at 4.30. By its checks r5 meets the rule with 23 on each side;
-the difference is the `lndl` answer to `t24`.
+it (`lndl` 23 against ReAct 24). r5, the run ADR-0132 D4 names as deciding, fails it: `lndl` 22 at
+3.59 requests per accepted task against ReAct 23 at 4.30. By its checks r5 meets the rule with 23
+on each side; the difference is the `lndl` answer to `t24`.
+
+The reading is one reader's judgment, made knowing which loop wrote each answer. It judges what
+each answer says to its question and did not check every side claim; each task's `truth` line is
+the source line it was read against, so another reader can redo it. Three answers to `t03`, the
+r3 ReAct, the r4 `lndl` and the r5 ReAct one, open by saying the endpoint's request model has no
+default (`lionagi/providers/anthropic/messages.py:86`) and then give 8192 as the value lionagi's
+CLI applies (`lionagi/cli/agent.py:89`, `:1027-1030`); the reading counts all three as right, since
+8192 is the value the task records. Counted wrong, r3 would be `lndl` 23 against ReAct 22 and r4
+`lndl` 22 against ReAct 24, neither outcome changing, and r5 would be 22 on each side, which meets
+the rule. r5's outcome rests on this reading of its ReAct answer to `t03`, which ends "So the
+answer is 8192 for that CLI API-launch path."
 
 In r2, r3 and r4 the reading and the checks differ in ten answers, and in r5 in one (r5's `t06`
 and `t20` checks take the answers the earlier ones rejected):
@@ -80,16 +92,19 @@ and `t20` checks take the answers the earlier ones rejected):
 | `t20` | r4 | `lndl` | rejected | right | The question asks which module defines the class; the answer names it by its import path, `lionagi.tools.code.search`, and says it did not open the file. The check expects the file path `lionagi/tools/code/search.py`. |
 | `t24` | r2, r3, r4, r5 | `lndl` | accepted | wrong | Each answer says `lionagi/mcp/config.py` defines no `RUNS_DIR`; line 19 of that file is `RUNS_DIR = RUNS_ROOT`. The check asks for the names `RUNS_DIR` and `JOBS_DIR`, which the question itself supplies. |
 
-The other rejected answers are wrong on reading too: the five r2 `lndl` legs that spent the round
-budget (`t03`, `t04`, `t17`, `t18`, `t19`; ADR-0132 D4, Result) and the r3 ReAct `t04` leg, which
+The other rejected answers are wrong on reading too: the five r2 `lndl` legs that spent all 11
+requests (`t03`, `t04`, `t17`, `t18`, `t19`; ADR-0132 D4, Result) and the r3 ReAct `t04` leg, which
 made no tool call and answered that none of its tool calls returned results. So are r5's two:
 the `lndl` answer to `t03` gives `32768` from another package in the read tree, where lionagi's
 CLI default is `8192` (`lionagi/cli/agent.py:89`), and the ReAct leg on `t10` called a tool named
 `grep`, which is not one of its read tools (`reader`, `search`, `context`), and then answered that
-it could not find the constants. One accepted answer
-carries an error that does not touch what the question asks: the r4 `lndl` answer to `t22` says
-the question gives `_wire_secure_guards` the signature `(spec: AgentSpec, hooks: dict)`, which the
-question does not; the rest of the answer matches `lionagi/agent/spec.py:48-56`.
+it could not find the constants. Three accepted answers carry an error in a side claim that does
+not touch what the question asks: the r4 `lndl` answer to `t22` says the question gives
+`_wire_secure_guards` the signature `(spec: AgentSpec, hooks: dict)`, which the question does not
+(the rest of the answer matches `lionagi/agent/spec.py:48-56`); the r2 ReAct answer to `t05` says
+`BashTool.call` substitutes the default, where the method is `handle_request`
+(`lionagi/tools/code/bash.py:111`); and the r4 `lndl` answer to `t03` says the CLI applies the
+fallback with `.get`, where it calls `setdefault` (`lionagi/cli/agent.py:1028`).
 
 ### r5, task by task
 
@@ -126,7 +141,9 @@ text at `208bcc08`, the code r5 ran.
 | `t24` | `lionagi/mcp/config.py:19` | **accepted, wrong** | accepted, right |
 
 `t20`'s `lndl` answer names the module by its import path and says it did not open the file; the
-question asks for the module, so it is right.
+question asks for the module, so it is right. `t03`'s ReAct answer is the one r5's outcome rests
+on: it says the request model has no default and answers 8192 for the CLI's API launch path, read
+as right (see above).
 
 After r5, `tasks.yaml`'s `t24` check was changed to require the assignments themselves
 (`RUNS_DIR = RUNS_ROOT` and `JOBS_DIR = LIONAGI_HOME / ...`, as regular expressions) instead of the
@@ -137,18 +154,23 @@ Each task also has a `none_of: []` beside `accept`, which the runner does not re
 it was so that each task file still matches the hash in its runs' `header.json`.
 
 `run_pilot.py` takes each leg's requests from its spend line and counts a leg with none as zero
-requests. `summary.json` records how many legs that was (`missing_spend`), and the D4 rule it
-computes does not depend on that number. It is 0 in r2 to r5, and `spend_lines` is at least 1 in
+requests. `summary.json` records how many legs that was (`missing_spend`). The D4 rule it computes
+does not read that number, but a leg counted as zero lowers its loop's requests, so the rule's
+inputs are complete only while it is 0. It is 0 in r2 to r5, and `spend_lines` is at least 1 in
 all 192 rows.
 
 ## What was changed for this directory
 
 - `run_pilot.py` is `runs/run_pilot.as-run.py.txt` with `noqa` comments added, the `(r1)` at the
-  end of one comment removed, and the layout reformatted by ruff. The two parse to the same syntax
-  tree: `ast.dump(ast.parse(...))` of each file gives identical output.
+  end of one comment removed (both as-run copies keep it; `r1` was an earlier run, not published,
+  in which the relative path that comment describes failed), and the layout reformatted by ruff.
+  The two parse to the same syntax tree: `ast.dump(ast.parse(...))` of each file gives identical
+  output.
 - In each `header.json`, `tasks_file` was an absolute path on the machine that ran it and now
-  reads `tasks.yaml`. Nothing else in `runs/` was changed, apart from a final newline added to the
-  JSON files; each run's `answers.jsonl` and r5's copy of the runner were added.
+  reads `tasks.yaml`, the file's name when the run used it; the contents each run used are
+  `runs/tasks.r2-r4.yaml` and `runs/tasks.r5.yaml`, which match its `tasks_sha256`. Nothing else
+  in `runs/` was changed, apart from a final newline added to the JSON files; each run's
+  `answers.jsonl`, r5's copy of the runner and those two task files were added.
 - The runner also writes each leg's prompt, stdout and stderr beside its results, and `li agent`
   keeps each leg's conversation under the run's `home/`. Of those, only the stdout is committed, as
   `answers.jsonl`. The counts in ADR-0132 of
