@@ -169,11 +169,11 @@ and r4, and `spend_lines` is at least 1 in all 144 rows. Each leg's spend lines 
   `reading.jsonl` has one row for each row of its run, that its `check` column is the run's
   `accepted`, and that the counts in ADR-0132's Result table are its tally.
 - The runner also writes each leg's prompt, stdout and stderr beside its results, and `li agent`
-  keeps each leg's conversation under the run's `home/`. Of those, the stdout is committed as
-  `answers.jsonl`, the stderr's spend lines as `spend.jsonl`, and the syntax of each round of each
-  `lndl` conversation as `rounds.jsonl`, from which ADR-0132 counts the runs that opened with an
-  `<invoke>` tag and the requests that went to rounds with no block. The prompts, the rest of the
-  stderr and the conversations are not committed.
+  keeps each leg's conversation under `home/`, the one directory every run shares (below). Of those,
+  the stdout is committed as `answers.jsonl`, the stderr's spend lines as `spend.jsonl`, and the
+  syntax of each round of each `lndl` conversation as `rounds.jsonl`, from which ADR-0132 counts the
+  runs that opened with an `<invoke>` tag and the requests that went to rounds with no block. The
+  prompts, the rest of the stderr and the conversations are not committed.
 
 ## Running it
 

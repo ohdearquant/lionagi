@@ -232,9 +232,9 @@ the 17 wrote a block in its next round, and 18 of the 79 requests went to rounds
   and its reading (`reading.jsonl`), and the README lists the ten answers where the reading and the
   checks differ and the answers to `t03` and `t05` whose count turns on the reading rule.
 - The counts of runs that opened with an `<invoke>` tag and of requests that went to rounds with no
-  block are read from each leg's conversation, which `li agent` keeps under the run's home directory.
-  The pilot commits what was read from them, the syntax each `lndl` round used (`rounds.jsonl`), and
-  not the conversations.
+  block are read from each leg's conversation, which `li agent` keeps under the one home directory
+  every run shares. The pilot commits what was read from them, the syntax each `lndl` round used
+  (`rounds.jsonl`), and not the conversations.
 - All 144 legs exited 0 and none exhausted its round budget, which D2 defines as spending it without
   an accepted `OUT{}`. The five r2 `lndl` legs that spent all 11 requests wrote an `OUT{}` in their
   last round (`rounds.jsonl`) and exited 0, so the loop accepted it (their answers gave no value, as
