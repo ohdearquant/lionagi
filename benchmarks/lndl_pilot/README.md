@@ -18,13 +18,15 @@ accepts no fewer tasks.
 - `.lionagi/agents/d4-react.md`, `d4-lndl.md`: the profile pair, `anthropic/claude-haiku-5-5`,
   read tools, `max_extensions: 10`, `timeout: 300`.
 - `summarize.py`: writes a run's `summary.json` from its `results.jsonl` and its `reading.jsonl`;
-  `--check` exits 1 when the committed file differs from what it computes.
+  `--check` exits 1 when the committed file differs from what it computes. It refuses rows that
+  miss or repeat a task and loop of the run's task file (the one its `header.json` names, checked
+  against `tasks_sha256`), and a reading whose source line the task's `truth` does not cite.
 - `run_pilot.py`: the runner. Each task runs once per loop; the two runs of a task are adjacent in
   time and their order alternates by task, four tasks in flight. Requests, tool calls and wall time
   come from the `[api] spend:` line `li agent` prints (ADR-0132 D3); the task's own check is the
   first pass on acceptance, and the reading below decides.
 - `runs/r2/`, `runs/r3/`, `runs/r4/`, `runs/r5/`: `header.json` (hashes of the runner, task set and
-  profiles, the read tree's commit, the `li` version), `results.jsonl` (one row per run),
+  profiles, the read tree's commit, the `li` version), `results.jsonl` (one row per leg),
   `summary.json` (totals and the D4 rule), `table.md` (the per-task table) and `answers.jsonl` (each
   run's answer, the leg's stdout with surrounding whitespace removed, as the check read it; its
   length is that row's `answer_chars`) and `reading.jsonl` (the reading of each answer: one row per
@@ -70,6 +72,8 @@ so the commits are recorded here, read from those environments after the runs.
 | r5 | lndl | 23 / 24 | 22 / 24 | 79 | 3.59 | 43 | 267.9 s |
 
 Requests per accepted task divides a run's requests by the tasks accepted on reading.
+`summary.json` stores it to three places, as the runner does (`3.435` for 79 over 23); the tables
+here give two places computed from the counts (3.43), not the stored value rounded again.
 
 Each task's check (`accept` in its task file) is a first pass on its answer. Every answer in r2
 to r5, accepted by its check or not, was then read against the `truth` line its task records (at
@@ -114,8 +118,9 @@ The checks are substring and regular-expression tests, so a wrong answer that re
 words or digits can pass one, and a right answer in other words can fail it; that is why the
 reading decides. `t04`'s check accepts "20 extensions, not 10", `t11`'s accepts "7 tools (lines
 286-294) ... does not include context", and `t12`'s accepts "5 (not 8) ... 15.0 (not 10.0) ... 60
-(not 30)". The `t24` check as changed after r5 rejects "RUNS_DIR is an alias of RUNS_ROOT" and
-accepts a denial that quotes `RUNS_DIR = RUNS_ROOT`. Every answer in r2 to r5 was read, so each
+(not 30)". The `t24` check as changed after r5 needs `.lionagi` and both assignments,
+`RUNS_DIR = RUNS_ROOT` and `JOBS_DIR = LIONAGI_HOME / ...`: it rejects "RUNS_DIR is an alias of
+RUNS_ROOT", and it would accept a denial that quotes both. Every answer in r2 to r5 was read, so each
 answer a check misjudged is among the differences listed below.
 
 In r2, r3 and r4 the reading and the checks differ in ten answers, and in r5 in one (r5's `t06`
@@ -183,9 +188,10 @@ cited code did not.
 | `t24` | `lionagi/mcp/config.py:19` | `lionagi/mcp/config.py:19` | **accepted, wrong** | accepted, right |
 
 `t20`'s `lndl` answer names the module by its import path and says it did not open the file; the
-question asks for the module, so it is right. `t03`'s ReAct answer is the one r5's outcome rests
-on: it says the request model has no default and answers 8192 for the CLI's API launch path, read
-as right (see above).
+question asks for the module, so it is right. r5's outcome is one task wide: any one of its accepted
+ReAct answers counted wrong, or either `lndl` answer read as wrong (`t03`, `t24`) counted right,
+would make `lndl` meet the rule. `t03`'s ReAct answer is one of those: it says the request model
+has no default and answers 8192 for the CLI's API launch path, read as right (see above).
 
 After r5, `tasks.yaml`'s `t24` check was changed to require the assignments themselves
 (`RUNS_DIR = RUNS_ROOT` and `JOBS_DIR = LIONAGI_HOME / ...`, as regular expressions) instead of the
@@ -212,8 +218,10 @@ all 192 rows.
   in which the relative path that comment describes failed), and the layout reformatted by ruff.
   The two parse to the same syntax tree: `ast.dump(ast.parse(...))` of each file gives identical
   output.
-- In each `header.json`, `tasks_file` was an absolute path on the machine that ran it and now
-  names the copy of the task set that run used, `runs/tasks.r2-r4.yaml` or `runs/tasks.r5.yaml`,
+- In each `header.json`, `tasks_file` was the absolute path the runner writes
+  (`Path(args.tasks).resolve()`, line 141 of `runs/run_pilot.as-run.py.txt` and line 147 of r5's
+  copy). It was replaced by `tasks.yaml` before the first commit and now names the copy of the
+  task set that run used, `runs/tasks.r2-r4.yaml` or `runs/tasks.r5.yaml`,
   whose sha256 is the header's `tasks_sha256`. `tasks.yaml` beside the runner is the task set as
   it is now (sha256 `aa04d3fd…`), which no run used.
 - Each `summary.json` is written by `summarize.py`, not by the runner: the totals and
@@ -221,9 +229,10 @@ all 192 rows.
   `d4_rule_by_substance` applies the same two D4 conditions to the counts in `reading.jsonl`. The
   two agree in r2, r3 and r4. In r5, `lndl_accepts_no_fewer` is true by the checks and false on
   reading (22 against 23). `summarize.py --check` passes on all four runs.
-- Nothing else in `runs/` was changed, apart from a final newline added to the JSON files; each
-  run's `answers.jsonl` and `reading.jsonl`, r5's copy of the runner and those two task files were
-  added.
+- Apart from those two edits and a final newline added to the JSON files, the files in `runs/`
+  are as the runner wrote them: each run's `results.jsonl` and `table.md` are unchanged since their
+  first commit. Each run's `answers.jsonl` and `reading.jsonl`, r5's copy of the runner and the
+  two task files were added.
 - The runner also writes each leg's prompt, stdout and stderr beside its results, and `li agent`
   keeps each leg's conversation under the run's `home/`. Of those, only the stdout is committed, as
   `answers.jsonl`. The counts in ADR-0132 of

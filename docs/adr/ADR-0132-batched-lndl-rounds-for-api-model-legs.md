@@ -160,10 +160,11 @@ run more than once as the code changes, and each run is recorded in the Result. 
 not settle the rule (Result); after r4 the run that decides was named as `r5`. r5 ran with
 lionagi installed from `208bcc08`, the `main` commit current when it started (read from its
 environment after the run), and read the source at `6fa69b19`, as r2 to r4 did. It asks the same
-questions against the same source lines, with the `t06` and `t20` checks corrected, and is read by the rule Amendment 1
-records. The rule that the reading decides was written into D4 after r5 had run, so r5 is reported
-under the checks and under the reading; its task file, rows and reading are recorded with its
-result below. No later run reopens D4: a different
+questions against the same source lines, with the `t06` and `t20` checks corrected; those two
+changes, and the `t24` check changed after r5, which no run has used, depart from the clause above
+that the task set is fixed before the first run. r5 is read by the rule Amendment 1 records. The
+rule that the reading decides was written into D4 after r5 had run, so r5 is reported under the
+checks and under the reading; its task file, rows and reading are recorded with its result below. No later run reopens D4: a different
 outcome takes a new decision. The reading is one reader's judgment, made knowing which loop wrote each answer,
 and no blind second reading was done; it judges what each answer says to its question and counts
 an answer right when it gives the value or name its task records, also when it corrects a premise
@@ -234,7 +235,7 @@ the 17 wrote a block in its next round, and 18 of the 79 requests went to rounds
   in r3, five in r4 (`t21` and `t22`) and three in r5. A round that declares more than 16 calls is
   refused and none of its calls runs (D2), so these counts cannot show whether a round reached the
   limit, and the limit is still unmeasured.
-- r4 ran the merged code (`d8838f28`), whose repair round also tells the model how a block opens
+- r4 ran `d8838f28`, whose repair round also tells the model how a block opens
   and closes, reads indented, longer and CRLF fences, and treats an empty block as a repair round
   (D2). On reading it fails the rule: `lndl` used fewer requests per accepted task (80 requests,
   3.48, against 91 and 3.79) and accepted one task fewer (23 against 24), so counting any one
@@ -244,8 +245,8 @@ the 17 wrote a block in its next round, and 18 of the 79 requests went to rounds
   rounds with no block, and no run reached the round budget.
 - On reading, r3 ties the accepts clause and r4 misses it by one task, so these runs do not settle
   it. The request saving held in both: 79 requests against 95, and 80 against 91.
-- `r5`, the run D4 names, ran at the merged code (`208bcc08`, 13 commits past `d8838f28`, none of
-  which changes `lionagi/lndl/` or the LNDL Middle; both loops ran that same code). Before it
+- `r5`, the run D4 names, ran with lionagi installed from `208bcc08` (13 commits past `d8838f28`,
+  none of which changes `lionagi/lndl/` or the LNDL Middle; both loops ran that same code). Before it
   started, the `t06` check was changed to accept the value written as `100000`, `100,000`, `100_000`
   or `100 000`, and the `t20` check to accept the module by its file or its import path. Its checks accept 23 tasks on each
   side. Every answer was read against the source as above, and the reading differs from the checks
