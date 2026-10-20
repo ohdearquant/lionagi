@@ -58,7 +58,7 @@ tasks:
     before truncating, and what is the name of the regex constant used to reject shell control operators?
   accept:
     all_of:
-    - '100000'
+    - 're:\b100[,_ ]?000\b'
     - _SHELL_CONTROL
     none_of: []
   none_of: []
@@ -293,7 +293,7 @@ tasks:
     all_of:
     - SearchTool
     - workspace_root
-    - lionagi/tools/code/search.py
+    - 're:lionagi/tools/code/search\.py|lionagi\.tools\.code\.search\b'
   none_of: []
   truth: lionagi/agent/factory.py:512-519 — imports SearchTool from lionagi.tools.code.search, constructs
     SearchTool(workspace_root=workspace_root); SearchTool defined at lionagi/tools/code/search.py:193
