@@ -1315,8 +1315,11 @@ class CodexCodeRequest(BaseModel):
             "Its hook trust records and `[projects]` trust decisions are merged with any the "
             "overrides write, so the hooks it trusts in CODEX_HOME/hooks.json still run and "
             "codex derives a trusted project's sandbox and loads its layers as with the file. "
-            "A user config that cannot be read, declares hooks or sets `default_permissions` "
-            "is refused, since what it holds cannot ride beside the flag."
+            "A user config that cannot be read, declares hooks, sets a root `profile` key or "
+            "sets `default_permissions` is refused, since what it holds cannot ride beside the "
+            "flag, and so is a project layer that sets a root `profile` key beside a carried "
+            "setting. A `profile`, or overrides that select or define one, are refused with "
+            "the flag, since codex then loads no profile."
         ),
         json_schema_extra=_cli("--ignore-user-config", 64, "bool"),
     )
@@ -2027,24 +2030,45 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
     then matches the run's directory against them itself.
 
     What cannot ride refuses the run: hook events declared in the file itself, whose
-    trust records name a file the run does not load; a root `profile` key, which selects
-    sandbox settings in place of the root ones (codex before 0.135) or which codex refuses
-    (from 0.135); `default_permissions`, a permissions profile codex applies in place of
-    `sandbox_mode`; and a file that exists but cannot be read, since the hooks it declares,
-    if any, would be dropped unseen.
+    trust records name a file the run does not load; a root `profile` key, which codex
+    0.162.1 reports as no longer supported and which earlier codex, given no `-p`, makes the
+    active profile, whose sandbox settings replace the root ones; `default_permissions`, a
+    permissions profile codex applies in place of `sandbox_mode`; and a file that exists but
+    cannot be read, since the hooks it declares, if any, would be dropped unseen. So does a
+    profile the run itself names, on the request or in its overrides: codex loads no user
+    config under the flag, and a profile is user config.
     """
+    if plain.profile is not None:
+        raise ConfigurationError(
+            f"Codex cannot start with --ignore-user-config and profile={plain.profile!r}: "
+            "under the flag codex loads no user config, and the profile is user config (its "
+            "file in CODEX_HOME, or its table in config.toml), so none of its settings would "
+            "apply. Set those settings in the run's config overrides and drop the profile, or "
+            "run without ignore_user_config."
+        )
+    flags = _command_line_layer(plain)
+    if _sets(flags, ("profile",)) or _sets(flags, ("profiles",)):
+        raise ConfigurationError(
+            "Codex cannot start with --ignore-user-config: the run's config overrides select "
+            "or define a profile, and a run that loads no user config takes its settings from "
+            "the overrides themselves. Set those settings in the overrides directly."
+        )
     config_path = codex_home_for_env(plain.env) / "config.toml"
     try:
         config = _read_codex_config(config_path)
     except ValueError as exc:
+        remedy = (
+            "Make the file one this Python's TOML parser reads"
+            if os.access(config_path, os.R_OK)
+            else "Make the file readable by this process"
+        )
         raise ConfigurationError(
             f"Codex cannot start with --ignore-user-config: {exc}. The hooks it may declare "
             "cannot be checked, and its sandbox settings and trust records cannot ride "
-            "beside the flag. Make the file one this Python's TOML parser reads, or run without "
-            "ignore_user_config."
+            f"beside the flag. {remedy}, or run without ignore_user_config."
         ) from None
-    # A dangling symlink is no file, as codex sees it; a directory or a FIFO is a file
-    # codex fails to read.
+    # A dangling symlink is no file, as codex sees it. A directory is a file codex fails
+    # to read, and a FIFO one it blocks on opening.
     if config is None and os.path.exists(config_path):
         raise ConfigurationError(
             f"Codex cannot start with --ignore-user-config: the codex config "
@@ -2065,7 +2089,6 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
             "file, so they cannot ride beside it. Declared in hooks.json in the same directory, "
             "which codex reads under the flag, they run once trusted."
         )
-    flags = _command_line_layer(plain)
     profile = config.get("profile")
     if profile is not None:
         # A key that is not a string is named by its type: its content is not echoed.
@@ -2075,11 +2098,11 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
             else f"a root profile key of type {type(profile).__name__}"
         )
         raise ConfigurationError(
-            f"Codex cannot start with --ignore-user-config: {config_path} sets {named}. With "
-            "no -p, codex before 0.135 makes it the active profile, whose sandbox settings "
-            "replace the root ones, and from 0.135 codex refuses the key itself; the flag "
-            "hides it either way, so the run would start under a sandbox the file did not "
-            "choose. Remove the key, and set the sandbox in the run's config overrides."
+            f"Codex cannot start with --ignore-user-config: {config_path} sets {named}. Codex "
+            "0.162.1 reports a root profile key as no longer supported, and earlier codex, "
+            "given no -p, makes it the active profile, whose sandbox settings replace the root "
+            "ones. The flag hides the key, so the run would start without what codex does with "
+            "it. Remove the key, and set the sandbox in the run's config overrides."
         )
     if config.get("default_permissions") is not None and not _sets(flags, ("default_permissions",)):
         raise ConfigurationError(
@@ -2314,7 +2337,9 @@ def _refuse_project_layer_disagreement(
     that sets another value, one that names a permissions profile in place of the mode,
     one the TOML parser refuses, and project layers that cannot be determined all refuse
     the run. Setting the key in the run's overrides keeps it from riding, and codex then
-    decides between the overrides and the layer as it does without the flag.
+    decides between the overrides and the layer as it does without the flag. A layer that
+    sets a root `profile` key refuses the run too: where codex applies it, it selects a
+    profile whose sandbox settings replace the root ones, and a carried value would beat them.
     """
     try:
         layers = list(project_layers(cwd, os.environ if plain.env is None else plain.env))
@@ -2327,6 +2352,16 @@ def _refuse_project_layer_disagreement(
             table: Mapping[str, Any] | None = _tomllib.loads(text)
         except _tomllib.TOMLDecodeError:
             table = None
+        if table is not None and _sets(table, ("profile",)):
+            settings = ", ".join(f"`{'.'.join(key_path)}`" for key_path in carried)
+            raise ConfigurationError(
+                f"Codex cannot start under cwd {cwd} with --ignore-user-config: {config_path} "
+                f"sets {settings}, which ride beside the flag, and the project config "
+                f"{layer_path} sets a root `profile` key. Where codex applies that key it selects "
+                "a profile whose sandbox settings replace the root ones, and a value on the "
+                "command line beats them, so the run would not get the profile's sandbox. Set "
+                f"{settings} in the run's config overrides."
+            )
         for key_path, value in carried.items():
             dotted = ".".join(key_path)
             if table is None:

@@ -9,14 +9,16 @@ overrides set them, the settings that narrow it, unless the overrides set them, 
 hook trust records and project trust decisions merged with any the overrides write,
 which the flag would otherwise drop with the rest of the file; no effort derived from
 a file the child never reads; a refusal when the user config cannot be read or declares
-hooks, a root profile or a permissions profile itself; a refusal when a project layer sets a carried
-sandbox setting to another value; and a refusal when a project layer, which the flag
-does not suppress, declares MCP servers.
+hooks, a root profile or a permissions profile itself; a refusal when the run names a profile
+itself; a refusal when a project layer sets a carried sandbox setting to another value or
+sets a root profile; and a refusal when a project layer, which the flag does not suppress,
+declares MCP servers.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import sys
 
 import pytest
@@ -931,9 +933,10 @@ def test_a_dangling_user_config_symlink_is_no_config(codex_home, tmp_path):
     ids=["profile-sandbox", "profile-permissions", "profile-only", "not-a-string"],
 )
 def test_a_root_profile_in_the_user_config_refuses_the_run(tmp_path, codex_home, text, named):
-    """With no -p, codex before 0.135 applies the root `profile`'s sandbox settings in place
-    of the root ones, and from 0.135 refuses the key. The flag hides the key, so a trusted
-    project would otherwise run workspace-write where the profile chose read-only."""
+    """Codex 0.162.1 reports a root `profile` key as no longer supported, and earlier codex,
+    given no -p, applies that profile's sandbox settings in place of the root ones. The flag
+    hides the key, so a trusted project would otherwise run workspace-write where the profile
+    chose read-only."""
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
     trusted = f'[projects."{repo}"]\ntrust_level = "trusted"\n'
@@ -960,3 +963,102 @@ def test_the_disagreement_refusal_names_both_values(tmp_path, codex_home):
         CodexCodeRequest(prompt="hi", repo=repo, ignore_user_config=True).as_cmd_args()
     assert "`sandbox_mode` to 'danger-full-access'" in str(refused.value)
     assert "sets it to another value, 'read-only'" in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    "request_sets",
+    [
+        {"sandbox": "workspace-write"},
+        {"full_auto": True},
+        {"bypass_approvals": True},
+        {"config_overrides": {"sandbox_mode": "read-only"}},
+    ],
+    ids=["sandbox", "full-auto", "bypass", "override"],
+)
+def test_a_root_profile_refuses_the_run_whatever_sandbox_the_request_sets(codex_home, request_sets):
+    """The refusal is for the key codex reports, not for the sandbox it would select, so
+    a request that sets the sandbox itself is refused too, and the message names no codex
+    version boundary it has no source for."""
+    (codex_home / "config.toml").write_text('profile = "ro"\n')
+
+    with pytest.raises(ConfigurationError) as refused:
+        CodexCodeRequest(prompt="hi", ignore_user_config=True, **request_sets).as_cmd_args()
+    assert "0.162.1 reports a root profile key as no longer supported" in str(refused.value)
+    assert "0.135" not in str(refused.value)
+
+
+def test_a_profile_the_run_names_is_refused_with_the_flag(codex_home):
+    """Codex loads no user config under the flag, and a profile is user config, so the
+    profile's settings would not apply."""
+    with pytest.raises(ConfigurationError, match="and profile='work'"):
+        CodexCodeRequest(prompt="hi", profile="work", ignore_user_config=True).as_cmd_args()
+
+    # the control: without the flag the profile reaches codex
+    args = CodexCodeRequest(prompt="hi", profile="work").as_cmd_args()
+    assert _has_pair(args, ["-p", "work"])
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"profile": "ro"}, {"profiles.ro.sandbox_mode": "read-only"}],
+    ids=["selects", "defines"],
+)
+def test_overrides_that_select_or_define_a_profile_are_refused_with_the_flag(codex_home, overrides):
+    with pytest.raises(ConfigurationError, match="select or define a profile"):
+        CodexCodeRequest(
+            prompt="hi", ignore_user_config=True, config_overrides=overrides
+        ).as_cmd_args()
+
+    # the control: another override starts the run
+    args = CodexCodeRequest(
+        prompt="hi", ignore_user_config=True, config_overrides={"model_verbosity": "low"}
+    ).as_cmd_args()
+    assert "--ignore-user-config" in args
+
+
+def test_a_project_layer_root_profile_refuses_a_carried_setting(tmp_path, codex_home):
+    """Where codex applies a layer's root `profile`, the profile's sandbox settings replace
+    the root ones, and the carried mode on the command line would beat them."""
+    (codex_home / "config.toml").write_text('sandbox_mode = "danger-full-access"\n')
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    _project_layer(repo, 'profile = "ro"\n[profiles.ro]\nsandbox_mode = "read-only"\n')
+
+    with pytest.raises(ConfigurationError) as refused:
+        CodexCodeRequest(prompt="hi", repo=repo, ignore_user_config=True).as_cmd_args()
+    assert "sets a root `profile` key" in str(refused.value)
+    assert "`sandbox_mode`" in str(refused.value)
+
+    # the controls: with the mode set by the run, nothing is carried and the run starts;
+    # with no setting to carry, the layer is codex's to apply
+    args = CodexCodeRequest(
+        prompt="hi",
+        repo=repo,
+        ignore_user_config=True,
+        config_overrides={"sandbox_mode": "read-only"},
+    ).as_cmd_args()
+    assert "--ignore-user-config" in args
+    (codex_home / "config.toml").unlink()
+    args = CodexCodeRequest(prompt="hi", repo=repo, ignore_user_config=True).as_cmd_args()
+    assert "--ignore-user-config" in args
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0, reason="needs a mode the reader is refused"
+)
+def test_an_unreadable_user_config_gets_the_permission_remedy(codex_home):
+    config = codex_home / "config.toml"
+    config.write_text('sandbox_mode = "workspace-write"\n')
+    config.chmod(0)
+    try:
+        with pytest.raises(ConfigurationError) as refused:
+            CodexCodeRequest(prompt="hi", ignore_user_config=True).as_cmd_args()
+    finally:
+        config.chmod(0o600)
+    assert "Make the file readable by this process" in str(refused.value)
+    assert "TOML parser" not in str(refused.value)
+
+    # the control: a file that is read but not parsed gets the parser remedy
+    config.write_text("[sandbox_workspace_write\n")
+    with pytest.raises(ConfigurationError, match="TOML parser reads"):
+        CodexCodeRequest(prompt="hi", ignore_user_config=True).as_cmd_args()

@@ -83,6 +83,20 @@ def test_an_empty_exclusive_set_ignores_the_codex_user_config(codex_home):
     assert kwargs == {"ignore_user_config": True}
 
 
+def test_an_empty_exclusive_set_keeps_a_profile_the_caller_named(codex_home):
+    """A profile is user config too, so the flag would load it as empty: a request that
+    names one keeps loading the user config, and its servers are disabled by name."""
+    codex_home.write_config({"khive": {"command": "kkernel"}})
+    kwargs: dict = {"profile": "work"}
+
+    assert apply_forwarded_mcp_servers(kwargs, {}, provider="codex", exclusive=True)
+
+    assert kwargs == {
+        "profile": "work",
+        "config_overrides": {"mcp_servers.khive.enabled": False},
+    }
+
+
 def test_an_exclusive_caller_with_no_set_is_strict_for_the_claude_transport():
     """No set from a caller that declares the whole set means no servers.
 

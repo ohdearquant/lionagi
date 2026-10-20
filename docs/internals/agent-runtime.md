@@ -70,7 +70,10 @@ and one implementation.
   (`servers=None`), which is how `--no-mcp-config` arrives: the Claude CLI
   needs `strict_mcp_config`; codex, which has no wholesale clear, gets
   `ignore_user_config` (`--ignore-user-config`), so the user config and every
-  server, hook and profile it declares are not loaded at all. A non-empty
+  server, hook and profile it declares are not loaded at all. A codex request
+  that names a profile is the exception: the profile is user config too, which
+  the flag would drop, so it keeps loading that config and its servers are
+  disabled by name, as for a non-empty set. A non-empty
   exclusive codex set instead needs each server its own config declares, and
   the set leaves out, disabled by name (see
   `_discover_ambient_codex_mcp_server_names`, which raises
