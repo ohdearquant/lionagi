@@ -357,8 +357,8 @@ tasks:
   accept:
     all_of:
     - .lionagi
-    - RUNS_DIR
-    - JOBS_DIR
+    - 're:RUNS_DIR\W{0,5}=\s*\W{0,3}RUNS_ROOT'
+    - 're:JOBS_DIR\W{0,5}=\s*\W{0,3}LIONAGI_HOME'
   none_of: []
   truth: lionagi/_paths.py:20 — LIONAGI_HOME = Path(os.environ.get('LIONAGI_HOME', Path.home() / '.lionagi'));
     lionagi/mcp/config.py:16 — imports LIONAGI_HOME, RUNS_ROOT from lionagi._paths; config.py:19 — RUNS_DIR
