@@ -516,6 +516,11 @@ class OrchestrationEnv:
     cwd: str | None
     team_data: dict | None = None
 
+    # The effort the orchestrator runs at, for the run record. ``effort`` above is
+    # the run-wide effort workers take, set only when one was asked for; this one
+    # can also come from the codex user config, which workers do not load.
+    orc_effort: str | None = None
+
     # In-process team messaging (parallel to team_data's file-based channel).
     # All three are set together when team mode is active; None otherwise.
     exchange: Exchange | None = None
@@ -721,6 +726,36 @@ def _isolate_worker_cli_config(imodel) -> None:
         kwargs["settings"] = None
 
 
+def _check_orchestrator_clone_mcp_set(env: OrchestrationEnv) -> None:
+    """Refuse, before the run starts, a worker set a clone of the orchestrator cannot take.
+
+    A reactive spawn routed to no role and started independent of its emitter is
+    cloned from the session's default branch, the orchestrator's, then isolated
+    like a worker and handed the worker set (``_spawn_branch_setup`` in flow.py).
+    A set that hand-off refuses would fail the run mid-flight, so it is refused
+    here, as a planned worker's is when it is built. The check is that hand-off,
+    run on a scratch request carrying the flag isolation sets.
+    """
+    servers = getattr(env, "mcp_servers", None)
+    imodel = getattr(env.orc_branch, "chat_model", None)
+    if not servers or not getattr(imodel, "is_cli", False):
+        return
+    from lionagi.agent.factory import _canonical_provider, apply_forwarded_mcp_servers
+
+    provider = imodel.endpoint.config.provider
+    if _canonical_provider(provider) != "codex":
+        return
+    try:
+        apply_forwarded_mcp_servers(
+            {"ignore_user_config": True}, servers, provider=provider, exclusive=True
+        )
+    except ConfigurationError as exc:
+        raise ConfigurationError(
+            "A reactive spawn routed to no role can run as a worker cloned from the "
+            f"codex orchestrator, and it takes the worker MCP set: {exc}"
+        ) from exc
+
+
 def _hand_mcp_servers(
     imodel,
     servers: dict | None,
@@ -870,7 +905,12 @@ async def setup_orchestration(
     )
     _orc_provider = orc_imodel.endpoint.config.provider
     _hand_mcp_servers(orc_imodel, run_mcp_servers, label="orchestrator")
-    effort = resolve_persisted_effort(_orc_provider, orc_imodel, effort)
+    orc_effort = resolve_persisted_effort(_orc_provider, orc_imodel, effort)
+    # Workers load no user config, so a run-wide effort reaches them only when one
+    # was asked for. Asked for nothing, a codex orchestrator derives its own effort
+    # from that config (build_imodel_from_spec), and that effort stays its own.
+    if effort is not None or parse_model_spec(model_spec).effort is not None:
+        effort = orc_effort
     if cwd:
         orc_imodel.endpoint.config.kwargs.setdefault("repo", Path(cwd))
 
@@ -929,6 +969,7 @@ async def setup_orchestration(
         default_model_spec=model_spec,
         bare=bare,
         effort=effort,
+        orc_effort=orc_effort,
         theme=theme,
         yolo=yolo,
         bypass=bypass,

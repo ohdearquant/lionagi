@@ -813,6 +813,106 @@ async def test_a_reactively_spawned_cli_node_runs_without_the_user_cli_config(
 
 
 @pytest.mark.asyncio
+async def test_a_spawn_cloned_from_the_orchestrator_drops_its_derived_effort(tmp_path, codex_home):
+    """A codex orchestrator asked for no effort derives one from the user config.
+    A node cloned from it no longer loads that config, so it runs at what a planned
+    worker with no role effort gets; a clone of a worker keeps that worker's effort,
+    and a run-wide effort the caller asked for is kept."""
+    from lionagi.cli._providers import build_imodel_from_spec
+    from lionagi.engines import PlanningEngine
+    from lionagi.session.branch import Branch
+
+    (codex_home.path / "config.toml").write_text('model_reasoning_effort = "high"\n')
+    spec = "codex/gpt-5.3-codex-spark"
+    env = _make_env(tmp_path)
+    env.orc_branch = Branch(chat_model=build_imodel_from_spec(spec))
+    assert env.orc_branch.chat_model.endpoint.config.kwargs["reasoning_effort"] == "high"
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="x", assignee="researcher")],
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={},
+        worker_models=[spec],
+    )
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = MagicMock(
+        return_value=_asyncio_coro(
+            {"operation_results": {"node-0": "planned result"}, "spawned_operations": 0}
+        )
+    )
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(env, plan_result, dag_state, max_concurrent=1, max_ops=0)
+    spawn_branch_setup = fake_engine_run.run_dag.call_args.kwargs["spawn_branch_setup"]
+
+    def _spawn(base, spawn_id):
+        clone = base.clone()
+        spawn_branch_setup(SimpleNamespace(metadata={"spawn_id": spawn_id}), clone)
+        return clone.chat_model.endpoint.config.kwargs
+
+    assert "reasoning_effort" not in _spawn(env.orc_branch, "spawn-1")
+    assert env.orc_branch.chat_model.endpoint.config.kwargs["reasoning_effort"] == "high"
+
+    worker = Branch(
+        chat_model=build_imodel_from_spec(spec, effort_override="low", ignore_user_config=True)
+    )
+    assert _spawn(worker, "spawn-2")["reasoning_effort"] == "low"
+
+    env.effort = "high"
+    assert _spawn(env.orc_branch, "spawn-3")["reasoning_effort"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_a_reactive_run_refuses_a_set_a_codex_orchestrator_clone_cannot_take(
+    tmp_path, codex_home
+):
+    """A spawn routed to no role can be cloned from the orchestrator and isolated
+    like a worker, and a codex worker refuses a server whose `env` or
+    `http_headers` would need the profile isolation drops. The run is refused
+    before any worker is built, as a planned codex worker's build refuses it,
+    rather than failing when such a node spawns."""
+    from lionagi._errors import ConfigurationError
+    from lionagi.cli._providers import build_imodel_from_spec
+
+    codex_home.write_config({})
+    env = _make_env(tmp_path)
+    env.orc_branch.chat_model = build_imodel_from_spec("codex/gpt-5")
+    env.mcp_servers = {"search": {"command": "search-mcp", "env": {"SEARCH_TOKEN": "s3cret"}}}
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="x", assignee="researcher")],
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+
+    with patch(
+        "lionagi.cli.orchestrate.flow.build_worker_branch",
+        return_value=(_FakeBranch("researcher"), "claude_code/sonnet", None, False),
+    ) as build:
+        with pytest.raises(ConfigurationError, match="reactive spawn") as refused:
+            await _build_dag(env, "do stuff", plan_result, reactive_spec="all", max_spawn=5)
+        build.assert_not_called()
+        assert "s3cret" not in str(refused.value)
+        assert codex_home.profile_files() == []
+
+        # No spawn, no clone: the same set builds with reactive spawning off.
+        await _build_dag(env, "do stuff", plan_result, reactive_spec="off", max_spawn=5)
+        # A set the clone can take builds with spawning on.
+        env.mcp_servers = {"search": {"command": "search-mcp"}}
+        await _build_dag(env, "do stuff", plan_result, reactive_spec="all", max_spawn=5)
+    assert build.call_count == 2
+
+
+@pytest.mark.asyncio
 async def test_execute_dag_escalated_spawned_node_evidence_uses_spawn_id(tmp_path):
     """An escalated node that was reactively spawned (not in the plan) must
     surface its role_node_builder-stamped spawn_id in the escalation

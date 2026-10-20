@@ -180,6 +180,9 @@ async def create_agent(
         )
 
     branch_kwargs = {}
+    # The request field holding an effort this factory derived from the codex user
+    # config, which the MCP hand-off below may turn off.
+    derived_effort_kwarg: str | None = None
 
     if chat_model is not None:
         branch_kwargs["chat_model"] = chat_model
@@ -203,6 +206,7 @@ async def create_agent(
 
         extra = {}
         effort = spec.effort or ms.effort
+        derived = False
         if not effort and provider == "codex":
             # Unset is not "no opinion": codex would read the global config's
             # effort, tuned for that config's own model, and 400 when it
@@ -210,10 +214,13 @@ async def create_agent(
             from lionagi.service.providers import codex_unset_effort_default
 
             effort = codex_unset_effort_default(model_name)
+            derived = effort is not None
         if effort:
             kwarg = PROVIDER_EFFORT_KWARG.get(provider)
             if kwarg:
                 extra[kwarg] = effort
+                if derived:
+                    derived_effort_kwarg = kwarg
         if spec.yolo:
             extra.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
 
@@ -305,6 +312,12 @@ async def create_agent(
         resolved_servers_explicit=resolved_mcp_explicit,
         native_mcp_servers=native_mcp_servers,
     )
+    if derived_effort_kwarg:
+        request_kwargs = branch.chat_model.endpoint.config.kwargs
+        if request_kwargs.get("ignore_user_config"):
+            # The derived effort stood in for the user config's own; the hand-off
+            # left a request that loads no user config, so nothing is derived from it.
+            request_kwargs.pop(derived_effort_kwarg, None)
     _wire_external_hooks(branch, spec)
 
     if op := spec.emission_operable():
@@ -838,12 +851,18 @@ def apply_forwarded_mcp_servers(
             kwargs["strict_mcp_config"] = True
         return True
 
-    if exclusive and not servers and not allowed_names:
+    # Discovered once: the allowlist check below and the by-name disables share it.
+    configured: set[str] | None = None
+    if exclusive and not servers and not kwargs.get("ignore_user_config"):
         # The empty set is the hermetic codex run: the user config, and every server,
         # hook and profile it declares, is not loaded at all. Codex keeps its own
-        # authentication store under the flag. An allowlist naming a server keeps
-        # that server, served from codex's own config, so it is not this case.
-        kwargs["ignore_user_config"] = True
+        # authentication store under the flag. An allowlist naming a server codex's
+        # own config declares keeps that server, served from that config, so it is
+        # not this case; an allowlist naming none of them leaves nothing to serve.
+        if allowed_names:
+            configured = _discover_ambient_codex_mcp_server_names()
+        if not allowed_names or not configured & set(allowed_names):
+            kwargs["ignore_user_config"] = True
 
     # codex takes no JSON MCP-config input; each server is forwarded as
     # `-c mcp_servers.<name>.<field>=<value>` overrides. A field outside the
@@ -881,11 +900,10 @@ def apply_forwarded_mcp_servers(
         # A run that ignores the user config loads none of its servers, and an
         # `enabled=false` for one of them is then such a table too.
         allowed = set(servers) if allowed_names is None else set(allowed_names)
-        configured = (
-            set()
-            if kwargs.get("ignore_user_config")
-            else _discover_ambient_codex_mcp_server_names()
-        )
+        if kwargs.get("ignore_user_config"):
+            configured = set()
+        elif configured is None:
+            configured = _discover_ambient_codex_mcp_server_names()
         for excluded_name in sorted(configured - allowed):
             overrides[f"mcp_servers.{excluded_name}.enabled"] = False
 

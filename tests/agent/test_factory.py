@@ -1279,6 +1279,41 @@ async def test_forward_mcp_codex_empty_allowlist_needs_no_ambient_discovery(tmp_
     assert branch.chat_model.endpoint.config.kwargs["ignore_user_config"] is True
 
 
+async def test_no_effort_is_derived_for_an_agent_that_ignores_the_user_config(
+    tmp_path, monkeypatch
+):
+    """An unset codex effort is derived from the user config to keep that config's
+    own value under the model's ceiling. An agent whose MCP hand-off leaves it
+    ignoring that config never reads the value, so the derived effort goes; an
+    agent that reads the config keeps it, and an explicit effort always stays."""
+    codex_home = tmp_path / "codex_home"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text('model_reasoning_effort = "high"\n')
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    async def _request_kwargs(*, allowlist, effort=None):
+        config = AgentSpec.compose(
+            "reviewer", model="codex/gpt-5.3-codex-spark", cwd=str(tmp_path / "elsewhere")
+        )
+        config.mcp_servers = allowlist
+        config.effort = effort
+        branch = await create_agent(config, load_settings=False)
+        return branch.chat_model.endpoint.config.kwargs
+
+    hermetic = await _request_kwargs(allowlist=[])
+    assert hermetic["ignore_user_config"] is True
+    assert "reasoning_effort" not in hermetic
+
+    reads = await _request_kwargs(allowlist=None)
+    assert "ignore_user_config" not in reads
+    assert reads["reasoning_effort"] == "high"
+
+    explicit = await _request_kwargs(allowlist=[], effort="low")
+    assert explicit["ignore_user_config"] is True
+    assert explicit["reasoning_effort"] == "low"
+
+
 async def test_forward_mcp_codex_none_allowlist_is_still_a_noop(tmp_path, monkeypatch):
     """spec.mcp_servers=None (never touched) must stay a true no-op for
     codex too -- only an explicit (possibly empty) allowlist triggers the

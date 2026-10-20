@@ -218,7 +218,7 @@ async def _run_fanout(
         invocation_id=invocation_id,
         model=_orc_model,
         provider=_orc_provider,
-        effort=env.effort,
+        effort=getattr(env, "orc_effort", None),
         project=project,
     )
 

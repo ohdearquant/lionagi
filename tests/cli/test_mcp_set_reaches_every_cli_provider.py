@@ -133,6 +133,20 @@ def test_an_allowlist_naming_a_server_only_codex_declares_keeps_that_server(code
     assert kwargs["config_overrides"] == {"mcp_servers.other.enabled": False}
 
 
+def test_an_allowlist_naming_no_server_codex_declares_is_the_empty_set(codex_home):
+    """With nothing described and no allowed name in codex's config there is no
+    server left to serve, so the run loads no user config, as the empty set does,
+    rather than loading it with every server it declares disabled by name."""
+    codex_home.write_config({"kept": {"command": "kept-mcp"}, "other": {"command": "other-mcp"}})
+    kwargs: dict = {}
+
+    assert apply_forwarded_mcp_servers(
+        kwargs, {}, provider="codex", exclusive=True, allowed_names=["undeclared"]
+    )
+
+    assert kwargs == {"ignore_user_config": True}
+
+
 def test_secret_fields_are_refused_on_a_request_that_ignores_the_user_config(codex_home):
     """The secret fields reach codex only through a generated `-p` profile, and a
     run that ignores the user config loads no profile: the server would start

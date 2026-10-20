@@ -83,8 +83,10 @@ def test_an_override_naming_the_key_wins_over_the_user_config(codex_home, overri
     args = CodexCodeRequest(
         prompt="hi", ignore_user_config=True, config_overrides=overrides
     ).as_cmd_args()
+    without = CodexCodeRequest(prompt="hi", ignore_user_config=True).as_cmd_args()
 
     assert not _has_pair(args, GRANT)
+    assert _has_pair(without, GRANT)
 
 
 def test_the_grant_is_read_from_the_home_the_childs_environment_names(tmp_path, codex_home):
@@ -97,8 +99,15 @@ def test_the_grant_is_read_from_the_home_the_childs_environment_names(tmp_path, 
     args = CodexCodeRequest(
         prompt="hi", ignore_user_config=True, env={"CODEX_HOME": str(child_home)}
     ).as_cmd_args()
-
     assert not _has_pair(args, GRANT)
+
+    # The converse: the child's home grants and ours does not.
+    _grants_network(child_home)
+    (codex_home / "config.toml").unlink()
+    args = CodexCodeRequest(
+        prompt="hi", ignore_user_config=True, env={"CODEX_HOME": str(child_home)}
+    ).as_cmd_args()
+    assert _has_pair(args, GRANT)
 
 
 def test_an_unreadable_user_config_grants_nothing_and_says_so(codex_home, caplog):

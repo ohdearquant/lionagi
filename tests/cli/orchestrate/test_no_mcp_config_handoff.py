@@ -63,7 +63,11 @@ def tmp_run(monkeypatch, tmp_path):
 
 
 async def _setup(
-    *, no_mcp_config: bool, mcp_config: str | None = None, model_spec: str = "claude_code/sonnet"
+    *,
+    no_mcp_config: bool,
+    mcp_config: str | None = None,
+    model_spec: str = "claude_code/sonnet",
+    effort: str | None = None,
 ):
     return await setup_orchestration(
         pattern_name="Fanout",
@@ -73,7 +77,7 @@ async def _setup(
         cwd=None,
         yolo=False,
         verbose=False,
-        effort=None,
+        effort=effort,
         theme=None,
         mcp_config=mcp_config,
         no_mcp_config=no_mcp_config,
@@ -797,6 +801,35 @@ async def test_a_codex_worker_takes_no_effort_from_the_user_config(tmp_run, code
 
     assert branch.chat_model.endpoint.config.kwargs["ignore_user_config"] is True
     assert "reasoning_effort" not in branch.chat_model.endpoint.config.kwargs
+
+
+@pytest.mark.asyncio
+async def test_a_codex_orchestrators_derived_effort_stays_its_own(tmp_run, codex_home):
+    """A codex orchestrator asked for no effort derives one from the user config it
+    loads. The run record keeps that effort; it is not a run-wide effort, so a
+    worker, which loads no user config, does not take it."""
+    (codex_home.path / "config.toml").write_text('model_reasoning_effort = "high"\n')
+    env = await _setup(no_mcp_config=False, model_spec="codex/gpt-5.3-codex-spark")
+
+    assert env.orc_branch.chat_model.endpoint.config.kwargs["reasoning_effort"] == "high"
+    assert env.orc_effort == "high"
+    assert env.effort is None
+    branch, _, _, _ = await build_worker_branch(
+        env, agent_id="w1", role="implementer", model_override="codex/gpt-5.3-codex-spark"
+    )
+    assert "reasoning_effort" not in branch.chat_model.endpoint.config.kwargs
+
+
+@pytest.mark.asyncio
+async def test_a_requested_run_effort_still_reaches_a_codex_worker(tmp_run, codex_home):
+    (codex_home.path / "config.toml").write_text('model_reasoning_effort = "high"\n')
+    env = await _setup(no_mcp_config=False, model_spec="codex/gpt-5.3-codex-spark", effort="low")
+
+    assert env.effort == env.orc_effort == "low"
+    branch, _, _, _ = await build_worker_branch(
+        env, agent_id="w1", role="implementer", model_override="codex/gpt-5.3-codex-spark"
+    )
+    assert branch.chat_model.endpoint.config.kwargs["reasoning_effort"] == "low"
 
 
 @pytest.mark.asyncio
