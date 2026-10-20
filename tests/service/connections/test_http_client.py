@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import email.parser
 import email.policy
+import http.client
 import io
 import socket
 import time
@@ -30,6 +31,7 @@ from tests._local_http import (
     LocalServer,
     Redirect,
     Request,
+    Response,
     StreamResponse,
     json_response,
 )
@@ -84,6 +86,37 @@ async def test_a_json_request_and_its_response(announce_close):
     assert headers["Content-Length"] == str(len(b'{"q": "hi"}'))
     assert headers["User-Agent"] == _http._USER_AGENT
     assert headers["Accept-Encoding"] == "identity"
+
+
+@pytest.mark.parametrize(
+    ("path", "sent"),
+    [("/café", "/caf%C3%A9"), ("/a b", "/a%20b"), ("/kept%2Fescape", "/kept%2Fescape")],
+    ids=["non-ascii", "space", "escape"],
+)
+async def test_a_path_and_query_are_sent_percent_encoded(path, sent):
+    seen = {}
+
+    async def handler(request: Request):
+        seen["path"] = request.path
+        seen["query"] = request.query
+        return json_response({})
+
+    async with serving(handler) as base, HTTPSession(timeout=5) as session:
+        response = await session.request("GET", f"{base}{path}?q=a é")
+        await response.read()
+
+    assert seen["path"] == sent
+    assert seen["query"] == {"q": "a é"}
+
+
+@pytest.mark.parametrize("body", [b"", b" \r\n"], ids=["empty", "whitespace"])
+async def test_a_json_body_with_nothing_in_it_reads_as_none(body):
+    async def handler(request: Request):
+        return Response(body=body, content_type="application/json")
+
+    async with serving(handler) as base, HTTPSession(timeout=5) as session:
+        response = await session.request("GET", base)
+        assert await response.json() is None
 
 
 async def test_a_request_header_replaces_a_session_header_of_any_case():
@@ -243,6 +276,49 @@ async def test_closing_a_session_closes_the_responses_still_open(announce_close)
         assert response._exchange.sock.fileno() == -1
 
 
+@framings
+async def test_closing_a_session_ends_a_request_still_waiting_for_its_response(announce_close):
+    closed = asyncio.Event()
+    async with serving(_waits_for_close(closed), announce_close) as base:
+        session = HTTPSession()
+        task = asyncio.create_task(session.request("POST", base, json={}))
+        await asyncio.sleep(0.2)
+        session.close()
+        with pytest.raises(TransportError):
+            await asyncio.wait_for(task, timeout=3)
+        # No timeout was set and nothing was cancelled, so only the close can have ended it.
+        await asyncio.wait_for(closed.wait(), timeout=3)
+
+
+async def test_opening_a_connection_is_bounded_by_the_time_the_request_has_left(monkeypatch):
+    # One slot: the second request waits for it while the first waits for its response.
+    monkeypatch.setattr(_http, "MAX_REQUESTS_IN_FLIGHT", 1)
+    timeouts = []
+    connect = http.client.HTTPConnection.connect
+
+    def recording_connect(self):
+        timeouts.append(self.timeout)
+        connect(self)
+
+    monkeypatch.setattr(http.client.HTTPConnection, "connect", recording_connect)
+
+    async def handler(request: Request):
+        await asyncio.sleep(0.5)
+        return json_response({})
+
+    async def call(session):
+        response = await session.request("POST", base, json={})
+        await response.read()
+
+    async with serving(handler) as base, HTTPSession(timeout=5) as session:
+        await asyncio.gather(call(session), call(session))
+
+    first, second = timeouts
+    assert 4.9 < first <= 5
+    # The half second spent waiting for the slot is not left for the connect.
+    assert second < 4.6
+
+
 async def test_a_refused_connection_is_a_transport_error():
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
@@ -373,5 +449,16 @@ def test_a_status_error_carries_the_response_it_describes():
     assert not isinstance(error, ConnectionError)
     assert (error.status, error.status_code) == (429, 429)
     assert error.headers == {"Retry-After": "2"}
+    assert error.headers.get("retry-after") == error.headers["RETRY-AFTER"] == "2"
+    assert "retry-after" in error.headers
+    assert error.headers.get("x-missing") is None
     assert (error.method, error.url) == ("POST", "https://api.test/v1")
     assert str(error) == "failed with status 429"
+
+
+def test_a_status_error_reads_the_headers_of_a_response_in_any_case():
+    message = http.client.parse_headers(io.BytesIO(b"Retry-After: 7\r\nX-Request-Id: r1\r\n\r\n"))
+    error = HTTPStatusError("failed with status 503", status=503, headers=message)
+    assert error.headers == {"Retry-After": "7", "X-Request-Id": "r1"}
+    assert error.headers["retry-after"] == "7"
+    assert error.headers.get("x-request-id") == "r1"

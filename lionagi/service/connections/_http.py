@@ -8,7 +8,13 @@ blocking step (connect and send, wait for the status line, read the body) runs i
 thread under a limiter of this module's own, so HTTP requests never take threads from the
 default pool other code in the process waits on. A request that is cancelled, or that runs past
 its session's timeout, shuts its socket down, which ends the blocked step and frees the thread;
-a request whose connection is still being opened when it is stopped is never sent.
+a request whose connection is still being opened when it is stopped is never sent. Opening a
+connection cannot be interrupted that way, so the thread doing it stays until the attempt ends:
+the time the request had left bounds the connect, but not the address lookup before it, and
+such a thread no longer counts against ``MAX_REQUESTS_IN_FLIGHT``.
+
+A URL's path and query are sent percent-encoded: a character that cannot appear in a request
+line (a space, a non-ASCII letter) is encoded, and an escape already in the URL is kept.
 
 Redirects are never followed, since the address guard checks one URL and a redirect could lead
 anywhere; a 3xx response is returned like any other status. Proxy settings in the environment
@@ -27,7 +33,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from typing import Any, TypeVar
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 import anyio
 import anyio.lowlevel
@@ -47,11 +53,15 @@ __all__ = (
 T = TypeVar("T")
 
 #: The most HTTP requests in flight at once in one event loop. Each holds a worker thread while
-#: it waits on the network, so this bounds those threads; a request past it waits for a slot,
-#: and the wait counts against its timeout.
+#: it waits on the network, so this bounds those threads, apart from those still opening a
+#: connection for a request that was stopped (module docstring); a request past it waits for a
+#: slot, and the wait counts against its timeout.
 MAX_REQUESTS_IN_FLIGHT = 256
 _READ_SIZE = 65536
 _USER_AGENT = f"lionagi/{__version__}"
+# RFC 3986 pchar plus "/" and "%", and for the query "?" as well.
+_PATH_SAFE = "/%:@!$&'()*+,;=-._~"
+_QUERY_SAFE = _PATH_SAFE + "?"
 
 _limiter_var: anyio.lowlevel.RunVar[anyio.CapacityLimiter] = anyio.lowlevel.RunVar(
     "lionagi_http_limiter"
@@ -65,8 +75,28 @@ class TransportError(ConnectionError):
     or what came back was not HTTP."""
 
 
+class _ResponseHeaders(dict):
+    """Header values by name as the server spelled it, looked up in any case."""
+
+    def _name(self, name: object) -> object:
+        if not isinstance(name, str) or dict.__contains__(self, name):
+            return name
+        lowered = name.lower()
+        return next((key for key in self if key.lower() == lowered), name)
+
+    def __getitem__(self, name: object) -> str:
+        return dict.__getitem__(self, self._name(name))
+
+    def __contains__(self, name: object) -> bool:
+        return dict.__contains__(self, self._name(name))
+
+    def get(self, name: object, default: Any = None) -> Any:
+        return dict.get(self, self._name(name), default)
+
+
 class HTTPStatusError(APIClientError):
-    """The server answered with a status the caller treats as a failure."""
+    """The server answered with a status the caller treats as a failure. ``headers`` are its
+    response headers, looked up in any case."""
 
     def __init__(
         self,
@@ -77,7 +107,9 @@ class HTTPStatusError(APIClientError):
         method: str = "",
         url: str = "",
     ):
-        super().__init__(message, status_code=status, headers=dict(headers or {}))
+        super().__init__(
+            message, status_code=status, headers=_ResponseHeaders(_header_items(headers))
+        )
         self.status = status
         self.method = method
         self.url = url
@@ -103,7 +135,8 @@ def _default_ssl_context() -> ssl.SSLContext:
 def _header_items(headers: Any) -> list[tuple[str, str]]:
     if headers is None:
         return []
-    if isinstance(headers, Mapping):
+    # A response's ``http.client.HTTPMessage`` is not a Mapping, and iterating it gives names only.
+    if isinstance(headers, Mapping) or hasattr(headers, "items"):
         return list(headers.items())
     return [tuple(pair) for pair in headers]
 
@@ -285,7 +318,9 @@ class HTTPResponse:
         return (await self.read()).decode(encoding, errors="replace")
 
     async def json(self) -> Any:
-        return _json.loads(await self.read())
+        """The body parsed as JSON; ``None`` when the body is empty or only whitespace."""
+        body = await self.read()
+        return _json.loads(body) if body.strip() else None
 
     async def iter_chunks(self) -> AsyncIterator[bytes]:
         """The body in the pieces it arrives in, as bytes; a piece can end inside a line or a
@@ -318,10 +353,13 @@ async def _run_step(
 ) -> T:
     def blocking() -> T:
         if deadline is not None:
-            # Bounds each blocking socket operation by the time the request has left.
+            # Bounds each blocking socket operation, opening the connection included, by the time
+            # the request has left; time spent waiting for a slot is not left any more.
+            left = max(deadline - time.monotonic(), 0.001)
+            exchange.conn.timeout = left
             sock = exchange.sock
             if sock is not None:
-                sock.settimeout(max(deadline - time.monotonic(), 0.001))
+                sock.settimeout(left)
         return exchange.run(step)
 
     try:
@@ -349,14 +387,15 @@ class HTTPSession:
     """Default headers and a per-request timeout, shared by the requests made through it.
 
     ``timeout`` bounds a request from its start until its response has been read, a streamed
-    response included; ``None`` sets no bound. Responses still open when the session closes
-    are closed with it.
+    response included; ``None`` sets no bound. Closing the session closes the responses still
+    open and ends the requests still waiting for theirs.
     """
 
     def __init__(self, *, timeout: float | None = None, headers: Any = None):
         self.timeout = timeout
         self.headers = headers
         self._responses: list[HTTPResponse] = []
+        self._exchanges: list[_Exchange] = []
 
     async def __aenter__(self) -> HTTPSession:
         return self
@@ -367,7 +406,10 @@ class HTTPSession:
     def close(self) -> None:
         for response in self._responses:
             response.close()
+        for exchange in self._exchanges:
+            exchange.stop()
         self._responses.clear()
+        self._exchanges.clear()
 
     async def request(
         self,
@@ -405,8 +447,10 @@ class HTTPSession:
         if body is not None and "content-length" not in names:
             send_headers["Content-Length"] = str(len(body))
 
-        target = parts.path or "/"
-        query = parts.query
+        # Encoded as a browser sends them: what a request line cannot carry is percent-encoded,
+        # and an escape already in the URL stays as it is.
+        target = quote(parts.path or "/", safe=_PATH_SAFE)
+        query = quote(parts.query, safe=_QUERY_SAFE)
         if params:
             extra = urlencode(list(params.items()))
             query = f"{query}&{extra}" if query else extra
@@ -420,6 +464,7 @@ class HTTPSession:
         else:
             conn = http.client.HTTPConnection(parts.hostname, parts.port, timeout=self.timeout)
         exchange = _Exchange(conn)
+        self._exchanges.append(exchange)
         method = method.upper()
         raw = await _run_step(
             exchange,
