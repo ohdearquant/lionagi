@@ -192,11 +192,11 @@ venv/bin/python run_pilot.py --tasks tasks.yaml --out runs/<name>
 A run is 48 `li agent` legs, two per task. `--only t01,t02` runs part of the task set. A run that
 does not cover every leg of the whole task set, because of `--only`, an interrupt, or a task that
 stopped on an error in the runner itself, still writes `summary.json` and `table.md` from the rows
-it has: `summary.json` says why under `partial`, the D4 rule is `null` with the same reason in
-`d4_rule_unset`, and `table.md` has a line for every task the run covers, marking a leg that did not
-run as `not run`. On an interrupt (Ctrl-C)
+it has: `summary.json` says why under `partial` and sets the D4 rule to `null`, with `d4_rule_unset`
+giving the same reason (and the count of legs with no spend line, if any), and `table.md` has a line
+for every task the run covers, marking a leg that did not run as `not run`. On an interrupt (Ctrl-C)
 no further leg starts and the runner waits for the legs already running. A second interrupt stops
-that wait: the summary and table are written from the rows so far, `partial` says that rows of
-legs still running may follow in `results.jsonl`, and the process exits once those legs end. The
-runner exits 2, with no run directory, when the read tree or `li` is missing; 130 after an
-interrupt; and 1 when a task stopped, or a leg raised, on an error in the runner itself.
+that wait: the summary and table are written from the rows so far, `partial` says that rows of legs
+still running may follow in `results.jsonl`, and the process exits once those legs end. The runner
+exits 2, with no run directory, when a check before the run fails (above); 130 after an interrupt;
+and 1 when a task stopped, or a leg raised, on an error in the runner itself.
