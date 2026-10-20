@@ -45,7 +45,7 @@ daemon that is already running (`lionagi/studio/cli.py:262`). So pairing is not 
 that can send HTTP can mint, redeem with a forged `Origin`, and decide.
 
 **P3 — the page keeps its bearer in memory only.** The frontend holds the paired bearer in a module
-variable (`apps/studio/frontend/src/lib/pairing.ts:14`); a reload loses it. Nothing reachable over
+variable (`apps/studio/frontend/src/lib/pairing.ts:27`); a reload loses it. Nothing reachable over
 HTTP can read it.
 
 **P4 — the permission bridge reads storage, not HTTP.** The provider-permission bridge polls the
