@@ -133,18 +133,23 @@ that marks its answer accepted or rejected as a first pass. Every answer is then
 source, and the reading decides: an answer the check accepts and the reading finds wrong is not accepted, and one
 the check rejects and the reading finds right is. The result is a per-task table of requests, tool
 calls, wall time and acceptance for both loops, published with the pilot's commit. The pilot can
-run more than once as the code changes; each run is recorded in the Result, which names the run
-that decides. Because the reading decides, a check corrected between runs changes the first pass
-and not the outcome. `lndl` becomes
-a recommended profile setting only if it uses fewer requests per accepted task in total and accepts
-no fewer tasks; the default stays `react` until a later decision changes it.
+run more than once as the code changes, and each run is recorded in the Result. r2, r3 and r4 did
+not settle the rule (Result); after r4, and before it started, the run that decides was named as
+`r5`, at the merged code. No later run reopens D4: a different outcome takes a new decision. The
+reading is one reader's judgment, made knowing which loop wrote each answer; it judges what each
+answer says to its question, and the pilot's README gives the source line for each task so that
+another reader can redo it. Because the reading decides, a check corrected between runs changes
+the first pass and not the outcome. `lndl` becomes a recommended profile setting only if it uses
+fewer requests per accepted task in total and accepts no fewer tasks; the default stays `react`
+until a later decision changes it.
 
 #### Result
 
 The pilot is `benchmarks/lndl_pilot/`: 24 read-only questions about lionagi's own source, each with
 an acceptance check, on `anthropic/claude-haiku-5-5` with read tools and `max_extensions: 10`. Each
 task's two runs are adjacent in time and the loop that goes first alternates by task. The per-task
-tables of requests, tool calls, wall time and acceptance are `runs/<run>/table.md` there.
+tables of requests, tool calls, wall time and acceptance by the checks are `runs/<run>/table.md`
+there.
 
 | run | lionagi | loop | accepted by the checks | accepted on reading | requests | per accepted task | tool calls |
 |---|---|---|---|---|---|---|---|
@@ -157,7 +162,8 @@ tables of requests, tool calls, wall time and acceptance are `runs/<run>/table.m
 
 Requests per accepted task divides a run's requests by the tasks accepted on reading.
 
-r2 fails the rule and r3 passes it, and one change to the Python package separates them: in r2 an
+On reading, r2 fails the rule and r3 meets it with no margin, and one change to the Python package
+separates them: in r2 an
 `lndl` round with no block continued with no error, and in r3 it is the repair round D2 describes.
 Read from each leg's conversation, which the pilot does not commit (see below), in both runs 17 of
 the 24 `lndl` runs opened with a call written as an `<invoke>` tag outside any block. In r2, 12 of
@@ -184,7 +190,9 @@ the 17 wrote a block in its next round, and 18 of the 79 requests went to rounds
 - On reading, r3 meets the rule with no margin: 23 tasks accepted on each side, and `lndl` used 79
   requests against 95 (3.43 per accepted task against 4.13). The ReAct side moved by one task
   between r2 and r3 (its r3 `t04` leg above), so r3 shows that `lndl` accepted no fewer tasks, not
-  that it accepts more.
+  that it accepts more. This counts the r3 ReAct answer to `t03` as right: it opens by saying the
+  endpoint's request model has no default and then gives 8192 as the value lionagi's CLI applies,
+  the line the task records. Counted wrong, r3 would be `lndl` 23 against ReAct 22.
 - The tool calls counted are the calls that ran. The most any `lndl` run made was four in r2, three
   in r3 and five in r4 (`t21` and `t22`). A round that declares more than 16 calls is refused and
   none of its calls runs (D2), so these counts cannot show whether a round reached the limit, and
@@ -196,11 +204,10 @@ the 17 wrote a block in its next round, and 18 of the 79 requests went to rounds
   outcome through different tasks (22 against 23). 17 of the 24 `lndl` runs again opened with an
   `<invoke>` tag, each wrote a block in its next round, 17 of the 80 requests went to rounds with no
   block, and no run reached the round budget.
-- On reading, r3 ties the accepts clause and r4 misses it by one task, so 24 tasks do not settle it.
-  The request saving held in both runs: 79 requests against 95, and 80 against 91. The run that
-  decides D4 is `r5`, a further run at the merged code, read the same way; its result is recorded in
-  a later change. Every answer is committed with the runs (`answers.jsonl`), and the README lists the ten
-  answers where the reading and the checks differ.
+- On reading, r3 ties the accepts clause and r4 misses it by one task, so these runs do not settle
+  it. The request saving held in both runs: 79 requests against 95, and 80 against 91. The result
+  of `r5`, the run D4 names, is recorded in a later change. Every answer is committed with the runs
+  (`answers.jsonl`), and the README lists the ten answers where the reading and the checks differ.
 - The counts of runs that opened with an `<invoke>` tag and of requests that went to rounds with no
   block are read from each leg's conversation, which `li agent` keeps under the run's home directory
   and the pilot does not commit; the committed files give the per-task requests, tool calls,
