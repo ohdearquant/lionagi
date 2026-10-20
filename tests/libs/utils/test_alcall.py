@@ -60,6 +60,18 @@ class TestAlcallBasic:
         results = await alcall([], async_func)
         assert results == []
 
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("is_coro", [True, False])
+    async def test_alcall_passes_a_keyword_named_index_to_func(self, is_coro):
+        async def add_index_async(value: int, *, index: int) -> int:
+            return value + index
+
+        def add_index_sync(value: int, *, index: int) -> int:
+            return value + index
+
+        func = add_index_async if is_coro else add_index_sync
+        assert await alcall([1, 2], func, index=40) == [41, 42]
+
 
 class TestAlcallFuncValidation:
     @pytest.mark.anyio
