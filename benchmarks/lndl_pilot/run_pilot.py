@@ -30,9 +30,33 @@ LI = HERE / "venv" / "bin" / "li"
 SCRATCH_HOME = HERE / "home"
 SPEND = re.compile(r"\[api\] spend: (\d+) request\(s\), (\d+) tool call\(s\), ([0-9.]+)s")
 RUN_TIMEOUT_S = 420
-# A task id names the leg's files in the run directory, so it may not reach outside it, and
-# with its longest suffix it must fit a file name.
+# A task id and a loop name together name a leg's files in the run directory, so neither may
+# reach outside it. At 100 characters each, an id, `-`, a loop name and the longest suffix
+# (`.prompt.txt`, 11) come to 212 bytes, inside a file name's 255.
 TASK_ID = re.compile(r"[A-Za-z0-9_-]{1,100}")
+
+
+class _TaskLoader(yaml.SafeLoader):
+    """safe_load keeps the last of a key a mapping names twice; this loader refuses it."""
+
+
+def _mapping_without_repeats(loader: _TaskLoader, node: yaml.MappingNode) -> dict:
+    seen: list = []
+    for key_node, _ in node.value:
+        if key_node.tag == "tag:yaml.org,2002:merge":
+            continue
+        key = loader.construct_object(key_node, deep=True)
+        if key in seen:
+            raise yaml.constructor.ConstructorError(
+                None, None, f"found the key {key!r} twice in one mapping", key_node.start_mark
+            )
+        seen.append(key)
+    return loader.construct_mapping(node, deep=True)
+
+
+_TaskLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping_without_repeats
+)
 
 
 def _matches(text: str, item: str) -> bool:
@@ -50,7 +74,7 @@ def check_answer(answer: str, accept: dict) -> bool:
 def run_one(task: dict, loop: str, out: Path) -> dict:
     stem = out / f"{task['id']}-{loop}"
     prompt_file = stem.with_suffix(".prompt.txt")
-    prompt_file.write_text(task["prompt"])
+    prompt_file.write_text(task["prompt"], encoding="utf-8")
     env = {
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
         "HOME": str(SCRATCH_HOME),
@@ -97,8 +121,8 @@ def run_one(task: dict, loop: str, out: Path) -> dict:
         rc = "harness-error"
         stdout, stderr = "", f"{type(exc).__name__}: {exc}\n"
     elapsed = round(time.monotonic() - started, 3)
-    stem.with_suffix(".stdout.txt").write_text(stdout)
-    stem.with_suffix(".stderr.txt").write_text(stderr)
+    stem.with_suffix(".stdout.txt").write_text(stdout, encoding="utf-8")
+    stem.with_suffix(".stderr.txt").write_text(stderr, encoding="utf-8")
     spends = SPEND.findall(stderr) or SPEND.findall(stdout)
     requests = tool_calls = wall = None
     if spends:
@@ -186,9 +210,9 @@ def task_problems(tasks: object) -> list[str]:
             except UnicodeEncodeError:
                 problems.append(f"{name}: `{key}` is not valid UTF-8 text")
                 continue
-            if key == "class" and not value.isprintable():
+            if key == "class" and value.splitlines() != [value]:
                 # A table row is one line; a `|` is escaped where the row is written.
-                problems.append(f"{name}: `class` holds a line break or another control character")
+                problems.append(f"{name}: `class` holds a line break")
         accept = task.get("accept")
         if not isinstance(accept, dict) or set(accept) - {"all_of", "none_of"}:
             problems.append(f"{name}: `accept` is not a mapping of `all_of` and `none_of`")
@@ -199,16 +223,28 @@ def task_problems(tasks: object) -> list[str]:
                 problems.append(f"{name}: `accept.{key}` is not a list of non-empty strings")
                 continue
             for item in value:
-                if item == "re:":
-                    # An empty pattern matches every answer, so it would decide nothing.
-                    problems.append(f"{name}: `accept.{key}` has an empty `re:` pattern")
-                elif item.startswith("re:"):
-                    try:
-                        re.compile(item[3:])
-                    # A repeat count past the engine's limit raises OverflowError, and deep
-                    # nesting RecursionError, rather than re.error.
-                    except (re.error, OverflowError, RecursionError) as exc:
-                        problems.append(f"{name}: `{item}` does not compile: {exc}")
+                try:
+                    item.encode("utf-8")
+                except UnicodeEncodeError:
+                    # A lone surrogate never matches an answer read from a leg's output.
+                    problems.append(f"{name}: `accept.{key}` has an item that is not valid UTF-8")
+                    continue
+                if not item.startswith("re:"):
+                    continue
+                try:
+                    pattern = re.compile(item[3:], re.IGNORECASE)
+                # A repeat count past the engine's limit raises OverflowError, and deep
+                # nesting RecursionError, rather than re.error.
+                except (re.error, OverflowError, RecursionError) as exc:
+                    problems.append(f"{name}: `{item}` does not compile: {exc}")
+                    continue
+                if not item[3:].strip() or pattern.search("") is not None:
+                    # A pattern that matches an empty answer would let all_of accept one and
+                    # make none_of refuse every answer; a blank one is a stray space.
+                    problems.append(
+                        f"{name}: `accept.{key}` has a `re:` pattern that is blank or matches"
+                        " an empty answer"
+                    )
         if items["all_of"] == []:
             # With nothing required, an empty answer would be accepted.
             problems.append(f"{name}: `accept.all_of` is empty")
@@ -277,8 +313,9 @@ def main() -> int:
     tasks_path = Path(args.tasks).resolve()
     tasks_bytes = tasks_path.read_bytes()
     try:
-        loaded = yaml.safe_load(tasks_bytes)
-    except yaml.YAMLError as exc:
+        loaded = yaml.load(tasks_bytes, Loader=_TaskLoader)  # noqa: S506 - a SafeLoader subclass
+    # Deep nesting raises RecursionError rather than a YAMLError.
+    except (yaml.YAMLError, RecursionError) as exc:
         print(f"{tasks_path} is not YAML: {exc}\nnothing run", file=sys.stderr)
         return 2
     if not isinstance(loaded, dict) or "tasks" not in loaded:
@@ -297,13 +334,25 @@ def main() -> int:
     # Read from the listing, so the name must match in letter case on any volume.
     profiles = {p.name for p in (HERE / ".lionagi" / "agents").glob("d4-*.md") if p.is_file()}
     for loop in loops:
-        if f"d4-{loop}.md" not in profiles:
+        if not TASK_ID.fullmatch(loop):
+            problems.append(f"--loops: {loop!r} is not 1 to 100 letters, digits, `_` and `-`")
+        elif f"d4-{loop}.md" not in profiles:
             problems.append(f"--loops: no profile d4-{loop}.md")
     if len({loop.lower() for loop in loops}) < len(loops):
         # A loop named twice would run each task's leg twice into the same files.
         problems.append(f"--loops: {args.loops!r} names a loop twice, ignoring letter case")
-    if os.path.lexists(args.out):
+    if not args.out:
+        problems.append("--out is empty")
+    elif os.path.lexists(args.out):
         problems.append(f"--out: {args.out} already exists")
+    else:
+        try:
+            # Absolute: each child runs with cwd set to the read tree, so a relative path would
+            # resolve there and the prompt file would not be found.
+            out = Path(args.out).resolve()
+        # A link loop on the way raises RuntimeError before Python 3.13 and OSError from it.
+        except (OSError, RuntimeError) as exc:
+            problems.append(f"--out: {args.out} does not resolve: {exc}")
     if args.only:
         wanted = args.only.split(",")
         known = (
@@ -312,6 +361,12 @@ def main() -> int:
             else set()
         )
         problems += [f"--only: no task {tid!r}" for tid in wanted if tid not in known]
+    if not problems:
+        # Task `x-a` under loop `b` and task `x` under loop `a-b` would write the same files.
+        stems = [f"{t['id']}-{loop}".lower() for t in tasks for loop in loops]
+        clashes = sorted({stem for stem in stems if stems.count(stem) > 1})
+        if clashes:
+            problems.append(f"two legs would write the same files: {', '.join(clashes)}")
     if problems:
         for problem in problems:
             print(problem, file=sys.stderr)
@@ -319,9 +374,6 @@ def main() -> int:
         return 2
     if args.only:
         tasks = [t for t in tasks if t["id"] in wanted]
-    # Absolute: each child runs with cwd set to the read tree, so a relative path would
-    # resolve there and the prompt file would not be found.
-    out = Path(args.out).resolve()
     header = {
         "tasks_file": str(tasks_path),
         "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -427,7 +479,7 @@ def main() -> int:
             cells.append(" / ".join([*counts, "yes" if r["accepted"] else "no"]))
         cls = task["class"].replace("|", "\\|")
         lines.append(f"| {tid} | {cls} | " + " | ".join(cells) + " |")
-    (out / "table.md").write_text("\n".join(lines) + "\n")
+    (out / "table.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(json.dumps(summary, indent=2))
     if stopped:
         return 130

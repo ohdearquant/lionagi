@@ -152,13 +152,13 @@ and r4, and `spend_lines` is at least 1 in all 144 rows. Each leg's spend lines 
   written stops its task on a harness error); and an
   interrupt starts no further leg and still writes the summary and table (below). Third, `main()`
   makes the run directory only after it has checked that the read tree exists and `li` is an
-  executable file, read the task file (a YAML mapping with a `tasks` key), checked each task
+  executable file, read the task file (a YAML mapping with a `tasks` key, and no mapping in it naming a key twice), checked each task
   (`task_problems()`: an `id` of 1 to 100 letters, digits, `_` and `-` that no other task shares,
   letter case aside, since each leg's files are named after it; a non-empty `class` on one line
   and a non-empty `prompt`, both text that encodes as UTF-8; checks that are lists of non-empty
-  strings with a non-empty `all_of`; each regular expression non-empty and compiling), checked
-  `--concurrency`, `--loops` (each the name of a profile beside the runner, letter case included,
-  and none named twice), `--only` and that nothing, a dangling link included, is at `--out` yet,
+  strings with a non-empty `all_of`, each encoding as UTF-8; each regular expression compiling, not blank, and not matching an empty answer), checked
+  `--concurrency`, `--loops` (each 1 to 100 letters, digits, `_` and `-`, the name of a profile beside the runner, letter case included,
+  and none named twice), `--only`, that no two legs would write the same files, and that `--out` is not empty, resolves, and that nothing, a dangling link included, is at it yet,
   and started `git`
   and `li --version` for the header, so none of those checks failing, and neither program failing
   to start, leaves a run directory behind; a failed check exits 2. Of the two files' top-level
@@ -201,7 +201,7 @@ stopped on an error in the runner itself, still writes `summary.json` and `table
 it has: `summary.json` says why under `partial` and sets the D4 rule to `null`, with `d4_rule_unset`
 giving the same reason (and the count of legs with no spend line, if any), and `table.md` has a line
 for every task the run covers, marking a leg with no recorded row as `not run` (it did not start,
-or its row could not be written) and a count missing from a leg's output as `-`. On an interrupt (Ctrl-C)
+its row could not be written, or it was still running at a second interrupt) and a count missing from a leg's output as `-`. On an interrupt (Ctrl-C)
 no further leg starts and the runner waits for the legs already running. A second interrupt stops
 that wait: the summary and table are written from the rows so far, `partial` says that rows of legs
 still running may follow in `results.jsonl`, and the process exits once those legs end. The runner
