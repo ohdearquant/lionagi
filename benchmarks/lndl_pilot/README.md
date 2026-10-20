@@ -28,25 +28,40 @@ accepts no fewer tasks.
 |---|---|---|
 | r2 | `4d373f9c` | continues with no error |
 | r3 | `aca2e2e9` | a repair round that says nothing ran (ADR-0132 D2) |
-| r4 | `d8838f28` | as r3, and the repair round also says how a block opens and closes |
+| r4 | `d8838f28` | as r3; the repair round also says how a block opens and closes, the reader takes indented, longer and CRLF fences, and an empty block is a repair round |
 
 | run | loop | accepted | requests | requests per accepted | tool calls | wall time |
 |---|---|---|---|---|---|---|
 | r2 | react | 23 / 24 | 94 | 4.09 | 56 | 295.9 s |
 | r2 | lndl | 18 / 24 | 119 | 6.61 | 34 | 330.4 s |
 | r3 | react | 22 / 24 | 95 | 4.32 | 59 | 315.9 s |
-| r3 | lndl | 23 / 24 | 79 | 3.44 | 37 | 210.5 s |
+| r3 | lndl | 23 / 24 | 79 | 3.43 | 37 | 210.5 s |
 | r4 | react | 23 / 24 | 91 | 3.96 | 59 | 290.7 s |
 | r4 | lndl | 22 / 24 | 80 | 3.64 | 47 | 236.4 s |
 
-r2 fails the rule, r3 passes it, and r4, at the merged code, fails it by one accepted task
-(`t20`). ADR-0132 D4 reads them together.
+By the checks in `tasks.yaml`, r2 fails the rule, r3 passes it, and r4, at the merged code, fails it
+by one accepted task (`t20`). ADR-0132 D4 reads them together.
 
 `t06`'s check expects `100000`. Every answer to it in r2 and r3, in both loops, wrote `100,000`,
 and in r4 the ReAct answer wrote `100_000` and the `lndl` answer `100,000`, so it is rejected in
 all six. With that one check read as
 accepting the answer, r2 is react 24, lndl 19, r3 is react 23 at 4.13 requests per accepted task,
 lndl 24 at 3.29, and r4 is react 24 at 3.79, lndl 23 at 3.48; no run's outcome changes. The committed `tasks.yaml` is the file the runs used, unchanged.
+
+`t20` asks which module defines the class the factory imports, and its check expects the file path
+`lionagi/tools/code/search.py`. The r4 `lndl` answer named the module by its import path,
+`lionagi.tools.code.search`, and was rejected; no other answer to `t20` was. With that check read as
+accepting the import path, r4 is react 23 at 3.96, lndl 23 at 3.48, and meets the rule; with `t06`
+read the same way as well, react 24 at 3.79, lndl 24 at 3.33. r4's outcome therefore rests on
+this one check, and r2's and r3's do not change under either reading.
+
+The checks are substring checks (`all_of` and `none_of` in `tasks.yaml`), so a wrong answer that
+contains the expected words can pass. The 24 accepted answers to `t09`, `t11`, `t12` and `t22`
+(both loops, all three runs), where that is easiest, were read by hand, and all are correct.
+
+`run_pilot.py` takes each leg's requests from its spend line, counts a leg with none as zero
+requests, and computes the D4 rule in `summary.json` without checking that every leg reported one.
+Every leg in r2, r3 and r4 did (`spend_lines` is at least 1 in all 144 rows).
 
 ## What was changed for this directory
 
@@ -56,6 +71,9 @@ lndl 24 at 3.29, and r4 is react 24 at 3.79, lndl 23 at 3.48; no run's outcome c
 - In each `header.json`, `tasks_file` was an absolute path on the machine that ran it and now
   reads `tasks.yaml`. Nothing else in `runs/` was changed, apart from a final newline added to the
   JSON files.
+- The runner also writes each leg's prompt, stdout and stderr beside its results. Those are not
+  committed; the counts in ADR-0132 of runs that opened with an `<invoke>` tag and of requests that
+  went to rounds with no block are read from them.
 
 ## Running it
 

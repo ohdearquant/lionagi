@@ -3,8 +3,8 @@
 - **Status**: Proposed
 - **Kind**: Aspirational
 - **Implementation-status**: implemented — D1-D3 are implemented and the D4 pilot ran (D4, Result);
-  at the merged code it does not meet the rule, so `lndl` stays an opt-in setting and is not
-  recommended
+  at the merged code it does not meet the rule by the checks fixed before the run, and would by a
+  substance reading of one check, so `lndl` stays an opt-in setting and is not recommended
 - **Area**: operations
 - **Date**: 2026-10-17
 - **Relations**: extends ADR-0024 (LNDL operate integration adapter) and ADR-0041 Amendment 1
@@ -145,11 +145,11 @@ tables of requests, tool calls, wall time and acceptance are `runs/<run>/table.m
 | r2 | `4d373f9c` | react | 23 / 24 | 94 | 4.09 | 56 |
 | r2 | `4d373f9c` | lndl | 18 / 24 | 119 | 6.61 | 34 |
 | r3 | `aca2e2e9` | react | 22 / 24 | 95 | 4.32 | 59 |
-| r3 | `aca2e2e9` | lndl | 23 / 24 | 79 | 3.44 | 37 |
+| r3 | `aca2e2e9` | lndl | 23 / 24 | 79 | 3.43 | 37 |
 | r4 | `d8838f28` | react | 23 / 24 | 91 | 3.96 | 59 |
 | r4 | `d8838f28` | lndl | 22 / 24 | 80 | 3.64 | 47 |
 
-r2 fails the rule and r3 passes it, and one change separates them: in r2 an `lndl` round with no
+r2 fails the rule and r3 passes it, and one change to the Python package separates them: in r2 an `lndl` round with no
 block continued with no error, and in r3 it is the repair round D2 describes. In both runs 17 of the
 24 `lndl` runs opened with a call written as an `<invoke>` tag outside any block. In r2, 12 of those
 recovered on their own and 5 (`t03`, `t04`, `t17`, `t18`, `t19`) repeated the tag until the budget
@@ -163,23 +163,40 @@ with no block.
   against 95.
 - `t06`'s check expects `100000` and all four answers to it wrote `100,000`. Read as accepting that,
   r3 is `lndl` 24 at 3.29 requests per accepted task and ReAct 23 at 4.13, and r2 still fails.
-- No `lndl` run made more than four tool calls, so no round came near the 16-call limit, and that
-  limit is still unmeasured.
+- The tool calls counted are the calls that ran. The most any `lndl` run made was four in r2, three
+  in r3 and five in r4 (`t21` and `t22`). A round that declares more than 16 calls is refused and
+  none of its calls runs (D2), so these counts cannot show whether a round reached the limit, and
+  the limit is still unmeasured.
 - r4 ran the merged code (`d8838f28`), whose repair round also tells the model how a block opens
   and closes, reads indented, longer and CRLF fences, and treats an empty block as a repair round
-  (D2). It fails the rule: `lndl` used fewer requests per accepted task (80 requests, 3.64, against
-  91 and 3.96) and accepted one task fewer (22 against 23). The deciding task is `t20`: the `lndl`
-  run named the module by its import path, `lionagi.tools.code.search`, said it had not opened the
-  file, and the check asks for `lionagi/tools/code/search.py`. Read on substance, `t06` (both r4
-  answers give the cap, as `100,000` or `100_000`) adds one task to each side and the outcome is
-  the same. 17
-  of the 24 `lndl` runs again opened with an `<invoke>` tag, each wrote a block in its next round,
-  17 of the 80 requests went to rounds with no block, and no run reached the round budget.
+  (D2). By the checks fixed before the first run, it fails the rule: `lndl` used fewer requests per
+  accepted task (80 requests, 3.64, against 91 and 3.96) and accepted one task fewer (22 against
+  23). The deciding task is `t20`, and the outcome rests on its check. The question asks which
+  module; the `lndl` run named it by its import path, `lionagi.tools.code.search`, and said it had
+  not opened the file, and the check asks for the file path `lionagi/tools/code/search.py`. Read on
+  substance, `t20` alone makes r4 meet the rule (`lndl` 23 at 3.48 requests per accepted task
+  against ReAct 23 at 3.96). `t06` alone (both r4 answers name `_SHELL_CONTROL` and give the cap, as
+  `100,000` or `100_000`) adds one task to each side and leaves the outcome as it is; with both,
+  `lndl` is 24 at 3.33 against 24 at 3.79. r2 fails and r3 passes under every one of these
+  readings. 17 of the 24 `lndl` runs again opened with an `<invoke>` tag, each wrote a block in its
+  next round, 17 of the 80 requests went to rounds with no block, and no run reached the round
+  budget.
 - r3 and r4 split the accepts clause by one task in opposite directions (`t04` on the ReAct side in
-  r3, `t20` on the `lndl` side in r4), so 24 tasks cannot settle it. The request saving held in
-  both runs: 79 requests against 95, and 80 against 91. Under D4, `lndl` is not a recommended
-  setting and the default stays `react`; a recommendation would need a larger task set and a later
-  decision.
+  r3, `t20` on the `lndl` side in r4), so 24 tasks cannot settle it, and in r4 the split rests on how
+  one check reads one answer. The request saving held in both runs: 79 requests against 95, and 80
+  against 91. D4 fixes each task's check before the first run and lets it decide, so under D4 `lndl`
+  is not a recommended setting and the default stays `react`. A recommendation needs a run whose
+  `t06` and `t20` checks accept the answer's substance, fixed before that run starts, or a larger
+  task set, and a later decision.
+- The checks are substring checks, so a wrong answer that contains the expected words can pass. The
+  answers where that is easiest, the 24 accepted answers to `t09`, `t11`, `t12` and `t22` (both
+  loops, all three runs), were read by hand, and all of them are correct.
+- The counts of runs that opened with an `<invoke>` tag and of requests that went to rounds with no
+  block are read from each leg's own output, which the pilot writes beside its results and does not
+  commit; the committed files give the per-task requests, tool calls and acceptance.
+- All 144 legs exited 0. In r2 five `lndl` legs spent all 11 requests, on the code before the repair
+  round; whether that code ended such a turn `failed`, as D2 now requires, has not been traced. No
+  leg in r3 or r4 reached the budget, so the pilot does not exercise D2's exhausted-turn exit.
 
 ## Consequences
 
