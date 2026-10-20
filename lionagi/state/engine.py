@@ -771,9 +771,9 @@ def _mask_spans(text: str, *, whole: bool) -> str:
     """Mask each span these readings take for a secret, all found before any
     is masked: each query value whose key ends in ``password``, each value of
     a key ending in ``password`` outside a query, then each URL password and
-    ``user:secret@``, read on *text* and again on a view with the query
-    values blanked, which takes out a delimiter such a value may hold that
-    would stop a reading short. *whole* reads *text* as one URL given alone.
+    ``user:secret@``, read on *text* and, when it has query values to mask,
+    again on a view with them blanked, which takes out a delimiter such a
+    value may hold that would stop a reading short. *whole* reads *text* as one URL given alone.
     The query and URL readings take one scan of the string plus a binary
     search per match, and the keyword readings read each position a bounded
     number of times however many values overlap (``_ValueEnds``), so the cost
@@ -808,7 +808,7 @@ def _mask_spans(text: str, *, whole: bool) -> str:
             continue
         stops = _BLANK_OR_AMPERSAND if after_ampersand else _BLANK
         spans.append((pos, reads.next_match(stops, end)))
-    for s in (text, "".join(blanked)):
+    for s in (text, "".join(blanked)) if values else (text,):
         ats = [m.start() for m in re.finditer("@", s)]
         gaps = [m.start() for m in _SPACE.finditer(s)]
         for m in _URL_USER.finditer(s):
