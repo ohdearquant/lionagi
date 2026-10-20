@@ -817,6 +817,33 @@ async def test_a_codex_worker_with_no_run_set_still_ignores_the_user_config(tmp_
 
 
 @pytest.mark.asyncio
+async def test_a_codex_worker_keeps_the_sandbox_and_the_hooks_the_user_config_trusts(
+    tmp_run, codex_home
+):
+    """The user config's servers stay out, while its sandbox mode and the trust
+    records of its hooks.json hooks reach the worker beside the flag."""
+    hook_key = f"{codex_home.path / 'hooks.json'}:pre_tool_use:0:0"
+    (codex_home.path / "config.toml").write_text(
+        'sandbox_mode = "workspace-write"\n'
+        "[mcp_servers.ambient]\n"
+        'command = "ambient-mcp"\n'
+        f'[hooks.state."{hook_key}"]\n'
+        'trusted_hash = "sha256:abc"\n'
+    )
+    env = await _setup(no_mcp_config=False)
+
+    branch, _, _, _ = await build_worker_branch(
+        env, agent_id="w1", role="implementer", model_override="codex/gpt-5"
+    )
+    args = await _codex_cli_args(branch.chat_model)
+
+    assert "--ignore-user-config" in args
+    assert _pair_follows(args, "-s", "workspace-write")
+    assert [arg for arg in args if arg.startswith("hooks.state=") and hook_key in arg]
+    assert not [arg for arg in args if "ambient" in arg]
+
+
+@pytest.mark.asyncio
 async def test_a_codex_worker_takes_no_effort_from_the_user_config(tmp_run, codex_home):
     """The user config's effort is read only to keep it under the model's ceiling,
     and a worker never loads that config, so no effort is derived from it."""
@@ -926,7 +953,9 @@ async def test_the_run_record_stores_the_orchestrators_own_effort(
 
 
 @pytest.mark.asyncio
-async def test_a_claude_worker_reads_no_setting_sources(tmp_run):
+async def test_a_claude_worker_keeps_its_settings_sources(tmp_run):
+    """The hooks and permissions in a Claude worker's settings are what gate its
+    tool calls, so the boundary leaves its settings sources as they are."""
     env = await _setup(no_mcp_config=False)
 
     branch, _, _, _ = await build_worker_branch(
@@ -934,31 +963,38 @@ async def test_a_claude_worker_reads_no_setting_sources(tmp_run):
     )
     args = await _cli_args(branch.chat_model)
 
-    assert _pair_follows(args, "--setting-sources", "")
-    assert "--settings" not in args
+    assert "--setting-sources" not in args
 
 
-def test_the_boundary_drops_a_codex_profile_and_a_claude_settings_file(codex_home):
-    """A `-p` profile is part of the user config, and a settings file is a
-    source of its own; neither reaches a worker."""
+def test_the_boundary_drops_a_codex_profile_and_leaves_a_claude_settings_file(codex_home):
+    """A `-p` profile is part of the codex user config and does not reach a
+    worker; a Claude settings file does."""
     from lionagi.cli._providers import build_imodel_from_spec
 
     codex = build_imodel_from_spec("codex/gpt-5")
     codex.endpoint.config.kwargs["profile"] = "work"
     claude = build_imodel_from_spec("claude_code/sonnet")
     claude.endpoint.config.kwargs["settings"] = "settings.json"
+    claude_before = dict(claude.endpoint.config.kwargs)
 
     orch_mod._isolate_worker_cli_config(codex)
     orch_mod._isolate_worker_cli_config(claude)
 
     assert codex.endpoint.config.kwargs["ignore_user_config"] is True
     assert codex.endpoint.config.kwargs["profile"] is None
-    assert claude.endpoint.config.kwargs["setting_sources"] == ""
-    assert claude.endpoint.config.kwargs["settings"] is None
+    assert claude.endpoint.config.kwargs == claude_before
 
 
-@pytest.mark.parametrize("spelling", ["CLAUDE_CODE", " claude_code "])
-def test_the_boundary_folds_claude_provider_spellings(spelling):
+@pytest.mark.parametrize(
+    ("spelling", "expected"),
+    [
+        ("CODEX", {"ignore_user_config": True, "profile": None}),
+        (" codex ", {"ignore_user_config": True, "profile": None}),
+        ("CLAUDE_CODE", {}),
+        (" claude_code ", {}),
+    ],
+)
+def test_the_boundary_folds_provider_spellings(spelling, expected):
     imodel = SimpleNamespace(
         is_cli=True,
         endpoint=SimpleNamespace(config=SimpleNamespace(provider=spelling, kwargs={})),
@@ -966,7 +1002,7 @@ def test_the_boundary_folds_claude_provider_spellings(spelling):
 
     orch_mod._isolate_worker_cli_config(imodel)
 
-    assert imodel.endpoint.config.kwargs == {"setting_sources": "", "settings": None}
+    assert imodel.endpoint.config.kwargs == expected
 
 
 def test_the_boundary_leaves_a_model_with_no_cli_alone():

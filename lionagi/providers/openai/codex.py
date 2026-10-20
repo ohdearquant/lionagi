@@ -17,7 +17,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mappin
 from dataclasses import dataclass
 from pathlib import Path
 from textwrap import shorten
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 import toml
 from pydantic import (
@@ -1305,11 +1305,13 @@ class CodexCodeRequest(BaseModel):
         default=False,
         description=(
             "Do not load CODEX_HOME/config.toml for this invocation, so the user's "
-            "MCP servers, hooks and profiles stay out of the run. Codex keeps its "
-            "normal authentication store. The flag does not cover project layers, so a "
-            "run with this set is refused when one of them declares `mcp_servers`. The "
-            "user config's sandbox network grant, when it has one, is passed beside "
-            "the flag: the flag is about what the run loads, not about its network."
+            "MCP servers and profiles stay out of the run. Codex keeps its normal "
+            "authentication store. The flag does not cover project layers, so a run "
+            "with this set is refused when one of them declares `mcp_servers`. The user "
+            "config's sandbox mode, sandbox network grant and hook trust records are "
+            "passed beside the flag, so the hooks it trusts in CODEX_HOME/hooks.json "
+            "still run; a user config that declares hooks itself is refused, since "
+            "their trust records name the file the run does not load."
         ),
         json_schema_extra=_cli("--ignore-user-config", 64, "bool"),
     )
@@ -1725,6 +1727,7 @@ class CodexCodeRequest(BaseModel):
         cwd = self.cwd()
 
         args.extend(self._build_declarative_args(plain))
+        carried = _ignored_user_config_carry(plain) if plain.ignore_user_config else None
 
         for git_root in _linked_worktree_git_writable_roots(cwd):
             if str(git_root) not in plain.add_dir:
@@ -1746,6 +1749,10 @@ class CodexCodeRequest(BaseModel):
                 args.extend(["-c", f"approval_policy={rendered}"])
             if plain.sandbox:
                 args.extend(["-s", plain.sandbox])
+            elif carried is not None and carried.sandbox_mode:
+                # Without the user config codex falls back to its built-in read-only
+                # sandbox, so the mode the user config sets is handed over here.
+                args.extend(["-s", carried.sandbox_mode])
 
         # Web search: old `--search` flag was removed upstream (2026-04);
         # express intent via the `tool_search` feature flag instead.
@@ -1802,12 +1809,15 @@ class CodexCodeRequest(BaseModel):
             args.extend(["-c", f"{key}={rendered}"])
 
         # `--ignore-user-config` drops the whole user config, and with it the
-        # `[sandbox_workspace_write] network_access` grant: under the flag alone a
-        # workspace-write child has no network. The flag is about what the run loads,
-        # not about its network, so the user config's own grant rides beside it, and
-        # only when the user config makes one; an override naming the key wins.
-        if plain.ignore_user_config and _user_config_network_grant(plain):
+        # `[sandbox_workspace_write] network_access` grant and the `[hooks.state]` trust
+        # records: under the flag alone a workspace-write child has no network, and
+        # codex finds CODEX_HOME/hooks.json but runs none of its hooks. The flag is about
+        # which servers and profiles the run loads, so both ride beside it.
+        if carried is not None and carried.network_grant:
             args.extend(["-c", "sandbox_workspace_write.network_access=true"])
+        if carried is not None and carried.hook_trust:
+            rendered = _rendered_override_value(carried.hook_trust, "The hook trust records")
+            args.extend(["-c", f"hooks.state={rendered}"])
 
         # Working directory (always emit)
         args.extend(["-C", str(cwd)])
@@ -1932,27 +1942,113 @@ class CodexCodeRequest(BaseModel):
 CodexSession = CLISession
 
 
-def _user_config_network_grant(plain: _PlainRequest) -> bool:
-    """Whether the user config the run ignores grants the workspace-write sandbox network.
+@dataclass(frozen=True)
+class _UserConfigCarry:
+    """The settings of an ignored user config that ride beside `--ignore-user-config`."""
 
-    False when an override of the run names the key, as `sandbox_workspace_write.network_access`
-    or inside a `sandbox_workspace_write` table: the caller's value is on the command line
-    already. A user config that cannot be read grants nothing; the run does not load it.
+    sandbox_mode: str | None = None
+    network_grant: bool = False
+    hook_trust: dict[str, dict[str, Any]] | None = None
+
+
+_SANDBOX_MODES = frozenset(get_args(CodexSandboxMode))
+
+
+def _ignored_user_config_carry(plain: _PlainRequest) -> _UserConfigCarry:
+    """Read the user config a run ignores for the settings that ride beside the flag.
+
+    Three settings of CODEX_HOME/config.toml are about the run's own posture rather
+    than about which servers and profiles it loads: the sandbox mode, the
+    workspace-write network grant, and the `[hooks.state]` trust records. Codex still
+    finds CODEX_HOME/hooks.json under the flag, but runs a hook from it only when its
+    trust record is in the user config or on the command line. Each setting rides
+    when the file sets it and no override of the run names it; an override is on the
+    command line already.
+
+    Hook events declared in the file itself cannot ride: their trust records name a
+    file the run does not load. A run that would drop them is refused, naming them. A
+    file that cannot be read carries nothing, and the warning says what is lost.
     """
+    config_path = codex_home_for_env(plain.env) / "config.toml"
+    try:
+        config = _read_codex_config(config_path) or {}
+    except ValueError as exc:
+        log.warning(
+            "the ignored codex config cannot be read, so its sandbox mode, network grant and "
+            "hook trust records do not ride beside the flag, and no hook it trusts runs: %s",
+            exc,
+        )
+        return _UserConfigCarry()
+    hooks = config.get("hooks")
+    hooks = hooks if isinstance(hooks, Mapping) else {}
+    declared = sorted(str(name) for name, groups in hooks.items() if name != "state" and groups)
+    if declared:
+        raise ConfigurationError(
+            f"Codex cannot start with --ignore-user-config: {config_path} declares hooks "
+            f"({', '.join(declared)}), which the flag drops, and their trust records name that "
+            "file, so they cannot ride beside it. Declared in hooks.json in the same directory, "
+            "which codex reads under the flag, they run once trusted."
+        )
+    mode = config.get("sandbox_mode")
+    table = config.get("sandbox_workspace_write")
+    trust = _hook_trust_records(hooks.get("state"))
+    return _UserConfigCarry(
+        sandbox_mode=(
+            mode
+            if mode in _SANDBOX_MODES and not _override_names(plain, ["sandbox_mode"])
+            else None
+        ),
+        network_grant=(
+            isinstance(table, Mapping)
+            and table.get("network_access") is True
+            and not _override_names(plain, ["sandbox_workspace_write", "network_access"])
+        ),
+        hook_trust=(trust if trust and not _override_names(plain, ["hooks", "state"]) else None),
+    )
+
+
+def _hook_trust_records(state: Any) -> dict[str, dict[str, Any]]:
+    """The `[hooks.state]` entries codex would read from the user config.
+
+    Codex skips an entry whose `enabled` is not a boolean or whose `trusted_hash` is
+    not a string, so such an entry is left out here too rather than half carried.
+    """
+    if not isinstance(state, Mapping):
+        return {}
+    records: dict[str, dict[str, Any]] = {}
+    for key, entry in state.items():
+        if not isinstance(entry, Mapping):
+            continue
+        enabled, trusted_hash = entry.get("enabled"), entry.get("trusted_hash")
+        if enabled is not None and not isinstance(enabled, bool):
+            continue
+        if trusted_hash is not None and not isinstance(trusted_hash, str):
+            continue
+        record = {
+            name: value
+            for name, value in (("enabled", enabled), ("trusted_hash", trusted_hash))
+            if value is not None
+        }
+        if record:
+            records[str(key)] = record
+    return records
+
+
+def _override_names(plain: _PlainRequest, key_path: list[str]) -> bool:
+    """Whether an override of the run sets ``key_path`` or a key under it, dotted or
+    inside a table."""
     for index, (key, value) in enumerate(plain.overrides):
         path = _override_key_path(key, f"The key of the config override entry {index}")
-        if path[:2] == ["sandbox_workspace_write", "network_access"]:
-            return False
-        if path == ["sandbox_workspace_write"] and isinstance(value, Mapping):
-            if "network_access" in value:
-                return False
-    try:
-        config = _read_codex_config(codex_home_for_env(plain.env) / "config.toml")
-    except ValueError as exc:
-        log.warning("the network grant of the ignored codex config is unknown: %s", exc)
-        return False
-    table = (config or {}).get("sandbox_workspace_write")
-    return isinstance(table, Mapping) and table.get("network_access") is True
+        if path[: len(key_path)] == key_path:
+            return True
+        if path == key_path[: len(path)]:
+            for part in key_path[len(path) :]:
+                if not isinstance(value, Mapping) or part not in value:
+                    break
+                value = value[part]
+            else:
+                return True
+    return False
 
 
 def refuse_declaring_project_layer(plain: _PlainRequest, cwd: Path) -> None:

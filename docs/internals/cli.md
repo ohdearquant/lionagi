@@ -347,11 +347,14 @@ found even when named (above), so the policy still applies to it. Once a worker 
 exclusively: the Claude CLI is run with `--strict-mcp-config`, so it adds none
 of the servers it would discover itself. Every worker, a reactively spawned node included, is passed through
 `_isolate_worker_cli_config` before the hand-over, set or no set: a codex worker
-runs with `--ignore-user-config` and no `-p` profile, so the servers, hooks and
+runs with `--ignore-user-config` and no `-p` profile, so the servers and
 profiles of the user's codex config never load and none needs disabling by
-name, and a Claude worker gets an empty `--setting-sources` and no `--settings`
-file. A worker therefore has none of the servers its CLI would load from its
-own configuration, a withheld one included; the orchestrator keeps them. The
+name. The config's sandbox mode, network grant and hook trust records ride
+beside the flag, so the hooks it trusts in `$CODEX_HOME/hooks.json` still gate
+the worker's tool calls, and a config that declares hooks itself is refused.
+A Claude worker keeps its settings sources, whose hooks and permissions gate
+its tool calls. A worker therefore has none of the servers its CLI would load
+from its own configuration, a withheld one included; the orchestrator keeps them. The
 synthesis branch starts from a copy of the orchestrator's model and is not
 isolated, so the same exclusive hand-over is what takes the orchestrator's
 servers off it: on codex, with a non-empty set, or an allowlist naming a server its

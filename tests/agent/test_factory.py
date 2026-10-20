@@ -1235,6 +1235,35 @@ async def test_forward_mcp_codex_empty_allowlist_ignores_the_ambient_config_too(
     assert not [arg for arg in args if "ambient-" in arg]
 
 
+async def test_forward_mcp_codex_empty_set_keeps_the_sandbox_and_the_hooks_the_user_config_trusts(
+    tmp_path, monkeypatch
+):
+    """An empty set ignores the user config, so its sandbox mode and the trust
+    records of its hooks.json hooks ride beside the flag while its servers stay out."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    codex_home = tmp_path / "codex_home"
+    codex_home.mkdir()
+    hook_key = f"{codex_home / 'hooks.json'}:pre_tool_use:0:0"
+    (codex_home / "config.toml").write_text(
+        'sandbox_mode = "workspace-write"\n'
+        '[mcp_servers.ambient-one]\ncommand = "one"\n'
+        f'[hooks.state."{hook_key}"]\ntrusted_hash = "sha256:abc"\n'
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    (tmp_path / "elsewhere").mkdir()
+    config = AgentSpec.compose("reviewer", model="codex/gpt-5.5", cwd=str(tmp_path / "elsewhere"))
+    config.mcp_servers = []
+    branch = await create_agent(config, load_settings=False)
+    api_call = await branch.chat_model.create_event(prompt="hi")
+    args = api_call.payload["request"].as_cmd_args()
+
+    assert "--ignore-user-config" in args
+    assert any(args[i : i + 2] == ["-s", "workspace-write"] for i in range(len(args) - 1))
+    assert [arg for arg in args if arg.startswith("hooks.state=") and hook_key in arg]
+    assert not [arg for arg in args if "ambient-" in arg]
+
+
 async def test_forward_mcp_codex_allowlist_enforcement_fails_closed_on_double_discovery_failure(
     tmp_path, monkeypatch
 ):

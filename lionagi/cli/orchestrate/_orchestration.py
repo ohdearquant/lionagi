@@ -702,28 +702,25 @@ def _worker_mcp_policy_section(env: OrchestrationEnv, *, grant_spawn: bool) -> s
 
 
 def _isolate_worker_cli_config(imodel) -> None:
-    """Keep the user's own CLI configuration out of a worker's process.
+    """Keep the user's own codex configuration out of a codex worker's process.
 
     A worker is started by the run, not by the person whose interactive CLI config
-    sits in their home directory, and that config carries MCP servers, hooks,
-    plugins and permissions of its own. Codex gets ``--ignore-user-config`` and no
-    ``-p`` profile; Claude gets an empty ``--setting-sources`` and no settings file.
-    What the worker is meant to have (its MCP set, model, effort, sandbox) is handed
-    to it explicitly. Applied before the MCP hand-off, which reads the codex flag.
+    sits in their home directory, and a codex config carries MCP servers and
+    profiles of its own. Codex gets ``--ignore-user-config`` and no ``-p`` profile.
+    Its MCP set, model and effort are handed to it explicitly, and the user
+    config's sandbox mode, network grant and hook trust records ride beside the
+    flag, so the hooks the user trusts still gate its tool calls. A Claude worker
+    keeps its settings sources, whose hooks and permissions gate its tool calls.
+    Applied before the MCP hand-off, which reads the codex flag.
     """
     if not getattr(imodel, "is_cli", False):
         return
     from lionagi.agent.factory import _canonical_provider
-    from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
 
     kwargs = imodel.endpoint.config.kwargs
-    provider = _canonical_provider(imodel.endpoint.config.provider)
-    if provider == "codex":
+    if _canonical_provider(imodel.endpoint.config.provider) == "codex":
         kwargs["ignore_user_config"] = True
         kwargs["profile"] = None
-    elif provider in _CLAUDE_PROVIDER_NAMES:
-        kwargs["setting_sources"] = ""
-        kwargs["settings"] = None
 
 
 def _check_orchestrator_clone_mcp_set(env: OrchestrationEnv) -> None:

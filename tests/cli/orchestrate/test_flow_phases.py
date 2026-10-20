@@ -752,19 +752,12 @@ async def test_execute_dag_reactive_wires_spawn_branch_setup_for_cli_workspace(t
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("spec", "user_key", "user_value", "flag_key", "flag_value"),
-    [
-        ("codex/gpt-5", "profile", "work", "ignore_user_config", True),
-        ("claude_code/sonnet", "settings", "settings.json", "setting_sources", ""),
-    ],
-)
-async def test_a_reactively_spawned_cli_node_runs_without_the_user_cli_config(
-    tmp_path, codex_home, spec, user_key, user_value, flag_key, flag_value
-):
+async def test_a_reactively_spawned_codex_node_runs_without_the_user_config(tmp_path, codex_home):
     """A spawned node is cloned from its emitter's branch, so its model starts
     with the emitter's CLI settings. The spawn hook isolates the clone the way a
     planned worker is isolated, and the emitter's own model keeps its settings."""
+    spec, user_key, user_value = "codex/gpt-5", "profile", "work"
+    flag_key, flag_value = "ignore_user_config", True
     from lionagi.cli._providers import build_imodel_from_spec
     from lionagi.engines import PlanningEngine
     from lionagi.session.branch import Branch
