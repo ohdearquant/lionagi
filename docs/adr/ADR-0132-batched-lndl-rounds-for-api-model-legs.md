@@ -3,9 +3,8 @@
 - **Status**: Proposed
 - **Kind**: Aspirational
 - **Implementation-status**: implemented — D1-D3 are implemented and the D4 pilot ran (D4, Result);
-  at the merged code it does not meet the rule by the checks fixed before the run, and would by a
-  substance reading of one check. `lndl` stays an opt-in setting and is not recommended, the
-  default stays `react`, and D4's outcome waits on a further run, `r5` (D4, Result)
+  at the merged code, with each task's check fixed before the run, `r5` meets the rule, so `lndl` is
+  a recommended profile setting for API-model legs and the default stays `react` (D4, Result)
 - **Area**: operations
 - **Date**: 2026-10-17
 - **Relations**: extends ADR-0024 (LNDL operate integration adapter) and ADR-0041 Amendment 1
@@ -149,6 +148,8 @@ tables of requests, tool calls, wall time and acceptance are `runs/<run>/table.m
 | r3 | `aca2e2e9` | lndl | 23 / 24 | 79 | 3.43 | 37 |
 | r4 | `d8838f28` | react | 23 / 24 | 91 | 3.96 | 59 |
 | r4 | `d8838f28` | lndl | 22 / 24 | 80 | 3.64 | 47 |
+| r5 | `208bcc08` | react | 23 / 24 | 99 | 4.30 | 65 |
+| r5 | `208bcc08` | lndl | 23 / 24 | 79 | 3.43 | 43 |
 
 r2 fails the rule and r3 passes it, and one change to the Python package separates them: in r2 an
 `lndl` round with no block continued with no error, and in r3 it is the repair round D2 describes.
@@ -171,9 +172,9 @@ requests went to rounds with no block.
   gives the cap as `100,000` and quotes `_MAX_OUTPUT_BYTES = 100_000`. Read as accepting that,
   r3 is `lndl` 24 at 3.29 requests per accepted task and ReAct 23 at 4.13, and r2 still fails.
 - The tool calls counted are the calls that ran. The most any `lndl` run made was four in r2, three
-  in r3 and five in r4 (`t21` and `t22`). A round that declares more than 16 calls is refused and
-  none of its calls runs (D2), so these counts cannot show whether a round reached the limit, and
-  the limit is still unmeasured.
+  in r3, five in r4 (`t21` and `t22`) and three in r5. A round that declares more than 16 calls is
+  refused and none of its calls runs (D2), so these counts cannot show whether a round reached the
+  limit, and the limit is still unmeasured.
 - r4 ran the merged code (`d8838f28`), whose repair round also tells the model how a block opens
   and closes, reads indented, longer and CRLF fences, and treats an empty block as a repair round
   (D2). By the checks fixed before the first run, it fails the rule: `lndl` used fewer requests per
@@ -191,23 +192,33 @@ requests went to rounds with no block.
 - r3 and r4 split the accepts clause by one task in opposite directions (`t04` on the ReAct side in
   r3, `t20` on the `lndl` side in r4), so 24 tasks cannot settle it, and in r4 the split rests on how
   one check reads one answer. The request saving held in both runs: 79 requests against 95, and 80
-  against 91. D4 fixes each task's check before the first run and lets it decide, so `lndl` is not
-  recommended and the default stays `react`. D4's outcome is pending: a further run, `r5`, at the
-  merged code, with `t06` and `t20` checks that accept the answer's substance and are fixed before
-  it starts, decides it, and its result is recorded in a later change.
-- The checks are substring checks, so a wrong answer that contains the expected words can pass. The
-  answers where that is easiest, the 24 accepted answers to `t09`, `t11`, `t12` and `t22` (both
-  loops, all three runs), were read by hand, and all of them are correct. Every answer is committed
+  against 91. D4 fixes each task's check before the first run and lets it decide, so after r4 `lndl` was
+  not recommended and D4's outcome was left to a further run, `r5`, at the merged code, with `t06`
+  and `t20` checks that accept the answer's substance, fixed before it started.
+- r5 ran the merged code (`208bcc08`, 13 commits past `d8838f28`, none of them in the LNDL Middle;
+  both loops ran that same code) with `t06` accepting the value in any of its spellings and `t20`
+  accepting the module by its file or its import path, both committed before the run started. It
+  meets the rule: `lndl` used 79 requests against 99 (3.43 per accepted task against 4.30) and
+  accepted 23 tasks, as ReAct did. Its two rejections are a wrong `lndl` answer to `t03`, a default
+  taken from another package in the read tree, and a ReAct leg on `t10` that called a tool it does
+  not have and then answered that it could not find the constants. By D4, `lndl` is now a
+  recommended profile setting for API-model legs, and the default stays `react` until a later
+  decision changes it. The accepts clause holds with no margin: r3 and r4 split it by one task in
+  opposite directions and r5 ties it, so 24 tasks do not show `lndl` accepting more or fewer tasks
+  than ReAct. The request saving held in every run since r3: 79 against 95, 80 against 91
+  and 79 against 99.
+- The checks are substring checks, so a wrong answer that contains the expected words can pass. The answers where that is easiest, the 32 accepted answers to `t09`, `t11`, `t12` and `t22` (both
+  loops, all four runs), were read by hand, and all of them are correct. Every answer is committed
   with the runs (`answers.jsonl`).
 - The counts of runs that opened with an `<invoke>` tag and of requests that went to rounds with no
   block are read from each leg's conversation, which `li agent` keeps under the run's home directory
   and the pilot does not commit; the committed files give the per-task requests, tool calls,
   acceptance and answers.
-- All 144 legs exited 0 and none exhausted its round budget, which D2 defines as spending it without
+- All 192 legs exited 0 and none exhausted its round budget, which D2 defines as spending it without
   an accepted `OUT{}`. The five r2 `lndl` legs that spent all 11 requests returned an `OUT{}` the
   loop accepted in their last round (their answers then failed the task checks, as above); an
   exhausted budget raises `LNDLError`, which `li agent` records as the run's failure and re-raises,
-  so such a leg would have exited non-zero. No `lndl` leg in r3 or r4 spent more than 5. The pilot
+  so such a leg would have exited non-zero. No `lndl` leg in r3, r4 or r5 spent more than 5. The pilot
   therefore does not exercise D2's exhausted-turn exit.
 
 ## Consequences
