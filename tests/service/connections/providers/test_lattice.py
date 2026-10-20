@@ -14,8 +14,6 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
-from aiohttp import ClientResponseError, web
-from aiohttp.test_utils import TestServer
 from pydantic import BaseModel, ValidationError
 
 from lionagi._errors import ProviderStreamError
@@ -26,9 +24,18 @@ from lionagi.providers.lattice.chat import (
     LatticeLoraSelection,
 )
 from lionagi.providers.lattice.embed import LatticeEmbedEndpoint, LatticeEmbedRequest
+from lionagi.service.connections._http import HTTPStatusError
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.connections.match_endpoint import match_endpoint
 from lionagi.service.imodel import iModel
+from tests._local_http import (
+    Application,
+    LocalServer,
+    Redirect,
+    Request,
+    StreamResponse,
+    json_response,
+)
 
 MODEL = "qwen3.5-0.8b"
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -55,7 +62,7 @@ def _chat_reply(content: str) -> dict:
 async def lattice_server():
     """Starts a server shaped like `lattice serve` from inside the test, so it is served by
     the test's own event loop."""
-    servers: list[TestServer] = []
+    servers: list[LocalServer] = []
 
     async def _start(
         reply: str = "Hello there",
@@ -64,7 +71,7 @@ async def lattice_server():
     ) -> tuple[str, list[dict]]:
         received: list[dict] = []
 
-        async def record(request: web.Request) -> dict:
+        async def record(request: Request) -> dict:
             raw = await request.read()
             entry = {
                 "path": request.path,
@@ -75,13 +82,13 @@ async def lattice_server():
             received.append(entry)
             return entry
 
-        async def chat(request: web.Request):
+        async def chat(request: Request):
             entry = await record(request)
             if redirect:
-                raise web.HTTPTemporaryRedirect(location=redirect)
+                raise Redirect(redirect)
             if not entry["body"].get("stream"):
-                return web.json_response(_chat_reply(reply))
-            response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+                return json_response(_chat_reply(reply))
+            response = StreamResponse(headers={"Content-Type": "text/event-stream"})
             await response.prepare(request)
             for event in stream_events or ():
                 await response.write(b"data: " + json.dumps(event).encode() + b"\n\n")
@@ -89,13 +96,13 @@ async def lattice_server():
             await response.write_eof()
             return response
 
-        async def embeddings(request: web.Request):
+        async def embeddings(request: Request):
             entry = await record(request)
             if redirect:
-                raise web.HTTPTemporaryRedirect(location=redirect)
+                raise Redirect(redirect)
             items = entry["body"]["input"]
             items = items if isinstance(items, list) else [items]
-            return web.json_response(
+            return json_response(
                 {
                     "object": "list",
                     "data": [
@@ -107,18 +114,18 @@ async def lattice_server():
                 }
             )
 
-        async def elsewhere(request: web.Request):
+        async def elsewhere(request: Request):
             """Where a redirect sends the request; records it so a test can see the second
             request the client made."""
             await record(request)
-            return web.json_response(_chat_reply(reply))
+            return json_response(_chat_reply(reply))
 
-        app = web.Application()
-        app.router.add_post("/v1/chat/completions", chat)
-        app.router.add_post("/v1/embeddings", embeddings)
+        app = Application()
+        app.add_post("/v1/chat/completions", chat)
+        app.add_post("/v1/embeddings", embeddings)
         if redirect:
-            app.router.add_route("*", redirect, elsewhere)
-        server = TestServer(app, host="127.0.0.1")
+            app.add_route("*", redirect, elsewhere)
+        server = LocalServer(app, host="127.0.0.1")
         await server.start_server()
         servers.append(server)
         return str(server.make_url("/v1")), received
@@ -386,11 +393,11 @@ async def test_a_lattice_request_never_follows_a_redirect(lattice_server):
     embed = match_endpoint(provider="lattice", endpoint="embed", model=MODEL, base_url=base_url)
     request = {"model": MODEL, "messages": [{"role": "user", "content": "hi"}]}
 
-    with pytest.raises(ClientResponseError) as called:
+    with pytest.raises(HTTPStatusError) as called:
         await chat.call(request)
-    with pytest.raises(ClientResponseError) as embedded:
+    with pytest.raises(HTTPStatusError) as embedded:
         await embed.call({"model": MODEL, "input": "a"})
-    with pytest.raises(ClientResponseError) as streamed:
+    with pytest.raises(HTTPStatusError) as streamed:
         async for _ in chat.stream(request):
             pass
 

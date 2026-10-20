@@ -153,6 +153,8 @@ its area block.
 - 0031-0032 — unused (intentional gaps)
 - [ADR-0126](ADR-0126-provider-credential-routing-and-monthly-account-budgets.md) — Provider
   credential routing and monthly account budgets (sequential number; see Numbering)
+- [ADR-0135](ADR-0135-standard-library-http-transport-for-endpoints.md) — Standard-library HTTP
+  transport for endpoints (sequential number; see Numbering)
 
 ### orchestration (0033-0040)
 

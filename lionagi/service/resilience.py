@@ -20,15 +20,11 @@ _default_retry_exceptions_cache: tuple[type[Exception], ...] | None = None
 
 
 def _default_retry_exceptions() -> tuple[type[Exception], ...]:
-    # aiohttp is lazily imported (matches connections/endpoint.py's convention)
-    # so module import stays cheap; aiohttp.ClientError covers the
-    # aiohttp.ClientResponseError(429/5xx) and connector errors that
-    # production code actually raises.
+    # APIClientError covers the HTTP client's status errors (429/5xx; a 4xx is excluded by the
+    # endpoint before it reaches a retry layer), and ConnectionError its transport errors.
     global _default_retry_exceptions_cache
     if _default_retry_exceptions_cache is None:
         import asyncio
-
-        import aiohttp
 
         # asyncio.TimeoutError is a distinct class from the builtin
         # TimeoutError before Python 3.11, and it is what timed-out awaits
@@ -40,7 +36,6 @@ def _default_retry_exceptions() -> tuple[type[Exception], ...]:
             ConnectionError,
             TimeoutError,
             asyncio.TimeoutError,
-            aiohttp.ClientError,
         )
     return _default_retry_exceptions_cache
 

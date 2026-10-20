@@ -3,6 +3,7 @@
 
 import warnings
 
+from ._http import HTTPStatusError, TransportError
 from .agentic_endpoint import AgenticEndpoint
 from .api_calling import APICalling
 from .endpoint import Endpoint
@@ -27,6 +28,7 @@ __all__ = (
     "Endpoint",
     "EndpointConfig",
     "HeaderFactory",
+    "HTTPStatusError",
     "match_endpoint",
     "MCPConnectionPool",
     "MCPSecurityConfig",
@@ -39,6 +41,7 @@ __all__ = (
     "ProviderConfig",
     "ProviderNotFoundError",
     "register_endpoint",
+    "TransportError",
 )
 
 

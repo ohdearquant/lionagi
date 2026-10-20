@@ -34,7 +34,6 @@ _IMPORT_PROBES = (
 # import name differs enough from the package name to be worth spelling out.
 _CORE_DEPS: dict[str, str] = {
     "pydantic": "pydantic",
-    "aiohttp": "aiohttp",
     "sqlalchemy": "sqlalchemy",
     "aiosqlite": "aiosqlite",
     "psutil": "psutil",

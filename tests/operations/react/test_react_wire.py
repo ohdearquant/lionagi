@@ -14,8 +14,6 @@ import json
 
 import pytest
 import pytest_asyncio
-from aiohttp import web
-from aiohttp.test_utils import TestServer
 
 from lionagi._errors import ExecutionError
 from lionagi.hooks.bus import HookBus, HookPoint
@@ -34,6 +32,7 @@ from lionagi.protocols.generic.progression import Progression
 from lionagi.protocols.messages import AssistantResponse, Instruction
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
+from tests._local_http import Application, LocalServer, Request, json_response
 
 MARKER = "candidate-menu-7f3a"
 
@@ -71,13 +70,13 @@ async def chat_server():
     async def _run(replies: list[dict]) -> tuple[str, list[dict]]:
         received: list[dict] = []
 
-        async def handler(request: web.Request):
+        async def handler(request: Request):
             received.append(await request.json())
-            return web.json_response(replies[len(received) - 1])
+            return json_response(replies[len(received) - 1])
 
-        app = web.Application()
-        app.router.add_route("POST", "/{tail:.*}", handler)
-        server = TestServer(app)
+        app = Application()
+        app.add_route("POST", "/{tail:.*}", handler)
+        server = LocalServer(app)
         await server.start_server()
         servers.append(server)
         return str(server.make_url("/")).rstrip("/"), received

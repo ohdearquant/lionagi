@@ -45,13 +45,13 @@ class LatticeRedirectsRefused:
     admitted the only host a request can reach.
     """
 
-    async def _call_aiohttp(self, payload, headers, **kwargs):
+    async def _call_http(self, payload, headers, **kwargs):
         kwargs["allow_redirects"] = False
-        return await super()._call_aiohttp(payload, headers, **kwargs)
+        return await super()._call_http(payload, headers, **kwargs)
 
-    async def _stream_aiohttp(self, payload, headers, **kwargs):
+    async def _stream_http(self, payload, headers, **kwargs):
         kwargs["allow_redirects"] = False
-        async for chunk in super()._stream_aiohttp(payload, headers, **kwargs):
+        async for chunk in super()._stream_http(payload, headers, **kwargs):
             yield chunk
 
 

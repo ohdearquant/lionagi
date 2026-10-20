@@ -13,6 +13,7 @@ mock_ollama = MagicMock()
 mock_ollama.__spec__ = MagicMock()  # Required for importlib.util.find_spec
 
 from lionagi.service.connections.endpoint_config import EndpointConfig
+from tests._local_http import Application, LocalServer, json_response
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -264,24 +265,21 @@ class TestOllamaCall:
     """Test Ollama call method against the real base HTTP transport.
 
     Only Ollama's own model listing/pulling SDK calls (``ollama.list`` /
-    ``ollama.pull``) are faked here. ``Endpoint.call`` and ``_call_aiohttp``
-    run for real against a local ``aiohttp`` server, so these tests prove the
+    ``ollama.pull``) are faked here. ``Endpoint.call`` and ``_call_http``
+    run for real against a local HTTP server, so these tests prove the
     wrapper actually sends a request over the wire and decodes a realistic
     response, not merely that it delegates to its parent class.
     """
 
     @staticmethod
     async def _start_chat_completions_server(response_body: dict, received: list):
-        from aiohttp import web
-        from aiohttp.test_utils import TestServer
-
         async def handler(request):
             received.append(await request.json())
-            return web.json_response(response_body)
+            return json_response(response_body)
 
-        app = web.Application()
-        app.router.add_post("/chat/completions", handler)
-        server = TestServer(app)
+        app = Application()
+        app.add_post("/chat/completions", handler)
+        server = LocalServer(app)
         await server.start_server()
         return server
 

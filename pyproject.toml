@@ -9,11 +9,6 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "aiocache>=0.12.0",
-    # CVE: out-of-bounds heap read in the C response parser on a malformed
-    # chunked response, request smuggling via WebSocket upgrade, and a
-    # WebSocket client that accepts compressed frames with no negotiated
-    # permessage-deflate.
-    "aiohttp>=3.14.3",
     "anyio>=4.14.2",
     # Imported directly by the flow kernel to detect the running async backend.
     # anyio dropped sniffio from its own dependencies in 4.10, so it is no
@@ -24,7 +19,6 @@ dependencies = [
     # Markdown reader sees it, to tell call markup written as prose from markup
     # quoted as code.
     "markdown-it-py>=3.0.0",
-    "msgspec>=0.20.0",
     "pydantic>=2.8.0",
     "pydantic-settings>=2.8.0",
     "toml>=0.10.2",
@@ -87,6 +81,9 @@ dev = [
     "pytest-benchmark>=5.1.0",
     "httpx>=0.28.1",
     "testcontainers[postgres]>=4.0",
+    # Tests that pass a msgspec Struct through the structural helpers; lionagi
+    # accepts one when msgspec is installed and never imports it otherwise.
+    "msgspec>=0.20.0",
 ]
 
 [project.scripts]

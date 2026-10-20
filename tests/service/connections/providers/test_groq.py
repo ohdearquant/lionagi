@@ -3,8 +3,8 @@
 
 """Wire-level contract tests for the Groq audio transcription endpoint.
 
-Drives GroqAudioTranscriptionEndpoint against an ephemeral local aiohttp server so
-the multipart-rebuild-on-retry contract restored in Endpoint._call_aiohttp is
+Drives GroqAudioTranscriptionEndpoint against an ephemeral local HTTP server so
+the multipart-rebuild-on-retry contract restored in Endpoint._call_http is
 exercised end to end rather than through a mocked session.
 """
 
@@ -14,15 +14,15 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
-from aiohttp import web
-from aiohttp.test_utils import TestServer
 
 from lionagi.providers.groq.audio_transcription import (
     GroqAudioTranscriptionEndpoint,
     _replayable_file_factory,
 )
+from lionagi.service.connections._http import HTTPStatusError
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.resilience import RetryConfig
+from tests._local_http import Application, LocalServer, Request, json_response
 
 _NO_SLEEP = patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock())
 
@@ -59,10 +59,10 @@ def _config(base_url: str, **overrides) -> EndpointConfig:
 async def run_server():
     servers = []
 
-    async def _run(handler) -> TestServer:
-        app = web.Application()
-        app.router.add_route("*", "/{tail:.*}", handler)
-        server = TestServer(app)
+    async def _run(handler) -> LocalServer:
+        app = Application()
+        app.add_route("*", "/{tail:.*}", handler)
+        server = LocalServer(app)
         await server.start_server()
         servers.append(server)
         return server
@@ -73,22 +73,12 @@ async def run_server():
         await server.close()
 
 
-async def _base_url(server: TestServer) -> str:
+async def _base_url(server: LocalServer) -> str:
     return str(server.make_url("/")).rstrip("/")
 
 
-async def _read_multipart(request: web.Request) -> dict:
-    reader = await request.multipart()
-    fields: dict[str, object] = {}
-    while True:
-        part = await reader.next()
-        if part is None:
-            break
-        if part.filename:
-            fields[part.name] = await part.read(decode=False)
-        else:
-            fields[part.name] = (await part.read()).decode()
-    return fields
+async def _read_multipart(request: Request) -> dict:
+    return await request.form()
 
 
 class TestGroqTranscription:
@@ -96,10 +86,10 @@ class TestGroqTranscription:
     async def test_wire_contract_path_model_filename_and_audio_bytes(self, run_server):
         received = []
 
-        async def handler(request: web.Request):
+        async def handler(request: Request):
             fields = await _read_multipart(request)
             received.append((request.path, request.headers.get("Content-Type", ""), fields))
-            return web.json_response({"text": "groq transcript"})
+            return json_response({"text": "groq transcript"})
 
         server = await run_server(handler)
         config = _config(await _base_url(server))
@@ -127,12 +117,12 @@ class TestGroqTranscription:
     async def test_multipart_body_is_rebuilt_after_retryable_failure(self, run_server):
         received = []
 
-        async def handler(request: web.Request):
+        async def handler(request: Request):
             fields = await _read_multipart(request)
             received.append(fields)
             if len(received) == 1:
-                return web.json_response({"error": "server error"}, status=500)
-            return web.json_response({"text": "second attempt transcript"})
+                return json_response({"error": "server error"}, status=500)
+            return json_response({"text": "second attempt transcript"})
 
         server = await run_server(handler)
         config = _config(await _base_url(server))
@@ -157,19 +147,17 @@ class TestGroqTranscription:
     async def test_non_429_4xx_sends_exactly_one_request(self, run_server):
         received = []
 
-        async def handler(request: web.Request):
+        async def handler(request: Request):
             fields = await _read_multipart(request)
             received.append(fields)
-            return web.json_response({"error": "invalid model"}, status=422)
+            return json_response({"error": "invalid model"}, status=422)
 
         server = await run_server(handler)
         config = _config(await _base_url(server))
         endpoint = GroqAudioTranscriptionEndpoint(config=config)
 
-        import aiohttp
-
         with _NO_SLEEP:
-            with pytest.raises(aiohttp.ClientResponseError) as exc_info:
+            with pytest.raises(HTTPStatusError) as exc_info:
                 await endpoint._call(
                     payload={"model": "bad-model"},
                     headers={"Authorization": "Bearer test", "Content-Type": "application/json"},
@@ -184,10 +172,10 @@ class TestGroqTranscription:
     async def test_5xx_respects_total_attempt_cap(self, run_server):
         received = []
 
-        async def handler(request: web.Request):
+        async def handler(request: Request):
             await _read_multipart(request)
             received.append(1)
-            return web.json_response({"error": "boom"}, status=500)
+            return json_response({"error": "boom"}, status=500)
 
         server = await run_server(handler)
         config = _config(await _base_url(server), max_retries=2)
@@ -206,26 +194,24 @@ class TestGroqTranscription:
 
     @pytest.mark.asyncio
     async def test_no_nested_retry_with_explicit_retry_config(self, run_server):
-        import aiohttp
-
         received = []
 
-        async def handler(request: web.Request):
+        async def handler(request: Request):
             await _read_multipart(request)
             received.append(1)
-            return web.json_response({"error": "boom"}, status=500)
+            return json_response({"error": "boom"}, status=500)
 
         server = await run_server(handler)
         config = _config(await _base_url(server), max_retries=5)
         retry_config = RetryConfig(
             max_retries=1,
             base_delay=0.01,
-            retry_exceptions=(aiohttp.ClientError,),
+            retry_exceptions=(HTTPStatusError,),
         )
         endpoint = GroqAudioTranscriptionEndpoint(config=config, retry_config=retry_config)
 
         with _NO_SLEEP:
-            with pytest.raises(aiohttp.ClientError):
+            with pytest.raises(HTTPStatusError):
                 await endpoint.call(
                     {"model": "whisper-large-v3"},
                     extra_headers={"Content-Type": "application/json"},
@@ -239,10 +225,10 @@ class TestGroqTranscription:
     async def test_non_seekable_stream_fails_before_network_io(self, run_server):
         request_count = 0
 
-        async def handler(request: web.Request):
+        async def handler(request: Request):
             nonlocal request_count
             request_count += 1
-            return web.json_response({"text": "should not get here"})
+            return json_response({"text": "should not get here"})
 
         server = await run_server(handler)
         config = _config(await _base_url(server))

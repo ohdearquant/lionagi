@@ -147,7 +147,7 @@ def test_check_imports_reports_broken_module(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_check_core_deps_all_ok() -> None:
     results = _check_core_deps()
-    assert set(results) == {"pydantic", "aiohttp", "sqlalchemy", "aiosqlite", "psutil"}
+    assert set(results) == {"pydantic", "sqlalchemy", "aiosqlite", "psutil"}
     assert all(r["status"] == "ok" for r in results.values())
 
 
@@ -164,7 +164,7 @@ def test_check_core_deps_reports_missing(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr("lionagi.cli.doctor.importlib.import_module", _broken)
     results = _check_core_deps()
     assert results["pydantic"]["status"] == "fail"
-    assert results["aiohttp"]["status"] == "ok"
+    assert results["sqlalchemy"]["status"] == "ok"
 
 
 # _check_studio_daemon

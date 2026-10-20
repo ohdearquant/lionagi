@@ -7,14 +7,13 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
-import aiohttp
 import pytest
 import pytest_asyncio
-from aiohttp import web
-from aiohttp.test_utils import TestServer
 
+from lionagi.service.connections._http import HTTPStatusError
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
+from tests._local_http import Application, LocalServer, Request, json_response
 
 _NO_SLEEP = patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock())
 
@@ -26,14 +25,14 @@ async def run_server():
     async def _run(body: dict) -> tuple[str, list[int]]:
         received: list[int] = []
 
-        async def handler(request: web.Request):
+        async def handler(request: Request):
             await request.read()
             received.append(1)
-            return web.json_response(body)
+            return json_response(body)
 
-        app = web.Application()
-        app.router.add_route("POST", "/{tail:.*}", handler)
-        server = TestServer(app)
+        app = Application()
+        app.add_route("POST", "/{tail:.*}", handler)
+        server = LocalServer(app)
         await server.start_server()
         servers.append(server)
         return str(server.make_url("/")).rstrip("/"), received
@@ -74,7 +73,7 @@ async def test_an_error_naming_a_4xx_is_raised_and_sent_once(run_server):
         {"id": "gen-1", "error": {"message": "input exceeds the context window", "code": 400}}
     )
 
-    with pytest.raises(aiohttp.ClientResponseError) as exc_info:
+    with pytest.raises(HTTPStatusError) as exc_info:
         await _call(_endpoint(base_url))
 
     assert exc_info.value.status == 400
@@ -87,7 +86,7 @@ async def test_an_error_naming_a_4xx_is_raised_and_sent_once(run_server):
 async def test_an_error_naming_a_retryable_status_is_retried_to_the_cap(run_server, code):
     base_url, received = await run_server({"error": {"message": "upstream", "code": code}})
 
-    with pytest.raises(aiohttp.ClientResponseError) as exc_info:
+    with pytest.raises(HTTPStatusError) as exc_info:
         await _call(_endpoint(base_url))
 
     assert exc_info.value.status == code
@@ -108,7 +107,7 @@ async def test_an_error_without_a_status_code_is_raised_once_under_the_http_stat
 ):
     base_url, received = await run_server({"error": error})
 
-    with pytest.raises(aiohttp.ClientResponseError) as exc_info:
+    with pytest.raises(HTTPStatusError) as exc_info:
         await _call(_endpoint(base_url))
 
     assert exc_info.value.status == 200

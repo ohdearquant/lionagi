@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
+from lionagi.service.connections._http import HTTPStatusError, TransportError
 from lionagi.service.resilience import (
     APIClientError,
     CircuitBreaker,
@@ -283,18 +284,15 @@ class TestRetryConfig:
         assert config.jitter is True
         assert config.jitter_factor == 0.2
 
-    def test_default_retry_exceptions_cover_real_aiohttp_errors(self):
+    def test_default_retry_exceptions_cover_real_http_errors(self):
         """Defaults must retry the errors production code actually raises
-        (aiohttp.ClientResponseError for 429/5xx, connector errors), not just
+        (HTTPStatusError for 429/5xx, connector errors), not just
         APIClientError, which nothing in production ever constructs."""
-        import aiohttp
-
         config = RetryConfig()
 
-        error = aiohttp.ClientResponseError(
-            request_info=None, history=(), status=429, message="rate limited"
-        )
+        error = HTTPStatusError("rate limited", status=429)
         assert isinstance(error, config.retry_exceptions)
+        assert isinstance(TransportError("connection refused"), config.retry_exceptions)
 
     def test_init_custom_values(self):
         config = RetryConfig(

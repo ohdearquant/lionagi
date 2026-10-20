@@ -11,14 +11,13 @@ from dataclasses import asdict, dataclass, field
 
 import pytest
 import pytest_asyncio
-from aiohttp import web
-from aiohttp.test_utils import TestServer
 
 from lionagi.protocols.generic import EventStatus
 from lionagi.service.connections.api_calling import APICalling
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.imodel import iModel
+from tests._local_http import Application, LocalServer, StreamResponse
 
 pytestmark = pytest.mark.asyncio
 
@@ -67,7 +66,7 @@ async def replay_server():
         async def handler(request):
             payload = await request.json()
             replay.requests.append(payload)
-            response = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+            response = StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
             await response.prepare(request)
             data = wire(payload) if callable(wire) else wire
             await response.write(data.encode())
@@ -81,9 +80,9 @@ async def replay_server():
             replay.eof.set()
             return response
 
-        app = web.Application()
-        app.router.add_post("/{tail:.*}", handler)
-        server = TestServer(app, host="127.0.0.1")
+        app = Application()
+        app.add_post("/{tail:.*}", handler)
+        server = LocalServer(app, host="127.0.0.1")
         await server.start_server()
         servers.append(server)
         replay.url = str(server.make_url("/")).rstrip("/")

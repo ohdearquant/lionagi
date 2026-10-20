@@ -451,13 +451,13 @@ class TestOpenAIIntegration:
 
     @pytest.mark.asyncio
     async def test_openai_error_handling(self, openai_imodel):
-        import aiohttp
+        from lionagi.service.connections._http import TransportError
 
         # Test rate limit error
         with patch.object(
             openai_imodel.endpoint,
             "call",
-            side_effect=aiohttp.ClientError("Rate limit exceeded"),
+            side_effect=TransportError("Rate limit exceeded"),
         ):
             result = await openai_imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
 

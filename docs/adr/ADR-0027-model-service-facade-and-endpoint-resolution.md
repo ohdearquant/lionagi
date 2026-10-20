@@ -507,20 +507,20 @@ class StreamChunk:
 - **One-shot HTTP status.** Status 200 returns JSON. Status 429 and status 500 or above are retryable
   transport failures. Other non-200 statuses are wrapped in an internal non-retryable sentinel so the
   retry layer gives up immediately. Only the native path (no explicit `RetryConfig`) unwraps the
-  sentinel and re-raises the original `aiohttp.ClientResponseError`; with an explicit `RetryConfig`
+  sentinel and re-raises the original `HTTPStatusError`; with an explicit `RetryConfig`
   the sentinel is neither excluded by default (`RetryConfig.exclude_exceptions` defaults empty) nor
   unwrapped, so the caller sees the internal sentinel exception rather than the original — a
   current-behavior asymmetry, recorded as-is.
 - **One-shot resilience.** An explicit `RetryConfig` wraps `_call`; an explicit circuit breaker
-  wraps the resulting attempt function when caching is off. With no `RetryConfig`, native aiohttp
-  retry uses `EndpointConfig.max_retries` as a total-attempt cap. Cached calls apply the same chosen
+  wraps the resulting attempt function when caching is off. With no `RetryConfig`, the native
+  retry path uses `EndpointConfig.max_retries` as a total-attempt cap. Cached calls apply the same chosen
   wrappers inside the cached function.
-- **HTTP stream.** `stream()` creates a payload then calls `_stream_aiohttp()` directly. It applies
+- **HTTP stream.** `stream()` creates a payload then calls `_stream_http()` directly. It applies
   neither the endpoint retry config nor the circuit breaker. The transport sets `stream=True`,
   requires status 200, parses SSE framing and plain JSON lines, ignores comments and SSE metadata,
   recognizes `[DONE]`, and maps unrecognized JSON objects to a `system` chunk containing raw data.
-- **Agentic transport.** `AgenticEndpoint` raises `NotImplementedError` from session, aiohttp call,
-  and aiohttp stream helpers. Concrete adapters override `_call()` and/or `stream()`.
+- **Agentic transport.** `AgenticEndpoint` raises `NotImplementedError` from the session, HTTP
+  call, and HTTP stream helpers. Concrete adapters override `_call()` and/or `stream()`.
 - **Token estimation.** `APICalling.required_tokens` returns `None` when the endpoint does not
   require tokens. Otherwise it estimates messages, Responses-style input, or embedding input. A
   caller-requested usage annotation is appended to the final message before dispatch.

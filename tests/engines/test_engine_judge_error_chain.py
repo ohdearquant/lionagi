@@ -16,11 +16,10 @@ import signal
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from aiohttp import web
-from aiohttp.test_utils import TestServer
 
 from lionagi import Branch, iModel
 from lionagi.engines.engine import Engine
+from tests._local_http import Application, LocalServer, Request, json_response
 
 pytestmark = pytest.mark.asyncio
 
@@ -159,15 +158,15 @@ async def refusing_server():
     test's.
     """
 
-    async def answer(request: web.Request):
+    async def answer(request: Request):
         await request.read()
-        return web.json_response(
+        return json_response(
             {"error": {"message": "the key is wrong", "type": "invalid_request_error"}},
             status=401,
         )
 
-    server = TestServer(web.Application())
-    server.app.router.add_route("POST", "/{tail:.*}", answer)
+    server = LocalServer(Application())
+    server.app.add_route("POST", "/{tail:.*}", answer)
     await server.start_server()
     try:
         yield str(server.make_url("/")).rstrip("/")
@@ -222,7 +221,7 @@ async def test_the_chain_from_a_provider_4xx_ends_and_names_the_response():
         cause = cause.__cause__
 
     assert len(seen) <= 8
-    assert "ClientResponseError" in kinds
+    assert "HTTPStatusError" in kinds
 
 
 async def test_an_uncontained_judge_raises_a_refusal_its_call_raises():

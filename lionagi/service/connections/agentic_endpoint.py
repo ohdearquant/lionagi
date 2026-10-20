@@ -41,8 +41,8 @@ class AgenticEndpoint(Endpoint):
     def _create_http_session(self, client_kwargs=None):
         raise NotImplementedError("Agentic endpoints do not use HTTP sessions")
 
-    async def _call_aiohttp(self, *a, **kw):
-        raise NotImplementedError("Agentic endpoints do not use aiohttp")
+    async def _call_http(self, *a, **kw):
+        raise NotImplementedError("Agentic endpoints do not make HTTP requests")
 
-    async def _stream_aiohttp(self, payload: dict, headers: dict, **kwargs):
-        raise NotImplementedError("Agentic endpoints do not use aiohttp streaming")
+    async def _stream_http(self, payload: dict, headers: dict, **kwargs):
+        raise NotImplementedError("Agentic endpoints do not stream over HTTP")

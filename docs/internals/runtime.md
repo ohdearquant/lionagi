@@ -1403,13 +1403,13 @@ only while its declared target remains trusted, removing it on
 ### Retry & sentinel-exclusion contract (`connections/endpoint.py`, `providers.py`, `resilience.py`)
 
 - `endpoint.py` — 4xx (non-429) client errors are wrapped in `_NonRetryableClientError` so the
-  original `aiohttp.ClientResponseError` stays inspectable via `__cause__` while retry logic
+  original `HTTPStatusError` stays inspectable via `__cause__` while retry logic
   sees an excluded type. The sentinel must stay excluded until whichever retry layer is active
   (the outer `retry_config`-driven wrapper in `call()`, or the native path in
-  `_call_aiohttp()`) has given up — unwrapping earlier would let a broad
-  `retry_exceptions=(aiohttp.ClientError,)` config replay a 400/401/403 the transport contract
+  `_call_http()`) has given up — unwrapping earlier would let a broad
+  `retry_exceptions=(HTTPStatusError,)` config replay a 400/401/403 the transport contract
   intends as single-shot. Request bodies are rebuilt inside the per-attempt function rather
-  than before retry orchestration, because `FormData`/`BytesIO`/file-stream bodies can be
+  than before retry orchestration, because `MultipartForm`/`BytesIO`/file-stream bodies can be
   consumed by the first POST and must not be silently replayed on a later attempt. In the
   native (no-`RetryConfig`) path, `config.max_retries` is a total-attempt cap (formerly
   backoff's `max_tries`), but `retry_with_backoff` runs `max_retries+1` attempts internally, so

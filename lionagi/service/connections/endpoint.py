@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import logging
 from collections.abc import Callable
@@ -20,6 +21,7 @@ from lionagi.service.resilience import (
 )
 from lionagi.service.types.stream_chunk import StreamChunk
 
+from ._http import HTTPSession, HTTPStatusError, TransportError, check_client_options
 from .endpoint_config import AUTHORIZATION_KWARG_NAMES, EndpointConfig
 from .header_factory import HeaderFactory
 
@@ -212,15 +214,12 @@ class Endpoint:
 
     def _create_http_session(
         self, client_kwargs: dict[str, Any] | None = None, *, timeout: Any = _CONFIGURED_TIMEOUT
-    ):
-        import aiohttp
-
+    ) -> HTTPSession:
         if timeout is _CONFIGURED_TIMEOUT:
             timeout = self.config.timeout
-        return aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(timeout),
-            **(self.config.client_kwargs if client_kwargs is None else client_kwargs),
-        )
+        options = self.config.client_kwargs if client_kwargs is None else client_kwargs
+        check_client_options(options)
+        return HTTPSession(timeout=timeout, **options)
 
     def copy_runtime_state_to(self, other: Endpoint) -> None:
         pass
@@ -396,13 +395,13 @@ class Endpoint:
             )
 
     async def _call(self, payload: dict, headers: dict, **kwargs):
-        return await self._call_aiohttp(payload=payload, headers=headers, **kwargs)
+        return await self._call_http(payload=payload, headers=headers, **kwargs)
 
     def _with_idempotency_key(self, headers: dict, *, routed: bool) -> dict:
         """*headers* with the key one logical request sends on every attempt, when retries are
         idempotent.
 
-        Minted once per logical request, before any retry path (native _call_aiohttp, the
+        Minted once per logical request, before any retry path (native _call_http, the
         opt-in RetryConfig wrapper, or a routed stream's attempts) is entered, and reused
         verbatim across every attempt, so the provider can recognize a lost-response replay as
         the same request. It also takes the place of a client-level key: one key shared by every
@@ -560,8 +559,6 @@ class Endpoint:
         error_context: str,
         _routing_scope: Any = None,
     ) -> Any:
-        import aiohttp
-
         async with self._create_http_session() as session:
             response = None
             try:
@@ -574,7 +571,13 @@ class Endpoint:
                 )
 
                 if response.status == 429 or response.status >= 500:
-                    response.raise_for_status()
+                    raise HTTPStatusError(
+                        f"{error_context} failed with status {response.status}: {response.reason}",
+                        status=response.status,
+                        headers=response.headers,
+                        method=response.method,
+                        url=response.url,
+                    )
                 elif response.status != 200:
                     try:
                         error_body = await response.json()
@@ -584,12 +587,12 @@ class Endpoint:
                     except Exception:
                         error_message = f"{error_context} failed with status {response.status}"
 
-                    original = aiohttp.ClientResponseError(
-                        request_info=response.request_info,
-                        history=response.history,
+                    original = HTTPStatusError(
+                        error_message,
                         status=response.status,
-                        message=error_message,
                         headers=response.headers,
+                        method=response.method,
+                        url=response.url,
                     )
                     # 4xx (non-429): wrap in sentinel so the native retry layer
                     # gives up immediately, preserving the original error on __cause__.
@@ -611,23 +614,22 @@ class Endpoint:
                     if isinstance(code, int) and not isinstance(code, bool) and 400 <= code < 600
                     else response.status
                 )
-                original = aiohttp.ClientResponseError(
-                    request_info=response.request_info,
-                    history=response.history,
+                original = HTTPStatusError(
+                    f"{error_context} failed with status {status}: {body}",
                     status=status,
-                    message=f"{error_context} failed with status {status}: {body}",
                     headers=response.headers,
+                    method=response.method,
+                    url=response.url,
                 )
                 if status == 429 or status >= 500:
                     raise original
                 raise _NonRetryableClientError(original) from original
             finally:
                 # Ensure response is properly released if coroutine is cancelled between retries.
-                # aiohttp.ClientResponse.release() is synchronous (not a coroutine) — do not await.
                 if response is not None and not response.closed:
                     response.release()
 
-    async def _call_aiohttp(
+    async def _call_http(
         self,
         payload: dict[str, Any],
         headers: dict[str, str],
@@ -663,12 +665,10 @@ class Endpoint:
             _routing_scope = self._account_scope(_routing_scope)
         self._assert_ssrf_safe_url()
 
-        import aiohttp
-
         build_body = request_body_factory or (lambda: {"json": payload})
 
         async def _make_request():
-            # Body rebuilt per-attempt, not before retry orchestration: FormData/BytesIO/
+            # Body rebuilt per-attempt, not before retry orchestration: a form/BytesIO/
             # file streams get consumed by the first POST and must not be silently replayed.
             body_kwargs = build_body()
             collision = set(body_kwargs) & set(request_kwargs)
@@ -697,7 +697,7 @@ class Endpoint:
 
         # No RetryConfig: native path excludes the 4xx sentinel so it gives up immediately.
         # max_retries is a total-attempt cap; retry_with_backoff runs +1 attempts, so subtract one.
-        retry_exceptions = (aiohttp.ClientError, asyncio.TimeoutError)
+        retry_exceptions = (HTTPStatusError, TransportError, TimeoutError, asyncio.TimeoutError)
         excluded_exceptions: tuple[type[Exception], ...] = (_NonRetryableClientError,)
         if routed:
             retry_exceptions = (*retry_exceptions, _RoutedRetryableError)
@@ -734,7 +734,7 @@ class Endpoint:
             # as a routed call's do.
             headers = self._with_idempotency_key(headers, routed=True)
 
-        stream = self._stream_aiohttp(
+        stream = self._stream_http(
             payload=payload,
             headers=headers,
             **scope_kwargs,
@@ -752,7 +752,7 @@ class Endpoint:
             # too, so it records how the stream ended now rather than when collected.
             await stream.aclose()
 
-    async def _stream_aiohttp(
+    async def _stream_http(
         self,
         payload: dict,
         headers: dict,
@@ -765,41 +765,40 @@ class Endpoint:
         payload["stream"] = True
 
         async with self._create_http_session() as session:
-            async with session.request(
+            response = await session.request(
                 method=self.config.method,
                 url=self.config.full_url,
                 headers=headers,
                 json=payload,
                 **kwargs,
-            ) as response:
-                if response.status != 200:
-                    import aiohttp
+            )
+            if response.status != 200:
+                raise HTTPStatusError(
+                    f"Request failed with status {response.status}",
+                    status=response.status,
+                    headers=response.headers,
+                    method=response.method,
+                    url=response.url,
+                )
 
-                    raise aiohttp.ClientResponseError(
-                        request_info=response.request_info,
-                        history=response.history,
-                        status=response.status,
-                        message=f"Request failed with status {response.status}",
-                        headers=response.headers,
-                    )
-
-                pending = ""
-                frame = _SSEFrame()
-                async for raw in response.content:
-                    if not raw:
-                        continue
-                    pending += raw.decode("utf-8")
-                    while "\n" in pending:
-                        line, pending = pending.split("\n", 1)
-                        for data, name in self._frame_stream_line(line, frame):
-                            yield self._line_to_stream_chunk(data, sse_event=name)
-
-                if pending:
-                    for data, name in self._frame_stream_line(pending, frame):
+            pending = ""
+            # A piece of the body can end inside a character as well as inside a line.
+            decoder = codecs.getincrementaldecoder("utf-8")()
+            frame = _SSEFrame()
+            async for raw in response.iter_chunks():
+                pending += decoder.decode(raw)
+                while "\n" in pending:
+                    line, pending = pending.split("\n", 1)
+                    for data, name in self._frame_stream_line(line, frame):
                         yield self._line_to_stream_chunk(data, sse_event=name)
-                if frame.data:
-                    data, name = self._take_sse_event(frame)
+            pending += decoder.decode(b"", final=True)
+
+            if pending:
+                for data, name in self._frame_stream_line(pending, frame):
                     yield self._line_to_stream_chunk(data, sse_event=name)
+            if frame.data:
+                data, name = self._take_sse_event(frame)
+                yield self._line_to_stream_chunk(data, sse_event=name)
 
     @staticmethod
     def _take_sse_event(frame: _SSEFrame) -> tuple[str, str | None]:

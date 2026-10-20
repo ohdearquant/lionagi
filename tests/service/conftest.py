@@ -4,9 +4,9 @@
 import json
 from unittest.mock import AsyncMock
 
-import aiohttp
 import pytest
 
+from lionagi.service.connections._http import HTTPResponse
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.imodel import iModel
@@ -33,7 +33,7 @@ def mock_endpoint(mock_endpoint_config):
 
 @pytest.fixture
 def mock_response():
-    response = AsyncMock(spec=aiohttp.ClientResponse)
+    response = AsyncMock(spec=HTTPResponse)
     response.status = 200
     response.headers = {"content-type": "application/json"}
     response.json = AsyncMock(
@@ -65,7 +65,7 @@ def mock_response():
 
 @pytest.fixture
 def mock_anthropic_response():
-    response = AsyncMock(spec=aiohttp.ClientResponse)
+    response = AsyncMock(spec=HTTPResponse)
     response.status = 200
     response.headers = {"content-type": "application/json"}
     response.json = AsyncMock(
@@ -95,10 +95,10 @@ def mock_streaming_response():
         for chunk in chunks:
             yield chunk
 
-    response = AsyncMock(spec=aiohttp.ClientResponse)
+    response = AsyncMock(spec=HTTPResponse)
     response.status = 200
     response.headers = {"content-type": "text/event-stream"}
-    response.content.iter_chunks = mock_iter_chunks
+    response.iter_chunks = mock_iter_chunks
     return response
 
 

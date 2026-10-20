@@ -22,11 +22,13 @@ from lionagi.config import AppSettings
 from lionagi.providers.anthropic.messages import AnthropicMessagesEndpoint
 from lionagi.service.accounts._credentials import CredentialSources
 from lionagi.service.accounts._types import AccountRoutingError, RouterErrorCode, Scope
+from lionagi.service.connections._http import HTTPSession, TransportError
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.imodel import _branch_routing_context, iModel
 from lionagi.service.resilience import RetryConfig
 from lionagi.session.branch import Branch
+from tests._local_http import Application, LocalServer, Request, json_response
 
 KEY_NAME = "LIONAGI_ROUTER_CANARY"
 CANARY = "sk-ant-api03-canary-0123456789"
@@ -71,6 +73,9 @@ class StubResponse:
 
     async def read(self):
         return json.dumps(self.body).encode()
+
+    def iter_chunks(self):
+        return self.content
 
     def release(self):
         self.closed = True
@@ -754,9 +759,9 @@ async def test_a_session_is_opened_with_the_timeout_it_is_given(monkeypatch, tmp
     endpoint.config.timeout = 30
 
     async with endpoint._create_http_session({}, timeout=5) as session:
-        assert session.timeout.total == 5
+        assert session.timeout == 5
     async with endpoint._create_http_session({}) as session:
-        assert session.timeout.total == 30
+        assert session.timeout == 30
 
 
 @pytest.mark.asyncio
@@ -807,13 +812,33 @@ async def test_an_empty_idempotency_key_is_replaced_by_a_minted_one(monkeypatch,
     assert len(_attempts(path)) == 1
 
 
+async def _headers_on_the_wire(client_kwargs, headers):
+    """The headers a local server receives from a session opened with *client_kwargs*."""
+    received = []
+
+    async def record(request: Request):
+        received.append(request.headers)
+        return json_response({})
+
+    app = Application()
+    app.add_route("*", "/{tail:.*}", record)
+    server = LocalServer(app)
+    await server.start_server()
+    try:
+        async with HTTPSession(**client_kwargs) as session:
+            response = await session.request("POST", server.make_url("/"), headers=headers, json={})
+            await response.read()
+    finally:
+        await server.close()
+    (wire,) = received
+    return wire
+
+
 @pytest.mark.asyncio
 async def test_a_call_header_replaces_a_client_header_of_the_same_name_on_the_wire(
     monkeypatch, tmp_path
 ):
     """The HTTP client sends a request header in place of a session header of the same name."""
-    import aiohttp
-
     _install_accounts(monkeypatch, tmp_path)
     model, transport = _model(monkeypatch, [_response()])
     model.endpoint.config.client_kwargs = {"headers": {"anthropic-version": "2023-01-01"}}
@@ -822,9 +847,8 @@ async def test_a_call_header_replaces_a_client_header_of_the_same_name_on_the_wi
 
     (client_kwargs,) = transport.client_kwargs
     (sent,) = transport.calls
-    async with aiohttp.ClientSession(**client_kwargs) as session:
-        wire = session._prepare_headers(sent["headers"])
-    assert wire.getall("anthropic-version") == ["2023-02-02"]
+    wire = await _headers_on_the_wire(client_kwargs, sent["headers"])
+    assert wire.get_all("anthropic-version") == ["2023-02-02"]
 
 
 @pytest.mark.asyncio
@@ -833,8 +857,6 @@ async def test_an_idempotency_key_in_the_client_options_is_replaced_on_the_wire(
 ):
     """A client-level key would be shared by every request, so each request's minted key is
     sent in its place."""
-    import aiohttp
-
     _install_accounts(monkeypatch, tmp_path)
     model, transport = _model(monkeypatch, [_response()])
     model.endpoint.config.idempotent_retries = True
@@ -844,9 +866,8 @@ async def test_an_idempotency_key_in_the_client_options_is_replaced_on_the_wire(
 
     (client_kwargs,) = transport.client_kwargs
     (sent,) = transport.calls
-    async with aiohttp.ClientSession(**client_kwargs) as session:
-        wire = session._prepare_headers(sent["headers"])
-    (key,) = wire.getall("idempotency-key")
+    wire = await _headers_on_the_wire(client_kwargs, sent["headers"])
+    (key,) = wire.get_all("idempotency-key")
     assert key.strip()
     assert key != "client-1"
 
@@ -1405,7 +1426,7 @@ async def test_a_routed_call_asking_for_bytes_is_refused_before_it_is_sent(
     payload, headers = model.endpoint.create_payload(REQUEST)
 
     with pytest.raises(AccountRoutingError) as caught:
-        await model.endpoint._call_aiohttp(payload, headers, response_mode="bytes")
+        await model.endpoint._call_http(payload, headers, response_mode="bytes")
 
     assert caught.value.code is RouterErrorCode.UNSUPPORTED_PRICING
     assert not transport.calls
@@ -1414,7 +1435,6 @@ async def test_a_routed_call_asking_for_bytes_is_refused_before_it_is_sent(
 
 @pytest.mark.asyncio
 async def test_stream_does_not_retry_after_yielding_a_chunk(monkeypatch, tmp_path):
-    from aiohttp import ClientError
 
     path = _install_accounts(monkeypatch, tmp_path)
     first = {
@@ -1429,7 +1449,7 @@ async def test_stream_does_not_retry_after_yielding_a_chunk(monkeypatch, tmp_pat
         b"data: " + json.dumps(first).encode() + b"\n\n",
         b"data: " + json.dumps(stop).encode() + b"\n\n",
         b" " * 40,
-        ClientError("offline"),
+        TransportError("offline"),
     ]
     model, transport = _model(monkeypatch, [StubResponse(pieces=pieces), _response()])
     model.endpoint.config.max_retries = 2
@@ -1678,8 +1698,8 @@ async def test_a_refusal_during_the_owners_send_leaves_that_send_alone(monkeypat
 @pytest.mark.parametrize("where", ["client", "request", "stream"])
 @pytest.mark.asyncio
 async def test_raise_for_status_is_refused_before_a_key_is_read(monkeypatch, tmp_path, where):
-    # aiohttp's own raise would skip the 401/403 block and keep the sent headers,
-    # key included, on the exception the routed error replaces.
+    # A transport-level raise on status would skip the 401/403 block and keep the sent
+    # headers, key included, on the exception the routed error replaces.
     path = _install_accounts(monkeypatch, tmp_path)
     lookups = []
     monkeypatch.setattr(router_module, "resolve_account_key", lambda *args: lookups.append(args))
@@ -3320,7 +3340,6 @@ async def test_a_transport_error_is_not_chained_to_the_error(
 ):
     """With the ledger down, its own error is what the caller gets, and it chains the
     transport error no more than the routed error does."""
-    from aiohttp import ClientError
 
     _install_accounts(monkeypatch, tmp_path)
     if ledger == "down":
@@ -3329,7 +3348,7 @@ async def test_a_transport_error_is_not_chained_to_the_error(
             raise RuntimeError("ledger unavailable")
 
         monkeypatch.setattr(router_module.AccountRouter, "settle_unknown", settle_unknown)
-    failing = ClientError("x-api-key: " + CANARY)
+    failing = TransportError("x-api-key: " + CANARY)
     response = StubResponse(pieces=[failing]) if streamed else _FailingResponse(failing)
     model, _ = _model(monkeypatch, [response])
     model.endpoint.config.max_retries = 0
@@ -3343,7 +3362,7 @@ async def test_a_transport_error_is_not_chained_to_the_error(
             await model.endpoint.call(REQUEST)
 
     linked = _every_linked_error(caught.value)
-    assert not any(isinstance(error, ClientError) for error in linked)
+    assert not any(isinstance(error, TransportError) for error in linked)
 
 
 def _chunk_raw_dicts(chunks) -> list[dict]:

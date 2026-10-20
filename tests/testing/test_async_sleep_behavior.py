@@ -7,11 +7,11 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 
-import aiohttp
 import anyio
 import pytest
 
 from lionagi.service.connections import match_endpoint
+from lionagi.service.connections._http import HTTPStatusError
 from lionagi.testing import ScriptModel
 from lionagi.testing.helpers import AsyncTestHelpers
 
@@ -48,9 +48,7 @@ def _first_result(endpoint, streaming: bool):
 async def _finish_owned_task(task, stream):
     if not task.done():
         task.cancel()
-    with suppress(
-        asyncio.CancelledError, aiohttp.ClientResponseError, asyncio.TimeoutError, ValueError
-    ):
+    with suppress(asyncio.CancelledError, HTTPStatusError, asyncio.TimeoutError, ValueError):
         await task
     if stream is not None:
         await stream.aclose()
@@ -61,7 +59,7 @@ async def _finish_owned_task(task, stream):
 @pytest.mark.parametrize(
     ("kind", "error_type"),
     [
-        ("rate_limit", aiohttp.ClientResponseError),
+        ("rate_limit", HTTPStatusError),
         ("timeout", asyncio.TimeoutError),
         ("value_error", ValueError),
     ],

@@ -34,6 +34,21 @@ directory's `.khive/config.toml` before it starts. For example, `:child` produce
 `<submitting actor>:child`. Leaving the setting unset or empty keeps the previous
 behaviour, including accepting a write-capable submission without `cwd`.
 
+lionagi no longer installs `aiohttp` or `msgspec` (see Removed). Endpoints make their HTTP requests
+with a client built on the standard library (ADR-0135), and four kinds of code need changing:
+
+- `EndpointConfig.client_kwargs` accepts only `headers`. Any other key, such as `connector`,
+  `trust_env` or `cookies`, raises `TypeError` on the endpoint's first call or stream, and request
+  options that were passed through to `aiohttp` (`ssl=`, `proxy=`, `timeout=`) raise `TypeError`.
+- Code that catches `aiohttp.ClientResponseError` catches
+  `lionagi.service.connections.HTTPStatusError`, which carries `.status`, `.headers`, `.method` and
+  `.url`; code that catches `aiohttp.ClientError` for network failures catches
+  `lionagi.service.connections.TransportError`, a `ConnectionError`. A timeout is still a
+  `TimeoutError`.
+- A subclass that overrides `Endpoint._call_aiohttp` or `Endpoint._stream_aiohttp` overrides
+  `_call_http` or `_stream_http`, which take the same arguments.
+- Code that passes a `msgspec.Struct` to lionagi's structural helpers installs `msgspec` itself.
+
 ### Added
 
 - The MCP server's `agent.submit`, `flow.submit`, `fanout.submit` and
@@ -148,6 +163,20 @@ behaviour, including accepting a write-capable submission without `cwd`.
 
 ### Changed
 
+- Endpoint HTTP requests use a client built on `http.client`, with each blocking step in a worker
+  thread (at most 256 requests in flight per event loop). The endpoint's `timeout` still bounds the
+  whole request, a streamed body included, and a cancelled or timed-out request closes its
+  connection at once. Redirects are no longer followed: a 3xx response fails the call like any other
+  non-200 status, so a request and its credentials never go to an address the endpoint's address
+  check did not see. Proxy settings in the environment are not read, as before. Responses are
+  requested uncompressed. A 200 response body is decoded as JSON whatever `Content-Type` it
+  declares; a body that is not JSON raises `json.JSONDecodeError` and is not retried, where
+  `aiohttp` raised a `ContentTypeError` that the endpoint retried.
+- Multipart uploads (OpenAI audio transcription and image edits, Groq transcription) are built by
+  `lionagi.service.connections._http.MultipartForm`, which writes field names and filenames as
+  browsers do: UTF-8 as is, with a quote, carriage return or line feed percent-encoded. `aiohttp`
+  percent-encoded every filename character outside the unreserved set, so a filename such as
+  `my clip.wav` now arrives as written rather than as `my%20clip.wav`.
 - `POST /api/studio/pairing-codes` now answers 410 for every admitted request, whatever its
   headers or the admission token. `li studio` mints a pairing code in process before it starts
   the daemon, or, against a daemon already running, obtains one over the daemon's new
@@ -354,6 +383,11 @@ behaviour, including accepting a write-capable submission without `cwd`.
 
 ### Removed
 
+- `aiohttp` and `msgspec` are no longer dependencies. A base install now resolves to 30 packages
+  instead of 40: `aiohappyeyeballs`, `aiosignal`, `async-timeout`, `attrs`, `frozenlist`,
+  `multidict`, `propcache` and `yarl` went with `aiohttp`. The `sandbox` extra still brings
+  `aiohttp` through `daytona`. A `msgspec.Struct` is still accepted wherever it was when `msgspec`
+  is installed.
 - A mutable `HashableModel` or `DataClass` value, the operation field models included, now
   raises `TypeError` from `hash()`, so it can no longer be put in a set or used as a dictionary
   key. Its hash was computed from its content, which can change after the value is stored, and

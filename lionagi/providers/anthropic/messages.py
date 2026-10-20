@@ -469,8 +469,6 @@ class AnthropicMessagesEndpoint(Endpoint):
 
         import asyncio
 
-        import aiohttp
-
         from lionagi.ln.concurrency import get_cancelled_exc_class
         from lionagi.service.accounts._router import (
             get_router,
@@ -641,7 +639,8 @@ class AnthropicMessagesEndpoint(Endpoint):
             ) from None
         except (_RoutedNoRetryError, _RoutedRetryableError):
             raise
-        except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError, ConnectionError):
+        # The HTTP client's transport errors are ConnectionErrors.
+        except (asyncio.TimeoutError, TimeoutError, ConnectionError):
             failure = (_RoutedRetryableError if request_entered else _RoutedNoRetryError)(
                 RouterErrorCode.TRANSPORT_ERROR.value,
                 account=attempt.account,
@@ -666,9 +665,9 @@ class AnthropicMessagesEndpoint(Endpoint):
                 await router.settle_not_sent(attempt)
             raise failure
 
-    async def _stream_aiohttp(self, payload: dict, headers: dict, *, _routing_scope=None, **kwargs):
+    async def _stream_http(self, payload: dict, headers: dict, *, _routing_scope=None, **kwargs):
         if not self._account_routing_enabled():
-            async for chunk in super()._stream_aiohttp(
+            async for chunk in super()._stream_http(
                 payload,
                 headers,
                 _routing_scope=_routing_scope,
@@ -1064,7 +1063,7 @@ class AnthropicMessagesEndpoint(Endpoint):
                         http_status=status,
                     ) from None
 
-                async for raw in response.content:
+                async for raw in response.iter_chunks():
                     safe = redactor.feed(raw)
                     pending += decoder.decode(safe)
                     while "\n" in pending:

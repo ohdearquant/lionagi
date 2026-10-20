@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import json
 
-import aiohttp
 import pytest
 
 from lionagi.service.connections import match_endpoint
+from lionagi.service.connections._http import HTTPStatusError
 from lionagi.service.imodel import iModel
 from lionagi.testing import (
     ScriptedEndpoint,
@@ -77,7 +77,7 @@ class TestEndpointDispatch:
             [{"type": "error", "kind": "rate_limit", "message": "rl"}]
         )
         ep = match_endpoint("scripted", "chat", script=script)
-        with pytest.raises(aiohttp.ClientResponseError) as exc:
+        with pytest.raises(HTTPStatusError) as exc:
             await ep._call(payload={"messages": []}, headers={})
         assert exc.value.status == 429
         # Error still recorded for inspection
