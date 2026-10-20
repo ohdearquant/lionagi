@@ -1365,10 +1365,10 @@ async def _run_agent(
             cfg,
             mcp_resolution.servers,
             provider=provider,
-            # The persisted request carries the previous run's servers; only a
-            # declared set replaces them. A failed search leaves them, as it
-            # leaves a new leg to what its CLI finds.
+            # The persisted request carries the previous run's servers; only a declared set replaces
+            # them. A failed search leaves them, as it leaves a new leg to what its CLI finds.
             exclusive=mcp_resolution.declared_empty,
+            env=getattr(branch.chat_model.endpoint, "_runtime_state", {}).get("env"),
         )
         missing_profile = _missing_generated_codex_profile(cfg)
         if missing_profile is not None:

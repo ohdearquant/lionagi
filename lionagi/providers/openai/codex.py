@@ -2030,10 +2030,10 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
 
     What cannot ride refuses the run: hook events declared in the file itself, whose
     trust records name a file the run does not load; a root `profile` key, which codex
-    0.162.1 reports as no longer supported and which codex 0.130.0, given no `-p`, makes the
-    active profile, whose sandbox settings replace the root ones (read at that tag:
-    `get_config_profile` falls back to the key, and the profile's `sandbox_mode` is taken
-    before the root's); `default_permissions`, a permissions profile codex applies in place
+    0.130.0, given no `-p`, makes the active profile, whose sandbox settings replace the root
+    ones (read at that tag: `get_config_profile` falls back to the key, and the profile's
+    `sandbox_mode` is taken before the root's), and which codex 0.162.1 still declares in its
+    config schema; `default_permissions`, a permissions profile codex applies in place
     of `sandbox_mode`; and a file that exists but cannot be read, since the hooks it
     declares, if any, would be dropped unseen. So does a
     profile the run itself names, on the request or in its overrides: codex loads no user
@@ -2108,10 +2108,10 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
         )
         raise ConfigurationError(
             f"Codex cannot start with --ignore-user-config: {config_path} sets {named}. Codex "
-            "0.162.1 reports a root profile key as no longer supported, and codex 0.130.0, "
-            "given no -p, makes it the active profile, whose sandbox settings replace the root "
-            "ones. The flag hides the key, so the run would start without what codex does with "
-            "it. Remove the key, and set the sandbox in the run's config overrides."
+            "0.130.0, given no -p, makes it the active profile, whose sandbox settings replace "
+            "the root ones, and codex 0.162.1 still declares the key. The flag hides the key, "
+            "so the run would start without what codex does with it. Remove the key, and set "
+            "the sandbox in the run's config overrides."
         )
     if config.get("default_permissions") is not None and not _sets(flags, ("default_permissions",)):
         raise ConfigurationError(

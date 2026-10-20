@@ -798,7 +798,18 @@ def request_kwargs_carry_forwarded_mcp(kwargs: dict[str, Any] | None) -> bool:
     kwargs = kwargs or {}
     if kwargs.get("mcp_servers"):
         return True
-    if kwargs.get("ignore_user_config") is True:
+    flag = kwargs.get("ignore_user_config")
+    if flag is not None and not isinstance(flag, bool):
+        # Read as the codex request's own field reads it (`"true"` and `1` are True there).
+        from pydantic import ValidationError
+
+        from lionagi.providers.openai.codex import _BOOL_ADAPTER
+
+        try:
+            flag = _BOOL_ADAPTER.validate_python(flag)
+        except ValidationError:
+            flag = None
+    if flag is True:
         # Codex states an exclusive empty set by loading no user config at all,
         # so the request carries the set with no per-server entry.
         return True
@@ -822,13 +833,16 @@ def apply_forwarded_mcp_servers(
     provider: str | None,
     exclusive: bool = False,
     allowed_names: Collection[str] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> bool:
     """Write a resolved MCP server set into a CLI request's kwargs.
 
     Returns whether *servers* reached the request (False: provider has no
     transport for a caller-resolved set). See
     docs/internals/agent-runtime.md#mcp-server-forwarding for what
-    *exclusive*/*allowed_names* mean.
+    *exclusive*/*allowed_names* mean. *env* is the environment the child will
+    run under when the model holds one outside *kwargs*; without it, an `env`
+    in *kwargs* is read, and without that, this process's.
     """
     if servers is None and not exclusive:
         # No set and no claim to the whole set: the request is left as it was.
@@ -850,6 +864,12 @@ def apply_forwarded_mcp_servers(
             # for itself. The strict flag is what makes it the entire set.
             kwargs["strict_mcp_config"] = True
         return True
+
+    from lionagi.providers._cli_subprocess import reveal_redacted
+
+    # The config the child reads is the one its own environment names.
+    child_env = reveal_redacted(env if env is not None else kwargs.get("env"))
+    child_env = child_env if isinstance(child_env, Mapping) else None
 
     flag = kwargs.get("ignore_user_config")
     if flag is not None and not isinstance(flag, bool):
@@ -878,7 +898,7 @@ def apply_forwarded_mcp_servers(
         # provider refuses that request. A flag value the request refuses is not
         # replaced here: it is left for the request to refuse.
         if allowed_names:
-            configured = _discover_ambient_codex_mcp_server_names()
+            configured = _discover_ambient_codex_mcp_server_names(child_env)
         if not allowed_names or not configured & set(allowed_names):
             kwargs["ignore_user_config"] = True
 
@@ -886,11 +906,10 @@ def apply_forwarded_mcp_servers(
     # request, or selected by an override (`-c profile=...`), whose key codex trims and
     # splits at every `.` before reading it. With neither, a root `profile` key in codex's
     # config.toml selects one: codex before 0.135, given no `-p`, makes it the active
-    # profile (from 0.135 codex refuses the key itself).
+    # profile.
     named_profile = kwargs.get("profile")
     remedy = "Drop the profile"
     if named_profile is None and exclusive and not kwargs.get("ignore_user_config"):
-        from lionagi.providers._cli_subprocess import reveal_redacted
         from lionagi.providers.openai._codex_profile import (
             codex_home_for_env,
             configured_codex_profile,
@@ -902,20 +921,17 @@ def apply_forwarded_mcp_servers(
             if isinstance(key, str) and str.__str__(key).strip(_TRIMMED).split(".")[0] == "profile":
                 named_profile = value
         if named_profile is None:
-            # The config the child reads is the one its own environment names.
-            env = reveal_redacted(kwargs.get("env"))
-            env = env if isinstance(env, Mapping) else None
             try:
-                named_profile = configured_codex_profile(env)
+                named_profile = configured_codex_profile(child_env)
             except ValueError:
-                # A file this parser cannot read is left to the discovery below, as before: its
-                # server list falls back to `codex mcp list --json`, and a root key in it is
-                # not seen here.
+                # A file this parser cannot read is left to the discovery below, as before,
+                # which reads its server list with its own parser or, when that one cannot read
+                # it either, from `codex mcp list --json`; a root key in it is not seen here.
                 named_profile = None
             if named_profile is not None:
                 remedy = (
                     "Remove the root `profile` key from "
-                    f"{str(codex_home_for_env(env) / 'config.toml')!r}"
+                    f"{str(codex_home_for_env(child_env) / 'config.toml')!r}"
                 )
     if exclusive and named_profile is not None and not kwargs.get("ignore_user_config"):
         # Without the flag the set is made exclusive by disabling, by name, the servers
@@ -975,7 +991,7 @@ def apply_forwarded_mcp_servers(
         if kwargs.get("ignore_user_config"):
             configured = set()
         elif configured is None:
-            configured = _discover_ambient_codex_mcp_server_names()
+            configured = _discover_ambient_codex_mcp_server_names(child_env)
         for excluded_name in sorted(configured - allowed):
             overrides[f"mcp_servers.{excluded_name}.enabled"] = False
 
@@ -989,6 +1005,19 @@ def apply_forwarded_mcp_servers(
             "(--ignore-user-config), profiles included, so the server would start without "
             "them. Drop `env` and `http_headers` from the server config."
         )
+    if secret_fields and child_env is not None:
+        from lionagi.providers.openai._codex_profile import codex_home_for_env
+
+        # The profile file is written under this process's codex home, and codex looks for
+        # `-p <name>` under the home its own environment names.
+        if codex_home_for_env(child_env).resolve() != _codex_home().resolve():
+            raise ConfigurationError(
+                f"MCP server(s) {sorted(secret_fields)!r} set `env` or `http_headers`, which "
+                "reach codex only through a profile file written under this process's codex "
+                "home, and the child's environment names a different one (CODEX_HOME or HOME), "
+                "where codex would not find it. Run the child under this process's codex home, "
+                "or drop `env` and `http_headers` from the server config."
+            )
     if secret_fields:
         _write_codex_mcp_secret_profile(kwargs, secret_fields)
     if overrides:
@@ -1143,6 +1172,8 @@ def _forward_mcp_to_cli_request(
         # build_chat_model reads it for a plain leg.
         exclusive=spec.mcp_servers is not None or (caller_resolved and not servers),
         allowed_names=spec.mcp_servers,
+        # A CLI endpoint holds the child's env outside its config kwargs.
+        env=getattr(forwarded.endpoint, "_runtime_state", {}).get("env"),
     )
 
 
@@ -1173,9 +1204,12 @@ _CODEX_MCP_SERVER_FIELDS = frozenset(
 _SECRET_CODEX_MCP_FIELDS = frozenset({"env", "http_headers"})
 
 
-def _discover_ambient_codex_mcp_server_names() -> set[str]:
+def _discover_ambient_codex_mcp_server_names(env: Mapping[str, str] | None = None) -> set[str]:
     """Discover names of ambient/profile-configured codex MCP servers codex
     would load on its own, so an explicit allowlist can disable them too.
+
+    *env* is the environment the child runs under: its config and its
+    `codex mcp list` are the ones read. None reads this process's.
 
     Raises ``ConfigurationError`` if discovery fails entirely — an allowlist
     that can't be enforced must fail closed, not silently pass servers
@@ -1187,7 +1221,12 @@ def _discover_ambient_codex_mcp_server_names() -> set[str]:
 
     import toml
 
-    codex_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    if env is None:
+        codex_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    else:
+        from lionagi.providers.openai._codex_profile import codex_home_for_env
+
+        codex_home = codex_home_for_env(env)
     config_path = codex_home / "config.toml"
     try:
         data = toml.loads(config_path.read_text())
@@ -1206,6 +1245,7 @@ def _discover_ambient_codex_mcp_server_names() -> set[str]:
     try:
         result = subprocess.run(
             ["codex", "mcp", "list", "--json"],  # noqa: S607 — relies on PATH resolution for "codex", intentional
+            env=None if env is None else dict(env),
             capture_output=True,
             text=True,
             timeout=15,
@@ -1299,6 +1339,19 @@ def _write_codex_mcp_secret_profile(
             "explicit profile or drop `env`/`http_headers` from the MCP "
             "server config."
         )
+    from lionagi.providers.openai.codex import _TRIMMED
+
+    for key in kwargs.get("config_overrides") or {}:
+        # Read through `str.__str__`, as the codex request reads an override key. Which of
+        # `-p` and a `profile` override codex applies is not settled here, so neither is
+        # left to shadow the other.
+        if isinstance(key, str) and str.__str__(key).strip(_TRIMMED).split(".")[0] == "profile":
+            raise ConfigurationError(
+                "Cannot forward MCP server secret fields for codex: the request's config "
+                "overrides select a profile, and the fields reach codex through a `-p` profile "
+                "of their own. Remove the `profile` override or drop `env`/`http_headers` from "
+                "the MCP server config."
+            )
 
     codex_home = _codex_home()
     codex_home.mkdir(parents=True, exist_ok=True)

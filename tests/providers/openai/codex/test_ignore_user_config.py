@@ -933,8 +933,8 @@ def test_a_dangling_user_config_symlink_is_no_config(codex_home, tmp_path):
     ids=["profile-sandbox", "profile-permissions", "profile-only", "not-a-string"],
 )
 def test_a_root_profile_in_the_user_config_refuses_the_run(tmp_path, codex_home, text, named):
-    """Codex 0.162.1 reports a root `profile` key as no longer supported, and codex 0.130.0,
-    given no -p, applies that profile's sandbox settings in place of the root ones. The flag
+    """Codex 0.130.0, given no -p, applies a root `profile` key's profile sandbox settings in
+    place of the root ones, and codex 0.162.1 still declares the key. The flag
     hides the key, so a trusted project would otherwise run workspace-write where the profile
     chose read-only."""
     repo = tmp_path / "repo"
@@ -983,7 +983,7 @@ def test_a_root_profile_refuses_the_run_whatever_sandbox_the_request_sets(codex_
 
     with pytest.raises(ConfigurationError) as refused:
         CodexCodeRequest(prompt="hi", ignore_user_config=True, **request_sets).as_cmd_args()
-    assert "0.162.1 reports a root profile key as no longer supported" in str(refused.value)
+    assert "codex 0.162.1 still declares the key" in str(refused.value)
     assert "0.135" not in str(refused.value)
 
 

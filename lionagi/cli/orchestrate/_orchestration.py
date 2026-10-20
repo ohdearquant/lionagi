@@ -762,9 +762,8 @@ def _hand_mcp_servers(
 ) -> None:
     """Give one worker's model the run's server set, or say it could not be given.
 
-    ``{}`` (apply no servers) and ``None`` (nothing to hand over, keep
-    whatever the model already had) are different requests. See
-    ``docs/internals/cli.md`` (`_orchestration.py`).
+    ``{}`` (apply no servers) and ``None`` (nothing to hand over, keep whatever the model
+    already had) are different requests. See ``docs/internals/cli.md`` (`_orchestration.py`).
     """
     if servers is None:
         return
@@ -776,6 +775,7 @@ def _hand_mcp_servers(
         servers,
         provider=provider,
         exclusive=not servers if exclusive is None else exclusive,
+        env=getattr(imodel.endpoint, "_runtime_state", {}).get("env"),
     )
     if applied:
         return

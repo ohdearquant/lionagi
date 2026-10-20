@@ -81,11 +81,17 @@ and one implementation.
   the profile declares would load. Without the flag the factory refuses a root
   `profile` key in that `config.toml` the same way, since codex before 0.135
   makes it the active profile when no `-p` is given; a key in a `config.toml`
-  its TOML parser cannot read is not seen, and that file's server list comes
-  from the fallback. The TOML parsers these reads use accept TOML 1.0 at most,
-  while codex 0.162.1 parses its config with a TOML 1.1 parser, so a file that
-  uses 1.1-only syntax (an `\e` escape, an inline table across lines or with a
-  trailing comma, a time without seconds) is one such file.
+  its TOML parser cannot read is not seen. The key is read with `tomllib`
+  (`tomli` on Python 3.10) and the server list with `toml` 0.10, and they differ
+  at the edges: `tomllib` and `toml` refuse the syntax only TOML 1.1 allows (an
+  `\e` escape, an inline table across lines or with a trailing comma, a time
+  without seconds), which codex 0.162.1 reads with its TOML 1.1 parser and
+  `tomli` 2.5 accepts, and only `toml` accepts a leading byte-order mark. A file
+  `toml` cannot read takes its server list from the fallback. These reads and
+  the fallback use the codex home named by the environment the
+  child runs under (the model's `env`, when it holds one), and a set whose
+  `env` or `http_headers` need a generated profile is refused when that home is
+  not this process's, since the profile file is written here.
   Those disables do not reach a server only
   a project layer (`.codex/config.toml`) declares either, and only a run under the
   flag has its project layers checked, so a run that keeps the user config is
@@ -127,7 +133,8 @@ and one implementation.
   env-var *names*, not secrets, so those stay on the `-c` path. A request
   that ignores the user config loads no profile either, so a server carrying
   `env` or `http_headers` on one is refused with `ConfigurationError` rather
-  than started without them.
+  than started without them. So is one whose config overrides select a
+  profile (`profile`), since the run would then name two.
 - `_forward_mcp_to_cli_request` reaches the per-turn request kwargs a CLI
   provider subprocess actually reads (unlike `_load_mcp`, which only reaches
   lionagi-native `branch.acts` tools, inert for CLI providers). With
