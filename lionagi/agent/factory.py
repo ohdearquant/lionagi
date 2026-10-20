@@ -1209,13 +1209,15 @@ _SECRET_CODEX_MCP_FIELDS = frozenset({"env", "http_headers"})
 
 def _refuse_non_absolute_codex_home(env: Mapping[str, str]) -> None:
     """Refuse a child CODEX_HOME that is a `~` or relative path before reading the config it
-    names, as the project-layer check does: where it lands depends on the child, not on the
-    directory read here."""
+    names, as the project-layer check does: a `~` lands under the child's HOME, which need not be
+    this process's, and a relative path under whatever directory is current when it is read, so
+    only an absolute path names the same home for this read and for the child."""
     value = env.get("CODEX_HOME")
     if value and not os.path.isabs(value):
         raise ConfigurationError(
             f"The child environment's CODEX_HOME {value!r} is not an absolute path, so the "
-            "codex config it names cannot be read before the run starts. Give an absolute path."
+            "codex config it names depends on the HOME or working directory it is read under. "
+            "Give an absolute path."
         )
 
 
@@ -1260,11 +1262,20 @@ def _discover_ambient_codex_mcp_server_names(env: Mapping[str, str] | None = Non
 
     from lionagi.providers.openai.codex import CODEX_CLI
 
+    if CODEX_CLI is None:
+        # No binary for the run to start, so none to list with: a bare `codex` would resolve on
+        # the child's PATH to a binary no run starts.
+        raise _AgentSettingError(
+            "Cannot enforce the explicit codex MCP server allowlist: "
+            f"{str(config_path)!r} could not be read and the Codex CLI was not found for "
+            "`codex mcp list --json`. Install it with: npm i -g @openai/codex"
+        )
     try:
         result = subprocess.run(  # noqa: S603 -- the argv is the binary below and literals
-            # The binary the run itself starts, found on this process's PATH: the child's
-            # environment may carry no PATH at all, and the run still starts.
-            [CODEX_CLI or "codex", "mcp", "list", "--json"],  # noqa: S607
+            # The binary the run itself starts, found on this process's PATH or in the
+            # directories discover_cli searches after it: the child's environment may carry
+            # no PATH at all, and the run still starts.
+            [CODEX_CLI, "mcp", "list", "--json"],
             env=None if env is None else dict(env),
             capture_output=True,
             text=True,

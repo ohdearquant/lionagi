@@ -1802,6 +1802,39 @@ async def test_forward_mcp_codex_allowlist_reads_a_deeply_nested_ambient_config_
     assert overrides == {"mcp_servers.docs.command": "docs-mcp"}
 
 
+async def test_forward_mcp_codex_allowlist_with_no_codex_binary_is_refused_without_listing(
+    tmp_path, monkeypatch
+):
+    """With the config unreadable and no codex binary found, the discovery refuses the
+    allowlist rather than run a bare `codex`, which would resolve on the child's PATH to a
+    binary the run never starts."""
+    import subprocess
+
+    codex_home = tmp_path / "codex_home"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text("x = " + "[" * 3000 + "]" * 3000 + "\n")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    calls: list[tuple] = []
+
+    def _run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+
+    monkeypatch.setattr("subprocess.run", _run)
+    import lionagi.providers.openai.codex as codex_mod
+
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", None)
+
+    config = AgentSpec.compose("reviewer", model="codex/gpt-5.5", cwd=str(tmp_path / "elsewhere"))
+    config.mcp_config_path = _write_mcp_config(tmp_path, {"docs": {"command": "docs-mcp"}})
+    config.mcp_servers = ["docs"]
+    with pytest.raises(ConfigurationError, match="Codex CLI was not found"):
+        await create_agent(config, load_settings=False)
+    assert calls == []
+
+
 async def test_forward_mcp_codex_allowlist_reads_a_non_utf8_ambient_config_as_unreadable(
     tmp_path, monkeypatch
 ):

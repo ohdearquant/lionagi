@@ -91,8 +91,13 @@ and one implementation.
   `toml` cannot read takes its server list from the fallback. These reads and
   the fallback use the codex home named by the environment the
   child runs under (the model's `env`, when it holds one; a `~` or relative
-  `CODEX_HOME` there is refused, since where it lands depends on the child), and
-  the fallback runs the codex binary the run itself starts. A set whose
+  `CODEX_HOME` there is refused, since a `~` lands under the child's `HOME` and a
+  relative path under whatever directory is current when it is read), and the
+  fallback runs the codex binary the run itself starts; with no codex binary
+  found the allowlist is refused rather than listed with another. A
+  `CODEX_HOME` that a `secrets.lookup` fill adds to the child's environment at
+  spawn is not seen by these reads, which run before the fill: set it in the
+  model's `env` or in this process's environment. A set whose
   `env` or `http_headers` need a generated profile is refused when that home is
   not this process's, since the profile file is written here.
   Those disables do not reach a server only
