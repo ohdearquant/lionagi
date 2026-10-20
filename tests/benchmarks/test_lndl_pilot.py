@@ -29,9 +29,7 @@ def _load(name: str, path: Path):
 
 
 runner = _load("lndl_pilot_runner", PILOT / "run_pilot.py")
-# summarize.py imports the runner as its script sibling (`from run_pilot import ...`).
-with mock.patch.dict(sys.modules, {"run_pilot": runner}):
-    pilot = _load("lndl_pilot_summarize", PILOT / "summarize.py")
+pilot = _load("lndl_pilot_summarize", PILOT / "summarize.py")
 
 LOOPS = ["react", "lndl"]
 RUNS = ["r2", "r3", "r4", "r5"]

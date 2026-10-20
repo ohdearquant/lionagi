@@ -220,8 +220,9 @@ After r5, `tasks.yaml`'s `t24` check was changed to require the assignments them
 two names the question supplies. Run against the committed answers, it rejects all four `lndl`
 answers (r2 to r5) and accepts all four ReAct ones; no run has used it yet.
 
-Each task also has a `none_of: []` beside `accept`, which the runner does not read; it is left as
-it was so that each task file still matches the hash in its runs' `header.json`.
+Each task in the two as-run task files also has a `none_of: []` beside `accept`, which the runner
+does not read; it is kept so that each file still matches the hash in its runs' `header.json`.
+`tasks.yaml` has none, and the runner refuses a task that has a non-empty one (below).
 The two as-run task files also keep two `enumerate_known_member` lines that are one line off at
 `6fa69b19`, and no check reads them: `t13`'s `system` is at `lionagi/protocols/messages/base.py:24`,
 and `t19`'s `.env` at `lionagi/libs/path_safety.py:12`. `tasks.yaml`, which no run has used, has
@@ -241,7 +242,7 @@ rows. Each leg's spend lines are in its run's `spend.jsonl`.
   changes. `summarize()` leaves the D4 rule unset when a leg had no spend line, where the as-run
   copies computed it (above). `main()` refuses a task file in which a task has a non-empty
   `none_of` beside its `accept` block, which `check_answer` would ignore, before it creates the
-  output directory; each task in the three task files has an empty one. Of the files' top-level
+  output directory; each task in the two as-run task files has an empty one. Of the files' top-level
   statements, `summarize()` and `main()` are the only ones whose `ast.dump` differs. With
   `missing_spend` at 0 in all four runs, both give the same totals and rule: the test loads each
   as-run copy, checks its sha256 against the run's `runner_sha256`, and recomputes the run's
@@ -251,8 +252,9 @@ rows. Each leg's spend lines are in its run's `spend.jsonl`.
   copy). It was replaced by `tasks.yaml` before the first commit and now names the copy of the
   task set that run used, `runs/tasks.r2-r4.yaml` or `runs/tasks.r5.yaml`,
   whose sha256 is the header's `tasks_sha256`. `tasks.yaml` beside the runner is the task set as
-  it is now (sha256 `aa04d3fd…`), which no run used.
-- Each `summary.json` is written by `summarize.py`, not by the runner: the totals and
+  it is now (sha256 `b938a95d…`), which no run used.
+- Each committed `summary.json` is the one `summarize.py` writes, which replaces the one the
+  runner writes at the end of a run (see Running it): the totals and
   `d4_rule_by_checks` are the runner's own summary of `results.jsonl` (its `d4_rule`, renamed), and
   `d4_rule_by_substance` is the same summary with each leg accepted as `reading.jsonl` reads it. The
   two agree in r2, r3 and r4. In r5, `lndl_accepts_no_fewer` is true by the checks and false on
@@ -273,7 +275,9 @@ rows. Each leg's spend lines are in its run's `spend.jsonl`.
 The runner expects, beside it, `tree/` (a checkout of `6fa69b19`), `venv/` (an environment with
 the lionagi to measure installed, so `venv/bin/li` exists), `home/` (an empty directory: the
 runner sets `HOME` to it and `LIONAGI_HOME` to `home/.lionagi`, so no user configuration is read)
-and `ANTHROPIC_API_KEY` in its environment. Then:
+and `ANTHROPIC_API_KEY` in its environment. `.gitignore` beside the runner keeps those three
+directories, and the prompt, stdout and stderr files the runner writes for each leg, out of a
+commit. Then:
 
 ```bash
 venv/bin/python run_pilot.py --tasks runs/tasks.r5.yaml --out runs/<name>

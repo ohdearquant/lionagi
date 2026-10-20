@@ -20,13 +20,21 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import re
 import sys
 from pathlib import Path
 
 import yaml
-from run_pilot import HERE, summarize
+
+HERE = Path(__file__).resolve().parent
+# The runner is loaded from its file beside this one, so the import holds however this file is
+# started or imported.
+_spec = importlib.util.spec_from_file_location("lndl_pilot_run_pilot", HERE / "run_pilot.py")
+_runner = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_runner)
+summarize = _runner.summarize
 
 LOOPS = ["react", "lndl"]
 
