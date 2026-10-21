@@ -90,11 +90,10 @@ and one implementation.
   root `profile` key in a file that starts with one is not seen here. A file
   `toml` cannot read takes its server list from the fallback. These reads and
   the fallback use the codex home named by the environment the
-  child runs under (the model's `env`, when it holds one; a `~` or relative
-  `CODEX_HOME` in an `env` handed to the child is refused, since codex takes the
-  value as a path and expands no `~`, so either form names a directory under the
-  working directory the child starts in; one in this process's own environment
-  is read as before, from this process's working directory), and the
+  child runs under (the model's `env` when it holds one, else this process's).
+  A `CODEX_HOME` that is not an absolute path is refused before any config is
+  read or process starts, from either environment, with one
+  `ConfigurationError` naming the variable. The
   fallback runs the codex binary the run itself starts; with no codex binary
   found the allowlist is refused rather than listed with another. A
   `CODEX_HOME` that a `secrets.lookup` fill adds to the child's environment at

@@ -16,7 +16,13 @@ from lionagi.providers.openai._codex_profile import (
     CODEX_MCP_PROFILE_PREFIX as _CODEX_MCP_PROFILE_PREFIX,
 )
 from lionagi.providers.openai._codex_profile import (
+    codex_home_for_env as _codex_home_for_env,
+)
+from lionagi.providers.openai._codex_profile import (
     is_generated_codex_profile as _is_generated_codex_profile,
+)
+from lionagi.providers.openai._codex_profile import (
+    refuse_non_absolute_codex_home as _refuse_non_absolute_codex_home,
 )
 from lionagi.service.providers import _CLAUDE_PROVIDER_NAMES
 from lionagi.session.branch import Branch
@@ -1207,20 +1213,6 @@ _CODEX_MCP_SERVER_FIELDS = frozenset(
 _SECRET_CODEX_MCP_FIELDS = frozenset({"env", "http_headers"})
 
 
-def _refuse_non_absolute_codex_home(env: Mapping[str, str]) -> None:
-    """Refuse a child CODEX_HOME that is a `~` or relative path before reading the config it
-    names: codex takes the value as a path and expands no `~`, so either form names a directory
-    under the working directory the child starts in, which need not be the one this read runs
-    in, and only an absolute path names the same home for this read and for the child."""
-    value = env.get("CODEX_HOME")
-    if value and not os.path.isabs(value):
-        raise ConfigurationError(
-            f"The child environment's CODEX_HOME {value!r} is not an absolute path, so the "
-            "codex config it names depends on the HOME or working directory it is read under. "
-            "Give an absolute path."
-        )
-
-
 def _discover_ambient_codex_mcp_server_names(env: Mapping[str, str] | None = None) -> set[str]:
     """Discover names of ambient/profile-configured codex MCP servers codex
     would load on its own, so an explicit allowlist can disable them too.
@@ -1234,17 +1226,10 @@ def _discover_ambient_codex_mcp_server_names(env: Mapping[str, str] | None = Non
     """
     import json
     import subprocess
-    from pathlib import Path
 
     import toml
 
-    if env is None:
-        codex_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
-    else:
-        from lionagi.providers.openai._codex_profile import codex_home_for_env
-
-        _refuse_non_absolute_codex_home(env)
-        codex_home = codex_home_for_env(env)
+    codex_home = _codex_home_for_env(env)
     config_path = codex_home / "config.toml"
     try:
         data = toml.loads(config_path.read_text())
@@ -1303,9 +1288,7 @@ def _discover_ambient_codex_mcp_server_names(env: Mapping[str, str] | None = Non
 
 
 def _codex_home() -> Path:
-    from pathlib import Path
-
-    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    return _codex_home_for_env(None)
 
 
 def _missing_generated_codex_profile(kwargs: dict[str, Any]) -> str | None:

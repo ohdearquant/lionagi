@@ -18,8 +18,9 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
-from lionagi._errors import CLIInputRefusedError, ContainmentRefusedError
+from lionagi._errors import CLIInputRefusedError, ConfigurationError, ContainmentRefusedError
 from lionagi.cli._providers import (
     AgentProfile,
     _parse_profile,
@@ -452,6 +453,29 @@ def test_containment_refuses_a_profile_a_model_profile_file_selects(tmp_path):
     assert req.config_overrides == {"profile": "work"}
     with pytest.raises(ValueError, match=re.escape("override entry 0: it selects")):
         req.as_cmd_args()
+
+
+@pytest.mark.parametrize("value", ["~/.codex", "relative/.codex"])
+def test_the_model_spec_reader_refuses_a_request_codex_home_that_is_not_absolute(tmp_path, value):
+    """The model-spec lookup resolves the home from the request's env, so the same refusal
+    applies before it reads a profile file there."""
+    with pytest.raises(ValidationError, match="CODEX_HOME") as refusal:
+        CodexCodeRequest(prompt="hi", repo=tmp_path, model="leg", env={"CODEX_HOME": value})
+    assert "is not an absolute path" in str(refusal.value)
+
+
+@pytest.mark.parametrize("value", ["~/.codex", "relative/.codex"])
+def test_the_containment_reader_refuses_a_request_codex_home_that_is_not_absolute(tmp_path, value):
+    """The containment read resolves the home from the request's env, so the same refusal
+    applies before it reads the config there."""
+    with pytest.raises(ValidationError, match="CODEX_HOME") as refusal:
+        CodexCodeRequest(
+            prompt="hi",
+            repo=tmp_path,
+            env={"CODEX_HOME": value},
+            contain_account_integrations=True,
+        )
+    assert "is not an absolute path" in str(refusal.value)
 
 
 def _codex_home(tmp_path, config: str) -> dict[str, str]:

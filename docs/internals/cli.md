@@ -357,7 +357,9 @@ config that declares hooks or sets `default_permissions` itself is refused.
 Both read the config in the codex home the worker's environment names, else
 this process's: a `CODEX_HOME` that a `secrets.lookup` fill adds to the
 child's environment at spawn is not seen by them, since the fill comes after,
-so set it in the worker's `env` or in this process's environment.
+so set it in the worker's `env` or in this process's environment. A
+`CODEX_HOME` that is not an absolute path is refused before either read or
+any process starts, from either environment.
 A Claude worker is not isolated here and keeps its settings sources, as an
 interactive run does. A worker therefore has none of the servers its CLI would load
 from `$CODEX_HOME/config.toml`, a withheld one included; the orchestrator keeps them. The
@@ -1102,7 +1104,7 @@ LION system text. The post-factory `add_message` on the preset path is skipped t
 
 **`_run_agent` raw_body vs system_prompt** — uses `profile.raw_body` (not
 `profile.system_prompt`) to avoid duplicating `LION_SYSTEM_MESSAGE`: `_parse_profile` prepends
-it into `system_prompt` when `lion_system=True`, and `factory.py:291-294` also prepends it
+it into `system_prompt` when `lion_system=True`, and `factory.py:297-300` also prepends it
 because `spec.lion_system` remains `True`. `raw_body` is the profile body before that expansion;
 the factory adds the header exactly once. When `lion_system=False`, `raw_body == system_prompt`
 so both paths are consistent.

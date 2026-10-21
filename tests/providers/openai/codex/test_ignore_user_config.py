@@ -58,6 +58,30 @@ def test_the_flag_reaches_the_command_line(codex_home):
     assert "--ignore-user-config" not in CodexCodeRequest(prompt="hi").as_cmd_args()
 
 
+@pytest.mark.parametrize("value", ["~/.codex", "relative/.codex"])
+def test_a_request_codex_home_that_is_not_absolute_is_refused(value, codex_home):
+    """A request's CODEX_HOME is refused by the one predicate, before the config is read,
+    with the same message a process home gets."""
+    with pytest.raises(ConfigurationError, match="CODEX_HOME") as refusal:
+        CodexCodeRequest(
+            prompt="hi", ignore_user_config=True, env={"CODEX_HOME": value}
+        ).as_cmd_args()
+    message = str(refusal.value)
+    assert "is not an absolute path" in message
+    assert repr(value) in message
+
+
+@pytest.mark.parametrize("value", ["~/.codex", "relative/.codex"])
+def test_a_process_codex_home_that_is_not_absolute_is_refused(value, monkeypatch):
+    """The process's CODEX_HOME goes through the same refusal as a request's."""
+    monkeypatch.setenv("CODEX_HOME", value)
+    with pytest.raises(ConfigurationError, match="CODEX_HOME") as refusal:
+        CodexCodeRequest(prompt="hi", ignore_user_config=True).as_cmd_args()
+    message = str(refusal.value)
+    assert "is not an absolute path" in message
+    assert repr(value) in message
+
+
 def test_the_user_configs_network_grant_rides_beside_the_flag(codex_home):
     _grants_network(codex_home)
 

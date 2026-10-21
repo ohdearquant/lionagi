@@ -32,6 +32,7 @@ from collections.abc import Iterator, Mapping
 from pathlib import Path
 
 from lionagi._errors import ConfigurationError
+from lionagi.providers.openai._codex_profile import refuse_non_absolute_codex_home
 
 try:
     import tomllib as _tomllib
@@ -98,13 +99,11 @@ def declaring_project_layer(
 
 
 def _codex_home(env: Mapping[str, str]) -> Path:
-    """CODEX_HOME as Codex finds it: the variable as given, canonical, or HOME's ``.codex``
-    as given. A relative value would resolve against Codex's process directory, not the
-    one checked here, so it is refused; a ``~`` is not expanded by Codex either."""
+    """CODEX_HOME as Codex finds it: the absolute variable as given, canonical, or HOME's
+    ``.codex`` as given. A value that is not an absolute path is refused."""
     value = env.get("CODEX_HOME") or ""
     if value:
-        if not os.path.isabs(value):
-            raise ConfigurationError(f"CODEX_HOME {value!r} is not an absolute path")
+        refuse_non_absolute_codex_home(env)
         try:
             return Path(os.path.realpath(value, strict=True))
         except OSError:

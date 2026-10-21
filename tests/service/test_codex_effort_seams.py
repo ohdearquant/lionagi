@@ -11,6 +11,7 @@ route, so each seam gets an arm here.
 """
 
 import pytest
+from pydantic import ValidationError
 
 from lionagi.service.providers import codex_unset_effort_default, reclamp_effort_for_model
 
@@ -193,17 +194,13 @@ class TestTheRequestModelBackstop:
 
         assert CodexCodeRequest(prompt="hi", model="work").model == "gpt-5.6-sol"
 
-    def test_a_tilde_in_the_childs_codex_home_expands_against_the_childs_home(
+    def test_a_tilde_in_the_childs_codex_home_is_refused_rather_than_resolved(
         self, tmp_path, monkeypatch
     ):
-        """`~` is expanded by whoever reads it, and that is the child.
+        """A `~` names a different directory depending on whose home expands it.
 
-        The home resolution deliberately avoids `Path.home()` because it honours
-        OUR `$HOME` -- and then expanded a tilde with `Path.expanduser()`, which
-        honours exactly the same thing. So an env naming `CODEX_HOME=~/codex`
-        resolved against the parent's home while the child resolved it against
-        its own, and the profile that decides the model was read from a
-        directory the child never opens.
+        Resolving it here could read the profile that decides the model from a
+        directory the child never opens, so the request is refused instead.
         """
         parent = tmp_path / "parent"
         child = tmp_path / "child"
@@ -215,15 +212,15 @@ class TestTheRequestModelBackstop:
 
         from lionagi.providers.openai.codex import CodexCodeRequest
 
-        req = CodexCodeRequest(
-            prompt="hi",
-            model="work",
-            env={"HOME": str(child), "CODEX_HOME": "~/codex"},
-        )
-        assert req.model == "gpt-5.3-codex-spark"
+        with pytest.raises(ValidationError, match="CODEX_HOME '~/codex' is not an absolute path"):
+            CodexCodeRequest(
+                prompt="hi",
+                model="work",
+                env={"HOME": str(child), "CODEX_HOME": "~/codex"},
+            )
 
-        # The control: an absolute child home was never affected by the tilde
-        # path, so the arm above is about the expansion and not about the env.
+        # The control: an absolute child home is read from the child's env, so
+        # the arm above is about the tilde and not about the env.
         absolute = CodexCodeRequest(
             prompt="hi",
             model="work",

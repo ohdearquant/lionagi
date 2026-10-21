@@ -1839,7 +1839,8 @@ def test_forward_mcp_codex_allowlist_with_no_codex_binary_and_a_child_env_is_ref
     tmp_path, monkeypatch
 ):
     """The same refusal when the child's environment is handed over: its CODEX_HOME names
-    the unreadable config and its PATH holds a `codex`, which the discovery does not run."""
+    the unreadable config, which the message names, and its PATH holds a `codex`, which the
+    discovery does not run."""
     import subprocess
 
     import lionagi.providers.openai.codex as codex_mod
@@ -1863,11 +1864,73 @@ def test_forward_mcp_codex_allowlist_with_no_codex_binary_and_a_child_env_is_ref
     monkeypatch.setattr("subprocess.run", _run)
     monkeypatch.setattr(codex_mod, "CODEX_CLI", None)
 
-    with pytest.raises(ConfigurationError, match="Codex CLI was not found"):
+    process_home = tmp_path / "process-home"
+    process_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(process_home))
+    with pytest.raises(ConfigurationError, match="Codex CLI was not found") as refusal:
         apply_forwarded_mcp_servers(
             {}, {}, provider="codex", exclusive=True, allowed_names=["docs"], env=env
         )
+    assert repr(str(codex_home / "config.toml")) in str(refusal.value)
+    assert repr(str(process_home / "config.toml")) not in str(refusal.value)
     assert calls == []
+
+
+def test_forward_mcp_codex_allowlist_refuses_a_process_codex_home_that_is_not_absolute(
+    tmp_path, monkeypatch
+):
+    """The process's own CODEX_HOME is refused before the config is read or a process starts,
+    through the same predicate and message as a request's."""
+    from lionagi.agent.factory import _discover_ambient_codex_mcp_server_names
+
+    monkeypatch.setenv("CODEX_HOME", "~/x")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    import lionagi.providers.openai.codex as codex_mod
+
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", None)
+    with pytest.raises(ConfigurationError, match="CODEX_HOME") as refusal:
+        _discover_ambient_codex_mcp_server_names()
+    message = str(refusal.value)
+    assert "is not an absolute path" in message
+    assert "~/x" in message
+
+
+def test_forward_mcp_codex_allowlist_refuses_a_request_codex_home_that_is_not_absolute():
+    """The request environment's CODEX_HOME is refused by the same predicate, with the same
+    message a process home gets."""
+    from lionagi.agent.factory import apply_forwarded_mcp_servers
+
+    with pytest.raises(ConfigurationError, match="CODEX_HOME") as refusal:
+        apply_forwarded_mcp_servers(
+            {},
+            {},
+            provider="codex",
+            exclusive=True,
+            allowed_names=["docs"],
+            env={"CODEX_HOME": "relative/.codex"},
+        )
+    message = str(refusal.value)
+    assert "is not an absolute path" in message
+    assert "relative/.codex" in message
+
+
+def test_forward_mcp_codex_allowlist_refuses_a_bad_home_before_reading_the_profile(monkeypatch):
+    """The refusal is raised before the root-profile read, not caught by its ValueError
+    fallback and retried as an absent profile."""
+    import lionagi.agent.factory as factory_mod
+
+    monkeypatch.setattr(
+        factory_mod, "_discover_ambient_codex_mcp_server_names", lambda *_a, **_k: {"docs"}
+    )
+    with pytest.raises(ConfigurationError, match="is not an absolute path"):
+        factory_mod.apply_forwarded_mcp_servers(
+            {},
+            {},
+            provider="codex",
+            exclusive=True,
+            allowed_names=["docs"],
+            env={"CODEX_HOME": "relative/.codex"},
+        )
 
 
 async def test_forward_mcp_codex_allowlist_reads_a_non_utf8_ambient_config_as_unreadable(

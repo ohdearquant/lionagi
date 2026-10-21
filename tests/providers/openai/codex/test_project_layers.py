@@ -90,10 +90,22 @@ def test_every_layer_is_listed_nearest_first(tmp_path, env):
 
 @pytest.mark.parametrize("value", ["~/.codex", "relative/.codex", "./.codex"])
 def test_a_codex_home_that_is_not_absolute_is_refused(tmp_path, value):
-    """Codex takes CODEX_HOME as given: no `~` expansion, and a relative value resolves against
-    Codex's own process directory, not the one this check runs in."""
+    """A CODEX_HOME this check cannot resolve to one directory is refused: how codex itself
+    reads either form makes no difference to that."""
     with pytest.raises(ConfigurationError, match="CODEX_HOME") as refusal:
         declaring_project_layer(tmp_path, {"CODEX_HOME": value})
+    assert repr(value) in str(refusal.value)
+
+
+@pytest.mark.parametrize("value", ["~/.codex", "relative/.codex"])
+def test_a_project_layer_check_refuses_a_request_codex_home_that_is_not_absolute(tmp_path, value):
+    """The project-layer reader takes the home from the request environment, so the same
+    refusal applies before it reads any layer."""
+    request = CodexCodeRequest(
+        prompt="x", repo=tmp_path, env={"CODEX_HOME": value}, ignore_user_config=True
+    )
+    with pytest.raises(ConfigurationError, match="is not an absolute path") as refusal:
+        codex_mod.refuse_declaring_project_layer(codex_mod._plain_request(request), tmp_path)
     assert repr(value) in str(refusal.value)
 
 
