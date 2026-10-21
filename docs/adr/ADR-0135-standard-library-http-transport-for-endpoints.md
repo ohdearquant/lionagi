@@ -198,12 +198,12 @@ Exact semantics:
   `trust_env=True`, which the endpoint never set).
 - The request carries `Accept-Encoding: identity` unless its headers name another coding. A
   body that arrives gzip- or deflate-coded all the same, because the caller asked for it or the
-  server sent it anyway, is decoded as it is read (`aiohttp` decoded both): a gzip body to what
-  `gzip.decompress` returns for it, several members included, and a deflate body as a zlib
-  stream or, from servers that send it, raw deflate data. A stream that does not end raises
-  `TransportError`, since only its end (the gzip trailer's length and CRC, the zlib checksum)
-  shows the body arrived whole, and so do bytes after the coded stream other than the start of
-  a next gzip member, which `zlib.decompress` skips and `gzip.decompress` skips only as NUL
+  server sent it anyway, is decoded as it is read (`aiohttp` decoded both): a gzip body member
+  by member, several members included, and a deflate body as a zlib stream or, from servers
+  that send it, raw deflate data. A stream that does not end raises `TransportError`, since
+  only its end (the gzip trailer's length and CRC, the zlib checksum) shows the body arrived
+  whole. Bytes after the last whole gzip member, NUL padding included, raise it too, as do bytes
+  after a deflate stream; `zlib.decompress` skips such bytes and `gzip.decompress` skips NUL
   padding. `aiohttp` returned a gzip body's decoded part, ignored one stray byte after a gzip
   member, and decoded a second deflate stream; the CHANGELOG lists each case. A `br` or `zstd`
   body raises `TransportError` unless it is empty (`aiohttp` decoded those only with an

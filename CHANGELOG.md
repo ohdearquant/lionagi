@@ -60,7 +60,8 @@ Some responses are handled differently:
   endpoint retried.
 - A body coded `br` or `zstd`, which a server sends when a request's headers ask for it, raises
   `TransportError` unless it is empty (an empty body reads as empty); `aiohttp` decoded those
-  when an optional decoder package was installed, and otherwise raised, for an empty body too.
+  when an optional decoder package was installed, and otherwise raised, with its default parser
+  for an empty `br` body too.
 - A gzip or deflate body that holds just its coded stream is decoded as before. Around that the
   client is stricter, and each of these raises `TransportError`: a gzip body that does not end,
   where `aiohttp` returned what had decoded (the whole document when only the trailer was
@@ -69,19 +70,23 @@ Some responses are handled differently:
   for the first two bytes of a next member and raised for two or more other bytes; and a
   second deflate stream, which `aiohttp` decoded. Other bytes after a deflate stream raised
   under `aiohttp` too. The endpoint retries a `TransportError` as it retries a dropped
-  connection, so with no `retry_config` set a gzip body cut before its trailer is requested
-  again, up to `max_retries` requests in all, where `aiohttp` returned the document from one.
+  connection, so with no `retry_config` set a gzip body that does not end is requested again,
+  up to `max_retries` requests in all, where `aiohttp` returned what had decoded from one.
 - A streamed gzip or deflate body arrives in pieces of what one read decodes to, with no bound
   on a piece's size: a 16 MiB body of zeros streams as two pieces, the larger about 8 MiB,
   where the largest piece `aiohttp` gave for it was 768 KiB.
 - The codings named in all of a response's `Content-Encoding` lines are read as one list whose
-  empty elements are ignored (RFC 9110), and a body in exactly one of them is handled as that
-  coding. `aiohttp`'s default compiled parser read only the last line and took it whole: it
-  returned as it arrived a body coded `x-gzip`, `gzip` followed by spaces, `gzip,` or `, gzip`,
-  or a `gzip` line followed by an empty one, and failed a `GZip` body with
-  `ClientPayloadError`; each is now decoded as gzip. A `gzip` line beside a second `gzip`
-  line, which `aiohttp` decoded once, or beside a `deflate` line, which it failed on gzip data,
-  now leaves the body as it arrived. Its pure-Python parser read the first line instead.
+  empty elements are ignored (RFC 9110), and a body in exactly one coding is handled as that
+  coding; a body in more than one is returned as it arrived. `aiohttp` took one line whole, the
+  last with its default compiled parser and the first with its pure-Python one, so the two
+  differ wherever a response's codings are a list or span lines. With the default parser, a
+  body coded `x-gzip`, a single `gzip` line with whitespace after the name or a comma beside
+  it (`gzip,`, `, gzip`, `gzip ,`), or a `gzip` line followed by an empty one came back
+  as it arrived, and a `GZip` body failed with `ClientPayloadError`; each is now decoded as
+  gzip. Two coding lines were decoded by the last one where it matched the data (`identity` or
+  `deflate` then `gzip` on gzip data, `gzip` then `deflate` on zlib data) and failed where it
+  did not (`gzip` then `deflate` on gzip data), and a `gzip` line beside a second `gzip` line
+  was decoded once; each of these is now returned as it arrived.
 
 ### Added
 
