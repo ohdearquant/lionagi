@@ -185,7 +185,8 @@ and r4, and `spend_lines` is at least 1 in all 144 rows. Each leg's spend lines 
   prompts, the rest of the stderr and the conversations are not committed, and `.gitignore`
   beside the runner leaves them out of a `git add`, with `home/`, `tree/` and `venv/`. A run
   directory under one of those three (`--out home/r9`, say) passes the runner's checks and is
-  ignored whole, its results included, so a run whose results are committed goes under `runs/`.
+  ignored whole, its results included. A run whose results are to be committed goes outside
+  those three; `runs/` is where this repo keeps them.
 
 ## Running it
 
