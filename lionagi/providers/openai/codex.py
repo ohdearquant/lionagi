@@ -2034,10 +2034,10 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
     ones (read at that tag: `get_config_profile` falls back to the key, and the profile's
     `sandbox_mode` is taken before the root's), and which codex 0.162.1 still declares in its
     config schema; `default_permissions`, a permissions profile codex applies in place
-    of `sandbox_mode`; and a file that exists but cannot be read, since the hooks it
-    declares, if any, would be dropped unseen. So does a
-    profile the run itself names, on the request or in its overrides: codex loads no user
-    config under the flag, and a profile is user config.
+    of `sandbox_mode`; and a file that exists but cannot be read or parsed (this Python's TOML
+    parser may refuse TOML 1.1 forms codex reads), since the hooks it declares, if any, would be
+    dropped unseen. So does a profile the run itself names, on the request or in its overrides:
+    codex loads no user config under the flag, and a profile is user config.
     """
     if plain.profile is not None:
         raise ConfigurationError(
@@ -2067,7 +2067,7 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
         config = _read_codex_config(config_path)
     except ValueError as exc:
         remedy = (
-            "Write the file in TOML 1.0 (codex reads TOML 1.1; this Python's parser may not)"
+            "Make the file one this Python's TOML parser reads (codex also reads TOML 1.1 forms)"
             if os.access(config_path, os.R_OK)
             else "Make the file readable by this process"
         )
@@ -2343,11 +2343,11 @@ def _refuse_project_layer_disagreement(
     trust decision is codex's, made from the layer's directory, the project and repository
     roots and managed configuration, so a carried value is exact only where no layer says
     otherwise: a layer that sets the same value agrees whichever way codex decides. A layer
-    that sets another value, one that names a permissions profile in place of the mode,
-    one the TOML parser refuses, and project layers that cannot be determined all refuse
-    the run. Setting the key in the run's overrides keeps it from riding, and codex then
-    decides between the overrides and the layer as it does without the flag. A layer's root
-    `profile` key is no concern here: codex drops `profile` and `profiles` from project
+    that sets another value, one that names a permissions profile in place of the mode, one this
+    Python's TOML parser refuses (codex also reads TOML 1.1 forms), and project layers that cannot
+    be determined all refuse the run. Setting the key in the run's overrides keeps it from riding,
+    and codex then decides between the overrides and the layer as it does without the flag. A
+    layer's root `profile` key is no concern here: codex drops `profile` and `profiles` from project
     layers (its project-local denylist, read at the 0.130.0 to 0.162.1 tags).
     """
     try:
@@ -2364,7 +2364,7 @@ def _refuse_project_layer_disagreement(
         for key_path, value in carried.items():
             dotted = ".".join(key_path)
             if table is None:
-                how = "cannot be parsed, so whether it sets it otherwise is unknown"
+                how = "cannot be parsed here (codex also reads TOML 1.1), so its setting is unknown"
             elif key_path == ("sandbox_mode",) and _sets(table, ("default_permissions",)):
                 how = "names a permissions profile in its place"
             elif not _sets(table, key_path):

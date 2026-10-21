@@ -96,8 +96,8 @@ and one implementation.
   the parser refuses stops the run instead, and so does a project layer it
   refuses while a sandbox setting rides beside the flag, so where the parser
   reads only TOML 1.0 a `config.toml` that codex itself reads is refused when it
-  uses that syntax; for the user config the message says to write the file in
-  TOML 1.0.
+  uses that syntax; for the user config the message says to make the file one
+  this parser reads.
   These reads and the fallback use the codex home named by the environment the
   child runs under (the model's `env` when it holds one, else this process's);
   an environment naming neither `CODEX_HOME` nor `HOME` names the OS account's

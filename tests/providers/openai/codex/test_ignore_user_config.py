@@ -28,7 +28,7 @@ from lionagi.providers.openai.codex import CodexCodeRequest
 
 if sys.version_info >= (3, 11):
     import tomllib
-else:  # the declared `tomli`; recent releases also read TOML 1.1
+else:  # the declared `tomli`; the locked 2.4.1 reads TOML 1.1
     import tomli as tomllib
 
 GRANT = ["-c", "sandbox_workspace_write.network_access=true"]
@@ -786,7 +786,7 @@ def test_a_user_config_that_is_not_a_regular_file_is_refused(codex_home, caplog)
     with pytest.raises(ConfigurationError, match="not a regular file") as refused:
         CodexCodeRequest(prompt="hi", ignore_user_config=True).as_cmd_args()
     assert "Replace it with a regular file" in str(refused.value)
-    assert "TOML 1.0" not in str(refused.value)
+    assert "codex also reads TOML 1.1" not in str(refused.value)
 
     # the control: no file at all is no config, and nothing is said
     (codex_home / "config.toml").rmdir()
@@ -1081,11 +1081,11 @@ def test_an_unreadable_user_config_gets_the_permission_remedy(codex_home):
     finally:
         config.chmod(0o600)
     assert "Make the file readable by this process" in str(refused.value)
-    assert "TOML 1.0" not in str(refused.value)
+    assert "codex also reads TOML 1.1" not in str(refused.value)
 
     # the control: a file that is read but not parsed gets the parser remedy
     config.write_text("[sandbox_workspace_write\n")
-    with pytest.raises(ConfigurationError, match="Write the file in TOML 1.0"):
+    with pytest.raises(ConfigurationError, match="Make the file one this Python's TOML parser"):
         CodexCodeRequest(prompt="hi", ignore_user_config=True).as_cmd_args()
 
 
@@ -1097,14 +1097,43 @@ def test_toml_1_1_syntax_in_the_user_config_is_read_as_this_pythons_parser_reads
     codex_home, syntax
 ):
     """Codex reads TOML 1.1. tomllib (3.11 and later) and tomli before 2.4 read TOML 1.0, so
-    under the flag such a config is refused with the TOML 1.0 remedy; tomli from 2.4 reads it."""
+    under the flag such a config is refused with the parser remedy; tomli from 2.4 reads it."""
     (codex_home / "config.toml").write_text(f'{syntax}\nsandbox_mode = "workspace-write"\n')
     request = CodexCodeRequest(prompt="hi", ignore_user_config=True)
     tomli = None if sys.version_info >= (3, 11) else pytest.importorskip("tomli")
     if tomli is None or tuple(int(x) for x in tomli.__version__.split(".")[:2]) < (2, 4):
-        with pytest.raises(ConfigurationError, match="Write the file in TOML 1.0"):
+        with pytest.raises(ConfigurationError, match="Make the file one this Python's TOML parser"):
             request.as_cmd_args()
     else:
         args = request.as_cmd_args()
         assert "--ignore-user-config" in args
         assert "workspace-write" in " ".join(args)
+
+
+@pytest.mark.parametrize(
+    "config_text",
+    ['\ufeffsandbox_mode = "workspace-write"\n', "[sandbox_workspace_write\n"],
+    ids=["byte-order-mark", "broken-table"],
+)
+def test_a_user_config_refused_for_another_cause_names_the_parsers_error(codex_home, config_text):
+    """A file every TOML parser refuses gets the parser's own error and the parser remedy;
+    nothing in the message says to write the file in TOML 1.0."""
+    (codex_home / "config.toml").write_text(config_text, encoding="utf-8")
+    with pytest.raises(ConfigurationError) as refused:
+        CodexCodeRequest(prompt="hi", ignore_user_config=True).as_cmd_args()
+    message = str(refused.value)
+    assert "(at line 1, column " in message
+    assert "Make the file one this Python's TOML parser reads" in message
+    assert "TOML 1.0" not in message
+
+
+def test_a_project_layer_the_parser_refuses_is_named_with_the_parsers_limit(tmp_path, codex_home):
+    (codex_home / "config.toml").write_text('sandbox_mode = "workspace-write"\n')
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    _project_layer(repo, "[sandbox_workspace_write\n")
+
+    with pytest.raises(ConfigurationError) as refused:
+        CodexCodeRequest(prompt="hi", repo=repo, ignore_user_config=True).as_cmd_args()
+    assert "cannot be parsed here (codex also reads TOML 1.1)" in str(refused.value)
+    assert "Set `sandbox_mode` in the run's config overrides" in str(refused.value)
