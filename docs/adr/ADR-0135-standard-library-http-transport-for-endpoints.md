@@ -14,9 +14,10 @@
 with no deprecation cycle, since no known caller configures the endpoint's client beyond its
 headers.
 
-Purpose: every HTTP request lionagi makes to a model provider goes through one client that the
-project owns and that depends only on the standard library and `anyio`, so a vulnerability in a
-third-party HTTP stack is no longer a lionagi release.
+Purpose: every HTTP request lionagi's endpoints make to a model provider goes through one client
+that the project owns and that depends only on the standard library and `anyio`, so a
+vulnerability in a third-party HTTP stack is no longer a lionagi release. The Ollama provider's
+model listing and pulls still go through the optional `ollama` package's own client.
 
 ## Context
 
@@ -193,8 +194,15 @@ Exact semantics:
   `allow_redirects=False`, which is accepted.
 - `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` are not read (`aiohttp` read them only with
   `trust_env=True`, which the endpoint never set).
-- The request carries `Accept-Encoding: identity`, so bodies arrive uncompressed and no
-  decompressor is involved.
+- The request carries `Accept-Encoding: identity` unless its headers name another coding. A
+  body that arrives gzip- or deflate-coded all the same, because the caller asked for it or the
+  server sent it anyway, is decoded as it is read (`aiohttp` decoded both): a gzip body as
+  `gzip.decompress` reads one, several members included, and a deflate body as a zlib stream or,
+  from servers that send it, raw deflate data. Data after the coded stream, or a stream that does
+  not end, raises `TransportError`. A `br` or `zstd` body raises `TransportError` (`aiohttp`
+  decoded those only with an optional decoder package installed); a body in any other coding,
+  or in more than one, is returned as it arrived, as under `aiohttp`. The headers stay as
+  received.
 - Default headers: `User-Agent: lionagi/<version>`; `Accept: */*`, as `aiohttp` sent;
   `Content-Type: application/json` for a `json=` body unless the caller set one; `Content-Length`
   for any body. A later header source replaces an earlier one of the same name in any case (session
@@ -236,7 +244,8 @@ The `_Exchange` object owns one connection and the socket it opened:
   stopped")`. The TCP connect itself is the exchange's own: `http.client` opens its socket through
   `HTTPConnection._create_connection`, which the exchange sets to a method that does what
   `socket.create_connection` does with a non-blocking connect, polled every 0.05 s for the stop.
-  The host's addresses are tried as RFC 8305 orders them, alternating address families, and the
+  The host's addresses are tried in the order the address lookup returns them, interleaved by
+  address family as RFC 8305 section 4 describes, and the
   next starts as soon as a connect fails or when the latest started has not connected within
   0.25 s, the Connection Attempt Delay `aiohttp` used (its `happy_eyeballs_delay`); the first to
   connect is used and the rest are closed, so an address that never answers does not hold up the
@@ -292,8 +301,9 @@ Exact semantics:
   a password holding one has to be percent-encoded (`%2F`, `%3F`, `%23`). Left raw, the user is
   read as the host, the password's text up to that character as the port, and the rest as the
   path, query or fragment, as `urllib.parse`, `yarl`, `httpx` and `urllib3` all read it; no
-  parse can tell that URL from one with an `@` in its path. Error text names the port, so a raw
-  `/` after a password's leading digits puts those digits in error text, as the port.
+  parse can tell that URL from one with an `@` in its path. Error text names the port, so when a
+  password's text up to a raw `/` is all digits, those digits reach error text as the port; any
+  other text there is no port, and the URL is refused as one that does not parse (below).
 - A URL that does not parse (a port that is not a number among them, and an authority holding a
   backslash, which RFC 3986 does not allow and `yarl` refused), and a user or password latin-1
   cannot carry, are refused with a `ValueError` that quotes none of the URL and has no exception
@@ -383,8 +393,10 @@ installed for it, which is what this record removes.
   requests than that at once queues them, and the queueing counts against their deadlines.
 - A request stopped while its host's address is being looked up leaves its thread in the lookup
   until the lookup returns; nothing is sent.
-- Responses arrive uncompressed. Large non-streamed JSON responses cost more bytes on the wire than
-  under `aiohttp`, which asked for gzip.
+- Responses are requested uncompressed. Large non-streamed JSON responses cost more bytes on the
+  wire than under `aiohttp`, which asked for gzip; a caller that wants gzip sets
+  `Accept-Encoding: gzip` in the `client_kwargs` headers, and the reply is decoded. A decoded
+  body's size is not limited, as a body's size on the wire is not.
 - Code that configured `client_kwargs` beyond headers, passed `aiohttp` request options, caught
   `aiohttp` exceptions, or overrode `_call_aiohttp` / `_stream_aiohttp` breaks at upgrade. The
   CHANGELOG's upgrade notes list each.

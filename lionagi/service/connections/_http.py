@@ -20,8 +20,13 @@ line (a space, a non-ASCII letter) is encoded, and an escape already in the URL 
 
 Redirects are never followed, since the address guard checks one URL and a redirect could lead
 anywhere; a 3xx response is returned like any other status. Proxy settings in the environment
-are not read. The client sends no ``Accept-Encoding`` other than ``identity``, so response
-bodies arrive uncompressed. A ``timeout`` of 0 or less sets no bound, as ``None`` does.
+are not read. A request asks for ``Accept-Encoding: identity`` unless its headers name another
+coding. A body that arrives gzip- or deflate-coded all the same is decoded as it is read, as
+``gzip.decompress`` and ``zlib.decompress`` decode one whole (a gzip body can hold several
+members; data after the coded stream, or a stream that does not end, raises
+``TransportError``); a ``br`` or ``zstd`` body raises ``TransportError``, and a body in any
+other coding, or in more than one, is returned as it arrived. The headers stay as received.
+A ``timeout`` of 0 or less sets no bound, as ``None`` does.
 """
 
 from __future__ import annotations
@@ -38,6 +43,7 @@ import ssl
 import threading
 import time
 import uuid
+import zlib
 from collections.abc import AsyncIterator, Callable, Mapping
 from typing import Any, TypeVar
 from urllib.parse import SplitResult, quote, unquote, urlencode, urlsplit, urlunsplit
@@ -293,7 +299,8 @@ class _Exchange:
         """What ``socket.create_connection`` does, staggered over the host's addresses, with the
         connects polled so that a stop ends them.
 
-        The addresses are tried as RFC 8305 orders them, alternating address families. The next
+        The addresses are tried in the order the address lookup returns them, interleaved by
+        address family as RFC 8305 section 4 describes. The next
         one starts as soon as a connect fails, or when the latest started has not connected within
         ``_CONNECT_STAGGER``, so an address that never answers does not hold up the others; the
         first to connect is used and the rest are closed. The deadline stops a request like any
@@ -429,6 +436,62 @@ def _transport_failure(where: str, exc: BaseException) -> BaseException:
     return exc
 
 
+class _BodyDecoder:
+    """A body in the content coding its response names, decoded as its bytes arrive."""
+
+    def __init__(self, coding: str, where: str):
+        self.coding = coding
+        self._where = where
+        self._zlib: Any = None
+
+    def _failure(self, why: str) -> TransportError:
+        return TransportError(f"{self._where}: the {self.coding}-coded body {why}")
+
+    def feed(self, data: bytes) -> bytes:
+        if data and self.coding not in ("gzip", "deflate"):
+            raise self._failure("is not decoded; this client decodes gzip and deflate")
+        pieces = []
+        while data:
+            if self._zlib is None:
+                if self.coding == "gzip":
+                    wbits = 16 + zlib.MAX_WBITS
+                else:
+                    # A deflate body is a zlib stream (RFC 9110 section 8.4.1.2), or raw deflate
+                    # data from some servers; a zlib stream's first byte names method 8 in its
+                    # low four bits, as aiohttp read it.
+                    wbits = zlib.MAX_WBITS if (data[0] & 0x0F) == 8 else -zlib.MAX_WBITS
+                self._zlib = zlib.decompressobj(wbits)
+            elif self._zlib.eof:
+                if self.coding != "gzip":
+                    raise self._failure("goes on after its stream ends")
+                # The next gzip member (RFC 1952 section 2.2), as gzip.decompress reads it.
+                self._zlib = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            try:
+                pieces.append(self._zlib.decompress(data))
+            except zlib.error as exc:
+                raise self._failure(f"does not decode: {exc}") from exc
+            data = self._zlib.unused_data
+        return b"".join(pieces)
+
+    def finish(self) -> bytes:
+        """What is left once the body has ended: a coded stream that has not ended is a body cut
+        short. A body with nothing in it (a HEAD or 304 response) decodes to nothing."""
+        if self._zlib is None:
+            return b""
+        tail = self._zlib.flush()
+        if not self._zlib.eof:
+            raise self._failure("ends before its stream does")
+        return tail
+
+
+def _body_decoder(headers: http.client.HTTPMessage, where: str) -> _BodyDecoder | None:
+    coding = (headers.get("Content-Encoding") or "").strip().lower()
+    coding = "gzip" if coding == "x-gzip" else coding
+    if coding in ("gzip", "deflate", "br", "zstd"):
+        return _BodyDecoder(coding, where)
+    return None
+
+
 class HTTPResponse:
     """A response whose status line and headers have arrived; the body is read on demand."""
 
@@ -455,6 +518,8 @@ class HTTPResponse:
         self._deadline = deadline
         self._timeout = timeout
         self._on_close = on_close
+        # None once the body's coding is decoded to its end, and for a body in no coding.
+        self._decoder = _body_decoder(raw.headers, where)
         self._body: bytes | None = None
         self._streamed = False
         # Set once a read() of the body has returned or raised (a stream sets _streamed instead):
@@ -485,11 +550,18 @@ class HTTPResponse:
                 if self._over:
                     raise TransportError("an earlier read of the body did not complete")
                 try:
-                    self._body = await self._step(self._raw.read)
+                    self._body = await self._step(self._read_whole)
                 finally:
                     self._over = True
                     self.close()
         return self._body
+
+    def _read_whole(self) -> bytes:
+        body = self._raw.read()
+        if self._decoder is None:
+            return body
+        decoder, self._decoder = self._decoder, None
+        return decoder.feed(body) + decoder.finish()
 
     def _charset(self) -> str | None:
         """The codec of the charset ``Content-Type`` declares; ``None`` when it declares none
@@ -519,16 +591,26 @@ class HTTPResponse:
         return _json.loads(body if charset in (None, "utf-8") else body.decode(charset))
 
     def _read_piece(self) -> bytes:
-        chunk = self._raw.read1(_READ_SIZE)
-        if not chunk and self._raw.length:
-            # read1 answers b"" both at the body's end and when the peer closes early; with part of
-            # the declared Content-Length still owed the body was cut, which read() reports too.
-            raise http.client.IncompleteRead(b"", self._raw.length)
-        return chunk
+        while True:
+            chunk = self._raw.read1(_READ_SIZE)
+            if not chunk and self._raw.length:
+                # read1 answers b"" both at the body's end and when the peer closes early; with
+                # part of the declared Content-Length still owed the body was cut, which read()
+                # reports too.
+                raise http.client.IncompleteRead(b"", self._raw.length)
+            if self._decoder is None:
+                return chunk
+            if not chunk:
+                decoder, self._decoder = self._decoder, None
+                return decoder.finish()
+            # A piece that decodes to nothing yet (a gzip header) is not the body's end.
+            piece = self._decoder.feed(chunk)
+            if piece:
+                return piece
 
     async def iter_chunks(self) -> AsyncIterator[bytes]:
-        """The body in the pieces it arrives in, as bytes; a piece can end inside a line or a
-        character. A body that ends before its declared ``Content-Length`` raises
+        """The body in the pieces it arrives in, as bytes, decoded from its coding as
+        ``read()`` decodes it; a piece can end inside a line or a character. A body that ends before its declared ``Content-Length`` raises
         ``TransportError``, as ``read()`` does. After ``read()``, the body it kept, in one piece."""
         if self._body is not None:
             if self._body:

@@ -50,7 +50,7 @@ with a client built on the standard library (ADR-0135), and four kinds of code n
   `_call_http` or `_stream_http`, which take the same arguments.
 - Code that passes a `msgspec.Struct` to lionagi's structural helpers installs `msgspec` itself.
 
-Two responses are handled differently:
+Three responses are handled differently:
 
 - A 3xx response fails the call with `HTTPStatusError`: redirects are no longer followed, so a
   request and its credentials never go to an address the endpoint's address check did not see.
@@ -58,6 +58,9 @@ Two responses are handled differently:
   JSON raises `json.JSONDecodeError`, or `UnicodeDecodeError` when its bytes do not decode (both
   are `ValueError`), and is not retried, where `aiohttp` raised a `ContentTypeError` that the
   endpoint retried.
+- A body coded `br` or `zstd`, which a server sends when a request's headers ask for it, raises
+  `TransportError`; `aiohttp` decoded those when an optional decoder package was installed. A
+  gzip or deflate body is decoded as before.
 
 ### Added
 
@@ -176,14 +179,16 @@ Two responses are handled differently:
 - Endpoint HTTP requests use a client built on `http.client`, with each blocking step in a worker
   thread (at most 256 requests in flight per event loop). The endpoint's `timeout` still bounds the
   whole request, a streamed body included, and the connect as a whole. A host's addresses are tried
-  as RFC 8305 orders them, the next starting when a connect fails or the latest has not connected
-  within a quarter of a second, as `aiohttp` did.
+  in the order the address lookup returns them, interleaved by address family as RFC 8305
+  describes, the next starting when a connect fails or the latest has not connected within a
+  quarter of a second, as `aiohttp` did.
   A cancelled or timed-out request closes its connection at once, and a TCP connect still in
   progress stops within a twentieth of a second; only the address lookup before the connect runs
   on until it returns. A `timeout` of 0 or less still sets no bound. Redirects are no longer
   followed, and a 200 body is decoded as JSON whatever its `Content-Type` (see the upgrade notes).
   Proxy settings in the environment are not read, as before. Responses are requested
-  uncompressed.
+  uncompressed unless a request's headers ask for a coding; a gzip or deflate body is still
+  decoded, and a `br` or `zstd` body raises `TransportError` (see the upgrade notes).
 - Multipart uploads (OpenAI audio transcription and image edits, Groq transcription) are built by
   `lionagi.service.connections._http.MultipartForm`, which writes field names and filenames as
   browsers do: UTF-8 as is, with a quote, carriage return or line feed percent-encoded. `aiohttp`

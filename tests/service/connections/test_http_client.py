@@ -10,6 +10,7 @@ import asyncio
 import base64
 import email.parser
 import email.policy
+import gzip
 import http.client
 import io
 import re
@@ -17,6 +18,7 @@ import selectors
 import socket
 import threading
 import time
+import zlib
 from contextlib import asynccontextmanager, contextmanager
 
 import pytest
@@ -560,7 +562,7 @@ async def test_a_host_whose_first_address_never_answers_is_reached_at_its_next(m
     # The silent address was tried first, the next started after the stagger rather than after
     # the deadline, and the connect left in progress was closed once the next one connected.
     assert len(held) == 1
-    assert _http._CONNECT_STAGGER * 0.8 < elapsed < 2
+    assert 0.2 < elapsed < 2
     assert held[0].fileno() == -1
 
 
@@ -654,6 +656,150 @@ async def answering(wire: bytes):
 
 
 _PIECE = b"data: one\n\n"
+
+
+_DOC = '{"text": "café", "n": 1}'.encode()
+
+
+def _raw_deflate(data: bytes) -> bytes:
+    coder = zlib.compressobj(wbits=-zlib.MAX_WBITS)
+    return coder.compress(data) + coder.flush()
+
+
+def _coded_reply(coding: str, body: bytes) -> bytes:
+    return (
+        f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Encoding: {coding}\r\n"
+        f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
+    ).encode() + body
+
+
+@pytest.mark.parametrize(
+    ("coding", "body"),
+    [
+        ("gzip", gzip.compress(_DOC, mtime=0)),
+        ("x-gzip", gzip.compress(_DOC, mtime=0)),
+        ("GZip", gzip.compress(_DOC, mtime=0)),
+        ("deflate", zlib.compress(_DOC)),
+        ("deflate", _raw_deflate(_DOC)),
+        ("gzip", gzip.compress(_DOC[:9], mtime=0) + gzip.compress(_DOC[9:], mtime=0)),
+    ],
+    ids=["gzip", "x-gzip", "any-case", "deflate", "raw-deflate", "two-gzip-members"],
+)
+async def test_a_gzip_or_deflate_body_is_read_decoded(coding, body):
+    async with answering(_coded_reply(coding, body)) as url, HTTPSession(timeout=5) as session:
+        response = await session.request("GET", url)
+        assert await response.read() == _DOC
+        assert await response.json() == {"text": "café", "n": 1}
+        assert response.headers["Content-Encoding"] == coding
+    async with answering(_coded_reply(coding, body)) as url, HTTPSession(timeout=5) as session:
+        response = await session.request("GET", url)
+        assert b"".join([piece async for piece in response.iter_chunks()]) == _DOC
+
+
+async def test_a_gzip_coded_stream_is_decoded_as_its_pieces_arrive():
+    coder = zlib.compressobj(wbits=16 + zlib.MAX_WBITS)
+    first = coder.compress(b"data: one\n\n") + coder.flush(zlib.Z_SYNC_FLUSH)
+    rest = coder.compress(b"data: two\n\n") + coder.flush()
+    second = asyncio.Event()
+
+    async def handler(request: Request):
+        response = StreamResponse(
+            headers={"Content-Type": "text/event-stream", "Content-Encoding": "gzip"}
+        )
+        await response.prepare(request)
+        # The gzip header alone, which decodes to nothing yet, then the first event.
+        await response.write(first[:10])
+        await response.write(first[10:])
+        await second.wait()
+        await response.write(rest)
+        await response.write_eof()
+        return response
+
+    async with serving(handler) as base, HTTPSession(timeout=5) as session:
+        response = await session.request("POST", base, json={})
+        chunks = response.iter_chunks()
+        # The first event is decoded while the server still holds the second.
+        assert await anext(chunks) == b"data: one\n\n"
+        second.set()
+        tail = [chunk async for chunk in chunks]
+
+    assert b"".join(tail) == b"data: two\n\n"
+    assert response.closed
+
+
+async def test_an_endpoint_that_asks_for_gzip_reads_the_reply_decoded():
+    seen = {}
+
+    async def handler(request: Request):
+        seen["accept-encoding"] = request.headers.get("Accept-Encoding")
+        return Response(
+            body=gzip.compress(b'{"id": "r1", "choices": []}', mtime=0),
+            content_type="application/json",
+            headers={"Content-Encoding": "gzip"},
+        )
+
+    async with serving(handler) as base:
+        endpoint = Endpoint(
+            config=EndpointConfig(
+                name="gzip_reply",
+                provider="openai",
+                endpoint="chat",
+                base_url=base,
+                api_key="dummy-key-gzip",
+                allow_local_network=True,
+                timeout=5,
+                max_retries=1,
+                client_kwargs={"headers": {"Accept-Encoding": "gzip"}},
+            )
+        )
+        result = await endpoint.call({"model": "m", "messages": []})
+
+    assert seen["accept-encoding"] == "gzip"
+    assert result == {"id": "r1", "choices": []}
+
+
+@pytest.mark.parametrize(
+    ("coding", "body", "why"),
+    [
+        ("gzip", gzip.compress(_DOC, mtime=0)[:-8], "ends before its stream does"),
+        ("gzip", b"not gzip at all", "does not decode"),
+        ("gzip", gzip.compress(_DOC, mtime=0) + b"\0\0", "does not decode"),
+        ("deflate", zlib.compress(_DOC) + b"x", "goes on after its stream ends"),
+        ("br", b"\x8b\x02\x80", "is not decoded; this client decodes gzip and deflate"),
+        ("zstd", b"\x28\xb5\x2f\xfd", "is not decoded; this client decodes gzip and deflate"),
+    ],
+    ids=["cut-short", "not-gzip", "trailing-zeros", "after-deflate-end", "br", "zstd"],
+)
+async def test_a_coded_body_that_does_not_decode_is_a_transport_error(coding, body, why):
+    for read in ("read", "iter_chunks"):
+        async with (
+            answering(_coded_reply(coding, body)) as url,
+            HTTPSession(timeout=5) as session,
+        ):
+            response = await session.request("GET", url)
+            message = re.escape(f"GET {url.removesuffix('/v1')}: the {coding}-coded body {why}")
+            with pytest.raises(TransportError, match=message):
+                if read == "read":
+                    await response.read()
+                else:
+                    async for _ in response.iter_chunks():
+                        pass
+            assert response.closed
+
+
+@pytest.mark.parametrize("coding", ["gzip", "deflate", "br"])
+async def test_an_empty_body_in_a_coding_reads_as_empty(coding):
+    async with answering(_coded_reply(coding, b"")) as url, HTTPSession(timeout=5) as session:
+        response = await session.request("GET", url)
+        assert await response.read() == b""
+        assert await response.json() is None
+
+
+@pytest.mark.parametrize("coding", ["identity", "compress", "gzip, deflate"])
+async def test_a_body_in_a_coding_not_decoded_here_is_returned_as_it_arrived(coding):
+    async with answering(_coded_reply(coding, _DOC)) as url, HTTPSession(timeout=5) as session:
+        response = await session.request("GET", url)
+        assert await response.read() == _DOC
 
 
 @pytest.mark.parametrize(
