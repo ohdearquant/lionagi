@@ -1348,12 +1348,13 @@ def test_what_a_run_writes_beside_its_results_is_left_out_of_a_git_add(tmp_path,
 
 
 def test_the_ignore_file_holds_the_patterns_the_rows_above_were_chosen_for():
-    """git reads only the pattern lines of an ignore file, split at LF with a CR before it dropped,
-    and a loosened pattern can leave every row above green while it ignores a committed file
-    under a name no row uses (`/tree*` and a `tree2` run directory). Any change to a pattern line
-    fails here until the list below is changed with it; rows above should show what it ignores."""
+    """git reads every line of an ignore file as a pattern but comments and lines of spaces alone
+    (a tab is a pattern), split at LF with a CR before it dropped, and a loosened pattern can leave
+    every row above green while it ignores a committed file under a name no row uses (`/tree*`
+    and a `tree2` run directory). Any change to a pattern line fails here until the list below is
+    changed with it; rows above should show what it ignores."""
     lines = [x.removesuffix("\r") for x in (PILOT / ".gitignore").read_bytes().decode().split("\n")]
-    patterns = [line for line in lines if line.strip() and not line.startswith("#")]
+    patterns = [line for line in lines if line.strip(" ") and not line.startswith("#")]
 
     assert patterns == [
         "/home",
