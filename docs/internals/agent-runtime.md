@@ -109,7 +109,7 @@ and one implementation.
   the set leaves out, disabled by name (see
   `_discover_ambient_codex_mcp_server_names`, which raises
   `ConfigurationError` if it can't enumerate them — an allowlist that can't
-  be enforced must fail closed, never silently pass every ambient server
+  be enforced over those servers must fail closed, never silently pass every ambient server
   through). Only those names, and none when the request ignores the user
   config: `mcp_servers.<name>.enabled=false` for a name codex has no table
   for is a table with no server in it, and codex refuses to start with one.

@@ -8,9 +8,12 @@ directory from its working directory up to the project root. ``--ignore-user-con
 empties the user layer only, and ``mcp_servers`` is not on the project layer's
 denylist, so wherever a trust source the user config does not carry marks the
 project trusted, that file adds MCP servers past an explicit set. Codex has no
-switch to drop the project layers, so a run that promised no servers beyond its
-own set refuses one whose project layers declare ``mcp_servers``, before each
-process starts: every ``codex exec`` reads its config afresh.
+switch to drop the project layers, so a run under ``--ignore-user-config`` refuses
+one whose project layers declare ``mcp_servers``, before each process starts: every
+``codex exec`` reads its config afresh. A run that keeps the user config is not
+checked here: its set is exclusive only over the servers that config declares,
+each disabled by name, and a server a trusted project layer declares still loads
+(docs/internals/agent-runtime.md).
 
 The walk starts where Codex starts: the working directory as Codex resolves ``-C``
 (the logical path when an ancestor below the top level is a symlink, else the
@@ -200,7 +203,8 @@ def _first_key_segment(key: str) -> str:
     """The first segment of a dotted TOML key, its quotes stripped and, in a basic (double-quoted)
     key, its code-point escapes decoded: a parser reads ``"mcp\\u005fservers"`` as ``mcp_servers``.
     ``\\x`` is a TOML 1.1 escape, which 1.0 rejects; it is decoded too, toward refusing, so a
-    parser that takes it is not evaded."""
+    parser that takes it is not evaded. A code point past U+10FFFF, which every parser refuses,
+    decodes to U+FFFD, so the key it is in names nothing."""
     key = key.strip()
     if key[:1] == "'":
         end = key.find("'", 1)
@@ -210,7 +214,10 @@ def _first_key_segment(key: str) -> str:
         while end > 0 and key[end - 1] == "\\":
             end = key.find('"', end + 1)
         segment = key[1:end] if end > 0 else key[1:]
-        return _TOML_CODE_POINT.sub(
-            lambda m: chr(int(m.group(1) or m.group(2) or m.group(3), 16)), segment
-        )
+        return _TOML_CODE_POINT.sub(_code_point, segment)
     return key.split(".", 1)[0].strip()
+
+
+def _code_point(match: re.Match[str]) -> str:
+    value = int(match.group(1) or match.group(2) or match.group(3), 16)
+    return chr(value) if value <= 0x10FFFF else "\ufffd"

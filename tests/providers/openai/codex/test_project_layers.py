@@ -307,6 +307,9 @@ async def test_the_run_check_reads_the_childs_codex_home_and_no_marker_override_
         ('"mcp\\u005fservers" = {}\n', 1),
         ('["mcp\\U0000005Fservers".leak]\n', 1),
         ('"mcp\\x5fservers".leak.command = "y"\n', 1),
+        # a code point past U+10FFFF names no key, and the parser refuses the file
+        ('"mcp\\UFFFFFFFF" = 1\nmcp_servers = {}\n', 2),
+        ('"\\U00110000" = 1\n[mcp_servers]\n', 2),
         # a byte-order mark the parser refuses, so the line read decides; CRLF line ends
         ("﻿mcp_servers = {}\n", 1),
         ('model = "x"\r\n[mcp_servers]\r\n', 2),
@@ -366,6 +369,7 @@ def test_the_line_search_stops_after_a_bounded_number_of_parses(monkeypatch):
         "a.mcp_servers = 1\n",
         '"not\\"mcp_servers" = 1\n',
         "tools = { mcp_servers = 1 }\n",
+        '"mcp\\U00110000servers" = 1\n',
         # inside a multi-line string, the line is the string's
         'note = """\nmcp_servers = 1\n[mcp_servers]\n"""\n',
     ],
