@@ -79,7 +79,10 @@ run a restart replaces is marked `failed` and still reads true, so that one time
 fire shows as two runs. For a missed-fire skip, `missed_fire_at` is the stored
 intended fire time as epoch seconds, including its fractional part. A stored integer
 past 2**53 is null, and a stored decimal with more digits than a float holds is
-served as the nearest float. The underlying trigger payload remains private.
+served as the nearest float. The underlying trigger payload remains private as a
+field; the single-run record still serves a run's stored failure text
+(`error_detail`, `reason_summary` and `outcome`) as before, and that text can quote
+part of the payload when the error or command output that produced it did.
 
 ## Other trigger and safety options
 

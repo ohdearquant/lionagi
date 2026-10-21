@@ -1068,28 +1068,42 @@ def test_the_single_run_record_keeps_a_session_reported_summary(tmp_path, monkey
     assert _RAW_ERROR_SENTINEL not in listed.text, "the list surface still classifies it"
 
 
-def test_every_run_route_serves_both_trigger_facts_with_their_values(tmp_path, monkeypatch):
-    """The allow-list above only bounds the keys; this requires both, on every HTTP surface."""
+@pytest.mark.parametrize(
+    ("fire", "facts"), [("timer", (True, None)), ("missed", (False, 1700000000.125))]
+)
+def test_every_run_route_serves_both_trigger_facts_with_their_values(
+    tmp_path, monkeypatch, fire, facts
+):
+    """The allow-list above only bounds the keys; this requires both, with their values, on
+    every HTTP surface: a timer fire, and a missed-fire skip as the scheduler records it."""
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
     _patch_db(monkeypatch, tmp_path / "state.db")
 
     async def seed():
         schedule_id = await _seed_schedule()
         async with StateDB() as db:
-            await db.create_schedule_run(
-                {
-                    "id": "timer-fire",
-                    "schedule_id": schedule_id,
-                    "trigger_context": {"scheduled": True, "fired_at": 1700000000.0},
-                    "action_kind": "agent",
-                    "action_args": {"prompt": "ping"},
-                    "status": "completed",
-                    "fired_at": time.time(),
-                }
-            )
+            if fire == "timer":
+                await db.create_schedule_run(
+                    {
+                        "id": "timer-fire",
+                        "schedule_id": schedule_id,
+                        "trigger_context": {"scheduled": True, "fired_at": 1700000000.0},
+                        "action_kind": "agent",
+                        "action_args": {"prompt": "ping"},
+                        "status": "completed",
+                        "fired_at": time.time(),
+                    }
+                )
+                return schedule_id
+            schedule = await db.get_schedule(schedule_id)
+        schedule = {**schedule, "next_fire_at": 1700000000.125, "missed_fire_policy": "skip"}
+        await SchedulerEngine()._record_missed_fire_skip(schedule, now=1700000100.0)
         return schedule_id
 
     schedule_id = asyncio.run(seed())
     client = _make_client()
+    (run_id,) = [r["id"] for r in client.get(f"/api/schedules/{schedule_id}/runs").json()["runs"]]
     listed = client.get("/api/schedules/", params={"include_recent_runs": "true"}).json()
     summary = next(s for s in listed["schedules"] if s["id"] == schedule_id)
     rows = {
@@ -1097,8 +1111,7 @@ def test_every_run_route_serves_both_trigger_facts_with_their_values(tmp_path, m
         "detail": client.get(f"/api/schedules/{schedule_id}").json()["recent_runs"][0],
         "status": client.get(f"/api/schedules/{schedule_id}/status").json()["latest_run"],
         "list summary": summary["recent_runs_summary"]["runs"][0],
-        "record": client.get("/api/schedules/runs/timer-fire").json(),
+        "record": client.get(f"/api/schedules/runs/{run_id}").json(),
     }
     for surface, row in rows.items():
-        assert (row.get("scheduled"), "missed_fire_at" in row) == (True, True), surface
-        assert row["missed_fire_at"] is None, surface
+        assert (row.get("scheduled"), row.get("missed_fire_at", "absent")) == facts, surface

@@ -74,7 +74,19 @@ def test_trigger_facts_are_identical_for_native_and_text_context(
 
 @pytest.mark.parametrize(
     "value",
-    [True, "1700000000", float("nan"), float("inf"), -float("inf"), None, 10**400, 2**53 + 1],
+    [
+        True,
+        "1700000000",
+        float("nan"),
+        float("inf"),
+        -float("inf"),
+        None,
+        10**400,
+        2**53 + 1,
+        2**53 + 2,
+        -(2**53 + 2),
+        2**60,
+    ],
 )
 @pytest.mark.parametrize("encoded", [False, True], ids=["native-json", "sqlite-text"])
 def test_invalid_missed_fire_times_are_null_and_json_safe(value, encoded):

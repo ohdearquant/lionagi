@@ -603,15 +603,12 @@ def _run_trigger_facts(row: dict[str, Any]) -> dict[str, Any]:
         row.get("reason_code") == "schedule.skipped.missed_fire"
         and isinstance(value, int | float)
         and not isinstance(value, bool)
+        # An integer past 2**53 is null, even one a float holds exactly; a stored decimal
+        # is already read as the nearest float.
+        and (isinstance(value, float) or abs(value) <= 2**53)
+        and math.isfinite(value)
     ):
-        try:
-            candidate = float(value)
-        except OverflowError:
-            pass
-        else:
-            # An integer past 2**53 is null; JSON text is already read as the nearest double.
-            if math.isfinite(candidate) and candidate == value:
-                missed_fire_at = candidate
+        missed_fire_at = float(value)
     return {"scheduled": scheduled, "missed_fire_at": missed_fire_at}
 
 
