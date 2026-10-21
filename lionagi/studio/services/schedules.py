@@ -624,12 +624,12 @@ def _run_summary(row: dict[str, Any]) -> dict[str, Any]:
 
 _RECENT_RUN_LIMIT = 25
 
-# The batch ships an occurrence's trigger context only when its stored text names one of
+# The batch ships an occurrence's trigger context only when its stored text quotes one of
 # the two keys _run_trigger_facts reads, and NULL otherwise, which projects the same two
-# defaults. A repository event's payload names neither, so it is no longer carried here
-# only to be parsed and dropped. The test is a match on the text, not a JSON parse, so no
-# stored value can fail the read, and a context that names a key ships whole for
-# _run_trigger_facts to decide as before. The scheduler writes contexts with json.dumps,
+# defaults. A repository event's payload ships only when it quotes one of the names, as a key
+# or as a value such as a label, and _run_trigger_facts then decides as before. The match
+# parses nothing; a context that ships is decoded by the row read, which under the pure-Python
+# scanner fails on nesting past its depth. The scheduler writes contexts with json.dumps,
 # which writes both keys literally; a key spelled with a JSON escape is not matched.
 _RECENT_RUN_CONTEXT = (
     " CASE WHEN CAST(occurrence.trigger_context AS TEXT) LIKE '%\"scheduled\"%'"

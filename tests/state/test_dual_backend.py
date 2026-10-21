@@ -2108,8 +2108,8 @@ async def test_postgres_recent_run_summary_cuts_a_tie_by_id_and_keeps_a_short_sl
 async def test_postgres_recent_run_summary_projects_both_trigger_facts(pg_url):
     """The batch ships a run's trigger context only when its text names a fact key,
     a match on the context cast to text, so the facts are read back through the
-    PostgreSQL form: a timer fire, a missed-fire skip recorded as the scheduler
-    records it, and a run whose context names neither key."""
+    PostgreSQL form: a timer fire, a missed-fire skip recorded through
+    create_skipped_run with the scheduler's context keys, and a run naming neither."""
     from lionagi.state.reasons import ScheduleReasons
     from lionagi.studio.services import schedules
     from lionagi.studio.services.scheduler_state import create_skipped_run
