@@ -144,6 +144,21 @@ def test_a_caller_already_at_the_recursion_limit_still_gets_its_error(monkeypatc
         StateDB._row_to_dict(row)
 
 
+def test_only_the_trigger_context_column_keeps_text_past_the_parsers_depth():
+    """On Python 3.10 and 3.11 the parser's depth error also fires for a caller near the
+    recursion limit, so the row read keeps text past that depth only in trigger_context, whose
+    projection reads it as no context; every other JSON column raises it as before. An integer
+    past the digit limit is a property of the text alone, so every column keeps that text."""
+    nested = "[" * 100_000
+    assert StateDB._row_to_dict({"trigger_context": nested})["trigger_context"] == nested
+    for key in ("node_metadata", "payload", "action_args"):
+        with pytest.raises(RecursionError, match="while decoding a JSON"):
+            StateDB._row_to_dict({key: nested})
+    digits = '{"n": 1' + "0" * 4999 + "}"
+    for key in ("trigger_context", "payload"):
+        assert StateDB._row_to_dict({key: digits})[key] == digits
+
+
 def test_trigger_payload_does_not_leak_from_any_projection_or_chain_child():
     parent = {
         "id": "parent",

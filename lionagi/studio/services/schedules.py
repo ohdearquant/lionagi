@@ -21,6 +21,7 @@ from sqlalchemy.exc import IntegrityError as SAIntegrityError
 from lionagi._flow_spec import normalize_flow_spec_keys, validate_flow_spec_fields
 from lionagi.ln import short_id
 from lionagi.state.db import StateDB, read_only_open_supported, state_db_known_absent
+from lionagi.state.reasons import ScheduleReasons
 
 from ..registry import studio_route
 from . import run_view
@@ -603,7 +604,7 @@ def _run_trigger_facts(row: dict[str, Any]) -> dict[str, Any]:
     missed_fire_at = None
     value = context.get("missed_fire_at")
     if (
-        row.get("reason_code") == "schedule.skipped.missed_fire"
+        row.get("reason_code") == ScheduleReasons.SKIPPED_MISSED_FIRE
         and isinstance(value, int | float)
         and not isinstance(value, bool)
         # An integer past 2**53 is null, even one a float holds exactly; a stored decimal
