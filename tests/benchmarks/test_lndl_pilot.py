@@ -1288,6 +1288,7 @@ def test_a_second_interrupt_writes_the_summary_and_a_running_legs_row_follows(
         ("notes.stdout.txt/results.jsonl", False),
         ("runs/r9.prompt.txt/results.jsonl", False),
         ("runs/r9.stderr.txt/results.jsonl", False),
+        ("runs/r9.stdout.txt/results.jsonl", False),
         ("runs/home/results.jsonl", False),
         ("runs/tree/results.jsonl", False),
         ("runs/venv/results.jsonl", False),
@@ -1316,7 +1317,8 @@ def test_what_a_run_writes_beside_its_results_is_left_out_of_a_git_add(tmp_path,
     empty.mkdir()
     env = {
         # A git commit hook runs with GIT_INDEX_FILE set, and GIT_DIR too in a linked worktree;
-        # GIT_DIR would point these commands at the hook's repository, so no GIT_ variable is kept.
+        # GIT_DIR would point these commands at the hook's repository, so the caller's GIT_
+        # variables are dropped.
         **{k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_NOSYSTEM": "1",
@@ -1343,3 +1345,24 @@ def test_what_a_run_writes_beside_its_results_is_left_out_of_a_git_add(tmp_path,
 
     assert probe.returncode in (0, 1), probe.stderr
     assert (probe.returncode == 0) is ignored
+
+
+def test_the_ignore_file_holds_the_patterns_the_rows_above_were_chosen_for():
+    """git reads only the pattern lines of an ignore file, and a loosened pattern can leave every
+    row above green while it ignores a committed file under a name no row uses (`/tree*` and a
+    `tree2` run directory). Any change to a pattern line fails here, so it is made together with
+    rows that show what it ignores."""
+    lines = (PILOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    patterns = [line for line in lines if line.strip() and not line.startswith("#")]
+
+    assert patterns == [
+        "/home",
+        "/tree",
+        "/venv",
+        "*.prompt.txt",
+        "*.stdout.txt",
+        "*.stderr.txt",
+        "!*.prompt.txt/",
+        "!*.stdout.txt/",
+        "!*.stderr.txt/",
+    ]
