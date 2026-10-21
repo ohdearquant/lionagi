@@ -76,7 +76,10 @@ Run lists, recent-run summaries and single-run records include `scheduled` and
 restart; manual fires, repository-event fires (`github_poll`), the late run of a
 missed fire under `missed_fire_policy=run_once`, chain children, and the rows a
 timer tick records without firing (a missed-fire skip, an overlap skip, a deferral
-at the concurrent-fire cap, a budget refusal) are false. The
+at the concurrent-fire cap, a budget refusal) are false. A timer fire refused before
+it starts a process (a working directory the daemon refuses, or a command argument
+that renders to a leading `-`) is recorded `failed` and reads true, as does a
+threshold alert the timer fires. The
 run a restart replaces is marked `failed` and still reads true, so that one timer
 fire shows as two runs. For a missed-fire skip, `missed_fire_at` is the stored
 intended fire time as epoch seconds, including its fractional part. A stored integer

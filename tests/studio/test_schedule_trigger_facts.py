@@ -123,6 +123,27 @@ def test_absent_and_malformed_context_has_both_default_facts(row):
         assert result["missed_fire_at"] is None
 
 
+def test_a_caller_already_at_the_recursion_limit_still_gets_its_error(monkeypatch):
+    """The parser's depth guard names what it was decoding. The error a caller already at the
+    recursion limit gets is the interpreter's bare one, which says nothing about the text, so
+    neither the projection nor the row read turns it into an empty context or raw text."""
+
+    def at_the_limit(*args, **kwargs):
+        def down():
+            down()
+
+        down()
+
+    monkeypatch.setattr(json, "loads", at_the_limit)
+    row = {"trigger_context": '{"scheduled": true}'}
+    for project in (schedules._run_view, schedules._run_summary, schedules._run_record):
+        with pytest.raises(RecursionError) as caught:
+            project(row)
+        assert "while decoding a JSON" not in str(caught.value)
+    with pytest.raises(RecursionError):
+        StateDB._row_to_dict(row)
+
+
 def test_trigger_payload_does_not_leak_from_any_projection_or_chain_child():
     parent = {
         "id": "parent",

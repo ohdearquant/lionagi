@@ -586,9 +586,12 @@ def _run_trigger_facts(row: dict[str, Any]) -> dict[str, Any]:
     if isinstance(context, str):
         try:
             context = json.loads(context)
-        except (ValueError, RecursionError):
-            # ValueError: malformed JSON, or an integer past the interpreter's digit limit.
-            # RecursionError: nesting past the parser's depth. Neither is a context.
+        except (ValueError, RecursionError) as exc:
+            # ValueError: malformed JSON, or an integer past the interpreter's digit limit. The
+            # parser's depth guard names what it was decoding; a bare RecursionError is the
+            # caller's own depth, which says nothing about this text, so it is raised again.
+            if isinstance(exc, RecursionError) and "while decoding a JSON" not in str(exc):
+                raise
             context = None
     if not isinstance(context, dict):
         context = {}
