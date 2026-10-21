@@ -113,8 +113,9 @@ def test_invalid_missed_fire_times_are_null_and_json_safe(value, encoded):
         # neither text is a context, and neither may fail the read.
         {"trigger_context": '{"n": 1' + "0" * 4999 + "}"},
         {"trigger_context": "[" * 100_000},
+        {"trigger_context": '{"a": ' * 100_000},
     ],
-    ids=["absent", "truncated", "string", "digit-limit", "nesting"],
+    ids=["absent", "truncated", "string", "digit-limit", "nesting", "object-nesting"],
 )
 def test_absent_and_malformed_context_has_both_default_facts(row):
     for project in (schedules._run_view, schedules._run_summary, schedules._run_record):
@@ -274,8 +275,18 @@ async def test_database_rows_match_across_run_routes_and_recent_summaries(isolat
         '{"scheduled": true, "n": 1' + "0" * 4999 + "}",
         '{"scheduled": ' + "[" * 100_000,
         '{"scheduled": tru',
+        '{"a": ' * 100_000,
+        '{"scheduled": ' + '{"a": ' * 100_000,
     ],
-    ids=["digit-limit", "nesting", "digit-limit-key", "nesting-key", "malformed-key"],
+    ids=[
+        "digit-limit",
+        "nesting",
+        "digit-limit-key",
+        "nesting-key",
+        "malformed-key",
+        "object-nesting",
+        "object-nesting-key",
+    ],
 )
 async def test_a_stored_context_text_that_does_not_parse_fails_no_run_read(isolated_db, text):
     async with StateDB() as db:

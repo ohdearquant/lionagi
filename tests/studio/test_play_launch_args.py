@@ -77,6 +77,13 @@ class TestBuildArgvPlay:
         with pytest.raises(ValueError, match="must not start with '-'"):
             build_argv(_play_schedule(action_prompt="--bypass"), {}, executable_prefix=["li"])
 
+    def test_leading_dash_refusal_does_not_carry_the_rendered_value(self):
+        # The refusal is stored on the run and served, and the value can come from an event.
+        schedule = _play_schedule(action_prompt="{{pr_title}}")
+        with pytest.raises(ValueError, match="must not start with '-'") as refused:
+            build_argv(schedule, {"pr_title": "--private-title"}, executable_prefix=["li"])
+        assert "private-title" not in str(refused.value)
+
     @pytest.mark.parametrize(
         "bad_args",
         [

@@ -70,8 +70,9 @@ the daemon's schedules service, `lionagi/studio/services/schedules.py`; CLI
 flags and output are defined in `lionagi/studio/cli.py`. Keep the daemon
 running for automatic fires.
 
-Run lists, recent-run summaries and single-run records include `scheduled` and
-`missed_fire_at`. `scheduled` is true only for a fire of the schedule's own timer
+Run lists, recent-run summaries, the status view's `latest_run` and single-run
+records include `scheduled` and `missed_fire_at`. `scheduled` is true only for a
+fire of the schedule's own timer
 (cron, interval or `at`), including that fire dispatched again after a daemon
 restart; manual fires, repository-event fires (`github_poll`), the late run of a
 missed fire under `missed_fire_policy=run_once`, chain children, and the rows a
