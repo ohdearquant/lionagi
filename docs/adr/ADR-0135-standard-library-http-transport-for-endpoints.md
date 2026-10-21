@@ -265,9 +265,18 @@ Exact semantics:
   `TransportError` or `TimeoutError`, and lets a cancellation through. A refused or reset
   connection, a TLS failure, and a reply that is not HTTP become `TransportError` naming the method
   and URL, with the original exception as `__cause__`.
-- A user and password in the URL go out only as a Basic `Authorization` header. The URL that
-  error text, `HTTPResponse.url` and `HTTPStatusError.url` carry has them removed, and a URL the
-  client refuses is named by its scheme and host alone.
+- A user and password in the URL go out only as a Basic `Authorization` header, encoded as
+  latin-1. The URL that error text, `HTTPResponse.url` and `HTTPStatusError.url` carry has them
+  removed. They are the ones RFC 3986 reads: the authority ends at the first `/`, `?` or `#`, so
+  a password holding one has to be percent-encoded (`%2F`, `%3F`, `%23`). Left raw, the user is
+  read as the host, the password's text up to that character as the port, and the rest as the
+  path, query or fragment, as `urllib.parse`, `yarl`, `httpx` and `urllib3` all read it; no
+  parse can tell that URL from one with an `@` in its path.
+- A URL that does not parse (a port that is not a number among them), and a user or password
+  latin-1 cannot carry, are refused with a `ValueError` that quotes none of the URL and has no
+  exception as its context: the parse's own errors quote the authority, and the encoder's names
+  the character it could not carry. A URL that is not http or https is named by its scheme and
+  host only in the `scheme://` form: without it, the text before the first colon can be a user.
 - An expired deadline raises `TimeoutError("<METHOD> <url> did not complete within <t> s")`. On
   Python 3.10, where `asyncio.TimeoutError` is a class of its own, the error is of a class derived
   from both, as `aiohttp`'s timeout derived from `asyncio.TimeoutError`.

@@ -40,7 +40,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from typing import Any, TypeVar
-from urllib.parse import quote, unquote, urlencode, urlsplit, urlunsplit
+from urllib.parse import SplitResult, quote, unquote, urlencode, urlsplit, urlunsplit
 
 import anyio
 import anyio.lowlevel
@@ -353,10 +353,19 @@ class _Exchange:
         return response
 
 
-def _without_userinfo(url: str) -> str:
-    """*url* with any user and password removed from its authority, for error text and the
-    response, which reach logs and the event record."""
-    parts = urlsplit(url)
+def _split(url: str) -> tuple[SplitResult, int | None] | None:
+    """*url* split, with its port, or None for a URL that does not parse: urlsplit's errors
+    quote the authority, and with it any password, so the caller refuses it with its own."""
+    try:
+        parts = urlsplit(url)
+        return parts, parts.port
+    except ValueError:
+        return None
+
+
+def _without_userinfo(url: str, parts: SplitResult) -> str:
+    """*url*, which split into *parts*, with any user and password removed from its authority,
+    for error text and the response, which reach logs and the event record."""
     if "@" not in parts.netloc:
         return url
     return urlunsplit(parts._replace(netloc=parts.netloc.rpartition("@")[2]))
@@ -560,16 +569,24 @@ class HTTPSession:
             raise ValueError("this client does not follow redirects")
         if json is not None and data is not None:
             raise ValueError("pass json or data, not both")
-        parts = urlsplit(url)
+        # Raised here, outside the parse's handler, so the parse's error is not kept as this
+        # one's context either.
+        split = _split(url)
+        if split is None:
+            raise ValueError("the URL does not parse (not shown: it can hold a password)")
+        parts, port = split
         if parts.scheme not in ("http", "https") or not parts.hostname:
-            # Named by its scheme and host only: a URL this check refuses can still carry a
-            # password where no parse finds it (`user:password@host`, with no scheme).
+            # Named by its scheme and host only in the `scheme://` form: without it, what
+            # urlsplit calls the scheme is the text before the first colon, which in
+            # `user:password@host` is the user.
+            if not url[len(parts.scheme) :].startswith("://"):
+                raise ValueError("not an http or https URL")
             raise ValueError(
                 f"not an http or https URL: scheme {parts.scheme!r}, host {parts.hostname!r}"
             )
         # The URL every error and the response carry: a user and password in it go out only
         # in the Authorization header below.
-        shown = _without_userinfo(url)
+        shown = _without_userinfo(url, parts)
 
         send_headers = _merged_headers(
             {"User-Agent": _USER_AGENT, "Accept": "*/*"}, self.headers, headers
@@ -583,8 +600,16 @@ class HTTPSession:
             login = unquote(parts.username or "")
             if ":" in login:
                 raise ValueError('a ":" is not allowed in a Basic login (RFC 7617 section 2)')
-            credentials = f"{login}:{unquote(parts.password or '')}".encode("latin-1")
-            send_headers["Authorization"] = "Basic " + base64.b64encode(credentials).decode()
+            credentials = f"{login}:{unquote(parts.password or '')}"
+            # Checked rather than caught: the encode error names the character and its place.
+            if any(ord(char) > 0xFF for char in credentials):
+                raise ValueError(
+                    "a user or password in the URL holds a character latin-1 cannot carry;"
+                    " pass an Authorization header instead"
+                )
+            send_headers["Authorization"] = (
+                "Basic " + base64.b64encode(credentials.encode("latin-1")).decode()
+            )
         body: bytes | None
         if json is not None:
             body = _json.dumps(json).encode("utf-8")
@@ -613,7 +638,8 @@ class HTTPSession:
         tls = _default_ssl_context() if parts.scheme == "https" else None
         # Given no port, http.client reads one off the host after its last colon, which in an
         # IPv6 literal is part of the address.
-        port = parts.port if parts.port is not None else (443 if tls is not None else 80)
+        if port is None:
+            port = 443 if tls is not None else 80
         if tls is not None:
             conn: http.client.HTTPConnection = http.client.HTTPSConnection(
                 parts.hostname, port, timeout=self.timeout, context=tls

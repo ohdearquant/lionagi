@@ -697,6 +697,94 @@ async def test_a_password_in_the_url_reaches_no_error_and_no_response():
         assert "s3cr@t" not in str(raised.value)
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        # A raw "/", "?" or "#" ends the authority (RFC 3986 section 3.2), so the password's
+        # lead is read as a port, and as no number the URL does not parse.
+        "http://user:Lk3d/Zq9w@127.0.0.1:9/v1",
+        "http://user:Lk3d?Zq9w@127.0.0.1:9/v1",
+        "http://user:Lk3d#Zq9w@127.0.0.1:9/v1",
+        # Characters NFKC folds into "@" and ":", which urlsplit refuses in an authority.
+        "http://user:Lk3d\uff20Zq9w@127.0.0.1:9/v1",
+        "http://user:Lk3d\uff1aZq9w@127.0.0.1:9/v1",
+        # Basic credentials go out as latin-1.
+        "http://user:Lk3d\u4e2dZq9w@127.0.0.1:9/v1",
+        # No "scheme://": the text before the first colon, which urlsplit takes for the scheme,
+        # is the user.
+        "Lk3d:Zq9w@127.0.0.1/v1",
+    ],
+)
+async def test_a_url_refused_before_connecting_quotes_none_of_its_credentials(url):
+    async with HTTPSession() as session:
+        with pytest.raises(ValueError) as refused:
+            await session.request("GET", url)
+
+    error = refused.value
+    assert type(error) is ValueError
+    # Compared in lower case: urlsplit lowercases what it takes for the scheme.
+    for text in (str(error).lower(), repr(error).lower()):
+        for fragment in ("lk3d", "zq9w", "\u4e2d", "4e2d", "position"):
+            assert fragment not in text
+    # Nor through the error the refusal could have been raised from.
+    assert error.__context__ is None
+    assert error.__cause__ is None
+
+
+async def test_a_raw_slash_after_a_numeric_lead_ends_the_authority():
+    # "http://user:123/Zq9w@host/v1" names host "user", port 123 and the path "/Zq9w@host/v1":
+    # RFC 3986 gives it no user or password, and a password holding "/", "?" or "#" has to be
+    # percent-encoded. The same shape with a host that answers shows the reading.
+    heads = []
+
+    async def answer(reader, writer):
+        heads.append(await reader.readuntil(b"\r\n\r\n"))
+        writer.write(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(answer, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        async with HTTPSession() as session:
+            response = await session.request("GET", f"http://127.0.0.1:{port}/Zq9w@host.invalid/v1")
+            await response.read()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert heads[0].startswith(b"GET /Zq9w@host.invalid/v1 HTTP/1.1\r\n")
+    assert b"Authorization" not in heads[0]
+    assert response.url == f"http://127.0.0.1:{port}/Zq9w@host.invalid/v1"
+
+
+async def test_a_percent_encoded_slash_question_mark_and_hash_stay_in_the_password():
+    heads = []
+
+    async def answer(reader, writer):
+        heads.append(await reader.readuntil(b"\r\n\r\n"))
+        writer.write(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(answer, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        async with HTTPSession() as session:
+            response = await session.request(
+                "GET", f"http://user:Lk3d%2FZq%3F9w%23@127.0.0.1:{port}/v1"
+            )
+            await response.read()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    expected = base64.b64encode(b"user:Lk3d/Zq?9w#").decode()
+    assert f"Authorization: Basic {expected}\r\n".encode() in heads[0]
+    assert heads[0].startswith(b"GET /v1 HTTP/1.1\r\n")
+    assert response.url == f"http://127.0.0.1:{port}/v1"
+
+
 async def test_an_endpoint_stream_cut_short_raises_rather_than_ending():
     whole = b'data: {"choices":[{"delta":{"content":"hel"}}]}\n\n'
     cut = b'data: {"choices":[{"delta":{"content":"lo'
