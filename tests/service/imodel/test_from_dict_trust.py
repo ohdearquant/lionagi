@@ -46,6 +46,41 @@ def test_a_caller_url_elsewhere_gets_no_env_key_either(env_key):
     assert config._api_key is None
 
 
+@pytest.mark.parametrize(
+    "stored", [OPENAI_URL + "/", "https://API.OpenAI.com/v1", "HTTPS://api.openai.com:443/v1"]
+)
+def test_the_env_key_is_attached_at_another_spelling_of_the_registered_url(env_key, stored):
+    assert iModel.from_dict(_stored(base_url=stored)).endpoint.config._api_key == env_key
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [
+        "https://api.openai.com:8443/v1",
+        "http://api.openai.com/v1",
+        "https://api.openai.com/v2",
+        "https://api.openai.com.gateway.example/v1",
+        "https://api.openai.com:notaport/v1",
+        "https://someone@api.openai.com/v1",
+    ],
+)
+def test_the_env_key_does_not_follow_a_near_spelling(env_key, stored):
+    assert iModel.from_dict(_stored(base_url=stored)).endpoint.config._api_key is None
+
+
+@pytest.mark.parametrize("caller_url", [None, OPENAI_URL])
+def test_a_stored_processor_config_sets_only_the_rate_limits(env_key, caller_url):
+    data = _stored()
+    data["processor_config"].update(
+        limit_requests=7, base_url=ELSEWHERE, provider="anthropic", env={"HOME": "/elsewhere"}
+    )
+    model = iModel.from_dict(data, base_url=caller_url)
+    assert model.executor.config["limit_requests"] == 7
+    assert model.endpoint.config.base_url == OPENAI_URL
+    assert model.endpoint.config.provider == "openai"
+    assert model.endpoint.config._api_key == env_key
+
+
 def test_a_caller_key_is_used_at_any_url(env_key):
     config = iModel.from_dict(_stored(base_url=ELSEWHERE), api_key="sk-caller").endpoint.config
     assert config._api_key == "sk-caller"

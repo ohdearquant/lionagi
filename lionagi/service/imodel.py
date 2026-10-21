@@ -746,18 +746,21 @@ class iModel:  # noqa: N801
             if (
                 api_key is None
                 and registered._api_key
-                and e1.config.base_url == registered.base_url
+                and _same_base_url(e1.config.base_url, registered.base_url)
             ):
                 e1.config._api_key = registered._api_key
         else:
             e1 = endpoint
 
+        # The executor's rate limits only: any other key would reach __init__ as an
+        # endpoint setting, such as a base_url or an env, past the rules above.
+        stored_limits = data.get("processor_config") or {}
         return cls(
             endpoint=e1,
             provider_metadata=data.get("provider_metadata"),
             id=data.get("id"),
             created_at=data.get("created_at"),
-            **data.get("processor_config", {}),
+            **{name: stored_limits[name] for name in _EXECUTOR_LIMITS if name in stored_limits},
         )
 
     @property
@@ -765,3 +768,40 @@ class iModel:  # noqa: N801
         if self.is_cli:
             return self.endpoint.session_id
         return self.provider_metadata.get("session_id")
+
+
+# The settings iModel.to_dict stores as processor_config: RateLimitedAPIExecutor's config.
+_EXECUTOR_LIMITS = (
+    "queue_capacity",
+    "capacity_refresh_time",
+    "interval",
+    "limit_requests",
+    "limit_tokens",
+    "concurrency_limit",
+)
+
+
+def _same_base_url(stored: str | None, registered: str | None) -> bool:
+    """Whether a stored base URL is the registered one, spelled another way: scheme and
+    host in any case, the scheme's default port written out, a trailing slash. A URL
+    with credentials in it, or one that does not parse, matches only itself."""
+    from urllib.parse import urlsplit
+
+    if stored == registered:
+        return True
+    if not stored or not registered:
+        return False
+    keys = []
+    for url in (stored, registered):
+        try:
+            parts = urlsplit(url)
+            port = parts.port
+        except ValueError:
+            return False
+        if parts.username is not None or parts.password is not None:
+            return False
+        if port == {"http": 80, "https": 443}.get(parts.scheme):
+            port = None
+        path = parts.path.rstrip("/")
+        keys.append((parts.scheme, parts.hostname, port, path, parts.query, parts.fragment))
+    return keys[0] == keys[1]

@@ -9,9 +9,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ### Upgrading from 0.35.5
 
 A model restored with `iModel.from_dict` or `Branch.from_dict` whose stored base URL is not
-its provider's registered one is restored without a credential. To keep sending to that URL,
-pass the key: `iModel.from_dict(data, api_key=...)`, or hand `Branch.from_dict` a live
-`chat_model`.
+its provider's registered one is restored without a credential, and every restored model takes
+its local-network setting from its provider's registration rather than the stored config. A
+model kept for a gateway that needs a key, or for a local-network address its provider does
+not allow, fails at its first call. To keep sending to that URL, pass the key and the opt-in:
+`iModel.from_dict(data, api_key=..., allow_local_network=True)`, or hand `Branch.from_dict` a
+live `chat_model`. `li agent --resume` takes neither, so a branch saved against such a
+gateway is resumed from Python instead.
 
 Pair `li studio` and the daemon from the same release. Updating only the daemon leaves an older
 `li studio` asking the retired `POST /api/studio/pairing-codes`, which now answers 410, so a page

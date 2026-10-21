@@ -1387,6 +1387,18 @@ class TestRuntimeValuesArriveAfterConstructionToo:
         # A stored row does not hand a child process its environment.
         assert payload["request"].env is None
 
+    @pytest.mark.parametrize("provider", PROVIDERS)
+    def test_a_stored_processor_config_does_not_reach_the_child_either(self, provider):
+        from lionagi.service.imodel import iModel
+
+        payload_dict = iModel(provider=provider).to_dict()
+        payload_dict["processor_config"]["env"] = {"TOKEN": self.SECRET}
+
+        rebuilt = iModel.from_dict(payload_dict)
+
+        payload, _ = rebuilt.endpoint.create_payload({"prompt": "ok"})
+        assert payload["request"].env is None
+
 
 class TestTheConfigsOwnSerialiserIsAlsoAPublicRoute:
     """The two tests above serialize the whole model, and the drain that keeps

@@ -367,4 +367,9 @@ restored = li.Branch.from_dict(data, chat_model=li.iModel(provider="openai", bas
 model = li.iModel.from_dict(model_data, base_url=url, api_key="MY_GATEWAY_KEY")
 ```
 
+A string `api_key` is read first as the name of a lionagi setting or an environment variable
+that holds the key, and is used as the key itself only when no setting or variable of that
+name is set, so `"MY_GATEWAY_KEY"` above names a variable. Pass a `SecretStr` to give the key
+itself.
+
 Next: [`Session`](session.md) — manage multiple branches
