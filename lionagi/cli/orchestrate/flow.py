@@ -1851,6 +1851,7 @@ async def _execute_dag(
             # node. A lookup failure leaves these unset, which resume treats
             # as unreconstructable for this node alone (see flow.py's resume path).
             spawn_fields: dict[str, Any] = {"parent_id": sig.parent_id}
+            escalation_retry = None
             with contextlib.suppress(Exception):
                 from lionagi.protocols.ids import to_uuid
 
@@ -1883,14 +1884,13 @@ async def _execute_dag(
                         # the class is read off the branch it ran on, so a resume that would
                         # rebuild it on the orchestrator's branch refuses it as it refuses a
                         # spawn a light worker asked for.
-                        run_branch = getattr(executor, "operation_branches", {}).get(
-                            spawned_node.id
-                        )
-                        run_model = getattr(run_branch, "chat_model", None)
-                        if run_model is not None:
-                            spawn_fields["emitter_workload"] = run_model.endpoint.config.kwargs.get(
-                                "workload"
-                            )
+                        escalation_retry = spawned_node
+            if escalation_retry is not None:
+                # Outside the suppression above: a missing branch entry is a record that
+                # would misstate the class this retry ran at, not a lookup to skip.
+                retry_workload = _escalation_retry_workload(executor, escalation_retry)
+                if retry_workload is not _NO_RECORDED_BRANCH_MODEL:
+                    spawn_fields["emitter_workload"] = retry_workload
             _checkpoint_tasks.append(
                 _asyncio.ensure_future(
                     _checkpoint_writer.record_spawned(
@@ -3728,3 +3728,27 @@ async def _resume_flow(
         retry_failed=retry_failed,
         **config,
     )
+
+
+_NO_RECORDED_BRANCH_MODEL = object()
+
+
+def _escalation_retry_workload(executor: Any, node: Any) -> Any:
+    """The workload class *node* ran at, read off the branch it ran on.
+
+    An escalation retry is built with no class of its own and runs on a clone of the
+    branch of the node it retries. A missing branch entry would record no class and let
+    a resume accept a light retry as heavy, so it raises instead, naming the node.
+    ``_NO_RECORDED_BRANCH_MODEL`` means the branch entry has no model to read.
+    """
+    operation_branches = getattr(executor, "operation_branches", None) or {}
+    run_branch = operation_branches.get(node.id)
+    if run_branch is None:
+        raise RuntimeError(
+            f"escalation retry {node.id} has no recorded branch, "
+            "so the workload class it ran at cannot be recorded"
+        )
+    run_model = getattr(run_branch, "chat_model", None)
+    if run_model is None:
+        return _NO_RECORDED_BRANCH_MODEL
+    return run_model.endpoint.config.kwargs.get("workload")

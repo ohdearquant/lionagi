@@ -112,6 +112,31 @@ def test_an_api_model_takes_no_workload():
     assert "workload" not in _kwargs(model)
 
 
+def test_a_bare_openai_codex_model_builds_an_api_endpoint_without_a_workload():
+    """A slashless spec falls through to a bare model name, which iModel resolves through the
+    API openai provider: nothing spawns, so there is no workload to hand a CLI."""
+    from lionagi.cli._providers import _add_workload_kwarg
+    from lionagi.service.connections.registry import EndpointRegistry
+
+    model = build_imodel_from_spec("openai-codex", workload="light")
+    assert type(model.endpoint).__name__ == "Endpoint"
+    assert EndpointRegistry.canonical_provider(model.endpoint.config.provider) == "openai"
+    assert "workload" not in _kwargs(model)
+    model.endpoint.config._api_key = "dummy-key"
+    payload, _ = model.endpoint.create_payload({"prompt": "hi"})
+    assert "workload" not in payload
+
+    kwargs: dict = {}
+    _add_workload_kwarg(kwargs, model.endpoint, "light")
+    assert "workload" not in kwargs
+
+
+def test_a_codex_cli_model_carries_the_workload_and_not_to_an_api_request():
+    model = build_imodel_from_spec("codex/gpt-5.5", workload="light")
+    assert _kwargs(model)["workload"] == "light"
+    payload, _ = model.endpoint.create_payload({"prompt": "hi"})
+    assert payload["request"].workload == "light"
+
 _CAPTURED: dict[str, Any] = {}
 
 

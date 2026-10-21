@@ -142,6 +142,7 @@ def _build_worker(
 
     class _Endpoint:
         def __init__(self):
+            self.is_cli = is_cli
             self.config = SimpleNamespace(kwargs={}, provider=provider)
 
     class _IModel:
@@ -164,7 +165,9 @@ def _build_worker(
     def _fake_build_imodel(*a, **kw):
         built["imodel_kwargs"] = kw
         _add_workload_kwarg(
-            imodel.endpoint.config.kwargs, provider, kw.get("workload", DEFAULT_WORKLOAD)
+            imodel.endpoint.config.kwargs,
+            imodel.endpoint,
+            kw.get("workload", DEFAULT_WORKLOAD),
         )
         return imodel
 
@@ -756,7 +759,11 @@ async def _spawned_branch_kwargs(
             model={"codex": "gpt-5.5", "openai": "gpt-4.1-mini"}.get(canonical, "sonnet"),
             **({"api_key": "dummy-key"} if branch_provider == "openai" else {}),
         )
-        _add_workload_kwarg(chat_model.endpoint.config.kwargs, branch_provider, branch_workload)
+        _add_workload_kwarg(
+            chat_model.endpoint.config.kwargs,
+            chat_model.endpoint,
+            branch_workload,
+        )
         return Branch(
             system=bare_worker_system(artifact_dir=tmp_path / "artifacts" / name),
             chat_model=chat_model,

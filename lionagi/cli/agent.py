@@ -1378,7 +1378,7 @@ async def _run_agent(
             )
         # Like the connectors: the class belongs to this launch, not to the stored row.
         cfg.pop("workload", None)
-        _add_workload_kwarg(cfg, provider, workload)
+        _add_workload_kwarg(cfg, branch.chat_model.endpoint, workload)
         # A resumed leg re-spawns a CLI child, so it needs the server set handed
         # to it just as a new one does; the persisted branch carries the model,
         # not the caller's directory. Which providers can be given a set, and

@@ -93,16 +93,11 @@ def _add_codex_account_integration_kwargs(
         extra["contain_account_integrations"] = True
 
 
-def _add_workload_kwarg(extra: dict, provider: str, workload: str) -> None:
-    from lionagi.service.connections.registry import EndpointRegistry
-
-    # Only a CLI provider spawns an agent process to count or sandbox; left out at the
-    # default, so a heavy leg's request is the one it was before workloads existed. A
-    # provider alias ("openai-codex", "pi-code") counts as the provider it resolves to.
-    if (
-        workload != DEFAULT_WORKLOAD
-        and EndpointRegistry.canonical_provider(provider) in CLI_PROVIDERS
-    ):
+def _add_workload_kwarg(extra: dict, endpoint: Any, workload: str) -> None:
+    # Only a CLI endpoint spawns an agent process to count or sandbox; left out at the
+    # default, so a heavy leg's request is the one it was before workloads existed. The
+    # endpoint decides, not the name: a slashless "openai-codex" is an API model.
+    if workload != DEFAULT_WORKLOAD and endpoint.is_cli:
         extra["workload"] = workload
 
 
@@ -167,7 +162,6 @@ def build_imodel_from_spec(
         _add_codex_account_integration_kwargs(
             extra, account_connectors, contain_account_integrations
         )
-    _add_workload_kwarg(extra, provider_raw, workload)
     if verbose:
         extra["verbose_output"] = True
     if theme is not None:
@@ -195,12 +189,16 @@ def build_imodel_from_spec(
         merged.update(extra.get("config_overrides") or {})
         extra["config_overrides"] = merged
 
-    return iModel(
+    model_instance = iModel(
         model=resolved_model,
         endpoint="query_cli",
         api_key="dummy",
         **extra,
     )
+    if workload != DEFAULT_WORKLOAD:
+        endpoint = model_instance.endpoint
+        _add_workload_kwarg(endpoint.config.kwargs, endpoint, workload)
+    return model_instance
 
 
 def build_chat_model(
@@ -265,7 +263,6 @@ def build_chat_model(
         _add_codex_account_integration_kwargs(
             extra, account_connectors, contain_account_integrations
         )
-    _add_workload_kwarg(extra, provider, workload)
     if verbose:
         extra["verbose_output"] = True
     if theme is not None:
@@ -295,14 +292,18 @@ def build_chat_model(
         merged.update(extra.get("config_overrides") or {})
         extra["config_overrides"] = merged
 
-    if extra:
-        return iModel(
+    if extra or workload != DEFAULT_WORKLOAD:
+        model_instance = iModel(
             provider=provider,
             endpoint="query_cli",
             model=model,
             api_key="dummy",
             **extra,
         )
+        if workload != DEFAULT_WORKLOAD:
+            endpoint = model_instance.endpoint
+            _add_workload_kwarg(endpoint.config.kwargs, endpoint, workload)
+        return model_instance
     return f"{provider}/{model}"
 
 

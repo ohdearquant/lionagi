@@ -278,7 +278,7 @@ class EndpointRegistry:
         name or provider-alias that some registered entry already claimed --
         i.e. whether rejecting it as unrecognized would be wrong regardless
         of which specific endpoint was requested for it."""
-        return provider.strip().lower() in cls._alias_owners
+        return provider.lower() in cls._alias_owners
 
     @classmethod
     def _provider_not_found_error(cls, provider: str) -> ProviderNotFoundError:

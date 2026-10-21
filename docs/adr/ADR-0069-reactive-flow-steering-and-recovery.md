@@ -553,7 +553,7 @@ against the artifact set a node declared, it does not make.
   `lionagi/state/schema.sql:191`). Two stages fill it: `_build_dag` resolves planned role declarations and persists them
   before execution (`lionagi/cli/orchestrate/flow.py:1074-1075,1169-1180`). Spawned instructions use the
   cached role declarations before injection, but `_execute_dag` appends their entries to the
-  session contract only after the DAG finishes (`lionagi/cli/orchestrate/flow.py:2624,2608-2616`).
+  session contract only after the DAG finishes (`lionagi/cli/orchestrate/flow.py:2624,2626-2638`).
   Resume does not read either persisted set. The column is also nullable — the schema records that a NULL contract means verification
   is skipped (`lionagi/state/schema.sql:190`) — so an absent or unreadable record is not evidence
   that the declared set is still present. Delta row 2 covers both the read and the check.
@@ -626,7 +626,7 @@ itself checkpointed terminal or another entry in the same list (`:1277-1300`, ra
 failing entry means no entry is rebuilt and the resume
 fails. One live behaviour already trades recorded spawns away: with `--retry-failed`, the resume
 drops every recorded spawn descended from a re-running (formerly failed) parent
-(`_drop_spawns_under_rerun_parents`, `lionagi/cli/orchestrate/flow.py:1353-1375`, called at `1426-1428`),
+(`_drop_spawns_under_rerun_parents`, `lionagi/cli/orchestrate/flow.py:1353-1375`, called at `1430`),
 which D5's rule that refusal is preferable to silently dropping spawned work disfavours.
 
 **Rejected paths, kept with their reasons.** Three ways of settling a node were weighed, and each
@@ -679,7 +679,7 @@ provide.
 | # | Delta | Size | Issue |
 |---|---|---|---|
 | 1 | Add a terminal reactive-flow cancel control; acceptance: after acknowledgement, no new operation starts and the run persists a cancelled terminal state. | M | (filled at issue-open time) |
-| 2 | Verify a replayed node's declared artifact set from the contract the run persisted, before pre-marking it `COMPLETED`, and refuse rather than trust when it cannot be proven; acceptance: a resumed run never marks a node that declared artifacts completed from a record whose declared set is missing or empty (presence and non-empty size, not content), it reads the persisted `artifact_contract_json` column rather than re-deriving the contract from the live roles, and a reactively spawned node's contract is persisted when that node completes rather than only after `run_dag`, where the spawned-entry extension is written today (`lionagi/cli/orchestrate/flow.py:2624,2608-2616`). Depends on delta 9 — without the original run's artifact root every declared path resolves against a root that never held the artifact, so presence cannot be checked until row 9 lands. | M | #2015 |
+| 2 | Verify a replayed node's declared artifact set from the contract the run persisted, before pre-marking it `COMPLETED`, and refuse rather than trust when it cannot be proven; acceptance: a resumed run never marks a node that declared artifacts completed from a record whose declared set is missing or empty (presence and non-empty size, not content), it reads the persisted `artifact_contract_json` column rather than re-deriving the contract from the live roles, and a reactively spawned node's contract is persisted when that node completes rather than only after `run_dag`, where the spawned-entry extension is written today (`lionagi/cli/orchestrate/flow.py:2624,2626-2638`). Depends on delta 9 — without the original run's artifact root every declared path resolves against a root that never held the artifact, so presence cannot be checked until row 9 lands. | M | #2015 |
 | 3 | Persist predecessor conversation state needed by `inherit_context`; acceptance: eligible resumed operations receive the same inherited conversation without requiring degraded mode. | L | #2015 |
 | 4 | Enforce checkpoint-version compatibility and report unsupported versions before graph construction; acceptance: a checkpoint with an unknown version fails with a typed migration/compatibility error. | S | (filled at issue-open time) |
 | 5 | Add operator recovery for controls stranded in `applying`; acceptance: status distinguishes definitely-applied, definitely-not-applied, and indeterminate messages without automatic duplicate injection. | M | (filled at issue-open time) |

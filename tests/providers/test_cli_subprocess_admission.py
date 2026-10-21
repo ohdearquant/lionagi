@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -44,6 +45,24 @@ def capped(tmp_path, monkeypatch):
 
 def _held():
     return subagent_admission_status()["pools"].get("all", {"held": 0, "holders": []})
+
+
+def _is_alive(pid: int) -> bool:
+    import psutil
+
+    try:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
+
+
+def _await_death(pid: int, deadline: float = 5.0) -> bool:
+    end = time.monotonic() + deadline
+    while time.monotonic() < end:
+        if not _is_alive(pid):
+            return True
+        time.sleep(0.05)
+    return not _is_alive(pid)
 
 
 @pytest.mark.asyncio
@@ -112,3 +131,100 @@ async def test_an_input_that_cannot_be_encoded_is_refused_before_admission(cappe
     assert admissions == []
     assert not marker.exists()
     assert _held()["held"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_cap_set_and_an_unreadable_start_time_refuses_and_frees_the_slot(
+    capped, monkeypatch
+):
+    """A child whose start time cannot be read is not recorded: its slot would stop counting
+    the moment this holder exits, so the spawn is refused and the child is ended."""
+    from lionagi.providers import _cli_subprocess
+
+    marker = capped / "started"
+    spawns = []
+    callbacks = []
+    observations = []
+    real_observe = _cli_subprocess.observe_spawned
+    real_end_group = _cli_subprocess.end_child_group
+
+    def _no_start_time(pid, *, expected_marker):
+        observations.append(pid)
+        observed = real_observe(pid, expected_marker=expected_marker)
+        return _cli_subprocess.SpawnedProcess(
+            pid=observed.pid, pgid=observed.pgid, create_time=None
+        )
+
+    async def _record_end(proc, **kwargs):
+        spawns.append(proc.pid)
+        await real_end_group(proc, **kwargs)
+
+    monkeypatch.setattr(_cli_subprocess, "observe_spawned", _no_start_time)
+    monkeypatch.setattr(_cli_subprocess, "end_child_group", _record_end)
+    stream = ndjson_from_cli(
+        [sys.executable, "-c", f"open({str(marker)!r}, 'w').close(); import time; time.sleep(30)"],
+        engine="codex",
+        on_spawn=callbacks.append,
+    )
+    with pytest.raises(SubagentAdmissionRefusedError, match="start time"):
+        async with contextlib.aclosing(stream):
+            await stream.__anext__()
+    assert len(observations) == 2
+    assert spawns == observations[:1]
+    assert _await_death(spawns[0])
+    assert callbacks == []
+    assert _held()["held"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_cap_set_and_a_second_start_time_read_succeeds_runs_and_records_it(
+    capped, monkeypatch
+):
+    """One unreadable observation is retried before the spawn is refused; the second read
+    records the start time the slot needs to outlive this holder."""
+    from lionagi.providers import _cli_subprocess
+
+    real_observe = _cli_subprocess.observe_spawned
+    observations = []
+
+    def _first_read_fails(pid, *, expected_marker):
+        observed = real_observe(pid, expected_marker=expected_marker)
+        observations.append(observed)
+        if len(observations) == 1:
+            return _cli_subprocess.SpawnedProcess(
+                pid=observed.pid, pgid=observed.pgid, create_time=None
+            )
+        return observed
+
+    monkeypatch.setattr(_cli_subprocess, "observe_spawned", _first_read_fails)
+    quick = 'import sys; sys.stdout.write(\'{"type": "done"}\\n\')'
+    stream = ndjson_from_cli([sys.executable, "-c", quick], engine="codex")
+    async with contextlib.aclosing(stream):
+        assert [obj async for obj in stream] == [{"type": "done"}]
+    assert len(observations) == 2
+    assert observations[-1].create_time is not None
+    assert _held()["held"] == 0
+
+
+@pytest.mark.asyncio
+async def test_with_no_cap_an_unreadable_start_time_still_runs(monkeypatch):
+    """Nothing counts a slot when no pool is capped, so there is no record to keep and the
+    child runs as it did before admission existed."""
+    from lionagi.providers import _cli_subprocess
+
+    real_observe = _cli_subprocess.observe_spawned
+    observations = []
+
+    def _no_start_time(pid, *, expected_marker):
+        observations.append(pid)
+        observed = real_observe(pid, expected_marker=expected_marker)
+        return _cli_subprocess.SpawnedProcess(
+            pid=observed.pid, pgid=observed.pgid, create_time=None
+        )
+
+    monkeypatch.setattr(_cli_subprocess, "observe_spawned", _no_start_time)
+    quick = 'import sys; sys.stdout.write(\'{"type": "done"}\\n\')'
+    stream = ndjson_from_cli([sys.executable, "-c", quick], engine="codex")
+    async with contextlib.aclosing(stream):
+        assert [obj async for obj in stream] == [{"type": "done"}]
+    assert len(observations) == 1

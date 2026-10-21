@@ -31,6 +31,7 @@ from lionagi.cli.orchestrate.flow import (
     _apply_checkpoint_precompletion,
     _build_dag,
     _DagState,
+    _escalation_retry_workload,
     _execute_dag,
     _PlanResult,
     _reconstruct_spawned_nodes,
@@ -811,6 +812,94 @@ def test_reconstruct_spawned_nodes_marks_failed_child_terminal_not_rerun():
     assert child.execution.response == {"error": "boom"}
 
 
+def test_retry_failed_accepts_an_unassigned_failed_spawn_with_no_recorded_class():
+    """A failed spawn with no assignee and no recorded class is still reconstructible at the
+    same class: neither a worker class nor a retried node's class is being replaced."""
+    builder, parent_id, worker_branch = _real_planned_node("worker")
+    env = SimpleNamespace(builder=builder)
+    dag_state = _DagState(
+        node_ids=[parent_id],
+        known_nodes={parent_id},
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"worker": worker_branch},
+        worker_models=[],
+    )
+    plan_result, checkpoint_ops = _terminal_plan_and_ops("worker", parent_id)
+    child_id = str(uuid4())
+    checkpoint_spawned = [
+        {
+            "node_id": child_id,
+            "status": "failed",
+            "response": {"error": "boom"},
+            "operation": "operate",
+            "assignee": None,
+            "instruction": "check the result",
+            "parent_id": None,
+            "spawn_id": "spawn-4",
+            "emitter_workload": None,
+        }
+    ]
+
+    _apply_checkpoint_precompletion(
+        env,
+        plan_result,
+        dag_state,
+        checkpoint_ops,
+        allow_degraded_context=False,
+        retry_failed=True,
+        checkpoint_spawned=checkpoint_spawned,
+    )
+
+    child = builder.get_graph().internal_nodes[UUID(child_id)]
+    assert child.execution.status == EventStatus.PENDING
+
+
+def test_retry_failed_refuses_an_unassigned_failed_spawn_with_a_recorded_worker_class():
+    """A recorded worker class means the retry would run at the orchestrator's class, so the
+    resume refuses rather than silently lifting that worker's confinement."""
+    builder, parent_id, worker_branch = _real_planned_node("worker")
+    env = SimpleNamespace(builder=builder)
+    dag_state = _DagState(
+        node_ids=[parent_id],
+        known_nodes={parent_id},
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"worker": worker_branch},
+        worker_models=[],
+    )
+    plan_result, checkpoint_ops = _terminal_plan_and_ops("worker", parent_id)
+    child_id = str(uuid4())
+    checkpoint_spawned = [
+        {
+            "node_id": child_id,
+            "status": "failed",
+            "response": {"error": "boom"},
+            "operation": "operate",
+            "assignee": None,
+            "instruction": "check the result",
+            "parent_id": None,
+            "spawn_id": "spawn-5",
+            "emitter_workload": "heavy",
+        }
+    ]
+
+    with pytest.raises(FlowResumeError, match=rf"{child_id} \(heavy\)"):
+        _apply_checkpoint_precompletion(
+            env,
+            plan_result,
+            dag_state,
+            checkpoint_ops,
+            allow_degraded_context=False,
+            retry_failed=True,
+            checkpoint_spawned=checkpoint_spawned,
+        )
+
+    assert UUID(child_id) not in builder.get_graph().internal_nodes
+
+
 @pytest.mark.parametrize("retry_failed", [False, True])
 def test_a_failed_unassigned_spawn_a_light_worker_asked_for_is_not_rerun_at_another_class(
     retry_failed,
@@ -1477,6 +1566,28 @@ async def test_a_failed_escalation_retry_records_the_class_it_ran_at(tmp_path: P
         )
     assert f"{retry_id} (light)" in str(refused.value)
     assert UUID(retry_id) not in resume_builder.get_graph().internal_nodes
+
+
+def test_an_escalation_retry_with_no_operation_branch_entry_raises_naming_the_node():
+    """An escalation retry reads its class off the branch it ran on. With no recorded
+    branch, writing no class would let a resume accept a light retry as heavy."""
+    node = SimpleNamespace(id=uuid4())
+    executor = SimpleNamespace(operation_branches={})
+
+    with pytest.raises(RuntimeError, match=str(node.id)):
+        _escalation_retry_workload(executor, node)
+
+
+def test_an_escalation_retry_reads_the_class_off_its_recorded_branch():
+    node = SimpleNamespace(id=uuid4())
+    ran_on = SimpleNamespace(
+        chat_model=SimpleNamespace(
+            endpoint=SimpleNamespace(config=SimpleNamespace(kwargs={"workload": "light"}))
+        )
+    )
+
+    executor = SimpleNamespace(operation_branches={node.id: ran_on})
+    assert _escalation_retry_workload(executor, node) == "light"
 
 
 async def test_checkpoint_record_captures_context_from_live_graph_node_parameters(

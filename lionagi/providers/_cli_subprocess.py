@@ -916,6 +916,19 @@ async def ndjson_from_cli(
     # stream's own try only define closures and create tasks, and the stdin payload was
     # encoded before the spawn, so nothing a caller passes can raise in that span.
     try:
+        if lease.slots and spawned.create_time is None:
+            # A slot records the child's start time so it stays held after this process
+            # exits. Without one, the child's pid could later name an unrelated process,
+            # so the slot would read free while the child still runs. Look once more;
+            # if identity still cannot be read, refuse rather than outlive the cap.
+            spawned = observe_spawned(proc.pid, expected_marker=spawn_marker)
+            if spawned.create_time is None:
+                from ._provider_errors import SubagentAdmissionRefusedError
+
+                raise SubagentAdmissionRefusedError(
+                    "subagent admission refused: the agent's start time could not be read, "
+                    "so its slot could not be kept past this process, and the agent was stopped"
+                )
         lease.record_child(spawned.pid, spawned.create_time)
 
         # Read the identity here, not at teardown: once the child is reaped its pid

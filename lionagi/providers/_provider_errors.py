@@ -111,7 +111,9 @@ class WorkerLivenessError(ProviderError):
 
 class SubagentAdmissionRefusedError(ProviderError):
     """No machine-wide slot for a CLI agent: a pool stayed at its cap, or admission could
-    not be read. Raised before the child exists, so nothing ran.
+    not be read. Raised before the child exists, or just after it when its start time
+    could not be read twice, in which case the child's group is ended before this is
+    raised.
 
     Retryable: the same request admits once a slot frees or the cap is raised.
     """

@@ -53,7 +53,7 @@ turn input is limited to 1,048,576 characters, and died at turn start.
 
 **P4 — what one "request" is differs by provider.** API providers send the message list each turn.
 The Codex and fresh Gemini CLI paths flatten the non-system messages into one turn input
-(`lionagi/providers/_cli_subprocess.py:1204-1227`), and Codex carries the system text as a separate
+(`lionagi/providers/_cli_subprocess.py:1217-1240`), and Codex carries the system text as a separate
 argument (`lionagi/providers/openai/codex.py:1799-1805`). A provider that resumes a session it holds
 sends only the new turn and keeps the history remotely, where nothing on this side can fold it.
 

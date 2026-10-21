@@ -103,7 +103,9 @@ Each provider passes its engine name: `codex`, `claude`, `gemini`, `pi`.
   uncapped install behaves as it did before this ADR.
 - The nested-agent check (D7) runs before admission, and the stdin payload is encoded before it,
   so neither a nested agent nor an input that cannot be encoded waits for or holds a slot.
-- The lease is taken before `create_subprocess_exec`, so a refused agent has no child.
+- The lease is taken before `create_subprocess_exec`, so an agent refused for a full pool has no
+  child. A child whose start time cannot be read is the one exception: it has started, and the
+  refusal ends its group before raising (D3).
 - After the spawn, `record_child(pid, create_time)` writes the child's identity into every slot.
 - The lease is released when the spawn raises, when the `on_spawn` observer raises, and in the
   generator's final `finally` after `end_child_group()`, so a slot frees only once the group has
@@ -165,11 +167,14 @@ A slot is the file `$LIONAGI_HOME/leases/subagents/<pool>/<index>.lock`, `index`
   child, which leads its own session, keeps running. A free lock whose record names a child that
   is still the same process (pid and start time, through `lionagi.ln._proc`) counts as held. An
   unreadable process table counts as running, so a slot is never handed out on a probe that
-  could not look. A record with no start time for its child (the spawn could not read one, or
-  the child does not lead its own process group) does not count: its pid alone could name a
-  process that took the pid over, so once the holder exits that slot reads free even while the
-  child still runs, and a pool can then hold one agent past its cap. The rule that a running
-  recorded child keeps its slot therefore holds only for a child recorded with its start time.
+  could not look. A child whose start time cannot be read is never recorded: its pid alone could
+  name a process that took the pid over, so once the holder exits such a slot would read free
+  even while the child still runs. The spawn observes the child once more for its start time; if
+  the second read has none too, and the admission holds at least one slot, the spawn is refused
+  with the same `SubagentAdmissionRefusedError` a full pool raises, the child's group is ended,
+  and the slots are released. So a slot is either held for a child recorded with its start time,
+  or not taken at all. With no cap set there are no slots to keep, and the child runs whether or
+  not its start time can be read.
 - **Counting and taking happen under the pool's admission lock.** Each pool has an admission lock,
   `<pool>/.admission`. An admission takes the admission locks of all its pools before it counts
   any, counts every held slot at every index on disk, and takes a slot in each pool only once all
