@@ -53,8 +53,8 @@ _LAZY = (
     "its package with lionagi.ln.register_type_prefix()"
 )
 _NESTED = (
-    "its path runs through a class, which a dotted path does not reach into; add a "
-    "nested class to LION_CLASS_REGISTRY under this name"
+    "its path runs through a class, which a dotted path does not reach into; register "
+    "the class under this dotted name in LION_CLASS_REGISTRY"
 )
 _OUTSIDE = (
     "its module is outside the allowed prefixes; import that module first, allow its "

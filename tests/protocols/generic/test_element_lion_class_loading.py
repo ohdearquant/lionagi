@@ -225,7 +225,7 @@ def test_a_pile_item_type_already_imported_still_resolves():
 
 
 def test_a_pile_item_type_without_a_module_is_refused():
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="names no module"):
         Element.from_dict(_dumped_pile(["Instruction"]))
 
 
@@ -299,7 +299,14 @@ def test_a_non_module_in_sys_modules_is_skipped_not_read(monkeypatch):
     monkeypatch.setitem(sys.modules, "lion_class_nonmod_zz", object())
     monkeypatch.setitem(sys.modules, "lion_class_proxy_zz", _SlottedProxy())
     monkeypatch.setitem(sys.modules, "lionagi.lion_class_removed_zz", object())
-    for name in ("lion_class_nonmod_zz.Thing", "lion_class_proxy_zz.Thing"):
+    names = (
+        "lion_class_nonmod_zz.Thing",
+        "lion_class_proxy_zz.Thing",
+        # Three parts: the check for a nested class reads the first part as a module.
+        "lion_class_nonmod_zz.Cls.Inner",
+        "lion_class_proxy_zz.Cls.Inner",
+    )
+    for name in names:
         with pytest.raises(ValueError, match="Unable to find class"):
             get_class(name)
     assert _SlottedProxy.calls == []
@@ -511,7 +518,7 @@ def test_the_remedy_fits_a_nested_class_a_module_getattr_and_a_moved_class(monke
     monkeypatch.setattr(_utils, "_ALLOWED_MODULE_PREFIXES", set(_utils._DEFAULT_ALLOWED_PREFIXES))
     monkeypatch.setattr(_utils, "_TYPE_CACHE", {})
     remedies = {
-        "lion_class_nest_zz.Outer.Inner": "add a nested class to LION_CLASS_REGISTRY",
+        "lion_class_nest_zz.Outer.Inner": "register the class under this dotted name",
         "lion_class_getattr_zz.Thing": "module-level __getattr__",
         "lionagi.no_such_mod_zz.Thing": "give its current dotted path",
         "lion_class_unimported_zz.old.Thing": "give its current dotted path",
@@ -523,7 +530,7 @@ def test_the_remedy_fits_a_nested_class_a_module_getattr_and_a_moved_class(monke
 
     # Each remedy works: a prefix does not reach the nested class, a registry entry does.
     _utils.register_type_prefix("lion_class_nest_zz.")
-    with pytest.raises(ValueError, match="add a nested class to LION_CLASS_REGISTRY"):
+    with pytest.raises(ValueError, match="register the class under this dotted name"):
         get_class("lion_class_nest_zz.Outer.Inner")
     monkeypatch.setitem(LION_CLASS_REGISTRY, "lion_class_nest_zz.Outer.Inner", Outer.Inner)
     assert get_class("lion_class_nest_zz.Outer.Inner") is Outer.Inner
@@ -541,6 +548,7 @@ def test_a_long_name_is_cut_short_in_each_error():
         with pytest.raises(ValidationError) as refused:
             Pile(item_type=item_type)
         assert len(str(refused.value)) < 1000
+        assert len(str(refused.value.to_dict())) < 1000
 
 
 def test_a_long_name_of_a_type_outside_the_element_hierarchy_is_cut_short(monkeypatch):
@@ -576,5 +584,5 @@ def test_a_class_nested_under_the_deepest_imported_module_is_still_found(monkeyp
     monkeypatch.setitem(sys.modules, module_name, nest)
     monkeypatch.setattr(_utils, "_ALLOWED_MODULE_PREFIXES", set(_utils._DEFAULT_ALLOWED_PREFIXES))
     monkeypatch.setattr(_utils, "_TYPE_CACHE", {})
-    with pytest.raises(ValueError, match="add a nested class to LION_CLASS_REGISTRY"):
+    with pytest.raises(ValueError, match="register the class under this dotted name"):
         get_class(f"{module_name}.Outer.Inner")

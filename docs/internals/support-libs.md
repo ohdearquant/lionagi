@@ -70,7 +70,7 @@ and there it matches only a class defined under that same prefix; any other
 dotted name the first steps do not resolve raises `ValueError` rather than
 resolving to a built-in or registered class that shares its short name. A bare
 short name matches a class defined under `lionagi.` in the built-in modules
-(never one they merely import, such as `Path`) or a registered Node subclass. A
+(never one they merely import, such as `Path`) or a registered class. A
 dotted path through an already-imported module resolves to whatever class that
 module's namespace holds under the name, including one the module only imports
 (`lionagi.protocols.generic.pile.Path` is `pathlib.Path`). It imports a module
@@ -88,10 +88,12 @@ outside the allowed prefixes whose module is not imported, or whose imported
 module has a module-level `__getattr__` (called only under an allowed prefix);
 the dotted form for a bare name; why loading failed for a name under an allowed
 prefix; the current path for a class that has moved; and a
-`LION_CLASS_REGISTRY` entry for a class nested in another class, which no
-dotted path reaches. It shows at most 160 characters of the name and of the
-reason. A bare `item_type` name is refused, a single name counts as a list
-holding it, and a union counts as each of its members.
+`LION_CLASS_REGISTRY` entry under its dotted name for a class nested in another
+class, which no dotted path reaches. The message shows at most 160 characters
+of the name and of the reason, which can repeat the module path; the error it
+is chained from carries the whole name. A bare `item_type` name is refused, a
+single name counts as a list holding it, and a union counts as each of its
+members.
 
 <a id="path-safety-contain-relative-path"></a>
 

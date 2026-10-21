@@ -83,12 +83,12 @@ def _validate_item_type(value, /) -> set[type[T]] | None:
     from lionagi._class_registry import _cut, get_class
 
     for i in value:
-        pending = [i]
+        pending, shown = [i], _cut(i) if isinstance(i, str) else i
         if isinstance(i, str):
             if "." not in i:
                 # A bare name says nothing about which package's class it means.
                 raise ValidationError.from_value(
-                    i,
+                    shown,
                     expected="A type.",
                     message=(
                         f"item_type {_cut(repr(i))} names no module: pass the class itself or "
@@ -98,7 +98,7 @@ def _validate_item_type(value, /) -> set[type[T]] | None:
             try:  # Imports a module only under an allowed prefix, with its parents.
                 pending = [get_class(i)]
             except Exception as e:
-                raise ValidationError.from_value(i, message=str(e), cause=e) from e
+                raise ValidationError.from_value(shown, message=str(e), cause=e) from e
         # A union counts as each member, nested ones too; never None, Any, a ForwardRef, a generic.
         while pending:
             m = pending.pop()
@@ -108,7 +108,7 @@ def _validate_item_type(value, /) -> set[type[T]] | None:
                 resolved.append(m)
             else:
                 refused = f"item_type cannot hold {_cut(repr(m))}"
-                raise ValidationError.from_value(i, expected="A type.", message=refused)
+                raise ValidationError.from_value(shown, expected="A type.", message=refused)
 
     # Compared once resolved and unions expanded: a type and its name, two names
     # for one class, or a type and a union holding it repeat one item type.
