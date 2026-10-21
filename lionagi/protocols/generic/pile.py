@@ -80,15 +80,15 @@ def _validate_item_type(value, /) -> set[type[T]] | None:
     value = [value] if isinstance(value, str) else to_list_type(value)
     resolved = []
 
-    from lionagi._class_registry import _cut, get_class
+    from lionagi._class_registry import _cut, _shown, get_class
 
     for i in value:
-        pending, shown = [i], _cut(i if isinstance(i, str) else repr(i))
+        pending = [i]
         if isinstance(i, str):
             if "." not in i:
                 # A bare name says nothing about which package's class it means.
                 raise ValidationError.from_value(
-                    shown,
+                    _cut(i),
                     expected="A type.",
                     message=(
                         f"item_type {_cut(repr(i))} names no module: pass the class itself or "
@@ -98,7 +98,7 @@ def _validate_item_type(value, /) -> set[type[T]] | None:
             try:  # Imports a module only under an allowed prefix, with its parents.
                 pending = [get_class(i)]
             except Exception as e:
-                raise ValidationError.from_value(shown, message=str(e), cause=e) from e
+                raise ValidationError.from_value(_cut(i), message=str(e), cause=e) from e
         # A union counts as each member, nested ones too; never None, Any, a ForwardRef, a generic.
         while pending:
             m = pending.pop()
@@ -107,9 +107,9 @@ def _validate_item_type(value, /) -> set[type[T]] | None:
             elif isinstance(m, type) and m not in (type(None), Any) and get_origin(m) is None:
                 resolved.append(m)
             else:
-                refused = f"item_type cannot hold {_cut(repr(m))}"
+                shown, refused = _shown(i), f"item_type cannot hold {_shown(m)}"
                 raise ValidationError.from_value(
-                    shown, expected="A type.", message=refused, type=type(i).__name__
+                    shown, expected="A type.", message=refused, type=_cut(type(i).__name__)
                 )
 
     # Compared once resolved and unions expanded: a type and its name, two names

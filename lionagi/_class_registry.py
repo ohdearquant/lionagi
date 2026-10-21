@@ -175,3 +175,14 @@ def get_class(class_name: str) -> type:
         reason = _cut(str(load_error.__cause__ or load_error))
         message = f"{message} (loading it failed: {reason})"
     raise ValueError(message) from load_error
+
+
+def _shown(value: object) -> str:
+    """A value as an error repeats it: a string as itself, anything else by its repr,
+    cut; one whose repr raises by its type's name, so the error is still raised."""
+    if isinstance(value, str):
+        return _cut(value)
+    try:
+        return _cut(repr(value))
+    except Exception:
+        return f"<{_cut(type(value).__name__)} object>"

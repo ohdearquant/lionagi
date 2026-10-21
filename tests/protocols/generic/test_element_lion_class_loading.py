@@ -36,6 +36,30 @@ class StaticFromDictElement(Element):
         return StaticFromDictElement.model_validate(data)
 
 
+class SuperFromDictElement(Element):
+    note: str = ""
+
+    @staticmethod
+    def from_dict(data):
+        data = dict(data)
+        data["note"] = "restored through super()"
+        return super(SuperFromDictElement, SuperFromDictElement).from_dict(data)
+
+
+class RaisingReprMeta(type):
+    def __repr__(cls):
+        raise RuntimeError("no repr for this class")
+
+
+class RaisingReprClass(metaclass=RaisingReprMeta):
+    pass
+
+
+class RaisingRepr:
+    def __repr__(self):
+        raise RuntimeError("no repr for this instance")
+
+
 class NotAnElement:
     called = False
 
@@ -119,6 +143,15 @@ def test_a_subclass_whose_from_dict_is_a_staticmethod_restores_through_it():
     restored = Element.from_dict(original.to_dict(mode="python"))
     assert type(restored) is StaticFromDictElement
     assert restored.note == "restored by its own from_dict"
+    assert restored.id == original.id
+
+
+@pytest.mark.parametrize("start", [Element, SuperFromDictElement], ids=["element", "itself"])
+def test_a_staticmethod_from_dict_that_calls_super_restores_from_either_class(start):
+    original = SuperFromDictElement(note="kept")
+    restored = start.from_dict(original.to_dict(mode="python"))
+    assert type(restored) is SuperFromDictElement
+    assert restored.note == "restored through super()"
     assert restored.id == original.id
 
 
@@ -470,6 +503,23 @@ def test_the_not_found_remedy_fits_the_shape_of_the_name(name, says, probe_modul
     if not says.startswith("allow"):
         assert "register_type_prefix" not in str(raised.value)
     assert not probe_module.exists()
+
+
+def test_a_class_whose_repr_raises_is_an_item_type():
+    assert Pile(item_type=[RaisingReprClass]).item_type == {RaisingReprClass}
+
+
+def test_a_member_whose_repr_raises_is_refused_by_its_type_name():
+    with pytest.raises(ValidationError, match="item_type cannot hold <RaisingRepr object>"):
+        Pile(item_type=[RaisingRepr()])
+
+
+def test_a_member_type_name_is_cut_in_the_details():
+    member = type("L" * 5000, (), {})()
+    with pytest.raises(ValidationError) as exc:
+        Pile(item_type=[member])
+    assert exc.value.details["type"].startswith("L" * _class_registry._SHOWN)
+    assert len(exc.value.details["type"]) < _class_registry._SHOWN + 40
 
 
 def test_typing_any_as_an_item_type_is_refused_by_name():

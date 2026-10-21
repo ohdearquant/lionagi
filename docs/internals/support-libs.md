@@ -77,10 +77,11 @@ module's namespace holds under the name, including one the module only imports
 only under an allowed prefix, together with the parent packages Python imports
 first, so a prefix naming a subpackage (`pkg.sub.`) lets it import the package
 above (`pkg`) as well. A name with an empty part (`.Foo`, `pkg.`, `pkg..Foo`)
-is refused before any import. When a dotted name under an allowed prefix fails
-to load and no later step resolves it, the `ValueError` says why loading failed
-and chains that error. `Element.from_dict` accepts only an Element subclass
-from it and raises `ValueError` otherwise, and a `Pile`'s `item_type` names
+is refused before any import, unless that exact name is a `LION_CLASS_REGISTRY`
+key. When a dotted name under an allowed prefix fails to load and no later step
+resolves it, the `ValueError` says why loading failed and chains that error.
+`Element.from_dict` accepts only an Element subclass from this lookup and
+raises `ValueError` otherwise, and a `Pile`'s `item_type` names
 resolve the same way, so data naming a class from a package of your own needs
 its defining module imported first or its package prefix registered. The error
 gives the remedy that fits the name: `register_type_prefix()` for a dotted name
