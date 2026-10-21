@@ -2402,15 +2402,17 @@ def refuse_declaring_project_layer(plain: _PlainRequest, cwd: Path) -> None:
     if declared is not None:
         config_file, line_number, shown = declared
         where = (
-            f"{config_file} (line {line_number}) is a Codex project config declaring `mcp_servers`"
+            f"{config_file} (line {line_number}) is a Codex project config declaring "
+            "`mcp_servers`, which a trusted project layer loads past the run's own server set"
             if shown
             else f"{config_file} is a Codex project config in which line {line_number} reads as "
-            "a `mcp_servers` declaration (read line by line, so it can be text inside a string)"
+            "a `mcp_servers` declaration; the line can be text inside a string, and where the "
+            "file declares the key, a trusted project layer loads it past the run's own server set"
         )
         raise ConfigurationError(
-            f"Codex cannot start under cwd {cwd} with --ignore-user-config: {where}, which a "
-            "trusted project layer loads past the run's own server set and the flag does not "
-            "suppress. Remove the declaration from that file, or run without ignore_user_config."
+            f"Codex cannot start under cwd {cwd} with --ignore-user-config: {where}, which the "
+            "flag does not suppress. Remove the declaration from that file, or run without "
+            "ignore_user_config."
         )
 
 

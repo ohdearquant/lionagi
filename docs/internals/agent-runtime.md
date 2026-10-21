@@ -93,17 +93,22 @@ and one implementation.
   key in a file the parser refuses is not seen here, and such a file takes its
   server list from the fallback; whether that list holds a server only a profile
   declares is codex's, unchecked here. Under `--ignore-user-config` a user config
-  the parser refuses stops the run instead, and so does a project layer it
-  refuses while a sandbox setting rides beside the flag, so where the parser
+  the parser refuses stops the run instead, and two checks read the project
+  layers. Every such request is refused when a project layer declares
+  `mcp_servers`: the parse decides it, and a layer the parser refuses is read
+  line by line, so any line whose first key segment is `mcp_servers` refuses the
+  run. The message names the file and the line, and where the parse does not
+  show that line declaring the key, it says only that the line reads as a
+  declaration. While a sandbox setting rides beside the flag, a project layer the
+  parser refuses also stops the run, whatever it declares. So where the parser
   reads only TOML 1.0 a `config.toml` that codex itself reads is refused when it
-  uses that syntax; for the user config the message gives the parser's error and
-  says to make the file one this parser reads, and for a project layer it gives
-  the parser's error; both add, where the parser reads only TOML 1.0, that codex
-  reads TOML 1.1 forms. A file nested deeper than the parser can follow is refused
-  the same way, with a `ConfigurationError` rather than a raised `RecursionError`:
-  for a project layer the message says the file nests deeper than the parser can
-  follow, and for the user config it gives Python's "maximum recursion depth
-  exceeded".
+  uses that syntax: always for the user config, and for a project layer under
+  the second check. The user config message gives the parser's error and says to
+  make the file one this parser reads; the second check's message gives the
+  parser's error, or says the file nests deeper than the parser can follow; both
+  add, where the parser reads only TOML 1.0, that codex reads TOML 1.1 forms. A
+  user config nested deeper than the parser can follow is refused with a
+  `ConfigurationError` that gives Python's "maximum recursion depth exceeded".
   These reads and the fallback use the codex home named by the environment the
   child runs under (the model's `env` when it holds one, else this process's);
   an environment naming neither `CODEX_HOME` nor `HOME` names the OS account's

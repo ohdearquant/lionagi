@@ -173,9 +173,12 @@ def mcp_servers_declaration_line(text: str) -> int | None:
     Text the TOML parser reads is decided by that parse, as Codex decides it: the root
     table holds the key or it does not, whatever a multi-line string or array between
     the lines holds. The line named is the first whose removal changes what the parse
-    reads as ``mcp_servers``, so not a line inside a string. Each line tried costs a parse
-    of the whole file, so at most ``_LINES_TRIED`` are tried; past them the first line that
-    reads as a declaration is named, which in a file built that way can be a string's.
+    reads as ``mcp_servers`` and which, parsed alone, sets a root ``mcp_servers``, so not a
+    line inside a string or one that closes a string; failing that, the first whose
+    removal changes the parse or leaves text the parser refuses, which reads as a
+    declaration. Each line tried costs a parse of the whole file, so at most
+    ``_LINES_TRIED`` are tried; past them the first line that reads as a declaration is
+    named, which in a file built that way can be a string's.
     Text the parser refuses, TOML 1.1 syntax where it reads only 1.0 included, and text
     nested deeper than it can follow have no structure to trust, so every line counts
     whose first key segment is ``mcp_servers``, a header or a key under any table, toward
@@ -187,7 +190,8 @@ def mcp_servers_declaration_line(text: str) -> int | None:
 
 def _declaration(text: str) -> tuple[int, bool] | None:
     """``mcp_servers_declaration_line``, and whether the parse shows that line declaring
-    ``mcp_servers``: true only when the text without it parses to another value there."""
+    ``mcp_servers``: true only when the text without it parses to another value there and
+    the line alone parses to a root ``mcp_servers``."""
     try:
         parsed = _tomllib.loads(text)
     except (_tomllib.TOMLDecodeError, RecursionError):
@@ -197,15 +201,29 @@ def _declaration(text: str) -> tuple[int, bool] | None:
         return None
     lines = text.split("\n")
     candidates = _declaration_lines(text)
+    reads_as: int | None = None
     for number in candidates[:_LINES_TRIED]:
         rest = "\n".join([*lines[: number - 1], "", *lines[number:]])
         try:
-            if _tomllib.loads(rest).get("mcp_servers") != parsed["mcp_servers"]:
-                return number, True
+            changed = _tomllib.loads(rest).get("mcp_servers") != parsed["mcp_servers"]
         except (_tomllib.TOMLDecodeError, RecursionError):
-            return number, False  # the line carries structure the declaration needs
+            changed = None  # the line carries structure the parse needs
+        if changed and _declares_alone(lines[number - 1]):
+            return number, True
+        if changed is not False and reads_as is None:
+            reads_as = number  # a string's closing line changes the parse as well
+    if reads_as is not None:
+        return reads_as, False
     # the parse found it: the refusal never waits on its line
     return (candidates[0] if len(candidates) > _LINES_TRIED else 1), False
+
+
+def _declares_alone(line: str) -> bool:
+    """Whether *line*, parsed as a whole file, sets a root ``mcp_servers``."""
+    try:
+        return "mcp_servers" in _tomllib.loads(line)
+    except (_tomllib.TOMLDecodeError, RecursionError):
+        return False
 
 
 def parse_failure(exc: BaseException) -> str:

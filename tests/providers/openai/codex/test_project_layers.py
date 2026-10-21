@@ -334,6 +334,9 @@ async def test_the_run_check_reads_the_childs_codex_home_and_no_marker_override_
         ('model = """\n[mcp_servers]\n"""\nmcp_servers = {}\n', 4),
         ('note = """\nmcp_servers = 1\n"""\n[mcp_servers.leak]\ncommand = "y"\n', 4),
         ('mcp_servers = """\nx\n"""\n', 1),
+        # nor a line that closes a string, though removing it changes what the string holds
+        ("x = '''\nmcp_servers.decoy = 1 '''\nmcp_servers.real = 2\ny = 1 # '''\n", 3),
+        ('note = """\nmcp_servers = 1 """\n[mcp_servers]\n', 3),
         # lines count at LF, as TOML counts them, whatever a string or comment holds
         ('a = "x y"\nmcp_servers = {}\n', 2),
         ("# a\u0085b\n[mcp_servers]\n", 2),
@@ -417,7 +420,26 @@ def test_a_line_the_parse_does_not_show_declaring_is_named_as_one_that_reads_as_
     message = str(refusal.value)
     assert f"{layer} is a Codex project config in which line 2 reads as a `mcp_servers`" in message
     assert "(line 2)" not in message
+    assert "line by line" not in message
+    assert "where the file declares the key" in message
     assert "Remove the declaration from that file" in message
+
+
+def test_a_line_that_closes_a_string_is_not_shown_declaring(tmp_path, env):
+    """Removing a string's closing line changes what the parse reads, since the string then runs
+    on; the line declaring the key is the one named as declaring it."""
+    project = tmp_path / "project"
+    _git_root(project)
+    (project / ".codex").mkdir()
+    layer = project / ".codex" / "config.toml"
+    layer.write_text("x = '''\nmcp_servers.decoy = 1 '''\nmcp_servers.real = 2\n", encoding="utf-8")
+    assert declaring_project_layer(project, env) == (layer, 3, True)
+    request = CodexCodeRequest(prompt="x", repo=project, env=env, ignore_user_config=True)
+    with pytest.raises(ConfigurationError) as refusal:
+        codex_mod.refuse_declaring_project_layer(codex_mod._plain_request(request), project)
+    message = str(refusal.value)
+    assert f"{layer} (line 3) is a Codex project config declaring `mcp_servers`" in message
+    assert "reads as" not in message
 
 
 def test_a_line_whose_removal_exposes_a_nesting_too_deep_to_parse_is_named():
