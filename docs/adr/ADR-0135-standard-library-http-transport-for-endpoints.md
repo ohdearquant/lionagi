@@ -265,6 +265,9 @@ Exact semantics:
   `TransportError` or `TimeoutError`, and lets a cancellation through. A refused or reset
   connection, a TLS failure, and a reply that is not HTTP become `TransportError` naming the method
   and URL, with the original exception as `__cause__`.
+- A user and password in the URL go out only as a Basic `Authorization` header. The URL that
+  error text, `HTTPResponse.url` and `HTTPStatusError.url` carry has them removed, and a URL the
+  client refuses is named by its scheme and host alone.
 - An expired deadline raises `TimeoutError("<METHOD> <url> did not complete within <t> s")`. On
   Python 3.10, where `asyncio.TimeoutError` is a class of its own, the error is of a class derived
   from both, as `aiohttp`'s timeout derived from `asyncio.TimeoutError`.

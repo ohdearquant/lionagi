@@ -40,7 +40,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from typing import Any, TypeVar
-from urllib.parse import quote, unquote, urlencode, urlsplit
+from urllib.parse import quote, unquote, urlencode, urlsplit, urlunsplit
 
 import anyio
 import anyio.lowlevel
@@ -353,6 +353,15 @@ class _Exchange:
         return response
 
 
+def _without_userinfo(url: str) -> str:
+    """*url* with any user and password removed from its authority, for error text and the
+    response, which reach logs and the event record."""
+    parts = urlsplit(url)
+    if "@" not in parts.netloc:
+        return url
+    return urlunsplit(parts._replace(netloc=parts.netloc.rpartition("@")[2]))
+
+
 def _transport_failure(method: str, url: str, exc: BaseException) -> BaseException:
     if isinstance(exc, (TimeoutError, TransportError)):
         return exc
@@ -553,7 +562,14 @@ class HTTPSession:
             raise ValueError("pass json or data, not both")
         parts = urlsplit(url)
         if parts.scheme not in ("http", "https") or not parts.hostname:
-            raise ValueError(f"not an http or https URL: {url!r}")
+            # Named by its scheme and host only: a URL this check refuses can still carry a
+            # password where no parse finds it (`user:password@host`, with no scheme).
+            raise ValueError(
+                f"not an http or https URL: scheme {parts.scheme!r}, host {parts.hostname!r}"
+            )
+        # The URL every error and the response carry: a user and password in it go out only
+        # in the Authorization header below.
+        shown = _without_userinfo(url)
 
         send_headers = _merged_headers(
             {"User-Agent": _USER_AGENT, "Accept": "*/*"}, self.headers, headers
@@ -617,12 +633,12 @@ class HTTPSession:
             exchange,
             lambda: exchange.send(method, target, body, wire_headers),
             method=method,
-            url=url,
+            url=shown,
             deadline=deadline,
             timeout=self.timeout,
         )
         response = HTTPResponse(
-            exchange, raw, method=method, url=url, deadline=deadline, timeout=self.timeout
+            exchange, raw, method=method, url=shown, deadline=deadline, timeout=self.timeout
         )
         self._responses.append(response)
         return response

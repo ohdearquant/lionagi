@@ -655,6 +655,48 @@ async def test_url_credentials_that_cannot_go_out_as_basic_are_refused_before_co
             await session.request("GET", url, headers=headers)
 
 
+async def test_a_password_in_the_url_reaches_no_error_and_no_response():
+    secret = "s3cr%40t"
+
+    async def ok(request: Request):
+        return json_response({})
+
+    async with serving(ok) as base:
+        authority = base.split("//", 1)[1].split("/", 1)[0]
+        url = f"http://user:{secret}@{authority}/v1"
+        async with HTTPSession(timeout=5) as session:
+            response = await session.request("GET", url)
+            await response.read()
+    assert response.url == f"http://{authority}/v1"
+
+    closed = socket.socket()
+    closed.bind(("127.0.0.1", 0))
+    port = closed.getsockname()[1]
+    closed.close()
+    async with HTTPSession(timeout=5) as session:
+        with pytest.raises(TransportError) as refused:
+            await session.request("GET", f"http://user:{secret}@127.0.0.1:{port}/v1")
+    assert f"127.0.0.1:{port}/v1" in str(refused.value)
+
+    stalled = asyncio.Event()
+    async with serving(_waits_for_close(stalled)) as base:
+        authority = base.split("//", 1)[1].split("/", 1)[0]
+        async with HTTPSession(timeout=0.3) as session:
+            with pytest.raises(TimeoutError) as late:
+                await session.request("GET", f"http://user:{secret}@{authority}/v1")
+    assert f"{authority}/v1" in str(late.value)
+
+    async with HTTPSession() as session:
+        with pytest.raises(ValueError, match="not an http or https URL") as bad:
+            await session.request("GET", f"ftp://user:{secret}@127.0.0.1/v1")
+        with pytest.raises(ValueError, match="not an http or https URL") as bare:
+            await session.request("GET", f"user:{secret}@127.0.0.1/v1")
+
+    for raised in (refused, late, bad, bare):
+        assert secret not in str(raised.value)
+        assert "s3cr@t" not in str(raised.value)
+
+
 async def test_an_endpoint_stream_cut_short_raises_rather_than_ending():
     whole = b'data: {"choices":[{"delta":{"content":"hel"}}]}\n\n'
     cut = b'data: {"choices":[{"delta":{"content":"lo'
