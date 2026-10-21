@@ -23,7 +23,7 @@ from lionagi.libs.path_safety import validate_bare_name
 
 try:
     import tomllib as _tomllib
-except ModuleNotFoundError:  # Python 3.10: the declared `tomli`, a TOML 1.0 parser like tomllib
+except ModuleNotFoundError:  # Python 3.10: the declared `tomli`, which at 2.4.1 also reads TOML 1.1
     import tomli as _tomllib  # type: ignore[no-redef]
 
 __all__ = (
