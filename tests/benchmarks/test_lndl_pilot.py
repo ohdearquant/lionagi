@@ -1305,8 +1305,8 @@ def test_what_a_run_writes_beside_its_results_is_left_out_of_a_git_add(tmp_path,
     empty = tmp_path / "empty"
     empty.mkdir()
     env = {
-        # A git hook sets GIT_DIR, GIT_INDEX_FILE and others, which would point these commands at
-        # the hook's repository.
+        # A git commit hook runs with GIT_INDEX_FILE set, and GIT_DIR too in a linked worktree;
+        # either would point these commands at the hook's repository.
         **{k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_NOSYSTEM": "1",

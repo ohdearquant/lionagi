@@ -6,7 +6,7 @@
 *.prompt.txt
 *.stdout.txt
 *.stderr.txt
-# A run directory named like a leg file is not itself ignored.
+# A run directory named like a leg file is not ignored for that name.
 !*.prompt.txt/
 !*.stdout.txt/
 !*.stderr.txt/
