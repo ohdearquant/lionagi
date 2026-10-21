@@ -590,7 +590,7 @@ def _run_trigger_facts(row: dict[str, Any]) -> dict[str, Any]:
         except (ValueError, RecursionError) as exc:
             # ValueError: malformed JSON, or an integer past the digit limit. The C scanner's depth
             # guard names what it was decoding; a bare RecursionError is raised again. On 3.10 and
-            # 3.11 it also counts the caller's depth, so near the limit shallow text reads as empty.
+            # 3.11 it counts the caller's depth too; near the limit shallow text fails either way.
             if isinstance(exc, RecursionError) and "while decoding a JSON" not in str(exc):
                 raise
             context = None
@@ -625,13 +625,13 @@ def _run_summary(row: dict[str, Any]) -> dict[str, Any]:
 
 _RECENT_RUN_LIMIT = 25
 
-# The batch ships an occurrence's trigger context only when its stored text quotes one of
-# the two keys _run_trigger_facts reads, and NULL otherwise, which projects the same two
-# defaults. A repository event's payload ships only when it quotes one of the names, as a key
-# or as a value such as a label, and _run_trigger_facts then decides as before. The match
-# parses nothing; a context that ships is decoded by _run_trigger_facts, which under the
-# pure-Python scanner fails on nesting past its depth. The scheduler writes contexts with
-# json.dumps, which writes both keys literally; a key spelled with a JSON escape is not matched.
+# The batch ships an occurrence's trigger context when its stored text matches one of the two
+# keys _run_trigger_facts reads, and NULL otherwise, which projects the same two defaults. LIKE
+# reads `_` as any character and SQLite ignores ASCII case, so a few other texts ship too and
+# project as before; a repository event's payload ships when it names a key or a value such as
+# a label. The match parses nothing; a context that ships is decoded by _run_trigger_facts,
+# which under the pure-Python scanner fails on nesting past its depth. The scheduler writes
+# contexts with json.dumps, so both keys appear literally; a JSON-escaped key is not matched.
 _RECENT_RUN_CONTEXT = (
     " CASE WHEN CAST(occurrence.trigger_context AS TEXT) LIKE '%\"scheduled\"%'"
     " OR CAST(occurrence.trigger_context AS TEXT) LIKE '%\"missed_fire_at\"%'"
