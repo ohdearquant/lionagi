@@ -21,13 +21,13 @@ line (a space, a non-ASCII letter) is encoded, and an escape already in the URL 
 Redirects are never followed, since the address guard checks one URL and a redirect could lead
 anywhere; a 3xx response is returned like any other status. Proxy settings in the environment
 are not read. A request asks for ``Accept-Encoding: identity`` unless its headers name another
-coding. A body that arrives gzip- or deflate-coded all the same is decoded as it is read, to
-the bytes ``gzip.decompress`` and ``zlib.decompress`` give for a body that holds just its
-coded stream (a gzip body can hold several members). Unlike those functions, this client
-refuses bytes after the coded stream: they, and a stream that does not end, raise
-``TransportError``. A ``br`` or ``zstd`` body raises ``TransportError``, and a body in any
-other coding, or in more than one (named in one ``Content-Encoding`` line or in several), is
-returned as it arrived. The headers stay as received.
+coding. A body that arrives gzip- or deflate-coded all the same is decoded as it is read, to the
+bytes ``gzip.decompress`` and ``zlib.decompress`` give for a body that holds just its coded
+stream (a gzip body can hold several members). Bytes after the stream, which ``zlib.decompress``
+skips and ``gzip.decompress`` skips only as NUL padding, raise ``TransportError`` here, as a
+stream that does not end does. A ``br`` or ``zstd`` body raises ``TransportError`` unless empty.
+The codings of all ``Content-Encoding`` lines are one list whose empty elements are ignored; a
+body in any other coding, or in more than one, is returned as it arrived. Headers stay as received.
 A ``timeout`` of 0 or less sets no bound, as ``None`` does.
 """
 
@@ -487,11 +487,11 @@ class _BodyDecoder:
 
 
 def _body_decoder(headers: http.client.HTTPMessage, where: str) -> _BodyDecoder | None:
-    # Several Content-Encoding lines name several codings, as one line with commas does
-    # (RFC 9110 section 5.3); such a body is returned as it arrived.
-    codings = headers.get_all("Content-Encoding") or []
-    coding = codings[0].strip().lower() if len(codings) == 1 else ""
-    coding = "gzip" if coding == "x-gzip" else coding
+    # The lines' codings are one list, as one line's commas make (RFC 9110 section 5.3), and its
+    # empty elements are ignored (section 5.6.1); a body in more than one is returned as it arrived.
+    listed = ",".join(headers.get_all("Content-Encoding") or []).split(",")
+    codings = [c for c in (part.strip().lower() for part in listed) if c]
+    coding = {"x-gzip": "gzip"}.get(codings[0], codings[0]) if len(codings) == 1 else ""
     if coding in ("gzip", "deflate", "br", "zstd"):
         return _BodyDecoder(coding, where)
     return None

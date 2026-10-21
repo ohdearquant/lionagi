@@ -683,8 +683,20 @@ def _coded_reply(coding: str, body: bytes) -> bytes:
         ("deflate", _raw_deflate(_DOC)),
         ("gzip", gzip.compress(_DOC[:9], mtime=0) + gzip.compress(_DOC[9:], mtime=0)),
         ("gzip   ", gzip.compress(_DOC, mtime=0)),
+        ("gzip,", gzip.compress(_DOC, mtime=0)),
+        (", gzip", gzip.compress(_DOC, mtime=0)),
     ],
-    ids=["gzip", "x-gzip", "any-case", "deflate", "raw-deflate", "two-gzip-members", "spaces"],
+    ids=[
+        "gzip",
+        "x-gzip",
+        "any-case",
+        "deflate",
+        "raw-deflate",
+        "two-gzip-members",
+        "spaces",
+        "trailing-comma",
+        "leading-comma",
+    ],
 )
 async def test_a_gzip_or_deflate_body_is_read_decoded(coding, body):
     async with answering(_coded_reply(coding, body)) as url, HTTPSession(timeout=5) as session:
@@ -695,6 +707,37 @@ async def test_a_gzip_or_deflate_body_is_read_decoded(coding, body):
     async with answering(_coded_reply(coding, body)) as url, HTTPSession(timeout=5) as session:
         response = await session.request("GET", url)
         assert b"".join([piece async for piece in response.iter_chunks()]) == _DOC
+
+
+class _FedRaw:
+    """A raw response whose body arrives in the given reads, so no network timing decides
+    which bytes a read returns."""
+
+    status, reason, length = 200, "OK", 0
+
+    def __init__(self, coding: str, reads: list[bytes]):
+        self.headers = http.client.parse_headers(
+            io.BytesIO(f"Content-Encoding: {coding}\r\n\r\n".encode())
+        )
+        self._reads = list(reads)
+
+    def read1(self, size: int) -> bytes:
+        return self._reads.pop(0) if self._reads else b""
+
+
+def test_a_read_that_decodes_to_nothing_yet_is_followed_by_the_next():
+    coder = zlib.compressobj(wbits=16 + zlib.MAX_WBITS)
+    first = coder.compress(b"data: one\n\n") + coder.flush(zlib.Z_SYNC_FLUSH)
+    rest = coder.compress(b"data: two\n\n") + coder.flush()
+    raw = _FedRaw("gzip", [first[:10], first[10:], rest])
+    response = _http.HTTPResponse(
+        None, raw, method="GET", url="http://h", where="GET http://h", deadline=None, timeout=None
+    )
+
+    # The gzip header alone decodes to nothing; the body goes on to the next read.
+    assert response._read_piece() == b"data: one\n\n"
+    assert response._read_piece() == b"data: two\n\n"
+    assert response._read_piece() == b""
 
 
 async def test_a_gzip_coded_stream_is_decoded_as_its_pieces_arrive():
@@ -816,17 +859,30 @@ async def test_a_body_in_a_coding_not_decoded_here_is_returned_as_it_arrived(cod
         assert await response.read() == _DOC
 
 
-async def test_a_body_with_two_content_encoding_lines_is_returned_as_it_arrived():
+@pytest.mark.parametrize(
+    ("lines", "decoded"),
+    [
+        (["gzip", "deflate"], False),
+        (["gzip", "gzip"], False),
+        (["gzip", ""], True),
+        (["", "gzip"], True),
+    ],
+    ids=["gzip-deflate", "gzip-gzip", "gzip-empty", "empty-gzip"],
+)
+async def test_the_content_encoding_lines_are_read_as_one_list(lines, decoded):
+    """The lines' codings form one list whose empty elements are ignored: a body in one coding
+    is decoded, and one in more than one is returned as it arrived."""
     body = gzip.compress(_DOC, mtime=0)
     reply = (
-        b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Encoding: deflate\r\n"
+        b"HTTP/1.1 200 OK\r\n"
+        + b"".join(f"Content-Encoding: {line}\r\n".encode() for line in lines)
         + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
         + body
     )
     async with answering(reply) as url, HTTPSession(timeout=5) as session:
         response = await session.request("GET", url)
-        assert await response.read() == body
-        assert response.headers.get_all("Content-Encoding") == ["gzip", "deflate"]
+        assert await response.read() == (_DOC if decoded else body)
+        assert response.headers.get_all("Content-Encoding") == lines
 
 
 @pytest.mark.parametrize(

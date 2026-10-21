@@ -50,7 +50,7 @@ with a client built on the standard library (ADR-0135), and four kinds of code n
   `_call_http` or `_stream_http`, which take the same arguments.
 - Code that passes a `msgspec.Struct` to lionagi's structural helpers installs `msgspec` itself.
 
-Four kinds of response are handled differently:
+Some responses are handled differently:
 
 - A 3xx response fails the call with `HTTPStatusError`: redirects are no longer followed, so a
   request and its credentials never go to an address the endpoint's address check did not see.
@@ -59,16 +59,29 @@ Four kinds of response are handled differently:
   are `ValueError`), and is not retried, where `aiohttp` raised a `ContentTypeError` that the
   endpoint retried.
 - A body coded `br` or `zstd`, which a server sends when a request's headers ask for it, raises
-  `TransportError`; `aiohttp` decoded those when an optional decoder package was installed.
+  `TransportError` unless it is empty (an empty body reads as empty); `aiohttp` decoded those
+  when an optional decoder package was installed, and otherwise raised, for an empty body too.
 - A gzip or deflate body that holds just its coded stream is decoded as before. Around that the
   client is stricter, and each of these raises `TransportError`: a gzip body that does not end,
   where `aiohttp` returned what had decoded (the whole document when only the trailer was
-  missing, a prefix when the body was cut inside its data); bytes after a gzip member that do
-  not begin another member, of which `aiohttp` ignored one and raised for two or more; and a
+  missing, a prefix when the body was cut inside its data); bytes after the last whole gzip
+  member, NUL padding included, where `aiohttp` returned the document for one stray byte or
+  for the first two bytes of a next member and raised for two or more other bytes; and a
   second deflate stream, which `aiohttp` decoded. Other bytes after a deflate stream raised
-  under `aiohttp` too. An `x-gzip` body is decoded as gzip, where `aiohttp` returned it as it
-  arrived, and a body whose response has more than one `Content-Encoding` line is returned as
-  it arrived, where `aiohttp` decoded it by the first line.
+  under `aiohttp` too. The endpoint retries a `TransportError` as it retries a dropped
+  connection, so with no `retry_config` set a gzip body cut before its trailer is requested
+  again, up to `max_retries` requests in all, where `aiohttp` returned the document from one.
+- A streamed gzip or deflate body arrives in pieces of what one read decodes to, with no bound
+  on a piece's size: a 16 MiB body of zeros streams as two pieces, the larger about 8 MiB,
+  where the largest piece `aiohttp` gave for it was 768 KiB.
+- The codings named in all of a response's `Content-Encoding` lines are read as one list whose
+  empty elements are ignored (RFC 9110), and a body in exactly one of them is handled as that
+  coding. `aiohttp`'s default compiled parser read only the last line and took it whole: it
+  returned as it arrived a body coded `x-gzip`, `gzip` followed by spaces, `gzip,` or `, gzip`,
+  or a `gzip` line followed by an empty one, and failed a `GZip` body with
+  `ClientPayloadError`; each is now decoded as gzip. A `gzip` line beside a second `gzip`
+  line, which `aiohttp` decoded once, or beside a `deflate` line, which it failed on gzip data,
+  now leaves the body as it arrived. Its pure-Python parser read the first line instead.
 
 ### Added
 
@@ -196,7 +209,7 @@ Four kinds of response are handled differently:
   followed, and a 200 body is decoded as JSON whatever its `Content-Type` (see the upgrade notes).
   Proxy settings in the environment are not read, as before. Responses are requested
   uncompressed unless a request's headers ask for a coding; a gzip or deflate body is still
-  decoded, with the differences the upgrade notes list, and a `br` or `zstd` body raises
+  decoded, with the differences the upgrade notes list, and a non-empty `br` or `zstd` body raises
   `TransportError`. A user and password in the URL are read as RFC 3986 reads them, so a
   password holding `/`, `?` or `#` has to be percent-encoded; left raw, a password whose text
   up to a `/` is all digits gives those digits as the port, which error text names. The Ollama

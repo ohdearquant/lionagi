@@ -203,14 +203,16 @@ Exact semantics:
   stream or, from servers that send it, raw deflate data. A stream that does not end raises
   `TransportError`, since only its end (the gzip trailer's length and CRC, the zlib checksum)
   shows the body arrived whole, and so do bytes after the coded stream other than the start of
-  a next gzip member, which `gzip.decompress` and `zlib.decompress` skip. `aiohttp` returned a
-  gzip body's decoded part, ignored one stray byte after a gzip member, and decoded a second
-  deflate stream; the CHANGELOG lists each case. An `x-gzip` body is decoded as gzip, which
-  `aiohttp` did not do. A `br` or `zstd` body raises `TransportError` (`aiohttp` decoded those
-  only with an optional decoder package installed). A body in any other coding is returned as
-  it arrived, as under `aiohttp`, and so is a body in more than one, named in one
-  `Content-Encoding` line or in several (`aiohttp` decoded by the first of several lines). The
-  headers stay as received.
+  a next gzip member, which `zlib.decompress` skips and `gzip.decompress` skips only as NUL
+  padding. `aiohttp` returned a gzip body's decoded part, ignored one stray byte after a gzip
+  member, and decoded a second deflate stream; the CHANGELOG lists each case. A `br` or `zstd`
+  body raises `TransportError` unless it is empty (`aiohttp` decoded those only with an
+  optional decoder package installed). The codings of all `Content-Encoding` lines are one
+  list whose empty elements are ignored (RFC 9110 section 5.6.1). A body in exactly one gzip or
+  deflate coding, `x-gzip` included, is decoded, and a body in any other coding, or in more
+  than one, is returned as it arrived. `aiohttp` read one line (the last with its default
+  compiled parser, the first with its pure-Python one), took it whole and did not map `x-gzip`;
+  the CHANGELOG lists the cases that now differ. The headers stay as received.
 - Default headers: `User-Agent: lionagi/<version>`; `Accept: */*`, as `aiohttp` sent;
   `Content-Type: application/json` for a `json=` body unless the caller set one; `Content-Length`
   for any body. A later header source replaces an earlier one of the same name in any case (session
