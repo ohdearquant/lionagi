@@ -154,10 +154,11 @@ dropped signals lives in memory and dies with it.
 
 **Decision.** Two records in the run directory, and the reaper reads them.
 
-1. When a store read or write fails teardown (teardown keeps the database error it caught) and
-   teardown hands back a status that is not terminal for a run whose teardown decided a
-   terminal one, the run writes `terminal_write_lost` on its run.json in the same manifest write
-   that records `status`: the decided status, its reason code, and the time. The decided status
+1. When a store read or write fails teardown (teardown keeps the store error it caught: a
+   database error, or the store having no row for its write) and teardown hands back a status
+   that is not terminal for a run whose teardown decided a terminal one, the `li agent` run
+   writes `terminal_write_lost` on its run.json in the same manifest write that records
+   `status`: the decided status, its reason code, and the time. The decided status
    and code are the outcome teardown records for its own run before its write
    (`terminal_reason`). When teardown failed before deciding, they are the terminal status it was
    asked to write and the code it resolved for that status, which it records before any later
@@ -166,14 +167,14 @@ dropped signals lives in memory and dies with it.
    what the run decided and that the store never got it. A run that defers its end to an
    auto-resume, or whose teardown decided `running` because a linked engine session still runs,
    decided no terminal status and writes nothing. A teardown that fails on anything but a
-   database error, such as an artifact removed while it was verified, reached no write the store
+   store error, such as an artifact removed while it was verified, reached no write the store
    refused, and the run writes nothing either. A terminal status other than the decided one
    is another writer's record (a concurrent teardown won the row, or the state doctor ended it),
    not a lost write.
 2. The first time a run's signal persistence opens a skip window (the store refused the writer
-   lock), the run writes `signal_persistence_degraded_at` on its run.json, once per run, on a
-   thread of its own under the run directory's manifest lock. The window exists so that an emit
-   never waits on the store, and this record must not make it wait on a file instead.
+   lock), the `li agent` run writes `signal_persistence_degraded_at` on its run.json, once per
+   run, on a thread of its own under the run directory's manifest lock. The window exists so
+   that an emit never waits on the store, and this record must not make it wait on a file instead.
    `bind_db_persistence` takes the callback that does this (`on_window_opened`) and calls it
    once per binding, on the event loop. A run killed after that thread has written the time
    still leaves this marker, though not its count. A whole-file write of run.json
@@ -221,8 +222,9 @@ compatibility mode is not a lost write here: the run fails with that refusal as 
 timed-out leg that would have auto-resumed fails the same way and is not resumed. Invocations
 sharing a run id share one run.json, and `terminal_write_lost` is lifecycle data like `status`:
 a later `RunDir.write_manifest` by another invocation replaces it.
-Flow, fanout and play runs write neither field; they degrade without the record, as
-Amendment 2's Limits say for their stop handle. A job whose hook could not take the job lock, so
+Flow, fanout and play runs write neither field, and neither do runs the Studio operator
+persists (its `setup_agent_persist` call passes no run directory); they degrade without the
+record, as Amendment 2's Limits say for their stop handle. A job whose hook could not take the job lock, so
 that run.json holds a real terminal status the job record never got, is a neighbouring case this
 amendment does not cover; so is a teardown that is itself interrupted part way by Ctrl-C or a
 cancellation, which records the interrupt's status on run.json without knowing whether its

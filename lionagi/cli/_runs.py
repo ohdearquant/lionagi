@@ -440,7 +440,7 @@ def lost_terminal_write(
 
     *returned* is what teardown handed back: the row's status when its terminal write failed
     (usually `running`), `unknown` when even that read failed. The record exists only when a
-    store read or write failed teardown (the database error teardown kept in *live*), the run
+    store read or write failed teardown (the store error teardown kept in *live*), the run
     decided a terminal status and *returned* is not terminal. Teardown that failed for any
     other reason, such as an artifact removed while it was being verified, never reached a
     write the store could refuse. A terminal *returned* that differs from the decision is
@@ -471,17 +471,17 @@ def lost_terminal_write(
 
 
 def _store_error_in(error: BaseException | None) -> BaseException | None:
-    """The database error *error* is, raises from, or carries inside exception groups.
+    """The store error *error* is, raises from, or carries inside exception groups.
 
-    Teardown's store reads and writes run inside task groups, so a store error can arrive
-    beside another failure, however deeply nested. An error raised while another was being
-    handled is not taken as caused by it.
+    A database error, or the store having no row for its write, anywhere in nested exception
+    groups. An error raised while another was being handled is not taken as caused by it.
     """
     import sqlite3
 
     from sqlalchemy.exc import SQLAlchemyError
 
     from lionagi.ln.concurrency._compat import BaseExceptionGroup
+    from lionagi.state.lifecycle import LifecycleNotFoundError
 
     seen: set[int] = set()
     pending: list[BaseException] = [error] if error is not None else []
@@ -490,7 +490,7 @@ def _store_error_in(error: BaseException | None) -> BaseException | None:
         if id(current) in seen:
             continue
         seen.add(id(current))
-        if isinstance(current, sqlite3.Error | SQLAlchemyError):
+        if isinstance(current, sqlite3.Error | SQLAlchemyError | LifecycleNotFoundError):
             return current
         if isinstance(current, BaseExceptionGroup):
             pending.extend(current.exceptions)
@@ -1630,10 +1630,10 @@ async def teardown_persist(
             ctx["store_refusal"] = refusal
             return "failed"
         _log.warning("live persist teardown failed: %s", exc, exc_info=True)
-        # Only a database error says the store failed teardown, so only that one leaves a
-        # terminal write the store may not have taken; a failure from anywhere else (an
-        # artifact removed while it was verified) stopped teardown before any refused write
-        # (ADR-0104 Amendment 3).
+        # Only a store error (a database error, or no row for the write) says the store failed
+        # teardown, so only that one leaves a terminal write the store may not have taken; a
+        # failure from anywhere else (an artifact removed while it was verified) stopped
+        # teardown before any refused write (ADR-0104 Amendment 3).
         store_error = _store_error_in(exc)
         if store_error is not None:
             ctx["teardown_store_error"] = store_error

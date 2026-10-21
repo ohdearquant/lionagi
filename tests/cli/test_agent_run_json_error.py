@@ -635,6 +635,54 @@ async def test_an_artifact_removed_while_teardown_verified_it_records_no_lost_wr
 
 
 @pytest.mark.asyncio
+async def test_a_run_whose_row_is_gone_at_its_terminal_write_records_the_decided_end(
+    monkeypatch, tmp_path
+):
+    """The session row is deleted before teardown writes the run's end, so the store finds no
+    row for the write. The run decided `completed` and the store never took it: run.json keeps
+    what is durable (`unknown`, the row cannot be read back) and records the decided end."""
+    from lionagi.state.db import StateDB
+    from lionagi.state.lifecycle import LifecycleNotFoundError
+
+    agent_mod, real_teardown = _with_a_real_row(monkeypatch, tmp_path, operate_return="done")
+    run = _run(monkeypatch, tmp_path)
+    real_update = StateDB.update_status
+    seen = {"terminal_writes": [], "write_errors": []}
+
+    async def update_status(self, entity_type, entity_id, **kw):
+        if entity_type == "session" and kw.get("new_status") != "running":
+            seen["terminal_writes"].append(kw.get("new_status"))
+        try:
+            return await real_update(self, entity_type, entity_id, **kw)
+        except BaseException as exc:
+            seen["write_errors"].append(type(exc.__cause__))
+            raise
+
+    async def teardown(ctx, **kw):
+        await ctx["db"].execute("DELETE FROM sessions WHERE id = ?", (ctx["session_id"],))
+        status = await real_teardown(ctx, **kw)
+        seen["decision"] = ctx.get("terminal_reason")
+        seen["store_error"] = type(ctx.get("teardown_store_error"))
+        return status
+
+    monkeypatch.setattr(StateDB, "update_status", update_status)
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", teardown)
+
+    from lionagi.cli.agent import _run_agent
+
+    *_, terminal_status, _ = await _run_agent("claude/sonnet", "go")
+
+    assert seen["terminal_writes"] == ["completed"]
+    assert seen["write_errors"] == [LifecycleNotFoundError]
+    assert seen["decision"][0] == "completed"
+    assert seen["store_error"] is LifecycleNotFoundError
+    manifest = json.loads(run.manifest_path.read_text())
+    assert terminal_status == manifest["status"] == "unknown"
+    lost = manifest[TERMINAL_WRITE_LOST_FIELD]
+    assert (lost["status"], lost["reason_code"]) == ("completed", RunReasons.COMPLETED_OK)
+
+
+@pytest.mark.asyncio
 async def test_a_leg_that_defers_its_end_to_an_auto_resume_records_no_lost_write(
     monkeypatch, tmp_path
 ):
@@ -830,6 +878,7 @@ def _store_error_cases():
     from sqlalchemy.exc import OperationalError
 
     from lionagi.ln.concurrency._compat import BaseExceptionGroup
+    from lionagi.state.lifecycle import LifecycleNotFoundError
 
     locked = sqlite3.OperationalError("database is locked")
     wrapped = OperationalError("UPDATE sessions", {}, sqlite3.OperationalError("disk I/O error"))
@@ -840,6 +889,10 @@ def _store_error_cases():
     nested = BaseExceptionGroup(
         "teardown", [ValueError("other"), BaseExceptionGroup("inner", [locked])]
     )
+    # StateDB.update_status raises LookupError from the lifecycle service's refusal.
+    no_row = LifecycleNotFoundError("session 's' not found")
+    row_gone = LookupError("session 's' not found (table=sessions)")
+    row_gone.__cause__ = no_row
     return [
         (locked, locked),
         (wrapped, wrapped),
@@ -848,6 +901,8 @@ def _store_error_cases():
         (FileNotFoundError("report.md"), None),
         (while_handling, None),
         (BaseExceptionGroup("teardown", [ValueError("a"), RuntimeError("b")]), None),
+        (row_gone, no_row),
+        (KeyError("report"), None),
     ]
 
 
@@ -862,12 +917,42 @@ def _store_error_cases():
         "filesystem-error",
         "raised-while-handling-a-store-error",
         "group-without-a-store-error",
+        "no-row-for-the-write",
+        "a-lookup-error-from-elsewhere",
     ],
 )
 def test_a_store_error_is_found_where_teardown_can_carry_one(error, expected):
     from lionagi.cli._runs import _store_error_in
 
     assert _store_error_in(error) is expected
+
+
+class _CauseCycle(RuntimeError):
+    """An error whose cause is its partner. Reading the cause ten times means the search is
+    walking the cycle again, so the read raises instead of letting the search loop."""
+
+    def __init__(self, name):
+        super().__init__(name)
+        self.partner = None
+        self.reads = 0
+
+    @property
+    def __cause__(self):
+        self.reads += 1
+        if self.reads >= 10:
+            raise AssertionError(f"cause of {self} read {self.reads} times")
+        return self.partner
+
+
+def test_a_cause_cycle_without_a_store_error_ends():
+    """Two errors that name each other as their cause: the search visits each once and finds
+    nothing."""
+    from lionagi.cli._runs import _store_error_in
+
+    first, second = _CauseCycle("a"), _CauseCycle("b")
+    first.partner, second.partner = second, first
+
+    assert _store_error_in(first) is None
 
 
 @pytest.mark.asyncio

@@ -82,8 +82,9 @@ assign a distinct `reason_code`; the next three keep the pre-existing
   (`{status, reason_code, at}`, written by the `li agent` run in the same
   manifest write that records the durable `status`, which is `running`, or
   `unknown` when teardown could not read the row back). A teardown that
-  failed on anything but a database error, such as an artifact removed while
-  it was verified, writes no record: the store refused nothing. The reap keeps
+  failed on anything but a store error (a database error, or no row for the
+  write), such as an artifact removed while it was verified, writes no
+  record: the store refused nothing. The reap keeps
   `reason_code=process_gone_without_outcome` (`LOST_REASON`), reports
   `reason_detail=terminal_write_lost` (`REASON_DETAIL_TERMINAL_WRITE_LOST`)
   and copies the decided status into `terminal_evidence["decided_status"]`.
