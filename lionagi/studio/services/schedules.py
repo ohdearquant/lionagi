@@ -588,8 +588,8 @@ def _run_trigger_facts(row: dict[str, Any]) -> dict[str, Any]:
             context = json.loads(context)
         except (ValueError, RecursionError) as exc:
             # ValueError: malformed JSON, or an integer past the interpreter's digit limit. The
-            # parser's depth guard names what it was decoding; a bare RecursionError is the
-            # caller's own depth, which says nothing about this text, so it is raised again.
+            # C scanner's depth guard names what it was decoding and counts the caller's depth
+            # too, so near the limit shallow text reads as empty; a bare one is raised again.
             if isinstance(exc, RecursionError) and "while decoding a JSON" not in str(exc):
                 raise
             context = None

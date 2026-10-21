@@ -7969,7 +7969,7 @@ class StateDB:
             if key in d and isinstance(d[key], str):
                 try:
                     d[key] = json.loads(d[key])
-                except (ValueError, TypeError, RecursionError) as exc:  # digit limit, parser depth
+                except (ValueError, TypeError, RecursionError) as exc:  # digit limit, depth guard
                     if isinstance(exc, RecursionError) and "while decoding a JSON" not in str(exc):
                         raise  # a bare RecursionError is the caller's own depth, not this text
         return d

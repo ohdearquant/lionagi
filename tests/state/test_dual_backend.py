@@ -2103,3 +2103,57 @@ async def test_postgres_recent_run_summary_cuts_a_tie_by_id_and_keeps_a_short_sl
     assert [run["id"] for run in short["runs"]] == [
         f"{short_id}-run-{index:02}" for index in range(24, -1, -1)
     ]
+
+
+async def test_postgres_recent_run_summary_projects_both_trigger_facts(pg_url):
+    """The batch ships a run's trigger context only when its text names a fact key,
+    a match on the context cast to text, so the facts are read back through the
+    PostgreSQL form: a timer fire, a missed-fire skip recorded as the scheduler
+    records it, and a run whose context names neither key."""
+    from lionagi.state.reasons import ScheduleReasons
+    from lionagi.studio.services import schedules
+    from lionagi.studio.services.scheduler_state import create_skipped_run
+
+    sid = f"pg-facts-{_uid()}"
+    db = StateDB(url=pg_url)
+    await db.open()
+    try:
+        assert db.dialect == "postgresql"
+        await _seed_pg_runs(db, sid, [(f"{sid}-plain", 100.0)])
+        await db.create_schedule_run(
+            {
+                "id": f"{sid}-timer",
+                "schedule_id": sid,
+                "trigger_context": {"scheduled": True, "fired_at": 101.0},
+                "action_args": [],
+                "action_kind": "agent",
+                "status": "completed",
+                "fired_at": 101.0,
+            }
+        )
+        await create_skipped_run(
+            db,
+            run_id=f"{sid}-missed",
+            schedule={"id": sid, "action_kind": "agent"},
+            trigger_context={
+                "skipped_missed_fire": True,
+                "missed_fire_at": 1700000000.125,
+                "checked_at": 102.0,
+            },
+            now=102.0,
+            reason_code=ScheduleReasons.SKIPPED_MISSED_FIRE,
+            reason_summary="Schedule fire skipped because the scheduled time passed.",
+            metadata={"missed_fire_policy": "skip", "missed_fire_at": 1700000000.125},
+        )
+        summaries = await schedules._recent_run_summaries(db, [sid])
+    finally:
+        await db.close()
+
+    summary = summaries[sid]
+    assert summary["status"] == "available"
+    facts = {run["id"]: (run["scheduled"], run["missed_fire_at"]) for run in summary["runs"]}
+    assert facts == {
+        f"{sid}-missed": (False, 1700000000.125),
+        f"{sid}-timer": (True, None),
+        f"{sid}-plain": (False, None),
+    }
