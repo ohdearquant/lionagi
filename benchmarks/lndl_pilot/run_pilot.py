@@ -343,10 +343,16 @@ def main() -> int:
         return 2
     try:
         loaded = yaml.load(tasks_bytes, Loader=_TaskLoader)  # noqa: S506 - a SafeLoader subclass
-    # Deep nesting raises RecursionError rather than a YAMLError, and a scalar PyYAML cannot
-    # build (a date such as 2026-02-30, `!!int abc`) raises ValueError.
-    except (yaml.YAMLError, RecursionError, ValueError) as exc:
+    except yaml.YAMLError as exc:
         print(f"{tasks_path} is not YAML: {exc}\nnothing run", file=sys.stderr)
+        return 2
+    # Not every failure is a YAMLError: deep nesting raises RecursionError, and the code that
+    # builds a value raises whatever it raises (ValueError for a date such as 2026-02-30,
+    # KeyError for `!!bool abc`, IndexError for `!!int ""`, and others). Each is a file this
+    # runner cannot take.
+    except Exception as exc:  # noqa: BLE001
+        reason = f"{type(exc).__name__}: {exc}"
+        print(f"{tasks_path} cannot be loaded: {reason}\nnothing run", file=sys.stderr)
         return 2
     if not isinstance(loaded, dict) or "tasks" not in loaded:
         print(f"{tasks_path} has no top-level `tasks`; nothing run", file=sys.stderr)

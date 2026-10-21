@@ -574,12 +574,16 @@ def test_only_beside_an_id_that_is_not_text_is_refused_before_anything_runs(
         # safe_load would keep the second of a repeated key and run that alone.
         ("tasks: [t01]\ntasks: [t02]\n", "is not YAML: found the key 'tasks' twice"),
         ("tasks:\n- id: t01\n  id: t02\n", "is not YAML: found the key 'id' twice"),
-        ("tasks: " + "[" * 3000 + "]" * 3000 + "\n", "is not YAML"),
+        ("tasks: " + "[" * 3000 + "]" * 3000 + "\n", "cannot be loaded: RecursionError"),
         # Each of these is valid YAML whose value PyYAML fails to build.
-        ("tasks: [2026-02-30]\n", "is not YAML"),
-        ("tasks: [2026-01-01T25:00:00Z]\n", "is not YAML"),
-        ("tasks: [!!int abc]\n", "is not YAML"),
-        ("tasks: [!!float abc]\n", "is not YAML"),
+        ("tasks: [2026-02-30]\n", "cannot be loaded: ValueError"),
+        ("tasks: [2026-01-01T25:00:00Z]\n", "cannot be loaded: ValueError"),
+        ("tasks: [!!int abc]\n", "cannot be loaded: ValueError"),
+        ("tasks: [!!float abc]\n", "cannot be loaded: ValueError"),
+        ("tasks: [!!bool abc]\n", "cannot be loaded: KeyError"),
+        ('tasks: [!!int ""]\n', "cannot be loaded: IndexError"),
+        ("tasks: [!!timestamp abc]\n", "cannot be loaded: AttributeError"),
+        ('tasks:\n- ? !!int ""\n  : x\n', "cannot be loaded: IndexError"),
     ],
 )
 def test_a_task_file_of_another_shape_is_refused_before_anything_runs(
