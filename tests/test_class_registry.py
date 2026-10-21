@@ -8,7 +8,8 @@ import pytest
 # Module-level Node subclasses
 # These classes MUST live here (module scope) so that their __module__ and
 # __qualname__ produce a valid importable fully-qualified name that
-# Element.from_dict can resolve via LION_CLASS_REGISTRY or import_module.
+# Element.from_dict resolves through get_class (the registry, or an import
+# under an allowed prefix).
 # Imported at module level; the import triggers no registration by itself
 # (Node.__pydantic_init_subclass__ fires only for *subclasses* of Node).
 from lionagi.protocols.graph.node import Node

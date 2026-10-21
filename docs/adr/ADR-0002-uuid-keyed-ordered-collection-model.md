@@ -278,8 +278,8 @@ reverted — see the current-state note above for what the code does today):
   property through the structural protocol is not sufficient.~~ Superseded: admission is
   structural again, and `item_type` no longer judges class-level conformance.
 - `item_type` accepts classes and unions. A fully qualified class string is resolved when it reaches
-  validation as a member of a list, tuple, or set. A scalar non-UUID string is currently discarded
-  by Pile's `to_list_type` normalizer before the resolver sees it. ~~Every resolved member must be a
+  validation as a member of a list, tuple, or set. A single string counts as a list holding it;
+  `to_list_type` used to discard it before the resolver saw it. ~~Every resolved member must be a
   nominal Observable subclass~~ — superseded: a resolved member need only be a class, since
   conformance is a property of instances and is established at admission. Duplicated declarations
   raise LionAGI `ValidationError`.
