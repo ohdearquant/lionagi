@@ -818,6 +818,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
   // Conversations this panel created, by a draft send or a fork. A list read started
   // before one was created may lack its row, so the merge keeps that row.
   const createdConversationIdsRef = useRef(new Set<string>());
+  // A send that failed once its conversation was no longer shown: the error and the
+  // text, kept until that conversation is selected again.
+  const failedSendsRef = useRef(new Map<string, { message: string; instruction: string }>());
   // The latest rename, pin or archive result this panel wrote, per conversation.
   const writeResultsRef = useRef(new Map<string, OperatorConversation>());
   // For the shown conversation: the last frame sequence read and its update_conversation
@@ -986,6 +989,12 @@ export default function OperatorPanel({ open, onClose }: Props) {
           conversation: snapshot.conversation,
           frames: snapshot.frames,
         });
+        const failed = failedSendsRef.current.get(conversationId);
+        if (failed) {
+          failedSendsRef.current.delete(conversationId);
+          setActionError(failed.message);
+          setInstruction((current) => current || failed.instruction);
+        }
       } catch (error) {
         if (selectedConversationIdRef.current !== conversationId) return;
         dispatch({
@@ -1306,9 +1315,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
     setSending(true);
     setActionError(null);
     // The conversation this send is for: the one shown when it started, or, for
-    // a draft, the one created for it. A failure is reported only while it is
-    // still the one selected. A draft whose conversation could not be created
-    // has none, so its failure shows where its text still is, in the composer.
+    // a draft, the one created for it. A failure is reported there, at once while
+    // it is selected, else when it is selected again. A draft whose conversation
+    // could not be created has none, so its failure shows where its text still is.
     let sentTo = state.conversation?.id ?? selectedConversationIdRef.current;
     try {
       let conversation = state.conversation;
@@ -1347,8 +1356,14 @@ export default function OperatorPanel({ open, onClose }: Props) {
       setInstruction("");
       nearBottomRef.current = true;
     } catch (error) {
-      if (sentTo !== null && selectedConversationIdRef.current !== sentTo) return;
       const message = error instanceof Error ? error.message : t("errors.send");
+      if (sentTo !== null && selectedConversationIdRef.current !== sentTo) {
+        // The text leaves the composer now shown, unless it was edited, so it is not
+        // sent to this conversation by mistake; both return with the one it was for.
+        failedSendsRef.current.set(sentTo, { message, instruction: trimmed });
+        setInstruction((current) => (current.trim() === trimmed ? "" : current));
+        return;
+      }
       setActionError(message);
       if (
         error instanceof ApiError &&
@@ -1969,7 +1984,10 @@ export default function OperatorPanel({ open, onClose }: Props) {
 
         <footer className="shrink-0 border-t border-edge bg-surface-raised p-3">
           {(actionError || state.error) && (
-            <div className="mb-2 flex items-start gap-1.5 rounded border border-status-failure/30 bg-status-error-bg px-2 py-1.5 text-meta text-status-failure">
+            <div
+              role="alert"
+              className="mb-2 flex items-start gap-1.5 rounded border border-status-failure/30 bg-status-error-bg px-2 py-1.5 text-meta text-status-failure"
+            >
               <IconError size={12} className="mt-0.5 shrink-0" />
               <span className="min-w-0 flex-1 break-words">{actionError ?? state.error}</span>
             </div>

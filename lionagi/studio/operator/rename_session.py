@@ -37,7 +37,7 @@ RENAME_SESSION_COMMAND_TYPE = "rename_session"
 
 RENAME_SESSION_DESCRIPTION = (
     "Give one Studio run a human name. A run and its session are the same "
-    "record here, so this renames the run itself -- it is not the Operator "
+    "record here, so this sets the run's own label -- it is not the Operator "
     "conversation's own name, which has a "
     "separate rename path outside this tool. Goes through a human approval "
     "flow; it is never automatic, and a denied proposal leaves the run's "

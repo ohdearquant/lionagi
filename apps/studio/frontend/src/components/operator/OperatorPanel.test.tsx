@@ -1163,7 +1163,7 @@ describe("OperatorPanel", () => {
       expect(window.localStorage.getItem("studio:operator-conversation")).toBe(firstRow.id);
     });
 
-    it("does not report a failed draft send in the conversation selected meanwhile", async () => {
+    it("reports a failed send and its text when its conversation is reselected", async () => {
       const other = { ...firstRow, id: "other", title: "Other conversation" };
       api.listOperatorConversations.mockResolvedValueOnce([]);
       api.createOperatorConversation.mockResolvedValueOnce(firstRow);
@@ -1184,7 +1184,18 @@ describe("OperatorPanel", () => {
 
       expect(container.textContent).not.toContain("Draft send failed");
       expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(container.querySelector("textarea")?.value).toBe("");
       expect(window.localStorage.getItem("studio:operator-conversation")).toBe(other.id);
+
+      await openList();
+      const back = [...container.querySelectorAll("ul li button")].find(
+        (button) => button.textContent === firstRow.title,
+      ) as HTMLButtonElement;
+      await act(async () => back.click());
+
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Draft send failed");
+      expect(container.querySelector("textarea")?.value).toBe("Inspect this project");
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe(firstRow.id);
     });
 
     it("reports a draft whose conversation could not be created where it is selected", async () => {

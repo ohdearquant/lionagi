@@ -46,8 +46,10 @@ behaviour, including accepting a write-capable submission without `cwd`.
   one. List refreshes retain conversations created while the read was pending,
   do not undo a rename, pin or archive made during the read unless the server
   changed the row afterwards, and respect the current list filter. A failed send
-  is reported only in the conversation it was sent for; a draft whose
-  conversation could not be created reports it in the conversation then shown.
+  is reported in the conversation it was sent for: at once while it is shown,
+  otherwise when it is selected again, with its unsent text back in the
+  composer. A draft whose conversation could not be created reports it in the
+  conversation then shown.
 - Studio sessions can set or clear an explicit display label through
   `PUT /api/sessions/{session_id}`. Labels take precedence in session list and
   detail names without changing activity timestamps; clearing a label restores

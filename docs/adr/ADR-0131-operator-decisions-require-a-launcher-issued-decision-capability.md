@@ -41,7 +41,7 @@ tool's HTTP request are all admitted.
 redeems (`tests/studio/test_hosted_hardening.py:967`). The CLI uses that route to pair a page with a
 daemon that is already running (`lionagi/studio/cli.py:261`). So pairing is not a boundary: a tool
 that can send HTTP can mint, redeem with a forged `Origin`, and decide. This paragraph describes the
-daemon before the HTTP mint route was retired (line numbers at `124b14193`).
+daemon before the HTTP mint route was retired (its line numbers are at `124b14193`).
 
 **P3 — the page keeps its bearer in memory only.** The frontend holds the paired bearer in a module
 variable (`apps/studio/frontend/src/lib/pairing.ts:14`); a reload loses it. Nothing reachable over
