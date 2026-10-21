@@ -236,14 +236,15 @@ class TestTheRequestModelBackstop:
         with pytest.raises(ValidationError, match="HOME 'rel' is not an absolute path"):
             CodexCodeRequest(prompt="hi", model="work", env={"HOME": "rel"})
 
-    def test_a_codex_home_in_the_childs_env_wins_over_a_relative_home(self):
+    def test_a_codex_home_in_the_childs_env_wins_over_a_relative_home(self, tmp_path):
         """CODEX_HOME is the home when it is set; a HOME beside it is not read."""
         from lionagi.providers.openai.codex import CodexCodeRequest
 
+        (tmp_path / "work.config.toml").write_text('model = "gpt-5.5"\n')
         req = CodexCodeRequest(
-            prompt="hi", model="work", env={"HOME": "rel", "CODEX_HOME": "/abs/x"}
+            prompt="hi", model="work", env={"HOME": "rel", "CODEX_HOME": str(tmp_path)}
         )
-        assert req.model == "work"
+        assert req.model == "gpt-5.5"
 
     def test_a_relative_process_home_is_refused_when_codex_home_is_unset(self, monkeypatch):
         """The process case goes through the same refusal: an environment naming no

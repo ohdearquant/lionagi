@@ -118,7 +118,10 @@ def test_a_home_that_is_not_absolute_is_refused_and_an_absent_one_is_the_passwor
         "depending on where it is resolved.",
     ):
         declaring_project_layer(tmp_path, {"HOME": "relative"})
-    assert project_layers._codex_home({}) == Path(pwd.getpwuid(os.getuid()).pw_dir) / ".codex"
+    account = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".codex"
+    assert project_layers._codex_home({}) == account
+    # An empty HOME names no directory, so it reads as no HOME.
+    assert project_layers._codex_home({"HOME": ""}) == account
     assert project_layers._codex_home({"HOME": str(tmp_path)}) == tmp_path / ".codex"
 
 

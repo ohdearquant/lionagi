@@ -354,8 +354,10 @@ its hook trust records and its `[projects]` trust decisions ride beside the
 flag, so the hooks it trusts in `$CODEX_HOME/hooks.json` still run for the
 worker and a project it trusts gets the sandbox codex derives for it; a
 config that declares hooks or sets `default_permissions` itself is refused.
-Both read the config in the codex home the worker's environment names, else
-this process's: a `CODEX_HOME` that a `secrets.lookup` fill adds to the
+Both read the config in the codex home the worker's environment names (its
+`env` when it has one, else this process's environment; one naming neither
+`CODEX_HOME` nor `HOME` names the OS account's home): a `CODEX_HOME` that a
+`secrets.lookup` fill adds to the
 child's environment at spawn is not seen by them, since the fill comes after,
 so set it in the worker's `env` or in this process's environment. A
 `CODEX_HOME`, or a `HOME` when `CODEX_HOME` is unset, that is not an absolute

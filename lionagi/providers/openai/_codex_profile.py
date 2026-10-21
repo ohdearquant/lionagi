@@ -268,7 +268,10 @@ def global_codex_reasoning_effort(env: Mapping[str, str] | None = None) -> str |
     whatever model a given spawn resolved — callers must clamp it to the
     resolved model before emitting it. An absent or unreadable config answers
     None (codex's own built-in default applies); unreadability is not an error
-    here because nothing was requested — this is a fallback read.
+    here because nothing was requested — this is a fallback read. A
+    ``CODEX_HOME``, or a ``HOME`` when ``CODEX_HOME`` is unset, that is not an
+    absolute path raises ``ConfigurationError`` before any read, since it names
+    no fixed directory.
 
     ``env`` is the environment the SPAWNED process will run under, when the
     caller has one. Reading our own environment instead answers about the wrong

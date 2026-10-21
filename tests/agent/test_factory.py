@@ -1933,9 +1933,9 @@ def test_forward_mcp_codex_allowlist_refuses_a_bad_home_before_reading_the_profi
         )
 
 
-def test_forward_mcp_codex_allowlist_refuses_a_bad_process_home_before_discovery(monkeypatch):
-    """With no request env, the process's CODEX_HOME is refused before the root-profile
-    read can swallow the refusal, and no codex executable is started."""
+def test_forward_mcp_codex_allowlist_refuses_a_bad_process_home_at_discovery(monkeypatch):
+    """With no request env, an allowlist's discovery refuses the process's CODEX_HOME, and
+    no codex executable is started."""
     import subprocess
 
     import lionagi.agent.factory as factory_mod
@@ -1947,6 +1947,32 @@ def test_forward_mcp_codex_allowlist_refuses_a_bad_process_home_before_discovery
     with pytest.raises(ConfigurationError, match="CODEX_HOME '~/x' is not an absolute path"):
         factory_mod.apply_forwarded_mcp_servers(
             {}, {}, provider="codex", exclusive=True, allowed_names=["docs"]
+        )
+    assert calls == []
+
+
+def test_forward_mcp_codex_exclusive_set_refuses_a_bad_process_home_before_the_profile_read(
+    monkeypatch,
+):
+    """A non-empty exclusive set keeps the user config, so the root `profile` key is read.
+    With no request env, the process's CODEX_HOME is refused before that read, whose
+    ValueError fallback would swallow a ConfigurationError, and before discovery."""
+    import subprocess
+
+    import lionagi.agent.factory as factory_mod
+
+    monkeypatch.setenv("CODEX_HOME", "~/x")
+    monkeypatch.setenv("HOME", "/home/example")
+    calls: list[tuple] = []
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: calls.append(argv))
+
+    def discovery(*_a, **_k):
+        raise AssertionError("the server list was read before the codex home was checked")
+
+    monkeypatch.setattr(factory_mod, "_discover_ambient_codex_mcp_server_names", discovery)
+    with pytest.raises(ConfigurationError, match="CODEX_HOME '~/x' is not an absolute path"):
+        factory_mod.apply_forwarded_mcp_servers(
+            {}, {"docs": {"command": "docs-server"}}, provider="codex", exclusive=True
         )
     assert calls == []
 
