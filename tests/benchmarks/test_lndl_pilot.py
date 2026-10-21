@@ -1269,19 +1269,29 @@ def test_a_second_interrupt_writes_the_summary_and_a_running_legs_row_follows(
         ("runs/r9/x/t01-react.prompt.txt", True),
         ("runs/r9/x/t01-lndl.stdout.txt", True),
         ("runs/r9/x/t01-lndl.stderr.txt", True),
+        ("r9/t01-react.prompt.txt", True),
+        ("r9/t01-lndl.stdout.txt", True),
+        ("r9/t01-lndl.stderr.txt", True),
         ("home", True),
         ("tree", True),
         ("venv", True),
         ("runs/r2/results.jsonl", False),
         ("runs/r2/header.json", False),
         ("runs/r2/answers.jsonl", False),
+        ("runs/r2/table.md", False),
+        ("runs/r2/summary.json", False),
+        ("runs/r2/environment.json", False),
+        ("runs/r2/spend.jsonl", False),
+        ("runs/r2/rounds.jsonl", False),
+        ("runs/r2/reading.jsonl", False),
         ("runs/run_pilot.as-run.py.txt", False),
         ("tasks.yaml", False),
     ],
 )
 def test_what_a_run_writes_beside_its_results_is_left_out_of_a_git_add(tmp_path, path, ignored):
-    """The runner writes each leg's prompt, stdout and stderr into its run directory, and the
-    README puts the read tree, the environment and every leg's LIONAGI_HOME beside the runner.
+    """The runner writes each leg's prompt, stdout and stderr into its run directory, wherever
+    `--out` puts it under the runner's directory, and the README puts the read tree, the
+    environment and every leg's LIONAGI_HOME beside the runner.
     Read with only this directory's ignore file, in a repository of its own, those are ignored
     and the files a run commits are not."""
     repo = tmp_path / "repo"
