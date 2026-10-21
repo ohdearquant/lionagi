@@ -273,6 +273,31 @@ async def test_a_timeout_counts_the_whole_request_including_its_body(announce_cl
             await asyncio.wait_for(closed.wait(), timeout=3)
 
 
+def _trickles(pieces: int, gap: float):
+    async def handler(request: Request):
+        response = StreamResponse()
+        await response.prepare(request)
+        for _ in range(pieces):
+            await response.write(b"x")
+            await asyncio.sleep(gap)
+        return response
+
+    return handler
+
+
+@framings
+async def test_a_body_that_keeps_arriving_still_ends_at_the_timeout(announce_close):
+    # Each piece arrives well inside the timeout, so only the bound on the whole request ends
+    # the read before the server's three seconds are up.
+    async with serving(_trickles(15, 0.2), announce_close) as base:
+        async with HTTPSession(timeout=0.5) as session:
+            started = time.monotonic()
+            response = await session.request("GET", base)
+            with pytest.raises(TimeoutError, match="did not complete within 0.5 s"):
+                await response.read()
+            assert time.monotonic() - started < 1.5
+
+
 @framings
 async def test_a_request_cancelled_before_its_response_closes_its_connection(announce_close):
     closed = asyncio.Event()
@@ -408,10 +433,12 @@ async def test_a_tcp_connect_in_progress_stops_soon_after_its_request_is_stopped
     url = f"http://{target[0]}:{target[1]}/v1"
     try:
         session = HTTPSession(timeout=0.3 if stop == "timeout" else None)
+        started = time.monotonic()
         task = asyncio.create_task(session.request("GET", url))
         if stop == "timeout":
-            with pytest.raises(TimeoutError):
+            with pytest.raises(TimeoutError, match="did not complete within 0.3 s"):
                 await asyncio.wait_for(task, timeout=3)
+            assert time.monotonic() - started < 1
         else:
             await asyncio.sleep(0.3)
             if stop == "cancel":
@@ -644,6 +671,7 @@ async def test_a_user_and_password_in_the_url_go_out_as_basic_credentials():
     ("url", "headers", "named"),
     [
         ("http://user:pw@127.0.0.1:9/v1", {"Authorization": "Bearer x"}, "not both"),
+        ("http://user:pw@127.0.0.1:9/v1", {"authorization": "Bearer x"}, "not both"),
         ("http://us%3Aer:pw@127.0.0.1:9/v1", None, "Basic login"),
     ],
 )
@@ -783,6 +811,76 @@ async def test_a_percent_encoded_slash_question_mark_and_hash_stay_in_the_passwo
     assert f"Authorization: Basic {expected}\r\n".encode() in heads[0]
     assert heads[0].startswith(b"GET /v1 HTTP/1.1\r\n")
     assert response.url == f"http://127.0.0.1:{port}/v1"
+
+
+@pytest.mark.parametrize("headers", [None, {"Authorization": "Bearer x"}], ids=["none", "bearer"])
+async def test_an_empty_user_with_no_password_is_no_credentials(headers):
+    heads = []
+
+    async def answer(reader, writer):
+        heads.append(await reader.readuntil(b"\r\n\r\n"))
+        writer.write(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(answer, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        async with HTTPSession() as session:
+            response = await session.request("GET", f"http://@127.0.0.1:{port}/v1", headers=headers)
+            await response.read()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    sent = [line for line in heads[0].split(b"\r\n") if line.lower().startswith(b"authorization:")]
+    assert sent == ([] if headers is None else [b"Authorization: Bearer x"])
+
+
+async def test_a_session_holds_only_the_requests_and_responses_still_open():
+    async def ok(request: Request):
+        return json_response({})
+
+    closed = socket.socket()
+    closed.bind(("127.0.0.1", 0))
+    refused = f"http://127.0.0.1:{closed.getsockname()[1]}/v1"
+    closed.close()
+    async with serving(ok) as base:
+        async with HTTPSession() as session:
+            for _ in range(50):
+                response = await session.request("GET", base)
+                assert session._responses == {response}
+                await response.read()
+                assert not session._responses
+                assert not session._exchanges
+            with pytest.raises(TransportError):
+                await session.request("GET", refused)
+            assert not session._exchanges
+
+
+async def test_a_closed_session_refuses_a_request():
+    session = HTTPSession()
+    session.close()
+    with pytest.raises(RuntimeError, match="the session is closed"):
+        await session.request("GET", "http://127.0.0.1:9/v1")
+
+
+@framings
+async def test_a_body_read_as_a_stream_is_not_read_again_as_if_stopped(announce_close):
+    async def ok(request: Request):
+        return json_response({"a": 1})
+
+    async with serving(ok, announce_close) as base:
+        async with HTTPSession() as session:
+            streamed = await session.request("GET", base)
+            pieces = [chunk async for chunk in streamed.iter_chunks()]
+            with pytest.raises(TransportError, match="already read as a stream"):
+                await streamed.read()
+
+            read = await session.request("GET", base)
+            body = await read.read()
+            assert [chunk async for chunk in read.iter_chunks()] == [body]
+    assert b"".join(pieces) == body
 
 
 async def test_an_endpoint_stream_cut_short_raises_rather_than_ending():

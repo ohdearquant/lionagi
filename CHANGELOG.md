@@ -181,6 +181,8 @@ with a client built on the standard library (ADR-0135), and four kinds of code n
   browsers do: UTF-8 as is, with a quote, carriage return or line feed percent-encoded. `aiohttp`
   percent-encoded every filename character outside the unreserved set, so a filename such as
   `my clip.wav` now arrives as written rather than as `my%20clip.wav`.
+- Requests send `User-Agent: lionagi/<version>`, where `aiohttp` sent
+  `Python/3.<minor> aiohttp/<version>`.
 - `POST /api/studio/pairing-codes` now answers 410 for every admitted request, whatever its
   headers or the admission token. `li studio` mints a pairing code in process before it starts
   the daemon, or, against a daemon already running, obtains one over the daemon's new

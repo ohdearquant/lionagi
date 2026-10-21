@@ -150,7 +150,9 @@ Exact semantics:
   closes early, so while part of a declared `Content-Length` is still owed `iter_chunks` raises
   `TransportError` (from `http.client.IncompleteRead`), as `read()` does; a stream cut short never
   ends as if it had arrived whole. A chunked body cut before its last chunk raises the same way from
-  `http.client` itself.
+  `http.client` itself. After `read()`, `iter_chunks` yields the body `read()` kept, in one piece;
+  after `iter_chunks`, `read()` raises `TransportError` saying the body was already read as a
+  stream, where a stop says the request was stopped.
 - `json()` decodes the body as JSON without checking the media type in `Content-Type`. A body
   declared in a charset other than UTF-8 is decoded with it first, as `aiohttp` did; otherwise
   `json.loads` reads the bytes and detects UTF-8, UTF-16 or UTF-32 itself. `text()` takes the
@@ -230,7 +232,8 @@ The `_Exchange` object owns one connection and the socket it opened:
 - A cancelled task, an expired deadline, and a step that fails all call `stop()`. `HTTPResponse`
   `close()` calls it too, and `HTTPSession.close()` calls it for each response still open and each
   request still waiting for its response, so the peer sees the connection end when the caller is
-  done with it, not when the objects are collected.
+  done with it, not when the objects are collected. The session holds only those: a response
+  leaves it when it closes and a request when it fails, so a long-lived session does not grow.
 
 Tests (`tests/service/connections/test_http_client.py`) run the timeout, cancel and close cases
 against a local server that answers once with `Connection: close` and once without it, and require
@@ -261,12 +264,14 @@ class HTTPStatusError(APIClientError):
 
 Exact semantics:
 
-- Apart from `ValueError` and `TypeError` for arguments it refuses (D3, D6, D7), the client raises
+- Apart from `ValueError` and `TypeError` for arguments it refuses (D3, D6, D7), and
+  `RuntimeError` for a request on a session already closed, as `aiohttp` raised, the client raises
   `TransportError` or `TimeoutError`, and lets a cancellation through. A refused or reset
   connection, a TLS failure, and a reply that is not HTTP become `TransportError` naming the method
   and URL, with the original exception as `__cause__`.
 - A user and password in the URL go out only as a Basic `Authorization` header, encoded as
-  latin-1. The URL that error text, `HTTPResponse.url` and `HTTPStatusError.url` carry has them
+  latin-1. An empty user with no password (`http://@host`) is no credentials, as `aiohttp` read
+  it. The URL that error text, `HTTPResponse.url` and `HTTPStatusError.url` carry has them
   removed. They are the ones RFC 3986 reads: the authority ends at the first `/`, `?` or `#`, so
   a password holding one has to be percent-encoded (`%2F`, `%3F`, `%23`). Left raw, the user is
   read as the host, the password's text up to that character as the port, and the rest as the

@@ -393,6 +393,7 @@ class HTTPResponse:
         url: str,
         deadline: float | None,
         timeout: float | None,
+        on_close: Callable[[HTTPResponse], None] | None = None,
     ):
         self._exchange = exchange
         self._raw = raw
@@ -403,7 +404,9 @@ class HTTPResponse:
         self.headers: http.client.HTTPMessage = raw.headers
         self._deadline = deadline
         self._timeout = timeout
+        self._on_close = on_close
         self._body: bytes | None = None
+        self._streamed = False
         self.closed = False
 
     async def _step(self, step: Callable[[], T]) -> T:
@@ -420,6 +423,8 @@ class HTTPResponse:
         """The whole body; the connection is closed once it is read, and a later call returns the
         same bytes."""
         if self._body is None:
+            if self._streamed:
+                raise TransportError("the body was already read as a stream")
             try:
                 self._body = await self._step(self._raw.read)
             finally:
@@ -464,7 +469,12 @@ class HTTPResponse:
     async def iter_chunks(self) -> AsyncIterator[bytes]:
         """The body in the pieces it arrives in, as bytes; a piece can end inside a line or a
         character. A body that ends before its declared ``Content-Length`` raises
-        ``TransportError``, as ``read()`` does."""
+        ``TransportError``, as ``read()`` does. After ``read()``, the body it kept, in one piece."""
+        if self._body is not None:
+            if self._body:
+                yield self._body
+            return
+        self._streamed = True
         try:
             while True:
                 chunk = await self._step(self._read_piece)
@@ -478,6 +488,8 @@ class HTTPResponse:
         if not self.closed:
             self.closed = True
             self._exchange.stop()
+            if self._on_close is not None:
+                self._on_close(self)
 
     release = close
 
@@ -537,8 +549,11 @@ class HTTPSession:
     def __init__(self, *, timeout: float | None = None, headers: Any = None):
         self.timeout = timeout if timeout is not None and timeout > 0 else None
         self.headers = headers
-        self._responses: list[HTTPResponse] = []
-        self._exchanges: list[_Exchange] = []
+        # What close() has to end: the requests still waiting for a response and the responses
+        # still open. Each leaves when it ends, so a long-lived session holds only those.
+        self._responses: set[HTTPResponse] = set()
+        self._exchanges: set[_Exchange] = set()
+        self.closed = False
 
     async def __aenter__(self) -> HTTPSession:
         return self
@@ -547,12 +562,17 @@ class HTTPSession:
         self.close()
 
     def close(self) -> None:
-        for response in self._responses:
+        self.closed = True
+        for response in list(self._responses):
             response.close()
-        for exchange in self._exchanges:
+        for exchange in list(self._exchanges):
             exchange.stop()
         self._responses.clear()
         self._exchanges.clear()
+
+    def _forget(self, response: HTTPResponse) -> None:
+        self._responses.discard(response)
+        self._exchanges.discard(response._exchange)
 
     async def request(
         self,
@@ -565,6 +585,8 @@ class HTTPSession:
         params: Mapping[str, Any] | None = None,
         allow_redirects: bool = False,
     ) -> HTTPResponse:
+        if self.closed:
+            raise RuntimeError("the session is closed")
         if allow_redirects:
             raise ValueError("this client does not follow redirects")
         if json is not None and data is not None:
@@ -594,7 +616,8 @@ class HTTPSession:
         names = {name.lower() for name in send_headers}
         # A user and password in the URL go out as Basic credentials, percent-decoded and encoded
         # as latin-1, and never in the request line.
-        if parts.username is not None or parts.password is not None:
+        # An empty user with no password (`http://@host`) is no credentials.
+        if parts.username or parts.password is not None:
             if "authorization" in names:
                 raise ValueError("pass credentials in the URL or an Authorization header, not both")
             login = unquote(parts.username or "")
@@ -647,7 +670,7 @@ class HTTPSession:
         else:
             conn = http.client.HTTPConnection(parts.hostname, port, timeout=self.timeout)
         exchange = _Exchange(conn, tls)
-        self._exchanges.append(exchange)
+        self._exchanges.add(exchange)
         method = method.upper()
         # http.client writes a str header value as latin-1 and refuses any other character; a
         # value goes out as its UTF-8 bytes instead.
@@ -655,18 +678,28 @@ class HTTPSession:
             name: value.encode("utf-8") if isinstance(value, str) else value
             for name, value in send_headers.items()
         }
-        raw = await _run_step(
+        try:
+            raw = await _run_step(
+                exchange,
+                lambda: exchange.send(method, target, body, wire_headers),
+                method=method,
+                url=shown,
+                deadline=deadline,
+                timeout=self.timeout,
+            )
+        except BaseException:
+            self._exchanges.discard(exchange)
+            raise
+        response = HTTPResponse(
             exchange,
-            lambda: exchange.send(method, target, body, wire_headers),
+            raw,
             method=method,
             url=shown,
             deadline=deadline,
             timeout=self.timeout,
+            on_close=self._forget,
         )
-        response = HTTPResponse(
-            exchange, raw, method=method, url=shown, deadline=deadline, timeout=self.timeout
-        )
-        self._responses.append(response)
+        self._responses.add(response)
         return response
 
 
