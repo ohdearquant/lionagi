@@ -3,6 +3,7 @@
 """Schedule run projections expose trigger facts without their source payload."""
 
 import json
+import sqlite3
 
 import pytest
 
@@ -226,6 +227,47 @@ async def test_database_rows_match_across_run_routes_and_recent_summaries(isolat
         assert (record["scheduled"], record["missed_fire_at"]) == facts
     parent = await schedules.get_schedule_run_route("tick")
     assert parent["chain_children"][0]["scheduled"] is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    ['{"n": 1' + "0" * 4999 + "}", "[" * 100_000],
+    ids=["digit-limit", "nesting"],
+)
+async def test_a_stored_context_text_that_does_not_parse_fails_no_run_read(isolated_db, text):
+    async with StateDB() as db:
+        await db.create_schedule(
+            {
+                "id": "nightly",
+                "name": "nightly",
+                "trigger_type": "interval",
+                "interval_sec": 60,
+                "action_kind": "agent",
+            }
+        )
+        await _seed_run(db, "odd", {"scheduled": True})
+    # No writer stores such text, so it is put in place of the written context directly.
+    with sqlite3.connect(isolated_db) as connection:
+        connection.execute("UPDATE schedule_runs SET trigger_context = ? WHERE id = 'odd'", (text,))
+
+    views = await schedules.list_schedule_runs_route("nightly", limit=25, offset=0, status=None)
+    detail = await schedules.get_schedule_route("nightly")
+    status = await schedules.get_schedule_status_route("nightly")
+    record = await schedules.get_schedule_run_route("odd")
+    listed = await schedules.list_schedules_route(
+        enabled=None, trigger_type=None, project=None, include_recent_runs=True
+    )
+    served = [
+        *views["runs"],
+        *detail["recent_runs"],
+        status["latest_run"],
+        record,
+        *listed["schedules"][0]["recent_runs_summary"]["runs"],
+    ]
+    assert len(served) == 5
+    for row in served:
+        assert row["id"] == "odd"
+        assert (row["scheduled"], row["missed_fire_at"]) == (False, None)
 
 
 def test_machine_runs_preserves_trigger_facts_from_the_studio_response(monkeypatch):

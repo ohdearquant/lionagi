@@ -7,6 +7,8 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
 
 from lionagi.state.db import StateDB
 from lionagi.studio.services import schedules
@@ -279,18 +281,30 @@ async def test_skip_reasons_for_100_schedules_are_read_in_one_snapshot(isolated_
             await create_run(db, sid, f"run-{index}", status="skipped", error_detail=None)
 
     opened = []
+    reads = []
     original = StateDB.read_snapshot
 
     def read_snapshot(db):
         opened.append(db)
         return original(db)
 
+    def record_query(conn, cursor, statement, parameters, context, executemany):
+        if "FROM status_transitions" in statement:
+            reads.append(statement)
+
     monkeypatch.setattr(StateDB, "read_snapshot", read_snapshot)
-    rows = await list_rows()
+    # The route opens its own StateDB, so the statements are counted on every engine.
+    event.listen(Engine, "before_cursor_execute", record_query)
+    try:
+        rows = await list_rows()
+    finally:
+        event.remove(Engine, "before_cursor_execute", record_query)
     assert len(rows) == 100
     assert all(row["recent_runs_summary"]["runs"][0]["status"] == "skipped" for row in rows)
-    # The skip reasons of every listed run come from one read, never one per run.
+    # The skip reasons of every listed run come from one snapshot and one statement,
+    # never one per run.
     assert len(opened) == 1
+    assert len(reads) == 1
 
 
 @pytest.mark.asyncio

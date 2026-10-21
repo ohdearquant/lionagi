@@ -7969,7 +7969,7 @@ class StateDB:
             if key in d and isinstance(d[key], str):
                 try:
                     d[key] = json.loads(d[key])
-                except (json.JSONDecodeError, TypeError):
+                except (ValueError, TypeError, RecursionError):  # digit limit, depth too
                     pass
         return d
 
