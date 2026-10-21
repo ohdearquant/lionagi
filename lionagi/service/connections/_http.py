@@ -67,6 +67,9 @@ MAX_REQUESTS_IN_FLIGHT = 256
 _READ_SIZE = 65536
 # How often a TCP connect in progress looks whether its request was stopped, in seconds.
 _CONNECT_POLL = 0.05
+# How long a TCP connect in progress holds up the next of the host's addresses, in seconds: the
+# Connection Attempt Delay RFC 8305 recommends.
+_CONNECT_STAGGER = 0.25
 _USER_AGENT = f"lionagi/{__version__}"
 # RFC 3986 pchar plus "/" and "%", and for the query "?" as well.
 _PATH_SAFE = "/%:@!$&'()*+,;=-._~"
@@ -287,44 +290,84 @@ class _Exchange:
         timeout: float | None,
         source_address: tuple[str, int] | None = None,
     ) -> socket.socket:
-        """What ``socket.create_connection`` does, with each connect polled so that a stop ends it.
+        """What ``socket.create_connection`` does, staggered over the host's addresses, with the
+        connects polled so that a stop ends them.
 
-        The deadline stops a request like any other stop, so the time the request had left bounds
-        the connect as a whole, across all of the host's addresses, not each address in turn. The
-        address lookup before it cannot be ended this way.
+        The addresses are tried as RFC 8305 orders them, alternating address families. The next
+        one starts as soon as a connect fails, or when the latest started has not connected within
+        ``_CONNECT_STAGGER``, so an address that never answers does not hold up the others; the
+        first to connect is used and the rest are closed. The deadline stops a request like any
+        other stop, so the time the request had left bounds the connect as a whole. The address
+        lookup before it cannot be ended this way.
         """
         host, port = address
+        by_family: dict[int, list] = {}
+        for info in socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM):
+            by_family.setdefault(info[0], []).append(info)
+        queues = list(by_family.values())
+        waiting = [
+            q[i] for i in range(max(map(len, queues), default=0)) for q in queues if i < len(q)
+        ]
         failure: OSError | None = None
-        for family, kind, proto, _, peer in socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM):
-            if self._stopped:
-                raise TransportError("the request was stopped")
-            sock = None
+        pending: list[socket.socket] = []
+        connected: socket.socket | None = None
+        next_start = 0.0
+        with selectors.DefaultSelector() as selector:
             try:
-                sock = socket.socket(family, kind, proto)
-                if source_address:
-                    sock.bind(source_address)
-                sock.setblocking(False)
-                try:
-                    sock.connect(peer)
-                except (BlockingIOError, InterruptedError):
-                    with selectors.DefaultSelector() as selector:
-                        selector.register(sock, selectors.EVENT_WRITE)
-                        while not selector.select(_CONNECT_POLL):
-                            if self._stopped:
-                                raise TransportError("the request was stopped") from None
-                    code = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
-                    if code:
-                        raise OSError(code, os.strerror(code)) from None
-                sock.settimeout(timeout)
-                return sock
-            except BaseException as exc:
-                if sock is not None:
+                while connected is None:
+                    if self._stopped:
+                        raise TransportError("the request was stopped")
+                    if waiting and (not pending or time.monotonic() >= next_start):
+                        family, kind, proto, _, peer = waiting.pop(0)
+                        sock = None
+                        try:
+                            sock = socket.socket(family, kind, proto)
+                            if source_address:
+                                sock.bind(source_address)
+                            sock.setblocking(False)
+                            try:
+                                sock.connect(peer)
+                            except (BlockingIOError, InterruptedError):
+                                selector.register(sock, selectors.EVENT_WRITE)
+                                pending.append(sock)
+                                next_start = time.monotonic() + _CONNECT_STAGGER
+                                continue
+                            connected = sock
+                        except OSError as exc:
+                            if sock is not None:
+                                sock.close()
+                            failure = exc
+                            next_start = 0.0
+                        except BaseException:
+                            if sock is not None:
+                                sock.close()
+                            raise
+                        continue
+                    if not pending:
+                        raise (
+                            failure
+                            if failure is not None
+                            else OSError("getaddrinfo returns an empty list")
+                        )
+                    wait = _CONNECT_POLL
+                    if waiting:
+                        wait = min(wait, max(next_start - time.monotonic(), 0.0))
+                    for key, _ in selector.select(wait):
+                        sock = key.fileobj
+                        selector.unregister(sock)
+                        pending.remove(sock)
+                        code = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+                        if not code:
+                            connected = sock
+                            break
+                        sock.close()
+                        failure = OSError(code, os.strerror(code))
+                        next_start = 0.0
+            finally:
+                for sock in pending:
                     sock.close()
-                # The next address is tried only after a failed connect, never after a stop.
-                if isinstance(exc, TransportError) or not isinstance(exc, OSError):
-                    raise
-                failure = exc
-        raise failure if failure is not None else OSError("getaddrinfo returns an empty list")
+        connected.settimeout(timeout)
+        return connected
 
     def _publish(self, sock: socket.socket) -> None:
         with self._lock:
@@ -414,8 +457,8 @@ class HTTPResponse:
         self._on_close = on_close
         self._body: bytes | None = None
         self._streamed = False
-        # Set once a read of the body has returned or raised: its connection is closed then, so
-        # a later read can only report what happened, never read again.
+        # Set once a read() of the body has returned or raised (a stream sets _streamed instead):
+        # its connection is closed then, so a later read can only report what happened.
         self._over = False
         # Held across a whole read(), so a read() started meanwhile returns the same bytes.
         self._reading = anyio.Lock()
@@ -436,7 +479,9 @@ class HTTPResponse:
         async with self._reading:
             if self._body is None:
                 if self._streamed:
-                    raise TransportError("the body was already read as a stream")
+                    raise TransportError(
+                        "the body was already read as a stream, in whole or in part"
+                    )
                 if self._over:
                     raise TransportError("an earlier read of the body did not complete")
                 try:
@@ -490,7 +535,7 @@ class HTTPResponse:
                 yield self._body
             return
         if self._streamed or self._reading.locked():
-            raise TransportError("the body was already read as a stream")
+            raise TransportError("the body was already read as a stream, in whole or in part")
         if self._over:
             raise TransportError("an earlier read of the body did not complete")
         self._streamed = True
@@ -506,7 +551,6 @@ class HTTPResponse:
                 empty = False
                 yield chunk
         finally:
-            self._over = True
             self.close()
 
     def close(self) -> None:

@@ -10,9 +10,9 @@
   resilience policy unchanged and renames the helpers its P5 cites; keeps ADR-0052's scripted
   endpoint and changes only the error type it raises; leaves ADR-0126's account routing unchanged
 
-**Instruction.** This record serves an instruction the project's maintainer gave on 2026-10-20:
-remove `aiohttp` and `msgspec` from the base dependencies to reduce the supply-chain surface, with
-no deprecation cycle, since no known caller configures the endpoint's client beyond its headers.
+**Goal.** `aiohttp` and `msgspec` leave the base dependencies, to reduce the supply-chain surface,
+with no deprecation cycle, since no known caller configures the endpoint's client beyond its
+headers.
 
 Purpose: every HTTP request lionagi makes to a model provider goes through one client that the
 project owns and that depends only on the standard library and `anyio`, so a vulnerability in a
@@ -236,9 +236,13 @@ The `_Exchange` object owns one connection and the socket it opened:
   stopped")`. The TCP connect itself is the exchange's own: `http.client` opens its socket through
   `HTTPConnection._create_connection`, which the exchange sets to a method that does what
   `socket.create_connection` does with a non-blocking connect, polled every 0.05 s for the stop.
-  A stop, the deadline's included, therefore ends the connect within one poll, and the time the
-  request had left bounds the connect as a whole, across all of the host's addresses, not each
-  address in turn. The address lookup before it cannot be ended and has no bound.
+  The host's addresses are tried as RFC 8305 orders them, alternating address families, and the
+  next starts as soon as a connect fails or when the latest started has not connected within
+  0.25 s, the Connection Attempt Delay `aiohttp` used (its `happy_eyeballs_delay`); the first to
+  connect is used and the rest are closed, so an address that never answers does not hold up the
+  others. A stop, the deadline's included, ends every connect still in progress within one poll,
+  and the time the request had left bounds the connect as a whole. The address lookup before it
+  cannot be ended and has no bound.
 - A cancelled task, an expired deadline, and a step that fails all call `stop()`. `HTTPResponse`
   `close()` calls it too, and `HTTPSession.close()` calls it for each response still open and each
   request still waiting for its response, so the peer sees the connection end when the caller is
@@ -288,7 +292,8 @@ Exact semantics:
   a password holding one has to be percent-encoded (`%2F`, `%3F`, `%23`). Left raw, the user is
   read as the host, the password's text up to that character as the port, and the rest as the
   path, query or fragment, as `urllib.parse`, `yarl`, `httpx` and `urllib3` all read it; no
-  parse can tell that URL from one with an `@` in its path.
+  parse can tell that URL from one with an `@` in its path. Error text names the port, so a raw
+  `/` after a password's leading digits puts those digits in error text, as the port.
 - A URL that does not parse (a port that is not a number among them, and an authority holding a
   backslash, which RFC 3986 does not allow and `yarl` refused), and a user or password latin-1
   cannot carry, are refused with a `ValueError` that quotes none of the URL and has no exception
@@ -335,9 +340,9 @@ on the first call or stream. Request keyword arguments that were forwarded to `a
 existing check (`lionagi/service/accounts/_router.py`) already admitted only headers on routed calls.
 
 **Why this way.** Ignoring an option silently would change what a configured request does without
-saying so; a `TypeError` naming the key says it at the first use. There is no deprecation window: the
-maintainer judged that no caller configures the client beyond headers, and a window would mean
-keeping `aiohttp` installed for it, which is what this record removes.
+saying so; a `TypeError` naming the key says it at the first use. There is no deprecation window: no
+known caller configures the client beyond headers, and a window would mean keeping `aiohttp`
+installed for it, which is what this record removes.
 
 ### D7. Names, form bodies, and the test server
 
@@ -371,7 +376,7 @@ keeping `aiohttp` installed for it, which is what this record removes.
 
 - A base install is 30 packages. A vulnerability in `aiohttp` or its dependencies no longer reaches a
   user who has not installed the `sandbox` extra.
-- HTTP behaviour is now lionagi's to maintain: about 640 lines in `_http.py` and the tests that pin
+- HTTP behaviour is now lionagi's to maintain: about 790 lines in `_http.py` and the tests that pin
   them. A defect in chunked decoding or TLS is `http.client`'s and arrives with interpreter updates;
   a defect in deadlines, cancellation or headers is ours.
 - Each request in flight holds a worker thread, at most 256 per event loop. A process that runs more
@@ -403,8 +408,8 @@ keeping `aiohttp` installed for it, which is what this record removes.
   handling on two backends, since lionagi runs on both asyncio and trio through `anyio`. That is the
   code with the most security exposure, and `http.client` already has it.
 - **A deprecation cycle with `aiohttp` as an optional extra.** It would keep existing
-  `client_kwargs` working for a release. It lost on the maintainer's call (D6), and because two
-  transports would double the test surface for a configuration nobody is known to use.
+  `client_kwargs` working for a release. It lost because no known caller needs it (D6), and
+  because two transports would double the test surface for a configuration nobody is known to use.
 - **Follow redirects, with the address guard run on each hop.** A provider that answers a moved
   endpoint with a 3xx would keep working, as under `aiohttp`. Across origins it would send a key
   to the host the redirect names, since `aiohttp`'s rule drops only `Authorization`, `Cookie` and

@@ -494,6 +494,108 @@ async def test_a_host_whose_first_address_refuses_is_reached_at_its_next(monkeyp
             assert await response.json() == {"host": f"two.test:{port}"}
 
 
+async def test_a_host_whose_first_address_never_answers_is_reached_at_its_next(monkeypatch):
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        silent = ("127.0.0.1", probe.getsockname()[1])
+    lookup = socket.getaddrinfo
+    connect = socket.socket.connect
+    real_selector = selectors.DefaultSelector
+    held = []
+
+    def in_progress(sock, address):
+        # A host that does not answer: the connect never completes.
+        if address == silent:
+            held.append(sock)
+            raise BlockingIOError("connecting")
+        return connect(sock, address)
+
+    class SilentNeverReady:
+        """The real selector, except that the silent address's socket is never ready."""
+
+        def __init__(self):
+            self._real = real_selector()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            self._real.close()
+            return False
+
+        def register(self, sock, events):
+            if sock not in held:
+                self._real.register(sock, events)
+
+        def unregister(self, sock):
+            self._real.unregister(sock)
+
+        def select(self, timeout):
+            if not self._real.get_map():
+                time.sleep(timeout)
+                return []
+            return self._real.select(timeout)
+
+    async def handler(request: Request):
+        return json_response({"ok": True})
+
+    async with serving(handler) as base:
+        port = int(base.rsplit(":", 1)[1].split("/", 1)[0])
+
+        def two_addresses(host, *args, **kwargs):
+            if host != "two.test":
+                return lookup(host, *args, **kwargs)
+            tcp = (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "")
+            return [(*tcp, silent), (*tcp, ("127.0.0.1", port))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", two_addresses)
+        monkeypatch.setattr(socket.socket, "connect", in_progress)
+        monkeypatch.setattr(selectors, "DefaultSelector", SilentNeverReady)
+        async with HTTPSession(timeout=5) as session:
+            started = time.monotonic()
+            response = await session.request("GET", f"http://two.test:{port}/v1")
+            assert await response.json() == {"ok": True}
+            elapsed = time.monotonic() - started
+
+    # The silent address was tried first, the next started after the stagger rather than after
+    # the deadline, and the connect left in progress was closed once the next one connected.
+    assert len(held) == 1
+    assert _http._CONNECT_STAGGER * 0.8 < elapsed < 2
+    assert held[0].fileno() == -1
+
+
+@pytest.mark.skipif(not socket.has_ipv6, reason="no IPv6 sockets in this build")
+async def test_a_hosts_addresses_are_tried_alternating_their_families(monkeypatch):
+    tried = []
+
+    def refuse(sock, address):
+        tried.append(address[0])
+        raise ConnectionRefusedError("refused")
+
+    def lookup(host, port, *args, **kwargs):
+        v6 = (socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, "")
+        v4 = (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "")
+        return [(*v6, ("::1", port, 0, 0)), (*v6, ("::2", port, 0, 0)), (*v4, ("127.0.0.1", port))]
+
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    monkeypatch.setattr(socket, "getaddrinfo", lookup)
+    async with HTTPSession(timeout=5) as session:
+        with pytest.raises(TransportError):
+            await session.request("GET", "http://many.test:8080/v1")
+    assert tried == ["::1", "127.0.0.1", "::2"]
+
+
+async def test_a_refused_ipv6_connection_names_its_host_in_brackets(monkeypatch):
+    def send(self, *args):
+        raise ConnectionRefusedError("refused")
+
+    monkeypatch.setattr(_http._Exchange, "send", send)
+    async with HTTPSession(timeout=5) as session:
+        with pytest.raises(TransportError) as refused:
+            await session.request("GET", "http://[::1]:8443/v1")
+    assert str(refused.value).startswith("GET http://[::1]:8443: ")
+
+
 async def test_a_refused_connection_is_a_transport_error():
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
