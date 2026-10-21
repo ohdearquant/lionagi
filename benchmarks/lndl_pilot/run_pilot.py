@@ -331,18 +331,21 @@ def main() -> int:
     if missing:
         print(f"{', '.join(missing)} not found; nothing run", file=sys.stderr)
         return 2
-    # A relative `--tasks` from a current directory that has gone raises OSError here too.
+    # A relative `--tasks` from a current directory that has gone raises OSError here too, and
+    # before Python 3.13 resolve() raises RuntimeError on a symlink loop.
     try:
         tasks_path = Path(args.tasks).resolve()
         tasks_bytes = tasks_path.read_bytes()
-    except OSError as exc:
-        print(f"--tasks: {args.tasks} cannot be read: {exc.strerror or exc}", file=sys.stderr)
+    except (OSError, RuntimeError) as exc:
+        reason = getattr(exc, "strerror", None) or exc
+        print(f"--tasks: {args.tasks} cannot be read: {reason}", file=sys.stderr)
         print("nothing run", file=sys.stderr)
         return 2
     try:
         loaded = yaml.load(tasks_bytes, Loader=_TaskLoader)  # noqa: S506 - a SafeLoader subclass
-    # Deep nesting raises RecursionError rather than a YAMLError.
-    except (yaml.YAMLError, RecursionError) as exc:
+    # Deep nesting raises RecursionError rather than a YAMLError, and a scalar PyYAML cannot
+    # build (a date such as 2026-02-30, `!!int abc`) raises ValueError.
+    except (yaml.YAMLError, RecursionError, ValueError) as exc:
         print(f"{tasks_path} is not YAML: {exc}\nnothing run", file=sys.stderr)
         return 2
     if not isinstance(loaded, dict) or "tasks" not in loaded:

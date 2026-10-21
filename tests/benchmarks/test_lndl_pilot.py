@@ -575,6 +575,11 @@ def test_only_beside_an_id_that_is_not_text_is_refused_before_anything_runs(
         ("tasks: [t01]\ntasks: [t02]\n", "is not YAML: found the key 'tasks' twice"),
         ("tasks:\n- id: t01\n  id: t02\n", "is not YAML: found the key 'id' twice"),
         ("tasks: " + "[" * 3000 + "]" * 3000 + "\n", "is not YAML"),
+        # Each of these is valid YAML whose value PyYAML fails to build.
+        ("tasks: [2026-02-30]\n", "is not YAML"),
+        ("tasks: [2026-01-01T25:00:00Z]\n", "is not YAML"),
+        ("tasks: [!!int abc]\n", "is not YAML"),
+        ("tasks: [!!float abc]\n", "is not YAML"),
     ],
 )
 def test_a_task_file_of_another_shape_is_refused_before_anything_runs(
@@ -928,14 +933,17 @@ def test_a_leg_file_path_of_the_limit_is_refused_and_one_byte_shorter_runs(
     assert f"a leg's file path would be {limit} bytes" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("lookup", ["raises", "not positive"])
 @pytest.mark.parametrize(("platform", "fallback"), [("linux", 4096), ("darwin", 1024)])
 def test_the_path_limit_falls_back_to_the_platform_value_when_it_cannot_be_read(
-    monkeypatch, tmp_path, platform, fallback
+    monkeypatch, tmp_path, platform, fallback, lookup
 ):
-    def refuse(path, name):
-        raise OSError(22, "Invalid argument")
+    def pathconf(path, name):
+        if lookup == "raises":
+            raise OSError(22, "Invalid argument")
+        return -1
 
-    monkeypatch.setattr(runner.os, "pathconf", refuse)
+    monkeypatch.setattr(runner.os, "pathconf", pathconf)
     monkeypatch.setattr(runner.sys, "platform", platform)
     assert runner._path_max(tmp_path) == fallback
 
@@ -1022,6 +1030,21 @@ def test_a_task_file_that_cannot_be_read_leaves_no_run_directory(monkeypatch, tm
     assert f"--tasks: {missing} cannot be read: {os.strerror(errno.ENOENT)}" in (
         capsys.readouterr().err
     )
+    assert not out.exists()
+
+
+def test_a_task_file_that_is_a_symlink_loop_leaves_no_run_directory(monkeypatch, tmp_path, capsys):
+    out = tmp_path / "run"
+    (tmp_path / "li").touch()
+    monkeypatch.setattr(runner, "TREE", tmp_path)
+    monkeypatch.setattr(runner, "LI", tmp_path / "li")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
+    loop = tmp_path / "loop.yaml"
+    loop.symlink_to(loop)
+    monkeypatch.setattr(sys, "argv", ["run_pilot.py", "--tasks", str(loop), "--out", str(out)])
+
+    assert runner.main() == 2
+    assert f"--tasks: {loop} cannot be read: " in capsys.readouterr().err
     assert not out.exists()
 
 
