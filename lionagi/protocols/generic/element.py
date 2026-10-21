@@ -181,10 +181,10 @@ class Element(BaseModel):
                 # short names (data persisted before full-name adoption), and
                 # imports a module only under an allowed prefix, with its parents.
                 subcls_type = _lion_class_type(subcls)
-                # Delegate to a custom from_dict, or when the concrete
-                # type differs so model_validate uses the right schema.
+                # Delegate to a custom from_dict (a staticmethod has no __func__),
+                # or when the concrete type differs, for model_validate's schema.
                 if (
-                    subcls_type.from_dict.__func__ != cls.from_dict.__func__
+                    getattr(subcls_type.from_dict, "__func__", None) != cls.from_dict.__func__
                     or subcls_type is not cls
                 ):
                     data["metadata"] = metadata

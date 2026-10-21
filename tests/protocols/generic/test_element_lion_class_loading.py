@@ -25,6 +25,16 @@ class LocalElement(Element):
     note: str = ""
 
 
+class StaticFromDictElement(Element):
+    note: str = ""
+
+    @staticmethod
+    def from_dict(data):
+        data = dict(data)
+        data["note"] = "restored by its own from_dict"
+        return StaticFromDictElement.model_validate(data)
+
+
 class NotAnElement:
     called = False
 
@@ -100,6 +110,14 @@ def test_an_element_subclass_already_imported_still_round_trips():
     restored = Element.from_dict(original.to_dict(mode="python"))
     assert type(restored) is LocalElement
     assert restored.note == "kept"
+    assert restored.id == original.id
+
+
+def test_a_subclass_whose_from_dict_is_a_staticmethod_restores_through_it():
+    original = StaticFromDictElement(note="kept")
+    restored = Element.from_dict(original.to_dict(mode="python"))
+    assert type(restored) is StaticFromDictElement
+    assert restored.note == "restored by its own from_dict"
     assert restored.id == original.id
 
 
