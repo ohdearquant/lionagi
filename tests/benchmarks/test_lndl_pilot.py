@@ -1272,6 +1272,7 @@ def test_a_second_interrupt_writes_the_summary_and_a_running_legs_row_follows(
         ("r9/t01-react.prompt.txt", True),
         ("r9/t01-lndl.stdout.txt", True),
         ("r9/t01-lndl.stderr.txt", True),
+        ("notes.stdout.txt/t01-react.stdout.txt", True),
         ("home", True),
         ("tree", True),
         ("venv", True),
@@ -1284,6 +1285,8 @@ def test_a_second_interrupt_writes_the_summary_and_a_running_legs_row_follows(
         ("runs/r2/spend.jsonl", False),
         ("runs/r2/rounds.jsonl", False),
         ("runs/r2/reading.jsonl", False),
+        ("notes.stdout.txt/results.jsonl", False),
+        ("runs/r9.prompt.txt/results.jsonl", False),
         ("runs/run_pilot.as-run.py.txt", False),
         ("tasks.yaml", False),
     ],
@@ -1293,7 +1296,8 @@ def test_what_a_run_writes_beside_its_results_is_left_out_of_a_git_add(tmp_path,
     `--out` puts it under the runner's directory, and the README puts the read tree, the
     environment and every leg's LIONAGI_HOME beside the runner.
     Read with only this directory's ignore file, in a repository of its own, those are ignored
-    and the files a run commits are not."""
+    and the files a run commits are not, whatever the run directory is named; a run directory
+    inside `home`, `tree` or `venv` is ignored whole."""
     repo = tmp_path / "repo"
     pilot = repo / "benchmarks" / "lndl_pilot"
     pilot.mkdir(parents=True)
@@ -1301,7 +1305,9 @@ def test_what_a_run_writes_beside_its_results_is_left_out_of_a_git_add(tmp_path,
     empty = tmp_path / "empty"
     empty.mkdir()
     env = {
-        **os.environ,
+        # A git hook sets GIT_DIR, GIT_INDEX_FILE and others, which would point these commands at
+        # the hook's repository.
+        **{k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_NOSYSTEM": "1",
         # git's default excludes file is $XDG_CONFIG_HOME/git/ignore, else $HOME/.config/git/ignore
@@ -1309,6 +1315,7 @@ def test_what_a_run_writes_beside_its_results_is_left_out_of_a_git_add(tmp_path,
         "HOME": str(empty),
     }
     subprocess.run(["git", "init", "-q", str(repo)], check=True, env=env)
+    assert (repo / ".git").is_dir()
     probe = subprocess.run(
         [
             "git",

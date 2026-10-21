@@ -183,7 +183,7 @@ and r4, and `spend_lines` is at least 1 in all 144 rows. Each leg's spend lines 
   syntax of each round of each `lndl` conversation as `rounds.jsonl`, from which ADR-0132 counts the
   runs that opened with an `<invoke>` tag and the requests that went to rounds with no block. The
   prompts, the rest of the stderr and the conversations are not committed, and `.gitignore`
-  beside the runner leaves them out of a `git add`, with `tree/` and `venv/`.
+  beside the runner leaves them out of a `git add`, with `home/`, `tree/` and `venv/`.
 
 ## Running it
 
