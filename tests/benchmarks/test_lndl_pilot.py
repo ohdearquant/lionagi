@@ -967,11 +967,12 @@ def test_a_relative_out_hands_every_leg_an_absolute_prompt_path_in_the_run(monke
 
 
 def _path_max(path: Path) -> int:
+    fallback = 4096 if sys.platform.startswith("linux") else 1024
     try:
         limit = os.pathconf(path, "PC_PATH_MAX")
     except (OSError, ValueError):
-        return 1024
-    return limit if limit > 0 else 1024
+        return fallback
+    return limit if limit > 0 else fallback
 
 
 def _deep_directory(root: Path, target_length: int) -> Path:
@@ -1235,3 +1236,49 @@ def test_a_second_interrupt_writes_the_summary_and_a_running_legs_row_follows(
     rows = _jsonl(out / "results.jsonl")
     assert [(r["id"], r["loop"], r["rc"]) for r in rows] == [("t01", "react", 0)]
     assert len(legs.legs) == 1
+
+
+@pytest.mark.parametrize(
+    ("path", "ignored"),
+    [
+        ("home/state.db", True),
+        ("tree/README.md", True),
+        ("venv/bin/li", True),
+        ("runs/r9/t01-react.prompt.txt", True),
+        ("runs/r9/t01-lndl.stdout.txt", True),
+        ("runs/r9/t01-lndl.stderr.txt", True),
+        ("runs/r2/results.jsonl", False),
+        ("runs/r2/header.json", False),
+        ("runs/r2/answers.jsonl", False),
+        ("runs/run_pilot.as-run.py.txt", False),
+        ("tasks.yaml", False),
+    ],
+)
+def test_what_a_run_writes_beside_its_results_is_left_out_of_a_git_add(tmp_path, path, ignored):
+    """The runner writes each leg's prompt, stdout and stderr into its run directory, and the
+    README puts the read tree, the environment and every leg's LIONAGI_HOME beside the runner.
+    Read with only this directory's ignore file, in a repository of its own, those are ignored
+    and the files a run commits are not."""
+    repo = tmp_path / "repo"
+    pilot = repo / "benchmarks" / "lndl_pilot"
+    pilot.mkdir(parents=True)
+    (pilot / ".gitignore").write_bytes((PILOT / ".gitignore").read_bytes())
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, env=env)
+    probe = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "check-ignore",
+            "--no-index",
+            "-q",
+            f"benchmarks/lndl_pilot/{path}",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert probe.returncode in (0, 1), probe.stderr
+    assert (probe.returncode == 0) is ignored

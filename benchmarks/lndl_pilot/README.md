@@ -167,7 +167,7 @@ and r4, and `spend_lines` is at least 1 in all 144 rows. Each leg's spend lines 
   statements,
   `summarize()`, `run_one()`, `run_pair()` and `main()` are the ones whose `ast.dump` differs, and
   `run_pilot.py` adds two imports (`threading` and `collections.abc.Callable`), the `TASK_ID`
-  pattern, the YAML loader that refuses a key named twice (`_TaskLoader`,
+  pattern, `_path_max()`, the YAML loader that refuses a key named twice (`_TaskLoader`,
   `_mapping_without_repeats()` and the call that registers it) and `task_problems()`. With `missing_spend` at 0 and every leg run in all three runs, both
   write the same `summary.json`; `tests/benchmarks/test_lndl_pilot.py` recomputes each committed
   summary from its run's `results.jsonl`.
@@ -182,7 +182,8 @@ and r4, and `spend_lines` is at least 1 in all 144 rows. Each leg's spend lines 
   the stdout is committed as `answers.jsonl`, the stderr's spend lines as `spend.jsonl`, and the
   syntax of each round of each `lndl` conversation as `rounds.jsonl`, from which ADR-0132 counts the
   runs that opened with an `<invoke>` tag and the requests that went to rounds with no block. The
-  prompts, the rest of the stderr and the conversations are not committed.
+  prompts, the rest of the stderr and the conversations are not committed, and `.gitignore`
+  beside the runner leaves them out of a `git add`, with `tree/` and `venv/`.
 
 ## Running it
 
