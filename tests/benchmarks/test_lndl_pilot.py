@@ -1287,6 +1287,10 @@ def test_a_second_interrupt_writes_the_summary_and_a_running_legs_row_follows(
         ("runs/r2/reading.jsonl", False),
         ("notes.stdout.txt/results.jsonl", False),
         ("runs/r9.prompt.txt/results.jsonl", False),
+        ("runs/r9.stderr.txt/results.jsonl", False),
+        ("runs/home/results.jsonl", False),
+        ("runs/tree/results.jsonl", False),
+        ("runs/venv/results.jsonl", False),
         ("runs/run_pilot.as-run.py.txt", False),
         ("tasks.yaml", False),
     ],
@@ -1306,7 +1310,7 @@ def test_what_a_run_writes_beside_its_results_is_left_out_of_a_git_add(tmp_path,
     empty.mkdir()
     env = {
         # A git commit hook runs with GIT_INDEX_FILE set, and GIT_DIR too in a linked worktree;
-        # either would point these commands at the hook's repository.
+        # GIT_DIR would point these commands at the hook's repository, so no GIT_ variable is kept.
         **{k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_NOSYSTEM": "1",
