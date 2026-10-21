@@ -402,7 +402,9 @@ def test_a_whole_file_write_keeps_the_earliest_time_on_file(tmp_path, bound):
 
 
 @pytest.mark.parametrize(
-    "on_file", ["yesterday", True, [1.0], None], ids=["string", "bool", "list", "null"]
+    "on_file",
+    ["yesterday", True, [1.0], None, float("nan"), float("inf"), 10**400],
+    ids=["string", "bool", "list", "null", "nan", "infinity", "past-float-range"],
 )
 def test_a_malformed_time_on_file_is_not_kept(tmp_path, on_file):
     """A whole-file write does not carry a time no reader takes, and the marker thread writes
@@ -424,6 +426,62 @@ def test_a_malformed_time_on_file_is_not_kept(tmp_path, on_file):
     run.manifest_path.write_text(json.dumps(on_disk))
     _runs._write_signal_persistence_degraded_at(run.state_root, 100.0)
     assert run.read_manifest()[SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD] == 100.0
+
+
+def test_the_degradation_record_keeps_the_earliest_time_on_file(tmp_path):
+    """Recording why persistence was disabled writes the whole file, and carries the time on file
+    as every other whole-file write does: a later time does not replace it, an earlier one does."""
+    from lionagi.cli._runs import PERSISTENCE_DEGRADED_REASON_FIELD, RunDir
+
+    run = RunDir(run_id="run-d", state_root=tmp_path / "d", artifact_root=tmp_path / "d-art")
+    run.ensure_state_dirs()
+    run.write_manifest({"status": "running", SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD: 1000.0})
+
+    _runs._record_persistence_degraded(
+        RuntimeError("store gone"),
+        run=run,
+        run_manifest={"status": "running", SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD: 2000.0},
+    )
+    manifest = run.read_manifest()
+    assert manifest[SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD] == 1000.0
+    assert "store gone" in manifest[PERSISTENCE_DEGRADED_REASON_FIELD]
+
+    _runs._record_persistence_degraded(
+        RuntimeError("store gone"),
+        run=run,
+        run_manifest={"status": "running", SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD: 500.0},
+    )
+    assert run.read_manifest()[SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD] == 500.0
+
+
+def test_the_copy_back_waits_for_the_manifest_lock(tmp_path):
+    """Copying a resumed leg's lost-write record onto the run's run.json takes the run directory's
+    manifest lock: it does not write while another descriptor holds it, and writes once freed."""
+    from lionagi.cli._runs import RunDir
+
+    run = RunDir(run_id="run-c", state_root=tmp_path / "c", artifact_root=tmp_path / "c-art")
+    run.ensure_state_dirs()
+    run.write_manifest({"status": "cancelled"})
+    record = {"status": "completed", "reason_code": "completed_ok", "at": 1.0}
+    lock_fd = os.open(run.state_root / ".run.json.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    done = threading.Event()
+
+    def copy_back():
+        _runs._write_terminal_write_lost(run.state_root, record)
+        done.set()
+
+    worker = threading.Thread(target=copy_back, daemon=True)
+    worker.start()
+    try:
+        assert not done.wait(1.0)
+        assert TERMINAL_WRITE_LOST_FIELD not in run.read_manifest()
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+    assert done.wait(10)
+    manifest = run.read_manifest()
+    assert (manifest["status"], manifest[TERMINAL_WRITE_LOST_FIELD]) == ("cancelled", record)
 
 
 def test_a_provenance_bound_write_over_an_unreadable_file_still_writes(tmp_path):

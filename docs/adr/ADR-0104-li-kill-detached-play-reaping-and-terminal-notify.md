@@ -191,7 +191,8 @@ dropped signals lives in memory and dies with it.
    The notice the reaper sends carries the detail.
 5. `job.status` lifts `signal_persist_dropped` and the two new fields to the top level beside
    `persistence_degraded_reason`, as read-time projections, each null when absent or malformed;
-   nothing new is stored on the job record.
+   they store nothing on the job record, whose only new stored value is decision 4's
+   `decided_status`.
 
 **Why the run directory.** It is the one place a run can still write when its store refuses it,
 and the reaper already reads run-directory files for the same purpose (`notify_outcome.json`,
@@ -218,8 +219,10 @@ a later whole-file write by another invocation replaces it.
 Flow, fanout and play runs write neither field; they degrade without the record, as
 Amendment 2's Limits say for their stop handle. A job whose hook could not take the job lock, so
 that run.json holds a real terminal status the job record never got, is a neighbouring case this
-amendment does not cover; so is a teardown interrupted by Ctrl-C or a cancellation, which
-records the interrupt's status on run.json without knowing whether its transition landed. A
+amendment does not cover; so is a teardown that is itself interrupted part way by Ctrl-C or a
+cancellation, which records the interrupt's status on run.json without knowing whether its
+transition landed. A run cancelled before its teardown, whose teardown then runs and fails its
+terminal write, is covered: the record names the cancellation. A
 marker write that cannot start its thread, or cannot read or write run.json, is logged and
 dropped, and the run's later manifest writes still carry the time. The new run.json fields are
 additive and use names no reader keys on today; `li kill`'s run-id resolution (Amendment 2)

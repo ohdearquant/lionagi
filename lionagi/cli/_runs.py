@@ -304,10 +304,7 @@ class RunDir:
         # earliest on file stays, so neither the run's own setup write nor the whole-file write of
         # another invocation sharing its run id erases or moves it.
         if isinstance(existing, dict):
-            kept = existing.get(SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD)
-            mine = payload.get(SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD)
-            if _is_time(kept) and not (_is_time(mine) and mine <= kept):
-                payload[SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD] = kept
+            _carry_earliest_time(payload, existing.get(SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD))
         _atomic_write_json(self.manifest_path, payload)
 
     def read_manifest(self) -> dict:
@@ -415,8 +412,10 @@ def _record_persistence_degraded(
             manifest = json.loads(manifest_path.read_text())
             if not isinstance(manifest, dict):
                 raise TypeError("run manifest is not a JSON object")
+            kept = manifest.get(SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD)
             if run_manifest is not None:
                 manifest.update(run_manifest)
+            _carry_earliest_time(manifest, kept)
             manifest[PERSISTENCE_DEGRADED_REASON_FIELD] = reason
             _atomic_write_json(manifest_path, manifest)
     except Exception as record_exc:  # noqa: BLE001 — degradation must not become a run failure
@@ -466,10 +465,26 @@ def lost_terminal_write(
 
 
 def _is_time(value: Any) -> bool:
-    """A finite number that is not a bool, the only value a reader of run.json takes as a time."""
+    """A finite number that is not a bool, the only value a reader of run.json takes as a time.
+
+    `math.isfinite` converts to float first, and an integer past float range (JSON's integers
+    are unbounded) makes that conversion raise; such a value is not a time either.
+    """
     import math
 
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _carry_earliest_time(payload: dict[str, Any], kept: Any) -> None:
+    """Put *kept*, the degradation time on file, into *payload* unless *payload* has one no later."""
+    mine = payload.get(SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD)
+    if _is_time(kept) and not (_is_time(mine) and mine <= kept):
+        payload[SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD] = kept
 
 
 def _write_signal_persistence_degraded_at(state_root: Path, at: float) -> None:
