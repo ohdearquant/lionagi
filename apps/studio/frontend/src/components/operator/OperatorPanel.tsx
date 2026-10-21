@@ -812,10 +812,16 @@ export default function OperatorPanel({ open, onClose }: Props) {
   // result for an earlier choice is dropped. A failed load keeps it: the error view
   // disables the composer, and Retry or a pick from the list replaces it.
   const selectedConversationIdRef = useRef<string | null>(null);
+  // The filter of the newest list read, set when that read starts. A read for another
+  // filter is dropped when it settles, and merged rows must match this one.
   const listFilterRef = useRef<"active" | "archived">("active");
+  // Conversations this panel created, by a draft send or a fork. A list read started
+  // before one was created may lack its row, so the merge keeps that row.
   const createdConversationIdsRef = useRef(new Set<string>());
   // The latest rename, pin or archive result this panel wrote, per conversation.
   const writeResultsRef = useRef(new Map<string, OperatorConversation>());
+  // For the shown conversation: the last frame sequence read and its update_conversation
+  // calls still waiting for a result, so a result or the turn's end refreshes metadata.
   const metadataRefreshRef = useRef<{
     conversationId: string;
     sequence: number;
