@@ -75,7 +75,10 @@ def _nested(class_name: str) -> bool:
     """Whether the name runs through a class held by an imported module, as the
     path of a class nested in another class does."""
     parts = class_name.split(".")
-    for end in range(len(parts) - 2, 0, -1):
+    # No imported module has more parts than the deepest name in sys.modules, so only
+    # that many leading parts are tried: a name of many parts costs one pass, not one per part.
+    deepest = max((name.count(".") for name in list(sys.modules)), default=0) + 1
+    for end in range(min(len(parts) - 2, deepest), 0, -1):
         module = sys.modules.get(".".join(parts[:end]))
         if isinstance(module, types.ModuleType):
             # The namespace, not getattr: a module-level __getattr__ can import.

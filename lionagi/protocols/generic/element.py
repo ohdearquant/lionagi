@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
-from lionagi._class_registry import get_class
+from lionagi._class_registry import _cut, get_class
 from lionagi.ln._json_dump import get_orjson_default, json_dumps
 from lionagi.ln._json_load import json_loads
 from lionagi.ln._utils import now_utc
@@ -229,7 +229,7 @@ def _lion_class_type(lion_class: Any) -> type[Element]:
         # and, when loading failed, the reason; the name is not repeated here.
         raise ValueError(f"metadata lion_class cannot be loaded: {exc}") from exc
     if not (isinstance(resolved, type) and issubclass(resolved, Element)):
-        raise ValueError(f"metadata lion_class {lion_class!r} is not an Element subclass")
+        raise ValueError(f"metadata lion_class {_cut(repr(lion_class))} is not an Element subclass")
     return resolved
 
 

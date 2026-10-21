@@ -6,6 +6,7 @@ prefix, and only to Element subclasses."""
 from __future__ import annotations
 
 import sys
+import time
 import types
 from typing import Annotated, Any, ForwardRef, Literal, Optional, Union
 
@@ -540,3 +541,40 @@ def test_a_long_name_is_cut_short_in_each_error():
         with pytest.raises(ValidationError) as refused:
             Pile(item_type=item_type)
         assert len(str(refused.value)) < 1000
+
+
+def test_a_long_name_of_a_type_outside_the_element_hierarchy_is_cut_short(monkeypatch):
+    long_name = "x" * 5000
+    monkeypatch.setitem(LION_CLASS_REGISTRY, long_name, NotAnElement)
+    with pytest.raises(ValueError, match="not an Element subclass") as refused:
+        Element.from_dict(_dumped(long_name))
+    assert len(str(refused.value)) < 1000
+    assert "more characters]" in str(refused.value)
+
+
+def test_a_name_of_many_parts_is_refused_in_one_pass_over_it():
+    # Each leading part of the name is no module; tried one by one, joined anew each time,
+    # 40,000 parts take seconds.
+    many = "zz." * 40_000 + "Thing"
+    started = time.perf_counter()
+    with pytest.raises(ValueError, match="cannot be loaded"):
+        Element.from_dict(_dumped(many))
+    with pytest.raises(ValidationError):
+        Pile(item_type=many)
+    assert time.perf_counter() - started < 1
+
+
+def test_a_class_nested_under_the_deepest_imported_module_is_still_found(monkeypatch):
+    class Outer:
+        class Inner(LocalElement):
+            pass
+
+    parts = max(name.count(".") for name in list(sys.modules)) + 2
+    module_name = ".".join(["lion_class_deep_zz"] * parts)
+    nest = types.ModuleType(module_name)
+    nest.Outer = Outer
+    monkeypatch.setitem(sys.modules, module_name, nest)
+    monkeypatch.setattr(_utils, "_ALLOWED_MODULE_PREFIXES", set(_utils._DEFAULT_ALLOWED_PREFIXES))
+    monkeypatch.setattr(_utils, "_TYPE_CACHE", {})
+    with pytest.raises(ValueError, match="add a nested class to LION_CLASS_REGISTRY"):
+        get_class(f"{module_name}.Outer.Inner")
