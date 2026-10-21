@@ -416,6 +416,7 @@ def _record_persistence_degraded(
             if run_manifest is not None:
                 manifest.update(run_manifest)
             _carry_earliest_time(manifest, kept)
+            _drop_a_time_that_is_not_one(manifest)
             manifest[PERSISTENCE_DEGRADED_REASON_FIELD] = reason
             _atomic_write_json(manifest_path, manifest)
     except Exception as record_exc:  # noqa: BLE001 — degradation must not become a run failure
@@ -480,6 +481,13 @@ def _is_time(value: Any) -> bool:
         return False
 
 
+def _drop_a_time_that_is_not_one(manifest: dict[str, Any]) -> None:
+    """Remove a degradation time no reader takes as one from *manifest*, read from run.json, as
+    `RunDir.write_manifest` leaves it out: a NaN or an infinity there would make the write fail."""
+    if not _is_time(manifest.get(SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD, 0)):
+        del manifest[SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD]
+
+
 def _carry_earliest_time(payload: dict[str, Any], kept: Any) -> None:
     """Put *kept*, the degradation time on file, into *payload* unless *payload* has one no later."""
     mine = payload.get(SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD)
@@ -523,6 +531,7 @@ def _write_terminal_write_lost(state_root: Path, record: dict[str, Any]) -> None
         if not isinstance(manifest, dict):
             raise TypeError("run manifest is not a JSON object")
         manifest[TERMINAL_WRITE_LOST_FIELD] = record
+        _drop_a_time_that_is_not_one(manifest)
         _atomic_write_json(manifest_path, manifest)
 
 

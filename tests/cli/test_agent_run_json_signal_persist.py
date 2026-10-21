@@ -471,9 +471,16 @@ def test_the_copy_back_waits_for_the_manifest_lock(tmp_path):
         _runs._write_terminal_write_lost(run.state_root, record)
         done.set()
 
-    worker = threading.Thread(target=copy_back, daemon=True)
+    started = threading.Event()
+
+    def copy_back_after_start():
+        started.set()
+        copy_back()
+
+    worker = threading.Thread(target=copy_back_after_start, daemon=True)
     worker.start()
     try:
+        assert started.wait(10)
         assert not done.wait(1.0)
         assert TERMINAL_WRITE_LOST_FIELD not in run.read_manifest()
     finally:
@@ -482,6 +489,61 @@ def test_the_copy_back_waits_for_the_manifest_lock(tmp_path):
     assert done.wait(10)
     manifest = run.read_manifest()
     assert (manifest["status"], manifest[TERMINAL_WRITE_LOST_FIELD]) == ("cancelled", record)
+
+
+def test_the_copy_back_writes_while_it_holds_the_manifest_lock(monkeypatch, tmp_path):
+    """At the moment the copy-back writes run.json, the run directory's manifest lock is held."""
+    from lionagi.cli._runs import RunDir
+
+    run = RunDir(run_id="run-h", state_root=tmp_path / "h", artifact_root=tmp_path / "h-art")
+    run.ensure_state_dirs()
+    run.write_manifest({"status": "cancelled"})
+    real_write = _runs._atomic_write_json
+    held: list[bool] = []
+
+    def write_and_probe(path, payload):
+        probe = os.open(run.state_root / ".run.json.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            held.append(True)
+        else:
+            held.append(False)
+        finally:
+            os.close(probe)
+        real_write(path, payload)
+
+    monkeypatch.setattr(_runs, "_atomic_write_json", write_and_probe)
+    record = {"status": "completed", "reason_code": "completed_ok", "at": 1.0}
+    _runs._write_terminal_write_lost(run.state_root, record)
+
+    assert held == [True]
+    assert run.read_manifest()[TERMINAL_WRITE_LOST_FIELD] == record
+
+
+@pytest.mark.parametrize("token", ["NaN", "Infinity"])
+def test_a_time_on_file_that_is_not_one_is_left_out_by_both_partial_writers(tmp_path, token):
+    """run.json holding a NaN or an infinity for the time does not stop the degradation record or
+    the copy-back from writing; both leave the value out, as a whole-file write does."""
+    from lionagi.cli._runs import PERSISTENCE_DEGRADED_REASON_FIELD, RunDir
+
+    run = RunDir(run_id="run-n", state_root=tmp_path / "n", artifact_root=tmp_path / "n-art")
+    run.ensure_state_dirs()
+    bad = f'{{"status": "running", "{SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD}": {token}}}'
+    run.manifest_path.write_text(bad)
+    _runs._record_persistence_degraded(
+        RuntimeError("store gone"), run=run, run_manifest={"status": "running"}
+    )
+    manifest = run.read_manifest()
+    assert "store gone" in manifest[PERSISTENCE_DEGRADED_REASON_FIELD]
+    assert SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD not in manifest
+
+    run.manifest_path.write_text(bad)
+    record = {"status": "completed", "reason_code": "completed_ok", "at": 1.0}
+    _runs._write_terminal_write_lost(run.state_root, record)
+    manifest = run.read_manifest()
+    assert manifest[TERMINAL_WRITE_LOST_FIELD] == record
+    assert SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD not in manifest
 
 
 def test_a_provenance_bound_write_over_an_unreadable_file_still_writes(tmp_path):
@@ -562,3 +624,39 @@ async def test_a_resumed_legs_first_skip_window_marks_the_run_json_the_job_reads
     assert during["status"] == final["status"] == "timed_out"
     assert final[SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD] == marker
     assert SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD in _manifest(resumed)
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_run_writes_the_time_again_when_its_leg_ends(monkeypatch, tmp_path):
+    """The marker's thread wrote nothing (it failed, or the process left before it ran), and the
+    run that resumed itself writes no manifest after its leg, so it writes the time again then."""
+    from lionagi.cli.agent import _run_agent
+    from lionagi.session.signal import NodeStarted
+
+    _with_a_real_row(monkeypatch, tmp_path, operate_return="done")
+    job, resumed = _two_runs(monkeypatch, tmp_path)
+    legs: list = []
+    handed: list = []
+    monkeypatch.setattr(
+        _runs, "_write_signal_persistence_degraded_at", lambda root, at: handed.append((root, at))
+    )
+
+    async def body(observer, blocker):
+        legs.append(observer)
+        if len(legs) == 1:
+            raise TimeoutError("deadline")
+        for i in range(SIGNALS):
+            await observer.emit(NodeStarted(op_id=f"held-{i}", name="step"))
+        await _until(lambda: any(root == job.state_root for root, _ in handed), "the hand-off")
+        assert SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD not in _manifest(job)
+
+    _operate_with_the_writer_held(monkeypatch, tmp_path, body)
+    _snapshot_before_operate(monkeypatch)
+
+    await _run_agent("claude/sonnet", "go", resume_on_timeout=True)
+
+    assert len(legs) == 2
+    marker = next(at for root, at in handed if root == job.state_root)
+    final = _manifest(job)
+    assert final["status"] == "timed_out"
+    assert final[SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD] == marker

@@ -191,7 +191,8 @@ dropped signals lives in memory and dies with it.
    The notice the reaper sends carries the detail.
 5. `job.status` lifts `signal_persist_dropped` and the two new fields to the top level beside
    `persistence_degraded_reason`, as read-time projections, each null when absent or malformed;
-   they store nothing on the job record, whose only new stored value is decision 4's
+   they store nothing on the job record, whose only new stored values are decision 4's: the
+   `reason_detail` values `terminal_write_lost` and `signal_persistence_degraded`, and
    `decided_status`.
 
 **Why the run directory.** It is the one place a run can still write when its store refuses it,
@@ -215,7 +216,7 @@ compatibility mode is not a lost write here: the run fails with that refusal as 
 (ADR-0128 D6), run.json records `failed`, and the status the run decided is not kept; a
 timed-out leg that would have auto-resumed fails the same way and is not resumed. Invocations
 sharing a run id share one run.json, and `terminal_write_lost` is lifecycle data like `status`:
-a later whole-file write by another invocation replaces it.
+a later `RunDir.write_manifest` by another invocation replaces it.
 Flow, fanout and play runs write neither field; they degrade without the record, as
 Amendment 2's Limits say for their stop handle. A job whose hook could not take the job lock, so
 that run.json holds a real terminal status the job record never got, is a neighbouring case this
@@ -224,7 +225,9 @@ cancellation, which records the interrupt's status on run.json without knowing w
 transition landed. A run cancelled before its teardown, whose teardown then runs and fails its
 terminal write, is covered: the record names the cancellation. A
 marker write that cannot start its thread, or cannot read or write run.json, is logged and
-dropped, and the run's later manifest writes still carry the time. The new run.json fields are
+dropped; the run's later manifest writes still carry the time, and a run that handed its end
+to an auto-resumed leg, which writes no manifest after it, writes the time again when the leg
+ends. The new run.json fields are
 additive and use names no reader keys on today; `li kill`'s run-id resolution (Amendment 2)
 still keys on `persistence_degraded_reason` alone.
 

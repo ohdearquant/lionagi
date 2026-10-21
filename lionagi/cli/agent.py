@@ -69,9 +69,11 @@ from ._providers import (
     resolve_persisted_effort,
 )
 from ._runs import (
+    SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD,
     TERMINAL_WRITE_LOST_FIELD,
     RunDir,
     _signal_window_marker,
+    _write_signal_persistence_degraded_at,
     _write_terminal_write_lost,
     allocate_run,
     find_branch,
@@ -2011,6 +2013,11 @@ async def _run_agent(
                 _lost_write_out=_resumed_lost,
             )
         finally:
+            # The marker's own write runs on a daemon thread that can fail or not finish, and this
+            # run writes no manifest after its leg, so the time it holds is written again here.
+            _degraded_at = run_manifest.get(SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD)
+            if _degraded_at is not None and isinstance(run, RunDir):
+                _write_signal_persistence_degraded_at(run.state_root, _degraded_at)
             if _resumed_lost.get(TERMINAL_WRITE_LOST_FIELD) is not None:
                 run_manifest[TERMINAL_WRITE_LOST_FIELD] = _resumed_lost[TERMINAL_WRITE_LOST_FIELD]
                 if isinstance(run, RunDir):

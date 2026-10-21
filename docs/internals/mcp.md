@@ -457,8 +457,9 @@ is surfaced rather than left for a reader to notice two fields disagree.
   setup failed, how many signals it could not confirm it wrote (written at
   teardown, 0 included), the terminal status its store did not take, and when
   its signal persistence first stopped waiting on a refusing store. These
-  store nothing on the job record; the reaper's `terminal_evidence.decided_status`
-  is the one stored value this record adds.
+  store nothing on the job record; the values this record gains are the reaper's
+  two new `reason_detail` values, `terminal_write_lost` and
+  `signal_persistence_degraded`, and its `terminal_evidence.decided_status`.
 - `child_actor` / `child_actor_config` / `submitting_actor` are set only when a
   write-capable submission runs under a server configured with
   `LIONAGI_MCP_CHILD_ACTOR_SUFFIX`. They name the run's own actor (the
