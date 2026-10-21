@@ -143,7 +143,7 @@ and r4, and `spend_lines` is at least 1 in all 144 rows. Each leg's spend lines 
 ## How the committed files differ from the runs' output
 
 - `run_pilot.py` is `runs/run_pilot.as-run.py.txt` with `noqa` comments added, the `(r1)` at the
-  end of one comment removed (the as-run copy keeps it), the layout reformatted by ruff, and three
+  end of one comment removed (the as-run copy keeps it: it is the file as it ran), the layout reformatted by ruff, and three
   changes. First, `summarize()` leaves the D4 rule unset when a leg has no spend line (above) or
   the rows are not the whole run, where the as-run copy computed it. Second, a run that stops early
   keeps what it has (`run_one()`, `run_pair()`, `main()`): a leg that raises in the runner, in its
