@@ -395,3 +395,11 @@ def test_a_layer_nested_deeper_than_the_parser_follows_is_read_line_by_line(tmp_
     assert declaring_project_layer(tmp_path / "project", env) is None
     layer.write_text(deep + _DECLARING, encoding="utf-8")
     assert declaring_project_layer(tmp_path / "project", env) == (layer, 2)
+
+
+def test_a_line_whose_removal_exposes_a_nesting_too_deep_to_parse_is_named():
+    """Removing a line can turn a string's text into TOML: when that text nests deeper than the
+    parser can follow, the line carries structure the declaration needs, as with a parse refused."""
+    text = 'mcp_servers = """\nnote = ' + "[" * 1500 + "]" * 1500 + '\n"""\n'
+
+    assert mcp_servers_declaration_line(text) == 1
