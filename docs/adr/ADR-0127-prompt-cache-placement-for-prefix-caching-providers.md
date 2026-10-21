@@ -97,7 +97,7 @@ that code on one of two paths, and the two paths differ:
 
 `iModel` then pops the same flag from the request (`service/imodel.py:291`) and, in `Endpoint.call`,
 it switches on a local response memo, except for a call routed through an account
-(`service/connections/endpoint.py:438`, `:508-526`), a different feature.
+(`service/connections/endpoint.py:444`, `:514-532`), a different feature.
 
 **P5: the run record cannot show what caching saved.** `RunEnd` carries `cached_tokens` and
 `cache_write_tokens` (`session/signal.py:66-67`) without the lifetime of the write, and ADR-0126's

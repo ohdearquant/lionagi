@@ -149,10 +149,16 @@ Exact semantics:
   and splits lines itself. `read1` answers an empty read both at the body's end and when the peer
   closes early, so while part of a declared `Content-Length` is still owed `iter_chunks` raises
   `TransportError` (from `http.client.IncompleteRead`), as `read()` does; a stream cut short never
-  ends as if it had arrived whole. A chunked body cut before its last chunk raises the same way from
-  `http.client` itself. After `read()`, `iter_chunks` yields the body `read()` kept, in one piece;
-  after `iter_chunks`, `read()` raises `TransportError` saying the body was already read as a
-  stream, where a stop says the request was stopped.
+  ends as if it had arrived whole. A chunked body cut before its last chunk raises `TransportError`
+  too, with the `http.client.IncompleteRead` that `http.client` raises as its cause. After `read()`,
+  `iter_chunks` yields the body `read()` kept, in one piece. Once `iter_chunks` has started,
+  `read()` and a second `iter_chunks` raise `TransportError` saying the body was already read as a
+  stream; after a `read()` that did not complete (a body cut short, a timeout, a stop), a later
+  read raises `TransportError` saying so; only a first read of a response whose request was
+  stopped says the request was stopped. A `read()` started while another runs waits for it and
+  returns the same bytes, and an `iter_chunks` started while a `read()` runs is refused as a
+  second stream is. A streamed body that ends with no bytes reads back as `b""`, as under
+  `aiohttp`.
 - `json()` decodes the body as JSON without checking the media type in `Content-Type`. A body
   declared in a charset other than UTF-8 is decoded with it first, as `aiohttp` did; otherwise
   `json.loads` reads the bytes and detects UTF-8, UTF-16 or UTF-32 itself. `text()` takes the
@@ -176,10 +182,11 @@ comparison with the other candidates is under Alternatives.
 Exact semantics:
 
 - `HTTPSession(timeout=t)` bounds each request from its start until its response is read, a streamed
-  body included, which is what `aiohttp.ClientTimeout(total=t)` bounded. Each blocking step runs
-  under `anyio.fail_after` with the time left, and the socket's own timeout is set to the same
-  remainder before each step, the connection's too, which bounds opening it: time spent waiting for
-  a slot is not left for the connect. `timeout=None`, or a value of 0 or less, sets no bound;
+  body included, which is what `aiohttp.ClientTimeout(total=t)` bounded. Each blocking step, its
+  wait for a worker slot included, runs under `anyio.fail_after` with the time left, and the
+  socket's own timeout is set to the same remainder before each step. The TCP connect is bounded
+  by the stop at the deadline, which its poll reads (D4), so time spent waiting for a slot is not
+  left for the connect. `timeout=None`, or a value of 0 or less, sets no bound;
   `aiohttp` armed no timer for those either.
 - A 3xx response is returned like any other status; the endpoint then treats it as a non-200
   failure. `allow_redirects=True` raises `ValueError`. The Lattice adapter still passes
@@ -200,7 +207,10 @@ Exact semantics:
   `ValueError` before any connection is opened.
 
 **Why this way.** Not following redirects closes P3 for every provider at once instead of one
-adapter at a time; a provider that moves an endpoint is configured at its new URL. Identity encoding
+adapter at a time; a provider that moves an endpoint is configured at its new URL. Running the
+address guard on each hop would not close it: on a change of origin `aiohttp` dropped only
+`Authorization`, `Cookie` and `Proxy-Authorization`, and the Anthropic and Exa endpoints send
+their keys in `x-api-key`, which would go to whatever host the redirect names (Alternatives). Identity encoding
 trades transfer size on large bodies for having no decompression code in the path. `aiohttp` asked
 for `gzip, deflate` by default.
 
@@ -268,21 +278,26 @@ Exact semantics:
   `RuntimeError` for a request on a session already closed, as `aiohttp` raised, the client raises
   `TransportError` or `TimeoutError`, and lets a cancellation through. A refused or reset
   connection, a TLS failure, and a reply that is not HTTP become `TransportError` naming the method
-  and URL, with the original exception as `__cause__`.
+  and the URL's scheme, host and port, with the original exception as `__cause__`. `aiohttp`'s
+  connect error named the host and port; the path and query are left out because they can hold a
+  key, or the rest of a password that has a raw `/` after a numeric start (below).
 - A user and password in the URL go out only as a Basic `Authorization` header, encoded as
   latin-1. An empty user with no password (`http://@host`) is no credentials, as `aiohttp` read
-  it. The URL that error text, `HTTPResponse.url` and `HTTPStatusError.url` carry has them
-  removed. They are the ones RFC 3986 reads: the authority ends at the first `/`, `?` or `#`, so
+  it. The URL that `HTTPResponse.url` and `HTTPStatusError.url` carry has them removed, and error
+  text names no user or password. They are the ones RFC 3986 reads: the authority ends at the first `/`, `?` or `#`, so
   a password holding one has to be percent-encoded (`%2F`, `%3F`, `%23`). Left raw, the user is
   read as the host, the password's text up to that character as the port, and the rest as the
   path, query or fragment, as `urllib.parse`, `yarl`, `httpx` and `urllib3` all read it; no
   parse can tell that URL from one with an `@` in its path.
-- A URL that does not parse (a port that is not a number among them), and a user or password
-  latin-1 cannot carry, are refused with a `ValueError` that quotes none of the URL and has no
-  exception as its context: the parse's own errors quote the authority, and the encoder's names
-  the character it could not carry. A URL that is not http or https is named by its scheme and
+- A URL that does not parse (a port that is not a number among them, and an authority holding a
+  backslash, which RFC 3986 does not allow and `yarl` refused), and a user or password latin-1
+  cannot carry, are refused with a `ValueError` that quotes none of the URL and has no exception
+  as its context: the parse's own errors quote the authority, and the encoder's names the
+  character it could not carry. The endpoint's address guard, which reads the configured URL
+  before any request, refuses one that does not parse with the same text. A URL that is not http or https is named by its scheme and
   host only in the `scheme://` form: without it, the text before the first colon can be a user.
-- An expired deadline raises `TimeoutError("<METHOD> <url> did not complete within <t> s")`. On
+- An expired deadline raises
+  `TimeoutError("<METHOD> <scheme>://<host>:<port> did not complete within <t> s")`. On
   Python 3.10, where `asyncio.TimeoutError` is a class of its own, the error is of a class derived
   from both, as `aiohttp`'s timeout derived from `asyncio.TimeoutError`.
 - The endpoint raises `HTTPStatusError` for a status it treats as a failure, where it raised
@@ -390,6 +405,13 @@ keeping `aiohttp` installed for it, which is what this record removes.
 - **A deprecation cycle with `aiohttp` as an optional extra.** It would keep existing
   `client_kwargs` working for a release. It lost on the maintainer's call (D6), and because two
   transports would double the test surface for a configuration nobody is known to use.
+- **Follow redirects, with the address guard run on each hop.** A provider that answers a moved
+  endpoint with a 3xx would keep working, as under `aiohttp`. Across origins it would send a key
+  to the host the redirect names, since `aiohttp`'s rule drops only `Authorization`, `Cookie` and
+  `Proxy-Authorization` there, and the Anthropic and Exa endpoints send theirs in `x-api-key`.
+  Following redirects only within one origin avoids that, at the cost of method rewriting, body
+  replay and a hop limit in the client; a 3xx stays a response (D3), and a moved endpoint is
+  configured at its new URL.
 - **Connection reuse across calls (DEFERRED).** A pool keyed by scheme, host and port, with idle
   connections checked before reuse, would save a TCP and TLS handshake per call to the same
   provider. Before this record each call opened its own `ClientSession`, so there was no reuse to

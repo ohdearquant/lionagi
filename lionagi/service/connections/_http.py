@@ -355,12 +355,17 @@ class _Exchange:
 
 def _split(url: str) -> tuple[SplitResult, int | None] | None:
     """*url* split, with its port, or None for a URL that does not parse: urlsplit's errors
-    quote the authority, and with it any password, so the caller refuses it with its own."""
+    quote the authority, and with it any password, so the caller refuses it with its own. An
+    authority holding a backslash does not parse either: RFC 3986 allows none there, and a parser
+    that reads it as the end of the host finds a different host than urlsplit does."""
     try:
         parts = urlsplit(url)
-        return parts, parts.port
+        port = parts.port
     except ValueError:
         return None
+    if "\\" in parts.netloc:
+        return None
+    return parts, port
 
 
 def _without_userinfo(url: str, parts: SplitResult) -> str:
@@ -371,11 +376,11 @@ def _without_userinfo(url: str, parts: SplitResult) -> str:
     return urlunsplit(parts._replace(netloc=parts.netloc.rpartition("@")[2]))
 
 
-def _transport_failure(method: str, url: str, exc: BaseException) -> BaseException:
+def _transport_failure(where: str, exc: BaseException) -> BaseException:
     if isinstance(exc, (TimeoutError, TransportError)):
         return exc
     if isinstance(exc, (OSError, http.client.HTTPException)):
-        error = TransportError(f"{method} {url}: {type(exc).__name__}: {exc}")
+        error = TransportError(f"{where}: {type(exc).__name__}: {exc}")
         error.__cause__ = exc
         return error
     return exc
@@ -391,6 +396,7 @@ class HTTPResponse:
         *,
         method: str,
         url: str,
+        where: str,
         deadline: float | None,
         timeout: float | None,
         on_close: Callable[[HTTPResponse], None] | None = None,
@@ -399,6 +405,7 @@ class HTTPResponse:
         self._raw = raw
         self.method = method
         self.url = url
+        self._where = where
         self.status: int = raw.status
         self.reason: str = raw.reason
         self.headers: http.client.HTTPMessage = raw.headers
@@ -407,14 +414,18 @@ class HTTPResponse:
         self._on_close = on_close
         self._body: bytes | None = None
         self._streamed = False
+        # Set once a read of the body has returned or raised: its connection is closed then, so
+        # a later read can only report what happened, never read again.
+        self._over = False
+        # Held across a whole read(), so a read() started meanwhile returns the same bytes.
+        self._reading = anyio.Lock()
         self.closed = False
 
     async def _step(self, step: Callable[[], T]) -> T:
         return await _run_step(
             self._exchange,
             step,
-            method=self.method,
-            url=self.url,
+            where=self._where,
             deadline=self._deadline,
             timeout=self._timeout,
         )
@@ -422,13 +433,17 @@ class HTTPResponse:
     async def read(self) -> bytes:
         """The whole body; the connection is closed once it is read, and a later call returns the
         same bytes."""
-        if self._body is None:
-            if self._streamed:
-                raise TransportError("the body was already read as a stream")
-            try:
-                self._body = await self._step(self._raw.read)
-            finally:
-                self.close()
+        async with self._reading:
+            if self._body is None:
+                if self._streamed:
+                    raise TransportError("the body was already read as a stream")
+                if self._over:
+                    raise TransportError("an earlier read of the body did not complete")
+                try:
+                    self._body = await self._step(self._raw.read)
+                finally:
+                    self._over = True
+                    self.close()
         return self._body
 
     def _charset(self) -> str | None:
@@ -474,14 +489,24 @@ class HTTPResponse:
             if self._body:
                 yield self._body
             return
+        if self._streamed or self._reading.locked():
+            raise TransportError("the body was already read as a stream")
+        if self._over:
+            raise TransportError("an earlier read of the body did not complete")
         self._streamed = True
+        empty = True
         try:
             while True:
                 chunk = await self._step(self._read_piece)
                 if not chunk:
+                    if empty:
+                        # A whole body with nothing in it: read() returns it, as after a read().
+                        self._body = b""
                     return
+                empty = False
                 yield chunk
         finally:
+            self._over = True
             self.close()
 
     def close(self) -> None:
@@ -498,8 +523,7 @@ async def _run_step(
     exchange: _Exchange,
     step: Callable[[], T],
     *,
-    method: str,
-    url: str,
+    where: str,
     deadline: float | None,
     timeout: float | None,
 ) -> T:
@@ -528,11 +552,11 @@ async def _run_step(
             )
     except TimeoutError:
         exchange.stop()
-        raise _RequestTimeoutError(f"{method} {url} did not complete within {timeout} s") from None
+        raise _RequestTimeoutError(f"{where} did not complete within {timeout} s") from None
     except BaseException as exc:
         # Cancelled, or the step failed: either way the exchange is over.
         exchange.stop()
-        failure = _transport_failure(method, url, exc)
+        failure = _transport_failure(where, exc)
         if failure is exc:
             raise
         raise failure from exc
@@ -606,8 +630,8 @@ class HTTPSession:
             raise ValueError(
                 f"not an http or https URL: scheme {parts.scheme!r}, host {parts.hostname!r}"
             )
-        # The URL every error and the response carry: a user and password in it go out only
-        # in the Authorization header below.
+        # The URL the response, and a status error built from it, carry: a user and password in it
+        # go out only in the Authorization header below.
         shown = _without_userinfo(url, parts)
 
         send_headers = _merged_headers(
@@ -663,6 +687,12 @@ class HTTPSession:
         # IPv6 literal is part of the address.
         if port is None:
             port = 443 if tls is not None else 80
+        method = method.upper()
+        # What error text names: the scheme, host and port, as aiohttp's connect error named the
+        # host and port. The path and query can hold a key, or the rest of a password that has a
+        # raw "/" after a numeric start (the authority ends there).
+        host = parts.hostname
+        where = f"{method} {parts.scheme}://{f'[{host}]' if ':' in host else host}:{port}"
         if tls is not None:
             conn: http.client.HTTPConnection = http.client.HTTPSConnection(
                 parts.hostname, port, timeout=self.timeout, context=tls
@@ -671,7 +701,6 @@ class HTTPSession:
             conn = http.client.HTTPConnection(parts.hostname, port, timeout=self.timeout)
         exchange = _Exchange(conn, tls)
         self._exchanges.add(exchange)
-        method = method.upper()
         # http.client writes a str header value as latin-1 and refuses any other character; a
         # value goes out as its UTF-8 bytes instead.
         wire_headers = {
@@ -682,8 +711,7 @@ class HTTPSession:
             raw = await _run_step(
                 exchange,
                 lambda: exchange.send(method, target, body, wire_headers),
-                method=method,
-                url=shown,
+                where=where,
                 deadline=deadline,
                 timeout=self.timeout,
             )
@@ -695,6 +723,7 @@ class HTTPSession:
             raw,
             method=method,
             url=shown,
+            where=where,
             deadline=deadline,
             timeout=self.timeout,
             on_close=self._forget,

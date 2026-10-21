@@ -385,8 +385,14 @@ class Endpoint:
 
         from lionagi.ln._ssrf import is_ssrf_safe
 
-        parsed = urlparse(self.config.full_url)
-        hostname = parsed.hostname or ""
+        try:
+            hostname: str | None = urlparse(self.config.full_url).hostname or ""
+        except ValueError:
+            hostname = None
+        # Raised outside the handler: the parse's error quotes the authority, and with it any
+        # password, so it is not kept as this one's context either.
+        if hostname is None:
+            raise ValueError("the URL does not parse (not shown: it can hold a password)")
         allow_local = getattr(self.config, "allow_local_network", False)
         if not is_ssrf_safe(hostname, allow_local=allow_local):
             raise PermissionError(

@@ -17,7 +17,7 @@ import selectors
 import socket
 import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 
 import pytest
 
@@ -251,7 +251,7 @@ async def test_a_request_past_its_timeout_raises_and_closes_its_connection(annou
         async with HTTPSession(timeout=0.3) as session:
             with pytest.raises(TimeoutError, match="did not complete within 0.3 s") as raised:
                 await session.request("POST", base, json={})
-            # A class of its own on Python 3.10, which aiohttp's timeout derived from.
+            # The class aiohttp's timeout was, which on Python 3.10 is not TimeoutError.
             assert isinstance(raised.value, asyncio.TimeoutError)
             assert time.monotonic() - started < 3
             # Before the session closes, so the request's own stop is what ended the connection.
@@ -366,37 +366,10 @@ async def test_a_timeout_of_zero_or_less_sets_no_bound(timeout):
         assert await response.json() == {"ok": True}
 
 
-async def test_opening_a_connection_is_bounded_by_the_time_the_request_has_left(monkeypatch):
-    # One slot: the second request waits for it while the first waits for its response.
-    monkeypatch.setattr(_http, "MAX_REQUESTS_IN_FLIGHT", 1)
-    timeouts = []
-    connect = http.client.HTTPConnection.connect
-
-    def recording_connect(self):
-        timeouts.append(self.timeout)
-        connect(self)
-
-    monkeypatch.setattr(http.client.HTTPConnection, "connect", recording_connect)
-
-    async def handler(request: Request):
-        await asyncio.sleep(0.5)
-        return json_response({})
-
-    async def call(session):
-        response = await session.request("POST", base, json={})
-        await response.read()
-
-    async with serving(handler) as base, HTTPSession(timeout=5) as session:
-        await asyncio.gather(call(session), call(session))
-
-    first, second = timeouts
-    assert 4.9 < first <= 5
-    # The half second spent waiting for the slot is not left for the connect.
-    assert second < 4.6
-
-
-@pytest.mark.parametrize("stop", ["timeout", "cancel", "close"])
-async def test_a_tcp_connect_in_progress_stops_soon_after_its_request_is_stopped(monkeypatch, stop):
+@contextmanager
+def _connect_never_answers(monkeypatch):
+    """A local address whose TCP connect stays in progress: each poll for it waits its timeout and
+    finds nothing. Yields the address and the list the polls append their times to."""
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         target = ("127.0.0.1", probe.getsockname()[1])
@@ -430,8 +403,47 @@ async def test_a_tcp_connect_in_progress_stops_soon_after_its_request_is_stopped
 
     monkeypatch.setattr(socket.socket, "connect", in_progress)
     monkeypatch.setattr(selectors, "DefaultSelector", Unanswered)
-    url = f"http://{target[0]}:{target[1]}/v1"
     try:
+        yield target, polls
+    finally:
+        done.set()
+
+
+async def test_the_wait_for_a_slot_counts_against_the_deadline_that_ends_a_connect(monkeypatch):
+    # One slot, held here for half a second; the request's host never answers its connect. Its
+    # one-second deadline counts from its start, the wait included, so the connect gets the half
+    # second the wait left.
+    monkeypatch.setattr(_http, "MAX_REQUESTS_IN_FLIGHT", 1)
+    with _connect_never_answers(monkeypatch) as (target, polls):
+        limiter = _http._limiter()
+        assert limiter.total_tokens == 1
+        await limiter.acquire()
+        held = True
+        try:
+            async with HTTPSession(timeout=1) as session:
+                started = time.monotonic()
+                task = asyncio.create_task(
+                    session.request("GET", f"http://{target[0]}:{target[1]}/v1")
+                )
+                await asyncio.sleep(0.5)
+                # Still waiting for the slot: the connect has not started.
+                assert not polls
+                limiter.release()
+                held = False
+                with pytest.raises(TimeoutError, match="did not complete within 1 s"):
+                    await asyncio.wait_for(task, timeout=3)
+                ended = time.monotonic() - started
+        finally:
+            if held:
+                limiter.release()
+    assert polls
+    assert 0.9 < ended < 1.4
+
+
+@pytest.mark.parametrize("stop", ["timeout", "cancel", "close"])
+async def test_a_tcp_connect_in_progress_stops_soon_after_its_request_is_stopped(monkeypatch, stop):
+    with _connect_never_answers(monkeypatch) as (target, polls):
+        url = f"http://{target[0]}:{target[1]}/v1"
         session = HTTPSession(timeout=0.3 if stop == "timeout" else None)
         started = time.monotonic()
         task = asyncio.create_task(session.request("GET", url))
@@ -456,8 +468,6 @@ async def test_a_tcp_connect_in_progress_stops_soon_after_its_request_is_stopped
         assert settled > 0
         assert len(polls) == settled
         session.close()
-    finally:
-        done.set()
 
 
 async def test_a_host_whose_first_address_refuses_is_reached_at_its_next(monkeypatch):
@@ -490,8 +500,11 @@ async def test_a_refused_connection_is_a_transport_error():
         port = probe.getsockname()[1]
     url = f"http://127.0.0.1:{port}/v1"
     async with HTTPSession(timeout=5) as session:
-        with pytest.raises(TransportError, match=f"POST {url}") as caught:
+        with pytest.raises(TransportError) as caught:
             await session.request("POST", url, json={})
+    # Named by method, scheme, host and port, as aiohttp's connect error named host and port.
+    assert str(caught.value).startswith(f"POST http://127.0.0.1:{port}: ConnectionRefusedError")
+    assert "/v1" not in str(caught.value)
     assert isinstance(caught.value, ConnectionError)
     assert isinstance(caught.value.__cause__, ConnectionRefusedError)
 
@@ -557,7 +570,8 @@ async def test_a_body_cut_short_is_a_transport_error(head):
     ):
         response = await session.request("POST", url, json={})
         pieces = []
-        with pytest.raises(TransportError, match=re.escape(f"POST {url}: IncompleteRead")):
+        origin = url.removesuffix("/v1")
+        with pytest.raises(TransportError, match=re.escape(f"POST {origin}: IncompleteRead")):
             async for piece in response.iter_chunks():
                 pieces.append(piece)
 
@@ -704,7 +718,7 @@ async def test_a_password_in_the_url_reaches_no_error_and_no_response():
     async with HTTPSession(timeout=5) as session:
         with pytest.raises(TransportError) as refused:
             await session.request("GET", f"http://user:{secret}@127.0.0.1:{port}/v1")
-    assert f"127.0.0.1:{port}/v1" in str(refused.value)
+    assert str(refused.value).startswith(f"GET http://127.0.0.1:{port}: ")
 
     stalled = asyncio.Event()
     async with serving(_waits_for_close(stalled)) as base:
@@ -712,7 +726,7 @@ async def test_a_password_in_the_url_reaches_no_error_and_no_response():
         async with HTTPSession(timeout=0.3) as session:
             with pytest.raises(TimeoutError) as late:
                 await session.request("GET", f"http://user:{secret}@{authority}/v1")
-    assert f"{authority}/v1" in str(late.value)
+    assert str(late.value) == f"GET http://{authority} did not complete within 0.3 s"
 
     async with HTTPSession() as session:
         with pytest.raises(ValueError, match="not an http or https URL") as bad:
@@ -741,6 +755,9 @@ async def test_a_password_in_the_url_reaches_no_error_and_no_response():
         # No "scheme://": the text before the first colon, which urlsplit takes for the scheme,
         # is the user.
         "Lk3d:Zq9w@127.0.0.1/v1",
+        # A backslash in the authority, which RFC 3986 does not allow and a parser that reads it
+        # as the end of the host takes for a different host.
+        "http://Lk3d\\:Zq9w@127.0.0.1:9/v1",
     ],
 )
 async def test_a_url_refused_before_connecting_quotes_none_of_its_credentials(url):
@@ -784,6 +801,49 @@ async def test_a_raw_slash_after_a_numeric_lead_ends_the_authority():
     assert heads[0].startswith(b"GET /Zq9w@host.invalid/v1 HTTP/1.1\r\n")
     assert b"Authorization" not in heads[0]
     assert response.url == f"http://127.0.0.1:{port}/Zq9w@host.invalid/v1"
+
+
+@pytest.mark.parametrize(
+    "tail", ["/Zq9w@127.0.0.1/v1", "/v1?key=Zq9w"], ids=["password-tail-in-path", "key-in-query"]
+)
+async def test_a_refused_connection_names_neither_the_path_nor_the_query(tail):
+    # The path can hold the rest of a password with a raw "/" after a numeric start, and the
+    # query can hold a key.
+    closed = socket.socket()
+    closed.bind(("127.0.0.1", 0))
+    port = closed.getsockname()[1]
+    closed.close()
+    async with HTTPSession(timeout=5) as session:
+        with pytest.raises(TransportError) as refused:
+            await session.request("GET", f"http://127.0.0.1:{port}{tail}")
+    assert str(refused.value).startswith(f"GET http://127.0.0.1:{port}: ")
+    assert "zq9w" not in str(refused.value).lower()
+
+
+async def test_an_endpoint_refuses_a_url_that_does_not_parse_without_quoting_it():
+    # "\uff20" is a character NFKC folds into "@", which urlsplit refuses in an authority, quoting
+    # the authority, password included.
+    endpoint = Endpoint(
+        config=EndpointConfig(
+            name="unparsed",
+            provider="unparsed",
+            base_url="http://user:Lk3d\uff20Zq9w@127.0.0.1:9",
+            endpoint="v1",
+            method="GET",
+            auth_type="none",
+            allow_local_network=True,
+            timeout=5,
+            max_retries=1,
+        )
+    )
+    with pytest.raises(ValueError) as refused:
+        await endpoint.call({})
+
+    error = refused.value
+    assert str(error) == "the URL does not parse (not shown: it can hold a password)"
+    assert "zq9w" not in repr(error).lower()
+    assert error.__context__ is None
+    assert error.__cause__ is None
 
 
 async def test_a_percent_encoded_slash_question_mark_and_hash_stay_in_the_password():
@@ -881,6 +941,90 @@ async def test_a_body_read_as_a_stream_is_not_read_again_as_if_stopped(announce_
             body = await read.read()
             assert [chunk async for chunk in read.iter_chunks()] == [body]
     assert b"".join(pieces) == body
+
+
+_WHOLE = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello"
+_CUT = b"HTTP/1.1 200 OK\r\nContent-Length: 40\r\n\r\nhello"
+
+
+async def _consume(response, how):
+    if how == "read":
+        return await response.read()
+    return [chunk async for chunk in response.iter_chunks()]
+
+
+@pytest.mark.parametrize(
+    ("wire", "first", "then", "message"),
+    [
+        pytest.param(_WHOLE, "iter", "iter", "already read as a stream", id="whole-iter-iter"),
+        pytest.param(_CUT, "iter", "iter", "already read as a stream", id="cut-iter-iter"),
+        pytest.param(_CUT, "iter", "read", "already read as a stream", id="cut-iter-read"),
+        pytest.param(_CUT, "read", "read", "earlier read of the body did not", id="cut-read-read"),
+        pytest.param(_CUT, "read", "iter", "earlier read of the body did not", id="cut-read-iter"),
+    ],
+)
+async def test_a_body_read_again_after_it_ended_or_failed_says_so_not_stopped(
+    wire, first, then, message
+):
+    async with answering(wire) as url, HTTPSession(timeout=5) as session:
+        response = await session.request("POST", url, json={})
+        if wire is _CUT:
+            with pytest.raises(TransportError, match="IncompleteRead"):
+                await _consume(response, first)
+        else:
+            await _consume(response, first)
+        with pytest.raises(TransportError, match=message):
+            await _consume(response, then)
+
+
+async def test_a_streamed_empty_body_reads_back_as_empty():
+    async with (
+        answering(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n") as url,
+        HTTPSession(timeout=5) as session,
+    ):
+        response = await session.request("POST", url, json={})
+        assert await _consume(response, "iter") == []
+        assert await response.read() == b""
+
+
+async def test_two_reads_at_once_both_return_the_body():
+    async with answering(_WHOLE) as url, HTTPSession(timeout=5) as session:
+        for _ in range(10):
+            response = await session.request("POST", url, json={})
+            assert await asyncio.gather(response.read(), response.read()) == [b"hello"] * 2
+
+
+async def test_a_stream_started_while_a_read_waits_for_the_body_is_refused():
+    sent = asyncio.Event()
+
+    async def answer(reader, writer):
+        head = await reader.readuntil(b"\r\n\r\n")
+        length = re.search(rb"(?im)^content-length:[ \t]*(\d+)", head)
+        if length:
+            await reader.readexactly(int(length.group(1)))
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n")
+        await writer.drain()
+        await sent.wait()
+        writer.write(b"hello")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(answer, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        async with HTTPSession(timeout=5) as session:
+            response = await session.request("POST", f"http://127.0.0.1:{port}/v1", json={})
+            reading = asyncio.create_task(response.read())
+            # The read is in its worker thread, waiting for the body.
+            await asyncio.sleep(0.2)
+            with pytest.raises(TransportError, match="already read as a stream"):
+                await _consume(response, "iter")
+            sent.set()
+            assert await asyncio.wait_for(reading, timeout=3) == b"hello"
+    finally:
+        sent.set()
+        server.close()
+        await server.wait_closed()
 
 
 async def test_an_endpoint_stream_cut_short_raises_rather_than_ending():
