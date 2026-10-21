@@ -439,18 +439,23 @@ def lost_terminal_write(
     """The terminal status a run decided that its store did not take, or None.
 
     *returned* is what teardown handed back: the row's status when its terminal write failed
-    (usually `running`), `unknown` when even that read failed. The record exists only when the
-    run decided a terminal status and *returned* is not terminal. A terminal *returned* that
-    differs from the decision is another writer's record, not a lost write, and a run that
-    decided `running` (a linked engine session still runs) decided no end. The decision is the
-    outcome teardown recorded in *live* before its write, or, when teardown failed before
-    deciding, the terminal status it was asked to write, with the code teardown resolved for
-    it, or the one `resolve_run_reason` gives when teardown failed before resolving one. The
-    caller leaves out a leg that defers its end to an auto-resume.
+    (usually `running`), `unknown` when even that read failed. The record exists only when a
+    store read or write failed teardown (the database error teardown kept in *live*), the run
+    decided a terminal status and *returned* is not terminal. Teardown that failed for any
+    other reason, such as an artifact removed while it was being verified, never reached a
+    write the store could refuse. A terminal *returned* that differs from the decision is
+    another writer's record, not a lost write, and a run that decided `running` (a linked
+    engine session still runs) decided no end. The decision is the outcome teardown recorded in
+    *live* before its write, or, when teardown failed before deciding, the terminal status it
+    was asked to write, with the code teardown resolved for it, or the one `resolve_run_reason`
+    gives when teardown failed before resolving one. The caller leaves out a leg that defers
+    its end to an auto-resume.
     """
     from lionagi.state.db import SESSION_TERMINAL_STATUSES
 
     if not live or returned in SESSION_TERMINAL_STATUSES:
+        return None
+    if live.get("teardown_store_error") is None:
         return None
     decision = live.get("terminal_reason")
     if decision:
@@ -463,6 +468,35 @@ def lost_terminal_write(
     if code is None:
         code = resolve_run_reason(status=status, exception=exception)[0]
     return {"status": status, "reason_code": code, "at": time.time()}
+
+
+def _store_error_in(error: BaseException | None) -> BaseException | None:
+    """The database error *error* is, raises from, or carries inside exception groups.
+
+    Teardown's store reads and writes run inside task groups, so a store error can arrive
+    beside another failure, however deeply nested. An error raised while another was being
+    handled is not taken as caused by it.
+    """
+    import sqlite3
+
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from lionagi.ln.concurrency._compat import BaseExceptionGroup
+
+    seen: set[int] = set()
+    pending: list[BaseException] = [error] if error is not None else []
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, sqlite3.Error | SQLAlchemyError):
+            return current
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+    return None
 
 
 def _is_time(value: Any) -> bool:
@@ -1596,6 +1630,13 @@ async def teardown_persist(
             ctx["store_refusal"] = refusal
             return "failed"
         _log.warning("live persist teardown failed: %s", exc, exc_info=True)
+        # Only a database error says the store failed teardown, so only that one leaves a
+        # terminal write the store may not have taken; a failure from anywhere else (an
+        # artifact removed while it was verified) stopped teardown before any refused write
+        # (ADR-0104 Amendment 3).
+        store_error = _store_error_in(exc)
+        if store_error is not None:
+            ctx["teardown_store_error"] = store_error
         # A failure anywhere in the block above (any of _teardown_common's
         # separate write transactions, or the bookkeeping around them) must
         # not make this return the *requested* terminal status as if it had

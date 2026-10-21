@@ -7,6 +7,7 @@ provider's refusal from a crash."""
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -22,6 +23,9 @@ from lionagi.cli._runs import (
 from lionagi.state.reasons import RunReasons
 from tests.cli.test_agent_context_from import _wire_agent_stubs
 from tests.providers.test_claude_code_refusal import REFUSAL
+
+# The store error teardown keeps when a store read or write fails it.
+_LOCKED = sqlite3.OperationalError("database is locked")
 
 
 def test_durable_operations_scopes_manifest_error_to_agent_runs():
@@ -523,11 +527,14 @@ async def test_a_refused_write_records_the_status_and_code_teardown_decided_not_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("store_failed", [True, False], ids=["store-error", "other-error"])
 async def test_a_teardown_that_failed_before_deciding_records_the_status_it_was_asked_to_write(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, store_failed
 ):
     """No decision was recorded, so the status is the one asked and the code is the one the run's
-    exception resolves to (a retryable provider refusal, not the generic failure code)."""
+    exception resolves to (a retryable provider refusal, not the generic failure code). Only a
+    failure the store raised leaves the record: any other one left the store able to take a
+    write that teardown never reached."""
     from lionagi import Branch
     from lionagi.cli import _runs
     from lionagi.providers._provider_errors import ProviderQuotaError
@@ -542,6 +549,8 @@ async def test_a_teardown_that_failed_before_deciding_records_the_status_it_was_
     async def flush_fails(ctx):
         seen["decision"] = ctx.get("terminal_reason")
         seen["resolved"] = ctx.get("requested_reason_code")
+        if store_failed:
+            raise sqlite3.OperationalError("database is locked")
         raise RuntimeError("flush failed")
 
     monkeypatch.setattr(Branch, "operate", operate)
@@ -556,8 +565,73 @@ async def test_a_teardown_that_failed_before_deciding_records_the_status_it_was_
     assert seen == {"decision": None, "resolved": None}
     manifest = json.loads(run.manifest_path.read_text())
     assert manifest["status"] == "running"
+    if not store_failed:
+        assert TERMINAL_WRITE_LOST_FIELD not in manifest
+        return
     lost = manifest[TERMINAL_WRITE_LOST_FIELD]
     assert (lost["status"], lost["reason_code"]) == ("failed", RunReasons.FAILED_PROVIDER_RETRYABLE)
+
+
+@pytest.mark.asyncio
+async def test_an_artifact_removed_while_teardown_verified_it_records_no_lost_write(
+    monkeypatch, tmp_path
+):
+    """The required report is removed after the verifier saw it and before it read its size, so
+    teardown fails before it decides or writes a terminal status. The store refused nothing:
+    the row stays `running` and run.json says so, with no lost write beside it."""
+    from lionagi.state import artifact_verifier
+    from lionagi.state.db import StateDB
+
+    agent_mod, real_teardown = _with_a_real_row(monkeypatch, tmp_path, operate_return="done")
+    contract = {"expected": [{"id": "report", "path": "report.md", "required": True}]}
+    monkeypatch.setattr(agent_mod, "resolve_artifact_contract", lambda **_: contract)
+    run = _run(monkeypatch, tmp_path)
+    report = run.artifact_root / "report.md"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text("the report")
+    real_getsize = artifact_verifier.os.path.getsize
+    real_update = StateDB.update_status
+    seen = {"terminal_writes": [], "write_errors": []}
+
+    def getsize(path):
+        if Path(path) == report and report.exists():
+            report.unlink()
+        return real_getsize(path)
+
+    async def update_status(self, entity_type, entity_id, **kw):
+        if entity_type == "session" and kw.get("new_status") != "running":
+            seen["terminal_writes"].append(kw.get("new_status"))
+        try:
+            return await real_update(self, entity_type, entity_id, **kw)
+        except BaseException as exc:
+            seen["write_errors"].append(repr(exc))
+            raise
+
+    async def teardown(ctx, **kw):
+        monkeypatch.setattr(artifact_verifier.os.path, "getsize", getsize)
+        status = await real_teardown(ctx, **kw)
+        seen["decision"] = ctx.get("terminal_reason")
+        seen["store_error"] = ctx.get("teardown_store_error")
+        return status
+
+    monkeypatch.setattr(StateDB, "update_status", update_status)
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", teardown)
+
+    from lionagi.cli.agent import _run_agent
+
+    *_, terminal_status, session_id = await _run_agent("claude/sonnet", "go")
+
+    assert seen == {
+        "terminal_writes": [],
+        "write_errors": [],
+        "decision": None,
+        "store_error": None,
+    }
+    async with StateDB() as db:
+        row = await db.get_session(session_id)
+    manifest = json.loads(run.manifest_path.read_text())
+    assert terminal_status == row["status"] == manifest["status"] == "running"
+    assert TERMINAL_WRITE_LOST_FIELD not in manifest
 
 
 @pytest.mark.asyncio
@@ -565,7 +639,8 @@ async def test_a_leg_that_defers_its_end_to_an_auto_resume_records_no_lost_write
     monkeypatch, tmp_path
 ):
     """The leg timed out and would resume: its teardown deferred the terminal write, so there was
-    none for the store to refuse, even when teardown then failed and left the row running."""
+    none for the store to refuse, even when the store then failed teardown and left the row
+    running."""
     from lionagi import Branch
     from lionagi.cli import _runs
 
@@ -576,7 +651,7 @@ async def test_a_leg_that_defers_its_end_to_an_auto_resume_records_no_lost_write
         raise TimeoutError("deadline")
 
     async def flush_fails(ctx):
-        raise RuntimeError("flush failed")
+        raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(Branch, "operate", operate)
     monkeypatch.setattr(_runs, "_flush_pending_message_events", flush_fails)
@@ -640,32 +715,65 @@ async def test_a_teardown_that_decided_running_records_no_lost_write(monkeypatch
     ("live", "requested", "returned", "expected"),
     [
         (None, "completed", "running", None),
-        ({"session_id": "s"}, "completed", "running", ("completed", RunReasons.COMPLETED_OK)),
         (
-            {"session_id": "s", "requested_reason_code": RunReasons.FAILED_PROVIDER_RETRYABLE},
+            {"session_id": "s", "teardown_store_error": _LOCKED},
+            "completed",
+            "running",
+            ("completed", RunReasons.COMPLETED_OK),
+        ),
+        (
+            {
+                "session_id": "s",
+                "requested_reason_code": RunReasons.FAILED_PROVIDER_RETRYABLE,
+                "teardown_store_error": _LOCKED,
+            },
             "failed",
             "running",
             ("failed", RunReasons.FAILED_PROVIDER_RETRYABLE),
         ),
         (
-            {"terminal_reason": ("failed", "s", RunReasons.FAILED_MISSING_ARTIFACT)},
+            {
+                "terminal_reason": ("failed", "s", RunReasons.FAILED_MISSING_ARTIFACT),
+                "teardown_store_error": _LOCKED,
+            },
             "completed",
             "running",
             ("failed", RunReasons.FAILED_MISSING_ARTIFACT),
         ),
         (
-            {"terminal_reason": ("failed", "the store refused a write")},
+            {
+                "terminal_reason": ("failed", "the store refused a write"),
+                "teardown_store_error": _LOCKED,
+            },
             "completed",
             "running",
             ("failed", RunReasons.FAILED_EXCEPTION),
         ),
         (
-            {"terminal_reason": ("completed", "s", RunReasons.COMPLETED_OK)},
+            {
+                "terminal_reason": ("completed", "s", RunReasons.COMPLETED_OK),
+                "teardown_store_error": _LOCKED,
+            },
             "completed",
             "unknown",
             ("completed", RunReasons.COMPLETED_OK),
         ),
-        ({"terminal_reason": ("running", "s", RunReasons.STARTED_OK)}, "failed", "running", None),
+        ({"session_id": "s"}, "completed", "running", None),
+        (
+            {"terminal_reason": ("completed", "s", RunReasons.COMPLETED_OK)},
+            "completed",
+            "running",
+            None,
+        ),
+        (
+            {
+                "terminal_reason": ("running", "s", RunReasons.STARTED_OK),
+                "teardown_store_error": _LOCKED,
+            },
+            "failed",
+            "running",
+            None,
+        ),
         (
             {"terminal_reason": ("completed", "s", RunReasons.COMPLETED_OK)},
             "completed",
@@ -684,7 +792,7 @@ async def test_a_teardown_that_decided_running_records_no_lost_write(monkeypatch
             "cancelled",
             None,
         ),
-        ({"session_id": "s"}, "running", "running", None),
+        ({"session_id": "s", "teardown_store_error": _LOCKED}, "running", "running", None),
     ],
     ids=[
         "no-persistence",
@@ -693,6 +801,8 @@ async def test_a_teardown_that_decided_running_records_no_lost_write(monkeypatch
         "decision-wins-over-the-request",
         "two-field-decision-resolves-its-code",
         "unknown-readback",
+        "no-store-error-before-deciding",
+        "no-store-error-after-deciding",
         "decided-running",
         "clean-write",
         "another-writers-terminal-status",
@@ -712,6 +822,52 @@ def test_the_lost_write_predicate_fires_only_for_a_terminal_decision_and_a_non_t
     assert (record["status"], record["reason_code"]) == expected
     assert set(record) == {"status", "reason_code", "at"}
     assert before <= record["at"] <= time.time()
+
+
+def _store_error_cases():
+    import sqlite3
+
+    from sqlalchemy.exc import OperationalError
+
+    from lionagi.ln.concurrency._compat import BaseExceptionGroup
+
+    locked = sqlite3.OperationalError("database is locked")
+    wrapped = OperationalError("UPDATE sessions", {}, sqlite3.OperationalError("disk I/O error"))
+    raised_from = RuntimeError("teardown write failed")
+    raised_from.__cause__ = locked
+    while_handling = FileNotFoundError("report.md")
+    while_handling.__context__ = locked
+    nested = BaseExceptionGroup(
+        "teardown", [ValueError("other"), BaseExceptionGroup("inner", [locked])]
+    )
+    return [
+        (locked, locked),
+        (wrapped, wrapped),
+        (raised_from, locked),
+        (nested, locked),
+        (FileNotFoundError("report.md"), None),
+        (while_handling, None),
+        (BaseExceptionGroup("teardown", [ValueError("a"), RuntimeError("b")]), None),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    _store_error_cases(),
+    ids=[
+        "sqlite-error",
+        "sqlalchemy-error",
+        "raised-from-a-store-error",
+        "inside-nested-groups",
+        "filesystem-error",
+        "raised-while-handling-a-store-error",
+        "group-without-a-store-error",
+    ],
+)
+def test_a_store_error_is_found_where_teardown_can_carry_one(error, expected):
+    from lionagi.cli._runs import _store_error_in
+
+    assert _store_error_in(error) is expected
 
 
 @pytest.mark.asyncio
@@ -803,7 +959,10 @@ def test_a_lost_write_with_no_code_from_teardown_reads_the_sigterm_latch_once(mo
     cu._SIGTERM_RECEIVED.set()
 
     lost = lost_terminal_write(
-        {"session_id": "s"}, requested="cancelled", exception=None, returned="running"
+        {"session_id": "s", "teardown_store_error": _LOCKED},
+        requested="cancelled",
+        exception=None,
+        returned="running",
     )
 
     assert lost["reason_code"] == RunReasons.CANCELLED_SIGTERM
@@ -820,7 +979,11 @@ def test_a_lost_write_takes_the_code_teardown_resolved_and_leaves_the_latch_alon
     monkeypatch.setattr(cu, "_SIGTERM_RECEIVED", threading.Event())
 
     lost = lost_terminal_write(
-        {"session_id": "s", "requested_reason_code": RunReasons.CANCELLED_SIGTERM},
+        {
+            "session_id": "s",
+            "requested_reason_code": RunReasons.CANCELLED_SIGTERM,
+            "teardown_store_error": _LOCKED,
+        },
         requested="cancelled",
         exception=None,
         returned="running",

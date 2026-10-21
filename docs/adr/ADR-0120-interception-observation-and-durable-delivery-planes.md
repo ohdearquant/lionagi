@@ -692,7 +692,7 @@ batch are minted; closure wakes only for remaining admitted facts. Closure drain
 emissions and persistence before recording its cutoff; observer unbinding is cleanup, not
 settlement, and `unbind_db_persistence` is synchronous and detaches the sink handler before the
 writes it tracked are known to have finished (`lionagi/session/observer.py:597-614`), ahead of the
-CLI and Studio closing the store (`lionagi/cli/_runs.py:1640`,
+CLI and Studio closing the store (`lionagi/cli/_runs.py:1681`,
 `lionagi/studio/services/workflow_run.py:110`). `retryable` closing work waits durably;
 `best_effort` drops and counts queue overflow. A hung invocation remains pending; restart recovers
 durable work without inventing a successful settlement.

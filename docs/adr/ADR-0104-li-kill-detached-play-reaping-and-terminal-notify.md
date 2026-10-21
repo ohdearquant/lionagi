@@ -154,7 +154,8 @@ dropped signals lives in memory and dies with it.
 
 **Decision.** Two records in the run directory, and the reaper reads them.
 
-1. When teardown hands back a status that is not terminal for a run whose teardown decided a
+1. When a store read or write fails teardown (teardown keeps the database error it caught) and
+   teardown hands back a status that is not terminal for a run whose teardown decided a
    terminal one, the run writes `terminal_write_lost` on its run.json in the same manifest write
    that records `status`: the decided status, its reason code, and the time. The decided status
    and code are the outcome teardown records for its own run before its write
@@ -164,7 +165,9 @@ dropped signals lives in memory and dies with it.
    `resolve_run_reason` gives the code. `status` keeps saying what is durable; the new field says
    what the run decided and that the store never got it. A run that defers its end to an
    auto-resume, or whose teardown decided `running` because a linked engine session still runs,
-   decided no terminal status and writes nothing. A terminal status other than the decided one
+   decided no terminal status and writes nothing. A teardown that fails on anything but a
+   database error, such as an artifact removed while it was verified, reached no write the store
+   refused, and the run writes nothing either. A terminal status other than the decided one
    is another writer's record (a concurrent teardown won the row, or the state doctor ended it),
    not a lost write.
 2. The first time a run's signal persistence opens a skip window (the store refused the writer
