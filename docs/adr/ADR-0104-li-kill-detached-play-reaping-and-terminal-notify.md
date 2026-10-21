@@ -141,10 +141,11 @@ before this amendment, which does not close it; that is tracked separately.
 A leg whose state store refuses writes keeps going: signal persistence skips and counts what it
 could not write (`signal_persist_dropped` on run.json at teardown), and a setup that fails
 records `persistence_degraded_reason` (Amendment 2). Its end can still be lost. Teardown's
-terminal transition is a store write. When the store refuses it, teardown hands back what is
-durable (the row's status, usually `running`, or `unknown` when it cannot read the row back)
-instead of the status the run decided. With no committed transition the lifecycle callback never
-runs, so the notify hook never records the end on the job record. run.json is then rewritten
+terminal transition is a store write. When that write fails, as it does when the store refuses
+the writer lock, teardown hands back what is durable (the row's status, usually `running`, or
+`unknown` when it cannot read the row back) instead of the status the run decided. With no
+committed transition the lifecycle callback never runs, so the notify hook never records the end
+on the job record. run.json is then rewritten
 with the durable status and the decided one is gone. When the process exits, the reaper finds a
 started job with no end and reports `process_gone_without_outcome` with no detail, the answer
 for a run that said nothing about its end, although this one decided its end and lost only the
@@ -171,11 +172,14 @@ dropped signals lives in memory and dies with it.
    thread of its own under the run directory's manifest lock. The window exists so that an emit
    never waits on the store, and this record must not make it wait on a file instead.
    `bind_db_persistence` takes the callback that does this (`on_window_opened`) and calls it
-   once per binding, on the event loop. A run killed later still leaves this marker, though not
-   its count.
+   once per binding, on the event loop. A run killed after that thread has written the time
+   still leaves this marker, though not its count. A whole-file write of run.json
+   (`RunDir.write_manifest`) keeps the earliest time on file, so neither the run's own setup
+   write nor one by another invocation sharing its run id (`LIONAGI_RUN_ID`) erases or moves it.
 3. An auto-resumed leg runs in a run directory of its own while the job reads the first run's
    run.json, so the first run hands it a marker for that run.json too, and a place to leave a
-   lost terminal write, which the first run copies onto its run.json when the leg ends.
+   lost terminal write, which the first run copies onto its run.json when the leg ends,
+   setting that one field under the manifest lock and leaving the rest of the file as it is.
 4. `reap_orphan` reads run.json through the bounded, fail-closed reader it already uses for
    `persistence_degraded_reason`, and assigns `reason_detail` beside
    `process_gone_without_outcome` in this order: `terminal_write_lost`, then
@@ -202,7 +206,15 @@ adds the cause without changing an answer any reader keys on.
 **Limits.** No detail is assigned from the absence of a field: retention prunes run directories,
 and an absent field is what an older run, a pruned one and a silent one all look like. A
 malformed record reads as absent. A leg killed before its store refused anything leaves no
-marker and is reaped as before. The count of dropped signals is still written only at teardown.
+marker and is reaped as before. One killed after its store refused the lock but before the
+marker's thread wrote the time leaves no marker either, and one killed after its terminal write
+failed but before the manifest write that records the loss leaves no `terminal_write_lost`. The
+count of dropped signals is still written only at teardown. A store that refuses a write in
+compatibility mode is not a lost write here: the run fails with that refusal as its reason
+(ADR-0128 D6), run.json records `failed`, and the status the run decided is not kept; a
+timed-out leg that would have auto-resumed fails the same way and is not resumed. Invocations
+sharing a run id share one run.json, and `terminal_write_lost` is lifecycle data like `status`:
+a later whole-file write by another invocation replaces it.
 Flow, fanout and play runs write neither field; they degrade without the record, as
 Amendment 2's Limits say for their stop handle. A job whose hook could not take the job lock, so
 that run.json holds a real terminal status the job record never got, is a neighbouring case this

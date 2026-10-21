@@ -72,6 +72,7 @@ from ._runs import (
     TERMINAL_WRITE_LOST_FIELD,
     RunDir,
     _signal_window_marker,
+    _write_terminal_write_lost,
     allocate_run,
     find_branch,
     load_last_branch,
@@ -2012,9 +2013,11 @@ async def _run_agent(
         finally:
             if _resumed_lost.get(TERMINAL_WRITE_LOST_FIELD) is not None:
                 run_manifest[TERMINAL_WRITE_LOST_FIELD] = _resumed_lost[TERMINAL_WRITE_LOST_FIELD]
-                if _write_run_manifest is not None:
+                if isinstance(run, RunDir):
                     try:
-                        _write_run_manifest(run_manifest)
+                        _write_terminal_write_lost(
+                            run.state_root, run_manifest[TERMINAL_WRITE_LOST_FIELD]
+                        )
                     except Exception as _copy_exc:  # noqa: BLE001 — the leg's own answer stands
                         log_error(
                             f"could not record the resumed leg's lost terminal write: {_copy_exc!r}"

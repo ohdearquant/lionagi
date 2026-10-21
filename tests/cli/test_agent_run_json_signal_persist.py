@@ -102,7 +102,27 @@ async def test_a_clean_run_writes_zero_dropped_signals_into_run_json(monkeypatch
     assert TERMINAL_WRITE_LOST_FIELD not in manifest
 
 
-# The marker a run leaves the first time its writer is refused (ADR-0104 Amendment 6).
+@pytest.mark.asyncio
+async def test_a_run_keeps_the_time_another_invocation_sharing_its_run_id_recorded(
+    monkeypatch, tmp_path
+):
+    """Another invocation sharing the run id had recorded a degradation time on run.json; this
+    run's own whole-file writes, from its setup write to its terminal one, keep it."""
+    from lionagi.cli.agent import _run_agent
+
+    agent_mod, real_teardown = _with_a_real_row(monkeypatch, tmp_path, operate_return="done")
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", real_teardown)
+    run = _run(monkeypatch, tmp_path)
+    run.write_manifest({"status": "running", SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD: 1000.0})
+
+    await _run_agent("claude/sonnet", "go")
+
+    manifest = json.loads(run.manifest_path.read_text())
+    assert manifest["status"] == "completed"
+    assert manifest[SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD] == 1000.0
+
+
+# The marker a run leaves the first time its writer is refused (ADR-0104 Amendment 3).
 
 
 async def _until(predicate, what: str, timeout: float = 10.0) -> None:
@@ -350,6 +370,78 @@ def test_the_marker_write_keeps_an_earlier_time_and_the_rest_of_the_file(tmp_pat
     manifest = run.read_manifest()
     assert manifest[SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD] == 100.0
     assert (manifest["status"], manifest["branch_id"]) == ("running", "b-1")
+
+
+@pytest.mark.parametrize("bound", [False, True], ids=["from-path", "provenance-bound"])
+def test_a_whole_file_write_keeps_the_earliest_time_on_file(tmp_path, bound):
+    """A manifest written without the time, or with a later one, keeps the time on file, as the
+    whole-file write of another invocation sharing the run id must; an earlier one replaces it."""
+    from lionagi.cli._runs import RunDir
+
+    run = RunDir(
+        run_id="run-s",
+        state_root=tmp_path / "s",
+        artifact_root=tmp_path / "s-art",
+        cwd=tmp_path if bound else None,
+    )
+    run.ensure_state_dirs()
+    run.write_manifest({"status": "running", SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD: 1000.0})
+
+    run.write_manifest({"status": "running"})
+    assert run.read_manifest()[SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD] == 1000.0
+
+    run.write_manifest({"status": "completed", SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD: 2000.0})
+    manifest = run.read_manifest()
+    assert (manifest["status"], manifest[SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD]) == (
+        "completed",
+        1000.0,
+    )
+
+    run.write_manifest({"status": "completed", SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD: 500.0})
+    assert run.read_manifest()[SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD] == 500.0
+
+
+@pytest.mark.parametrize(
+    "on_file", ["yesterday", True, [1.0], None], ids=["string", "bool", "list", "null"]
+)
+def test_a_malformed_time_on_file_is_not_kept(tmp_path, on_file):
+    """A whole-file write does not carry a time no reader takes, and the marker thread writes
+    over one."""
+    from lionagi.cli._runs import RunDir
+
+    run = RunDir(run_id="run-m", state_root=tmp_path / "m", artifact_root=tmp_path / "m-art")
+    run.ensure_state_dirs()
+    on_disk = {
+        "run_id": "run-m",
+        "status": "running",
+        SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD: on_file,
+    }
+
+    run.manifest_path.write_text(json.dumps(on_disk))
+    run.write_manifest({"status": "running"})
+    assert SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD not in run.read_manifest()
+
+    run.manifest_path.write_text(json.dumps(on_disk))
+    _runs._write_signal_persistence_degraded_at(run.state_root, 100.0)
+    assert run.read_manifest()[SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD] == 100.0
+
+
+def test_a_provenance_bound_write_over_an_unreadable_file_still_writes(tmp_path):
+    """A run bound to its provenance reads the file only for the time, so a file it cannot read
+    is written over as before, without one."""
+    from lionagi.cli._runs import RunDir
+
+    run = RunDir(
+        run_id="run-u", state_root=tmp_path / "u", artifact_root=tmp_path / "u-art", cwd=tmp_path
+    )
+    run.ensure_state_dirs()
+    run.manifest_path.write_bytes(b"\xff\xfe not json")
+
+    run.write_manifest({"status": "running"})
+
+    manifest = run.read_manifest()
+    assert (manifest["status"], manifest["cwd"]) == ("running", str(tmp_path))
+    assert SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD not in manifest
 
 
 @pytest.mark.parametrize("content", [None, b"not json", b"[1, 2]"], ids=["absent", "text", "list"])

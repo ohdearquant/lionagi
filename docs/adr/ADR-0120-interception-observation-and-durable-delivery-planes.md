@@ -692,7 +692,7 @@ batch are minted; closure wakes only for remaining admitted facts. Closure drain
 emissions and persistence before recording its cutoff; observer unbinding is cleanup, not
 settlement, and `unbind_db_persistence` is synchronous and detaches the sink handler before the
 writes it tracked are known to have finished (`lionagi/session/observer.py:597-614`), ahead of the
-CLI and Studio closing the store (`lionagi/cli/_runs.py:1572`,
+CLI and Studio closing the store (`lionagi/cli/_runs.py:1616`,
 `lionagi/studio/services/workflow_run.py:110`). `retryable` closing work waits durably;
 `best_effort` drops and counts queue overflow. A hung invocation remains pending; restart recovers
 durable work without inventing a successful settlement.
@@ -720,9 +720,9 @@ sink did not confirm is not a committed row and is no durable subscriber's sourc
 `best_effort` subscribers only. The sanitizer drops `emitter_role`, so a role filter cannot be
 replayed from the row (`lionagi/session/observer.py:55-57`, `:69`), truncates an oversized payload
 behind a marker (`:112-142`), and wraps a non-Signal emit as `Signal(data=event)`
-(`:337-338`), losing payload type; the writer lock refusal skips writes for the window
+(`:361-362`), losing payload type; the writer lock refusal skips writes for the window
 (`:40`, `:556`), and a sink bound without a store or read while unbound counts nothing
-(`:269-270`, `:500-502`). `persist_dropped` is therefore binding-local dropped-plus-in-flight
+(`:524-526`, `:296`). `persist_dropped` is therefore binding-local dropped-plus-in-flight
 accounting, not a durable gap ledger: it equals `dropped + in_flight`, and zero does not prove
 completeness (`lionagi/session/observer.py:219-222`, `:296`). Known capture degradation is recorded
 when storage recovers; unbound, absent-store and crash intervals may remain unknown.
@@ -801,7 +801,7 @@ everything since; facts past the range belong to the next wake.
 
 - `SessionObserver.observe` and `emit` subscribe and dispatch per matched fact inside `emit`, with
   no boundary notion, no batching and no per-subscriber cursor
-  (`lionagi/session/observer.py:298-322`, `:335-372`).
+  (`lionagi/session/observer.py:298-322`, `:359-396`).
 - No durable wake path exists. Runs are spawned in-process today: the hypothesis, review and
   research operations call `run.spawn` for follow-up work inside their own run
   (`lionagi/engines/hypothesis.py:887-958`, `lionagi/engines/review.py:616`,

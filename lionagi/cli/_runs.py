@@ -236,6 +236,11 @@ class RunDir:
         ``UnicodeDecodeError``, or a ``ValueError`` the JSON parser raises for
         JSON it will not read, such as an integer over its digit limit) stops
         the write with that error.
+
+        The file's signal persistence degradation time stays when *data* has
+        none or a later one (ADR-0104 Amendment 3). A run bound to its
+        execution provenance reads the file for that time alone, and writes
+        without it when the file cannot be read.
         """
         ensure_lionagi_dir(self.state_root)
         with _run_manifest_lock(self.state_root, required=False):
@@ -270,6 +275,12 @@ class RunDir:
                     "mcp_config_reason": self.mcp_config_reason,
                 }
             )
+            try:
+                existing = self.read_manifest()
+            except (OSError, ValueError, RecursionError):
+                # Only the degradation time below is read back on this path, and a file this
+                # read cannot take yields none to keep.
+                existing = {}
         else:
             # A manifest that is gone, or that is malformed JSON (JSONDecodeError), holds
             # nothing this code can read back, and one that is JSON but not an object holds
@@ -289,6 +300,14 @@ class RunDir:
                 ):
                     if key in existing:
                         payload[key] = existing[key]
+        # The signal persistence degradation time is once per run (ADR-0104 Amendment 3): the
+        # earliest on file stays, so neither the run's own setup write nor the whole-file write of
+        # another invocation sharing its run id erases or moves it.
+        if isinstance(existing, dict):
+            kept = existing.get(SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD)
+            mine = payload.get(SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD)
+            if _is_time(kept) and not (_is_time(mine) and mine <= kept):
+                payload[SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD] = kept
         _atomic_write_json(self.manifest_path, payload)
 
     def read_manifest(self) -> dict:
@@ -446,8 +465,15 @@ def lost_terminal_write(
     return {"status": status, "reason_code": code, "at": time.time()}
 
 
+def _is_time(value: Any) -> bool:
+    """A finite number that is not a bool, the only value a reader of run.json takes as a time."""
+    import math
+
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
 def _write_signal_persistence_degraded_at(state_root: Path, at: float) -> None:
-    """Add *at* to the run.json in *state_root* unless it already holds a time.
+    """Add *at* to the run.json in *state_root* unless it already holds a time no later.
 
     Runs on its own thread and takes only the run directory's manifest lock, never the state
     store's writer. A failure is logged, since nothing above this frame can catch it.
@@ -458,13 +484,31 @@ def _write_signal_persistence_degraded_at(state_root: Path, at: float) -> None:
             manifest = json.loads(manifest_path.read_text())
             if not isinstance(manifest, dict):
                 raise TypeError("run manifest is not a JSON object")
-            if manifest.get(SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD) is None:
+            kept = manifest.get(SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD)
+            if not (_is_time(kept) and kept <= at):
                 manifest[SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD] = at
                 _atomic_write_json(manifest_path, manifest)
     except Exception as exc:  # noqa: BLE001 — a marker that cannot be written must not fail the run
         _log.warning(
             "could not record signal persistence degradation in %s: %r", manifest_path, exc
         )
+
+
+def _write_terminal_write_lost(state_root: Path, record: dict[str, Any]) -> None:
+    """Set `terminal_write_lost` to *record* on the run.json in *state_root*, under its manifest
+    lock, and leave every other field as the file holds it.
+
+    For a run copying its auto-resumed leg's record onto its own run.json: the run has nothing
+    else left to say there, and what another invocation sharing its run id wrote since the run's
+    last write stays.
+    """
+    manifest_path = state_root / "run.json"
+    with _run_manifest_lock(state_root, required=False):
+        manifest = json.loads(manifest_path.read_text())
+        if not isinstance(manifest, dict):
+            raise TypeError("run manifest is not a JSON object")
+        manifest[TERMINAL_WRITE_LOST_FIELD] = record
+        _atomic_write_json(manifest_path, manifest)
 
 
 def _signal_window_marker(run_manifest: dict[str, Any], state_root: Path) -> Callable[[], None]:

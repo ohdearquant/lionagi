@@ -752,6 +752,46 @@ async def test_a_resumed_legs_lost_write_reaches_the_run_json_the_job_reads(monk
     assert job_manifest[TERMINAL_WRITE_LOST_FIELD] == resumed_manifest[TERMINAL_WRITE_LOST_FIELD]
 
 
+@pytest.mark.asyncio
+async def test_the_copied_lost_write_leaves_what_another_invocation_wrote(monkeypatch, tmp_path):
+    """While the resumed leg ran, another invocation sharing the first run's id wrote that run's
+    run.json. The copy adds the lost write and leaves the rest of the file as that writer left it."""
+    from lionagi import Branch
+
+    agent_mod, real_teardown = _with_a_real_row(monkeypatch, tmp_path)
+    monkeypatch.setattr(agent_mod, "teardown_agent_persist", real_teardown)
+    legs = []
+    runs = {}
+
+    async def operate(self, instruction=None, **kw):
+        legs.append(instruction)
+        if len(legs) == 1:
+            raise TimeoutError("deadline")
+        path = runs["job"].manifest_path
+        manifest = json.loads(path.read_text())
+        manifest.update({"status": "cancelled", "written_by": "another invocation"})
+        path.write_text(json.dumps(manifest))
+        return "done"
+
+    monkeypatch.setattr(Branch, "operate", operate)
+    _snapshot_before_operate(monkeypatch)
+    refused = _refuse_terminal_writes(monkeypatch)
+    runs["job"], _resumed = _two_runs(monkeypatch, tmp_path)
+
+    from lionagi.cli.agent import _run_agent
+
+    await _run_agent("claude/sonnet", "go", resume_on_timeout=True)
+
+    assert len(legs) == 2 and refused == ["completed"]
+    job_manifest = json.loads(runs["job"].manifest_path.read_text())
+    assert (job_manifest["status"], job_manifest["written_by"]) == (
+        "cancelled",
+        "another invocation",
+    )
+    lost = job_manifest[TERMINAL_WRITE_LOST_FIELD]
+    assert (lost["status"], lost["reason_code"]) == ("completed", RunReasons.COMPLETED_OK)
+
+
 def test_a_lost_write_with_no_code_from_teardown_reads_the_sigterm_latch_once(monkeypatch):
     """A cancelled run's teardown failed before resolving a code: the record names the external
     SIGTERM and consumes the latch, so a later cancellation in the process is not read as one."""

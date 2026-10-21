@@ -360,7 +360,8 @@ def test_binding_provenance_holds_the_manifest_lock_across_its_read_and_rewrite(
     monkeypatch.setattr(runs_mod.RunDir, "read_manifest", observe_read)
     rebound = run.with_execution_provenance(cwd=tmp_path, mcp_resolution=resolution)
 
-    assert held_at_read == [True]
+    # The rebind reads the file, and its write reads it again for the degradation time to keep.
+    assert held_at_read == [True, True]
     assert json.loads(rebound.manifest_path.read_text())["mcp_config_reason"] == (
         "no_mcp_config_found"
     )

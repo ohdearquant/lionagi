@@ -94,9 +94,12 @@ assign a distinct `reason_code`; the next three keep the pre-existing
 - **Signal persistence degraded**: the run's signal persistence stopped
   waiting on a store that refused the writer lock, and its `run.json` carries
   `signal_persistence_degraded_at` (epoch seconds, written once per run when
-  the first skip window opens, off the emit path). This marker outlives a run
-  killed while the store was refusing writes, which its count of dropped
-  signals does not. `reason_detail=signal_persistence_degraded`
+  the first skip window opens, off the emit path). Once written, the marker
+  outlives a run killed while the store was refusing writes, which its count
+  of dropped signals does not; a run killed before the write leaves none. A
+  whole-file write of `run.json` keeps the earliest time on file, so an
+  invocation sharing the run id does not erase it.
+  `reason_detail=signal_persistence_degraded`
   (`REASON_DETAIL_SIGNAL_PERSISTENCE_DEGRADED`), reason code unchanged.
 - **True silence** — no spawn failure, no recorded notice either way, process
   conclusively gone. `reason_code=process_gone_without_outcome` (`LOST_

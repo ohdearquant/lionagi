@@ -1673,6 +1673,9 @@ def test_a_malformed_terminal_write_lost_record_assigns_nothing(
     _pid_absent(monkeypatch)
     rid = _stranded()
     _run_json(rid, terminal_write_lost=lost)
+    # the same record well formed names the cause, so the reader is there to refuse this one
+    control = _stranded()
+    _run_json(control, terminal_write_lost=_LOST)
 
     st = jobs.status(rid)
 
@@ -1680,6 +1683,7 @@ def test_a_malformed_terminal_write_lost_record_assigns_nothing(
     assert st["reason_detail"] is None
     assert st["outcome"] == jobs.OUTCOME_INDETERMINATE
     assert "decided_status" not in st["terminal_evidence"]
+    assert jobs.status(control)["reason_detail"] == jobs.REASON_DETAIL_TERMINAL_WRITE_LOST
 
 
 @pytest.mark.parametrize(
@@ -1691,11 +1695,15 @@ def test_a_malformed_signal_degraded_time_assigns_nothing(sandbox, monkeypatch, 
     _pid_absent(monkeypatch)
     rid = _stranded()
     _run_json(rid, signal_persistence_degraded_at=at)
+    # a well-formed time names the cause, so the reader is there to refuse this one
+    control = _stranded()
+    _run_json(control, signal_persistence_degraded_at=_SIGNAL_DEGRADED_AT)
 
     st = jobs.status(rid)
 
     assert st["reason_code"] == jobs.LOST_REASON
     assert st["reason_detail"] is None
+    assert jobs.status(control)["reason_detail"] == jobs.REASON_DETAIL_SIGNAL_PERSISTENCE_DEGRADED
 
 
 def test_a_malformed_lost_write_does_not_hide_a_later_well_formed_record(
