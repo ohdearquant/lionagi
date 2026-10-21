@@ -10,7 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
 from lionagi.service.resilience import (
     CircuitBreaker,
@@ -20,10 +20,16 @@ from lionagi.service.resilience import (
 )
 from lionagi.service.types.stream_chunk import StreamChunk
 
-from .endpoint_config import AUTHORIZATION_KWARG_NAMES, EndpointConfig
+from .endpoint_config import AUTHORIZATION_KWARG_NAMES, RUNTIME_STATE_NAMES, EndpointConfig
 from .header_factory import HeaderFactory
 
 _CONFIGURED_TIMEOUT = object()
+
+# What ``from_dict`` never takes from a stored config: the credential source, the
+# local-network opt-in, and the kwargs a config never writes down.
+_NOT_RESTORED = frozenset(
+    ("api_key", "allow_local_network", *AUTHORIZATION_KWARG_NAMES, *RUNTIME_STATE_NAMES)
+)
 
 # The event types that say the call itself failed: the Responses API's
 # ``response.failed`` and Codex's ``turn.failed``. A bare ``failed`` is read the same
@@ -1010,7 +1016,21 @@ class Endpoint:
         }
 
     @classmethod
-    def from_dict(cls, data: dict):
+    def from_dict(
+        cls,
+        data: dict,
+        *,
+        base_url: str | None = None,
+        api_key: str | SecretStr | None = None,
+        allow_local_network: bool | None = None,
+    ):
+        """Rebuild an endpoint from ``to_dict`` output.
+
+        The stored config never supplies a credential, the local-network opt-in, a grant
+        or runtime state. The first two come from the keyword arguments here; a grant is
+        handed to the live config again by the caller whose role names it. ``base_url``
+        given here replaces the stored one.
+        """
         from lionagi.utils import to_dict
 
         data = to_dict(data, recursive=True)
@@ -1023,18 +1043,21 @@ class Endpoint:
         if circuit_breaker:
             circuit_breaker = CircuitBreaker(**circuit_breaker)
         if config:
-            # The config never writes a grant down, but this reads a stored row
-            # as it stands: one written by an older version, or by any other
-            # writer, may still carry it. A grant belongs to the role of the
-            # caller restoring the row, who hands it again if the role names it.
+            # The config never writes these down, but this reads a stored row as it
+            # stands: one written by an older version, or by any other writer, may still
+            # carry them. A name the config has no field for is moved into kwargs, so
+            # both places are cleared. A grant belongs to the role of the caller
+            # restoring the row, who hands it again if the role names it.
+            config = {k: v for k, v in config.items() if k not in _NOT_RESTORED}
             kwargs = config.get("kwargs")
             if isinstance(kwargs, dict):
-                config = {
-                    **config,
-                    "kwargs": {
-                        k: v for k, v in kwargs.items() if k not in AUTHORIZATION_KWARG_NAMES
-                    },
-                }
+                config["kwargs"] = {k: v for k, v in kwargs.items() if k not in _NOT_RESTORED}
+            if base_url is not None:
+                config["base_url"] = base_url
+            if api_key is not None:
+                config["api_key"] = api_key
+            if allow_local_network is not None:
+                config["allow_local_network"] = allow_local_network
             config = EndpointConfig(**config)
 
         return cls(

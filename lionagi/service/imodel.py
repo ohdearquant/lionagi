@@ -9,7 +9,7 @@ from contextlib import nullcontext
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
 from lionagi.ln import is_coro_func, now_utc
 from lionagi.protocols.generic import Event, EventStatus, Log
@@ -706,23 +706,49 @@ class iModel:  # noqa: N801
         return data
 
     @classmethod
-    def from_dict(cls, data: dict):
-        endpoint = Endpoint.from_dict(data.get("endpoint", {}))
+    def from_dict(
+        cls,
+        data: dict,
+        *,
+        base_url: str | None = None,
+        api_key: str | SecretStr | None = None,
+        allow_local_network: bool | None = None,
+    ):
+        """Rebuild a model from ``to_dict`` output, read as trusted input.
+
+        ``data`` chooses the provider, model and settings. It never supplies a
+        credential or the local-network opt-in. Without ``api_key``, the provider's
+        credential from the environment is attached only when the base URL is the
+        provider's registered one. Without ``allow_local_network``, the provider's
+        registered setting applies. ``base_url`` replaces the stored URL.
+        """
+        endpoint = Endpoint.from_dict(
+            data.get("endpoint", {}),
+            base_url=base_url,
+            api_key=api_key,
+            allow_local_network=allow_local_network,
+        )
 
         # openai_compatible=True: rehydrating a persisted iModel must never
         # raise just because its provider isn't (or is no longer) registered.
-        # This lookup only recovers a registered subclass and a fresh
-        # env-sourced API key when one applies; `endpoint` is already complete.
+        # This lookup only recovers a registered subclass, its env-sourced API key
+        # and its local-network setting; `endpoint` is already complete.
         if e1 := match_endpoint(
             provider=endpoint.config.provider,
             endpoint=endpoint.config.endpoint,
             openai_compatible=True,
         ):
-            # Preserve the freshly resolved (env-sourced) API key before overwriting config
-            fresh_api_key = e1.config._api_key
+            registered = e1.config
             e1.config = endpoint.config
-            if e1.config._api_key is None and fresh_api_key:
-                e1.config._api_key = fresh_api_key
+            if allow_local_network is None:
+                e1.config.allow_local_network = registered.allow_local_network
+            # The environment's credential is for the provider's own URL only.
+            if (
+                api_key is None
+                and registered._api_key
+                and e1.config.base_url == registered.base_url
+            ):
+                e1.config._api_key = registered._api_key
         else:
             e1 = endpoint
 

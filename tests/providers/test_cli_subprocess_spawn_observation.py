@@ -1350,10 +1350,10 @@ class TestTheRawInputShapesTheFixWasNotWrittenAgainst:
 class TestRuntimeValuesArriveAfterConstructionToo:
     """The drain ran once, at construction, and construction is not the only
     way these values get in. ``EndpointConfig.update()`` puts unknown keys
-    straight back into the serializable ``kwargs`` and ``iModel.from_dict()``
-    assigns a hydrated config over the specialized one. Both are public, and a
-    value that arrives by either is the same credential as one passed to the
-    constructor."""
+    straight back into the serializable ``kwargs``, and a value that arrives
+    that way is the same credential as one passed to the constructor.
+    ``iModel.from_dict()`` assigns a hydrated config over the specialized one,
+    and drops the values from the stored row first."""
 
     SECRET = "post-construction-canary"
     PROVIDERS = ["claude_code", "codex"]
@@ -1384,7 +1384,8 @@ class TestRuntimeValuesArriveAfterConstructionToo:
 
         assert self.SECRET not in json.dumps(rebuilt.to_dict())
         payload, _ = rebuilt.endpoint.create_payload({"prompt": "ok"})
-        assert payload["request"].env == {"TOKEN": self.SECRET}
+        # A stored row does not hand a child process its environment.
+        assert payload["request"].env is None
 
 
 class TestTheConfigsOwnSerialiserIsAlsoAPublicRoute:

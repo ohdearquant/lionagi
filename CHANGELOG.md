@@ -8,6 +8,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Upgrading from 0.35.5
 
+A model restored with `iModel.from_dict` or `Branch.from_dict` whose stored base URL is not
+its provider's registered one is restored without a credential. To keep sending to that URL,
+pass the key: `iModel.from_dict(data, api_key=...)`, or hand `Branch.from_dict` a live
+`chat_model`.
+
 Pair `li studio` and the daemon from the same release. Updating only the daemon leaves an older
 `li studio` asking the retired `POST /api/studio/pairing-codes`, which now answers 410, so a page
 opened against an already-running daemon is not paired; updating only `li studio` leaves it
@@ -515,6 +520,13 @@ behaviour, including accepting a write-capable submission without `cwd`.
 
 ### Security
 
+- `iModel.from_dict` and `Branch.from_dict` no longer take a credential, the local-network
+  opt-in or a child process's environment from the stored data. The provider's credential from
+  the environment is attached only when the stored base URL is the provider's registered one,
+  and the local-network setting comes from the provider's registration. `iModel.from_dict`
+  takes `base_url`, `api_key` and `allow_local_network` from the caller, and `Branch.from_dict`
+  takes `chat_model` and `parse_model`. A grant or an environment written as a top-level key
+  of a stored config is dropped too.
 - Raised the `mcp` floor in the `mcp` extra to 1.30.0 (GHSA-84m7-p3x7-pcfv: sessions accumulate
   without bound in the StreamableHTTP server transport). `li mcp` serves over stdio, so its own
   server was not exposed; the floor keeps installs off the affected releases.

@@ -1,0 +1,127 @@
+"""What a restored model takes from stored data, and what it takes only from the caller."""
+
+import pytest
+from pydantic import SecretStr
+
+import lionagi.config
+from lionagi.service.connections.endpoint import Endpoint
+from lionagi.service.imodel import iModel
+from lionagi.session.branch import Branch
+
+OPENAI_URL = "https://api.openai.com/v1"
+ELSEWHERE = "https://gateway.example/v1"
+LATTICE_MODEL = "qwen3.5-0.8b"
+
+
+@pytest.fixture
+def env_key(monkeypatch):
+    patched = lionagi.config.settings.model_copy(
+        update={"OPENAI_API_KEY": SecretStr("sk-from-env")}
+    )
+    monkeypatch.setattr(lionagi.config, "settings", patched)
+    return "sk-from-env"
+
+
+def _stored(**config):
+    data = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key").to_dict()
+    data["endpoint"]["config"].update(config)
+    return data
+
+
+def test_the_env_key_is_attached_at_the_providers_registered_url(env_key):
+    config = iModel.from_dict(_stored()).endpoint.config
+    assert config.base_url == OPENAI_URL
+    assert config._api_key == env_key
+
+
+def test_the_env_key_does_not_follow_a_stored_url_elsewhere(env_key):
+    config = iModel.from_dict(_stored(base_url=ELSEWHERE)).endpoint.config
+    assert config.base_url == ELSEWHERE
+    assert config._api_key is None
+
+
+def test_a_caller_url_elsewhere_gets_no_env_key_either(env_key):
+    config = iModel.from_dict(_stored(), base_url=ELSEWHERE).endpoint.config
+    assert config.base_url == ELSEWHERE
+    assert config._api_key is None
+
+
+def test_a_caller_key_is_used_at_any_url(env_key):
+    config = iModel.from_dict(_stored(base_url=ELSEWHERE), api_key="sk-caller").endpoint.config
+    assert config._api_key == "sk-caller"
+
+
+@pytest.mark.parametrize("base_url", [OPENAI_URL, ELSEWHERE])
+def test_a_stored_key_is_never_resolved(env_key, monkeypatch, base_url):
+    monkeypatch.setenv("SOME_OTHER_SECRET", "other-secret-value")
+    config = iModel.from_dict(
+        _stored(base_url=base_url, api_key="SOME_OTHER_SECRET")
+    ).endpoint.config
+    assert config._api_key == (env_key if base_url == OPENAI_URL else None)
+
+
+def test_a_stored_local_network_opt_in_is_not_restored():
+    config = iModel.from_dict(_stored(allow_local_network=True)).endpoint.config
+    assert config.allow_local_network is False
+
+
+def test_a_local_provider_keeps_its_registered_opt_in_at_any_port():
+    url = "http://127.0.0.1:9999/v1"
+    data = iModel(provider="lattice", model=LATTICE_MODEL, base_url=url).to_dict()
+    data["endpoint"]["config"]["allow_local_network"] = False
+    config = iModel.from_dict(data).endpoint.config
+    assert config.base_url == url
+    assert config.allow_local_network is True
+
+
+def test_the_caller_decides_the_opt_in():
+    opened = iModel.from_dict(_stored(), allow_local_network=True)
+    assert opened.endpoint.config.allow_local_network is True
+    lattice = iModel(provider="lattice", model=LATTICE_MODEL).to_dict()
+    closed = iModel.from_dict(lattice, allow_local_network=False)
+    assert closed.endpoint.config.allow_local_network is False
+
+
+@pytest.mark.parametrize("where", ["top-level", "kwargs"])
+def test_unwritten_names_are_dropped_wherever_the_row_puts_them(where):
+    data = iModel(provider="codex", model="gpt-5.5", verbose_output=True).to_dict()
+    config = data["endpoint"]["config"]
+    names = {"account_connectors": ["github"], "env": {"TOKEN": "x"}, "on_spawn": "callback"}
+    (config if where == "top-level" else config["kwargs"]).update(names)
+
+    for restored in (
+        Endpoint.from_dict(data["endpoint"]).config,
+        iModel.from_dict(data).endpoint.config,
+    ):
+        assert not set(names) & set(restored.kwargs)
+        # The persisted settings around them survive.
+        assert restored.kwargs["model"] == "gpt-5.5"
+        assert restored.kwargs["verbose_output"] is True
+
+
+def test_a_branch_takes_the_callers_model_over_the_stored_one(env_key):
+    branch = Branch(chat_model=iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key"))
+    data = branch.to_dict()
+    data["chat_model"]["endpoint"]["config"]["base_url"] = ELSEWHERE
+
+    stored = Branch.from_dict(data).chat_model.endpoint.config
+    assert stored.base_url == ELSEWHERE
+    assert stored._api_key is None
+
+    live = iModel(provider="openai", model="gpt-4.1-mini", base_url=ELSEWHERE, api_key="sk-caller")
+    restored = Branch.from_dict(data, chat_model=live)
+    assert restored.chat_model is live
+    # No parse model was stored, so the parse model follows the chat model.
+    assert restored.parse_model is live
+    assert "chat_model" in data
+
+
+def test_a_branch_takes_a_callers_parse_model_beside_the_stored_chat_model():
+    chat = iModel(provider="openai", model="gpt-4.1-mini", api_key="test-key")
+    parse = iModel(provider="openai", model="gpt-4.1-nano", api_key="test-key")
+    data = Branch(chat_model=chat, parse_model=parse).to_dict()
+
+    live = iModel(provider="openai", model="gpt-4.1", api_key="sk-caller")
+    restored = Branch.from_dict(data, parse_model=live)
+    assert restored.parse_model is live
+    assert restored.chat_model.endpoint.config.kwargs["model"] == "gpt-4.1-mini"

@@ -124,7 +124,14 @@ two channels the same way, for a different reason: it is a grant, not a
 secret. It lets a codex request reach the signed-in account's app connectors,
 and it belongs to the role the call runs under, so a branch restored from a
 snapshot or a run record must not carry it into a caller under another role.
-`Endpoint.from_dict()` also drops it from a stored row's `kwargs`, since a row
-written by an older version or by another writer may still hold it. A caller
-whose role names connectors hands them again. `repr` shows the names as they
-are, because they are not secret.
+`Endpoint.from_dict()` also drops it from a stored row, since a row written by
+an older version or by another writer may still hold it. A caller whose role
+names connectors hands them again. `repr` shows the names as they are, because
+they are not secret.
+
+`Endpoint.from_dict()` drops `RUNTIME_STATE_NAMES` from a stored row the same
+way, together with `api_key` and `allow_local_network`, wherever the row puts
+them: in `kwargs`, or as a top-level key the config moves into `kwargs`. A
+restored model takes its credential and its local-network setting from the
+caller or from the provider's registration (`iModel.from_dict()`), and a
+child process gets an environment only from a live caller.

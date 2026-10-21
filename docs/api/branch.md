@@ -351,4 +351,20 @@ branch.dump_logs(clear=True, persist_path="./logs/session.json")
 await branch.adump_logs(clear=False)
 ```
 
+`Branch.from_dict` reads its input as trusted. The class names it holds are resolved as
+[ADR-0001](../adr/ADR-0001-element-identity-and-polymorphic-serialization-envelope.md) D3
+describes, which can import a module the data names, and its stored models choose the
+provider, model, base URL and request settings. Restore only data that your own process, or a
+writer you trust, produced.
+
+A stored model never supplies a credential or the local-network opt-in. `iModel.from_dict`
+attaches the provider's credential from the environment only when the stored base URL is the
+provider's registered one, and takes the local-network setting from the provider's
+registration. A caller that wants another endpoint, credential or setting passes it:
+
+```python
+restored = li.Branch.from_dict(data, chat_model=li.iModel(provider="openai", base_url=url))
+model = li.iModel.from_dict(model_data, base_url=url, api_key="MY_GATEWAY_KEY")
+```
+
 Next: [`Session`](session.md) — manage multiple branches

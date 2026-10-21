@@ -78,10 +78,10 @@ the credential (`lionagi/service/connections/endpoint_config.py:132`).
 `iModel.invoke` → `APICalling` → endpoint HTTP transport
 (`lionagi/operations/chat/chat.py:79`, `lionagi/service/imodel.py:567`,
 `lionagi/service/connections/api_calling.py:116`). HTTP retry happens inside the
-endpoint, below that event boundary (`lionagi/service/connections/endpoint.py:304`,
-`lionagi/service/connections/endpoint.py:382`). Response JSON returns directly;
+endpoint, below that event boundary (`lionagi/service/connections/endpoint.py:310`,
+`lionagi/service/connections/endpoint.py:388`). Response JSON returns directly;
 Branch cost aggregation sums reported costs and leaves absent cost unknown
-(`lionagi/service/connections/endpoint.py:350`, `lionagi/session/signal.py:346`).
+(`lionagi/service/connections/endpoint.py:356`, `lionagi/session/signal.py:346`).
 Neither a successful outer operation nor its final response accounts for every
 attempt that might have reached the provider.
 
@@ -223,7 +223,7 @@ without `security` needs no keychain when env/dotenv resolves the chosen name.
 Only request-local header construction unwraps the secret. Routed
 `create_payload` and `APICalling.headers` contain no account key; they must not use
 the current eager header path (`lionagi/service/imodel.py:274`,
-`lionagi/service/connections/endpoint.py:128`). For routed calls, explicit
+`lionagi/service/connections/endpoint.py:134`). For routed calls, explicit
 `api_key`, authentication headers, client-level authentication/trace callbacks,
 custom hosts and
 redirects are rejected before lookup: the ledger must describe the credential
@@ -253,7 +253,7 @@ A Session contains independent Branch scopes, rather than imposing one account.
 Standalone iModel calls use `("imodel", str(imodel.id), "anthropic")`; a direct
 endpoint instance uses a fresh private UUID scope. iModel serialization already
 preserves its id (`lionagi/service/imodel.py:699`,
-`lionagi/service/imodel.py:732`). Direct endpoints have
+`lionagi/service/imodel.py:758`). Direct endpoints have
 no durable resume promise. A model reused for independent conversations must be
 invoked through separate Branches or separate iModel identities.
 
@@ -470,7 +470,7 @@ Status alone is not proof of a zero bill. Streams merge the initial usage and
 later cumulative usage fields by replacement, not addition, and settle only with
 complete terminal evidence. HTTP usage is intercepted before generic stream
 projection and before yielding to consumers; the current generic projection keeps
-raw events (`lionagi/service/connections/endpoint.py:537`). No automatic retry after
+raw events (`lionagi/service/connections/endpoint.py:543`). No automatic retry after
 stream output starts. Stream close/finalization shields an available settlement
 from caller cancellation, bounded by the ledger's five-second wait. If commit
 fails or the process dies, the durable ceiling remains. It must never report the
@@ -492,7 +492,7 @@ marks and new error handling. It retains current direct-key and unresolved-name
 semantics, retry/cache behavior, return types and serialization. Tightening
 `EndpointConfig._validate_api_key` globally is explicitly not authorized here.
 Configured routing disallows the endpoint's application response cache initially:
-its current wrapper receives headers (`lionagi/service/connections/endpoint.py:260`),
+its current wrapper receives headers (`lionagi/service/connections/endpoint.py:266`),
 and making that cache account-aware is DEFERRED. Provider prompt caching remains
 supported and is distinct from that application cache.
 
