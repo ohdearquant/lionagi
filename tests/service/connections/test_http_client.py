@@ -682,8 +682,9 @@ def _coded_reply(coding: str, body: bytes) -> bytes:
         ("deflate", zlib.compress(_DOC)),
         ("deflate", _raw_deflate(_DOC)),
         ("gzip", gzip.compress(_DOC[:9], mtime=0) + gzip.compress(_DOC[9:], mtime=0)),
+        ("gzip   ", gzip.compress(_DOC, mtime=0)),
     ],
-    ids=["gzip", "x-gzip", "any-case", "deflate", "raw-deflate", "two-gzip-members"],
+    ids=["gzip", "x-gzip", "any-case", "deflate", "raw-deflate", "two-gzip-members", "spaces"],
 )
 async def test_a_gzip_or_deflate_body_is_read_decoded(coding, body):
     async with answering(_coded_reply(coding, body)) as url, HTTPSession(timeout=5) as session:
@@ -762,13 +763,26 @@ async def test_an_endpoint_that_asks_for_gzip_reads_the_reply_decoded():
     ("coding", "body", "why"),
     [
         ("gzip", gzip.compress(_DOC, mtime=0)[:-8], "ends before its stream does"),
+        ("gzip", gzip.compress(_DOC, mtime=0)[:20], "ends before its stream does"),
         ("gzip", b"not gzip at all", "does not decode"),
-        ("gzip", gzip.compress(_DOC, mtime=0) + b"\0\0", "does not decode"),
+        ("gzip", gzip.compress(_DOC, mtime=0) + b"\0\0", "goes on after its stream ends"),
+        ("gzip", gzip.compress(_DOC, mtime=0) + b"\n", "goes on after its stream ends"),
         ("deflate", zlib.compress(_DOC) + b"x", "goes on after its stream ends"),
+        ("deflate", zlib.compress(_DOC) * 2, "goes on after its stream ends"),
         ("br", b"\x8b\x02\x80", "is not decoded; this client decodes gzip and deflate"),
         ("zstd", b"\x28\xb5\x2f\xfd", "is not decoded; this client decodes gzip and deflate"),
     ],
-    ids=["cut-short", "not-gzip", "trailing-zeros", "after-deflate-end", "br", "zstd"],
+    ids=[
+        "cut-short",
+        "cut-in-data",
+        "not-gzip",
+        "trailing-zeros",
+        "byte-after-gzip",
+        "after-deflate-end",
+        "two-deflate-streams",
+        "br",
+        "zstd",
+    ],
 )
 async def test_a_coded_body_that_does_not_decode_is_a_transport_error(coding, body, why):
     for read in ("read", "iter_chunks"):
@@ -800,6 +814,19 @@ async def test_a_body_in_a_coding_not_decoded_here_is_returned_as_it_arrived(cod
     async with answering(_coded_reply(coding, _DOC)) as url, HTTPSession(timeout=5) as session:
         response = await session.request("GET", url)
         assert await response.read() == _DOC
+
+
+async def test_a_body_with_two_content_encoding_lines_is_returned_as_it_arrived():
+    body = gzip.compress(_DOC, mtime=0)
+    reply = (
+        b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Encoding: deflate\r\n"
+        + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+        + body
+    )
+    async with answering(reply) as url, HTTPSession(timeout=5) as session:
+        response = await session.request("GET", url)
+        assert await response.read() == body
+        assert response.headers.get_all("Content-Encoding") == ["gzip", "deflate"]
 
 
 @pytest.mark.parametrize(

@@ -21,11 +21,13 @@ line (a space, a non-ASCII letter) is encoded, and an escape already in the URL 
 Redirects are never followed, since the address guard checks one URL and a redirect could lead
 anywhere; a 3xx response is returned like any other status. Proxy settings in the environment
 are not read. A request asks for ``Accept-Encoding: identity`` unless its headers name another
-coding. A body that arrives gzip- or deflate-coded all the same is decoded as it is read, as
-``gzip.decompress`` and ``zlib.decompress`` decode one whole (a gzip body can hold several
-members; data after the coded stream, or a stream that does not end, raises
-``TransportError``); a ``br`` or ``zstd`` body raises ``TransportError``, and a body in any
-other coding, or in more than one, is returned as it arrived. The headers stay as received.
+coding. A body that arrives gzip- or deflate-coded all the same is decoded as it is read, to
+the bytes ``gzip.decompress`` and ``zlib.decompress`` give for a body that holds just its
+coded stream (a gzip body can hold several members). Unlike those functions, this client
+refuses bytes after the coded stream: they, and a stream that does not end, raise
+``TransportError``. A ``br`` or ``zstd`` body raises ``TransportError``, and a body in any
+other coding, or in more than one (named in one ``Content-Encoding`` line or in several), is
+returned as it arrived. The headers stay as received.
 A ``timeout`` of 0 or less sets no bound, as ``None`` does.
 """
 
@@ -462,9 +464,9 @@ class _BodyDecoder:
                     wbits = zlib.MAX_WBITS if (data[0] & 0x0F) == 8 else -zlib.MAX_WBITS
                 self._zlib = zlib.decompressobj(wbits)
             elif self._zlib.eof:
-                if self.coding != "gzip":
+                # Only the start of a next gzip member (RFC 1952 section 2.2) may follow.
+                if self.coding != "gzip" or not b"\x1f\x8b".startswith(data[:2]):
                     raise self._failure("goes on after its stream ends")
-                # The next gzip member (RFC 1952 section 2.2), as gzip.decompress reads it.
                 self._zlib = zlib.decompressobj(16 + zlib.MAX_WBITS)
             try:
                 pieces.append(self._zlib.decompress(data))
@@ -485,7 +487,10 @@ class _BodyDecoder:
 
 
 def _body_decoder(headers: http.client.HTTPMessage, where: str) -> _BodyDecoder | None:
-    coding = (headers.get("Content-Encoding") or "").strip().lower()
+    # Several Content-Encoding lines name several codings, as one line with commas does
+    # (RFC 9110 section 5.3); such a body is returned as it arrived.
+    codings = headers.get_all("Content-Encoding") or []
+    coding = codings[0].strip().lower() if len(codings) == 1 else ""
     coding = "gzip" if coding == "x-gzip" else coding
     if coding in ("gzip", "deflate", "br", "zstd"):
         return _BodyDecoder(coding, where)
@@ -609,9 +614,12 @@ class HTTPResponse:
                 return piece
 
     async def iter_chunks(self) -> AsyncIterator[bytes]:
-        """The body in the pieces it arrives in, as bytes, decoded from its coding as
-        ``read()`` decodes it; a piece can end inside a line or a character. A body that ends before its declared ``Content-Length`` raises
-        ``TransportError``, as ``read()`` does. After ``read()``, the body it kept, in one piece."""
+        """The body in the pieces it arrives in, as bytes, decoded from its coding as ``read()``
+        decodes it; a piece can end inside a line or a character. A coded body's piece is all
+        that one read of it decodes to, with no bound on its size: a 64 KiB read of a highly
+        compressed body can decode to many megabytes. A body that ends before its declared
+        ``Content-Length`` raises ``TransportError``, as ``read()`` does. After ``read()``, the
+        body it kept, in one piece."""
         if self._body is not None:
             if self._body:
                 yield self._body

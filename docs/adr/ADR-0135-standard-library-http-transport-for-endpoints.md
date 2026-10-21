@@ -145,7 +145,9 @@ Exact semantics:
   lookup before the connect runs until the lookup returns, so such threads are not counted against
   `MAX_REQUESTS_IN_FLIGHT`. The limit bounds requests in flight, and threads only while no stopped
   request is still looking up its host.
-- `iter_chunks` yields what each `read1(65536)` returns. A piece can end inside a line or inside a
+- `iter_chunks` yields what each `read1(65536)` returns, decoded when the body is coded: a read
+  that decodes to nothing yet is followed by the next, and a decoded piece is all that one read
+  decodes to, with no bound on its size. A piece can end inside a line or inside a
   UTF-8 character; the endpoint's stream parser decodes incrementally (`codecs` incremental decoder)
   and splits lines itself. `read1` answers an empty read both at the body's end and when the peer
   closes early, so while part of a declared `Content-Length` is still owed `iter_chunks` raises
@@ -196,13 +198,19 @@ Exact semantics:
   `trust_env=True`, which the endpoint never set).
 - The request carries `Accept-Encoding: identity` unless its headers name another coding. A
   body that arrives gzip- or deflate-coded all the same, because the caller asked for it or the
-  server sent it anyway, is decoded as it is read (`aiohttp` decoded both): a gzip body as
-  `gzip.decompress` reads one, several members included, and a deflate body as a zlib stream or,
-  from servers that send it, raw deflate data. Data after the coded stream, or a stream that does
-  not end, raises `TransportError`. A `br` or `zstd` body raises `TransportError` (`aiohttp`
-  decoded those only with an optional decoder package installed); a body in any other coding,
-  or in more than one, is returned as it arrived, as under `aiohttp`. The headers stay as
-  received.
+  server sent it anyway, is decoded as it is read (`aiohttp` decoded both): a gzip body to what
+  `gzip.decompress` returns for it, several members included, and a deflate body as a zlib
+  stream or, from servers that send it, raw deflate data. A stream that does not end raises
+  `TransportError`, since only its end (the gzip trailer's length and CRC, the zlib checksum)
+  shows the body arrived whole, and so do bytes after the coded stream other than the start of
+  a next gzip member, which `gzip.decompress` and `zlib.decompress` skip. `aiohttp` returned a
+  gzip body's decoded part, ignored one stray byte after a gzip member, and decoded a second
+  deflate stream; the CHANGELOG lists each case. An `x-gzip` body is decoded as gzip, which
+  `aiohttp` did not do. A `br` or `zstd` body raises `TransportError` (`aiohttp` decoded those
+  only with an optional decoder package installed). A body in any other coding is returned as
+  it arrived, as under `aiohttp`, and so is a body in more than one, named in one
+  `Content-Encoding` line or in several (`aiohttp` decoded by the first of several lines). The
+  headers stay as received.
 - Default headers: `User-Agent: lionagi/<version>`; `Accept: */*`, as `aiohttp` sent;
   `Content-Type: application/json` for a `json=` body unless the caller set one; `Content-Length`
   for any body. A later header source replaces an earlier one of the same name in any case (session
@@ -218,8 +226,9 @@ Exact semantics:
 adapter at a time; a provider that moves an endpoint is configured at its new URL. Running the
 address guard on each hop would not close it: on a change of origin `aiohttp` dropped only
 `Authorization`, `Cookie` and `Proxy-Authorization`, and the Anthropic and Exa endpoints send
-their keys in `x-api-key`, which would go to whatever host the redirect names (Alternatives). Identity encoding
-trades transfer size on large bodies for having no decompression code in the path. `aiohttp` asked
+their keys in `x-api-key`, which would go to whatever host the redirect names (Alternatives). Requesting identity
+encoding trades transfer size on large bodies for bodies that need no decoding unless a caller
+asks for a coding or a server sends one unasked. `aiohttp` asked
 for `gzip, deflate` by default.
 
 ### D4. Cancel, timeout and close end the connection
@@ -396,7 +405,8 @@ installed for it, which is what this record removes.
 - Responses are requested uncompressed. Large non-streamed JSON responses cost more bytes on the
   wire than under `aiohttp`, which asked for gzip; a caller that wants gzip sets
   `Accept-Encoding: gzip` in the `client_kwargs` headers, and the reply is decoded. A decoded
-  body's size is not limited, as a body's size on the wire is not.
+  body's size is not limited, as a body's size on the wire is not, and neither is the size of
+  a streamed piece of a coded body, which is all that one read decodes to.
 - Code that configured `client_kwargs` beyond headers, passed `aiohttp` request options, caught
   `aiohttp` exceptions, or overrode `_call_aiohttp` / `_stream_aiohttp` breaks at upgrade. The
   CHANGELOG's upgrade notes list each.

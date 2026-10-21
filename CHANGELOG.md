@@ -50,7 +50,7 @@ with a client built on the standard library (ADR-0135), and four kinds of code n
   `_call_http` or `_stream_http`, which take the same arguments.
 - Code that passes a `msgspec.Struct` to lionagi's structural helpers installs `msgspec` itself.
 
-Three responses are handled differently:
+Four kinds of response are handled differently:
 
 - A 3xx response fails the call with `HTTPStatusError`: redirects are no longer followed, so a
   request and its credentials never go to an address the endpoint's address check did not see.
@@ -59,8 +59,16 @@ Three responses are handled differently:
   are `ValueError`), and is not retried, where `aiohttp` raised a `ContentTypeError` that the
   endpoint retried.
 - A body coded `br` or `zstd`, which a server sends when a request's headers ask for it, raises
-  `TransportError`; `aiohttp` decoded those when an optional decoder package was installed. A
-  gzip or deflate body is decoded as before.
+  `TransportError`; `aiohttp` decoded those when an optional decoder package was installed.
+- A gzip or deflate body that holds just its coded stream is decoded as before. Around that the
+  client is stricter, and each of these raises `TransportError`: a gzip body that does not end,
+  where `aiohttp` returned what had decoded (the whole document when only the trailer was
+  missing, a prefix when the body was cut inside its data); bytes after a gzip member that do
+  not begin another member, of which `aiohttp` ignored one and raised for two or more; and a
+  second deflate stream, which `aiohttp` decoded. Other bytes after a deflate stream raised
+  under `aiohttp` too. An `x-gzip` body is decoded as gzip, where `aiohttp` returned it as it
+  arrived, and a body whose response has more than one `Content-Encoding` line is returned as
+  it arrived, where `aiohttp` decoded it by the first line.
 
 ### Added
 
@@ -188,7 +196,11 @@ Three responses are handled differently:
   followed, and a 200 body is decoded as JSON whatever its `Content-Type` (see the upgrade notes).
   Proxy settings in the environment are not read, as before. Responses are requested
   uncompressed unless a request's headers ask for a coding; a gzip or deflate body is still
-  decoded, and a `br` or `zstd` body raises `TransportError` (see the upgrade notes).
+  decoded, with the differences the upgrade notes list, and a `br` or `zstd` body raises
+  `TransportError`. A user and password in the URL are read as RFC 3986 reads them, so a
+  password holding `/`, `?` or `#` has to be percent-encoded; left raw, a password whose text
+  up to a `/` is all digits gives those digits as the port, which error text names. The Ollama
+  provider's model listing and pulls still go through the `ollama` package's own client.
 - Multipart uploads (OpenAI audio transcription and image edits, Groq transcription) are built by
   `lionagi.service.connections._http.MultipartForm`, which writes field names and filenames as
   browsers do: UTF-8 as is, with a quote, carriage return or line feed percent-encoded. `aiohttp`
