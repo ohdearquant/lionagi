@@ -101,9 +101,9 @@ def declaring_project_layer(
 def _codex_home(env: Mapping[str, str]) -> Path:
     """CODEX_HOME as Codex finds it: the absolute variable as given, canonical, or HOME's
     ``.codex`` as given. A value that is not an absolute path is refused."""
+    refuse_non_absolute_codex_home(env)
     value = env.get("CODEX_HOME") or ""
     if value:
-        refuse_non_absolute_codex_home(env)
         try:
             return Path(os.path.realpath(value, strict=True))
         except OSError:
@@ -113,8 +113,6 @@ def _codex_home(env: Mapping[str, str]) -> Path:
         import pwd  # Unix, as these paths are
 
         home = pwd.getpwuid(os.getuid()).pw_dir
-    if not os.path.isabs(home):
-        raise ConfigurationError(f"HOME {home!r} is not an absolute path")
     return Path(home) / ".codex"
 
 

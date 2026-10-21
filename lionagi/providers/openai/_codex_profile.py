@@ -191,7 +191,7 @@ def resolve_codex_config_profile(
 
 
 def refuse_non_absolute_codex_home(env: Mapping[str, str]) -> None:
-    """Refuse a CODEX_HOME that is not an absolute path, before it is read.
+    """Refuse a CODEX_HOME, or a HOME when CODEX_HOME is unset, that is not absolute.
 
     Both this process's environment and a request's environment are read by this
     check. A value that is not absolute would otherwise name a different directory
@@ -204,6 +204,13 @@ def refuse_non_absolute_codex_home(env: Mapping[str, str]) -> None:
             f"CODEX_HOME {value!r} is not an absolute path: it names a different "
             "codex home depending on where it is resolved."
         )
+    if not value:
+        home = env.get("HOME")
+        if home and not os.path.isabs(home):
+            raise ConfigurationError(
+                f"HOME {home!r} is not an absolute path: it names a different codex home "
+                "depending on where it is resolved."
+            )
 
 
 def codex_home_for_env(env: Mapping[str, str] | None) -> Path:
@@ -223,8 +230,9 @@ def codex_home_for_env(env: Mapping[str, str] | None) -> Path:
     the password database, so a parent whose own ``HOME`` is redirected would
     answer about a directory the child never looks at.
 
-    A ``CODEX_HOME`` that is not an absolute path is refused before it is read,
-    from either this process's environment or a request's.
+    A ``CODEX_HOME``, or a ``HOME`` when ``CODEX_HOME`` is unset, that is not an
+    absolute path is refused before it is read, from either this process's
+    environment or a request's.
     """
     source: Mapping[str, str] = os.environ if env is None else env
     refuse_non_absolute_codex_home(source)

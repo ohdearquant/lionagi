@@ -1933,6 +1933,24 @@ def test_forward_mcp_codex_allowlist_refuses_a_bad_home_before_reading_the_profi
         )
 
 
+def test_forward_mcp_codex_allowlist_refuses_a_bad_process_home_before_discovery(monkeypatch):
+    """With no request env, the process's CODEX_HOME is refused before the root-profile
+    read can swallow the refusal, and no codex executable is started."""
+    import subprocess
+
+    import lionagi.agent.factory as factory_mod
+
+    monkeypatch.setenv("CODEX_HOME", "~/x")
+    monkeypatch.setenv("HOME", "/home/example")
+    calls: list[tuple] = []
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: calls.append(argv))
+    with pytest.raises(ConfigurationError, match="CODEX_HOME '~/x' is not an absolute path"):
+        factory_mod.apply_forwarded_mcp_servers(
+            {}, {}, provider="codex", exclusive=True, allowed_names=["docs"]
+        )
+    assert calls == []
+
+
 async def test_forward_mcp_codex_allowlist_reads_a_non_utf8_ambient_config_as_unreadable(
     tmp_path, monkeypatch
 ):

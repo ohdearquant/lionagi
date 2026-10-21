@@ -358,8 +358,9 @@ Both read the config in the codex home the worker's environment names, else
 this process's: a `CODEX_HOME` that a `secrets.lookup` fill adds to the
 child's environment at spawn is not seen by them, since the fill comes after,
 so set it in the worker's `env` or in this process's environment. A
-`CODEX_HOME` that is not an absolute path is refused before either read or
-any process starts, from either environment.
+`CODEX_HOME`, or a `HOME` when `CODEX_HOME` is unset, that is not an absolute
+path is refused before either read or any process starts, from either
+environment.
 A Claude worker is not isolated here and keeps its settings sources, as an
 interactive run does. A worker therefore has none of the servers its CLI would load
 from `$CODEX_HOME/config.toml`, a withheld one included; the orchestrator keeps them. The

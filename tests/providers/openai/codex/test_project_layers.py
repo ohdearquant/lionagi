@@ -112,9 +112,19 @@ def test_a_project_layer_check_refuses_a_request_codex_home_that_is_not_absolute
 def test_a_home_that_is_not_absolute_is_refused_and_an_absent_one_is_the_password_entry(
     tmp_path,
 ):
-    with pytest.raises(ConfigurationError, match="HOME 'relative' is not an absolute path"):
+    with pytest.raises(
+        ConfigurationError,
+        match="HOME 'relative' is not an absolute path: it names a different codex home "
+        "depending on where it is resolved.",
+    ):
         declaring_project_layer(tmp_path, {"HOME": "relative"})
     assert project_layers._codex_home({}) == Path(pwd.getpwuid(os.getuid()).pw_dir) / ".codex"
+    assert project_layers._codex_home({"HOME": str(tmp_path)}) == tmp_path / ".codex"
+
+
+def test_the_project_layer_check_does_not_refuse_after_the_shared_check_has_passed(tmp_path):
+    """The shared check is the one refusal for HOME: _codex_home calls it before choosing
+    the variable, so an absolute HOME with no CODEX_HOME reaches the home it names."""
     assert project_layers._codex_home({"HOME": str(tmp_path)}) == tmp_path / ".codex"
 
 

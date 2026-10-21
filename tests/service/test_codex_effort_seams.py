@@ -228,6 +228,34 @@ class TestTheRequestModelBackstop:
         )
         assert absolute.model == "gpt-5.3-codex-spark"
 
+    def test_a_relative_home_in_the_childs_env_is_refused_rather_than_resolved(self):
+        """A HOME that is not absolute names a different codex home depending on where it
+        is resolved, so the model-spec lookup refuses it before reading a profile there."""
+        from lionagi.providers.openai.codex import CodexCodeRequest
+
+        with pytest.raises(ValidationError, match="HOME 'rel' is not an absolute path"):
+            CodexCodeRequest(prompt="hi", model="work", env={"HOME": "rel"})
+
+    def test_a_codex_home_in_the_childs_env_wins_over_a_relative_home(self):
+        """CODEX_HOME is the home when it is set; a HOME beside it is not read."""
+        from lionagi.providers.openai.codex import CodexCodeRequest
+
+        req = CodexCodeRequest(
+            prompt="hi", model="work", env={"HOME": "rel", "CODEX_HOME": "/abs/x"}
+        )
+        assert req.model == "work"
+
+    def test_a_relative_process_home_is_refused_when_codex_home_is_unset(self, monkeypatch):
+        """The process case goes through the same refusal: an environment naming no
+        CODEX_HOME reads its HOME, and a relative one names no fixed directory."""
+        from lionagi._errors import ConfigurationError
+        from lionagi.providers.openai._codex_profile import codex_home_for_env
+
+        monkeypatch.delenv("CODEX_HOME", raising=False)
+        monkeypatch.setenv("HOME", "rel")
+        with pytest.raises(ConfigurationError, match="HOME 'rel' is not an absolute path"):
+            codex_home_for_env(None)
+
     def test_a_malformed_effort_is_rejected_rather_than_replaced(self, global_ultra):
         """Unset means absent, not "any value that is not a string".
 

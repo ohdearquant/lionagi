@@ -91,9 +91,9 @@ and one implementation.
   `toml` cannot read takes its server list from the fallback. These reads and
   the fallback use the codex home named by the environment the
   child runs under (the model's `env` when it holds one, else this process's).
-  A `CODEX_HOME` that is not an absolute path is refused before any config is
-  read or process starts, from either environment, with one
-  `ConfigurationError` naming the variable. The
+  A `CODEX_HOME`, or a `HOME` when `CODEX_HOME` is unset, that is not an
+  absolute path is refused before any config is read or process starts, from
+  either environment, with one `ConfigurationError` naming the variable. The
   fallback runs the codex binary the run itself starts; with no codex binary
   found the allowlist is refused rather than listed with another. A
   `CODEX_HOME` that a `secrets.lookup` fill adds to the child's environment at

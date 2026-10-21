@@ -927,8 +927,7 @@ def apply_forwarded_mcp_servers(
             if isinstance(key, str) and str.__str__(key).strip(_TRIMMED).split(".")[0] == "profile":
                 named_profile = value
         if named_profile is None:
-            if child_env is not None:
-                _refuse_non_absolute_codex_home(child_env)
+            _refuse_non_absolute_codex_home(os.environ if child_env is None else child_env)
             try:
                 named_profile = configured_codex_profile(child_env)
             except ValueError:

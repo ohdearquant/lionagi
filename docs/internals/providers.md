@@ -202,10 +202,10 @@ explicit instruction and the profile is only a default sitting in a file.
 
 Both reads use the codex home the *child* will use. A request whose `env`
 replaces the child environment names its own `CODEX_HOME` (or `HOME`), and the
-profile and config read are the ones that environment names. A `CODEX_HOME`
-that is not an absolute path is refused before either read, whether it comes
-from the request's environment or this process's; an environment naming neither
-falls back to the OS account's home.
+profile and config read are the ones that environment names. A `CODEX_HOME`,
+or a `HOME` when `CODEX_HOME` is unset, that is not an absolute path is refused
+before either read, whether it comes from the request's environment or this
+process's; an environment naming neither falls back to the OS account's home.
 
 When the caller sets no effort, the request emits the global config's
 `model_reasoning_effort` clamped to the resolved model
