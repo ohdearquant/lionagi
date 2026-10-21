@@ -146,7 +146,9 @@ function readStoredConversation(): string | null {
 
 // A rename, pin or archive this panel wrote while a read was pending must not be
 // undone by the read's older snapshot of that row. The server stamps updatedAt on
-// every write, so a snapshot stamped later already holds the write.
+// every write, so a snapshot stamped later already holds the write. Otherwise the
+// write's result is the newer row: its description, which the Operator can change,
+// is taken with the fields this panel writes.
 function keepWrite(row: OperatorConversation, written: OperatorConversation): OperatorConversation {
   const snapshotIsNewer =
     row.updatedAt !== undefined &&
@@ -156,6 +158,7 @@ function keepWrite(row: OperatorConversation, written: OperatorConversation): Op
   return {
     ...row,
     title: written.title,
+    description: written.description,
     pinned: written.pinned,
     status: written.status,
     updatedAt: written.updatedAt,
@@ -805,6 +808,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const renameButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const previousRenamingIdRef = useRef<string | null>(null);
   const conversationListButtonRef = useRef<HTMLButtonElement>(null);
+  // The conversation the human last chose, set before its load starts so a late
+  // result for an earlier choice is dropped. A failed load keeps it: the error view
+  // disables the composer, and Retry or a pick from the list replaces it.
   const selectedConversationIdRef = useRef<string | null>(null);
   const listFilterRef = useRef<"active" | "archived">("active");
   const createdConversationIdsRef = useRef(new Set<string>());

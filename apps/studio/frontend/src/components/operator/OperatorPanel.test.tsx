@@ -1433,6 +1433,20 @@ describe("OperatorPanel", () => {
         expectMetadata("Renamed check", "Original scope");
       });
 
+      it("takes the description from a rename stamped later than a pending read", async () => {
+        const { conversation, other, settle } = await holdMetadataRead();
+        api.updateOperatorConversation.mockResolvedValueOnce({
+          ...conversation,
+          title: "Renamed check",
+          description: "Newer scope",
+          updatedAt: 30,
+        });
+        await renameRow("Scheduler check", "Renamed check");
+        const older = { ...conversation, description: "Older scope", updatedAt: 20 };
+        await settle(older, [older, other]);
+        expectMetadata("Renamed check", "Newer scope");
+      });
+
       it("takes a refresh that holds a later server change over a rename written during it", async () => {
         const { conversation, other, settle } = await holdMetadataRead();
         api.updateOperatorConversation.mockResolvedValueOnce({

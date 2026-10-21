@@ -416,8 +416,10 @@ async def update_conversation(arguments: dict[str, Any]) -> dict[str, Any]:
     fields = args.model_dump(include=args.model_fields_set - {"conversation_id"})
     try:
         return await store.update_conversation_from_turn(conversation_id, request_id, **fields)
-    except OperatorConflictError as exc:
-        return {"updated": False, "reason": (exc.details or {}).get("code", "turn_not_active")}
+    except OperatorConflictError:
+        # With no status or pin to change, the store's only conflict here is a turn that is
+        # no longer the conversation's active one.
+        return {"updated": False, "reason": "turn_not_active"}
     except OperatorNotFoundError:
         return {"updated": False, "reason": "not_found"}
 
