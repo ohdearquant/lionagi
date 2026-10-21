@@ -87,19 +87,11 @@ def _nested(class_name: str) -> bool:
 
 
 def get_class(class_name: str) -> type:
-    """Retrieve a class by name: LION_CLASS_REGISTRY lookup (fully-qualified
-    name), then a dotted path whose module is already imported, then a dotted
-    path under an allowed module prefix (``lionagi.`` and any prefix added with
-    ``lionagi.ln.register_type_prefix``), then legacy short-name lookup among
-    the built-in modules, then a LION_CLASS_REGISTRY key ending in the short
-    name. A dotted name outside the allowed prefixes that neither of its own
-    steps resolves raises instead of falling back to its short name, and one
-    under an allowed prefix falls back only to a class defined under an
-    allowed prefix that the name itself starts with; a bare short name
-    resolves only to a lionagi class or a registered one. A module is imported
-    here only under an allowed prefix, with the parent packages Python imports
-    first. Raises ValueError if not found, chained from the import failure
-    when loading a dotted name failed.
+    """Return the class a serialized name refers to. Raises ValueError if none
+    is found, chained from the import failure when loading a dotted name failed.
+
+    The lookup order, which modules may be imported, and the remedy each error
+    gives are described once, in docs/internals/support-libs.md.
     """
     if not class_name:
         # Reject empty names here: the suffix-match fallback below would
