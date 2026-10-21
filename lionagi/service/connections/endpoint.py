@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal
 
@@ -1029,7 +1029,8 @@ class Endpoint:
         The stored config never supplies a credential, the local-network opt-in, a grant
         or runtime state. The first two come from the keyword arguments here; a grant is
         handed to the live config again by the caller whose role names it. ``base_url``
-        given here replaces the stored one.
+        given here replaces the stored one. A stored header named as a credential is
+        dropped, and of the stored client options only the headers are kept.
         """
         from lionagi.utils import to_dict
 
@@ -1043,15 +1044,30 @@ class Endpoint:
         if circuit_breaker:
             circuit_breaker = CircuitBreaker(**circuit_breaker)
         if config:
-            # The config never writes these down, but this reads a stored row as it
-            # stands: one written by an older version, or by any other writer, may still
-            # carry them. A name the config has no field for is moved into kwargs, so
-            # both places are cleared. A grant belongs to the role of the caller
+            # None of these is taken from a stored row. The config writes down only the
+            # opt-in; a row written by an older version, or by any other writer, may
+            # carry the rest. A name the config has no field for is moved into kwargs,
+            # so both places are cleared. A grant belongs to the role of the caller
             # restoring the row, who hands it again if the role names it.
             config = {k: v for k, v in config.items() if k not in _NOT_RESTORED}
             kwargs = config.get("kwargs")
             if isinstance(kwargs, dict):
                 config["kwargs"] = {k: v for k, v in kwargs.items() if k not in _NOT_RESTORED}
+            # Nor does a stored header. The endpoint merges default_headers over the
+            # credential header it writes, so a stored Authorization or x-api-key would
+            # replace the restored key, at whatever URL the model is restored to. Of the
+            # client options only the headers are kept, filtered the same way: the rest
+            # set up this process's HTTP client, and some hand it a credential (auth,
+            # proxy_auth, cookies) or let it read one here (trust_env reads .netrc).
+            if isinstance(config.get("default_headers"), Mapping):
+                config["default_headers"] = _without_credential_headers(config["default_headers"])
+            client_kwargs = config.get("client_kwargs")
+            if isinstance(client_kwargs, Mapping):
+                config["client_kwargs"] = {
+                    name: _without_credential_headers(value)
+                    for name, value in client_kwargs.items()
+                    if name == "headers"
+                }
             if base_url is not None:
                 config["base_url"] = base_url
             if api_key is not None:
@@ -1065,3 +1081,25 @@ class Endpoint:
             circuit_breaker=circuit_breaker,
             retry_config=retry_config,
         )
+
+
+def _without_credential_headers(headers: Any) -> Any:
+    """``headers`` without each header whose name the library reads as a credential.
+
+    A mapping and a list of name-value pairs are filtered; any other value is returned
+    as it is, for the config or the HTTP client to accept or refuse.
+    """
+    from lionagi.libs.credential_fields import is_secret_field_name
+
+    def names_credential(name: Any) -> bool:
+        return isinstance(name, str) and is_secret_field_name(name)
+
+    if isinstance(headers, Mapping):
+        return {name: value for name, value in headers.items() if not names_credential(name)}
+    if isinstance(headers, (list, tuple)):
+        return [
+            pair
+            for pair in headers
+            if not (isinstance(pair, (list, tuple)) and pair and names_credential(pair[0]))
+        ]
+    return headers

@@ -15,7 +15,9 @@ model kept for a gateway that needs a key, or for a local-network address its pr
 not allow, fails at its first call. To keep sending to that URL, pass the key and the opt-in:
 `iModel.from_dict(data, api_key=..., allow_local_network=True)`, or hand `Branch.from_dict` a
 live `chat_model`. `li agent --resume` takes neither, so a branch saved against such a
-gateway is resumed from Python instead.
+gateway is resumed from Python instead. A restored model also keeps no client option but its
+headers: one that relied on a stored `trust_env`, for proxy settings from the environment,
+sets it again on the live config (`model.endpoint.config.client_kwargs`).
 
 Pair `li studio` and the daemon from the same release. Updating only the daemon leaves an older
 `li studio` asking the retired `POST /api/studio/pairing-codes`, which now answers 410, so a page
@@ -524,13 +526,17 @@ behaviour, including accepting a write-capable submission without `cwd`.
 
 ### Security
 
-- `iModel.from_dict` and `Branch.from_dict` no longer take a credential, the local-network
-  opt-in or a child process's environment from the stored data. The provider's credential from
-  the environment is attached only when the stored base URL is the provider's registered one,
-  and the local-network setting comes from the provider's registration. `iModel.from_dict`
-  takes `base_url`, `api_key` and `allow_local_network` from the caller, and `Branch.from_dict`
-  takes `chat_model` and `parse_model`. A grant or an environment written as a top-level key
-  of a stored config is dropped too.
+- `Endpoint.from_dict`, `iModel.from_dict` and `Branch.from_dict` no longer take a credential,
+  the local-network opt-in or a child process's environment from the stored data. The
+  provider's credential from the environment is attached only when the stored base URL is the
+  provider's registered one, and the local-network setting comes from the provider's
+  registration. `iModel.from_dict` takes `base_url`, `api_key` and `allow_local_network` from
+  the caller, and `Branch.from_dict` takes `chat_model` and `parse_model`. A grant or an
+  environment written as a top-level key of a stored config is dropped too. So is a stored
+  header whose name names a credential (`Authorization`, `x-api-key`, `api-key` and the like),
+  in `default_headers` or in the client options' `headers`, which before could replace the
+  restored key, a caller's key included; and no client option other than `headers` is restored
+  (`auth`, `proxy_auth`, `cookies` and `trust_env` among them).
 - Raised the `mcp` floor in the `mcp` extra to 1.30.0 (GHSA-84m7-p3x7-pcfv: sessions accumulate
   without bound in the StreamableHTTP server transport). `li mcp` serves over stdio, so its own
   server was not exposed; the floor keeps installs off the affected releases.

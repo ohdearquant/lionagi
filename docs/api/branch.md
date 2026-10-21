@@ -357,13 +357,17 @@ describes, which can import a module the data names, and its stored models choos
 provider, model, base URL and request settings. Restore only data that your own process, or a
 writer you trust, produced.
 
-A stored model never supplies a credential or the local-network opt-in. `iModel.from_dict`
-attaches the provider's credential from the environment only when the stored base URL is the
-provider's registered one, and takes the local-network setting from the provider's
-registration. A caller that wants another endpoint, credential or setting passes it:
+Some settings belong to the process restoring the data rather than to the data, so a stored
+model never supplies them, whoever wrote it: a credential, the local-network opt-in, a header
+named as a credential (such as `Authorization` or `x-api-key`), and any client option other
+than its headers. `iModel.from_dict` attaches the provider's credential from the environment
+only when the stored base URL is the provider's registered one, and takes the local-network
+setting from the provider's registration. A caller that wants another endpoint, credential or
+setting passes it:
 
 ```python
-restored = li.Branch.from_dict(data, chat_model=li.iModel(provider="openai", base_url=url))
+live = li.iModel(provider="openai", base_url=url, api_key="MY_GATEWAY_KEY")
+restored = li.Branch.from_dict(data, chat_model=live)
 model = li.iModel.from_dict(model_data, base_url=url, api_key="MY_GATEWAY_KEY")
 ```
 

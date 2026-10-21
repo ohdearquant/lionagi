@@ -92,6 +92,7 @@ def test_a_stored_key_is_never_resolved(env_key, monkeypatch, base_url):
     config = iModel.from_dict(
         _stored(base_url=base_url, api_key="SOME_OTHER_SECRET")
     ).endpoint.config
+    # The stored name is not read: the env key at the registered URL, and none elsewhere.
     assert config._api_key == (env_key if base_url == OPENAI_URL else None)
 
 
@@ -148,6 +149,7 @@ def test_a_branch_takes_the_callers_model_over_the_stored_one(env_key):
     assert restored.chat_model is live
     # No parse model was stored, so the parse model follows the chat model.
     assert restored.parse_model is live
+    # The caller's data is left as it was.
     assert "chat_model" in data
 
 
@@ -160,3 +162,38 @@ def test_a_branch_takes_a_callers_parse_model_beside_the_stored_chat_model():
     restored = Branch.from_dict(data, parse_model=live)
     assert restored.parse_model is live
     assert restored.chat_model.endpoint.config.kwargs["model"] == "gpt-4.1-mini"
+
+
+CREDENTIAL_HEADERS = ["Authorization", "x-api-key", "X_Api_Key", "Proxy-Authorization", "api-key"]
+CALLERS = {
+    "env-key": {},
+    "caller-key": {"api_key": "sk-caller"},
+    "caller-url": {"api_key": "sk-caller", "base_url": ELSEWHERE},
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", CREDENTIAL_HEADERS)
+@pytest.mark.parametrize("caller", list(CALLERS.values()), ids=list(CALLERS))
+async def test_a_stored_credential_header_never_reaches_the_request(env_key, name, caller):
+    data = _stored(default_headers={name: "stored-secret", "OpenAI-Beta": "kept"})
+    data["endpoint"]["config"]["client_kwargs"] = {
+        "headers": [[name, "stored-secret"], ["X-Trace", "kept"]],
+        "auth": ["user", "stored-secret"],
+        "trust_env": True,
+    }
+    endpoint = iModel.from_dict(data, **caller).endpoint
+
+    _, headers = endpoint.create_payload({"model": "gpt-4.1-mini", "messages": []})
+    assert headers["Authorization"] == f"Bearer {caller.get('api_key', env_key)}"
+    assert "stored-secret" not in headers.values()
+    assert headers["OpenAI-Beta"] == "kept"
+
+    session = endpoint._create_http_session()
+    try:
+        assert "stored-secret" not in session.headers.values()
+        assert session.headers["X-Trace"] == "kept"
+        assert session.auth is None
+        assert session.trust_env is False
+    finally:
+        await session.close()
