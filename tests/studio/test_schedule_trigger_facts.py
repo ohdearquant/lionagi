@@ -228,7 +228,7 @@ async def test_database_rows_match_across_run_routes_and_recent_summaries(isolat
     assert parent["chain_children"][0]["scheduled"] is False
 
 
-def test_machine_runs_preserves_trigger_facts_from_the_http_service(monkeypatch):
+def test_machine_runs_preserves_trigger_facts_from_the_studio_response(monkeypatch):
     from lionagi.cli import machine_schedule
 
     row = schedules._run_view({"id": "tick", "trigger_context": {"scheduled": True}})
@@ -316,3 +316,104 @@ async def test_a_timer_fire_dispatched_again_after_a_restart_is_still_served_as_
         await engine._recover_undispatched_fires()
     assert tracked.call_args.kwargs["supersedes_run_id"] == "orphan"
     assert _served_scheduled(_captured_trigger_context(tracked)) == [True, True, True]
+
+
+async def test_the_batch_read_ships_a_context_only_when_it_names_a_fact_key(isolated_db):
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    event = {"repo": "acme/widgets", "github_events": [{"pr_body": "x" * 200_000}]}
+    async with StateDB() as db:
+        await db.create_schedule(
+            {
+                "id": "nightly",
+                "name": "nightly",
+                "trigger_type": "interval",
+                "interval_sec": 60,
+                "action_kind": "agent",
+                "next_fire_at": 1700000000.125,
+                "missed_fire_policy": "skip",
+            }
+        )
+        await _seed_run(db, "event", event)
+        await _seed_run(db, "named-in-a-value", {"action": "scheduled", "note": "missed_fire_at"})
+        await _seed_run(db, "tick", {"scheduled": True, "fired_at": 1700000000.0})
+        schedule = await db.get_schedule("nightly")
+    await SchedulerEngine()._record_missed_fire_skip(schedule, now=1700000100.0)
+
+    async with StateDB() as db:
+        grouped, _, _ = await schedules._read_run_batch(db, ["nightly"])
+    shipped = {row["id"]: row["trigger_context"] for row in grouped["nightly"]}
+    assert len(shipped) == 4
+    assert shipped["event"] is None
+    assert shipped["named-in-a-value"] is not None
+    assert shipped["tick"] is not None
+    missed = next(rid for rid in shipped if rid not in {"event", "named-in-a-value", "tick"})
+    assert shipped[missed] is not None
+
+    views = await schedules.list_schedule_runs_route("nightly", limit=25, offset=0, status=None)
+    listed = await schedules.list_schedules_route(
+        enabled=None, trigger_type=None, project=None, include_recent_runs=True
+    )
+    expected = {
+        "event": (False, None),
+        "named-in-a-value": (False, None),
+        "tick": (True, None),
+        missed: (False, 1700000000.125),
+    }
+    for rows in (views["runs"], listed["schedules"][0]["recent_runs_summary"]["runs"]):
+        assert {r["id"]: (r["scheduled"], r["missed_fire_at"]) for r in rows} == expected
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    [
+        {"trigger_type": "cron", "cron_expr": "0 * * * *"},
+        {"trigger_type": "interval", "interval_sec": 60},
+        {"trigger_type": "at"},
+    ],
+    ids=["cron", "interval", "at"],
+)
+async def test_a_timer_fire_recorded_in_the_database_is_served_as_scheduled(isolated_db, trigger):
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    async with StateDB() as db:
+        await db.create_schedule(
+            {
+                "id": "nightly",
+                "name": "nightly",
+                "action_kind": "agent",
+                "action_prompt": "ping",
+                "action_cwd": "/",
+                "next_fire_at": 1000.0,
+                **trigger,
+            }
+        )
+        schedule = await db.get_schedule("nightly")
+    engine = SchedulerEngine()
+    with (
+        patch(
+            "lionagi.studio.scheduler.subprocess.build_argv",
+            return_value=(["li", "agent", "ping"], None),
+        ),
+        patch(
+            "lionagi.studio.scheduler.subprocess.spawn_and_wait",
+            new=AsyncMock(return_value=(0, "")),
+        ),
+    ):
+        await engine._maybe_fire(schedule, now=1000.0)
+        await asyncio.gather(*list(engine._fire_tasks))
+
+    views = await schedules.list_schedule_runs_route("nightly", limit=25, offset=0, status=None)
+    assert [(r["status"], r["scheduled"]) for r in views["runs"]] == [("completed", True)]
+    detail = await schedules.get_schedule_route("nightly")
+    assert [r["scheduled"] for r in detail["recent_runs"]] == [True]
+    listed = await schedules.list_schedules_route(
+        enabled=None, trigger_type=None, project=None, include_recent_runs=True
+    )
+    summary = listed["schedules"][0]["recent_runs_summary"]["runs"]
+    assert [r["scheduled"] for r in summary] == [True]
+    record = await schedules.get_schedule_run_route(views["runs"][0]["id"])
+    assert record["scheduled"] is True

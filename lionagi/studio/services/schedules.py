@@ -621,6 +621,19 @@ def _run_summary(row: dict[str, Any]) -> dict[str, Any]:
 
 _RECENT_RUN_LIMIT = 25
 
+# The batch ships an occurrence's trigger context only when its stored text names one of
+# the two keys _run_trigger_facts reads, and NULL otherwise, which projects the same two
+# defaults. A repository event's payload names neither, so it is no longer carried here
+# only to be parsed and dropped. The test is a match on the text, not a JSON parse, so no
+# stored value can fail the read, and a context that names a key ships whole for
+# _run_trigger_facts to decide as before. The scheduler writes contexts with json.dumps,
+# which writes both keys literally; a key spelled with a JSON escape is not matched.
+_RECENT_RUN_CONTEXT = (
+    " CASE WHEN CAST(occurrence.trigger_context AS TEXT) LIKE '%\"scheduled\"%'"
+    " OR CAST(occurrence.trigger_context AS TEXT) LIKE '%\"missed_fire_at\"%'"
+    " THEN occurrence.trigger_context END AS trigger_context"
+)
+
 
 def _recent_run_keys_sql(dialect: str) -> str:
     """The per-definition key read, in the dialect's own collection vocabulary.
@@ -628,7 +641,8 @@ def _recent_run_keys_sql(dialect: str) -> str:
     Both forms select up to ``_RECENT_RUN_LIMIT + 1`` keys per requested
     definition, newest first by ``fired_at DESC, id DESC``, and leave the row
     past the limit without an occurrence payload. The extra key detects longer
-    history without reading its error payload or counting every run.
+    history without reading its error payload or counting every run. Both read
+    the trigger context through ``_RECENT_RUN_CONTEXT``.
 
     SQLite aggregates each definition's keys with ``json_group_array`` and
     expands them with ``json_each``; ``recent.key`` is the 0-based position, so
@@ -643,11 +657,11 @@ def _recent_run_keys_sql(dialect: str) -> str:
     """
     if dialect == "sqlite":
         return (
-            "SELECT recent.value AS id, definition.value AS schedule_id,"
+            "SELECT recent.value AS id, definition.value AS schedule_id,"  # noqa: S608
             " occurrence.invocation_id, occurrence.action_kind, occurrence.status,"
             " occurrence.exit_code, occurrence.chain_depth, occurrence.fired_at,"
             " occurrence.ended_at, occurrence.error_detail,"
-            " occurrence.trigger_context"
+            f"{_RECENT_RUN_CONTEXT}"
             " FROM json_each(?) AS definition"
             " JOIN json_each((SELECT json_group_array(id) FROM ("
             " SELECT id FROM schedule_runs WHERE schedule_id = definition.value"
@@ -657,11 +671,11 @@ def _recent_run_keys_sql(dialect: str) -> str:
             " ORDER BY definition.value, recent.key"
         )
     return (
-        "SELECT recent.id AS id, definition.value AS schedule_id,"
+        "SELECT recent.id AS id, definition.value AS schedule_id,"  # noqa: S608
         " occurrence.invocation_id, occurrence.action_kind, occurrence.status,"
         " occurrence.exit_code, occurrence.chain_depth, occurrence.fired_at,"
         " occurrence.ended_at, occurrence.error_detail,"
-        " occurrence.trigger_context"
+        f"{_RECENT_RUN_CONTEXT}"
         " FROM jsonb_array_elements_text(CAST(? AS jsonb)) AS definition(value)"
         " JOIN LATERAL ("
         " SELECT jsonb_agg(ordered.id ORDER BY ordered.fired_at DESC, ordered.id DESC) AS ids"
