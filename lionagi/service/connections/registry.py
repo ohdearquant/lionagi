@@ -547,9 +547,11 @@ class EndpointRegistry:
     def canonical_provider(cls, provider: str) -> str:
         """The provider a name or provider-alias resolves to when matched
         ("openai-codex" -> "codex", "claude" -> "claude_code"); a name no entry
-        claims comes back folded the same way."""
+        claims comes back folded the same way. The name is folded as the match
+        folds it, letter case only, so a padded name comes back padded and names
+        no provider, as the match finds none for it."""
         cls._ensure_loaded()
-        key = provider.strip().lower()
+        key = provider.lower()
         return cls._alias_owners.get(key, key)
 
     @classmethod

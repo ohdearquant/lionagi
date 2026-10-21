@@ -168,7 +168,8 @@ A slot is the file `$LIONAGI_HOME/leases/subagents/<pool>/<index>.lock`, `index`
   could not look. A record with no start time for its child (the spawn could not read one, or
   the child does not lead its own process group) does not count: its pid alone could name a
   process that took the pid over, so once the holder exits that slot reads free even while the
-  child still runs, and a pool can then hold one agent past its cap.
+  child still runs, and a pool can then hold one agent past its cap. The rule that a running
+  recorded child keeps its slot therefore holds only for a child recorded with its start time.
 - **Counting and taking happen under the pool's admission lock.** Each pool has an admission lock,
   `<pool>/.admission`. An admission takes the admission locks of all its pools before it counts
   any, counts every held slot at every index on disk, and takes a slot in each pool only once all
@@ -288,15 +289,17 @@ The class is chosen as follows:
 - A spawned node that a resume runs again (`--retry-failed`) is rebuilt from the checkpoint
   without that setup: with an assignee it runs on that worker's branch and class, without one on
   the orchestrator's branch or a clone of it, with the orchestrator's class. The checkpoint
-  records the class of a `light` worker that asked for a node naming no assignee, and
-  `--retry-failed` refuses with `FlowResumeError` to run such a node again. A resume without the
+  records the class of a `light` worker that asked for a node naming no assignee, and for an
+  escalation retry the class it ran at, read off the branch it ran on, and `--retry-failed`
+  refuses with `FlowResumeError` to run such a node again when that class is `light`. A resume without the
   flag refuses every failed node, so a run in which such a node failed is re-run from scratch. A
   checkpoint written before that record existed carries no class, and its nodes run again as
   described.
 - A `light` codex worker is handed no `add_dir`, so its one writable root is its working
   directory, the worker's artifact directory; the project-root `add_dir` every other CLI worker
-  is handed is unchanged. A codex worker in team mode needs the team directory writable, so a `light` codex
-  worker there is refused with `CLIInputRefusedError` before it starts.
+  is handed is unchanged. A codex worker in team mode, named by the provider or an alias of it such
+  as `openai-codex`, needs the team directory writable, so a `light` codex worker there is refused
+  with `CLIInputRefusedError` before it starts.
 - API-model legs take no workload; the field is passed only to CLI providers, and only when it is
   not the default.
 - `agent.submit` on the MCP surface exposes the flag with the same two values. A `light`

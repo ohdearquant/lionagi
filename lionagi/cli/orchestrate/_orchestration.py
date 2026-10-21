@@ -1161,9 +1161,12 @@ async def build_worker_branch(
         add_dir = w_imodel.endpoint.config.kwargs.setdefault("add_dir", [])
         if not _is_light_codex(w_imodel) and project_root not in add_dir:
             add_dir.append(project_root)
+        from lionagi.service.connections.registry import EndpointRegistry
+
+        # An alias ("openai-codex") is the same provider, and gets the same grant.
         if (
             getattr(env, "team_data", None)
-            and w_imodel.endpoint.config.provider == "codex"
+            and EndpointRegistry.canonical_provider(w_imodel.endpoint.config.provider) == "codex"
             and (teams_dir := str(_team_module.TEAMS_DIR.resolve())) not in add_dir
         ):
             add_dir.append(teams_dir)

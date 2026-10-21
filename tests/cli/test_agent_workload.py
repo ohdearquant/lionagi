@@ -206,14 +206,15 @@ def _stored_light_codex_branch(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["codex", "openai-codex"])
 @pytest.mark.parametrize(("role", "expected"), [(_PLAIN_ROLE, None), (_LIGHT_ROLE, "light")])
 async def test_a_resume_runs_with_this_launchs_class_not_the_stored_one(
-    monkeypatch, tmp_path, role, expected
+    monkeypatch, tmp_path, role, expected, provider
 ):
     import lionagi.cli.agent as agent_mod
     from lionagi.cli.agent import _run_agent
 
-    branch_id, path = _stored_light_codex_branch(tmp_path)
+    branch_id, path = _stored_light_codex_branch(tmp_path, provider)
     monkeypatch.setattr(agent_mod, "find_branch", lambda bid: ("run-x", path))
     _wire_agent_stubs(monkeypatch, tmp_path)
     _use_role(monkeypatch, role)
@@ -225,14 +226,15 @@ async def test_a_resume_runs_with_this_launchs_class_not_the_stored_one(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["codex", "openai-codex"])
 @pytest.mark.parametrize(("flag", "expected"), [(None, None), ("light", "light")])
 async def test_a_resume_without_a_role_runs_heavy_unless_the_flag_says_light(
-    monkeypatch, tmp_path, flag, expected
+    monkeypatch, tmp_path, flag, expected, provider
 ):
     import lionagi.cli.agent as agent_mod
     from lionagi.cli.agent import _run_agent
 
-    branch_id, path = _stored_light_codex_branch(tmp_path)
+    branch_id, path = _stored_light_codex_branch(tmp_path, provider)
     monkeypatch.setattr(agent_mod, "find_branch", lambda bid: ("run-x", path))
     _wire_agent_stubs(monkeypatch, tmp_path)
     captured = _capture_chat_kwargs(monkeypatch)

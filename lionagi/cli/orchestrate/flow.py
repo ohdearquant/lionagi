@@ -1256,7 +1256,8 @@ def _reconstruct_spawned_nodes(
         )
 
     # A node naming no assignee is rebuilt on the orchestrator's branch, with the
-    # orchestrator's class, and not with the class of the worker that asked for it.
+    # orchestrator's class, and not with the class of the worker that asked for it,
+    # or, for an escalation retry, of the node it retries.
     reclassed = [
         f"{e['node_id']} ({e['emitter_workload']})"
         for e in checkpoint_spawned
@@ -1268,10 +1269,11 @@ def _reconstruct_spawned_nodes(
     if reclassed:
         raise FlowResumeError(
             "Resume refused for reactively spawned node(s) "
-            f"[{', '.join(reclassed)}]: a worker of the class shown asked for them "
-            "naming no assignee, and --retry-failed would run them again with the "
-            "orchestrator's class, while a resume without it refuses every failed "
-            "node. Re-run the flow from scratch."
+            f"[{', '.join(reclassed)}]: each ran at the class shown, asked for by a "
+            "worker of that class naming no assignee or retrying a node of that class, "
+            "and --retry-failed would run them again with the orchestrator's class, "
+            "while a resume without it refuses every failed node. Re-run the flow "
+            "from scratch."
         )
 
     known_ids = {str(n) for n in dag_state.node_ids}
@@ -1875,6 +1877,20 @@ async def _execute_dag(
                         else getattr(params, "context", None)
                     )
                     spawn_fields["emitter_workload"] = spawned_node.metadata.get("emitter_workload")
+                    if spawned_node.metadata.get("escalated_from") is not None:
+                        # An escalation retry runs on a clone of the branch of the node it
+                        # retries, at that node's class, and is built with no record of it:
+                        # the class is read off the branch it ran on, so a resume that would
+                        # rebuild it on the orchestrator's branch refuses it as it refuses a
+                        # spawn a light worker asked for.
+                        run_branch = getattr(executor, "operation_branches", {}).get(
+                            spawned_node.id
+                        )
+                        run_model = getattr(run_branch, "chat_model", None)
+                        if run_model is not None:
+                            spawn_fields["emitter_workload"] = run_model.endpoint.config.kwargs.get(
+                                "workload"
+                            )
             _checkpoint_tasks.append(
                 _asyncio.ensure_future(
                     _checkpoint_writer.record_spawned(
@@ -2269,7 +2285,13 @@ async def _execute_dag(
             add_dir.append(project_root)
         # The same team grant a planned worker gets: a codex spawn in team mode
         # needs the teams directory writable, and a light one is refused for it.
-        if getattr(env, "team_data", None) and chat_model.endpoint.config.provider == "codex":
+        # An alias ("openai-codex") is the same provider.
+        from lionagi.service.connections.registry import EndpointRegistry
+
+        if (
+            getattr(env, "team_data", None)
+            and EndpointRegistry.canonical_provider(chat_model.endpoint.config.provider) == "codex"
+        ):
             from .. import team as _team_module
 
             teams_dir = str(_team_module.TEAMS_DIR.resolve())

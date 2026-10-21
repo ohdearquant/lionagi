@@ -1367,6 +1367,118 @@ async def test_checkpoint_record_captures_spawn_id_from_live_role_routed_graph_n
     ]
 
 
+@pytest.mark.parametrize("workload", ["light", None])
+async def test_a_failed_escalation_retry_records_the_class_it_ran_at(tmp_path: Path, workload):
+    """An escalation retry is built with no class of its own and runs on a clone of the branch
+    of the node it retries. Its record carries the class that branch ran at, so --retry-failed,
+    which would rebuild it on the orchestrator's branch, refuses a light one; a heavy one
+    records none."""
+    builder, parent_id, worker_branch = _real_planned_node("worker")
+    env = _make_resume_env(tmp_path)
+    env.builder = builder
+    env.session = Session(default_branch=Branch(name="orchestrator"))
+    env.run.checkpoint_path = tmp_path / "checkpoint.json"
+
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="write the brief", assignee="worker")],
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=[parent_id],
+        known_nodes={parent_id},
+        deps_by_node={parent_id: []},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"worker": worker_branch},
+        worker_models=["codex"],
+    )
+
+    from lionagi.operations.node import create_operation
+
+    retry = create_operation(
+        "operate", parameters={"instruction": "[escalation] stuck\nOriginal: write the brief"}
+    )
+    retry.metadata["escalated_from"] = str(parent_id)
+    builder.get_graph().add_node(retry)
+    retry_id = str(retry.id)
+    ran_on = SimpleNamespace(
+        chat_model=SimpleNamespace(
+            endpoint=SimpleNamespace(
+                config=SimpleNamespace(kwargs={"workload": workload} if workload else {})
+            )
+        )
+    )
+
+    async def _run_dag_result(*args, executor_ref=None, **_kw):
+        executor_ref["executor"] = SimpleNamespace(
+            context=SimpleNamespace(content={}),
+            results={},
+            operation_branches={retry.id: ran_on},
+        )
+        await env.session.emit(
+            NodeFailed(
+                op_id=retry_id,
+                name="worker escalation retry",
+                elapsed=0.1,
+                parent_id=str(parent_id),
+                depends_on=[str(parent_id)],
+            )
+        )
+        return {"operation_results": {}, "spawned_operations": 0, "escalated_operations": []}
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = _run_dag_result
+
+    from lionagi.engines import PlanningEngine
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(
+            env,
+            plan_result,
+            dag_state,
+            max_concurrent=1,
+            max_ops=0,
+            checkpoint_prompt="write the brief",
+            checkpoint_plan=[{"agent_id": "worker"}],
+            checkpoint_config={"model_spec": "codex"},
+        )
+
+    (entry,) = load_checkpoint(env.run.checkpoint_path)["spawned"]
+    assert entry["node_id"] == retry_id
+    assert entry["status"] == "failed"
+    assert entry["assignee"] is None
+    assert entry.get("emitter_workload") == workload
+    if workload is None:
+        return
+
+    resume_builder, resume_parent, resume_branch = _real_planned_node("worker")
+    resume_plan, checkpoint_ops = _terminal_plan_and_ops("worker", resume_parent)
+    resume_state = _DagState(
+        node_ids=[resume_parent],
+        known_nodes={resume_parent},
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=None,
+        role_base={"worker": resume_branch},
+        worker_models=[],
+    )
+    with pytest.raises(FlowResumeError) as refused:
+        _apply_checkpoint_precompletion(
+            SimpleNamespace(builder=resume_builder),
+            resume_plan,
+            resume_state,
+            checkpoint_ops,
+            allow_degraded_context=False,
+            retry_failed=True,
+            checkpoint_spawned=[entry],
+        )
+    assert f"{retry_id} (light)" in str(refused.value)
+    assert UUID(retry_id) not in resume_builder.get_graph().internal_nodes
+
+
 async def test_checkpoint_record_captures_context_from_live_graph_node_parameters(
     tmp_path: Path,
 ):
