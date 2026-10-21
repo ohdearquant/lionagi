@@ -1209,9 +1209,9 @@ _SECRET_CODEX_MCP_FIELDS = frozenset({"env", "http_headers"})
 
 def _refuse_non_absolute_codex_home(env: Mapping[str, str]) -> None:
     """Refuse a child CODEX_HOME that is a `~` or relative path before reading the config it
-    names, as the project-layer check does: a `~` lands under the child's HOME, which need not be
-    this process's, and a relative path under whatever directory is current when it is read, so
-    only an absolute path names the same home for this read and for the child."""
+    names: codex takes the value as a path and expands no `~`, so either form names a directory
+    under the working directory the child starts in, which need not be the one this read runs
+    in, and only an absolute path names the same home for this read and for the child."""
     value = env.get("CODEX_HOME")
     if value and not os.path.isabs(value):
         raise ConfigurationError(

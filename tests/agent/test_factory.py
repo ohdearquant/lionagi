@@ -1835,6 +1835,41 @@ async def test_forward_mcp_codex_allowlist_with_no_codex_binary_is_refused_witho
     assert calls == []
 
 
+def test_forward_mcp_codex_allowlist_with_no_codex_binary_and_a_child_env_is_refused(
+    tmp_path, monkeypatch
+):
+    """The same refusal when the child's environment is handed over: its CODEX_HOME names
+    the unreadable config and its PATH holds a `codex`, which the discovery does not run."""
+    import subprocess
+
+    import lionagi.providers.openai.codex as codex_mod
+    from lionagi.agent.factory import apply_forwarded_mcp_servers
+
+    codex_home = tmp_path / "codex_home"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text("x = " + "[" * 3000 + "]" * 3000 + "\n")
+    child_bin = tmp_path / "child-bin"
+    child_bin.mkdir()
+    (child_bin / "codex").write_text("#!/bin/sh\necho '[]'\n")
+    (child_bin / "codex").chmod(0o755)
+    env = {"CODEX_HOME": str(codex_home), "HOME": str(tmp_path / "home"), "PATH": str(child_bin)}
+
+    calls: list[tuple] = []
+
+    def _run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+
+    monkeypatch.setattr("subprocess.run", _run)
+    monkeypatch.setattr(codex_mod, "CODEX_CLI", None)
+
+    with pytest.raises(ConfigurationError, match="Codex CLI was not found"):
+        apply_forwarded_mcp_servers(
+            {}, {}, provider="codex", exclusive=True, allowed_names=["docs"], env=env
+        )
+    assert calls == []
+
+
 async def test_forward_mcp_codex_allowlist_reads_a_non_utf8_ambient_config_as_unreadable(
     tmp_path, monkeypatch
 ):

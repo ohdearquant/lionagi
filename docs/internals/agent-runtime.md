@@ -91,8 +91,10 @@ and one implementation.
   `toml` cannot read takes its server list from the fallback. These reads and
   the fallback use the codex home named by the environment the
   child runs under (the model's `env`, when it holds one; a `~` or relative
-  `CODEX_HOME` there is refused, since a `~` lands under the child's `HOME` and a
-  relative path under whatever directory is current when it is read), and the
+  `CODEX_HOME` in an `env` handed to the child is refused, since codex takes the
+  value as a path and expands no `~`, so either form names a directory under the
+  working directory the child starts in; one in this process's own environment
+  is read as before, from this process's working directory), and the
   fallback runs the codex binary the run itself starts; with no codex binary
   found the allowlist is refused rather than listed with another. A
   `CODEX_HOME` that a `secrets.lookup` fill adds to the child's environment at

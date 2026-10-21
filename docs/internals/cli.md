@@ -354,6 +354,10 @@ its hook trust records and its `[projects]` trust decisions ride beside the
 flag, so the hooks it trusts in `$CODEX_HOME/hooks.json` still run for the
 worker and a project it trusts gets the sandbox codex derives for it; a
 config that declares hooks or sets `default_permissions` itself is refused.
+Both read the config in the codex home the worker's environment names, else
+this process's: a `CODEX_HOME` that a `secrets.lookup` fill adds to the
+child's environment at spawn is not seen by them, since the fill comes after,
+so set it in the worker's `env` or in this process's environment.
 A Claude worker is not isolated here and keeps its settings sources, as an
 interactive run does. A worker therefore has none of the servers its CLI would load
 from `$CODEX_HOME/config.toml`, a withheld one included; the orchestrator keeps them. The
