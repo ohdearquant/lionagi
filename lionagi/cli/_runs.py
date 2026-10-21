@@ -484,8 +484,8 @@ def _is_time(value: Any) -> bool:
 def _drop_a_time_that_is_not_one(manifest: dict[str, Any]) -> None:
     """Remove a degradation time no reader takes as one from *manifest*, read from run.json, as
     `RunDir.write_manifest` leaves it out: a NaN or an infinity there would make the write fail."""
-    if not _is_time(manifest.get(SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD, 0)):
-        del manifest[SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD]
+    if not _is_time(manifest.get(SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD)):
+        manifest.pop(SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD, None)
 
 
 def _carry_earliest_time(payload: dict[str, Any], kept: Any) -> None:

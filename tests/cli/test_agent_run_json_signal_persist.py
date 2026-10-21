@@ -567,6 +567,8 @@ def test_an_integer_time_on_file_is_kept_by_every_writer(tmp_path):
     for write in writers:
         run.manifest_path.write_text(on_file)
         write()
+        # 100 == 100.0, so the type says whether the integer itself was kept.
+        assert type(run.read_manifest()[SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD]) is int
         assert run.read_manifest()[SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD] == 100
 
 
