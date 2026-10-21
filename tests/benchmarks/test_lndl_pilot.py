@@ -143,11 +143,14 @@ def test_each_answer_is_the_text_its_row_measured_and_checked(run):
     gives the row's requests, tool calls and wall time."""
     loaded = runner.yaml.load((PILOT / "tasks.yaml").read_bytes(), Loader=runner._TaskLoader)
     accept = {task["id"]: task["accept"] for task in loaded["tasks"]}
-    results = {(r["id"], r["loop"]): r for r in _jsonl(PILOT / "runs" / run / "results.jsonl")}
-    answers = {
-        (a["id"], a["loop"]): a["answer"] for a in _jsonl(PILOT / "runs" / run / "answers.jsonl")
-    }
-    spend = {(s["id"], s["loop"]): s["spend"] for s in _jsonl(PILOT / "runs" / run / "spend.jsonl")}
+    result_rows = _jsonl(PILOT / "runs" / run / "results.jsonl")
+    answer_rows = _jsonl(PILOT / "runs" / run / "answers.jsonl")
+    spend_rows = _jsonl(PILOT / "runs" / run / "spend.jsonl")
+    # One line per row in each file: a second line for a key would hide the first.
+    assert len(result_rows) == len(answer_rows) == len(spend_rows) == 48
+    results = {(r["id"], r["loop"]): r for r in result_rows}
+    answers = {(a["id"], a["loop"]): a["answer"] for a in answer_rows}
+    spend = {(s["id"], s["loop"]): s["spend"] for s in spend_rows}
     assert sorted(answers) == sorted(spend) == sorted(results)
     for key, row in results.items():
         assert len(answers[key]) == row["answer_chars"]
@@ -167,6 +170,12 @@ def test_each_answer_is_the_text_its_row_measured_and_checked(run):
 
 def _block(syntax: str) -> bool:
     return "F" in syntax or "L" in syntax
+
+
+def _says(phrase: str, text: str) -> bool:
+    """Whether *text* holds *phrase*, with no digit just before it: a count that opens the
+    phrase is not matched inside a longer number."""
+    return re.search(r"(?<!\d)" + re.escape(phrase), text) is not None
 
 
 def test_the_adr_counts_of_rounds_requests_and_exits_are_the_runs_tallies():
@@ -212,10 +221,20 @@ def test_the_adr_counts_of_rounds_requests_and_exits_are_the_runs_tallies():
     ) in flat
     assert all(_block(rounds["r3"][t][1]) for t in opened["r3"])
     assert f"In r3 each of the {len(opened['r3'])} wrote a block in its next round" in flat
-    for run, said in (("r2", "{} of the {} `lndl` requests"), ("r3", "and {} of the {} requests")):
+    assert all(_block(rounds["r4"][t][1]) for t in opened["r4"])
+    assert _says(
+        f"{len(opened['r4'])} of the 24 `lndl` runs again opened with an `<invoke>` tag, each wrote "
+        "a block in its next round",
+        flat,
+    )
+    for run, said in (
+        ("r2", "{} of the {} `lndl` requests"),
+        ("r3", "and {} of the {} requests"),
+        ("r4", "{} of the {} requests"),
+    ):
         no_block = sum(not _block(s) for syntax in rounds[run].values() for s in syntax)
         total = sum(len(syntax) for syntax in rounds[run].values())
-        assert said.format(no_block, total) + " went to rounds with no block" in flat
+        assert _says(said.format(no_block, total) + " went to rounds with no block", flat)
     t04 = results["r3"][("t04", "react")]
     assert (t04["requests"], t04["tool_calls"]) == (3, 0)
     assert "it made no tool call in its 3 requests" in flat
@@ -1247,6 +1266,12 @@ def test_a_second_interrupt_writes_the_summary_and_a_running_legs_row_follows(
         ("runs/r9/t01-react.prompt.txt", True),
         ("runs/r9/t01-lndl.stdout.txt", True),
         ("runs/r9/t01-lndl.stderr.txt", True),
+        ("runs/r9/x/t01-react.prompt.txt", True),
+        ("runs/r9/x/t01-lndl.stdout.txt", True),
+        ("runs/r9/x/t01-lndl.stderr.txt", True),
+        ("home", True),
+        ("tree", True),
+        ("venv", True),
         ("runs/r2/results.jsonl", False),
         ("runs/r2/header.json", False),
         ("runs/r2/answers.jsonl", False),
@@ -1263,7 +1288,16 @@ def test_what_a_run_writes_beside_its_results_is_left_out_of_a_git_add(tmp_path,
     pilot = repo / "benchmarks" / "lndl_pilot"
     pilot.mkdir(parents=True)
     (pilot / ".gitignore").write_bytes((PILOT / ".gitignore").read_bytes())
-    env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    env = {
+        **os.environ,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        # git's default excludes file is $XDG_CONFIG_HOME/git/ignore, else $HOME/.config/git/ignore
+        "XDG_CONFIG_HOME": str(empty),
+        "HOME": str(empty),
+    }
     subprocess.run(["git", "init", "-q", str(repo)], check=True, env=env)
     probe = subprocess.run(
         [

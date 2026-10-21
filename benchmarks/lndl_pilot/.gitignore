@@ -1,8 +1,8 @@
 # What the runner expects or writes beside it and in each run directory; README.md lists what a
 # run commits.
-/home/
-/tree/
-/venv/
-/runs/*/*.prompt.txt
-/runs/*/*.stdout.txt
-/runs/*/*.stderr.txt
+/home
+/tree
+/venv
+/runs/**/*.prompt.txt
+/runs/**/*.stdout.txt
+/runs/**/*.stderr.txt
