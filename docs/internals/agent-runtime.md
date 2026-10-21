@@ -97,7 +97,10 @@ and one implementation.
   refuses while a sandbox setting rides beside the flag, so where the parser
   reads only TOML 1.0 a `config.toml` that codex itself reads is refused when it
   uses that syntax; for the user config the message says to make the file one
-  this parser reads.
+  this parser reads, and for a project layer it gives the parser's error, adding,
+  where the parser reads only TOML 1.0, that codex reads TOML 1.1 forms it does
+  not. A file nested deeper than the parser can follow is refused the same way,
+  never with a `RecursionError`.
   These reads and the fallback use the codex home named by the environment the
   child runs under (the model's `env` when it holds one, else this process's);
   an environment naming neither `CODEX_HOME` nor `HOME` names the OS account's

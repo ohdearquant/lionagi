@@ -188,6 +188,7 @@ def test_a_layer_that_exists_but_cannot_be_read_refuses(tmp_path, env):
     finally:
         config_file.chmod(0o600)
     assert str(config_file) in str(refusal.value)
+    assert "Make it readable by this process as UTF-8 text" in str(refusal.value)
 
 
 @pytest.mark.parametrize("kind", ["fifo", "directory"])
@@ -204,6 +205,7 @@ def test_a_layer_that_is_not_a_regular_file_refuses_without_reading_it(tmp_path,
     with pytest.raises(ConfigurationError, match="not a regular file") as refusal:
         declaring_project_layer(tmp_path / "project", env)
     assert str(config_file) in str(refusal.value)
+    assert "Replace it with a regular file or remove it" in str(refusal.value)
 
 
 # --- the check before every run ------------------------------------------------------------------
@@ -248,6 +250,7 @@ async def test_every_run_checks_again_so_a_layer_written_after_the_request_refus
     message = str(refusal.value)
     assert f"{config_file} (line 1)" in message
     assert "--ignore-user-config" in message
+    assert "Remove the declaration from that file" in message
 
 
 @pytest.mark.asyncio
@@ -379,3 +382,16 @@ def test_the_line_search_stops_after_a_bounded_number_of_parses(monkeypatch):
 )
 def test_mcp_servers_declaration_line_ignores_other_keys(text):
     assert mcp_servers_declaration_line(text) is None
+
+
+def test_a_layer_nested_deeper_than_the_parser_follows_is_read_line_by_line(tmp_path, env):
+    """A parse that runs out of stack is a parse refused: the layer is read line by line, so it
+    refuses when a line declares `mcp_servers` and passes when none does."""
+    _git_root(tmp_path / "project")
+    (tmp_path / "project" / ".codex").mkdir()
+    layer = tmp_path / "project" / ".codex" / "config.toml"
+    deep = "note = " + "[" * 1500 + "]" * 1500 + "\n"
+    layer.write_text(deep, encoding="utf-8")
+    assert declaring_project_layer(tmp_path / "project", env) is None
+    layer.write_text(deep + _DECLARING, encoding="utf-8")
+    assert declaring_project_layer(tmp_path / "project", env) == (layer, 2)

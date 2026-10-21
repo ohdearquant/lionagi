@@ -71,7 +71,7 @@ from ._codex_profile import (
     is_generated_codex_profile,
     project_codex_profile,
 )
-from ._codex_project_layers import declaring_project_layer, project_layers
+from ._codex_project_layers import declaring_project_layer, parse_failure, project_layers
 from ._config import CodexConfigs
 
 if TYPE_CHECKING:
@@ -2069,7 +2069,7 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
         remedy = (
             "Make the file one this Python's TOML parser reads (codex also reads TOML 1.1 forms)"
             if os.access(config_path, os.R_OK)
-            else "Make the file readable by this process"
+            else "Make the file readable, and its folder searchable, by this process"
         )
         raise ConfigurationError(
             f"Codex cannot start with --ignore-user-config: {exc}. The hooks it may declare "
@@ -2359,12 +2359,12 @@ def _refuse_project_layer_disagreement(
     for layer_path, text in layers:
         try:
             table: Mapping[str, Any] | None = _tomllib.loads(text)
-        except _tomllib.TOMLDecodeError:
-            table = None
+        except (_tomllib.TOMLDecodeError, RecursionError) as exc:
+            table, failure = None, parse_failure(exc)
         for key_path, value in carried.items():
             dotted = ".".join(key_path)
             if table is None:
-                how = "cannot be parsed here (codex also reads TOML 1.1), so its setting is unknown"
+                how = f"cannot be parsed here ({failure}), so its setting is unknown"
             elif key_path == ("sandbox_mode",) and _sets(table, ("default_permissions",)):
                 how = "names a permissions profile in its place"
             elif not _sets(table, key_path):
@@ -2401,8 +2401,8 @@ def refuse_declaring_project_layer(plain: _PlainRequest, cwd: Path) -> None:
         raise ConfigurationError(
             f"Codex cannot start under cwd {cwd} with --ignore-user-config: {config_file} "
             f"(line {line_number}) is a Codex project config declaring `mcp_servers`, which a "
-            "trusted project layer loads past the run's own server set and "
-            "--ignore-user-config does not suppress."
+            "trusted project layer loads past the run's own server set and the flag does not "
+            "suppress. Remove the declaration from that file, or run without ignore_user_config."
         )
 
 

@@ -1080,7 +1080,9 @@ def test_an_unreadable_user_config_gets_the_permission_remedy(codex_home):
             CodexCodeRequest(prompt="hi", ignore_user_config=True).as_cmd_args()
     finally:
         config.chmod(0o600)
-    assert "Make the file readable by this process" in str(refused.value)
+    assert "Make the file readable, and its folder searchable, by this process" in str(
+        refused.value
+    )
     assert "codex also reads TOML 1.1" not in str(refused.value)
 
     # the control: a file that is read but not parsed gets the parser remedy
@@ -1135,5 +1137,53 @@ def test_a_project_layer_the_parser_refuses_is_named_with_the_parsers_limit(tmp_
 
     with pytest.raises(ConfigurationError) as refused:
         CodexCodeRequest(prompt="hi", repo=repo, ignore_user_config=True).as_cmd_args()
-    assert "cannot be parsed here (codex also reads TOML 1.1)" in str(refused.value)
-    assert "Set `sandbox_mode` in the run's config overrides" in str(refused.value)
+    message = str(refused.value)
+    assert "cannot be parsed here (" in message
+    assert "(at line 1, column " in message
+    assert "Set `sandbox_mode` in the run's config overrides" in message
+    # the TOML 1.1 note only where the parser reads 1.0: tomllib (3.11 to 3.14), tomli before 2.4
+    tomli = None if sys.version_info >= (3, 11) else pytest.importorskip("tomli")
+    reads_1_1 = tomli is not None and tuple(int(x) for x in tomli.__version__.split(".")[:2]) >= (
+        2,
+        4,
+    )
+    assert ("codex reads it and this parser does not" in message) is not reads_1_1
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0, reason="needs a mode the reader is refused"
+)
+def test_a_user_config_in_a_folder_this_process_cannot_search_gets_the_folder_remedy(codex_home):
+    (codex_home / "config.toml").write_text('sandbox_mode = "workspace-write"\n')
+    codex_home.chmod(0o600)
+    try:
+        with pytest.raises(ConfigurationError) as refused:
+            CodexCodeRequest(prompt="hi", ignore_user_config=True).as_cmd_args()
+    finally:
+        codex_home.chmod(0o700)
+    message = str(refused.value)
+    assert "its folder searchable" in message
+    assert "TOML parser reads" not in message
+
+
+@pytest.mark.parametrize("where", ["user", "project"])
+def test_a_config_nested_deeper_than_the_parser_follows_is_refused_by_name(
+    tmp_path, codex_home, where
+):
+    """A parser that recurses per nesting level runs out of stack on a deep enough file; the
+    run is refused with a ConfigurationError, never a RecursionError."""
+    deep = "note = " + "[" * 1500 + "]" * 1500 + "\n"
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    if where == "user":
+        (codex_home / "config.toml").write_text(deep + 'sandbox_mode = "workspace-write"\n')
+    else:
+        (codex_home / "config.toml").write_text('sandbox_mode = "workspace-write"\n')
+        _project_layer(repo, deep)
+    with pytest.raises(ConfigurationError) as refused:
+        CodexCodeRequest(prompt="hi", repo=repo, ignore_user_config=True).as_cmd_args()
+    message = str(refused.value)
+    if where == "project":
+        assert "cannot be parsed here (it nests deeper than this Python's TOML parser" in message
+    else:
+        assert "Make the file one this Python's TOML parser reads" in message

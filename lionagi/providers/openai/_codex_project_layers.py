@@ -42,11 +42,29 @@ try:
 except ModuleNotFoundError:  # Python 3.10: the declared `tomli`; the locked 2.4.1 reads TOML 1.1
     import tomli as _tomllib  # type: ignore[no-redef]
 
-__all__ = ("declaring_project_layer", "mcp_servers_declaration_line", "project_layers")
+__all__ = (
+    "declaring_project_layer",
+    "mcp_servers_declaration_line",
+    "parse_failure",
+    "project_layers",
+)
 
 # How many candidate lines `mcp_servers_declaration_line` tries before naming the first.
 _LINES_TRIED = 8
 _TOML_CODE_POINT = re.compile(r"\\u([0-9A-Fa-f]{4})|\\U([0-9A-Fa-f]{8})|\\x([0-9A-Fa-f]{2})")
+
+
+def _reads_toml_1_1() -> bool:
+    """Whether this Python's TOML parser reads TOML 1.1, as ``tomli`` does from 2.4; ``tomllib``
+    on Python 3.11 to 3.14 reads 1.0 only. A trailing comma in an inline table is 1.1 syntax."""
+    try:
+        _tomllib.loads("t = {a = 1,}")
+    except _tomllib.TOMLDecodeError:
+        return False
+    return True
+
+
+_READS_TOML_1_1 = _reads_toml_1_1()
 
 
 def project_layers(
@@ -71,7 +89,7 @@ def project_layers(
             if not stat.S_ISREG(path.stat().st_mode):
                 raise ConfigurationError(
                     f"the Codex project config {path} is not a regular file, so what it "
-                    "sets is unknown"
+                    "sets is unknown. Replace it with a regular file or remove it"
                 )
             text = path.read_text(encoding="utf-8")
         except (FileNotFoundError, NotADirectoryError):
@@ -79,7 +97,8 @@ def project_layers(
         except (OSError, UnicodeDecodeError) as exc:
             raise ConfigurationError(
                 f"the Codex project config {path} could not be read ({exc}), so what it "
-                "sets is unknown"
+                "sets is unknown. Make it readable by this process as UTF-8 text, with its "
+                "folders searchable, or remove it"
             ) from exc
         yield path, text
 
@@ -157,13 +176,14 @@ def mcp_servers_declaration_line(text: str) -> int | None:
     reads as ``mcp_servers``, so not a line inside a string. Each line tried costs a parse
     of the whole file, so at most ``_LINES_TRIED`` are tried; past them the first line that
     reads as a declaration is named, which in a file built that way can be a string's.
-    Text the parser refuses, TOML 1.1 syntax where it reads only 1.0 included, has no
-    structure to trust, so every line counts whose first key segment is ``mcp_servers``,
-    a header or a key under any table, toward refusing.
+    Text the parser refuses, TOML 1.1 syntax where it reads only 1.0 included, and text
+    nested deeper than it can follow have no structure to trust, so every line counts
+    whose first key segment is ``mcp_servers``, a header or a key under any table, toward
+    refusing.
     """
     try:
         parsed = _tomllib.loads(text)
-    except _tomllib.TOMLDecodeError:
+    except (_tomllib.TOMLDecodeError, RecursionError):
         return next(iter(_declaration_lines(text)), None)
     if "mcp_servers" not in parsed:
         return None
@@ -174,10 +194,21 @@ def mcp_servers_declaration_line(text: str) -> int | None:
         try:
             if _tomllib.loads(rest).get("mcp_servers") != parsed["mcp_servers"]:
                 return number
-        except _tomllib.TOMLDecodeError:
+        except (_tomllib.TOMLDecodeError, RecursionError):
             return number  # the line carries structure the declaration needs
     # the parse found it: the refusal never waits on its line
     return candidates[0] if len(candidates) > _LINES_TRIED else 1
+
+
+def parse_failure(exc: BaseException) -> str:
+    """Why this Python's TOML parser refused a text, for a refusal message: its error, or a
+    nesting deeper than it can follow; for an error, where the parser reads only TOML 1.0,
+    that codex reads the TOML 1.1 forms it refuses."""
+    if isinstance(exc, RecursionError):
+        return "it nests deeper than this Python's TOML parser can follow"
+    if _READS_TOML_1_1:
+        return str(exc)
+    return f"{exc}; if the file uses a TOML 1.1 form, codex reads it and this parser does not"
 
 
 def _declaration_lines(text: str) -> list[int]:
