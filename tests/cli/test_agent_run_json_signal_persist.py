@@ -546,6 +546,30 @@ def test_a_time_on_file_that_is_not_one_is_left_out_by_both_partial_writers(tmp_
     assert SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD not in manifest
 
 
+def test_an_integer_time_on_file_is_kept_by_every_writer(tmp_path):
+    """JSON holds a whole-second time as an integer, which readers take as a time, so the
+    degradation record, the copy-back, the marker write and a whole-file write all keep it."""
+    from lionagi.cli._runs import RunDir
+
+    run = RunDir(run_id="run-i", state_root=tmp_path / "i", artifact_root=tmp_path / "i-art")
+    run.ensure_state_dirs()
+    on_file = f'{{"status": "running", "{SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD}": 100}}'
+    record = {"status": "completed", "reason_code": "completed_ok", "at": 1.0}
+    writers = [
+        lambda: _runs._record_persistence_degraded(
+            RuntimeError("store gone"), run=run, run_manifest={"status": "running"}
+        ),
+        lambda: _runs._write_terminal_write_lost(run.state_root, record),
+        lambda: _runs._write_signal_persistence_degraded_at(run.state_root, 200.0),
+        lambda: run.write_manifest({"status": "running"}),
+    ]
+
+    for write in writers:
+        run.manifest_path.write_text(on_file)
+        write()
+        assert run.read_manifest()[SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD] == 100
+
+
 def test_a_provenance_bound_write_over_an_unreadable_file_still_writes(tmp_path):
     """A run bound to its provenance reads the file only for the time, so a file it cannot read
     is written over as before, without one."""
@@ -624,6 +648,35 @@ async def test_a_resumed_legs_first_skip_window_marks_the_run_json_the_job_reads
     assert during["status"] == final["status"] == "timed_out"
     assert final[SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD] == marker
     assert SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD in _manifest(resumed)
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_run_whose_legs_were_never_refused_writes_no_time(monkeypatch, tmp_path):
+    """A run that resumed itself, with no skip window in either leg, has no time to write again
+    when its leg ends, and neither run.json gets the field, not even as null."""
+    from lionagi.cli.agent import _run_agent
+
+    _with_a_real_row(monkeypatch, tmp_path, operate_return="done")
+    job, resumed = _two_runs(monkeypatch, tmp_path)
+    legs: list = []
+
+    async def body(observer, blocker):
+        legs.append(observer)
+        if len(legs) == 1:
+            raise TimeoutError("deadline")
+
+    _operate_with_the_writer_held(monkeypatch, tmp_path, body)
+    _snapshot_before_operate(monkeypatch)
+
+    *_, terminal_status, _session_id = await _run_agent(
+        "claude/sonnet", "go", resume_on_timeout=True
+    )
+
+    assert len(legs) == 2
+    assert terminal_status == _manifest(resumed)["status"] == "completed"
+    assert _manifest(job)["status"] == "timed_out"
+    assert SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD not in _manifest(job)
+    assert SIGNAL_PERSISTENCE_DEGRADED_AT_FIELD not in _manifest(resumed)
 
 
 @pytest.mark.asyncio

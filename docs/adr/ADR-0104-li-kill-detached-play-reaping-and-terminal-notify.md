@@ -179,7 +179,8 @@ dropped signals lives in memory and dies with it.
 3. An auto-resumed leg runs in a run directory of its own while the job reads the first run's
    run.json, so the first run hands it a marker for that run.json too, and a place to leave a
    lost terminal write, which the first run copies onto its run.json when the leg ends,
-   setting that one field under the manifest lock and leaving the rest of the file as it is.
+   setting that one field under the manifest lock and leaving the rest of the file as it is,
+   except a degradation time no reader takes as one, which it drops as a whole-file write does.
 4. `reap_orphan` reads run.json through the bounded, fail-closed reader it already uses for
    `persistence_degraded_reason`, and assigns `reason_detail` beside
    `process_gone_without_outcome` in this order: `terminal_write_lost`, then

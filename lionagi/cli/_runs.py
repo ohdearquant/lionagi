@@ -519,7 +519,7 @@ def _write_signal_persistence_degraded_at(state_root: Path, at: float) -> None:
 
 def _write_terminal_write_lost(state_root: Path, record: dict[str, Any]) -> None:
     """Set `terminal_write_lost` to *record* on the run.json in *state_root*, under its manifest
-    lock, and leave every other field as the file holds it.
+    lock, and leave every other field as the file holds it, but drop a malformed degradation time.
 
     For a run copying its auto-resumed leg's record onto its own run.json: the run has nothing
     else left to say there, and what another invocation sharing its run id wrote since the run's
