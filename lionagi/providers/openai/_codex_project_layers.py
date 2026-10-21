@@ -173,12 +173,13 @@ def mcp_servers_declaration_line(text: str) -> int | None:
     Text the TOML parser reads is decided by that parse, as Codex decides it: the root
     table holds the key or it does not, whatever a multi-line string or array between
     the lines holds. The line named is the first whose removal changes what the parse
-    reads as ``mcp_servers`` and which, parsed alone, sets a root ``mcp_servers``, so not a
-    line inside a string or one that closes a string; failing that, the first whose
-    removal changes the parse or leaves text the parser refuses, which reads as a
-    declaration. Each line tried costs a parse of the whole file, so at most
-    ``_LINES_TRIED`` are tried; past them the first line that reads as a declaration is
-    named, which in a file built that way can be a string's.
+    reads as ``mcp_servers``, which parsed alone sets a root ``mcp_servers``, and whose
+    preceding text parses whole, so not a line inside a string or one that closes a
+    string; failing that, the first whose removal changes the parse or leaves text the
+    parser refuses, which reads as a declaration. Each line tried costs up to three
+    parses, one of them of the file without it, so at most ``_LINES_TRIED`` are tried;
+    past them the first line that reads as a declaration is named, which in a file
+    built that way can be a string's.
     Text the parser refuses, TOML 1.1 syntax where it reads only 1.0 included, and text
     nested deeper than it can follow have no structure to trust, so every line counts
     whose first key segment is ``mcp_servers``, a header or a key under any table, toward
@@ -190,8 +191,8 @@ def mcp_servers_declaration_line(text: str) -> int | None:
 
 def _declaration(text: str) -> tuple[int, bool] | None:
     """``mcp_servers_declaration_line``, and whether the parse shows that line declaring
-    ``mcp_servers``: true only when the text without it parses to another value there and
-    the line alone parses to a root ``mcp_servers``."""
+    ``mcp_servers``: true only when the text without it parses to another value there, the
+    line alone parses to a root ``mcp_servers`` and the text before it parses whole."""
     try:
         parsed = _tomllib.loads(text)
     except (_tomllib.TOMLDecodeError, RecursionError):
@@ -208,7 +209,7 @@ def _declaration(text: str) -> tuple[int, bool] | None:
             changed = _tomllib.loads(rest).get("mcp_servers") != parsed["mcp_servers"]
         except (_tomllib.TOMLDecodeError, RecursionError):
             changed = None  # the line carries structure the parse needs
-        if changed and _declares_alone(lines[number - 1]):
+        if changed and _declares_alone(lines[number - 1]) and _starts_statement(lines, number):
             return number, True
         if changed is not False and reads_as is None:
             reads_as = number  # a string's closing line changes the parse as well
@@ -224,6 +225,17 @@ def _declares_alone(line: str) -> bool:
         return "mcp_servers" in _tomllib.loads(line)
     except (_tomllib.TOMLDecodeError, RecursionError):
         return False
+
+
+def _starts_statement(lines: list[str], number: int) -> bool:
+    """Whether the text before line *number* parses whole, so that no string or value an
+    earlier line opens runs on into it. A string's line can parse alone, a comment after
+    the string's close or a value that differs from itself (``nan``) included."""
+    try:
+        _tomllib.loads("\n".join(lines[: number - 1]))
+    except (_tomllib.TOMLDecodeError, RecursionError):
+        return False
+    return True
 
 
 def parse_failure(exc: BaseException) -> str:

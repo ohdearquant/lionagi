@@ -2406,7 +2406,7 @@ def refuse_declaring_project_layer(plain: _PlainRequest, cwd: Path) -> None:
             "`mcp_servers`, which a trusted project layer loads past the run's own server set"
             if shown
             else f"{config_file} is a Codex project config in which line {line_number} reads as "
-            "a `mcp_servers` declaration; the line can be text inside a string, and where the "
+            "a `mcp_servers` declaration that the parse does not confirm, and where the "
             "file declares the key, a trusted project layer loads it past the run's own server set"
         )
         raise ConfigurationError(

@@ -442,6 +442,22 @@ def test_a_line_that_closes_a_string_is_not_shown_declaring(tmp_path, env):
     assert "reads as" not in message
 
 
+@pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        ('x = """\nmcp_servers = 1 # """\nmcp_servers.real = 2\nz = 1 # """\n', 3),
+        ("x = '''\nmcp_servers.a = 1 # '''\nmcp_servers.real = 2\nz = 1 # '''\n", 3),
+        ('x = """\n[mcp_servers] # """\n[mcp_servers.real]\ncommand = "a" # """\n', 3),
+        ('note = """\nmcp_servers = 1\n"""\nmcp_servers.x = nan\n', 4),
+    ],
+)
+def test_a_string_line_that_parses_alone_is_not_shown_declaring(text, line):
+    """A string's closing line can parse alone when a comment follows the close, and with a
+    ``nan`` in the key every removal changes the parse; the line shown declaring is the first
+    whose preceding text parses whole."""
+    assert project_layers._declaration(text) == (line, True)
+
+
 def test_a_line_whose_removal_exposes_a_nesting_too_deep_to_parse_is_named():
     """Removing a line can turn a string's text into TOML: when that text nests deeper than the
     parser can follow, the line carries structure the declaration needs, as with a parse refused."""

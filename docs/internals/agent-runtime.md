@@ -105,8 +105,9 @@ and one implementation.
   uses that syntax: always for the user config, and for a project layer under
   the second check. The user config message gives the parser's error and says to
   make the file one this parser reads; the second check's message gives the
-  parser's error, or says the file nests deeper than the parser can follow; both
-  add, where the parser reads only TOML 1.0, that codex reads TOML 1.1 forms. A
+  parser's error, or says the file nests deeper than the parser can follow. Where
+  the parser reads only TOML 1.0, both messages add to the parser's error that
+  codex reads TOML 1.1 forms. A
   user config nested deeper than the parser can follow is refused with a
   `ConfigurationError` that gives Python's "maximum recursion depth exceeded".
   These reads and the fallback use the codex home named by the environment the
