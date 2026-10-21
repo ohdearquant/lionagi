@@ -1066,3 +1066,39 @@ def test_the_single_run_record_keeps_a_session_reported_summary(tmp_path, monkey
 
     listed = client.get(f"/api/schedules/{schedule_id}/runs")
     assert _RAW_ERROR_SENTINEL not in listed.text, "the list surface still classifies it"
+
+
+def test_every_run_route_serves_both_trigger_facts_with_their_values(tmp_path, monkeypatch):
+    """The allow-list above only bounds the keys; this requires both, on every HTTP surface."""
+    _patch_db(monkeypatch, tmp_path / "state.db")
+
+    async def seed():
+        schedule_id = await _seed_schedule()
+        async with StateDB() as db:
+            await db.create_schedule_run(
+                {
+                    "id": "timer-fire",
+                    "schedule_id": schedule_id,
+                    "trigger_context": {"scheduled": True, "fired_at": 1700000000.0},
+                    "action_kind": "agent",
+                    "action_args": {"prompt": "ping"},
+                    "status": "completed",
+                    "fired_at": time.time(),
+                }
+            )
+        return schedule_id
+
+    schedule_id = asyncio.run(seed())
+    client = _make_client()
+    listed = client.get("/api/schedules/", params={"include_recent_runs": "true"}).json()
+    summary = next(s for s in listed["schedules"] if s["id"] == schedule_id)
+    rows = {
+        "run list": client.get(f"/api/schedules/{schedule_id}/runs").json()["runs"][0],
+        "detail": client.get(f"/api/schedules/{schedule_id}").json()["recent_runs"][0],
+        "status": client.get(f"/api/schedules/{schedule_id}/status").json()["latest_run"],
+        "list summary": summary["recent_runs_summary"]["runs"][0],
+        "record": client.get("/api/schedules/runs/timer-fire").json(),
+    }
+    for surface, row in rows.items():
+        assert (row.get("scheduled"), "missed_fire_at" in row) == (True, True), surface
+        assert row["missed_fire_at"] is None, surface

@@ -231,3 +231,76 @@ def test_machine_runs_preserves_trigger_facts_from_the_http_service(monkeypatch)
     assert requests == ["/nightly/runs?limit=25"]
     assert result["runs"][0]["scheduled"] is True
     assert result["runs"][0]["missed_fire_at"] is None
+
+
+def _captured_trigger_context(tracked):
+    tracked.assert_called_once()
+    return tracked.call_args.kwargs["trigger_context"]
+
+
+def _served_scheduled(context):
+    row = {"id": "run", "trigger_context": context}
+    return [
+        project(row)["scheduled"]
+        for project in (schedules._run_view, schedules._run_summary, schedules._run_record)
+    ]
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    [
+        {"trigger_type": "cron", "cron_expr": "0 * * * *"},
+        {"trigger_type": "interval", "cron_expr": None, "interval_sec": 60},
+        {"trigger_type": "at", "cron_expr": None},
+    ],
+    ids=["cron", "interval", "at"],
+)
+async def test_a_timer_fire_is_written_and_served_as_scheduled(trigger):
+    from unittest.mock import patch
+
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+    from tests.studio.test_scheduler_engine import _make_svc, _minimal_schedule
+
+    engine = SchedulerEngine(svc=_make_svc())
+    with patch.object(engine, "_tracked_fire") as tracked:
+        await engine._maybe_fire(_minimal_schedule(next_fire_at=1000.0, **trigger), now=1000.0)
+    assert _served_scheduled(_captured_trigger_context(tracked)) == [True, True, True]
+
+
+async def test_a_manual_fire_is_written_and_served_as_not_scheduled():
+    from unittest.mock import patch
+
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+    from tests.studio.test_scheduler_engine import _make_svc, _minimal_schedule
+
+    svc = _make_svc()
+    svc.get_schedule.return_value = _minimal_schedule(next_fire_at=1000.0)
+    engine = SchedulerEngine(svc=svc)
+    with patch.object(engine, "_tracked_fire") as tracked:
+        await engine.fire_now("sched-001")
+    context = _captured_trigger_context(tracked)
+    assert context["manual"] is True
+    assert _served_scheduled(context) == [False, False, False]
+
+
+async def test_a_timer_fire_dispatched_again_after_a_restart_is_still_served_as_scheduled():
+    from unittest.mock import patch
+
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+    from tests.studio.test_scheduler_engine import _make_svc, _minimal_schedule
+
+    svc = _make_svc()
+    svc.get_schedule.return_value = _minimal_schedule(enabled=True)
+    svc.list_undispatched_schedule_runs.return_value = [
+        {
+            "id": "orphan",
+            "schedule_id": "sched-001",
+            "chain_depth": 0,
+            "trigger_context": {"scheduled": True, "fired_at": 1000.0},
+        }
+    ]
+    engine = SchedulerEngine(svc=svc)
+    with patch.object(engine, "_tracked_fire") as tracked:
+        await engine._recover_undispatched_fires()
+    assert tracked.call_args.kwargs["supersedes_run_id"] == "orphan"
+    assert _served_scheduled(_captured_trigger_context(tracked)) == [True, True, True]

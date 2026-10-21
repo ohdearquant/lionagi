@@ -509,8 +509,8 @@ async def list_schedules(
 #
 # trigger_context and error_detail are content-bearing and are not on it. trigger_context
 # carries whole external event payloads; error_detail carries subprocess stderr and
-# exception text. This surface derives only scheduled-vs-manual and the intended time
-# of a skipped missed fire from the trigger payload, and classifies failure text.
+# exception text. This surface derives only whether a run is its schedule's timer fire and
+# the intended time of a skipped missed fire from the trigger payload, and classifies failure text.
 _RUN_SUMMARY_FIELDS = (
     "id",
     "schedule_id",
@@ -609,7 +609,7 @@ def _run_trigger_facts(row: dict[str, Any]) -> dict[str, Any]:
         except OverflowError:
             pass
         else:
-            # Only a value the float holds exactly: an integer past 2**53 would be served rounded.
+            # An integer past 2**53 is null; JSON text is already read as the nearest double.
             if math.isfinite(candidate) and candidate == value:
                 missed_fire_at = candidate
     return {"scheduled": scheduled, "missed_fire_at": missed_fire_at}
@@ -917,9 +917,9 @@ def _run_view(row: dict[str, Any]) -> dict[str, Any]:
 
 # The single-run route is the documented reader of the raw failure text -- the list
 # surfaces serve a classification instead -- which is why error_detail is here and off
-# _RUN_SUMMARY_FIELDS. trigger_context stays private on the list surfaces' reasoning:
-# whole external event payloads stay private; schedule-health readers receive only
-# scheduled-vs-manual and the intended time of a skipped missed fire.
+# _RUN_SUMMARY_FIELDS. trigger_context stays private here as on the list surfaces, since it
+# carries whole external event payloads; only the two facts derived from it are served:
+# whether a run is its schedule's timer fire, and the intended time of a skipped missed fire.
 _RUN_RECORD_FIELDS = _RUN_VIEW_FIELDS + ("error_detail",)
 
 
