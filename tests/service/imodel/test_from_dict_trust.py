@@ -81,6 +81,23 @@ def test_a_stored_processor_config_sets_only_the_rate_limits(env_key, caller_url
     assert model.endpoint.config._api_key == env_key
 
 
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("queue_capacity", 17),
+        ("capacity_refresh_time", 13.0),
+        ("interval", 3.0),
+        ("limit_requests", 7),
+        ("limit_tokens", 11),
+        ("concurrency_limit", 5),
+    ],
+)
+def test_a_stored_processor_config_keeps_each_rate_limit(name, value):
+    data = _stored()
+    data["processor_config"][name] = value
+    assert iModel.from_dict(data).executor.config[name] == value
+
+
 def test_a_caller_key_is_used_at_any_url(env_key):
     config = iModel.from_dict(_stored(base_url=ELSEWHERE), api_key="sk-caller").endpoint.config
     assert config._api_key == "sk-caller"
@@ -104,10 +121,17 @@ def test_a_stored_local_network_opt_in_is_not_restored():
 def test_a_local_provider_keeps_its_registered_opt_in_at_any_port():
     url = "http://127.0.0.1:9999/v1"
     data = iModel(provider="lattice", model=LATTICE_MODEL, base_url=url).to_dict()
-    data["endpoint"]["config"]["allow_local_network"] = False
     config = iModel.from_dict(data).endpoint.config
     assert config.base_url == url
     assert config.allow_local_network is True
+
+
+def test_a_stored_config_can_turn_a_local_providers_opt_in_off():
+    url = "https://models.example/v1"
+    model = iModel(provider="lattice", model=LATTICE_MODEL, base_url=url, allow_local_network=False)
+    config = iModel.from_dict(model.to_dict()).endpoint.config
+    assert config.base_url == url
+    assert config.allow_local_network is False
 
 
 def test_the_caller_decides_the_opt_in():
@@ -116,6 +140,22 @@ def test_the_caller_decides_the_opt_in():
     lattice = iModel(provider="lattice", model=LATTICE_MODEL).to_dict()
     closed = iModel.from_dict(lattice, allow_local_network=False)
     assert closed.endpoint.config.allow_local_network is False
+
+
+@pytest.mark.parametrize("where", ["top-level", "kwargs"])
+@pytest.mark.parametrize(
+    ("name", "value"), [("api_key", "SOME_OTHER_SECRET"), ("allow_local_network", True)]
+)
+def test_the_endpoint_itself_drops_a_stored_key_or_opt_in(env_key, monkeypatch, where, name, value):
+    monkeypatch.setenv("SOME_OTHER_SECRET", "other-secret-value")
+    data = _stored()["endpoint"]
+    config = data["config"]
+    (config if where == "top-level" else config["kwargs"])[name] = value
+
+    restored = Endpoint.from_dict(data).config
+    assert name not in restored.kwargs
+    assert restored._api_key is None
+    assert restored.allow_local_network is False
 
 
 @pytest.mark.parametrize("where", ["top-level", "kwargs"])

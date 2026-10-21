@@ -1030,7 +1030,9 @@ class Endpoint:
         or runtime state. The first two come from the keyword arguments here; a grant is
         handed to the live config again by the caller whose role names it. ``base_url``
         given here replaces the stored one. A stored header named as a credential is
-        dropped, and of the stored client options only the headers are kept.
+        dropped, and of the stored client options only the headers are kept. Without
+        the keyword arguments the config has no credential and the opt-in is off;
+        ``iModel.from_dict`` then applies the provider's registration.
         """
         from lionagi.utils import to_dict
 

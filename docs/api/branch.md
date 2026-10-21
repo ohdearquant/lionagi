@@ -357,17 +357,19 @@ describes, which can import a module the data names, and its stored models choos
 provider, model, base URL and request settings. Restore only data that your own process, or a
 writer you trust, produced.
 
-Some settings belong to the process restoring the data rather than to the data, so a stored
-model never supplies them, whoever wrote it: a credential, the local-network opt-in, a header
-named as a credential (such as `Authorization` or `x-api-key`), and any client option other
-than its headers. `iModel.from_dict` attaches the provider's credential from the environment
-only when the stored base URL is the provider's registered one, and takes the local-network
-setting from the provider's registration. A caller that wants another endpoint, credential or
-setting passes it:
+Some settings lionagi sends with an HTTP model's requests belong to the process restoring the
+data rather than to the data, so a stored model never supplies them, whoever wrote it: a
+credential, the local-network opt-in, a header named as a credential (such as `Authorization`
+or `x-api-key`), and any client option other than its headers. `iModel.from_dict` attaches the
+provider's credential from the environment only when the stored base URL is the provider's
+registered one, and takes the local-network setting from the provider's registration; a stored
+config can turn that setting off, never on. The opt-in admits loopback addresses only
+(`localhost`, `127.0.0.1`, `::1`). A caller that wants another endpoint, credential or setting
+passes it, and a key passed without a `base_url` goes to the stored URL:
 
 ```python
 live = li.iModel(provider="openai", base_url=url, api_key="MY_GATEWAY_KEY")
-restored = li.Branch.from_dict(data, chat_model=live)
+restored = li.Branch.from_dict(data, chat_model=live, parse_model=live)
 model = li.iModel.from_dict(model_data, base_url=url, api_key="MY_GATEWAY_KEY")
 ```
 
@@ -375,5 +377,11 @@ A string `api_key` is read first as the name of a lionagi setting or an environm
 that holds the key, and is used as the key itself only when no setting or variable of that
 name is set, so `"MY_GATEWAY_KEY"` above names a variable. Pass a `SecretStr` to give the key
 itself.
+
+A CLI model sends no request of its own, so the rule above does not reach it. Its settings are
+restored as stored, and the child process it starts reads them: Codex `config_overrides` can
+name another provider URL and the environment variable its key is read from, and Claude Code's
+`settings` and `permission_mode` set what that child may do. The child inherits this process's
+environment unless a live caller sets one. Restore a CLI row only from a writer you trust.
 
 Next: [`Session`](session.md) — manage multiple branches

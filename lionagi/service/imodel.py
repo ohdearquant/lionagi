@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import nullcontext
 from typing import Any
 from uuid import UUID, uuid4
@@ -717,9 +717,9 @@ class iModel:  # noqa: N801
         """Rebuild a model from ``to_dict`` output, read as trusted input.
 
         ``data`` chooses the provider, model and settings. It never supplies a
-        credential or the local-network opt-in. Without ``api_key``, the provider's
-        credential from the environment is attached only when the base URL is the
-        provider's registered one. Without ``allow_local_network``, the provider's
+        credential, and can turn the local-network opt-in off but not on. Without
+        ``api_key``, the environment's credential is attached only at the provider's
+        registered base URL. Without ``allow_local_network``, the provider's
         registered setting applies. ``base_url`` replaces the stored URL.
         """
         endpoint = Endpoint.from_dict(
@@ -741,7 +741,7 @@ class iModel:  # noqa: N801
             registered = e1.config
             e1.config = endpoint.config
             if allow_local_network is None:
-                e1.config.allow_local_network = registered.allow_local_network
+                e1.config.allow_local_network = _restored_opt_in(registered, data)
             # The environment's credential is for the provider's own URL only.
             if (
                 api_key is None
@@ -805,3 +805,14 @@ def _same_base_url(stored: str | None, registered: str | None) -> bool:
         path = parts.path.rstrip("/")
         keys.append((parts.scheme, parts.hostname, port, path, parts.query, parts.fragment))
     return keys[0] == keys[1]
+
+
+def _restored_opt_in(registered: Any, data: Mapping) -> bool:
+    """The provider's registered local-network opt-in, unless the stored config turned it
+    off. Off, the model reaches public hosts only; on, loopback hosts only. A stored row
+    may turn it off, as its writer did for a local provider served elsewhere, but never
+    on, which would point the model at this machine."""
+    endpoint = data.get("endpoint")
+    config = endpoint.get("config") if isinstance(endpoint, Mapping) else None
+    stored = config.get("allow_local_network") if isinstance(config, Mapping) else None
+    return registered.allow_local_network and stored is not False
