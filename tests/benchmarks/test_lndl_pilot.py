@@ -141,7 +141,12 @@ def test_the_documents_record_three_runs_and_name_the_fourth_as_unrecorded():
         text = document.read_text()
         assert "each run is recorded in the Result" not in text
         assert re.search(r"r2[^\n]{0,8}(?:-|,\s*)r3[^\n]{0,8}r4", text)
-        assert re.search(r"r5[\s\S]+not recorded", text)
+        flat = " ".join(text.split())
+        assert re.search(
+            r"A fourth run, `r5`, ran before the [^.]*? was adopted[^.]*\. "
+            r"It is not recorded here and decides nothing until",
+            flat,
+        )
 
 
 class _Legs:
@@ -810,6 +815,34 @@ def test_a_relative_out_from_a_removed_current_directory_is_refused(monkeypatch,
     assert not (tmp_path / "run").exists()
 
 
+def test_a_relative_tasks_file_from_a_removed_current_directory_is_refused(
+    monkeypatch, tmp_path, capsys
+):
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    (tmp_path / "li").touch(mode=0o755)
+    monkeypatch.setattr(runner, "TREE", tmp_path)
+    monkeypatch.setattr(runner, "LI", tmp_path / "li")
+    legs = _Legs()
+    monkeypatch.setattr(runner.subprocess, "run", legs)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
+    out = tmp_path / "run"
+    monkeypatch.setattr(sys, "argv", ["run_pilot.py", "--tasks", "tasks.yaml", "--out", str(out)])
+    os.chdir(gone)
+    gone.rmdir()
+    try:
+        rc = runner.main()
+    finally:
+        os.chdir(tmp_path)
+
+    assert rc == 2
+    assert legs.legs == []
+    assert f"--tasks: tasks.yaml cannot be read: {os.strerror(errno.ENOENT)}" in (
+        capsys.readouterr().err
+    )
+    assert not out.exists()
+
+
 def test_a_relative_out_hands_every_leg_an_absolute_prompt_path_in_the_run(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     legs = _Legs()
@@ -868,7 +901,43 @@ def test_an_out_whose_leg_file_paths_would_be_too_long_is_refused(
     assert not out.exists()
     err = capsys.readouterr().err
     assert f"--out: {out} is too long: a leg's file path would be" in err
-    assert f"over this file system's {limit}-byte limit" in err
+    assert f"and this file system takes at most {limit - 1}" in err
+
+
+@pytest.mark.parametrize(("short_by", "refused"), [(0, True), (1, False)], ids=["limit", "limit-1"])
+def test_a_leg_file_path_of_the_limit_is_refused_and_one_byte_shorter_runs(
+    monkeypatch, tmp_path, capsys, short_by, refused
+):
+    limit = _path_max(tmp_path)
+    leg_file = "/t01-react.prompt.txt"
+    out_length = limit - short_by - len(leg_file)
+    base = _deep_directory(tmp_path, out_length - 12)
+    out = base / ("r" * (out_length - len(str(base)) - 1))
+    assert len(os.fsencode(str(out) + leg_file)) == limit - short_by
+    legs = _Legs()
+    rc, _ = _run_main(monkeypatch, tmp_path, legs, ["t01"], "--out", str(out))
+
+    if not refused:
+        assert rc == 0
+        assert len(legs.legs) == 2
+        assert Path(str(out) + leg_file).is_file()
+        return
+    assert rc == 2
+    assert legs.legs == []
+    assert not out.exists()
+    assert f"a leg's file path would be {limit} bytes" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("platform", "fallback"), [("linux", 4096), ("darwin", 1024)])
+def test_the_path_limit_falls_back_to_the_platform_value_when_it_cannot_be_read(
+    monkeypatch, tmp_path, platform, fallback
+):
+    def refuse(path, name):
+        raise OSError(22, "Invalid argument")
+
+    monkeypatch.setattr(runner.os, "pathconf", refuse)
+    monkeypatch.setattr(runner.sys, "platform", platform)
+    assert runner._path_max(tmp_path) == fallback
 
 
 def test_an_out_under_a_link_to_a_directory_runs_there(monkeypatch, tmp_path):
@@ -940,19 +1009,19 @@ def test_an_li_that_cannot_start_leaves_no_run_directory(monkeypatch, tmp_path):
     assert not (tmp_path / "run").exists()
 
 
-def test_a_task_file_that_cannot_be_read_leaves_no_run_directory(monkeypatch, tmp_path):
+def test_a_task_file_that_cannot_be_read_leaves_no_run_directory(monkeypatch, tmp_path, capsys):
     out = tmp_path / "run"
     (tmp_path / "li").touch()
     monkeypatch.setattr(runner, "TREE", tmp_path)
     monkeypatch.setattr(runner, "LI", tmp_path / "li")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["run_pilot.py", "--tasks", str(tmp_path / "missing.yaml"), "--out", str(out)],
+    missing = tmp_path / "missing.yaml"
+    monkeypatch.setattr(sys, "argv", ["run_pilot.py", "--tasks", str(missing), "--out", str(out)])
+
+    assert runner.main() == 2
+    assert f"--tasks: {missing} cannot be read: {os.strerror(errno.ENOENT)}" in (
+        capsys.readouterr().err
     )
-    with pytest.raises(FileNotFoundError):
-        runner.main()
     assert not out.exists()
 
 

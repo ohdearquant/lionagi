@@ -160,10 +160,10 @@ and r4, and `spend_lines` is at least 1 in all 144 rows. Each leg's spend lines 
   and a non-empty `prompt`, both text that encodes as UTF-8; checks that are lists of non-empty
   strings with a non-empty `all_of`, each encoding as UTF-8; each regular expression compiling, not blank, and not matching an empty answer), checked
   `--concurrency`, `--loops` (each 1 to 100 letters, digits, `_` and `-`, the name of a profile beside the runner, letter case included,
-  and none named twice), `--only`, that no two legs would write the same files, and that `--out` is not empty and that none of the leg files the run will write would be longer than the file system's path limit; it then makes that directory with one `mkdir`, which refuses an existing path, a missing or dangling parent, a file or a link loop on the way, and a name or path the file system will not take, each with the OS's own reason,
+  and none named twice), `--only`, that no two legs would write the same files, and that `--out` is not empty and that no leg file the run will write would have a path too long for the file system; it then makes that directory with one `mkdir`, which refuses an existing path, a missing or dangling parent, a file or a link loop on the way, and a name or path the file system will not take, each with the OS's own reason,
   and started `git`
   and `li --version` for the header, so none of those checks failing, and neither program failing
-  to start, leaves a run directory behind; a failed check, or a run directory that cannot be created, exits 2, and only the run directory itself is ever made. The `mkdir` follows links, so a path component replaced by a link to another existing directory after `--out` was given is followed; its message gives the OS's reason, not the component that failed. Of the two files' top-level
+  to start, leaves a run directory behind; a failed check, or a run directory that cannot be created, exits 2, and only the run directory itself is ever made. The `mkdir` follows links, so a path component replaced by a link to another existing directory after `--out` was given is followed, and a `..` after a link goes up from the link's target, as the OS resolves it; its message gives the OS's reason, not the component that failed. Of the two files' top-level
   statements,
   `summarize()`, `run_one()`, `run_pair()` and `main()` are the ones whose `ast.dump` differs, and
   `run_pilot.py` adds two imports (`threading` and `collections.abc.Callable`), the `TASK_ID`

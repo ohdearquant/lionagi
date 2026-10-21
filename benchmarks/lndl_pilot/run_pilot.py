@@ -37,7 +37,8 @@ TASK_ID = re.compile(r"[A-Za-z0-9_-]{1,100}")
 
 
 def _path_max(path: Path) -> int:
-    """The file system's path limit at the nearest existing ancestor of `path`, or 1024."""
+    """`PC_PATH_MAX` at the nearest existing ancestor of `path`, which counts a path's terminating
+    NUL; where it cannot be read, the platform's usual value (4096 on Linux, 1024 elsewhere)."""
     probe = path
     while probe != probe.parent:
         try:
@@ -49,8 +50,10 @@ def _path_max(path: Path) -> int:
     try:
         limit = os.pathconf(probe, "PC_PATH_MAX")
     except (OSError, ValueError):
-        return 1024
-    return limit if limit > 0 else 1024
+        return 4096 if sys.platform.startswith("linux") else 1024
+    if limit > 0:
+        return limit
+    return 4096 if sys.platform.startswith("linux") else 1024
 
 
 class _TaskLoader(yaml.SafeLoader):
@@ -328,8 +331,14 @@ def main() -> int:
     if missing:
         print(f"{', '.join(missing)} not found; nothing run", file=sys.stderr)
         return 2
-    tasks_path = Path(args.tasks).resolve()
-    tasks_bytes = tasks_path.read_bytes()
+    # A relative `--tasks` from a current directory that has gone raises OSError here too.
+    try:
+        tasks_path = Path(args.tasks).resolve()
+        tasks_bytes = tasks_path.read_bytes()
+    except OSError as exc:
+        print(f"--tasks: {args.tasks} cannot be read: {exc.strerror or exc}", file=sys.stderr)
+        print("nothing run", file=sys.stderr)
+        return 2
     try:
         loaded = yaml.load(tasks_bytes, Loader=_TaskLoader)  # noqa: S506 - a SafeLoader subclass
     # Deep nesting raises RecursionError rather than a YAMLError.
@@ -386,7 +395,8 @@ def main() -> int:
     if not problems:
         # A leg writes `{id}-{loop}.prompt.txt`, `.stdout.txt` and `.stderr.txt`, whose suffixes
         # have the same length. Refuse a directory under which one of those would be too long,
-        # before the run starts and each leg fails writing its prompt.
+        # before the run starts and each leg fails writing its prompt. The limit counts the
+        # terminating NUL, so a path must be shorter than it.
         run_tasks = [t for t in tasks if t["id"] in wanted] if args.only else tasks
         longest = max(
             len(os.fsencode(out / f"{t['id']}-{loop}.prompt.txt"))
@@ -394,10 +404,10 @@ def main() -> int:
             for loop in loops
         )
         limit = _path_max(out.parent)
-        if longest > limit:
+        if longest >= limit:
             problems.append(
                 f"--out: {args.out} is too long: a leg's file path would be {longest} bytes, "
-                f"over this file system's {limit}-byte limit"
+                f"and this file system takes at most {limit - 1}"
             )
     if problems:
         for problem in problems:
@@ -438,7 +448,7 @@ def main() -> int:
     }
     # Made once everything above has been checked and `git` and `li` have answered for the
     # header, so a refused run, or an `li` that cannot start, leaves no run directory behind.
-    # This one mkdir, with no parents, is the gate for `--out`: the OS follows links on the way,
+    # This one mkdir, with no parents, is the last gate for `--out`: the OS follows links on the way,
     # so a component replaced by a link to another existing directory after `--out` was given is
     # followed, while a missing path, a file or a link loop is refused. The message carries the
     # OS's reason, not the component that failed.
