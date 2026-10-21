@@ -267,8 +267,15 @@ async def test_database_rows_match_across_run_routes_and_recent_summaries(isolat
 
 @pytest.mark.parametrize(
     "text",
-    ['{"n": 1' + "0" * 4999 + "}", "[" * 100_000],
-    ids=["digit-limit", "nesting"],
+    [
+        '{"n": 1' + "0" * 4999 + "}",
+        "[" * 100_000,
+        # Naming the key, the text also ships in the recent-run batch, which decodes it itself.
+        '{"scheduled": true, "n": 1' + "0" * 4999 + "}",
+        '{"scheduled": ' + "[" * 100_000,
+        '{"scheduled": tru',
+    ],
+    ids=["digit-limit", "nesting", "digit-limit-key", "nesting-key", "malformed-key"],
 )
 async def test_a_stored_context_text_that_does_not_parse_fails_no_run_read(isolated_db, text):
     async with StateDB() as db:

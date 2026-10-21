@@ -78,9 +78,10 @@ missed fire under `missed_fire_policy=run_once`, chain children, and the rows a
 timer tick records without firing (a missed-fire skip, an overlap skip, a deferral
 at the concurrent-fire cap, a budget refusal) are false. A timer fire refused before
 it starts a process (a working directory the daemon refuses, a command argument that
-renders to a leading `-` or to characters outside the allowed set, no resolvable `li`)
-is recorded `failed` and reads true, as does a threshold alert the timer fires; a fire
-whose rendered prompt is refused records no run. The
+renders to a leading `-` or to characters outside the allowed set, a `play` prompt that
+renders to a leading `-`, no resolvable `li`) is recorded `failed` and reads true, as
+does a threshold alert the timer fires; a fire whose rendered prompt is past the length
+cap or exactly `--` records no run. The
 run a restart replaces is marked `failed` and still reads true, so that one timer
 fire shows as two runs. For a missed-fire skip, `missed_fire_at` is the stored
 intended fire time as epoch seconds, including its fractional part. A stored integer

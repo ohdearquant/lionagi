@@ -629,9 +629,9 @@ _RECENT_RUN_LIMIT = 25
 # the two keys _run_trigger_facts reads, and NULL otherwise, which projects the same two
 # defaults. A repository event's payload ships only when it quotes one of the names, as a key
 # or as a value such as a label, and _run_trigger_facts then decides as before. The match
-# parses nothing; a context that ships is decoded by the row read, which under the pure-Python
-# scanner fails on nesting past its depth. The scheduler writes contexts with json.dumps,
-# which writes both keys literally; a key spelled with a JSON escape is not matched.
+# parses nothing; a context that ships is decoded by _run_trigger_facts, which under the
+# pure-Python scanner fails on nesting past its depth. The scheduler writes contexts with
+# json.dumps, which writes both keys literally; a key spelled with a JSON escape is not matched.
 _RECENT_RUN_CONTEXT = (
     " CASE WHEN CAST(occurrence.trigger_context AS TEXT) LIKE '%\"scheduled\"%'"
     " OR CAST(occurrence.trigger_context AS TEXT) LIKE '%\"missed_fire_at\"%'"
