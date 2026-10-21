@@ -39,7 +39,7 @@ from lionagi.providers.openai._codex_profile import refuse_non_absolute_codex_ho
 
 try:
     import tomllib as _tomllib
-except ModuleNotFoundError:  # Python 3.10: the declared `tomli`; recent releases also read TOML 1.1
+except ModuleNotFoundError:  # Python 3.10: the declared `tomli`; the locked 2.4.1 reads TOML 1.1
     import tomli as _tomllib  # type: ignore[no-redef]
 
 __all__ = ("declaring_project_layer", "mcp_servers_declaration_line", "project_layers")

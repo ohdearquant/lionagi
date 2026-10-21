@@ -353,7 +353,10 @@ name. The config's `sandbox_mode`, its `[sandbox_workspace_write]` settings,
 its hook trust records and its `[projects]` trust decisions ride beside the
 flag, so the hooks it trusts in `$CODEX_HOME/hooks.json` still run for the
 worker and a project it trusts gets the sandbox codex derives for it; a
-config that declares hooks or sets `default_permissions` itself is refused.
+config that declares hooks or sets `default_permissions` itself is refused,
+and so is one this Python's TOML parser refuses: on Python 3.11 and later that
+includes the TOML 1.1 syntax codex itself reads (`agent-runtime.md` lists it),
+and the same config written in TOML 1.0 starts.
 Both read the config in the codex home the worker's environment names (its
 `env` when it has one, else this process's environment; one naming neither
 `CODEX_HOME` nor `HOME` names the OS account's home): a `CODEX_HOME` that a

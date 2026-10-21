@@ -786,7 +786,7 @@ def test_a_user_config_that_is_not_a_regular_file_is_refused(codex_home, caplog)
     with pytest.raises(ConfigurationError, match="not a regular file") as refused:
         CodexCodeRequest(prompt="hi", ignore_user_config=True).as_cmd_args()
     assert "Replace it with a regular file" in str(refused.value)
-    assert "TOML parser" not in str(refused.value)
+    assert "TOML 1.0" not in str(refused.value)
 
     # the control: no file at all is no config, and nothing is said
     (codex_home / "config.toml").rmdir()
@@ -1081,9 +1081,30 @@ def test_an_unreadable_user_config_gets_the_permission_remedy(codex_home):
     finally:
         config.chmod(0o600)
     assert "Make the file readable by this process" in str(refused.value)
-    assert "TOML parser" not in str(refused.value)
+    assert "TOML 1.0" not in str(refused.value)
 
     # the control: a file that is read but not parsed gets the parser remedy
     config.write_text("[sandbox_workspace_write\n")
-    with pytest.raises(ConfigurationError, match="TOML parser reads"):
+    with pytest.raises(ConfigurationError, match="Write the file in TOML 1.0"):
         CodexCodeRequest(prompt="hi", ignore_user_config=True).as_cmd_args()
+
+
+@pytest.mark.parametrize(
+    "syntax",
+    ['note = "k\\e"', 'note = "\\x41"', "note = {a = 1,}", "note = {\n  a = 1 }", "note = 07:30"],
+)
+def test_toml_1_1_syntax_in_the_user_config_is_read_as_this_pythons_parser_reads_it(
+    codex_home, syntax
+):
+    """Codex reads TOML 1.1. tomllib (3.11 and later) and tomli before 2.4 read TOML 1.0, so
+    under the flag such a config is refused with the TOML 1.0 remedy; tomli from 2.4 reads it."""
+    (codex_home / "config.toml").write_text(f'{syntax}\nsandbox_mode = "workspace-write"\n')
+    request = CodexCodeRequest(prompt="hi", ignore_user_config=True)
+    tomli = None if sys.version_info >= (3, 11) else pytest.importorskip("tomli")
+    if tomli is None or tuple(int(x) for x in tomli.__version__.split(".")[:2]) < (2, 4):
+        with pytest.raises(ConfigurationError, match="Write the file in TOML 1.0"):
+            request.as_cmd_args()
+    else:
+        args = request.as_cmd_args()
+        assert "--ignore-user-config" in args
+        assert "workspace-write" in " ".join(args)

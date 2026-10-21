@@ -80,7 +80,7 @@ if TYPE_CHECKING:
 
 try:
     import tomllib as _tomllib
-except ModuleNotFoundError:  # Python 3.10: the declared `tomli`, a TOML 1.0 parser like tomllib
+except ModuleNotFoundError:  # Python 3.10: the declared `tomli`; the locked 2.4.1 reads TOML 1.1
     # (`toml` 0.10 does not normalize whitespace around dotted key parts)
     import tomli as _tomllib  # type: ignore[no-redef]
 
@@ -2067,7 +2067,7 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
         config = _read_codex_config(config_path)
     except ValueError as exc:
         remedy = (
-            "Make the file one this Python's TOML parser reads"
+            "Write the file in TOML 1.0 (codex reads TOML 1.1; this Python's parser may not)"
             if os.access(config_path, os.R_OK)
             else "Make the file readable by this process"
         )

@@ -83,13 +83,21 @@ and one implementation.
   a key in a `config.toml` its TOML parser cannot read is not seen. The key and
   the server list are read with `tomllib` (`tomli` on Python 3.10), which decodes
   a quoted key as TOML defines it, so `"mcp\u005fservers"` declares servers as
-  `mcp_servers` does. `tomllib` on Python 3.12 refuses the syntax only TOML 1.1
-  allows (an `\e` or `\x` escape, an inline table across lines or with a trailing
-  comma, a time without seconds), which codex 0.162.1 reads with its TOML 1.1
-  parser and `tomli` 2.4.1, the version the lock file pins, accepts; both refuse a
-  leading byte-order mark. A root `profile` key in a file the parser refuses is
-  not seen here, and such a file takes its server list from the fallback; whether
-  that list holds a server only a profile declares is codex's, unchecked here.
+  `mcp_servers` does. `tomllib` (tried on Python 3.11 to 3.14) refuses the
+  syntax only TOML 1.1 allows (an `\e` or `\x` escape, an inline table across
+  lines or with a trailing comma, a time without seconds), which codex 0.162.1
+  reads with its TOML 1.1 parser; on Python 3.10, `tomli` 2.4.1, the version the
+  lock file pins, accepts it, as `tomli` does from 2.4.0, and `tomli` 2.0.1, the
+  declared floor, refuses it.
+  `tomllib` and `tomli` both refuse a leading byte-order mark. A root `profile`
+  key in a file the parser refuses is not seen here, and such a file takes its
+  server list from the fallback; whether that list holds a server only a profile
+  declares is codex's, unchecked here. Under `--ignore-user-config` a user config
+  the parser refuses stops the run instead, and so does a project layer it
+  refuses while a sandbox setting rides beside the flag, so where the parser
+  reads only TOML 1.0 a `config.toml` that codex itself reads is refused when it
+  uses that syntax; for the user config the message says to write the file in
+  TOML 1.0.
   These reads and the fallback use the codex home named by the environment the
   child runs under (the model's `env` when it holds one, else this process's);
   an environment naming neither `CODEX_HOME` nor `HOME` names the OS account's
