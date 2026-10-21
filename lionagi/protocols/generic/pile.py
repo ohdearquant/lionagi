@@ -80,7 +80,7 @@ def _validate_item_type(value, /) -> set[type[T]] | None:
     value = [value] if isinstance(value, str) else to_list_type(value)
     resolved = []
 
-    from lionagi._class_registry import _cut, _shown, get_class
+    from lionagi._class_registry import _cut, _quoted, _shown, get_class
 
     for i in value:
         pending = [i]
@@ -91,7 +91,7 @@ def _validate_item_type(value, /) -> set[type[T]] | None:
                     _cut(i),
                     expected="A type.",
                     message=(
-                        f"item_type {_cut(repr(i))} names no module: pass the class itself or "
+                        f"item_type {_quoted(i)} names no module: pass the class itself or "
                         "its dotted path, such as 'lionagi.protocols.generic.element.Element'"
                     ),
                 )

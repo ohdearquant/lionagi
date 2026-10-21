@@ -67,7 +67,7 @@ _SHOWN = 160
 
 def _cut(text: str) -> str:
     if len(text) <= _SHOWN:
-        return text
+        return str.__str__(text)
     return f"{text[:_SHOWN]}... [{len(text) - _SHOWN:,} more characters]"
 
 
@@ -96,7 +96,7 @@ def get_class(class_name: str) -> type:
     if not class_name:
         # Reject empty names here: the suffix-match fallback below would
         # otherwise match any registry key ending in a bare ".".
-        raise ValueError(_NOT_FOUND.format(_cut(repr(class_name)), _MALFORMED))
+        raise ValueError(_NOT_FOUND.format(_quoted(class_name), _MALFORMED))
 
     if class_name in LION_CLASS_REGISTRY:
         return LION_CLASS_REGISTRY[class_name]
@@ -113,7 +113,7 @@ def get_class(class_name: str) -> type:
         # An empty part (".Foo", "pkg..Foo", "pkg.") names no module or class, and an
         # empty short name would match every registry key ending in ".".
         if not name or "" in mod.split("."):
-            raise ValueError(_NOT_FOUND.format(_cut(repr(class_name)), _MALFORMED))
+            raise ValueError(_NOT_FOUND.format(_quoted(class_name), _MALFORMED))
         module = sys.modules.get(mod)
         if isinstance(module, types.ModuleType):
             # The module's own namespace, not getattr: a module-level
@@ -136,7 +136,7 @@ def get_class(class_name: str) -> type:
                 hint = _LAZY if "__getattr__" in vars(module) else _IMPORTED
             else:
                 hint = _NESTED if _nested(class_name) else _OUTSIDE
-            shown = _cut(repr(class_name))
+            shown = _quoted(class_name)
             raise ValueError(_NOT_FOUND.format(shown, hint)) from load_error
 
     for mod_name in _BUILTIN_MODULES:
@@ -166,7 +166,7 @@ def get_class(class_name: str) -> type:
         hint = _BARE
     else:
         hint = _NESTED if _nested(class_name) else _UNDER_PREFIX
-    message = _NOT_FOUND.format(_cut(repr(class_name)), hint)
+    message = _NOT_FOUND.format(_quoted(class_name), hint)
     if load_error is not None:
         # The name is under an allowed prefix, so loading it was already tried:
         # say why it failed (a module that raises on import, a missing name).
@@ -186,3 +186,9 @@ def _shown(value: object) -> str:
         return _cut(repr(value))
     except Exception:
         return f"<{_cut(type(value).__name__)} object>"
+
+
+def _quoted(name: object) -> str:
+    """A name as an error quotes it: a string by the plain ``str`` repr, so a subclass's own
+    ``__repr__`` never runs; anything else as ``_shown`` gives it."""
+    return _cut(str.__repr__(name)) if isinstance(name, str) else _shown(name)

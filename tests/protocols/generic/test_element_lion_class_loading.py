@@ -36,11 +36,15 @@ class StaticFromDictElement(Element):
         return StaticFromDictElement.model_validate(data)
 
 
+SUPER_FROM_DICT_CALLS: list = []
+
+
 class SuperFromDictElement(Element):
     note: str = ""
 
     @staticmethod
     def from_dict(data):
+        SUPER_FROM_DICT_CALLS.append(data)
         data = dict(data)
         data["note"] = "restored through super()"
         return super(SuperFromDictElement, SuperFromDictElement).from_dict(data)
@@ -53,6 +57,11 @@ class RaisingReprMeta(type):
 
 class RaisingReprClass(metaclass=RaisingReprMeta):
     pass
+
+
+class RaisingReprStr(str):
+    def __repr__(self):
+        raise RuntimeError("no repr for this string")
 
 
 class RaisingRepr:
@@ -153,6 +162,13 @@ def test_a_staticmethod_from_dict_that_calls_super_restores_from_either_class(st
     assert type(restored) is SuperFromDictElement
     assert restored.note == "restored through super()"
     assert restored.id == original.id
+
+
+@pytest.mark.parametrize("start", [Element, SuperFromDictElement], ids=["element", "itself"])
+def test_a_from_dict_that_calls_super_runs_once_per_restore(start):
+    SUPER_FROM_DICT_CALLS.clear()
+    start.from_dict(SuperFromDictElement(note="kept").to_dict(mode="python"))
+    assert len(SUPER_FROM_DICT_CALLS) == 1
 
 
 def test_a_type_outside_the_element_hierarchy_is_refused_before_it_is_called():
@@ -520,6 +536,29 @@ def test_a_member_type_name_is_cut_in_the_details():
         Pile(item_type=[member])
     assert exc.value.details["type"].startswith("L" * _class_registry._SHOWN)
     assert len(exc.value.details["type"]) < _class_registry._SHOWN + 40
+
+
+@pytest.mark.parametrize("name", ["Foo", "nosuch.Foo"])
+def test_an_item_type_string_whose_repr_raises_is_refused_by_its_text(name):
+    with pytest.raises(ValidationError) as exc:
+        Pile(item_type=[RaisingReprStr(name)])
+    assert f"'{name}'" in exc.value.message
+    assert type(exc.value.details["value"]) is str
+    assert exc.value.to_dict(include_cause=True)
+
+
+@pytest.mark.parametrize("name", ["Nope", "nosuch.Foo", f"{__name__}.NotAnElement"])
+def test_a_lion_class_string_whose_repr_raises_is_quoted_by_its_text(name):
+    with pytest.raises(ValueError) as exc:
+        Element.from_dict(_dumped(RaisingReprStr(name)))
+    assert f"'{name}'" in str(exc.value)
+
+
+def test_a_lion_class_type_name_is_cut_in_the_message():
+    member = type("L" * 5000, (), {})()
+    with pytest.raises(ValueError, match="must be a string") as exc:
+        Element.from_dict(_dumped(member))
+    assert len(str(exc.value)) < _class_registry._SHOWN + 80
 
 
 def test_typing_any_as_an_item_type_is_refused_by_name():

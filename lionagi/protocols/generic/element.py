@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
-from lionagi._class_registry import _cut, get_class
+from lionagi._class_registry import _cut, _quoted, get_class
 from lionagi.ln._json_dump import get_orjson_default, json_dumps
 from lionagi.ln._json_load import json_loads
 from lionagi.ln._utils import now_utc
@@ -181,11 +181,10 @@ class Element(BaseModel):
                 # short names (data persisted before full-name adoption), and
                 # imports a module only under an allowed prefix, with its parents.
                 subcls_type = _lion_class_type(subcls)
-                # Another class restores through its own from_dict, a staticmethod
-                # included, or through this one again with itself as cls, so that
-                # model_validate applies its schema. The class already restoring
-                # stops here: a from_dict of its own that calls super() into this
-                # one would otherwise be called again and never return.
+                # Another class restores through its own from_dict, a staticmethod included, or
+                # through this one again with itself as cls, so that model_validate applies its
+                # schema. The class already restoring stops here: a from_dict of its own that calls
+                # super() into this one would otherwise run a second time for the same data.
                 if subcls_type is not cls:
                     data["metadata"] = metadata
                     return subcls_type.from_dict(data)
@@ -221,7 +220,8 @@ def _lion_class_type(lion_class: Any) -> type[Element]:
     lionagi may load, or that names a type outside the Element hierarchy.
     """
     if not isinstance(lion_class, str):
-        raise ValueError(f"metadata lion_class must be a string, got {type(lion_class).__name__}")
+        shown = _cut(type(lion_class).__name__)
+        raise ValueError(f"metadata lion_class must be a string, got {shown}")
     try:
         resolved = get_class(lion_class)
     except ValueError as exc:
@@ -229,7 +229,7 @@ def _lion_class_type(lion_class: Any) -> type[Element]:
         # and, when loading failed, the reason; the name is not repeated here.
         raise ValueError(f"metadata lion_class cannot be loaded: {exc}") from exc
     if not (isinstance(resolved, type) and issubclass(resolved, Element)):
-        raise ValueError(f"metadata lion_class {_cut(repr(lion_class))} is not an Element subclass")
+        raise ValueError(f"metadata lion_class {_quoted(lion_class)} is not an Element subclass")
     return resolved
 
 
