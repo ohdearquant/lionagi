@@ -1015,6 +1015,7 @@ describe("OperatorPanel", () => {
 
     it.each([
       [50, false],
+      [100, false],
       [200, true],
     ])(
       "against an archive at 100, a pending read's row from %i is shown: %s",
@@ -1183,6 +1184,31 @@ describe("OperatorPanel", () => {
 
       expect(container.textContent).not.toContain("Draft send failed");
       expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe(other.id);
+    });
+
+    it("reports a draft whose conversation could not be created where it is selected", async () => {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([]);
+      const pending = deferred<OperatorConversation>();
+      api.createOperatorConversation.mockReturnValueOnce(pending.promise);
+      const submits = api.submitOperatorTurn.mock.calls.length;
+      await mount();
+      await sendInstruction();
+      await openList();
+      api.listOperatorConversations.mockResolvedValueOnce([other]);
+      await clickFilter("Active");
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      const select = [...container.querySelectorAll("ul li button")].find(
+        (button) => button.textContent === other.title,
+      ) as HTMLButtonElement;
+      await act(async () => select.click());
+
+      await act(async () => pending.reject(new Error("Draft create failed")));
+
+      expect(container.textContent).toContain("Draft create failed");
+      expect(container.querySelector("textarea")?.value).toBe("Inspect this project");
+      expect(api.submitOperatorTurn).toHaveBeenCalledTimes(submits);
       expect(window.localStorage.getItem("studio:operator-conversation")).toBe(other.id);
     });
 

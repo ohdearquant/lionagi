@@ -44,9 +44,10 @@ behaviour, including accepting a write-capable submission without `cwd`.
   nullable `studio_operator_conversations.description`. Live conversation titles
   and descriptions refresh after the tool result, or after a turn ends without
   one. List refreshes retain conversations created while the read was pending,
-  do not bring back a conversation archived during the read unless the server
-  changed it afterwards, and respect the current list filter. A failed send is
-  reported only in the conversation it was sent for.
+  do not undo a rename, pin or archive made during the read unless the server
+  changed the row afterwards, and respect the current list filter. A failed send
+  is reported only in the conversation it was sent for; a draft whose
+  conversation could not be created reports it in the conversation then shown.
 - Studio sessions can set or clear an explicit display label through
   `PUT /api/sessions/{session_id}`. Labels take precedence in session list and
   detail names without changing activity timestamps; clearing a label restores

@@ -1307,7 +1307,8 @@ export default function OperatorPanel({ open, onClose }: Props) {
     setActionError(null);
     // The conversation this send is for: the one shown when it started, or, for
     // a draft, the one created for it. A failure is reported only while it is
-    // still the one selected.
+    // still the one selected. A draft whose conversation could not be created
+    // has none, so its failure shows where its text still is, in the composer.
     let sentTo = state.conversation?.id ?? selectedConversationIdRef.current;
     try {
       let conversation = state.conversation;
@@ -1346,7 +1347,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
       setInstruction("");
       nearBottomRef.current = true;
     } catch (error) {
-      if (selectedConversationIdRef.current !== sentTo) return;
+      if (sentTo !== null && selectedConversationIdRef.current !== sentTo) return;
       const message = error instanceof Error ? error.message : t("errors.send");
       setActionError(message);
       if (
