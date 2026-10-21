@@ -596,20 +596,20 @@ def test_compaction_path_replaces_a_span_with_one_summary() -> None:
 
 
 def test_codex_omission_markers_are_the_three_cited_shapes() -> None:
-    _in_span(_CODEX, 2558, 2561, "[output truncated:", "characters omitted here]")
-    _in_span(_CODEX, 2680, 2683, "items not shown]")
-    _in_span(_CODEX, 2712, 2717, 'note = "[omitted]"', "keys not shown")
+    _in_span(_CODEX, 2566, 2569, "[output truncated:", "characters omitted here]")
+    _in_span(_CODEX, 2688, 2691, "items not shown]")
+    _in_span(_CODEX, 2720, 2725, 'note = "[omitted]"', "keys not shown")
     # The file-change echo repeats the mapping's shape; its payload is the
     # ``{"omitted": ...}`` entry the amendment now names as its own shape.
-    _in_span(_CODEX, 2772, 2775, '{"omitted":', "changes not shown")
+    _in_span(_CODEX, 2780, 2783, '{"omitted":', "changes not shown")
 
 
 def test_amendment_counts_three_codex_marker_shapes_and_cites_each() -> None:
     normalized = _normalized(_amendment_body())
     assert "in three shapes" in normalized
-    for cited in (":2558-2561", ":2680-2683", ":2712-2717"):
+    for cited in (":2566-2569", ":2688-2691", ":2720-2725"):
         assert cited in normalized, f"{cited} is not cited for its marker shape"
-    assert ":2772-2775" in normalized
+    assert ":2780-2783" in normalized
     # The fourth site is the same mapping shape, said so, not a fourth shape.
     assert "A fourth site repeats the mapping's shape rather than adding a new one" in normalized
     # The ``{"omitted": ...}`` entry the file-change echo appends is described as its
@@ -658,7 +658,7 @@ def test_react_context_removal_is_listed_in_the_starting_state() -> None:
 
 
 def test_the_file_change_echo_call_site_is_where_cited() -> None:
-    _in_span(_CODEX, 2961, 2961, "_bounded_changes(changes)")
+    _in_span(_CODEX, 2969, 2969, "_bounded_changes(changes)")
 
 
 def test_amendment_cites_the_value_error_guard_by_line() -> None:

@@ -63,10 +63,10 @@ def test_a_layer_above_the_project_root_refuses_too(tmp_path, env):
     _git_root(repo)
     (repo / "work").mkdir()
 
-    assert declaring_project_layer(repo / "work", env) == (config_file, 1)
+    assert declaring_project_layer(repo / "work", env) == (config_file, 1, True)
     # the nearest declaring layer is the one named
     nearer = _declaring(repo)
-    assert declaring_project_layer(repo / "work", env) == (nearer, 1)
+    assert declaring_project_layer(repo / "work", env) == (nearer, 1, True)
 
 
 def test_every_layer_is_listed_nearest_first(tmp_path, env):
@@ -152,7 +152,7 @@ def test_a_project_codex_that_resolves_to_codex_home_is_skipped_as_codex_skips_i
     other = tmp_path / "other-home"
     other.mkdir()
     declared = declaring_project_layer(project / "work", {"CODEX_HOME": str(other)})
-    assert declared == (project / ".codex" / "config.toml", 1)
+    assert declared == (project / ".codex" / "config.toml", 1, True)
 
 
 # --- which directory Codex walks for `-C` --------------------------------------------------------
@@ -170,10 +170,14 @@ def test_under_a_symlinked_ancestor_the_walk_is_the_logical_path_as_codex_resolv
     config_file = _declaring(view)
     (view / "proj").symlink_to(tmp_path / "real" / "proj", target_is_directory=True)
 
-    assert declaring_project_layer(view / "proj" / "work", env) == (config_file, 1)
+    assert declaring_project_layer(view / "proj" / "work", env) == (config_file, 1, True)
     assert declaring_project_layer(tmp_path / "real" / "proj" / "work", env) is None
     # `..` collapses on the logical path, never through the link's target
-    assert declaring_project_layer(view / "proj" / "work" / ".." / "work", env) == (config_file, 1)
+    assert declaring_project_layer(view / "proj" / "work" / ".." / "work", env) == (
+        config_file,
+        1,
+        True,
+    )
 
 
 def test_a_layer_that_exists_but_cannot_be_read_refuses(tmp_path, env):
@@ -394,7 +398,26 @@ def test_a_layer_nested_deeper_than_the_parser_follows_is_read_line_by_line(tmp_
     layer.write_text(deep, encoding="utf-8")
     assert declaring_project_layer(tmp_path / "project", env) is None
     layer.write_text(deep + _DECLARING, encoding="utf-8")
-    assert declaring_project_layer(tmp_path / "project", env) == (layer, 2)
+    assert declaring_project_layer(tmp_path / "project", env) == (layer, 2, False)
+
+
+def test_a_line_the_parse_does_not_show_declaring_is_named_as_one_that_reads_as_one(tmp_path, env):
+    """Past the lines tried one by one, the first line that reads as a declaration is named, and
+    the refusal says only that it reads as one: here it is text inside a string."""
+    project = tmp_path / "project"
+    _git_root(project)
+    (project / ".codex").mkdir()
+    layer = project / ".codex" / "config.toml"
+    decoys = "mcp_servers.decoy = 1\n" * 9
+    layer.write_text(f'note = """\n{decoys}"""\n{_DECLARING}', encoding="utf-8")
+    assert declaring_project_layer(project, env) == (layer, 2, False)
+    request = CodexCodeRequest(prompt="x", repo=project, env=env, ignore_user_config=True)
+    with pytest.raises(ConfigurationError) as refusal:
+        codex_mod.refuse_declaring_project_layer(codex_mod._plain_request(request), project)
+    message = str(refusal.value)
+    assert f"{layer} is a Codex project config in which line 2 reads as a `mcp_servers`" in message
+    assert "(line 2)" not in message
+    assert "Remove the declaration from that file" in message
 
 
 def test_a_line_whose_removal_exposes_a_nesting_too_deep_to_parse_is_named():

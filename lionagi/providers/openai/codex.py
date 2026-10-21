@@ -2066,8 +2066,11 @@ def _ignored_user_config_carry(plain: _PlainRequest, cwd: Path) -> _UserConfigCa
     try:
         config = _read_codex_config(config_path)
     except ValueError as exc:
+        from ._codex_project_layers import _READS_TOML_1_1
+
         remedy = (
-            "Make the file one this Python's TOML parser reads (codex also reads TOML 1.1 forms)"
+            "Make the file one this Python's TOML parser reads"
+            + ("" if _READS_TOML_1_1 else " (codex also reads TOML 1.1 forms)")
             if os.access(config_path, os.R_OK)
             else "Make the file readable, and its folder searchable, by this process"
         )
@@ -2397,10 +2400,15 @@ def refuse_declaring_project_layer(plain: _PlainRequest, cwd: Path) -> None:
             f"Codex cannot start under cwd {cwd} with --ignore-user-config: {exc}."
         ) from exc
     if declared is not None:
-        config_file, line_number = declared
+        config_file, line_number, shown = declared
+        where = (
+            f"{config_file} (line {line_number}) is a Codex project config declaring `mcp_servers`"
+            if shown
+            else f"{config_file} is a Codex project config in which line {line_number} reads as "
+            "a `mcp_servers` declaration (read line by line, so it can be text inside a string)"
+        )
         raise ConfigurationError(
-            f"Codex cannot start under cwd {cwd} with --ignore-user-config: {config_file} "
-            f"(line {line_number}) is a Codex project config declaring `mcp_servers`, which a "
+            f"Codex cannot start under cwd {cwd} with --ignore-user-config: {where}, which a "
             "trusted project layer loads past the run's own server set and the flag does not "
             "suppress. Remove the declaration from that file, or run without ignore_user_config."
         )

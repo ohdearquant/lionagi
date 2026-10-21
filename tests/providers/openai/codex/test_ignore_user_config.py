@@ -24,6 +24,7 @@ import sys
 import pytest
 
 from lionagi._errors import ConfigurationError
+from lionagi.providers.openai import _codex_project_layers
 from lionagi.providers.openai.codex import CodexCodeRequest
 
 if sys.version_info >= (3, 11):
@@ -1127,6 +1128,21 @@ def test_a_user_config_refused_for_another_cause_names_the_parsers_error(codex_h
     assert "(at line 1, column " in message
     assert "Make the file one this Python's TOML parser reads" in message
     assert "TOML 1.0" not in message
+
+
+@pytest.mark.parametrize("reads_1_1", [True, False], ids=["reads-1.1", "reads-1.0"])
+def test_the_user_config_remedy_names_toml_1_1_only_where_the_parser_reads_1_0(
+    codex_home, monkeypatch, reads_1_1
+):
+    """A parser that reads TOML 1.1 refused the file for another cause, so the remedy does not
+    say codex reads 1.1 forms; one that reads only 1.0 may have refused a form codex reads."""
+    monkeypatch.setattr(_codex_project_layers, "_READS_TOML_1_1", reads_1_1)
+    (codex_home / "config.toml").write_text("[sandbox_workspace_write\n", encoding="utf-8")
+    with pytest.raises(ConfigurationError) as refused:
+        CodexCodeRequest(prompt="hi", ignore_user_config=True).as_cmd_args()
+    message = str(refused.value)
+    assert "Make the file one this Python's TOML parser reads" in message
+    assert ("codex also reads TOML 1.1 forms" in message) is not reads_1_1
 
 
 def test_a_project_layer_the_parser_refuses_is_named_with_the_parsers_limit(tmp_path, codex_home):

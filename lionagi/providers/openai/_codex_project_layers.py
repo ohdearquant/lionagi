@@ -105,18 +105,18 @@ def project_layers(
 
 def declaring_project_layer(
     cwd: str | os.PathLike[str], env: Mapping[str, str]
-) -> tuple[Path, int] | None:
+) -> tuple[Path, int, bool] | None:
     """The first of ``project_layers(cwd, env)`` that declares a top-level ``mcp_servers``
-    key, with its line, or ``None``.
+    key, with its line and whether the parse shows that line declaring it, or ``None``.
 
     A layer is read as a TOML parser reads it, or line by line toward refusing when the
     parser refuses it (``mcp_servers_declaration_line``), and counts whether or not its
     project is trusted, since trust is not fully readable here.
     """
     for path, text in project_layers(cwd, env):
-        line_number = mcp_servers_declaration_line(text)
-        if line_number is not None:
-            return path, line_number
+        found = _declaration(text)
+        if found is not None:
+            return path, *found
     return None
 
 
@@ -181,10 +181,18 @@ def mcp_servers_declaration_line(text: str) -> int | None:
     whose first key segment is ``mcp_servers``, a header or a key under any table, toward
     refusing.
     """
+    found = _declaration(text)
+    return None if found is None else found[0]
+
+
+def _declaration(text: str) -> tuple[int, bool] | None:
+    """``mcp_servers_declaration_line``, and whether the parse shows that line declaring
+    ``mcp_servers``: true only when the text without it parses to another value there."""
     try:
         parsed = _tomllib.loads(text)
     except (_tomllib.TOMLDecodeError, RecursionError):
-        return next(iter(_declaration_lines(text)), None)
+        candidates = _declaration_lines(text)
+        return (candidates[0], False) if candidates else None
     if "mcp_servers" not in parsed:
         return None
     lines = text.split("\n")
@@ -193,11 +201,11 @@ def mcp_servers_declaration_line(text: str) -> int | None:
         rest = "\n".join([*lines[: number - 1], "", *lines[number:]])
         try:
             if _tomllib.loads(rest).get("mcp_servers") != parsed["mcp_servers"]:
-                return number
+                return number, True
         except (_tomllib.TOMLDecodeError, RecursionError):
-            return number  # the line carries structure the declaration needs
+            return number, False  # the line carries structure the declaration needs
     # the parse found it: the refusal never waits on its line
-    return candidates[0] if len(candidates) > _LINES_TRIED else 1
+    return (candidates[0] if len(candidates) > _LINES_TRIED else 1), False
 
 
 def parse_failure(exc: BaseException) -> str:
