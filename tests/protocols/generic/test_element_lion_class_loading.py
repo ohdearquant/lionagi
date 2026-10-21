@@ -544,11 +544,13 @@ def test_a_long_name_is_cut_short_in_each_error():
         Element.from_dict(_dumped(long_name))
     assert len(str(raised.value)) < 1000
     assert "more characters]" in str(raised.value)
-    for item_type in (long_name, "x" * 5000):
+    for item_type in (long_name, "x" * 5000, [Literal["x" * 5000]]):
         with pytest.raises(ValidationError) as refused:
             Pile(item_type=item_type)
         assert len(str(refused.value)) < 1000
         assert len(str(refused.value.to_dict())) < 1000
+    # A member that is not a string is shown by its cut repr and keeps its own type name.
+    assert refused.value.details["type"] != "str"
 
 
 def test_a_long_name_of_a_type_outside_the_element_hierarchy_is_cut_short(monkeypatch):

@@ -83,7 +83,7 @@ def _validate_item_type(value, /) -> set[type[T]] | None:
     from lionagi._class_registry import _cut, get_class
 
     for i in value:
-        pending, shown = [i], _cut(i) if isinstance(i, str) else i
+        pending, shown = [i], _cut(i if isinstance(i, str) else repr(i))
         if isinstance(i, str):
             if "." not in i:
                 # A bare name says nothing about which package's class it means.
@@ -108,7 +108,9 @@ def _validate_item_type(value, /) -> set[type[T]] | None:
                 resolved.append(m)
             else:
                 refused = f"item_type cannot hold {_cut(repr(m))}"
-                raise ValidationError.from_value(shown, expected="A type.", message=refused)
+                raise ValidationError.from_value(
+                    shown, expected="A type.", message=refused, type=type(i).__name__
+                )
 
     # Compared once resolved and unions expanded: a type and its name, two names
     # for one class, or a type and a union holding it repeat one item type.
