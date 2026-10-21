@@ -203,8 +203,8 @@ def _first_key_segment(key: str) -> str:
     """The first segment of a dotted TOML key, its quotes stripped and, in a basic (double-quoted)
     key, its code-point escapes decoded: a parser reads ``"mcp\\u005fservers"`` as ``mcp_servers``.
     ``\\x`` is a TOML 1.1 escape, which 1.0 rejects; it is decoded too, toward refusing, so a
-    parser that takes it is not evaded. A code point past U+10FFFF, which every parser refuses,
-    decodes to U+FFFD, so the key it is in names nothing."""
+    parser that takes it is not evaded. A code point past U+10FFFF, which TOML does not allow
+    and tomllib refuses, decodes to U+FFFD, so the key it is in names nothing."""
     key = key.strip()
     if key[:1] == "'":
         end = key.find("'", 1)

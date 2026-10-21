@@ -151,6 +151,32 @@ def test_an_allowlist_naming_a_server_only_codex_declares_keeps_that_server(code
 
 
 @pytest.mark.parametrize(
+    "config",
+    [
+        '"mcp\\u005fservers".kept.command = "kept-mcp"\n'
+        '"mcp\\u005fservers".leak.command = "leak-mcp"\n',
+        '[mcp_servers.kept]\ncommand = "kept-mcp"\n\n'
+        '["mcp\\u005fservers".leak]\ncommand = "leak-mcp"\n',
+    ],
+    ids=["every-server-escaped", "one-server-escaped"],
+)
+def test_an_escaped_mcp_servers_key_declares_the_servers_it_spells(codex_home, config):
+    """A quoted key holding an escape is the key it decodes to, so `"mcp\\u005fservers"`
+    declares servers as `mcp_servers` does. Read with the escape left in, the kept server
+    would be missing and the run would drop the user config with it, and a server declared
+    that way beside a plain one would load with no disable."""
+    (codex_home.path / "config.toml").write_text(config)
+    kwargs: dict = {}
+
+    assert apply_forwarded_mcp_servers(
+        kwargs, {}, provider="codex", exclusive=True, allowed_names=["kept"]
+    )
+
+    assert "ignore_user_config" not in kwargs
+    assert kwargs["config_overrides"] == {"mcp_servers.leak.enabled": False}
+
+
+@pytest.mark.parametrize(
     ("servers", "allowed_names"),
     [({}, ["kept"]), (SERVERS, None)],
     ids=["allowlist-keeps-a-declared-server", "non-empty-set"],

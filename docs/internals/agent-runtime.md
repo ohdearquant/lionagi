@@ -81,21 +81,24 @@ and one implementation.
   the profile declares would load. Without the flag the factory refuses a root
   `profile` key in that `config.toml` the same way, since codex before 0.135
   makes it the active profile when no `-p` is given; a key in a `config.toml`
-  its TOML parser cannot read is not seen. The key is read with `tomllib`
-  (`tomli` on Python 3.10) and the server list with `toml` 0.10, and they differ
-  at the edges: `tomllib` and `toml` refuse the syntax only TOML 1.1 allows (an
-  `\e` escape, an inline table across lines or with a trailing comma, a time
-  without seconds), which codex 0.162.1 reads with its TOML 1.1 parser and
-  `tomli` 2.5 accepts, and only `toml` accepts a leading byte-order mark, so a
-  root `profile` key in a file that starts with one is not seen here. A file
-  `toml` cannot read takes its server list from the fallback. These reads and
+  its TOML parser cannot read is not seen. The key and the server list are read
+  with `tomllib` (`tomli` on Python 3.10), which decodes a quoted key as TOML
+  defines it, so `"mcp\u005fservers"` declares servers as `mcp_servers` does.
+  `tomllib` on Python 3.12 refuses the syntax only TOML 1.1 allows (an `\e`
+  escape, an inline table across lines or with a trailing comma, a time without
+  seconds), which codex 0.162.1 reads with its TOML 1.1 parser and `tomli` 2.4.1,
+  the version the lock file pins, accepts; both refuse a leading byte-order mark.
+  A root `profile` key in a file the parser refuses is not seen here, and such a
+  file takes its server list from the fallback. These reads and
   the fallback use the codex home named by the environment the
   child runs under (the model's `env` when it holds one, else this process's);
   an environment naming neither `CODEX_HOME` nor `HOME` names the OS account's
   home. A `CODEX_HOME`, or a `HOME` when `CODEX_HOME` is unset, that is not an
   absolute path is refused before these reads and the fallback, from either
   environment, with one `ConfigurationError` naming the variable. A run that
-  makes none of these reads is not checked here. The
+  makes none of these reads is not checked here; one that contains account
+  integrations (`contain_account_integrations`) is refused the same way when the
+  codex provider reads that `config.toml` for its root `profile` key. The
   fallback runs the codex binary the run itself starts; with no codex binary
   found the allowlist is refused rather than listed with another. A
   `CODEX_HOME` that a `secrets.lookup` fill adds to the child's environment at

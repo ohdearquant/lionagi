@@ -1226,20 +1226,20 @@ def _discover_ambient_codex_mcp_server_names(env: Mapping[str, str] | None = Non
     import json
     import subprocess
 
-    import toml
+    from lionagi.providers.openai._codex_profile import _read_codex_config
 
     codex_home = _codex_home_for_env(env)
     config_path = codex_home / "config.toml"
     try:
-        data = toml.loads(config_path.read_text())
-    except (OSError, UnicodeError, RecursionError, toml.TomlDecodeError):
-        # UnicodeError: read_text() decodes, so a config that is not UTF-8 is
-        # as unreadable as an unparseable one. RecursionError: the parser
-        # recurses per nesting level, so a config nested past the limit is too.
-        # Both fall through to the fallback rather than escaping discovery.
-        pass
-    else:
-        mcp_servers = data.get("mcp_servers") if isinstance(data, dict) else None
+        # The reader the root `profile` key goes through. Its parser decodes a quoted key
+        # as TOML defines it, so `"mcp\u005fservers"` declares the same table as `mcp_servers`.
+        data = _read_codex_config(config_path)
+    except ValueError:
+        # Unreadable, not UTF-8, nested past the parser's recursion limit, or not TOML
+        # the parser reads: the fallback lists the servers codex itself loads.
+        data = None
+    if data is not None:
+        mcp_servers = data.get("mcp_servers")
         if isinstance(mcp_servers, dict):
             return set(mcp_servers)
         return set()
