@@ -36,6 +36,23 @@ RUN_TIMEOUT_S = 420
 TASK_ID = re.compile(r"[A-Za-z0-9_-]{1,100}")
 
 
+def _path_max(path: Path) -> int:
+    """The file system's path limit at the nearest existing ancestor of `path`, or 1024."""
+    probe = path
+    while probe != probe.parent:
+        try:
+            os.stat(probe)
+        except OSError:
+            probe = probe.parent
+            continue
+        break
+    try:
+        limit = os.pathconf(probe, "PC_PATH_MAX")
+    except (OSError, ValueError):
+        return 1024
+    return limit if limit > 0 else 1024
+
+
 class _TaskLoader(yaml.SafeLoader):
     """safe_load keeps the last of a key a mapping names twice; this loader refuses it."""
 
@@ -344,34 +361,14 @@ def main() -> int:
         problems.append(f"--loops: {args.loops!r} names a loop twice, ignoring letter case")
     if not args.out:
         problems.append("--out is empty")
-    elif ".." in Path(args.out).parts:
-        # Python reads a `..` as text where the OS goes up from whatever it has looked up, and the
-        # two can disagree on where that lies; a path without one leaves nothing to agree on.
-        problems.append(f"--out: {args.out} has a `..` part; name the directory without one")
-    elif os.path.lexists(Path(args.out)):
-        # Through Path, which drops a trailing slash: with one, lstat follows a dangling link.
-        problems.append(f"--out: {args.out} already exists")
     else:
         # Absolute: each child runs with cwd set to the read tree, so a relative path would
-        # resolve there and the prompt file would not be found. Only the run directory itself is
-        # made, so the directory it goes in must already exist as the OS looks it up: a link
-        # loop, a dangling link or a file on the way is refused here, not once the run has begun.
-        out = Path(args.out).absolute()
+        # resolve there and the prompt file would not be found. A current directory that has
+        # gone raises OSError here, which is a refusal rather than a traceback.
         try:
-            os.stat(out.parent)
-        except FileNotFoundError:
-            what = "a link that does not resolve" if os.path.islink(out.parent) else "missing"
-            problems.append(f"--out: {args.out} is under {out.parent}, which is {what}")
+            out = Path(args.out).absolute()
         except OSError as exc:
-            problems.append(
-                f"--out: {args.out} is under {out.parent}, which cannot be looked up: "
-                f"{exc.strerror}"
-            )
-        else:
-            if not os.path.isdir(out.parent):
-                problems.append(
-                    f"--out: {args.out} is under {out.parent}, which is not a directory"
-                )
+            problems.append(f"--out: {args.out} cannot be made absolute: {exc.strerror or exc}")
     if args.only:
         wanted = args.only.split(",")
         known = (
@@ -386,6 +383,22 @@ def main() -> int:
         clashes = sorted({stem for stem in stems if stems.count(stem) > 1})
         if clashes:
             problems.append(f"two legs would write the same files: {', '.join(clashes)}")
+    if not problems:
+        # A leg writes `{id}-{loop}.prompt.txt`, `.stdout.txt` and `.stderr.txt`, whose suffixes
+        # have the same length. Refuse a directory under which one of those would be too long,
+        # before the run starts and each leg fails writing its prompt.
+        run_tasks = [t for t in tasks if t["id"] in wanted] if args.only else tasks
+        longest = max(
+            len(os.fsencode(out / f"{t['id']}-{loop}.prompt.txt"))
+            for t in run_tasks
+            for loop in loops
+        )
+        limit = _path_max(out.parent)
+        if longest > limit:
+            problems.append(
+                f"--out: {args.out} is too long: a leg's file path would be {longest} bytes, "
+                f"over this file system's {limit}-byte limit"
+            )
     if problems:
         for problem in problems:
             print(problem, file=sys.stderr)
@@ -425,12 +438,14 @@ def main() -> int:
     }
     # Made once everything above has been checked and `git` and `li` have answered for the
     # header, so a refused run, or an `li` that cannot start, leaves no run directory behind.
+    # This one mkdir, with no parents, is the gate for `--out`: the OS follows links on the way,
+    # so a component replaced by a link to another existing directory after `--out` was given is
+    # followed, while a missing path, a file or a link loop is refused. The message carries the
+    # OS's reason, not the component that failed.
     try:
         out.mkdir(exist_ok=False)
     except OSError as exc:
-        # A directory without write permission, a read-only file system and a name the file system
-        # refuses show only here, as does a change to the path since it was checked.
-        print(f"--out: {args.out} cannot be created: {exc}", file=sys.stderr)
+        print(f"--out: {args.out} cannot be created: {exc.strerror}", file=sys.stderr)
         print("nothing run", file=sys.stderr)
         return 2
     (out / "header.json").write_text(json.dumps(header, indent=2))

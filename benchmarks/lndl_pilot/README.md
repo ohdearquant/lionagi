@@ -65,8 +65,8 @@ Requests per accepted task divides a run's requests by the tasks accepted on rea
 the sum of the legs' own `wall_seconds`; each run had up to four legs going at once
 (`--concurrency 4`), so it is not the time the run took.
 
-Each task's check (`accept` in `tasks.yaml`) is a first pass on its answer. Every answer in
-r2, r3 and r4, accepted by its check or not, was then read against the `truth` line `tasks.yaml`
+Each task's check (`accept` in `tasks.yaml`) is a first pass on its answer. Three runs, r2, r3
+and r4, are recorded here; every answer in them, accepted by its check or not, was read against the `truth` line `tasks.yaml`
 records for its task (written against `6fa69b19`), and ADR-0132 D4 takes the reading as the
 decision. Read that way, r2 fails the rule, r3 meets it with no margin (23 accepted tasks on each
 side), and r4, at `d8838f28`, fails it (`lndl` 23 against ReAct 24). By the checks alone the
@@ -160,10 +160,10 @@ and r4, and `spend_lines` is at least 1 in all 144 rows. Each leg's spend lines 
   and a non-empty `prompt`, both text that encodes as UTF-8; checks that are lists of non-empty
   strings with a non-empty `all_of`, each encoding as UTF-8; each regular expression compiling, not blank, and not matching an empty answer), checked
   `--concurrency`, `--loops` (each 1 to 100 letters, digits, `_` and `-`, the name of a profile beside the runner, letter case included,
-  and none named twice), `--only`, that no two legs would write the same files, and that `--out` is not empty, has no `..` part, goes in a directory that exists as the OS looks it up, and that nothing, a dangling link included, is at it yet,
+  and none named twice), `--only`, that no two legs would write the same files, and that `--out` is not empty and that none of the leg files the run will write would be longer than the file system's path limit; it then makes that directory with one `mkdir`, which refuses an existing path, a missing or dangling parent, a file or a link loop on the way, and a name or path the file system will not take, each with the OS's own reason,
   and started `git`
   and `li --version` for the header, so none of those checks failing, and neither program failing
-  to start, leaves a run directory behind; a failed check, or a run directory that cannot be created, exits 2, and only the run directory itself is ever made. Of the two files' top-level
+  to start, leaves a run directory behind; a failed check, or a run directory that cannot be created, exits 2, and only the run directory itself is ever made. The `mkdir` follows links, so a path component replaced by a link to another existing directory after `--out` was given is followed; its message gives the OS's reason, not the component that failed. Of the two files' top-level
   statements,
   `summarize()`, `run_one()`, `run_pair()` and `main()` are the ones whose `ast.dump` differs, and
   `run_pilot.py` adds two imports (`threading` and `collections.abc.Callable`), the `TASK_ID`

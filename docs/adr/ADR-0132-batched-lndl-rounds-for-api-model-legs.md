@@ -137,9 +137,9 @@ source, and the reading decides: an answer the check accepts and the reading fin
 the check rejects and the reading finds right is. The result is a per-task table of requests, tool
 calls, wall time and acceptance for both loops, published with the pilot's commit, and a per-task
 record of each answer's reading beside its check. The pilot can run more than once as the code
-changes, and each run is recorded in the Result. r2, r3 and r4 are recorded there and do not settle
-the rule. A fourth run, `r5`, ran before the rule that the reading decides was adopted. It is not
-recorded here, and decides nothing until the change that decides D4 on it adds it to the Result,
+changes. Three runs, r2, r3 and r4, are recorded in the Result; they do not settle the rule. A
+fourth run, `r5`, ran before the rule that the reading decides was adopted. It is not recorded
+here, and decides nothing until the change that decides D4 on it adds it to the Result,
 beside the times at which each form of the rule took effect, so that its outcome is read knowing which rule was in force when it ran; no run recorded
 here decides D4. Once a recorded run decides it, no later run reopens D4: a different outcome takes
 a new decision. The reading is one

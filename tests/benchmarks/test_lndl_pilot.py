@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import importlib.util
 import json
 import os
@@ -133,6 +134,14 @@ def test_the_reading_and_the_checks_differ_in_the_ten_answers_the_adr_names():
         ("r4", "t20", "lndl"),
         ("r4", "t24", "lndl"),
     ]
+
+
+def test_the_documents_record_three_runs_and_name_the_fourth_as_unrecorded():
+    for document in (ADR, PILOT / "README.md"):
+        text = document.read_text()
+        assert "each run is recorded in the Result" not in text
+        assert re.search(r"r2[^\n]{0,8}(?:-|,\s*)r3[^\n]{0,8}r4", text)
+        assert re.search(r"r5[\s\S]+not recorded", text)
 
 
 class _Legs:
@@ -484,20 +493,36 @@ def test_a_missing_read_tree_or_li_is_refused_before_anything_runs(
     assert f"{tmp_path / 'absent'} not found; nothing run" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("case", ["out-exists", "out-dangling-link", "li-is-a-directory"])
-def test_an_existing_out_or_an_li_that_is_not_a_file_is_refused_before_anything_runs(
-    monkeypatch, tmp_path, capsys, case
-):
+@pytest.mark.parametrize("kind", ["directory", "file", "link"])
+def test_an_out_that_already_exists_is_refused_by_mkdir(monkeypatch, tmp_path, capsys, kind):
+    out = tmp_path / "run"
+    if kind == "directory":
+        out.mkdir()
+    elif kind == "file":
+        out.write_text("not a directory\n")
+    else:
+        out.symlink_to(tmp_path / "elsewhere")
+    legs = _Legs()
+    rc, _ = _run_main(monkeypatch, tmp_path, legs, ["t01"])
+
+    assert rc == 2
+    assert legs.legs == []
+    assert f"--out: {out} cannot be created: {os.strerror(errno.EEXIST)}" in capsys.readouterr().err
+    if kind == "directory":
+        assert list(out.iterdir()) == []
+    elif kind == "file":
+        assert out.read_text() == "not a directory\n"
+    else:
+        assert out.is_symlink()
+        assert not (tmp_path / "elsewhere").exists()
+
+
+def test_an_li_that_is_not_a_file_is_refused_before_anything_runs(monkeypatch, tmp_path, capsys):
     real_main = runner.main
 
     def main():
-        if case == "out-exists":
-            (tmp_path / "run").mkdir()
-        elif case == "out-dangling-link":
-            (tmp_path / "run").symlink_to(tmp_path / "elsewhere")
-        else:
-            runner.LI.unlink()
-            runner.LI.mkdir()
+        runner.LI.unlink()
+        runner.LI.mkdir()
         return real_main()
 
     monkeypatch.setattr(runner, "main", main)
@@ -506,17 +531,8 @@ def test_an_existing_out_or_an_li_that_is_not_a_file_is_refused_before_anything_
 
     assert rc == 2
     assert legs.legs == []
-    err = capsys.readouterr().err
-    if case == "out-exists":
-        assert f"--out: {out} already exists" in err
-        assert list(out.iterdir()) == []
-    elif case == "out-dangling-link":
-        assert f"--out: {out} already exists" in err
-        assert out.is_symlink()
-        assert not (tmp_path / "elsewhere").exists()
-    else:
-        assert f"{runner.LI} is not executable" in err
-        assert not out.exists()
+    assert not out.exists()
+    assert f"{runner.LI} is not executable" in capsys.readouterr().err
 
 
 def test_only_beside_an_id_that_is_not_text_is_refused_before_anything_runs(
@@ -645,7 +661,7 @@ def test_two_legs_that_would_write_the_same_files_are_refused_before_anything_ru
     assert "two legs would write the same files: x-a-b" in capsys.readouterr().err
 
 
-def test_an_out_through_a_link_loop_is_refused_before_anything_runs(monkeypatch, tmp_path, capsys):
+def test_an_out_through_a_link_loop_is_refused_by_mkdir(monkeypatch, tmp_path, capsys):
     (tmp_path / "loop").symlink_to(tmp_path / "loop")
     out = tmp_path / "loop" / "run"
     legs = _Legs()
@@ -653,12 +669,10 @@ def test_an_out_through_a_link_loop_is_refused_before_anything_runs(monkeypatch,
 
     assert rc == 2
     assert legs.legs == []
-    assert f"--out: {out} is under {tmp_path / 'loop'}, which cannot be looked up:" in (
-        capsys.readouterr().err
-    )
+    assert f"--out: {out} cannot be created: {os.strerror(errno.ELOOP)}" in capsys.readouterr().err
 
 
-def test_an_out_naming_a_dangling_link_with_a_trailing_slash_is_refused(
+def test_an_out_naming_a_dangling_link_with_a_trailing_slash_is_refused_by_mkdir(
     monkeypatch, tmp_path, capsys
 ):
     (tmp_path / "dang").symlink_to(tmp_path / "elsewhere")
@@ -668,10 +682,12 @@ def test_an_out_naming_a_dangling_link_with_a_trailing_slash_is_refused(
     assert rc == 2
     assert legs.legs == []
     assert not (tmp_path / "elsewhere").exists()
-    assert f"--out: {tmp_path / 'dang'}/ already exists" in capsys.readouterr().err
+    assert f"--out: {tmp_path / 'dang'}/ cannot be created: {os.strerror(errno.EEXIST)}" in (
+        capsys.readouterr().err
+    )
 
 
-def test_an_out_under_a_file_is_refused_before_anything_runs(monkeypatch, tmp_path, capsys):
+def test_an_out_under_a_file_is_refused_by_mkdir(monkeypatch, tmp_path, capsys):
     (tmp_path / "afile").write_text("")
     legs = _Legs()
     rc, _ = _run_main(
@@ -681,32 +697,11 @@ def test_an_out_under_a_file_is_refused_before_anything_runs(monkeypatch, tmp_pa
     assert rc == 2
     assert legs.legs == []
     err = capsys.readouterr().err
-    assert f"--out: {tmp_path / 'afile' / 'run'} is under {tmp_path / 'afile'}, which is not" in err
+    reason = os.strerror(errno.ENOTDIR)
+    assert f"--out: {tmp_path / 'afile' / 'run'} cannot be created: {reason}" in err
 
 
-@pytest.mark.parametrize(
-    "tail",
-    ["P/M/../G/run", "V/../run", "P/..", "P/../P/run"],
-    ids=["missing", "link", "end", "back"],
-)
-def test_an_out_with_a_dot_dot_part_is_refused_before_anything_runs(
-    monkeypatch, tmp_path, capsys, tail
-):
-    (tmp_path / "P" / "G").mkdir(parents=True)
-    (tmp_path / "real" / "D").mkdir(parents=True)
-    (tmp_path / "V").symlink_to(tmp_path / "real" / "D")
-    out = f"{tmp_path}/{tail}"
-    legs = _Legs()
-    rc, _ = _run_main(monkeypatch, tmp_path, legs, ["t01"], "--out", out)
-
-    assert rc == 2
-    assert legs.legs == []
-    for made in ("P/G/run", "P/run", "real/run", "run"):
-        assert not (tmp_path / made).exists()
-    assert f"--out: {out} has a `..` part" in capsys.readouterr().err
-
-
-def test_an_out_under_a_missing_directory_is_refused_and_makes_nothing(
+def test_an_out_under_a_missing_directory_is_refused_by_mkdir_and_makes_nothing(
     monkeypatch, tmp_path, capsys
 ):
     out = tmp_path / "a" / "b" / "run"
@@ -716,16 +711,18 @@ def test_an_out_under_a_missing_directory_is_refused_and_makes_nothing(
     assert rc == 2
     assert legs.legs == []
     assert not (tmp_path / "a").exists()
-    assert f"--out: {out} is under {tmp_path / 'a' / 'b'}, which is missing" in (
+    assert f"--out: {out} cannot be created: {os.strerror(errno.ENOENT)}" in (
         capsys.readouterr().err
     )
 
 
-def test_an_out_under_a_directory_that_cannot_be_searched_is_refused(monkeypatch, tmp_path, capsys):
+def test_an_out_through_a_directory_that_cannot_be_searched_is_refused(
+    monkeypatch, tmp_path, capsys
+):
     closed = tmp_path / "P" / "U"
     closed.mkdir(parents=True)
     closed.chmod(0o600)
-    out = closed / "M" / "run"
+    out = closed / "run"
     try:
         if os.access(closed / ".", os.X_OK):
             pytest.skip("this user can search a directory without search permission")
@@ -736,8 +733,8 @@ def test_an_out_under_a_directory_that_cannot_be_searched_is_refused(monkeypatch
 
     assert rc == 2
     assert legs.legs == []
-    assert not (closed / "M").exists()
-    assert f"--out: {out} is under {closed / 'M'}, which cannot be looked up:" in (
+    assert not (closed / "run").exists()
+    assert f"--out: {out} cannot be created: {os.strerror(errno.EACCES)}" in (
         capsys.readouterr().err
     )
 
@@ -756,14 +753,12 @@ def test_an_out_through_a_link_whose_target_goes_up_out_of_a_file_is_refused(
     assert rc == 2
     assert legs.legs == []
     assert not (tmp_path / "P" / "D" / "run").exists()
-    assert f"--out: {out} is under {tmp_path / 'P' / 'L'}, which cannot be looked up:" in (
+    assert f"--out: {out} cannot be created: {os.strerror(errno.ENOTDIR)}" in (
         capsys.readouterr().err
     )
 
 
-def test_an_out_under_a_dangling_link_is_refused_before_anything_runs(
-    monkeypatch, tmp_path, capsys
-):
+def test_an_out_through_a_dangling_link_is_refused_by_mkdir(monkeypatch, tmp_path, capsys):
     (tmp_path / "dang").symlink_to(tmp_path / "elsewhere")
     out = tmp_path / "dang" / "run"
     legs = _Legs()
@@ -772,9 +767,108 @@ def test_an_out_under_a_dangling_link_is_refused_before_anything_runs(
     assert rc == 2
     assert legs.legs == []
     assert not (tmp_path / "elsewhere").exists()
-    assert f"--out: {out} is under {tmp_path / 'dang'}, which is a link that does not resolve" in (
+    assert f"--out: {out} cannot be created: {os.strerror(errno.ENOENT)}" in (
         capsys.readouterr().err
     )
+
+
+def test_a_relative_out_from_a_removed_current_directory_is_refused(monkeypatch, tmp_path, capsys):
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    tasks_file = tmp_path / "tasks.yaml"
+    tasks_file.write_text(
+        json.dumps(
+            {
+                "tasks": [
+                    {
+                        "id": "t01",
+                        "class": "lookup",
+                        "prompt": "question t01",
+                        "accept": {"all_of": ["42"]},
+                    }
+                ]
+            }
+        )
+    )
+    (tmp_path / "li").touch(mode=0o755)
+    monkeypatch.setattr(runner, "TREE", tmp_path)
+    monkeypatch.setattr(runner, "LI", tmp_path / "li")
+    monkeypatch.setattr(runner.subprocess, "run", _Legs())
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
+    monkeypatch.setattr(sys, "argv", ["run_pilot.py", "--tasks", str(tasks_file), "--out", "run"])
+    os.chdir(gone)
+    gone.rmdir()
+    try:
+        rc = runner.main()
+    finally:
+        os.chdir(tmp_path)
+
+    assert rc == 2
+    assert f"--out: run cannot be made absolute: {os.strerror(errno.ENOENT)}" in (
+        capsys.readouterr().err
+    )
+    assert not (tmp_path / "run").exists()
+
+
+def test_a_relative_out_hands_every_leg_an_absolute_prompt_path_in_the_run(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    legs = _Legs()
+    rc, out = _run_main(monkeypatch, tmp_path, legs, ["t01"], "--out", "run")
+
+    assert rc == 0
+    assert len(legs.legs) == 2
+    prompts = [Path(argv[argv.index("--prompt-file") + 1]) for argv in legs.legs]
+    assert all(prompt.is_absolute() for prompt in prompts)
+    assert all(prompt.parent == out for prompt in prompts)
+    assert {prompt.name for prompt in prompts} == {
+        "t01-react.prompt.txt",
+        "t01-lndl.prompt.txt",
+    }
+
+
+def _path_max(path: Path) -> int:
+    try:
+        limit = os.pathconf(path, "PC_PATH_MAX")
+    except (OSError, ValueError):
+        return 1024
+    return limit if limit > 0 else 1024
+
+
+def _deep_directory(root: Path, target_length: int) -> Path:
+    base = root
+    while len(str(base)) + 41 <= target_length:
+        base = base / ("d" * 40)
+        base.mkdir()
+    remaining = target_length - len(str(base))
+    if remaining > 1:
+        base = base / ("d" * (remaining - 1))
+        base.mkdir()
+    return base
+
+
+@pytest.mark.parametrize(
+    ("tid", "refused"), [("t" * 100, True), ("t01", False)], ids=["long-id", "short-id"]
+)
+def test_an_out_whose_leg_file_paths_would_be_too_long_is_refused(
+    monkeypatch, tmp_path, capsys, tid, refused
+):
+    limit = _path_max(tmp_path)
+    base = _deep_directory(tmp_path, limit - 70)
+    out = base / "run"
+    legs = _Legs()
+    rc, _ = _run_main(monkeypatch, tmp_path, legs, [tid], "--out", str(out))
+
+    if not refused:
+        assert rc == 0
+        assert len(legs.legs) == 2
+        assert (out / "header.json").is_file()
+        return
+    assert rc == 2
+    assert legs.legs == []
+    assert not out.exists()
+    err = capsys.readouterr().err
+    assert f"--out: {out} is too long: a leg's file path would be" in err
+    assert f"over this file system's {limit}-byte limit" in err
 
 
 def test_an_out_under_a_link_to_a_directory_runs_there(monkeypatch, tmp_path):
@@ -798,10 +892,12 @@ def test_an_out_whose_name_the_file_system_refuses_leaves_no_directory_behind(
     assert rc == 2
     assert legs.legs == []
     assert not os.path.lexists(out)
-    assert f"--out: {out} cannot be created:" in capsys.readouterr().err
+    assert f"--out: {out} cannot be created: {os.strerror(errno.ENAMETOOLONG)}" in (
+        capsys.readouterr().err
+    )
 
 
-def test_an_out_that_cannot_be_created_is_refused_before_anything_runs(
+def test_an_out_through_a_directory_that_cannot_be_searched_is_refused_by_mkdir(
     monkeypatch, tmp_path, capsys
 ):
     closed = tmp_path / "closed"
@@ -818,7 +914,9 @@ def test_an_out_that_cannot_be_created_is_refused_before_anything_runs(
     assert rc == 2
     assert legs.legs == []
     assert not (closed / "run").exists()
-    assert f"--out: {closed / 'run'} cannot be created:" in capsys.readouterr().err
+    assert f"--out: {closed / 'run'} cannot be created: {os.strerror(errno.EACCES)}" in (
+        capsys.readouterr().err
+    )
 
 
 def test_an_li_that_cannot_start_leaves_no_run_directory(monkeypatch, tmp_path):
