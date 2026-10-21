@@ -2190,8 +2190,18 @@ async def _execute_dag(
                     # another engine it would not be held as the worker that asked is. A
                     # dependent one is cloned from that worker's branch and runs on its engine.
                     orc_model = getattr(env.orc_branch, "chat_model", None)
-                    asked_on = emitter_model.endpoint.config.provider
-                    runs_on = orc_model.endpoint.config.provider if orc_model is not None else None
+                    from lionagi.service.connections.registry import EndpointRegistry
+
+                    # Compared as the providers the spellings resolve to: "claude" and
+                    # "claude_code" are one engine.
+                    asked_on = EndpointRegistry.canonical_provider(
+                        emitter_model.endpoint.config.provider
+                    )
+                    runs_on = (
+                        EndpointRegistry.canonical_provider(orc_model.endpoint.config.provider)
+                        if orc_model is not None
+                        else None
+                    )
                     if getattr(req, "independent", False) and runs_on != asked_on:
                         raise CLIInputRefusedError(
                             f"spawn refused: an independent agent naming no assignee runs on "

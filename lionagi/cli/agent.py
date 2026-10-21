@@ -1369,7 +1369,9 @@ async def _run_agent(
             cfg.update(PROVIDER_FAST_KWARGS.get(provider, {}))
         # The stored row never carries a connector grant; its containment value also belongs
         # to the previous role, so both settings come from the current role.
-        if provider == "codex":
+        from lionagi.service.connections.registry import EndpointRegistry
+
+        if EndpointRegistry.canonical_provider(provider) == "codex":
             cfg.pop("contain_account_integrations", None)
             _add_codex_account_integration_kwargs(
                 cfg, account_connectors, contain_account_integrations

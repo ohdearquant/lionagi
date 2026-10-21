@@ -700,6 +700,7 @@ async def _spawned_branch_kwargs(
     emitter_provider: str | None = None,
     independent: bool = True,
     expected: list | None = None,
+    refuses: bool = False,
 ) -> dict:
     """Run a reactively spawned branch through the setup `_execute_dag` hands the DAG
     runner, and return the request kwargs it leaves on the branch. The spawn is a clone
@@ -710,7 +711,8 @@ async def _spawned_branch_kwargs(
     orchestrator's branch, as the executor clones it. *emitter_provider* puts that worker
     on another engine than the orchestrator's. With *independent* false the request is a
     dependent one, cloned from that worker's branch. *expected* collects the spawn ids
-    the run is told to expect a worker for."""
+    the run is told to expect a worker for. With *refuses* the node builder must refuse
+    the request, and the refusal's text comes back as ``{"refusal": ...}``."""
     import lionagi.engines as engines_mod
     from lionagi import Branch, iModel
     from lionagi.casts.emission import SpawnRequest
@@ -797,6 +799,12 @@ async def _spawned_branch_kwargs(
             operation_branches={emitter.id: emitter_branch}
         )
         request = SpawnRequest(instruction="check the result", independent=independent)
+        if refuses:
+            from lionagi._errors import CLIInputRefusedError
+
+            with pytest.raises(CLIInputRefusedError) as refused:
+                captured["node_builder"](request, emitter)
+            return {"refusal": str(refused.value)}
         operation = captured["node_builder"](request, emitter)
         assert operation.branch_id is None
         source = orchestrator if independent else emitter_branch
@@ -902,10 +910,8 @@ async def test_an_independent_spawn_a_light_worker_asks_for_on_another_engine_is
     """Under a Claude Code orchestrator, a light codex worker's independent request naming
     no assignee would run as a Claude Code agent, where light removes only the file-writing
     tools and Bash can still write anywhere. It is refused before any node exists."""
-    from lionagi._errors import CLIInputRefusedError
-
     expected: list = []
-    with pytest.raises(CLIInputRefusedError) as refused:
+    message = (
         await _spawned_branch_kwargs(
             tmp_path,
             monkeypatch,
@@ -914,8 +920,9 @@ async def test_an_independent_spawn_a_light_worker_asks_for_on_another_engine_is
             emitted_by="light",
             emitter_provider="codex",
             expected=expected,
+            refuses=True,
         )
-    message = str(refused.value)
+    )["refusal"]
     assert "orchestrator's engine (claude_code)" in message
     assert "runs on codex" in message
     # Refused before the node is built, so the run expects no worker for it.
@@ -928,17 +935,43 @@ async def test_an_independent_spawn_a_light_worker_asks_for_under_an_api_orchest
 ):
     """Under an API orchestrator the request would run as an API call, which the light
     class does not confine at all, so it is refused as under another CLI engine."""
-    from lionagi._errors import CLIInputRefusedError
+    refused = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="openai",
+        emitted_by="light",
+        emitter_provider="codex",
+        refuses=True,
+    )
+    assert "orchestrator's engine (openai)" in refused["refusal"]
 
-    with pytest.raises(CLIInputRefusedError, match=r"orchestrator's engine \(openai\)"):
-        await _spawned_branch_kwargs(
-            tmp_path,
-            monkeypatch,
-            DEFAULT_WORKLOAD,
-            provider="openai",
-            emitted_by="light",
-            emitter_provider="codex",
-        )
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider", "emitter_provider"),
+    [
+        ("claude_code", "claude"),
+        ("claude_code", "claude-code"),
+        ("claude", "claude_code"),
+        ("codex", "openai-codex"),
+    ],
+)
+async def test_an_independent_spawn_a_light_worker_asks_for_on_its_own_engine_is_not_refused(
+    tmp_path, monkeypatch, provider, emitter_provider
+):
+    """Two spellings of one provider are one engine, so a light worker's independent
+    request under an orchestrator on its own engine, spelled differently, runs light."""
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider=provider,
+        emitted_by="light",
+        emitter_provider=emitter_provider,
+    )
+
+    assert kwargs["workload"] == "light"
 
 
 @pytest.mark.asyncio

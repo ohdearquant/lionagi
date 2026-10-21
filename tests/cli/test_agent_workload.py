@@ -16,6 +16,7 @@ from unittest.mock import patch
 import pytest
 
 from lionagi.cli._providers import (
+    _is_light_codex,
     _parse_profile,
     build_chat_model,
     build_imodel_from_spec,
@@ -60,12 +61,44 @@ def _kwargs(model) -> dict[str, Any]:
     return dict(model.endpoint.config.kwargs)
 
 
-@pytest.mark.parametrize("provider", ["codex", "claude_code", "gemini-cli", "pi"])
+@pytest.mark.parametrize(
+    "provider",
+    [
+        "codex",
+        "openai-codex",
+        "claude_code",
+        "claude-code",
+        "claude",
+        "gemini_code",
+        "gemini-cli",
+        "pi",
+        "pi-code",
+        "pi_code",
+    ],
+)
 def test_a_light_cli_leg_hands_its_workload_to_the_provider(provider):
     model = build_chat_model(provider, "m", False, False, None, workload="light")
     assert _kwargs(model)["workload"] == "light"
     spec_model = build_imodel_from_spec(f"{provider}/m", workload="light")
     assert _kwargs(spec_model)["workload"] == "light"
+
+
+@pytest.mark.parametrize("provider", ["codex", "openai-codex", "Codex"])
+def test_every_codex_spelling_keeps_the_light_class_and_the_containment(provider):
+    asked = {
+        "workload": "light",
+        "contain_account_integrations": True,
+        "account_connectors": ("github",),
+    }
+    for model in (
+        build_imodel_from_spec(f"{provider}/gpt-5.5", **asked),
+        build_chat_model(provider, "gpt-5.5", False, False, None, **asked),
+    ):
+        kwargs = _kwargs(model)
+        assert kwargs["workload"] == "light"
+        assert kwargs["contain_account_integrations"] is True
+        assert kwargs["account_connectors"] == ["github"]
+        assert _is_light_codex(model)
 
 
 def test_a_heavy_leg_adds_nothing_to_the_request():
@@ -157,12 +190,16 @@ async def test_a_new_run_takes_the_flag_else_the_role(monkeypatch, tmp_path, rol
     assert captured[-1].get("workload") == expected
 
 
-def _stored_light_codex_branch(tmp_path: Path) -> tuple[str, Path]:
+def _stored_light_codex_branch(
+    tmp_path: Path, provider: str = "codex", contained: bool = False
+) -> tuple[str, Path]:
     from lionagi import Branch, iModel
 
-    branch = Branch(chat_model=iModel(provider="codex", model="gpt-5.5"))
+    branch = Branch(chat_model=iModel(provider=provider, model="gpt-5.5"))
     data = branch.to_dict()
     data["chat_model"]["endpoint"]["config"]["kwargs"]["workload"] = "light"
+    if contained:
+        data["chat_model"]["endpoint"]["config"]["kwargs"]["contain_account_integrations"] = True
     path = tmp_path / f"{branch.id}.json"
     path.write_text(json.dumps(data))
     return str(branch.id), path
@@ -203,6 +240,36 @@ async def test_a_resume_without_a_role_runs_heavy_unless_the_flag_says_light(
     await _run_agent(None, "continue", resume=branch_id, workload=flag)
 
     assert captured[-1].get("workload") == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["codex", "openai-codex"])
+async def test_a_resume_drops_the_stored_containment_whatever_the_codex_spelling(
+    monkeypatch, tmp_path, provider
+):
+    import lionagi.cli.agent as agent_mod
+    from lionagi import Branch
+    from lionagi.cli.agent import _run_agent
+
+    branch_id, path = _stored_light_codex_branch(tmp_path, provider, contained=True)
+    monkeypatch.setattr(agent_mod, "find_branch", lambda bid: ("run-x", path))
+    _wire_agent_stubs(monkeypatch, tmp_path)
+    captured: list[tuple[str, dict]] = []
+
+    async def fake_operate(self, instruction=None, **kw):
+        config = self.chat_model.endpoint.config
+        captured.append((config.provider, dict(config.kwargs)))
+        return "ok"
+
+    monkeypatch.setattr(Branch, "operate", fake_operate)
+
+    # No role and no model: a role's model would name the provider and hide the stored spelling.
+    await _run_agent(None, "continue", resume=branch_id)
+
+    resumed_on, kwargs = captured[-1]
+    assert resumed_on == provider
+    assert "contain_account_integrations" not in kwargs
+    assert kwargs.get("workload") is None
 
 
 @pytest.mark.parametrize(("bare", "expected"), [(False, "light"), (True, "heavy")])

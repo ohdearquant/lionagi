@@ -94,17 +94,28 @@ def _add_codex_account_integration_kwargs(
 
 
 def _add_workload_kwarg(extra: dict, provider: str, workload: str) -> None:
+    from lionagi.service.connections.registry import EndpointRegistry
+
     # Only a CLI provider spawns an agent process to count or sandbox; left out at the
-    # default, so a heavy leg's request is the one it was before workloads existed.
-    if workload != DEFAULT_WORKLOAD and provider in CLI_PROVIDERS:
+    # default, so a heavy leg's request is the one it was before workloads existed. A
+    # provider alias ("openai-codex", "pi-code") counts as the provider it resolves to.
+    if (
+        workload != DEFAULT_WORKLOAD
+        and EndpointRegistry.canonical_provider(provider) in CLI_PROVIDERS
+    ):
         extra["workload"] = workload
 
 
 def _is_light_codex(imodel: iModel) -> bool:
     # A light codex worker writes only its working directory and the artifact directory
     # the run gives it, and codex refuses it any other writable root.
+    from lionagi.service.connections.registry import EndpointRegistry
+
     config = imodel.endpoint.config
-    return config.provider == "codex" and config.kwargs.get("workload") == "light"
+    return (
+        EndpointRegistry.canonical_provider(config.provider) == "codex"
+        and config.kwargs.get("workload") == "light"
+    )
 
 
 def build_imodel_from_spec(
@@ -123,6 +134,8 @@ def build_imodel_from_spec(
     """Parse spec, build iModel. Effort in spec unless overridden."""
     ms = parse_model_spec(spec)
     effort = normalize_effort(effort_override) if effort_override is not None else ms.effort
+
+    from lionagi.service.connections.registry import EndpointRegistry
 
     extra: dict = {}
 
@@ -150,7 +163,7 @@ def build_imodel_from_spec(
         extra.update(PROVIDER_YOLO_KWARGS.get(provider_raw, {}))
     if fast:
         extra.update(PROVIDER_FAST_KWARGS.get(provider_raw, {}))
-    if provider_raw == "codex":
+    if EndpointRegistry.canonical_provider(provider_raw) == "codex":
         _add_codex_account_integration_kwargs(
             extra, account_connectors, contain_account_integrations
         )
@@ -246,7 +259,9 @@ def build_chat_model(
         extra.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
     if fast:
         extra.update(PROVIDER_FAST_KWARGS.get(provider, {}))
-    if provider == "codex":
+    from lionagi.service.connections.registry import EndpointRegistry
+
+    if EndpointRegistry.canonical_provider(provider) == "codex":
         _add_codex_account_integration_kwargs(
             extra, account_connectors, contain_account_integrations
         )

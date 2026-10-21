@@ -165,7 +165,10 @@ A slot is the file `$LIONAGI_HOME/leases/subagents/<pool>/<index>.lock`, `index`
   child, which leads its own session, keeps running. A free lock whose record names a child that
   is still the same process (pid and start time, through `lionagi.ln._proc`) counts as held. An
   unreadable process table counts as running, so a slot is never handed out on a probe that
-  could not look.
+  could not look. A record with no start time for its child (the spawn could not read one, or
+  the child does not lead its own process group) does not count: its pid alone could name a
+  process that took the pid over, so once the holder exits that slot reads free even while the
+  child still runs, and a pool can then hold one agent past its cap.
 - **Counting and taking happen under the pool's admission lock.** Each pool has an admission lock,
   `<pool>/.admission`. An admission takes the admission locks of all its pools before it counts
   any, counts every held slot at every index on disk, and takes a slot in each pool only once all
@@ -274,7 +277,8 @@ The class is chosen as follows:
   worker's class, so asking for an unnamed agent does not lift a `light` worker's confinement.
   That clone keeps the orchestrator's other settings, so one a `light` agent cannot have refuses
   the spawn before its process starts. When the orchestrator runs on another engine than the
-  `light` worker that asked, an API model included, the independent request is refused with
+  `light` worker that asked (two spellings of one provider, such as `claude` and `claude_code`,
+  are one engine), an API model included, the independent request is refused with
   `CLIInputRefusedError` before any node exists, since `light` confines an agent differently on
   each engine and not at all on an API model; the worker names an assignee, or asks for a
   dependent agent, which runs on its own engine. A request no worker emitted (the orchestrator's

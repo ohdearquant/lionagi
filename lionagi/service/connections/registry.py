@@ -544,6 +544,15 @@ class EndpointRegistry:
             cls._loaded = True
 
     @classmethod
+    def canonical_provider(cls, provider: str) -> str:
+        """The provider a name or provider-alias resolves to when matched
+        ("openai-codex" -> "codex", "claude" -> "claude_code"); a name no entry
+        claims comes back folded the same way."""
+        cls._ensure_loaded()
+        key = provider.strip().lower()
+        return cls._alias_owners.get(key, key)
+
+    @classmethod
     def list_providers(cls) -> list[dict[str, Any]]:
         cls._ensure_loaded()
         return [
