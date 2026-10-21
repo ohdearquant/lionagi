@@ -342,46 +342,36 @@ def main() -> int:
     if len({loop.lower() for loop in loops}) < len(loops):
         # A loop named twice would run each task's leg twice into the same files.
         problems.append(f"--loops: {args.loops!r} names a loop twice, ignoring letter case")
-    # resolve() reads a `..` as text, where the OS goes up only from a directory it can look up,
-    # so the two agree on where --out lies only when the OS resolves the path up to each `..`.
-    parts = Path(args.out).parts
-    up = None
-    for i, part in enumerate(parts):
-        if part != "..":
-            continue
-        try:
-            os.stat(Path(*parts[: i + 1]))
-        except FileNotFoundError:
-            up = f"goes up from {Path(*parts[:i])}, which does not exist"
-        except OSError as exc:
-            up = f"goes up from {Path(*parts[:i])}, which cannot be looked up: {exc.strerror}"
-        if up is not None:
-            break
     if not args.out:
         problems.append("--out is empty")
+    elif ".." in Path(args.out).parts:
+        # Python reads a `..` as text where the OS goes up from whatever it has looked up, and the
+        # two can disagree on where that lies; a path without one leaves nothing to agree on.
+        problems.append(f"--out: {args.out} has a `..` part; name the directory without one")
     elif os.path.lexists(Path(args.out)):
         # Through Path, which drops a trailing slash: with one, lstat follows a dangling link.
         problems.append(f"--out: {args.out} already exists")
-    elif up is not None:
-        problems.append(f"--out: {args.out} {up}")
     else:
+        # Absolute: each child runs with cwd set to the read tree, so a relative path would
+        # resolve there and the prompt file would not be found. Only the run directory itself is
+        # made, so the directory it goes in must already exist as the OS looks it up: a link
+        # loop, a dangling link or a file on the way is refused here, not once the run has begun.
+        out = Path(args.out).absolute()
         try:
-            # Absolute: each child runs with cwd set to the read tree, so a relative path would
-            # resolve there and the prompt file would not be found.
-            out = Path(args.out).resolve()
-            # From Python 3.13 resolve() returns through a link loop instead of raising, so the
-            # deepest part of the path that exists is resolved strictly: a loop, a dangling link
-            # or a file on the way is refused here, not by mkdir once the run has begun.
-            parent = Path(args.out).absolute().parent
-            while not os.path.lexists(parent) and parent != parent.parent:
-                parent = parent.parent
-            # isdir() asks the OS, which before Python 3.13 can disagree with realpath(): a link
-            # whose target goes up out of a file (`F/../D`) resolves there as text.
-            if not (os.path.isdir(os.path.realpath(parent, strict=True)) and os.path.isdir(parent)):
-                problems.append(f"--out: {args.out} is under {parent}, which is not a directory")
-        # resolve() raises RuntimeError on a link loop before Python 3.13; realpath raises OSError.
-        except (OSError, RuntimeError) as exc:
-            problems.append(f"--out: {args.out} does not resolve: {exc}")
+            os.stat(out.parent)
+        except FileNotFoundError:
+            what = "a link that does not resolve" if os.path.islink(out.parent) else "missing"
+            problems.append(f"--out: {args.out} is under {out.parent}, which is {what}")
+        except OSError as exc:
+            problems.append(
+                f"--out: {args.out} is under {out.parent}, which cannot be looked up: "
+                f"{exc.strerror}"
+            )
+        else:
+            if not os.path.isdir(out.parent):
+                problems.append(
+                    f"--out: {args.out} is under {out.parent}, which is not a directory"
+                )
     if args.only:
         wanted = args.only.split(",")
         known = (
@@ -435,22 +425,11 @@ def main() -> int:
     }
     # Made once everything above has been checked and `git` and `li` have answered for the
     # header, so a refused run, or an `li` that cannot start, leaves no run directory behind.
-    # The ancestors mkdir would create, deepest first, so that a failure part way removes them.
-    missing = []
-    for ancestor in out.parents:
-        if os.path.lexists(ancestor):
-            break
-        missing.append(ancestor)
     try:
-        out.mkdir(parents=True, exist_ok=False)
+        out.mkdir(exist_ok=False)
     except OSError as exc:
-        # An ancestor without search permission or on a read-only file system shows only here, and
-        # so does a name the file system refuses, once the ancestors before it have been made.
-        for ancestor in missing:
-            try:
-                ancestor.rmdir()
-            except OSError:
-                pass
+        # A directory without write permission, a read-only file system and a name the file system
+        # refuses show only here, as does a change to the path since it was checked.
         print(f"--out: {args.out} cannot be created: {exc}", file=sys.stderr)
         print("nothing run", file=sys.stderr)
         return 2

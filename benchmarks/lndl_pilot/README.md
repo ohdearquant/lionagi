@@ -71,8 +71,9 @@ records for its task (written against `6fa69b19`), and ADR-0132 D4 takes the rea
 decision. Read that way, r2 fails the rule, r3 meets it with no margin (23 accepted tasks on each
 side), and r4, at `d8838f28`, fails it (`lndl` 23 against ReAct 24). By the checks alone the
 outcomes are the same, r3 by one task. A fourth run, `r5`, ran before the reading rule was
-adopted (ADR-0132 D4); it is recorded in the change that decides D4 on it, beside the times each
-form of the rule took effect, and no run recorded here decides D4.
+adopted (ADR-0132 D4). It is not recorded here and decides nothing until the change that decides
+D4 on it records it, beside the times each form of the rule took effect; no run recorded here
+decides D4.
 
 The reading is one reader's judgment, made by the author of this change knowing which loop wrote
 each answer; no blind second reading was done. It judges what each answer says to its question and did not check every side claim;
@@ -159,10 +160,10 @@ and r4, and `spend_lines` is at least 1 in all 144 rows. Each leg's spend lines 
   and a non-empty `prompt`, both text that encodes as UTF-8; checks that are lists of non-empty
   strings with a non-empty `all_of`, each encoding as UTF-8; each regular expression compiling, not blank, and not matching an empty answer), checked
   `--concurrency`, `--loops` (each 1 to 100 letters, digits, `_` and `-`, the name of a profile beside the runner, letter case included,
-  and none named twice), `--only`, that no two legs would write the same files, and that `--out` is not empty, resolves, goes up (`..`) only out of a directory the OS can look up, lies under a directory, and that nothing, a dangling link included, is at it yet,
+  and none named twice), `--only`, that no two legs would write the same files, and that `--out` is not empty, has no `..` part, goes in a directory that exists as the OS looks it up, and that nothing, a dangling link included, is at it yet,
   and started `git`
   and `li --version` for the header, so none of those checks failing, and neither program failing
-  to start, leaves a run directory behind; a failed check, or a run directory that cannot be created, exits 2, and the second removes the directories made on the way to it. Of the two files' top-level
+  to start, leaves a run directory behind; a failed check, or a run directory that cannot be created, exits 2, and only the run directory itself is ever made. Of the two files' top-level
   statements,
   `summarize()`, `run_one()`, `run_pair()` and `main()` are the ones whose `ast.dump` differs, and
   `run_pilot.py` adds two imports (`threading` and `collections.abc.Callable`), the `TASK_ID`
