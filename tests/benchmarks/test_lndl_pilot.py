@@ -136,6 +136,104 @@ def test_the_reading_and_the_checks_differ_in_the_ten_answers_the_adr_names():
     ]
 
 
+@pytest.mark.parametrize("run", ["r2", "r3", "r4"])
+def test_each_answer_is_the_text_its_row_measured_and_checked(run):
+    """answers.jsonl holds each leg's answer as the check read it: its length is the row's
+    `answer_chars`, the check re-run on it gives the row's `accepted`, and the last spend line
+    gives the row's requests, tool calls and wall time."""
+    loaded = runner.yaml.load((PILOT / "tasks.yaml").read_bytes(), Loader=runner._TaskLoader)
+    accept = {task["id"]: task["accept"] for task in loaded["tasks"]}
+    results = {(r["id"], r["loop"]): r for r in _jsonl(PILOT / "runs" / run / "results.jsonl")}
+    answers = {
+        (a["id"], a["loop"]): a["answer"] for a in _jsonl(PILOT / "runs" / run / "answers.jsonl")
+    }
+    spend = {(s["id"], s["loop"]): s["spend"] for s in _jsonl(PILOT / "runs" / run / "spend.jsonl")}
+    assert sorted(answers) == sorted(spend) == sorted(results)
+    for key, row in results.items():
+        assert len(answers[key]) == row["answer_chars"]
+        assert runner.check_answer(answers[key], accept[key[0]]) is row["accepted"]
+        lines = re.findall(
+            r"\[api\] spend: (\d+) request\(s\), (\d+) tool call\(s\), ([0-9.]+)s",
+            "\n".join(spend[key]),
+        )
+        assert len(lines) == row["spend_lines"]
+        requests, tool_calls, wall = lines[-1]
+        assert (int(requests), int(tool_calls), float(wall)) == (
+            row["requests"],
+            row["tool_calls"],
+            row["wall_seconds"],
+        )
+
+
+def _block(syntax: str) -> bool:
+    return "F" in syntax or "L" in syntax
+
+
+def test_the_adr_counts_of_rounds_requests_and_exits_are_the_runs_tallies():
+    """The Result's counts of `lndl` rounds, of the runs that opened with an `<invoke>` tag and
+    of the requests that went to rounds with no block are recomputed from rounds.jsonl, and the
+    exits and request counts beside them from results.jsonl."""
+    flat = " ".join(ADR.read_text().split())
+    runs = ("r2", "r3", "r4")
+    rounds = {
+        run: {r["id"]: r["rounds"] for r in _jsonl(PILOT / "runs" / run / "rounds.jsonl")}
+        for run in runs
+    }
+    results = {
+        run: {(r["id"], r["loop"]): r for r in _jsonl(PILOT / "runs" / run / "results.jsonl")}
+        for run in runs
+    }
+    for run in runs:
+        assert sorted(rounds[run]) == sorted(i for i, loop in results[run] if loop == "lndl")
+        for task, syntax in rounds[run].items():
+            assert len(syntax) == results[run][(task, "lndl")]["requests"]
+
+    opened = {run: [t for t, syntax in rounds[run].items() if syntax[0] == "I"] for run in runs}
+    assert len(opened["r2"]) == len(opened["r3"])
+    assert (
+        f"in both runs {len(opened['r2'])} of the 24 `lndl` runs opened with a call written as an "
+        "`<invoke>` tag outside any block"
+    ) in flat
+    r2 = rounds["r2"]
+    by_fifth = [t for t in opened["r2"] if any(map(_block, r2[t][:5]))]
+    late = sorted(t for t in opened["r2"] if not any(map(_block, r2[t][:9])))
+    named = ", ".join(f"`{t}`" for t in late)
+    assert (
+        f"In r2, {len(by_fifth)} of those wrote a block by their fifth round, and {len(late)} "
+        f"({named}) wrote none before their tenth"
+    ) in flat
+    first = {t: next(i for i, s in enumerate(r2[t], 1) if _block(s)) for t in late}
+    assert first == {"t03": 10, "t04": 11, "t17": 11, "t18": 11, "t19": 11}
+    assert {len(r2[t]) for t in late} == {11}
+    assert results["r2"][("t03", "lndl")]["tool_calls"] == 1
+    assert (
+        "`t03` wrote one in its tenth round, which ran its one tool call, and the other four first "
+        "wrote one in the eleventh and last round"
+    ) in flat
+    assert all(_block(rounds["r3"][t][1]) for t in opened["r3"])
+    assert f"In r3 each of the {len(opened['r3'])} wrote a block in its next round" in flat
+    for run, said in (("r2", "{} of the {} `lndl` requests"), ("r3", "and {} of the {} requests")):
+        no_block = sum(not _block(s) for syntax in rounds[run].values() for s in syntax)
+        total = sum(len(syntax) for syntax in rounds[run].values())
+        assert said.format(no_block, total) + " went to rounds with no block" in flat
+    t04 = results["r3"][("t04", "react")]
+    assert (t04["requests"], t04["tool_calls"]) == (3, 0)
+    assert "it made no tool call in its 3 requests" in flat
+
+    rows = [row for run in runs for row in results[run].values()]
+    assert len(rows) == 144
+    assert {row["rc"] for row in rows} == {0}
+    assert "All 144 legs exited 0" in flat
+    spent_all = sorted(t for t, syntax in r2.items() if len(syntax) == 11)
+    assert spent_all == late
+    assert all("O" in r2[t][-1] for t in spent_all)
+    assert (
+        "The five r2 `lndl` legs that spent all 11 requests wrote an `OUT{}` in their last round"
+    ) in flat
+    assert max(len(syntax) for run in ("r3", "r4") for syntax in rounds[run].values()) <= 5
+    assert "No `lndl` leg in r3 or r4 spent more than 5" in flat
+
+
 def test_the_documents_record_three_runs_and_name_the_fourth_as_unrecorded():
     for document in (ADR, PILOT / "README.md"):
         text = document.read_text()
@@ -276,8 +374,8 @@ def test_a_leg_whose_check_raises_after_it_ran_is_its_own_row(monkeypatch, tmp_p
         # These two raise OverflowError and RecursionError rather than re.error.
         ({"all_of": ["re:4{4294967296}"]}, "`re:4{4294967296}` does not compile"),
         ({"all_of": ["re:" + "(" * 3000 + "4" + ")" * 3000]}, "does not compile"),
-        # A pattern that matches an empty answer lets all_of accept one and makes none_of
-        # refuse every answer; a blank one is a stray space.
+        # A pattern that matches an empty answer lets all_of accept one, and in none_of it
+        # can refuse every answer (`.*` matches each); a blank one is a stray space.
         ({"all_of": ["re:"]}, "`accept.all_of` has a `re:` pattern that is blank or matches"),
         ({"all_of": ["re:(?:)"]}, "`accept.all_of` has a `re:` pattern that is blank or matches"),
         ({"all_of": ["re:x*"]}, "`accept.all_of` has a `re:` pattern that is blank or matches"),

@@ -260,8 +260,9 @@ def task_problems(tasks: object) -> list[str]:
                     problems.append(f"{name}: `{item}` does not compile: {exc}")
                     continue
                 if not item[3:].strip() or pattern.search("") is not None:
-                    # A pattern that matches an empty answer would let all_of accept one and
-                    # make none_of refuse every answer; a blank one is a stray space.
+                    # A pattern that matches an empty answer would let all_of accept one, and
+                    # in none_of it can refuse every answer (`.*` matches each); a blank one is
+                    # a stray space.
                     problems.append(
                         f"{name}: `accept.{key}` has a `re:` pattern that is blank or matches"
                         " an empty answer"
