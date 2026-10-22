@@ -812,6 +812,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
   // result for an earlier choice is dropped. A failed load keeps it: the error view
   // disables the composer, and Retry or a pick from the list replaces it.
   const selectedConversationIdRef = useRef<string | null>(null);
+  // How many times the operator has chosen a conversation (a row, a new or forked
+  // conversation, a retry). The list's own first selection is not a choice.
+  const operatorChoicesRef = useRef(0);
   // The filter of the newest list read, set when that read starts. A read for another
   // filter is dropped when it settles, and merged rows must match this one.
   const listFilterRef = useRef<"active" | "archived">("active");
@@ -1001,12 +1004,21 @@ export default function OperatorPanel({ open, onClose }: Props) {
   );
 
   // A failed send kept for a conversation is reported once that conversation is
-  // shown and ready, no send is in flight and no other error is showing. A send in
-  // flight still owns the composer and its outcome may clear it, and another alert
-  // would be replaced, so either one defers the report rather than losing it.
+  // shown and ready, no send, Stop or decision is in flight and no other error is
+  // showing. A send in flight still owns the composer and its outcome may clear it,
+  // and a Stop or decision that fails replaces the alert, as another error showing
+  // would be replaced, so each defers the report rather than losing it.
   const shownConversationId = state.conversation?.id;
   useEffect(() => {
-    if (!shownConversationId || state.loadState !== "ready" || sending || actionError) return;
+    if (
+      !shownConversationId ||
+      state.loadState !== "ready" ||
+      sending ||
+      stopping ||
+      deciding.size > 0 ||
+      actionError
+    )
+      return;
     const failed = failedSendsRef.current.get(shownConversationId);
     if (!failed) return;
     failedSendsRef.current.delete(shownConversationId);
@@ -1015,7 +1027,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
     setInstruction((current) =>
       current.trim() ? `${failed.instruction}\n${current}` : failed.instruction,
     );
-  }, [actionError, sending, shownConversationId, state.loadState]);
+  }, [actionError, deciding, sending, shownConversationId, state.loadState, stopping]);
 
   useEffect(() => {
     let active = true;
@@ -1330,10 +1342,10 @@ export default function OperatorPanel({ open, onClose }: Props) {
     // it is selected, else when it is selected again. A draft whose conversation
     // could not be created has none, so its failure shows where its text still is.
     let sentTo = state.conversation?.id ?? null;
-    // A draft's new conversation takes the panel only while the operator has not
-    // chosen another conversation since this send started; otherwise it is listed
-    // and the turn submitted there, and the chosen conversation stays selected.
-    const selectedAtStart = selectedConversationIdRef.current;
+    // A draft's new conversation takes the panel only while the operator has made no
+    // choice of conversation since this send started; otherwise it is listed and the
+    // turn submitted there, and the chosen conversation stays selected.
+    const choicesAtStart = operatorChoicesRef.current;
     try {
       let conversation = state.conversation;
       if (!conversation) {
@@ -1344,7 +1356,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
           conversation as OperatorConversation,
           ...current.filter((item) => item.id !== conversation?.id),
         ]);
-        if (selectedConversationIdRef.current === selectedAtStart) {
+        if (operatorChoicesRef.current === choicesAtStart) {
           selectedConversationIdRef.current = conversation.id;
           window.localStorage.setItem(STORAGE_KEY, conversation.id);
           dispatch({ type: "LOAD_SUCCESS", conversation, frames: [] });
@@ -1368,10 +1380,14 @@ export default function OperatorPanel({ open, onClose }: Props) {
         ...(effectiveEffort ? { effort: effectiveEffort } : {}),
         ...(clearing ? { clearSelection: true } : {}),
       });
-      dispatch({ type: "TURN_ACCEPTED", requestId: accepted.requestId });
-      setStreamEpoch((current) => current + 1);
+      // The turn runs on its own conversation; the panel shows it only when that
+      // conversation is still the one selected.
+      if (selectedConversationIdRef.current === conversation.id) {
+        dispatch({ type: "TURN_ACCEPTED", requestId: accepted.requestId });
+        setStreamEpoch((current) => current + 1);
+        nearBottomRef.current = true;
+      }
       setInstruction("");
-      nearBottomRef.current = true;
     } catch (error) {
       const message = error instanceof Error ? error.message : t("errors.send");
       if (sentTo !== null && selectedConversationIdRef.current !== sentTo) {
@@ -1467,6 +1483,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
   }, [autoAllow, proposals, decidedProposalIds, deciding, handleProposalDecision]);
 
   const resetConversation = useCallback(() => {
+    operatorChoicesRef.current += 1;
     selectedConversationIdRef.current = null;
     window.localStorage.removeItem(STORAGE_KEY);
     dispatch({ type: "RESET" });
@@ -1481,6 +1498,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         resetConversation();
         return;
       }
+      operatorChoicesRef.current += 1;
       if (conversationId === state.conversation?.id) return;
       dispatch({ type: "RESET" });
       setVisibleCount(200);
@@ -1925,7 +1943,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
                   size="sm"
                   onClick={() => {
                     const id = readStoredConversation();
-                    if (id) void loadConversation(id);
+                    if (!id) return;
+                    operatorChoicesRef.current += 1;
+                    void loadConversation(id);
                   }}
                 >
                   {t("retry")}

@@ -1275,6 +1275,12 @@ describe("OperatorPanel", () => {
       expect(container.querySelector("textarea")?.value).toBe("Inspect this project");
     });
 
+    function buttonNamed(name: string) {
+      return [...container.querySelectorAll("button")].find(
+        (button) => button.textContent === name,
+      );
+    }
+
     async function selectRow(row: { title: string }) {
       await openList();
       const button = [...container.querySelectorAll("ul li button")].find(
@@ -1331,6 +1337,50 @@ describe("OperatorPanel", () => {
 
       expect(api.submitOperatorTurn.mock.calls[submits][0]).toBe(created.id);
       expect(window.localStorage.getItem("studio:operator-conversation")).toBe(other.id);
+      // The accepted turn runs in the new conversation; the chosen one shows no Stop.
+      expect(buttonNamed("Stop")).toBeUndefined();
+      expect(buttonNamed("Send")).toBeDefined();
+    });
+
+    it("lets a draft's conversation take the panel when the list selects a row by itself", async () => {
+      const created = { ...firstRow, id: "created-1", title: "New conversation" };
+      const listing = deferred<OperatorConversation[]>();
+      api.listOperatorConversations.mockReturnValueOnce(listing.promise);
+      const pending = deferred<OperatorConversation>();
+      api.createOperatorConversation.mockReturnValueOnce(pending.promise);
+      api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "request-created" });
+      await mount();
+      await sendInstruction();
+      // The list read settles during the create and selects its first row; the
+      // operator chose nothing.
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames: [] });
+      await act(async () => listing.resolve([firstRow]));
+      await act(async () => pending.resolve(created));
+
+      expect(api.submitOperatorTurn.mock.calls.at(-1)?.[0]).toBe(created.id);
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe(created.id);
+      expect(buttonNamed("Stop")).toBeDefined();
+    });
+
+    it("keeps a conversation the operator chose again while a draft's conversation is created", async () => {
+      const created = { ...firstRow, id: "created-1", title: "New conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow]);
+      const loading = deferred<{ conversation: OperatorConversation; frames: OperatorFrame[] }>();
+      api.getOperatorConversation.mockReturnValueOnce(loading.promise);
+      const pending = deferred<OperatorConversation>();
+      api.createOperatorConversation.mockReturnValueOnce(pending.promise);
+      api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "request-created" });
+      await mount();
+      await sendInstruction();
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames: [] });
+      await selectRow(firstRow);
+
+      await act(async () => pending.resolve(created));
+      await act(async () => loading.resolve({ conversation: firstRow, frames: [] }));
+
+      expect(api.submitOperatorTurn.mock.calls.at(-1)?.[0]).toBe(created.id);
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe(firstRow.id);
+      expect(buttonNamed("Stop")).toBeUndefined();
     });
 
     it("reports a kept failure after a send still in flight settles", async () => {
@@ -1380,6 +1430,119 @@ describe("OperatorPanel", () => {
       expect(container.querySelector('[role="alert"]')?.textContent).toContain("Draft send failed");
       expect(container.querySelector("textarea")?.value).toBe("Inspect this project");
     });
+
+    function proposalFrame(conversationId: string, id: string): OperatorFrame {
+      return {
+        version: 1,
+        conversationId,
+        requestId: `request-${id}`,
+        sequence: 1,
+        type: "proposal",
+        payload: {
+          proposal: {
+            id,
+            command: { operation: "shell", argv: ["git", "status"] },
+            commandHash: "sha256",
+            risk: "execute",
+            summary: "Inspect repository state",
+            idempotencyKey: id,
+            expiresAt: 999,
+          },
+        },
+        createdAt: 1,
+      } as unknown as OperatorFrame;
+    }
+
+    // A send on the first row fails while another conversation is shown, so its
+    // failure is kept. A decision on that other conversation is still in flight when
+    // the first row is chosen again, and it fails while the row loads, so its error
+    // is showing when the row becomes ready.
+    async function keepAFailureBehindADecisionError(reload: {
+      conversation: OperatorConversation;
+      frames: OperatorFrame[];
+    }) {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames: [] });
+      const pending = deferred<{ requestId: string }>();
+      api.submitOperatorTurn.mockReturnValueOnce(pending.promise);
+      await mount();
+      await sendInstruction();
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: other,
+        frames: [proposalFrame(other.id, "proposal-1")],
+      });
+      await selectRow(other);
+      await act(async () => pending.reject(new Error("Send failed on the first row")));
+
+      const decision = deferred<{ proposalId: string; status: string }>();
+      api.decideOperatorProposal.mockReturnValueOnce(decision.promise);
+      await act(async () => buttonNamed("Allow")!.click());
+      const reloading = deferred<{ conversation: OperatorConversation; frames: OperatorFrame[] }>();
+      api.getOperatorConversation.mockReturnValueOnce(reloading.promise);
+      await selectRow(firstRow);
+      await act(async () => decision.reject(new Error("First decision failed")));
+      const draft = container.querySelector("textarea")!.value;
+      await act(async () => reloading.resolve(reload));
+      return { other, draft };
+    }
+
+    async function expectTheKeptFailureOnReturn(other: OperatorConversation) {
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames: [] });
+      await selectRow(firstRow);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "Send failed on the first row",
+      );
+      expect(container.querySelector("textarea")?.value).toBe("Inspect this project");
+    }
+
+    it("leaves a decision error showing when a kept failure's conversation loads", async () => {
+      const { other, draft } = await keepAFailureBehindADecisionError({
+        conversation: firstRow,
+        frames: [],
+      });
+
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "First decision failed",
+      );
+      expect(container.textContent).not.toContain("Send failed on the first row");
+      expect(container.querySelector("textarea")?.value).toBe(draft);
+
+      await expectTheKeptFailureOnReturn(other);
+    });
+
+    it.each(["decision", "stop"])(
+      "keeps a failure kept behind an alert while a %s started over it is in flight",
+      async (action) => {
+        const { other, draft } = await keepAFailureBehindADecisionError(
+          action === "decision"
+            ? { conversation: firstRow, frames: [proposalFrame(firstRow.id, "proposal-2")] }
+            : { conversation: { ...firstRow, activeRequestId: "request-running" }, frames: [] },
+        );
+        const inFlight = deferred<never>();
+        if (action === "decision") {
+          api.decideOperatorProposal.mockReturnValueOnce(inFlight.promise);
+          await act(async () => buttonNamed("Allow")!.click());
+        } else {
+          api.cancelOperatorRequest.mockReturnValueOnce(inFlight.promise);
+          await act(async () => buttonNamed("Stop")!.click());
+        }
+
+        // Starting it cleared the alert; the kept failure waits for its outcome.
+        expect(container.querySelector('[role="alert"]')).toBeNull();
+        expect(container.querySelector("textarea")?.value).toBe(draft);
+
+        await act(async () => inFlight.reject(new Error(`The ${action} failed`)));
+        expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+          `The ${action} failed`,
+        );
+        expect(container.textContent).not.toContain("Send failed on the first row");
+
+        await expectTheKeptFailureOnReturn(other);
+      },
+    );
 
     it("shows a conversation description beneath its title and in the tooltip", async () => {
       const description = "Review scheduler retries and release decisions";
