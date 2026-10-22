@@ -46,6 +46,7 @@ from ._orchestration import (
     EFFORT_MAP,
     OrchestrationEnv,
     _check_orchestrator_clone_mcp_set,
+    _check_orchestrator_clone_profile,
     _hand_mcp_servers,
     _resolve_worker_model_spec,
     attribute_worker_build_failure,
@@ -1026,6 +1027,7 @@ async def _build_dag(
 
     if reactive and max_spawn > 0:
         _check_orchestrator_clone_mcp_set(env)
+        _check_orchestrator_clone_profile(env)
 
     worker_models: list[str] = []
     node_ids: list[str] = []

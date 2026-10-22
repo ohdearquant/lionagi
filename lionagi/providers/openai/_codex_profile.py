@@ -34,6 +34,7 @@ __all__ = (
     "global_codex_reasoning_effort",
     "is_generated_codex_profile",
     "project_codex_profile",
+    "refuse_codex_profile_run_settings",
     "refuse_non_absolute_codex_home",
     "resolve_codex_config_profile",
 )
@@ -188,6 +189,28 @@ def resolve_codex_config_profile(
 
     logger.info("codex profile %r resolves to model %r", model, resolved)
     return resolved, overrides
+
+
+def refuse_codex_profile_run_settings(name: str, overrides: Mapping[str, Any]) -> None:
+    """Refuse a profile setting more than its model, for a request that ignores the user config.
+
+    The request names the profile, so its model settings still apply: every key whose
+    first segment starts with ``model_``, provider routing (``model_providers.*``)
+    included. Any other key (``sandbox_mode``, ``approval_policy``,
+    ``shell_environment_policy``) would set what the run decides for itself.
+    """
+    extra = sorted(
+        key
+        for key in overrides
+        if not key.split(".")[0].strip().strip("\"'").strip().startswith("model_")
+    )
+    if extra:
+        raise ConfigurationError(
+            f"codex config profile {name!r} sets {', '.join(extra)} besides its model "
+            "settings, and this request ignores the user config, so the run sets its own "
+            "sandbox, approvals and environment. Remove those keys from the profile, or "
+            "name a profile that sets only its model and provider."
+        )
 
 
 def refuse_non_absolute_codex_home(env: Mapping[str, str]) -> None:

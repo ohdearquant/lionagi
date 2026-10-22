@@ -98,10 +98,10 @@ def test_outbox_row_defaults_and_attempt_bound_anchors() -> None:
 
 def test_team_round_batches_pending_targets_per_completion() -> None:
     assert "pending_targets = frozenset(state.pending_targets) | frozenset(exchange_pending)" in (
-        _line("lionagi/cli/orchestrate/_orchestration.py", 1455)
+        _line("lionagi/cli/orchestrate/_orchestration.py", 1488)
     )
-    assert "def build_round_operations" in _line("lionagi/cli/orchestrate/_orchestration.py", 1491)
-    assert "def _on_team_op_complete" in _line("lionagi/cli/orchestrate/flow.py", 1990)
+    assert "def build_round_operations" in _line("lionagi/cli/orchestrate/_orchestration.py", 1524)
+    assert "def _on_team_op_complete" in _line("lionagi/cli/orchestrate/flow.py", 1992)
 
 
 def test_signal_rows_and_schedule_cursor_citations_point_at_their_code() -> None:
@@ -248,7 +248,7 @@ def test_d3_body_carries_the_delivery_clause_the_amendment_points_at() -> None:
 
 def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are() -> None:
     flat = _flat()
-    assert "lionagi/cli/orchestrate/_orchestration.py:1455" in flat
+    assert "lionagi/cli/orchestrate/_orchestration.py:1488" in flat
     assert "lionagi/state/schema.sql:463" in flat
     assert "lionagi/state/db.py:5342-5344" in flat
     assert (
@@ -260,7 +260,7 @@ def test_code_today_names_the_batch_reader_and_schedule_cursor_for_what_they_are
     )
     assert "ADR-0070, Accepted" in flat
     assert "per-completion batch of targets, not a per-subscriber position" in flat
-    assert "lionagi/cli/orchestrate/flow.py:1990-2035" in flat
+    assert "lionagi/cli/orchestrate/flow.py:1992-2037" in flat
     assert "It is one position per schedule, not per observing subscriber" in flat
 
 

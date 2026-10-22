@@ -200,6 +200,16 @@ ceiling to a different model's profile. Caller-supplied `config_overrides`
 still win over the profile's, since an override at the call site is an
 explicit instruction and the profile is only a default sitting in a file.
 
+A request that also ignores the user config (`ignore_user_config`) takes only
+the profile's model settings: `model` and every key whose first segment starts
+with `model_`, which includes `model_provider` and the `model_providers.*`
+routing. A profile carrying any other key, such as `sandbox_mode`,
+`approval_policy` or `shell_environment_policy`, is refused
+(`refuse_codex_profile_run_settings`), since those set the sandbox, approvals and
+environment the run decides for itself. The CLI's spec builder applies the same
+rule to a planned worker, and a run whose spawns can clone a codex orchestrator
+applies it to the orchestrator's profile before the run starts.
+
 Both reads use the codex home the *child* will use. A request whose `env`
 replaces the child environment names its own `CODEX_HOME` (or `HOME`), and the
 profile and config read are the ones that environment names. A `CODEX_HOME`,

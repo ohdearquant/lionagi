@@ -918,6 +918,50 @@ async def test_a_reactive_run_refuses_a_set_a_codex_orchestrator_clone_cannot_ta
         # A set the clone can take builds with spawning on.
         env.mcp_servers = {"search": {"command": "search-mcp"}}
         await _build_dag(env, "do stuff", plan_result, reactive_spec="all", max_spawn=5)
+
+
+@pytest.mark.asyncio
+async def test_a_reactive_run_refuses_a_codex_orchestrator_profile_its_clone_cannot_take(
+    tmp_path, codex_home
+):
+    """A clone of the orchestrator ignores the user config like a worker and keeps
+    the config overrides its model was built with. A profile the orchestrator's spec
+    names that sets the sandbox or the approval policy is refused before any worker
+    is built, as a planned worker's build refuses it."""
+    from lionagi._errors import ConfigurationError
+    from lionagi.cli._providers import build_imodel_from_spec
+
+    codex_home.write_config({})
+    (codex_home.path / "wide.config.toml").write_text(
+        'model = "vendor/m"\nmodel_provider = "openrouter"\napproval_policy = "never"\n'
+    )
+    env = _make_env(tmp_path)
+    env.default_model_spec = "codex/wide"
+    env.orc_branch.chat_model = build_imodel_from_spec("codex/wide")
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="x", assignee="researcher")],
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+
+    with patch(
+        "lionagi.cli.orchestrate.flow.build_worker_branch",
+        return_value=(_FakeBranch("researcher"), "claude_code/sonnet", None, False),
+    ) as build:
+        with pytest.raises(ConfigurationError, match="sets approval_policy besides") as refused:
+            await _build_dag(env, "do stuff", plan_result, reactive_spec="all", max_spawn=5)
+        assert "reactive spawn" in str(refused.value)
+        build.assert_not_called()
+
+        # No spawn, no clone: the same orchestrator builds with reactive spawning off.
+        await _build_dag(env, "do stuff", plan_result, reactive_spec="off", max_spawn=5)
+        # A profile that sets only its model and provider builds with spawning on.
+        (codex_home.path / "wide.config.toml").write_text(
+            'model = "vendor/m"\nmodel_provider = "openrouter"\n'
+        )
+        await _build_dag(env, "do stuff", plan_result, reactive_spec="all", max_spawn=5)
     assert build.call_count == 2
 
 

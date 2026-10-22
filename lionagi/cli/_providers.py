@@ -16,6 +16,7 @@ from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.libs.path_safety import validate_bare_name
 from lionagi.ln import coerce_created_at
 from lionagi.providers.openai._codex_profile import (
+    refuse_codex_profile_run_settings,
     resolve_codex_config_profile,
 )
 from lionagi.service.providers import (
@@ -129,6 +130,8 @@ def build_imodel_from_spec(
         resolved_profile = resolve_codex_config_profile(profile_name)
         if resolved_profile is not None:
             profile_model, codex_profile_overrides = resolved_profile
+            if ignore_user_config:
+                refuse_codex_profile_run_settings(profile_name, codex_profile_overrides)
             progress(f"codex profile {profile_name!r} resolves to model {profile_model!r}")
             resolved_model = f"codex/{profile_model}"
             ms = ModelSpec(model=resolved_model, effort=ms.effort)

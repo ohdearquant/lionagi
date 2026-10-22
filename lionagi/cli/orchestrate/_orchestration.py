@@ -753,6 +753,39 @@ def _check_orchestrator_clone_mcp_set(env: OrchestrationEnv) -> None:
         ) from exc
 
 
+def _check_orchestrator_clone_profile(env: OrchestrationEnv) -> None:
+    """Refuse, before the run starts, a codex orchestrator profile its clones could not take.
+
+    A clone of the orchestrator is isolated like a worker and keeps the config
+    overrides its model was built with, a ``codex/<name>`` profile's settings among
+    them, so the profile is held to the rule a planned worker's build applies.
+    """
+    imodel = getattr(env.orc_branch, "chat_model", None)
+    if not getattr(imodel, "is_cli", False):
+        return
+    from lionagi.agent.factory import _canonical_provider
+    from lionagi.providers.openai._codex_profile import (
+        refuse_codex_profile_run_settings,
+        resolve_codex_config_profile,
+    )
+
+    if _canonical_provider(imodel.endpoint.config.provider) != "codex":
+        return
+    provider, _, name = parse_model_spec(env.default_model_spec).model.partition("/")
+    if provider != "codex" or not name:
+        return
+    resolved = resolve_codex_config_profile(name)
+    if resolved is None:
+        return
+    try:
+        refuse_codex_profile_run_settings(name, resolved[1])
+    except ConfigurationError as exc:
+        raise ConfigurationError(
+            "A reactive spawn routed to no role can run as a worker cloned from the "
+            f"codex orchestrator, and that worker ignores the user config: {exc}"
+        ) from exc
+
+
 def _hand_mcp_servers(
     imodel,
     servers: dict | None,

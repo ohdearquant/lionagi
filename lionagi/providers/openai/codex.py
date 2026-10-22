@@ -1412,7 +1412,10 @@ class CodexCodeRequest(BaseModel):
         read a profile file the child never opens and put a different model on
         the command line.
         """
-        from ._codex_profile import resolve_codex_config_profile
+        from ._codex_profile import (
+            refuse_codex_profile_run_settings,
+            resolve_codex_config_profile,
+        )
 
         model = values.get("model")
         if not isinstance(model, str) or not model:
@@ -1422,6 +1425,8 @@ class CodexCodeRequest(BaseModel):
         if resolved is None:
             return values
         profile_model, profile_overrides = resolved
+        if values.get("ignore_user_config"):
+            refuse_codex_profile_run_settings(model, profile_overrides)
         values["model"] = profile_model
         if profile_overrides:
             merged = dict(profile_overrides)

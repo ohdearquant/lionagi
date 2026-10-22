@@ -379,7 +379,12 @@ neither can be read. An empty set whose allowlist names none of those servers
 carries `--ignore-user-config` instead, and nothing is disabled by name. If the
 request names a codex profile, or its config overrides select one (`profile`), its
 build is refused either way: the flag drops the profile, and the disables by name do
-not reach a server only the profile declares. A
+not reach a server only the profile declares. A `codex/<name>` model string that
+names a profile file is read by lionagi before codex starts, so under the flag its
+model settings still apply (`model` and every key starting with `model_`, provider
+routing included), and a profile that sets anything else, `sandbox_mode` or
+`approval_policy` for instance, is refused: for a planned worker when it is built, and
+for a codex orchestrator's profile before a run whose spawns can clone it starts. A
 worker whose provider has no transport for the set is warned
 about, naming the worker (`label`) since a run's workers can resolve
 different providers. `{}` (an explicit empty set) and `None` (no set at all)

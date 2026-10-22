@@ -70,7 +70,9 @@ and one implementation.
   (`servers=None`), which is how `--no-mcp-config` arrives: the Claude CLI
   needs `strict_mcp_config`; codex, which has no wholesale clear, gets
   `ignore_user_config` (`--ignore-user-config`), so the user config and every
-  server, hook and profile it declares are not loaded at all. A codex request that
+  server, hook and profile it declares are not loaded at all (a profile a `codex/<name>`
+  model string names is read by lionagi itself, and under the flag only its model
+  settings may apply; see providers.md). A codex request that
   hands an exclusive set and names a profile, or whose config overrides select one
   (`profile`), is refused whichever form the set takes: under the flag the codex
   provider refuses it, since the profile is user config too, which the flag drops;
