@@ -20,7 +20,6 @@ dependencies = [
     # Markdown reader sees it, to tell call markup written as prose from markup
     # quoted as code.
     "markdown-it-py>=3.0.0",
-    "msgspec>=0.20.0",
     "pydantic>=2.8.0",
     "pydantic-settings>=2.8.0",
     "toml>=0.10.2",
@@ -69,6 +68,9 @@ dev = [
     "pyarrow>=21.0.0",
     "pytest-xdist>=3.8.0",
     "pytest-timeout>=2.4.0",
+    # Tests that pass a msgspec Struct through the structural helpers; lionagi
+    # accepts one when msgspec is installed and works without it.
+    "msgspec>=0.20.0",
     "testcontainers[postgres]>=4.0",
 ]
 

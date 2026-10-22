@@ -382,6 +382,10 @@ longer exists, so an install that names it gets a missing-extra warning from the
   `docling` go the `torch`, `torchvision`, `accelerate` and OCR packages it pulled into
   `lionagi[all]`.
 
+- `msgspec` is no longer a dependency. lionagi still accepts a `msgspec.Struct` value wherever it
+  accepted one before, when `msgspec` is installed; code that passes one installs `msgspec`
+  itself.
+
 - A mutable `HashableModel` or `DataClass` value, the operation field models included, now
   raises `TypeError` from `hash()`, so it can no longer be put in a set or used as a dictionary
   key. Its hash was computed from its content, which can change after the value is stored, and
