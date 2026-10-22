@@ -2,15 +2,50 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import json
+import re
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlsplit
 
-import aiohttp
+import httpx
 import pytest
 
 from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
+from lionagi.service.resilience import APIClientError
 from lionagi.service.types.stream_chunk import StreamChunk
+
+
+def _http_response(status: int = 200, body: dict | None = None, *, headers=None):
+    return httpx.Response(status, json=body if body is not None else {}, headers=headers or {})
+
+
+def _http_client_for(responses):
+    pending = iter(responses)
+
+    def handler(request):
+        response = next(pending)
+        response.request = request
+        return response
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def _http_client(handler):
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def _stream_client(body: str):
+    return httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                text=body,
+                headers={"Content-Type": "text/event-stream"},
+                request=request,
+            )
+        )
+    )
 
 
 class TestEndpoint:
@@ -61,6 +96,45 @@ class TestEndpoint:
     def test_endpoint_initialization_invalid_config_type(self):
         with pytest.raises(ValueError, match="Config must be a dict, EndpointConfig, or None"):
             Endpoint(config="invalid_config_type")
+
+    @pytest.mark.asyncio
+    async def test_http_client_factory_uses_httpx_defaults_and_client_overrides(
+        self, openai_config
+    ):
+        endpoint = Endpoint(config=openai_config)
+        client = endpoint._create_http_session(timeout=7)
+        try:
+            assert isinstance(client, httpx.AsyncClient)
+            assert client.timeout.connect == 7
+            assert client.timeout.read == 7
+            assert client.follow_redirects is True
+            assert client._trust_env is False
+        finally:
+            await client.aclose()
+
+        client = endpoint._create_http_session(
+            {"follow_redirects": False, "trust_env": True, "headers": {"X-Test": "yes"}},
+            timeout=7,
+        )
+        try:
+            assert isinstance(client, httpx.AsyncClient)
+            assert client.timeout.connect == 7
+            assert client.follow_redirects is False
+            assert client._trust_env is True
+            assert client.headers["X-Test"] == "yes"
+        finally:
+            await (client.aclose() if isinstance(client, httpx.AsyncClient) else client.close())
+
+    @pytest.mark.parametrize(
+        ("legacy_name", "new_name"),
+        [("_call_aiohttp", "_call_http"), ("_stream_aiohttp", "_stream_http")],
+    )
+    def test_subclass_rejects_removed_transport_override(self, legacy_name, new_name):
+        async def override(*args, **kwargs):
+            return None
+
+        with pytest.raises(TypeError, match=re.escape(new_name)):
+            type("LegacyTransportEndpoint", (Endpoint,), {legacy_name: override})
 
     def test_request_options_setter(self, openai_config):
         from pydantic import BaseModel
@@ -156,41 +230,15 @@ class TestEndpoint:
         assert headers["anthropic-version"] == "2023-06-01"
 
     @pytest.mark.asyncio
-    async def test_http_request_session_cleanup(self, openai_config, mock_response):
+    async def test_http_request_session_cleanup(self, openai_config):
         # Disable OpenAI compatibility for pure HTTP test
         openai_config.openai_compatible = False
         endpoint = Endpoint(config=openai_config)
 
-        # Mock the response with proper status
-        mock_response.status = 200
-        mock_response.json = AsyncMock(return_value={"success": True})
-        mock_response.closed = False
-        # aiohttp.ClientResponse.release() is synchronous — must NOT be an AsyncMock
-        mock_response.release = MagicMock()
-        mock_response.request_info = MagicMock()
-        mock_response.history = []
-        mock_response.headers = {}
-
-        mock_session = AsyncMock(spec=aiohttp.ClientSession)
-        # Mock request to return the response directly (not as context manager)
-        mock_session.request = AsyncMock(return_value=mock_response)
-
-        # Track session cleanup through __aexit__
-        exit_called = []
-
-        async def track_exit(*args):
-            exit_called.append(True)
-            return None
-
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(side_effect=track_exit)
-
-        # Create session class that returns our mock
-        def mock_session_class(*args, **kwargs):
-            return mock_session
+        client = _http_client_for([_http_response(body={"success": True})])
 
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
-            with patch("aiohttp.ClientSession", side_effect=mock_session_class):
+            with patch.object(endpoint, "_create_http_session", return_value=client):
                 request = {
                     "messages": [{"role": "user", "content": "test"}],
                     "model": "gpt-4.1-mini",
@@ -198,53 +246,26 @@ class TestEndpoint:
 
                 await endpoint.call(request)
 
-        # Verify session was cleaned up via context manager
-        assert len(exit_called) == 1
-        mock_session.__aexit__.assert_called_once()
+        assert client.is_closed
 
     @pytest.mark.asyncio
-    async def test_response_release_is_called_synchronously(self, openai_config, mock_response):
-        """Regression: aiohttp.ClientResponse.release() is synchronous; awaiting it raises TypeError.
-
-        The finally block must call release() without await to correctly clean up on success, error, and cancellation paths.
-        """
+    async def test_http_client_closes_after_request(self, openai_config):
+        """The HTTP client closes after a request completes."""
         # Disable OpenAI compatibility for pure HTTP test
         openai_config.openai_compatible = False
         endpoint = Endpoint(config=openai_config)
 
-        release_await_attempted = []
-
-        # A MagicMock (sync) will track calls; an AsyncMock would mask the bug.
-        sync_release = MagicMock()
-
-        mock_response.status = 200
-        mock_response.json = AsyncMock(return_value={"released": True})
-        mock_response.closed = False
-        mock_response.release = sync_release
-        mock_response.request_info = MagicMock()
-        mock_response.history = []
-        mock_response.headers = {}
-
-        mock_session = AsyncMock(spec=aiohttp.ClientSession)
-        mock_session.request = AsyncMock(return_value=mock_response)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=None)
-
-        def mock_session_class(*args, **kwargs):
-            return mock_session
+        client = _http_client_for([_http_response(body={"released": True})])
 
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
-            with patch("aiohttp.ClientSession", side_effect=mock_session_class):
+            with patch.object(endpoint, "_create_http_session", return_value=client):
                 request = {
                     "messages": [{"role": "user", "content": "test"}],
                     "model": "gpt-4.1-mini",
                 }
                 result = await endpoint.call(request)
 
-        # release() must have been called exactly once, synchronously
-        sync_release.assert_called_once()
-        # It must NOT have been awaited (MagicMock.return_value was not iterated/awaited)
-        assert len(release_await_attempted) == 0
+        assert client.is_closed
         assert result is not None
 
     def test_url_construction(self, openai_config, anthropic_config):
@@ -370,35 +391,26 @@ class TestEndpoint:
         endpoint = Endpoint(config=openai_config)
         entered = []
         all_entered = asyncio.Event()
-        sessions = []
-        responses = []
+        clients = []
 
-        async def request(*args, **kwargs):
-            label = kwargs["json"]["messages"][0]["content"]
+        async def handler(request):
+            payload = json.loads(request.content)
+            label = payload["messages"][0]["content"]
             entered.append(label)
             if len(entered) == 3:
                 all_entered.set()
             await asyncio.wait_for(all_entered.wait(), timeout=2)
             if label == "second":
-                raise aiohttp.ClientError("second request failed")
-            response = AsyncMock(spec=aiohttp.ClientResponse)
-            response.status = 200
-            response.closed = False
-            response.release = MagicMock()
-            response.json = AsyncMock(return_value={"success": True, "request": label})
-            responses.append(response)
-            return response
+                raise httpx.ConnectError("second request failed", request=request)
+            return httpx.Response(200, json={"success": True, "request": label}, request=request)
 
-        def create_session():
-            session = AsyncMock(spec=aiohttp.ClientSession)
-            session.__aenter__ = AsyncMock(return_value=session)
-            session.__aexit__ = AsyncMock(return_value=False)
-            session.request = AsyncMock(side_effect=request)
-            sessions.append(session)
-            return session
+        def create_client():
+            client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+            clients.append(client)
+            return client
 
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
-            with patch.object(endpoint, "_create_http_session", side_effect=create_session):
+            with patch.object(endpoint, "_create_http_session", side_effect=create_client):
                 results = await asyncio.gather(
                     *(
                         endpoint.call({"messages": [{"role": "user", "content": label}]})
@@ -408,25 +420,20 @@ class TestEndpoint:
                 )
 
         assert results[0] == {"success": True, "request": "first"}
-        assert isinstance(results[1], aiohttp.ClientError)
+        assert isinstance(results[1], httpx.RequestError)
         assert str(results[1]) == "second request failed"
         assert results[2] == {"success": True, "request": "third"}
         assert sorted(entered) == ["first", "second", "third"]
-        assert len(sessions) == 3
-        assert len({id(session) for session in sessions}) == 3
-        for session in sessions:
-            session.request.assert_awaited_once()
-            session.__aexit__.assert_awaited_once()
-        assert len(responses) == 2
-        for response in responses:
-            response.release.assert_called_once()
+        assert len(clients) == 3
+        assert len({id(client) for client in clients}) == 3
+        assert all(client.is_closed for client in clients)
 
     @pytest.mark.asyncio
-    async def test_aiohttp_429_status_code_path(self, openai_config):
+    async def test_http_429_status_code_path(self, openai_config):
         openai_config.openai_compatible = False
         endpoint = Endpoint(config=openai_config)
 
-        # Mock _call_aiohttp to test 429 handling logic
+        # Mock the transport call to test status handling logic.
         with patch.object(endpoint, "_call") as mock_call:
             mock_call.return_value = {"success": True}
             request = {"messages": [{"role": "user", "content": "test"}]}
@@ -435,7 +442,7 @@ class TestEndpoint:
             mock_call.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_aiohttp_error_handling_paths(self, openai_config):
+    async def test_http_error_handling_paths(self, openai_config):
         openai_config.openai_compatible = False
         endpoint = Endpoint(config=openai_config)
 
@@ -457,7 +464,7 @@ class TestEndpoint:
 
         with patch.object(
             endpoint,
-            "_stream_aiohttp",
+            "_stream_http",
             side_effect=lambda *args, **kwargs: mock_stream(),
         ):
             request = {"messages": [{"role": "user", "content": "test"}]}
@@ -469,30 +476,12 @@ class TestEndpoint:
             assert chunks[0] == b"chunk1"
 
     @pytest.mark.asyncio
-    async def test_stream_aiohttp(self, openai_config):
+    async def test_stream_http(self, openai_config):
         endpoint = Endpoint(config=openai_config)
-
-        # Mock response with streaming content
-        mock_response = MagicMock()
-        mock_response.status = 200
-
-        async def mock_content_iter():
-            yield b"line1\n"
-            yield b"line2\n"
-            yield b""  # Empty line
-            yield b"line3\n"
-
-        mock_response.content = mock_content_iter()
-        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_response.__aexit__ = AsyncMock()
-
-        mock_session = AsyncMock(spec=aiohttp.ClientSession)
-        mock_session.request = MagicMock(return_value=mock_response)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock()
+        client = _stream_client("line1\nline2\n\nline3\n")
 
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
-            with patch("aiohttp.ClientSession", return_value=mock_session):
+            with patch.object(endpoint, "_create_http_session", return_value=client):
                 request = {"messages": [{"role": "user", "content": "test"}]}
                 chunks = []
                 async for chunk in endpoint.stream(request):
@@ -504,30 +493,16 @@ class TestEndpoint:
         assert [chunk.content for chunk in chunks] == ["line1", "line2", "line3"]
 
     @pytest.mark.asyncio
-    async def test_stream_aiohttp_ignores_sse_control_lines(self, openai_config):
+    async def test_stream_http_ignores_sse_control_lines(self, openai_config):
         endpoint = Endpoint(config=openai_config)
-
-        mock_response = MagicMock()
-        mock_response.status = 200
-
-        async def mock_content_iter():
-            yield b"event: response.output_text.delta\n"
-            yield b"id: evt_1\n"
-            yield b'data: {"type":"response.output_text.delta","delta":"hi"}\n\n'
-            yield b": keepalive\n\n"
-            yield b"data: [DONE]\n\n"
-
-        mock_response.content = mock_content_iter()
-        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_response.__aexit__ = AsyncMock()
-
-        mock_session = AsyncMock(spec=aiohttp.ClientSession)
-        mock_session.request = MagicMock(return_value=mock_response)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock()
+        client = _stream_client(
+            "event: response.output_text.delta\nid: evt_1\n"
+            'data: {"type":"response.output_text.delta","delta":"hi"}\n\n'
+            ": keepalive\n\ndata: [DONE]\n\n"
+        )
 
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
-            with patch("aiohttp.ClientSession", return_value=mock_session):
+            with patch.object(endpoint, "_create_http_session", return_value=client):
                 request = {"messages": [{"role": "user", "content": "test"}]}
                 chunks = [chunk async for chunk in endpoint.stream(request)]
 
@@ -552,29 +527,18 @@ class TestEndpoint:
         assert endpoint._event_to_stream_chunk({"choices": []}) is None
 
     @pytest.mark.asyncio
-    async def test_stream_aiohttp_usage_only_terminal_event(self, openai_config):
+    async def test_stream_http_usage_only_terminal_event(self, openai_config):
         """End-to-end: the usage-only line surfaces as a result chunk with usage."""
         endpoint = Endpoint(config=openai_config)
 
-        mock_response = MagicMock()
-        mock_response.status = 200
-
-        async def mock_content_iter():
-            yield b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
-            yield b'data: {"choices":[],"usage":{"total_tokens":18}}\n\n'
-            yield b"data: [DONE]\n\n"
-
-        mock_response.content = mock_content_iter()
-        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_response.__aexit__ = AsyncMock()
-
-        mock_session = AsyncMock(spec=aiohttp.ClientSession)
-        mock_session.request = MagicMock(return_value=mock_response)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock()
+        client = _stream_client(
+            'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+            'data: {"choices":[],"usage":{"total_tokens":18}}\n\n'
+            "data: [DONE]\n\n"
+        )
 
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
-            with patch("aiohttp.ClientSession", return_value=mock_session):
+            with patch.object(endpoint, "_create_http_session", return_value=client):
                 request = {"messages": [{"role": "user", "content": "test"}]}
                 chunks = [chunk async for chunk in endpoint.stream(request)]
 
@@ -591,7 +555,7 @@ class TestEndpoint:
 
         with patch.object(
             endpoint,
-            "_stream_aiohttp",
+            "_stream_http",
             side_effect=lambda *args, **kwargs: mock_stream(),
         ):
             request = {"messages": [{"role": "user", "content": "test"}]}
@@ -710,7 +674,7 @@ class TestEndpoint:
 
 
 class TestEndpointSSRFGuard:
-    """Endpoint._call_aiohttp and _stream_aiohttp must block SSRF URLs."""
+    """Endpoint._call_http and _stream_http must block SSRF URLs."""
 
     def _make_endpoint(self, base_url: str) -> Endpoint:
         config = EndpointConfig(
@@ -725,42 +689,33 @@ class TestEndpointSSRFGuard:
         return Endpoint(config=config)
 
     @pytest.mark.asyncio
-    async def test_call_aiohttp_blocks_private_ip(self):
-        """_call_aiohttp raises PermissionError for private base_url."""
+    async def test_call_http_blocks_private_ip(self):
+        """_call_http raises PermissionError for private base_url."""
         endpoint = self._make_endpoint("http://169.254.169.254")
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=False):
             with pytest.raises(PermissionError, match="SSRF guard"):
-                await endpoint._call_aiohttp(payload={}, headers={})
+                await endpoint._call_http(payload={}, headers={})
 
     @pytest.mark.asyncio
-    async def test_call_aiohttp_allows_public_ip(self):
-        """_call_aiohttp does NOT raise for a public base_url."""
+    async def test_call_http_allows_public_ip(self):
+        """_call_http does not raise for a public base_url."""
         endpoint = self._make_endpoint("https://api.openai.com/v1")
-        mock_response = AsyncMock()
-        mock_response.status = 200
-        mock_response.closed = False
-        mock_response.json = AsyncMock(return_value={"ok": True})
-        # aiohttp.ClientResponse.release() is synchronous — must NOT be an AsyncMock
-        mock_response.release = MagicMock()
-
-        mock_session = AsyncMock()
-        mock_session.request = AsyncMock(return_value=mock_response)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
+        client = _http_client_for([_http_response(body={"ok": True})])
 
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
-            with patch.object(endpoint, "_create_http_session", return_value=mock_session):
-                result = await endpoint._call_aiohttp(payload={}, headers={})
+            with patch.object(endpoint, "_create_http_session", return_value=client):
+                result = await endpoint._call_http(payload={}, headers={})
         assert result == {"ok": True}
+        assert client.is_closed
 
     @pytest.mark.asyncio
-    async def test_stream_aiohttp_blocks_private_ip(self):
-        """_stream_aiohttp raises PermissionError for private base_url."""
+    async def test_stream_http_blocks_private_ip(self):
+        """_stream_http raises PermissionError for private base_url."""
         endpoint = self._make_endpoint("http://192.168.1.1")
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=False):
             with pytest.raises(PermissionError, match="SSRF guard"):
                 # consume the async generator to trigger the check
-                async for _ in endpoint._stream_aiohttp(payload={}, headers={}):
+                async for _ in endpoint._stream_http(payload={}, headers={}):
                     pass
 
     @pytest.mark.asyncio
@@ -776,7 +731,7 @@ class TestEndpointSSRFGuard:
         )
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=False):
             with pytest.raises(PermissionError, match="SSRF guard"):
-                await model.endpoint._call_aiohttp(payload={}, headers={})
+                await model.endpoint._call_http(payload={}, headers={})
 
     @pytest.mark.asyncio
     async def test_endpoint_ssrf_blocks_link_local_ipv6(self):
@@ -784,7 +739,7 @@ class TestEndpointSSRFGuard:
         endpoint = self._make_endpoint("http://[fe80::1]")
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=False):
             with pytest.raises(PermissionError, match="SSRF guard"):
-                await endpoint._call_aiohttp(payload={}, headers={})
+                await endpoint._call_http(payload={}, headers={})
 
 
 class TestProviderCallOverrideSSRFGuard:
@@ -911,48 +866,14 @@ class TestSingleRetryPathParity:
         return Endpoint(config=config)
 
     def _make_mock_session(self, responses):
-        """Build a mock session that returns responses in sequence."""
-        mock_session = AsyncMock(spec=aiohttp.ClientSession)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-
-        calls = iter(responses)
-
-        async def _request(*args, **kwargs):
-            return next(calls)
-
-        mock_session.request = _request
-        return mock_session
+        """Build an HTTPX client with a mock transport returning responses in sequence."""
+        return _http_client_for(responses)
 
     def _make_ok_response(self, body: dict | None = None):
-        r = AsyncMock(spec=aiohttp.ClientResponse)
-        r.status = 200
-        r.closed = False
-        r.release = MagicMock()
-        r.json = AsyncMock(return_value=body or {"ok": True})
-        return r
+        return _http_response(body=body or {"ok": True})
 
     def _make_error_response(self, status: int):
-        r = AsyncMock(spec=aiohttp.ClientResponse)
-        r.status = status
-        r.closed = False
-        r.release = MagicMock()
-        r.request_info = MagicMock()
-        r.history = []
-        r.headers = {}
-        r.json = AsyncMock(return_value={"error": f"status {status}"})
-
-        def _raise_for_status():
-            raise aiohttp.ClientResponseError(
-                request_info=r.request_info,
-                history=r.history,
-                status=status,
-                message=f"status {status}",
-                headers=r.headers,
-            )
-
-        r.raise_for_status = _raise_for_status
-        return r
+        return _http_response(status, {"error": f"status {status}"})
 
     @pytest.mark.asyncio
     async def test_200_ok_no_retry(self):
@@ -961,9 +882,9 @@ class TestSingleRetryPathParity:
         session = self._make_mock_session([ok])
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
             with patch.object(endpoint, "_create_http_session", return_value=session):
-                result = await endpoint._call_aiohttp({}, {})
+                result = await endpoint._call_http({}, {})
         assert result == {"choices": []}
-        assert ok.release.call_count == 1
+        assert session.is_closed
 
     @pytest.mark.asyncio
     async def test_429_is_retried(self):
@@ -984,13 +905,13 @@ class TestSingleRetryPathParity:
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
             with patch.object(endpoint, "_create_http_session", side_effect=_make_new_session):
                 with patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock()):
-                    result = await endpoint._call_aiohttp({}, {})
+                    result = await endpoint._call_http({}, {})
         assert result == {"retried": True}
         assert attempt == 2
 
     @pytest.mark.asyncio
     async def test_400_gives_up_immediately(self):
-        """400 client error must not be retried; raises aiohttp.ClientResponseError."""
+        """400 response errors must not be retried."""
         endpoint = self._make_endpoint(max_retries=3)
         r400 = self._make_error_response(400)
 
@@ -1003,9 +924,9 @@ class TestSingleRetryPathParity:
 
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
             with patch.object(endpoint, "_create_http_session", side_effect=_make_new_session):
-                with pytest.raises(aiohttp.ClientResponseError) as exc_info:
-                    await endpoint._call_aiohttp({}, {})
-        assert exc_info.value.status == 400
+                with pytest.raises(APIClientError) as exc_info:
+                    await endpoint._call_http({}, {})
+        assert exc_info.value.status_code == 400
         assert call_count == 1
 
     @pytest.mark.asyncio
@@ -1022,9 +943,9 @@ class TestSingleRetryPathParity:
 
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
             with patch.object(endpoint, "_create_http_session", side_effect=_make_new_session):
-                with pytest.raises(aiohttp.ClientResponseError) as exc_info:
-                    await endpoint._call_aiohttp({}, {})
-        assert exc_info.value.status == 401
+                with pytest.raises(APIClientError) as exc_info:
+                    await endpoint._call_http({}, {})
+        assert exc_info.value.status_code == 401
         assert call_count == 1
 
     @pytest.mark.asyncio
@@ -1041,9 +962,9 @@ class TestSingleRetryPathParity:
 
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
             with patch.object(endpoint, "_create_http_session", side_effect=_make_new_session):
-                with pytest.raises(aiohttp.ClientResponseError) as exc_info:
-                    await endpoint._call_aiohttp({}, {})
-        assert exc_info.value.status == 403
+                with pytest.raises(APIClientError) as exc_info:
+                    await endpoint._call_http({}, {})
+        assert exc_info.value.status_code == 403
         assert call_count == 1
 
     @pytest.mark.asyncio
@@ -1061,9 +982,9 @@ class TestSingleRetryPathParity:
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
             with patch.object(endpoint, "_create_http_session", side_effect=_make_new_session):
                 with patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock()):
-                    with pytest.raises(aiohttp.ClientResponseError) as exc_info:
-                        await endpoint._call_aiohttp({}, {})
-        assert exc_info.value.status == 500
+                    with pytest.raises(APIClientError) as exc_info:
+                        await endpoint._call_http({}, {})
+        assert exc_info.value.status_code == 500
         # max_retries is a total-attempt cap (was backoff's max_tries): 2 → 2 attempts
         assert call_count == 2
 
@@ -1074,21 +995,19 @@ class TestSingleRetryPathParity:
 
         call_count = 0
 
-        async def _raise_timeout(*args, **kwargs):
+        async def _raise_timeout(request):
             nonlocal call_count
             call_count += 1
             raise asyncio.TimeoutError()
 
-        mock_session = AsyncMock(spec=aiohttp.ClientSession)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_session.request = _raise_timeout
+        def create_client():
+            return httpx.AsyncClient(transport=httpx.MockTransport(_raise_timeout))
 
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
-            with patch.object(endpoint, "_create_http_session", return_value=mock_session):
+            with patch.object(endpoint, "_create_http_session", side_effect=create_client):
                 with patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock()):
                     with pytest.raises(asyncio.TimeoutError):
-                        await endpoint._call_aiohttp({}, {})
+                        await endpoint._call_http({}, {})
         # max_retries is a total-attempt cap (was backoff's max_tries): 2 → 2 attempts
         assert call_count == 2
 
@@ -1115,47 +1034,13 @@ class TestRetryConfigDefaultRetriesRealErrors:
         )
 
     def _make_mock_session(self, responses):
-        mock_session = AsyncMock(spec=aiohttp.ClientSession)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-
-        calls = iter(responses)
-
-        async def _request(*args, **kwargs):
-            return next(calls)
-
-        mock_session.request = _request
-        return mock_session
+        return _http_client_for(responses)
 
     def _make_ok_response(self, body: dict | None = None):
-        r = AsyncMock(spec=aiohttp.ClientResponse)
-        r.status = 200
-        r.closed = False
-        r.release = MagicMock()
-        r.json = AsyncMock(return_value=body or {"ok": True})
-        return r
+        return _http_response(body=body or {"ok": True})
 
     def _make_error_response(self, status: int):
-        r = AsyncMock(spec=aiohttp.ClientResponse)
-        r.status = status
-        r.closed = False
-        r.release = MagicMock()
-        r.request_info = MagicMock()
-        r.history = []
-        r.headers = {}
-        r.json = AsyncMock(return_value={"error": f"status {status}"})
-
-        def _raise_for_status():
-            raise aiohttp.ClientResponseError(
-                request_info=r.request_info,
-                history=r.history,
-                status=status,
-                message=f"status {status}",
-                headers=r.headers,
-            )
-
-        r.raise_for_status = _raise_for_status
-        return r
+        return _http_response(status, {"error": f"status {status}"})
 
     @pytest.mark.asyncio
     async def test_429_is_retried_with_default_retry_config(self):
@@ -1215,9 +1100,9 @@ class TestRetryConfigDefaultRetriesRealErrors:
 
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
             with patch.object(endpoint, "_create_http_session", side_effect=_make_new_session):
-                with pytest.raises(aiohttp.ClientResponseError) as exc_info:
+                with pytest.raises(APIClientError) as exc_info:
                     await endpoint.call({}, skip_payload_creation=True)
-        assert exc_info.value.status == 404
+        assert exc_info.value.status_code == 404
         assert call_count == 1
 
     @pytest.mark.asyncio
@@ -1231,18 +1116,16 @@ class TestRetryConfigDefaultRetriesRealErrors:
 
         call_count = 0
 
-        async def _raise_timeout(*args, **kwargs):
+        async def _raise_timeout(request):
             nonlocal call_count
             call_count += 1
             raise _asyncio.TimeoutError()
 
-        mock_session = AsyncMock(spec=aiohttp.ClientSession)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_session.request = _raise_timeout
+        def create_client():
+            return _http_client(_raise_timeout)
 
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
-            with patch.object(endpoint, "_create_http_session", return_value=mock_session):
+            with patch.object(endpoint, "_create_http_session", side_effect=create_client):
                 with patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock()):
                     with pytest.raises(_asyncio.TimeoutError):
                         await endpoint.call({}, skip_payload_creation=True)
@@ -1254,18 +1137,16 @@ class TestRetryConfigDefaultRetriesRealErrors:
 
         call_count = 0
 
-        async def _raise_connection_error(*args, **kwargs):
+        async def _raise_connection_error(request):
             nonlocal call_count
             call_count += 1
             raise ConnectionError("boom")
 
-        mock_session = AsyncMock(spec=aiohttp.ClientSession)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_session.request = _raise_connection_error
+        def create_client():
+            return _http_client(_raise_connection_error)
 
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
-            with patch.object(endpoint, "_create_http_session", return_value=mock_session):
+            with patch.object(endpoint, "_create_http_session", side_effect=create_client):
                 with patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock()):
                     with pytest.raises(ConnectionError):
                         await endpoint.call({}, skip_payload_creation=True)
@@ -1293,34 +1174,10 @@ class TestIdempotencyKeyOnRetriedPosts:
         return Endpoint(config=config)
 
     def _make_ok_response(self, body: dict | None = None):
-        r = AsyncMock(spec=aiohttp.ClientResponse)
-        r.status = 200
-        r.closed = False
-        r.release = MagicMock()
-        r.json = AsyncMock(return_value=body or {"ok": True})
-        return r
+        return _http_response(body=body or {"ok": True})
 
     def _make_error_response(self, status: int):
-        r = AsyncMock(spec=aiohttp.ClientResponse)
-        r.status = status
-        r.closed = False
-        r.release = MagicMock()
-        r.request_info = MagicMock()
-        r.history = []
-        r.headers = {}
-        r.json = AsyncMock(return_value={"error": f"status {status}"})
-
-        def _raise_for_status():
-            raise aiohttp.ClientResponseError(
-                request_info=r.request_info,
-                history=r.history,
-                status=status,
-                message=f"status {status}",
-                headers=r.headers,
-            )
-
-        r.raise_for_status = _raise_for_status
-        return r
+        return _http_response(status, {"error": f"status {status}"})
 
     @pytest.mark.asyncio
     async def test_same_idempotency_key_reused_across_retries(self):
@@ -1328,7 +1185,7 @@ class TestIdempotencyKeyOnRetriedPosts:
         server with the SAME Idempotency-Key both times -- a fresh key per
         attempt would defeat server-side dedup of the ambiguous first try."""
         endpoint = self._make_endpoint(idempotent_retries=True, max_retries=3)
-        sent_headers: list[dict] = []
+        sent_headers: list[httpx.Headers] = []
 
         attempt = 0
 
@@ -1337,16 +1194,11 @@ class TestIdempotencyKeyOnRetriedPosts:
             attempt += 1
             resp = self._make_error_response(500) if attempt == 1 else self._make_ok_response()
 
-            mock_session = AsyncMock(spec=aiohttp.ClientSession)
-            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-            mock_session.__aexit__ = AsyncMock(return_value=False)
-
-            async def _request(*a, **kw):
-                sent_headers.append(dict(kw["headers"]))
+            async def handler(request):
+                sent_headers.append(request.headers.copy())
                 return resp
 
-            mock_session.request = _request
-            return mock_session
+            return _http_client(handler)
 
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
             with patch.object(endpoint, "_create_http_session", side_effect=_make_new_session):
@@ -1362,19 +1214,14 @@ class TestIdempotencyKeyOnRetriedPosts:
     async def test_two_separate_calls_get_different_keys(self):
         """Two distinct logical requests must not collide on the same key."""
         endpoint = self._make_endpoint(idempotent_retries=True, max_retries=1)
-        sent_headers: list[dict] = []
+        sent_headers: list[httpx.Headers] = []
 
         def _make_new_session(*args, **kwargs):
-            mock_session = AsyncMock(spec=aiohttp.ClientSession)
-            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-            mock_session.__aexit__ = AsyncMock(return_value=False)
-
-            async def _request(*a, **kw):
-                sent_headers.append(dict(kw["headers"]))
+            async def handler(request):
+                sent_headers.append(request.headers.copy())
                 return self._make_ok_response()
 
-            mock_session.request = _request
-            return mock_session
+            return _http_client(handler)
 
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
             with patch.object(endpoint, "_create_http_session", side_effect=_make_new_session):
@@ -1387,19 +1234,14 @@ class TestIdempotencyKeyOnRetriedPosts:
     @pytest.mark.asyncio
     async def test_idempotency_key_absent_when_not_opted_in(self):
         endpoint = self._make_endpoint(idempotent_retries=False, max_retries=1)
-        sent_headers: list[dict] = []
+        sent_headers: list[httpx.Headers] = []
 
         def _make_new_session(*args, **kwargs):
-            mock_session = AsyncMock(spec=aiohttp.ClientSession)
-            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-            mock_session.__aexit__ = AsyncMock(return_value=False)
-
-            async def _request(*a, **kw):
-                sent_headers.append(dict(kw["headers"]))
+            async def handler(request):
+                sent_headers.append(request.headers.copy())
                 return self._make_ok_response()
 
-            mock_session.request = _request
-            return mock_session
+            return _http_client(handler)
 
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
             with patch.object(endpoint, "_create_http_session", side_effect=_make_new_session):
@@ -1410,7 +1252,7 @@ class TestIdempotencyKeyOnRetriedPosts:
     @pytest.mark.asyncio
     async def test_same_key_reused_across_retries_via_retry_config(self):
         """The opt-in RetryConfig path re-invokes ``self._call`` (and therefore
-        ``_call_aiohttp``) fresh on every attempt from outside -- the key must
+        ``_call_http``) fresh on every attempt from outside -- the key must
         be minted in ``call()``, before that wrapper is entered, or each
         attempt would silently mint its own."""
         from lionagi.service.resilience import RetryConfig
@@ -1426,7 +1268,7 @@ class TestIdempotencyKeyOnRetriedPosts:
             idempotent_retries=True,
         )
         endpoint = Endpoint(config=config, retry_config=RetryConfig(max_retries=2, base_delay=0.01))
-        sent_headers: list[dict] = []
+        sent_headers: list[httpx.Headers] = []
         attempt = 0
 
         def _make_new_session(*args, **kwargs):
@@ -1434,16 +1276,11 @@ class TestIdempotencyKeyOnRetriedPosts:
             attempt += 1
             resp = self._make_error_response(500) if attempt == 1 else self._make_ok_response()
 
-            mock_session = AsyncMock(spec=aiohttp.ClientSession)
-            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-            mock_session.__aexit__ = AsyncMock(return_value=False)
-
-            async def _request(*a, **kw):
-                sent_headers.append(dict(kw["headers"]))
+            async def handler(request):
+                sent_headers.append(request.headers.copy())
                 return resp
 
-            mock_session.request = _request
-            return mock_session
+            return _http_client(handler)
 
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
             with patch.object(endpoint, "_create_http_session", side_effect=_make_new_session):
@@ -1455,28 +1292,11 @@ class TestIdempotencyKeyOnRetriedPosts:
 
 
 def _mock_session_returning(*responses):
-    mock_session = AsyncMock(spec=aiohttp.ClientSession)
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=False)
-    calls = iter(responses)
-
-    async def _request(*args, **kwargs):
-        return next(calls)
-
-    mock_session.request = _request
-    return mock_session
+    return _http_client_for(responses)
 
 
 def _response_with_status(status: int):
-    response = AsyncMock(spec=aiohttp.ClientResponse)
-    response.status = status
-    response.closed = False
-    response.release = MagicMock()
-    response.request_info = MagicMock()
-    response.history = []
-    response.headers = {}
-    response.json = AsyncMock(return_value={"error": f"status {status}"})
-    return response
+    return _http_response(status, {"error": f"status {status}"})
 
 
 class TestThe4xxSentinelUnwrapLeavesAnAcyclicCause:
@@ -1506,10 +1326,10 @@ class TestThe4xxSentinelUnwrapLeavesAnAcyclicCause:
 
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
             with patch.object(endpoint, "_create_http_session", return_value=session):
-                with pytest.raises(aiohttp.ClientResponseError) as info:
+                with pytest.raises(APIClientError) as info:
                     await endpoint._call(payload={"model": "m", "messages": []}, headers={})
 
-        assert info.value.status == 401
+        assert info.value.status_code == 401
         assert info.value.__cause__ is not info.value
         assert info.value.__cause__ is None
 
@@ -1523,10 +1343,10 @@ class TestThe4xxSentinelUnwrapLeavesAnAcyclicCause:
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
             with patch.object(endpoint, "_create_http_session", return_value=session):
                 with patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock()):
-                    with pytest.raises(aiohttp.ClientResponseError) as info:
+                    with pytest.raises(APIClientError) as info:
                         await endpoint.call({"messages": []})
 
-        assert info.value.status == 400
+        assert info.value.status_code == 400
         assert info.value.__cause__ is not info.value
 
     @pytest.mark.asyncio
@@ -1536,7 +1356,7 @@ class TestThe4xxSentinelUnwrapLeavesAnAcyclicCause:
 
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
             with patch.object(endpoint, "_create_http_session", return_value=session):
-                with pytest.raises(aiohttp.ClientResponseError) as info:
+                with pytest.raises(APIClientError) as info:
                     await endpoint._call(payload={"model": "m", "messages": []}, headers={})
 
         seen, cause = set(), info.value

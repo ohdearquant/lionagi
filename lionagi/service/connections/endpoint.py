@@ -13,6 +13,7 @@ from typing import Any, ClassVar, Literal
 from pydantic import BaseModel
 
 from lionagi.service.resilience import (
+    APIClientError,
     CircuitBreaker,
     RetryConfig,
     _reraise_inner,
@@ -176,6 +177,17 @@ class Endpoint:
     # (ADR-0127 D3). Only such an endpoint changes a request when ``prompt_caching`` is on.
     caches_system_prefix: ClassVar[bool] = False
 
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        for old_name, new_name in (
+            ("_call_aiohttp", "_call_http"),
+            ("_stream_aiohttp", "_stream_http"),
+        ):
+            if old_name in cls.__dict__:
+                raise TypeError(
+                    f"{cls.__name__} overrides a removed transport method; use {new_name} instead"
+                )
+
     def __init__(
         self,
         config: dict | EndpointConfig | None = None,
@@ -213,14 +225,15 @@ class Endpoint:
     def _create_http_session(
         self, client_kwargs: dict[str, Any] | None = None, *, timeout: Any = _CONFIGURED_TIMEOUT
     ):
-        import aiohttp
+        import httpx
 
         if timeout is _CONFIGURED_TIMEOUT:
             timeout = self.config.timeout
-        return aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(timeout),
-            **(self.config.client_kwargs if client_kwargs is None else client_kwargs),
-        )
+        options = dict(self.config.client_kwargs if client_kwargs is None else client_kwargs)
+        options.setdefault("follow_redirects", True)
+        options.setdefault("trust_env", False)
+        options.setdefault("timeout", httpx.Timeout(timeout))
+        return httpx.AsyncClient(**options)
 
     def copy_runtime_state_to(self, other: Endpoint) -> None:
         pass
@@ -396,13 +409,13 @@ class Endpoint:
             )
 
     async def _call(self, payload: dict, headers: dict, **kwargs):
-        return await self._call_aiohttp(payload=payload, headers=headers, **kwargs)
+        return await self._call_http(payload=payload, headers=headers, **kwargs)
 
     def _with_idempotency_key(self, headers: dict, *, routed: bool) -> dict:
         """*headers* with the key one logical request sends on every attempt, when retries are
         idempotent.
 
-        Minted once per logical request, before any retry path (native _call_aiohttp, the
+        Minted once per logical request, before any retry path (native _call_http, the
         opt-in RetryConfig wrapper, or a routed stream's attempts) is entered, and reused
         verbatim across every attempt, so the provider can recognize a lost-response replay as
         the same request. It also takes the place of a client-level key: one key shared by every
@@ -560,74 +573,71 @@ class Endpoint:
         error_context: str,
         _routing_scope: Any = None,
     ) -> Any:
-        import aiohttp
+        import httpx
 
-        async with self._create_http_session() as session:
-            response = None
-            try:
-                response = await session.request(
-                    method=self.config.method,
-                    url=self.config.full_url,
-                    headers=headers,
-                    **body_kwargs,
-                    **request_kwargs,
-                )
+        async with self._create_http_session() as client:
+            response = await client.request(
+                method=self.config.method,
+                url=self.config.full_url,
+                headers=headers,
+                **body_kwargs,
+                **request_kwargs,
+            )
 
-                if response.status == 429 or response.status >= 500:
+            status = response.status_code
+            if status == 429 or status >= 500:
+                try:
                     response.raise_for_status()
-                elif response.status != 200:
-                    try:
-                        error_body = await response.json()
-                        error_message = (
-                            f"{error_context} failed with status {response.status}: {error_body}"
-                        )
-                    except Exception:
-                        error_message = f"{error_context} failed with status {response.status}"
+                except httpx.HTTPStatusError as exc:
+                    raise APIClientError(
+                        str(exc), status_code=status, headers=response.headers
+                    ) from exc
+            elif status != 200:
+                error_kwargs = {}
+                try:
+                    error_body = response.json()
+                    error_message = f"{error_context} failed with status {status}: {error_body}"
+                    error_kwargs["response_data"] = error_body
+                except Exception:
+                    error_message = f"{error_context} failed with status {status}"
 
-                    original = aiohttp.ClientResponseError(
-                        request_info=response.request_info,
-                        history=response.history,
-                        status=response.status,
-                        message=error_message,
-                        headers=response.headers,
-                    )
-                    # 4xx (non-429): wrap in sentinel so the native retry layer
-                    # gives up immediately, preserving the original error on __cause__.
-                    raise _NonRetryableClientError(original) from original
-
-                if response_mode == "bytes":
-                    return await response.read()
-                body = await response.json()
-                error = _error_in_body(payload, body)
-                if error is None:
-                    return body
-
-                # Some OpenAI-compatible gateways answer a refused request with
-                # HTTP 200 and an error object in place of a result. Fail it the
-                # way the status it names would have failed.
-                code = error.get("code") if isinstance(error, dict) else None
-                status = (
-                    code
-                    if isinstance(code, int) and not isinstance(code, bool) and 400 <= code < 600
-                    else response.status
-                )
-                original = aiohttp.ClientResponseError(
-                    request_info=response.request_info,
-                    history=response.history,
-                    status=status,
-                    message=f"{error_context} failed with status {status}: {body}",
+                original = APIClientError(
+                    error_message,
+                    status_code=status,
                     headers=response.headers,
+                    **error_kwargs,
                 )
-                if status == 429 or status >= 500:
-                    raise original
+                # 4xx (non-429): wrap in sentinel so the native retry layer
+                # gives up immediately, preserving the original error on __cause__.
                 raise _NonRetryableClientError(original) from original
-            finally:
-                # Ensure response is properly released if coroutine is cancelled between retries.
-                # aiohttp.ClientResponse.release() is synchronous (not a coroutine) — do not await.
-                if response is not None and not response.closed:
-                    response.release()
 
-    async def _call_aiohttp(
+            if response_mode == "bytes":
+                return response.content
+            body = response.json()
+            error = _error_in_body(payload, body)
+            if error is None:
+                return body
+
+            # Some OpenAI-compatible gateways answer a refused request with
+            # HTTP 200 and an error object in place of a result. Fail it the
+            # way the status it names would have failed.
+            code = error.get("code") if isinstance(error, dict) else None
+            status = (
+                code
+                if isinstance(code, int) and not isinstance(code, bool) and 400 <= code < 600
+                else response.status_code
+            )
+            original = APIClientError(
+                f"{error_context} failed with status {status}: {body}",
+                status_code=status,
+                headers=response.headers,
+                response_data=body,
+            )
+            if status == 429 or status >= 500:
+                raise original
+            raise _NonRetryableClientError(original) from original
+
+    async def _call_http(
         self,
         payload: dict[str, Any],
         headers: dict[str, str],
@@ -663,12 +673,12 @@ class Endpoint:
             _routing_scope = self._account_scope(_routing_scope)
         self._assert_ssrf_safe_url()
 
-        import aiohttp
+        import httpx
 
         build_body = request_body_factory or (lambda: {"json": payload})
 
         async def _make_request():
-            # Body rebuilt per-attempt, not before retry orchestration: FormData/BytesIO/
+            # Body rebuilt per-attempt, not before retry orchestration: multipart bodies and
             # file streams get consumed by the first POST and must not be silently replayed.
             body_kwargs = build_body()
             collision = set(body_kwargs) & set(request_kwargs)
@@ -697,7 +707,7 @@ class Endpoint:
 
         # No RetryConfig: native path excludes the 4xx sentinel so it gives up immediately.
         # max_retries is a total-attempt cap; retry_with_backoff runs +1 attempts, so subtract one.
-        retry_exceptions = (aiohttp.ClientError, asyncio.TimeoutError)
+        retry_exceptions = (httpx.RequestError, APIClientError, asyncio.TimeoutError)
         excluded_exceptions: tuple[type[Exception], ...] = (_NonRetryableClientError,)
         if routed:
             retry_exceptions = (*retry_exceptions, _RoutedRetryableError)
@@ -734,7 +744,7 @@ class Endpoint:
             # as a routed call's do.
             headers = self._with_idempotency_key(headers, routed=True)
 
-        stream = self._stream_aiohttp(
+        stream = self._stream_http(
             payload=payload,
             headers=headers,
             **scope_kwargs,
@@ -752,7 +762,7 @@ class Endpoint:
             # too, so it records how the stream ended now rather than when collected.
             await stream.aclose()
 
-    async def _stream_aiohttp(
+    async def _stream_http(
         self,
         payload: dict,
         headers: dict,
@@ -764,31 +774,27 @@ class Endpoint:
 
         payload["stream"] = True
 
-        async with self._create_http_session() as session:
-            async with session.request(
+        async with self._create_http_session() as client:
+            async with client.stream(
                 method=self.config.method,
                 url=self.config.full_url,
                 headers=headers,
                 json=payload,
                 **kwargs,
             ) as response:
-                if response.status != 200:
-                    import aiohttp
-
-                    raise aiohttp.ClientResponseError(
-                        request_info=response.request_info,
-                        history=response.history,
-                        status=response.status,
-                        message=f"Request failed with status {response.status}",
+                if response.status_code != 200:
+                    raise APIClientError(
+                        f"Request failed with status {response.status_code}",
+                        status_code=response.status_code,
                         headers=response.headers,
                     )
 
                 pending = ""
                 frame = _SSEFrame()
-                async for raw in response.content:
-                    if not raw:
+                async for text in response.aiter_text():
+                    if not text:
                         continue
-                    pending += raw.decode("utf-8")
+                    pending += text
                     while "\n" in pending:
                         line, pending = pending.split("\n", 1)
                         for data, name in self._frame_stream_line(line, frame):
