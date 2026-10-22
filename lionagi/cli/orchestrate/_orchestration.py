@@ -518,6 +518,11 @@ class OrchestrationEnv:
     cwd: str | None
     team_data: dict | None = None
 
+    # The effort the orchestrator runs at, for the run record. ``effort`` above is
+    # the run-wide effort workers take, set only when one was asked for; this one
+    # can also come from the codex user config, which workers do not load.
+    orc_effort: str | None = None
+
     # In-process team messaging (parallel to team_data's file-based channel).
     # All three are set together when team mode is active; None otherwise.
     exchange: Exchange | None = None
@@ -698,6 +703,91 @@ def _worker_mcp_policy_section(env: OrchestrationEnv, *, grant_spawn: bool) -> s
     )
 
 
+def _isolate_worker_cli_config(imodel) -> None:
+    """Keep the user's own codex configuration out of a codex worker's process.
+
+    A worker is started by the run, not by the person whose interactive CLI config
+    sits in their home directory, and a codex config carries MCP servers and
+    profiles of its own. Codex gets ``--ignore-user-config`` and no ``-p`` profile.
+    Its MCP set, model and effort are handed to it explicitly, and the user
+    config's sandbox settings and its hook and project trust records ride beside
+    the flag (codex.py names which), so what it trusts stays trusted. A Claude worker
+    is not isolated here and keeps its settings sources.
+    Applied before the MCP hand-off, which reads the codex flag.
+    """
+    if not getattr(imodel, "is_cli", False):
+        return
+    from lionagi.agent.factory import _canonical_provider
+
+    kwargs = imodel.endpoint.config.kwargs
+    if _canonical_provider(imodel.endpoint.config.provider) == "codex":
+        kwargs["ignore_user_config"] = True
+        kwargs["profile"] = None
+
+
+def _check_orchestrator_clone_mcp_set(env: OrchestrationEnv) -> None:
+    """Refuse, before the run starts, a worker set a clone of the orchestrator cannot take.
+
+    A reactive spawn routed to no role and started independent of its emitter is
+    cloned from the session's default branch, the orchestrator's, then isolated
+    like a worker and handed the worker set (``_spawn_branch_setup`` in flow.py).
+    A set that hand-off refuses would fail the run mid-flight, so it is refused
+    here, as a planned worker's is when it is built. The check is that hand-off,
+    run on a scratch request carrying the flag isolation sets.
+    """
+    servers = getattr(env, "mcp_servers", None)
+    imodel = getattr(env.orc_branch, "chat_model", None)
+    if not servers or not getattr(imodel, "is_cli", False):
+        return
+    from lionagi.agent.factory import _canonical_provider, apply_forwarded_mcp_servers
+
+    provider = imodel.endpoint.config.provider
+    if _canonical_provider(provider) != "codex":
+        return
+    try:
+        apply_forwarded_mcp_servers(
+            {"ignore_user_config": True}, servers, provider=provider, exclusive=True
+        )
+    except ConfigurationError as exc:
+        raise ConfigurationError(
+            "A reactive spawn routed to no role can run as a worker cloned from the "
+            f"codex orchestrator, and it takes the worker MCP set: {exc}"
+        ) from exc
+
+
+def _check_orchestrator_clone_profile(env: OrchestrationEnv) -> None:
+    """Refuse, before the run starts, a codex orchestrator profile its clones could not take.
+
+    A clone of the orchestrator is isolated like a worker and keeps the config
+    overrides its model was built with, a ``codex/<name>`` profile's settings among
+    them, so the profile is held to the rule a planned worker's build applies.
+    """
+    imodel = getattr(env.orc_branch, "chat_model", None)
+    if not getattr(imodel, "is_cli", False):
+        return
+    from lionagi.agent.factory import _canonical_provider
+    from lionagi.providers.openai._codex_profile import (
+        refuse_codex_profile_run_settings,
+        resolve_codex_config_profile,
+    )
+
+    if _canonical_provider(imodel.endpoint.config.provider) != "codex":
+        return
+    provider, _, name = parse_model_spec(env.default_model_spec).model.partition("/")
+    if provider != "codex" or not name:
+        return
+    resolved = resolve_codex_config_profile(name)
+    if resolved is None:
+        return
+    try:
+        refuse_codex_profile_run_settings(name, resolved[1])
+    except ConfigurationError as exc:
+        raise ConfigurationError(
+            "A reactive spawn routed to no role can run as a worker cloned from the "
+            f"codex orchestrator, and that worker ignores the user config: {exc}"
+        ) from exc
+
+
 def _hand_mcp_servers(
     imodel,
     servers: dict | None,
@@ -707,9 +797,8 @@ def _hand_mcp_servers(
 ) -> None:
     """Give one worker's model the run's server set, or say it could not be given.
 
-    ``{}`` (apply no servers) and ``None`` (nothing to hand over, keep
-    whatever the model already had) are different requests. See
-    ``docs/internals/cli.md`` (`_orchestration.py`).
+    ``{}`` (apply no servers) and ``None`` (nothing to hand over, keep whatever the model
+    already had) are different requests. See ``docs/internals/cli.md`` (`_orchestration.py`).
     """
     if servers is None:
         return
@@ -721,6 +810,7 @@ def _hand_mcp_servers(
         servers,
         provider=provider,
         exclusive=not servers if exclusive is None else exclusive,
+        env=getattr(imodel.endpoint, "_runtime_state", {}).get("env"),
     )
     if applied:
         return
@@ -848,7 +938,23 @@ async def setup_orchestration(
     )
     _orc_provider = orc_imodel.endpoint.config.provider
     _hand_mcp_servers(orc_imodel, run_mcp_servers, label="orchestrator")
-    effort = resolve_persisted_effort(_orc_provider, orc_imodel, effort)
+    effort_requested = effort is not None or parse_model_spec(model_spec).effort is not None
+    if not effort_requested and orc_imodel.endpoint.config.kwargs.get("ignore_user_config"):
+        # An empty set left the orchestrator loading no user config, so the effort
+        # build_imodel_from_spec derived from that config goes too (create_agent
+        # drops it the same way).
+        from lionagi.agent.factory import _canonical_provider
+        from lionagi.service.providers import PROVIDER_EFFORT_KWARG
+
+        effort_kwarg = PROVIDER_EFFORT_KWARG.get(_canonical_provider(_orc_provider))
+        if effort_kwarg:
+            orc_imodel.endpoint.config.kwargs.pop(effort_kwarg, None)
+    orc_effort = resolve_persisted_effort(_orc_provider, orc_imodel, effort)
+    # Workers load no user config, so a run-wide effort reaches them only when one
+    # was asked for. Asked for nothing, a codex orchestrator derives its own effort
+    # from that config (build_imodel_from_spec), and that effort stays its own.
+    if effort_requested:
+        effort = orc_effort
     if cwd:
         orc_imodel.endpoint.config.kwargs.setdefault("repo", Path(cwd))
 
@@ -907,6 +1013,7 @@ async def setup_orchestration(
         default_model_spec=model_spec,
         bare=bare,
         effort=effort,
+        orc_effort=orc_effort,
         theme=theme,
         yolo=yolo,
         bypass=bypass,
@@ -1138,7 +1245,10 @@ async def build_worker_branch(
             if not env.bare
             else DEFAULT_WORKLOAD
         ),
+        # Isolated below, so no effort is derived from the user config either.
+        ignore_user_config=True,
     )
+    _isolate_worker_cli_config(w_imodel)
     worker_mcp_servers = getattr(env, "mcp_servers", None)
     _hand_mcp_servers(
         w_imodel,

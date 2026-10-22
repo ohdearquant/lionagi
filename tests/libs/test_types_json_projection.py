@@ -259,6 +259,17 @@ def test_json_projection_rejects_non_finite_numbers_instead_of_writing_null(valu
         projected.to_dict(mode="json")
 
 
+@pytest.mark.parametrize("container", [set, frozenset])
+def test_json_projection_walks_into_sets_as_it_does_lists(container):
+    projected = ProjectionDataClass(
+        params=NestedParams(),
+        payload={"metric": container([float("nan")])},
+    )
+
+    with pytest.raises(ValueError, match=r"non-finite float at \$\.payload\.metric\[0\]"):
+        projected.to_dict(mode="json")
+
+
 def test_json_projection_rejects_bytes_until_snapshot_encoding_is_versioned():
     value = ProjectionDataClass(params=NestedParams(), payload={"raw": b"opaque"})
 

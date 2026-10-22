@@ -328,6 +328,7 @@ BOOLEAN_FIELDS: tuple[str, ...] = (
     "search",
     "fast_mode",
     "contain_account_integrations",
+    "ignore_user_config",
 )
 
 

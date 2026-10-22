@@ -778,6 +778,7 @@ async def _spawned_branch_kwargs(
         worker_artifact_dirs={},
         cwd=str(tmp_path),
         verbose=False,
+        effort=None,
         _live_persist=None,
         team_data=team_data,
         exchange=None,

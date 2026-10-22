@@ -179,6 +179,23 @@ def test_the_light_pins_come_after_every_caller_override(tmp_path):
     assert overrides.index('model_verbosity="low"') < len(overrides) - 2
 
 
+def test_the_light_pins_come_after_the_settings_carried_beside_ignore_user_config(tmp_path):
+    env = _home_with_config(
+        tmp_path,
+        "[sandbox_workspace_write]\nnetwork_access = true\n"
+        f"writable_roots = [{str(tmp_path / 'elsewhere')!r}]\n",
+    )
+    args = _codex(tmp_path, workload="light", ignore_user_config=True, env=env)
+    assert "--ignore-user-config" in args
+    sandbox = [o for o in _pairs(args, "-c") if o.startswith("sandbox_workspace_write.")]
+    # The user config's grants are carried, and the pins still have the last word.
+    assert "sandbox_workspace_write.network_access=true" in sandbox[:-2]
+    assert sandbox[-2:] == [
+        "sandbox_workspace_write.writable_roots=[]",
+        "sandbox_workspace_write.network_access=false",
+    ]
+
+
 def test_a_copied_request_cannot_slip_a_light_agent_past_the_refusal(tmp_path):
     request = CodexCodeRequest(prompt="hi", repo=tmp_path, workload="light")
     copied = request.model_copy(update={"bypass_approvals": True})

@@ -45,6 +45,8 @@ from ._notify import register_flow_notify_scope, unregister_flow_notify_scope
 from ._orchestration import (
     EFFORT_MAP,
     OrchestrationEnv,
+    _check_orchestrator_clone_mcp_set,
+    _check_orchestrator_clone_profile,
     _hand_mcp_servers,
     _resolve_worker_model_spec,
     attribute_worker_build_failure,
@@ -1022,6 +1024,10 @@ async def _build_dag(
 
     def _may_spawn(role: str) -> bool:
         return max_spawn > 0 and reactive and (spawn_roles is None or role in spawn_roles)
+
+    if reactive and max_spawn > 0:
+        _check_orchestrator_clone_mcp_set(env)
+        _check_orchestrator_clone_profile(env)
 
     worker_models: list[str] = []
     node_ids: list[str] = []
@@ -2255,6 +2261,26 @@ async def _execute_dag(
 
         if not is_cli:
             return
+        # A spawned node is a worker the run starts: a codex one keeps the user's
+        # CLI config out, as a planned worker does. Its model is a copy (Branch.clone).
+        from ._orchestration import _isolate_worker_cli_config
+
+        _isolate_worker_cli_config(chat_model)
+        if getattr(branch, "metadata", {}).get("clone_from") is env.orc_branch and not env.effort:
+            # A copy of the orchestrator's model carries the effort that model was
+            # built with, which a codex orchestrator derives from the user config
+            # this node no longer loads. With no run-wide effort asked for, it runs
+            # at what a planned worker with no role effort gets. An effort a codex
+            # profile the orchestrator's spec names sets as an override stays, as it
+            # does on a planned worker built from that spec.
+            from lionagi.agent.factory import _canonical_provider
+            from lionagi.service.providers import PROVIDER_EFFORT_KWARG
+
+            effort_kwarg = PROVIDER_EFFORT_KWARG.get(
+                _canonical_provider(chat_model.endpoint.config.provider)
+            )
+            if effort_kwarg:
+                chat_model.endpoint.config.kwargs.pop(effort_kwarg, None)
         # A clone of the orchestrator's branch would carry the run's whole set,
         # job control included. A spawned node is a leaf like a planned worker
         # and gets the worker set the same way, as its whole set.
@@ -3152,7 +3178,7 @@ async def _run_flow(
         invocation_id=invocation_id,
         model=_orc_model,
         provider=_orc_provider,
-        effort=env.effort,
+        effort=getattr(env, "orc_effort", None),
         project=project,
         artifact_contract=artifact_contract,
         extra_node_metadata=_extra_node_metadata,
