@@ -1,8 +1,12 @@
-# What the runner expects or writes beside it and in each run directory; README.md lists what a
-# run commits.
-/home/
-/tree/
-/venv/
-/runs/*/*.prompt.txt
-/runs/*/*.stdout.txt
-/runs/*/*.stderr.txt
+# What the runner expects beside it, and the files it writes for each leg into a run directory
+# anywhere under this one; README.md lists what a run commits.
+/home
+/tree
+/venv
+*.prompt.txt
+*.stdout.txt
+*.stderr.txt
+# A run directory named like a leg file is not ignored for that name.
+!*.prompt.txt/
+!*.stdout.txt/
+!*.stderr.txt/

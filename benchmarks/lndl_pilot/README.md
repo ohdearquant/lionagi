@@ -265,23 +265,28 @@ rows. Each leg's spend lines are in its run's `spend.jsonl`.
   block, which `check_answer` would ignore), checked `--concurrency`, `--loops` (each 1 to 100
   letters, digits, `_` and `-`, the name of a profile beside the runner, letter case included,
   and none named twice), `--only`, that no two legs would write the same files, and that `--out`
-  is not empty, resolves, goes up (`..`) only out of a directory the OS can look up, lies under a
-  directory, and that nothing, a dangling link included, is at it yet, and started `git` and
-  `li --version` for the header, so none of those checks failing, and neither program failing to
-  start, leaves a run directory behind; a failed check, or a run directory that cannot be created,
-  exits 2, and the second removes the directories made on the way to it. Each task in the two as-run
-  task files has an empty `none_of` beside its `accept`. Fourth, `main()` names a task file that is
-  in this directory by its path here in `header.json`, the form `summarize.py` reads (below); it
-  writes each part of the path as its directory lists it, taking an entry whose name differs from
-  the given one only in letter case when it is the same file, so a spelling that a
-  case-insensitive volume accepts names it too and no link beside the file is taken for it. Of the
-  files' top-level statements, `summarize()`, `run_one()`, `run_pair()` and `main()` are the ones
-  whose `ast.dump` differs, and `run_pilot.py` adds two imports (`threading` and
-  `collections.abc.Callable`), the `TASK_ID` pattern, the YAML loader that refuses a key named
-  twice (`_TaskLoader`, `_mapping_without_repeats()` and the call that registers it) and
-  `task_problems()`. With `missing_spend` at 0 and every leg run in all four runs, both give the
-  same totals and rule: the test loads each as-run copy, checks its sha256 against the run's
-  `runner_sha256`, and recomputes the run's `summary.json` with it.
+  is not empty and that no leg file the run will write would have a path too long for the file
+  system; it then makes that directory with one `mkdir`, which refuses an existing path, a
+  missing or dangling parent, a file or a link loop on the way, and a name or path the file
+  system will not take, each with the OS's own reason, and started `git` and `li --version` for
+  the header, so none of those checks failing, and neither program failing to start, leaves a
+  run directory behind; a failed check, or a run directory that cannot be created, exits 2, and
+  only the run directory itself is ever made. The `mkdir` follows links, so a path component
+  replaced by a link to another existing directory after `--out` was given is followed, and a
+  `..` after a link goes up from the link's target, as the OS resolves it; its message gives the
+  OS's reason, not the component that failed. Each task in the two as-run task files has an
+  empty `none_of` beside its `accept`. Fourth, `main()` names a task file that is in this
+  directory by its path here in `header.json`, the form `summarize.py` reads (below); it writes
+  each part of the path as its directory lists it, taking an entry whose name differs from the
+  given one only in letter case when it is the same file, so a spelling that a case-insensitive
+  volume accepts names it too and no link beside the file is taken for it. Of the files'
+  top-level statements, `summarize()`, `run_one()`, `run_pair()` and `main()` are the ones whose
+  `ast.dump` differs, and `run_pilot.py` adds two imports (`threading` and
+  `collections.abc.Callable`), the `TASK_ID` pattern, `_path_max()`, the YAML loader that
+  refuses a key named twice (`_TaskLoader`, `_mapping_without_repeats()` and the call that
+  registers it) and `task_problems()`. With `missing_spend` at 0 and every leg run in all four
+  runs, both give the same totals and rule: the test loads each as-run copy, checks its sha256
+  against the run's `runner_sha256`, and recomputes the run's `summary.json` with it.
 - In each `header.json`, `tasks_file` was the absolute path the runner as run wrote
   (`Path(args.tasks).resolve()`, line 141 of `runs/run_pilot.as-run.py.txt` and line 147 of r5's
   copy). It was replaced by `tasks.yaml` before the first commit and now names the copy of the
@@ -308,7 +313,11 @@ rows. Each leg's spend lines are in its run's `spend.jsonl`.
   the stdout is committed as `answers.jsonl`, the stderr's spend lines as `spend.jsonl`, and the
   syntax of each round of each `lndl` conversation as `rounds.jsonl`, from which ADR-0132 counts the
   runs that opened with an `<invoke>` tag and the requests that went to rounds with no block. The
-  prompts, the rest of the stderr and the conversations are not committed.
+  prompts, the rest of the stderr and the conversations are not committed, and `.gitignore`
+  beside the runner leaves them out of a `git add`, with `home/`, `tree/` and `venv/`. A run
+  directory under one of those three (`--out home/r9`, say) passes the runner's checks and is
+  ignored whole, its results included. A run whose results are to be committed goes outside
+  those three; `runs/` is where this repo keeps them.
 
 ## Running it
 

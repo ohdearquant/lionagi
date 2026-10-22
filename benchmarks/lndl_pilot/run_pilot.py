@@ -36,6 +36,26 @@ RUN_TIMEOUT_S = 420
 TASK_ID = re.compile(r"[A-Za-z0-9_-]{1,100}")
 
 
+def _path_max(path: Path) -> int:
+    """`PC_PATH_MAX` at the nearest existing ancestor of `path`, which counts a path's terminating
+    NUL; where it cannot be read, the platform's usual value (4096 on Linux, 1024 elsewhere)."""
+    probe = path
+    while probe != probe.parent:
+        try:
+            os.stat(probe)
+        except OSError:
+            probe = probe.parent
+            continue
+        break
+    try:
+        limit = os.pathconf(probe, "PC_PATH_MAX")
+    except (OSError, ValueError):
+        return 4096 if sys.platform.startswith("linux") else 1024
+    if limit > 0:
+        return limit
+    return 4096 if sys.platform.startswith("linux") else 1024
+
+
 class _TaskLoader(yaml.SafeLoader):
     """safe_load keeps the last of a key a mapping names twice; this loader refuses it."""
 
@@ -243,8 +263,9 @@ def task_problems(tasks: object) -> list[str]:
                     problems.append(f"{name}: `{item}` does not compile: {exc}")
                     continue
                 if not item[3:].strip() or pattern.search("") is not None:
-                    # A pattern that matches an empty answer would let all_of accept one and
-                    # make none_of refuse every answer; a blank one is a stray space.
+                    # A pattern that matches an empty answer would let all_of accept one, and
+                    # in none_of it can refuse every answer (`.*` matches each); a blank one is
+                    # a stray space.
                     problems.append(
                         f"{name}: `accept.{key}` has a `re:` pattern that is blank or matches"
                         " an empty answer"
@@ -314,18 +335,28 @@ def main() -> int:
     if missing:
         print(f"{', '.join(missing)} not found; nothing run", file=sys.stderr)
         return 2
+    # A relative `--tasks` from a current directory that has gone raises OSError here too, and
+    # before Python 3.13 resolve() raises RuntimeError on a symlink loop.
     try:
         tasks_path = Path(args.tasks).resolve()
         tasks_bytes = tasks_path.read_bytes()
-    # resolve() raises RuntimeError on a link loop before Python 3.13.
     except (OSError, RuntimeError) as exc:
-        print(f"--tasks: {args.tasks} cannot be read: {exc}\nnothing run", file=sys.stderr)
+        reason = getattr(exc, "strerror", None) or exc
+        print(f"--tasks: {args.tasks} cannot be read: {reason}", file=sys.stderr)
+        print("nothing run", file=sys.stderr)
         return 2
     try:
         loaded = yaml.load(tasks_bytes, Loader=_TaskLoader)  # noqa: S506 - a SafeLoader subclass
-    # Deep nesting raises RecursionError rather than a YAMLError.
-    except (yaml.YAMLError, RecursionError) as exc:
+    except yaml.YAMLError as exc:
         print(f"{tasks_path} is not YAML: {exc}\nnothing run", file=sys.stderr)
+        return 2
+    # Not every failure is a YAMLError: deep nesting raises RecursionError, and the code that
+    # builds a value raises whatever it raises (ValueError for a date such as 2026-02-30,
+    # KeyError for `!!bool abc`, IndexError for `!!int ""`, and others). Each is a file this
+    # runner cannot take.
+    except Exception as exc:  # noqa: BLE001
+        reason = f"{type(exc).__name__}: {exc}"
+        print(f"{tasks_path} cannot be loaded: {reason}\nnothing run", file=sys.stderr)
         return 2
     if not isinstance(loaded, dict) or "tasks" not in loaded:
         print(f"{tasks_path} has no top-level `tasks`; nothing run", file=sys.stderr)
@@ -350,46 +381,16 @@ def main() -> int:
     if len({loop.lower() for loop in loops}) < len(loops):
         # A loop named twice would run each task's leg twice into the same files.
         problems.append(f"--loops: {args.loops!r} names a loop twice, ignoring letter case")
-    # resolve() reads a `..` as text, where the OS goes up only from a directory it can look up,
-    # so the two agree on where --out lies only when the OS resolves the path up to each `..`.
-    parts = Path(args.out).parts
-    up = None
-    for i, part in enumerate(parts):
-        if part != "..":
-            continue
-        try:
-            os.stat(Path(*parts[: i + 1]))
-        except FileNotFoundError:
-            up = f"goes up from {Path(*parts[:i])}, which does not exist"
-        except OSError as exc:
-            up = f"goes up from {Path(*parts[:i])}, which cannot be looked up: {exc.strerror}"
-        if up is not None:
-            break
     if not args.out:
         problems.append("--out is empty")
-    elif os.path.lexists(Path(args.out)):
-        # Through Path, which drops a trailing slash: with one, lstat follows a dangling link.
-        problems.append(f"--out: {args.out} already exists")
-    elif up is not None:
-        problems.append(f"--out: {args.out} {up}")
     else:
+        # Absolute: each child runs with cwd set to the read tree, so a relative path would
+        # resolve there and the prompt file would not be found. A current directory that has
+        # gone raises OSError here, which is a refusal rather than a traceback.
         try:
-            # Absolute: each child runs with cwd set to the read tree, so a relative path would
-            # resolve there and the prompt file would not be found.
-            out = Path(args.out).resolve()
-            # From Python 3.13 resolve() returns through a link loop instead of raising, so the
-            # deepest part of the path that exists is resolved strictly: a loop, a dangling link
-            # or a file on the way is refused here, not by mkdir once the run has begun.
-            parent = Path(args.out).absolute().parent
-            while not os.path.lexists(parent) and parent != parent.parent:
-                parent = parent.parent
-            # isdir() asks the OS, which before Python 3.13 can disagree with realpath(): a link
-            # whose target goes up out of a file (`F/../D`) resolves there as text.
-            if not (os.path.isdir(os.path.realpath(parent, strict=True)) and os.path.isdir(parent)):
-                problems.append(f"--out: {args.out} is under {parent}, which is not a directory")
-        # resolve() raises RuntimeError on a link loop before Python 3.13; realpath raises OSError.
-        except (OSError, RuntimeError) as exc:
-            problems.append(f"--out: {args.out} does not resolve: {exc}")
+            out = Path(args.out).absolute()
+        except OSError as exc:
+            problems.append(f"--out: {args.out} cannot be made absolute: {exc.strerror or exc}")
     if args.only:
         wanted = args.only.split(",")
         known = (
@@ -404,6 +405,23 @@ def main() -> int:
         clashes = sorted({stem for stem in stems if stems.count(stem) > 1})
         if clashes:
             problems.append(f"two legs would write the same files: {', '.join(clashes)}")
+    if not problems:
+        # A leg writes `{id}-{loop}.prompt.txt`, `.stdout.txt` and `.stderr.txt`, whose suffixes
+        # have the same length. Refuse a directory under which one of those would be too long,
+        # before the run starts and each leg fails writing its prompt. The limit counts the
+        # terminating NUL, so a path must be shorter than it.
+        run_tasks = [t for t in tasks if t["id"] in wanted] if args.only else tasks
+        longest = max(
+            len(os.fsencode(out / f"{t['id']}-{loop}.prompt.txt"))
+            for t in run_tasks
+            for loop in loops
+        )
+        limit = _path_max(out.parent)
+        if longest >= limit:
+            problems.append(
+                f"--out: {args.out} is too long: a leg's file path would be {longest} bytes, "
+                f"and this file system takes at most {limit - 1}"
+            )
     if problems:
         for problem in problems:
             print(problem, file=sys.stderr)
@@ -473,23 +491,14 @@ def main() -> int:
     }
     # Made once everything above has been checked and `git` and `li` have answered for the
     # header, so a refused run, or an `li` that cannot start, leaves no run directory behind.
-    # The ancestors mkdir would create, deepest first, so that a failure part way removes them.
-    missing = []
-    for ancestor in out.parents:
-        if os.path.lexists(ancestor):
-            break
-        missing.append(ancestor)
+    # This one mkdir, with no parents, is the last gate for `--out`: the OS follows links on the way,
+    # so a component replaced by a link to another existing directory after `--out` was given is
+    # followed, while a missing path, a file or a link loop is refused. The message carries the
+    # OS's reason, not the component that failed.
     try:
-        out.mkdir(parents=True, exist_ok=False)
+        out.mkdir(exist_ok=False)
     except OSError as exc:
-        # An ancestor without search permission or on a read-only file system shows only here, and
-        # so does a name the file system refuses, once the ancestors before it have been made.
-        for ancestor in missing:
-            try:
-                ancestor.rmdir()
-            except OSError:
-                pass
-        print(f"--out: {args.out} cannot be created: {exc}", file=sys.stderr)
+        print(f"--out: {args.out} cannot be created: {exc.strerror}", file=sys.stderr)
         print("nothing run", file=sys.stderr)
         return 2
     (out / "header.json").write_text(json.dumps(header, indent=2))
