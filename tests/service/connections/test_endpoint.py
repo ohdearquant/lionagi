@@ -1843,12 +1843,68 @@ class TestAiohttpRequestValues:
                 return _raw_response("307 Temporary Redirect", headers={"Location": location})
 
             async with _LocalServer(downgrade, context) as server:
-                endpoint = _local_endpoint(server.port, scheme="https")
+                # Retries allowed: the refusal is not one, so the pinned server is asked once.
+                endpoint = _local_endpoint(server.port, scheme="https", max_retries=3)
                 with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
                     with pytest.raises(httpx.ConnectError, match="redirect from https to http"):
                         await endpoint._call_http({}, {}, ssl=pin)
 
-        assert set(server.request_lines) == {"POST /v1/chat HTTP/1.1"}
+        assert server.request_lines == ["POST /v1/chat HTTP/1.1"]
+        assert plain.request_lines == []
+
+    @pytest.mark.asyncio
+    async def test_a_pinned_request_is_not_redirected_off_https_after_starting_on_http(
+        self, tmp_path
+    ):
+        aiohttp = pytest.importorskip("aiohttp")
+        import hashlib
+
+        context, der = _self_signed_server_context(tmp_path)
+        pin = aiohttp.Fingerprint(hashlib.sha256(der).digest())
+        pinned_port = None
+
+        async def plain_hops(server, line):
+            if "/v1/final" in line:
+                return await _ok(server, line)
+            location = f"https://127.0.0.1:{pinned_port}/v1/chat"
+            return _raw_response("307 Temporary Redirect", headers={"Location": location})
+
+        async with _LocalServer(plain_hops) as plain:
+
+            async def downgrade(server, line):
+                location = f"http://127.0.0.1:{plain.port}/v1/final"
+                return _raw_response("307 Temporary Redirect", headers={"Location": location})
+
+            async with _LocalServer(downgrade, context) as pinned:
+                pinned_port = pinned.port
+                with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+                    with pytest.raises(httpx.ConnectError, match="redirect from https to http"):
+                        await _local_endpoint(plain.port)._call_http({}, {}, ssl=pin)
+
+        assert plain.request_lines == ["POST /v1/chat HTTP/1.1"]
+        assert pinned.request_lines == ["POST /v1/chat HTTP/1.1"]
+
+    @pytest.mark.asyncio
+    async def test_a_pinned_stream_is_not_redirected_off_https(self, tmp_path):
+        aiohttp = pytest.importorskip("aiohttp")
+        import hashlib
+
+        context, der = _self_signed_server_context(tmp_path)
+        pin = aiohttp.Fingerprint(hashlib.sha256(der).digest())
+        async with _LocalServer(_ok) as plain:
+
+            async def downgrade(server, line):
+                location = f"http://127.0.0.1:{plain.port}/v1/final"
+                return _raw_response("307 Temporary Redirect", headers={"Location": location})
+
+            async with _LocalServer(downgrade, context) as server:
+                endpoint = _local_endpoint(server.port, scheme="https")
+                with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+                    with pytest.raises(httpx.ConnectError, match="redirect from https to http"):
+                        async for _ in endpoint._stream_http({}, {}, ssl=pin):
+                            pass
+
+        assert server.request_lines == ["POST /v1/chat HTTP/1.1"]
         assert plain.request_lines == []
 
     @pytest.mark.asyncio
@@ -1901,6 +1957,7 @@ class TestAiohttpRequestValues:
         [
             ({"total": 10, "sock_read": 2}, (10, 2, 10, 10)),
             ({"total": 5, "connect": 30, "sock_connect": 2}, (2, 5, 5, 5)),
+            ({"connect": 2, "sock_connect": 30}, (2, None, None, 2)),
             ({"connect": 3}, (3, None, None, 3)),
             ({}, (None, None, None, None)),
             ({"total": 2, "connect": 10, "sock_connect": 10, "sock_read": 10}, (2, 2, 2, 2)),
@@ -1918,6 +1975,15 @@ class TestAiohttpRequestValues:
         timeout = rest["timeout"]
         assert isinstance(timeout, httpx.Timeout)
         assert (timeout.connect, timeout.read, timeout.write, timeout.pool) == expected
+
+    @pytest.mark.parametrize("sock_read", [-1, -0.5])
+    def test_a_negative_sock_read_is_refused(self, sock_read):
+        aiohttp = pytest.importorskip("aiohttp")
+
+        with pytest.raises(ValueError, match="sock_read"):
+            _local_endpoint(1)._client_for_request(
+                {"timeout": aiohttp.ClientTimeout(total=5, sock_read=sock_read)}
+            )
 
     @pytest.mark.asyncio
     async def test_a_client_timeout_bounds_a_stalled_read(self):
@@ -1941,7 +2007,9 @@ class TestAiohttpRequestValues:
         assert elapsed < 4
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("where", ["request", "float", "client timeout", "config"])
+    @pytest.mark.parametrize(
+        "where", ["request", "float", "client timeout", "config", "client kwargs"]
+    )
     async def test_a_zero_timeout_is_no_timeout(self, where):
         aiohttp = pytest.importorskip("aiohttp")
 
@@ -1954,9 +2022,14 @@ class TestAiohttpRequestValues:
             "float": {"timeout": 0.0},
             "client timeout": {"timeout": aiohttp.ClientTimeout(total=0)},
             "config": {},
+            "client kwargs": {},
         }[where]
+        config = {
+            "config": {"timeout": 0},
+            "client kwargs": {"client_kwargs": {"timeout": 0}},
+        }.get(where, {})
         async with _LocalServer(late) as server:
-            endpoint = _local_endpoint(server.port, **({"timeout": 0} if where == "config" else {}))
+            endpoint = _local_endpoint(server.port, **config)
             with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
                 result = await endpoint._call_http({}, {}, **options)
 

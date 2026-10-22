@@ -66,23 +66,40 @@ def _pinned_ssl_context(fingerprint: bytes):
     return context
 
 
+# Built on first use, as httpx is imported only when a request is made.
+_REFUSED_REDIRECT_ERROR = None
+
+
+def _refused_redirect_error():
+    """The ``httpx.ConnectError`` a pinned client raises for a redirect off https."""
+    global _REFUSED_REDIRECT_ERROR
+    if _REFUSED_REDIRECT_ERROR is None:
+        import httpx
+
+        class RefusedRedirectError(httpx.ConnectError):
+            """A redirect off https from a pinned request; sent again, it would be refused again."""
+
+        _REFUSED_REDIRECT_ERROR = RefusedRedirectError
+    return _REFUSED_REDIRECT_ERROR
+
+
 def _refuse_a_redirect_off_https():
-    """A request hook for a pinned client: a redirect from https to plain http is refused.
+    """A request hook for a pinned client: once a request has gone over https, a redirect
+    to plain http is refused.
 
     The pin is checked only on a TLS connection, so following such a redirect would send the
-    request, body included, to a server the pin never checked. A request first sent over
-    plain http is left alone, as aiohttp left it.
+    request, body included, to a server the pin never checked. Hops over plain http before
+    the first https one are left alone, as aiohttp left them. Each request gets a client of
+    its own, so the hook sees the hops of one request.
     """
-    import httpx
-
-    first_scheme = None
+    https_seen = False
 
     async def hook(request):
-        nonlocal first_scheme
-        if first_scheme is None:
-            first_scheme = request.url.scheme
-        elif first_scheme == "https" and request.url.scheme != "https":
-            raise httpx.ConnectError(
+        nonlocal https_seen
+        if request.url.scheme == "https":
+            https_seen = True
+        elif https_seen:
+            raise _refused_redirect_error()(
                 f"refusing a redirect from https to {request.url.scheme}: "
                 "the certificate fingerprint cannot be checked there",
                 request=request,
@@ -102,18 +119,25 @@ def _httpx_timeout(timeout):
     """httpx's timeout for an ``aiohttp.ClientTimeout``.
 
     httpx has no bound on a whole request, so ``total`` bounds each phase, as
-    ``EndpointConfig.timeout`` does, and caps the phases ``connect``, ``sock_connect`` and
-    ``sock_read`` set. A value of zero or below is no timeout, as aiohttp read it.
+    ``EndpointConfig.timeout`` does, and a phase takes the smallest bound set on it:
+    connecting is bounded by ``sock_connect``, ``connect`` and ``total``, reading by
+    ``sock_read`` and ``total``, and waiting for a pooled connection by ``connect`` and
+    ``total``. A value of zero or below is no timeout, as aiohttp read it, except a negative
+    ``sock_read``: aiohttp timed every read out at once on one, so it is refused here.
     """
     import httpx
 
+    sock_read = timeout.sock_read
+    if isinstance(sock_read, (int, float)) and sock_read < 0:
+        raise ValueError(
+            f"sock_read={sock_read!r} would time every read out at once; "
+            "pass None or 0 for no read timeout"
+        )
     total = _seconds_or_none(timeout.total)
 
     def bound(*values):
-        value = next((v for v in map(_seconds_or_none, values) if v is not None), None)
-        if value is None:
-            return total
-        return value if total is None else min(value, total)
+        bounds = [v for v in (*map(_seconds_or_none, values), total) if v is not None]
+        return min(bounds, default=None)
 
     return httpx.Timeout(
         connect=bound(timeout.sock_connect, timeout.connect),
@@ -327,6 +351,9 @@ class Endpoint:
         if timeout is _CONFIGURED_TIMEOUT:
             timeout = self.config.timeout
         options = dict(self.config.client_kwargs if client_kwargs is None else client_kwargs)
+        if "timeout" in options:
+            # A configured number of zero or below is no timeout, as the config's own is.
+            options["timeout"] = _seconds_or_none(options["timeout"])
         options.setdefault("follow_redirects", True)
         options.setdefault("trust_env", False)
         options.setdefault("verify", _verified_ssl_context())
@@ -734,13 +761,17 @@ class Endpoint:
 
         client, request_kwargs = self._client_for_request(request_kwargs)
         async with client:
-            response = await client.request(
-                method=self.config.method,
-                url=self.config.full_url,
-                headers=headers,
-                **body_kwargs,
-                **request_kwargs,
-            )
+            try:
+                response = await client.request(
+                    method=self.config.method,
+                    url=self.config.full_url,
+                    headers=headers,
+                    **body_kwargs,
+                    **request_kwargs,
+                )
+            except _refused_redirect_error() as exc:
+                # Sent again, the request would reach the pinned server and be refused again.
+                raise _NonRetryableClientError(exc) from exc
 
             status = response.status_code
             if status == 429 or status >= 500:
