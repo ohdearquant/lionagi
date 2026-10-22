@@ -219,12 +219,16 @@ failed but before the manifest write that records the loss leaves no `terminal_w
 count of dropped signals is still written only at teardown. A store that refuses a write in
 compatibility mode is not a lost write here: the run fails with that refusal as its reason
 (ADR-0128 D6), run.json records `failed`, and the status the run decided is not kept; a
-timed-out leg that would have auto-resumed fails the same way and is not resumed. Invocations
+timed-out leg that would have auto-resumed fails the same way and is not resumed. A
+compare-and-set miss is not a lost write either: when another writer has moved the session
+row off the status this teardown read, the teardown reads the row back and returns its
+status without raising, a non-terminal status included, and nothing is recorded. Invocations
 sharing a run id share one run.json, and `terminal_write_lost` is lifecycle data like `status`:
 a later `RunDir.write_manifest` by another invocation replaces it.
 Flow, fanout and play runs write neither field, and neither do runs the Studio operator
-persists (its `setup_agent_persist` call passes no run directory); they degrade without the
-record, as Amendment 2's Limits say for their stop handle. A job whose hook could not take the job lock, so
+persists: the record is written by `li agent`'s teardown, and the operator's
+`setup_agent_persist` call passes a run id and an artifacts path but no `run` or
+`run_manifest`. They degrade without the record, as Amendment 2's Limits say for their stop handle. A job whose hook could not take the job lock, so
 that run.json holds a real terminal status the job record never got, is a neighbouring case this
 amendment does not cover; so is a teardown that is itself interrupted part way by Ctrl-C or a
 cancellation, which records the interrupt's status on run.json without knowing whether its
