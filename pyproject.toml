@@ -56,35 +56,23 @@ classifiers=[
 
 [dependency-groups]
 dev = [
-    "black[jupyter]>=26.3.1",
-    "isort>=6.0.0",
     "pre-commit>=4.2.0",
     "pytest>=9.0.3",
     "pytest-asyncio>=1.1.0",
-    "sphinx-autobuild>=2024.10.3",
-    "sphinx>=8.0.0",
-    "furo>=2024.8.6",
     "ipython>=8.31.0",
-    "ipykernel>=6.29.5",
-    "ipywidgets>=8.1.5",
     "tqdm>=4.67.1",
     "pytest-cov>=6.1.1",
     "ruff>=0.12.0",
     "mkdocs>=1.6.1",
     "mkdocs-material[imaging]>=9.7.7",
     "mkdocs-minify-plugin>=0.8.0",
-    "mkdocs-git-revision-date-localized-plugin>=1.4.7",
-    "mkdocs-git-committers-plugin-2>=2.5.0",
     "mkdocstrings>=0.30.0",
     "mkdocstrings-python>=1.17.0",
     "trio>=0.30.0",
-    "line-profiler>=5.0.0",
-    "memory-profiler>=0.61.0",
     "hypothesis>=6.152.2",
     "pyarrow>=21.0.0",
     "pytest-xdist>=3.8.0",
     "pytest-timeout>=2.4.0",
-    "pytest-benchmark>=5.1.0",
     "httpx>=0.28.1",
     "testcontainers[postgres]>=4.0",
 ]
@@ -106,6 +94,7 @@ reader = [
 
 ollama = [
     "ollama>=0.6.1",
+    "tqdm>=4.67.1",
 ]
 
 mcp = [
@@ -254,7 +243,7 @@ extend-immutable-calls = ["pydantic.Field", "lionagi.mcp.server._arg"]
 # hits the blocked-controller case sets MAX_WORKER_RESTART=0 (scripts/ci.sh) or
 # passes --max-worker-restart=0. scripts/ci.sh checks distinct collected and
 # reported test IDs; a caller who runs pytest directly gets no such check.
-addopts = "-q -ra --strict-config --strict-markers --tb=short --maxfail=5 -n auto --dist loadfile --benchmark-disable --max-worker-restart=4"
+addopts = "-q -ra --strict-config --strict-markers --tb=short --maxfail=5 -n auto --dist loadfile --max-worker-restart=4"
 # Strict, so that a test written for anyio (marked `anyio`, or taking the
 # `anyio_backend` fixture) runs on the backend it is parametrized with. Auto
 # mode hands every coroutine test to pytest-asyncio, which ran each [trio] case
@@ -287,8 +276,6 @@ filterwarnings = [
     "ignore:The `parse_obj` method is deprecated.*:pydantic.warnings.PydanticDeprecatedSince20",
     "ignore:The `dict` method is deprecated.*:pydantic.warnings.PydanticDeprecatedSince20",
     "ignore:The `__fields_set__` attribute is deprecated.*:pydantic.warnings.PydanticDeprecatedSince20",
-    # pytest-benchmark emits this during configure when xdist is active; narrow filter keeps -W error usable
-    "ignore:Benchmarks are automatically disabled because xdist plugin is active.Benchmarks cannot be performed reliably in a parallelized environment.:pytest_benchmark.logger.PytestBenchmarkWarning",
     "ignore::DeprecationWarning:^(?!lionagi\\.).*",
     "ignore::PendingDeprecationWarning",
     "ignore::pytest.PytestUnraisableExceptionWarning",
