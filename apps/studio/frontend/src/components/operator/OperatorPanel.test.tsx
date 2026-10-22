@@ -1544,6 +1544,187 @@ describe("OperatorPanel", () => {
       },
     );
 
+    async function flushAutoAllow() {
+      // Auto-allow decides on a zero-delay timer; let it and the decision settle.
+      for (let tick = 0; tick < 3; tick += 1) {
+        await act(async () => {
+          await new Promise((settle) => window.setTimeout(settle, 0));
+        });
+      }
+    }
+
+    async function startANewConversation() {
+      await openList();
+      const button = [...container.querySelectorAll("button")].find(
+        (item) =>
+          item.textContent === "Start a new conversation" && !item.hasAttribute("aria-expanded"),
+      ) as HTMLButtonElement;
+      await act(async () => button.click());
+    }
+
+    it("reports a kept failure once auto-allow has decided its conversation's proposal", async () => {
+      window.localStorage.setItem("studio:operator-auto-allow", "1");
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames: [] });
+      const pending = deferred<{ requestId: string }>();
+      api.submitOperatorTurn.mockReturnValueOnce(pending.promise);
+      await mount();
+      await sendInstruction();
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      await act(async () => pending.reject(new Error("Send failed on the first row")));
+
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
+      await selectRow(firstRow);
+      await flushAutoAllow();
+
+      expect(api.decideOperatorProposal).toHaveBeenCalledTimes(1);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "Send failed on the first row",
+      );
+      expect(container.querySelector("textarea")?.value).toBe("Inspect this project");
+    });
+
+    it("sends a refused auto-allow decision once and leaves its error showing", async () => {
+      window.localStorage.setItem("studio:operator-auto-allow", "1");
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow]);
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
+      api.decideOperatorProposal.mockRejectedValue(new Error("Decision refused"));
+      await mount();
+      await flushAutoAllow();
+      await flushAutoAllow();
+
+      expect(api.decideOperatorProposal).toHaveBeenCalledTimes(1);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Decision refused");
+
+      api.decideOperatorProposal.mockResolvedValueOnce({
+        proposalId: "proposal-1",
+        status: "allowed",
+      });
+      await act(async () => buttonNamed("Allow")!.click());
+      expect(api.decideOperatorProposal).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps a new conversation started before the first list read settles", async () => {
+      const listing = deferred<OperatorConversation[]>();
+      api.listOperatorConversations.mockReturnValueOnce(listing.promise);
+      await mount();
+      await startANewConversation();
+      const loads = api.getOperatorConversation.mock.calls.length;
+
+      await act(async () => listing.resolve([firstRow]));
+
+      expect(api.getOperatorConversation).toHaveBeenCalledTimes(loads);
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBeNull();
+    });
+
+    it("keeps a draft's text when its conversation cannot be created after a new conversation", async () => {
+      api.listOperatorConversations.mockResolvedValueOnce([]);
+      const pending = deferred<OperatorConversation>();
+      api.createOperatorConversation.mockReturnValueOnce(pending.promise);
+      await mount();
+      await sendInstruction();
+      await startANewConversation();
+      expect(container.querySelector("textarea")?.value).toBe("");
+
+      await act(async () => pending.reject(new Error("Draft create failed")));
+
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "Draft create failed",
+      );
+      expect(container.querySelector("textarea")?.value).toBe("Inspect this project");
+    });
+
+    it("keeps a new conversation started while a draft's conversation is created", async () => {
+      const created = { ...firstRow, id: "created-1", title: "New conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([]);
+      const pending = deferred<OperatorConversation>();
+      api.createOperatorConversation.mockReturnValueOnce(pending.promise);
+      api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "request-created" });
+      await mount();
+      await sendInstruction();
+      await startANewConversation();
+
+      await act(async () => pending.resolve(created));
+
+      expect(api.submitOperatorTurn.mock.calls.at(-1)?.[0]).toBe(created.id);
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBeNull();
+      expect(buttonNamed("Stop")).toBeUndefined();
+    });
+
+    it("keeps a conversation retried while a draft's conversation is created", async () => {
+      const created = { ...firstRow, id: "created-1", title: "New conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow]);
+      const loading = deferred<{ conversation: OperatorConversation; frames: OperatorFrame[] }>();
+      api.getOperatorConversation.mockReturnValueOnce(loading.promise);
+      const pending = deferred<OperatorConversation>();
+      api.createOperatorConversation.mockReturnValueOnce(pending.promise);
+      api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "request-created" });
+      await mount();
+      // Sent while the list's own selection loads; that load then fails.
+      await sendInstruction();
+      await act(async () => loading.reject(new Error("Load failed")));
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames: [] });
+      await act(async () => buttonNamed("Retry")!.click());
+
+      await act(async () => pending.resolve(created));
+
+      expect(api.submitOperatorTurn.mock.calls.at(-1)?.[0]).toBe(created.id);
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe(firstRow.id);
+      expect(buttonNamed("Stop")).toBeUndefined();
+    });
+
+    it("retries the conversation whose load failed, not the stored one", async () => {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      window.localStorage.setItem("studio:operator-conversation", firstRow.id);
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames: [] });
+      await mount();
+      api.getOperatorConversation.mockRejectedValueOnce(new Error("Load failed"));
+      await selectRow(other);
+      expect(buttonNamed("Retry")).toBeDefined();
+
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await act(async () => buttonNamed("Retry")!.click());
+
+      expect(api.getOperatorConversation.mock.calls.at(-1)?.[0]).toBe(other.id);
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe(other.id);
+    });
+
+    it("keeps a fork when a draft's conversation is created during the fork request", async () => {
+      const created = { ...firstRow, id: "created-1", title: "New conversation" };
+      const forked = { ...firstRow, id: "conversation-fork", title: "Scheduler check (fork)" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow]);
+      api.getOperatorConversation.mockReturnValueOnce(new Promise(() => {}));
+      const pending = deferred<OperatorConversation>();
+      api.createOperatorConversation.mockReturnValueOnce(pending.promise);
+      api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "request-created" });
+      const forking = deferred<{ conversation: OperatorConversation; frames: OperatorFrame[] }>();
+      api.forkOperatorConversation.mockReturnValueOnce(forking.promise);
+      await mount();
+      await sendInstruction();
+      await openList();
+      const forkButton = container.querySelector(
+        'ul li button[aria-label="Fork"]',
+      ) as HTMLButtonElement;
+      await act(async () => forkButton.click());
+
+      // The draft's conversation is created while the fork request is in flight.
+      await act(async () => pending.resolve(created));
+      expect(window.localStorage.getItem("studio:operator-conversation")).not.toBe(created.id);
+      expect(buttonNamed("Stop")).toBeUndefined();
+
+      await act(async () => forking.resolve({ conversation: forked, frames: [] }));
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe(forked.id);
+    });
+
     it("shows a conversation description beneath its title and in the tooltip", async () => {
       const description = "Review scheduler retries and release decisions";
       const conversation = {

@@ -824,6 +824,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
   // A send that failed once its conversation was no longer shown: the error and the
   // text, kept until that conversation is selected again.
   const failedSendsRef = useRef(new Map<string, { message: string; instruction: string }>());
+  // Proposals auto-allow has decided once. A refused decision is not retried by itself:
+  // its error shows, and the operator can decide again by hand.
+  const autoAllowTriedRef = useRef(new Set<string>());
   // The latest rename, pin or archive result this panel wrote, per conversation.
   const writeResultsRef = useRef(new Map<string, OperatorConversation>());
   // For the shown conversation: the last frame sequence read and its update_conversation
@@ -1003,11 +1006,14 @@ export default function OperatorPanel({ open, onClose }: Props) {
     [t],
   );
 
+  const proposals = useMemo(() => pendingOperatorProposals(state.frames), [state.frames]);
+
   // A failed send kept for a conversation is reported once that conversation is
-  // shown and ready, no send, Stop or decision is in flight and no other error is
-  // showing. A send in flight still owns the composer and its outcome may clear it,
-  // and a Stop or decision that fails replaces the alert, as another error showing
-  // would be replaced, so each defers the report rather than losing it.
+  // shown and ready, no send, Stop or decision is in flight or about to start under
+  // auto-allow, and no other error is showing. A send in flight still owns the
+  // composer and its outcome may clear it, and a Stop or decision clears the alert
+  // when it starts and replaces it when it fails, as another error showing would be
+  // replaced, so each defers the report rather than losing it.
   const shownConversationId = state.conversation?.id;
   useEffect(() => {
     if (
@@ -1019,6 +1025,15 @@ export default function OperatorPanel({ open, onClose }: Props) {
       actionError
     )
       return;
+    // A proposal auto-allow will decide on its next tick; that decision clears the alert.
+    if (
+      autoAllow &&
+      proposals.some(({ frame, resolved }) => {
+        const id = frame.payload.proposal.id;
+        return !resolved && !decidedProposalIds.has(id) && !autoAllowTriedRef.current.has(id);
+      })
+    )
+      return;
     const failed = failedSendsRef.current.get(shownConversationId);
     if (!failed) return;
     failedSendsRef.current.delete(shownConversationId);
@@ -1027,7 +1042,17 @@ export default function OperatorPanel({ open, onClose }: Props) {
     setInstruction((current) =>
       current.trim() ? `${failed.instruction}\n${current}` : failed.instruction,
     );
-  }, [actionError, deciding, sending, shownConversationId, state.loadState, stopping]);
+  }, [
+    actionError,
+    autoAllow,
+    decidedProposalIds,
+    deciding,
+    proposals,
+    sending,
+    shownConversationId,
+    state.loadState,
+    stopping,
+  ]);
 
   useEffect(() => {
     let active = true;
@@ -1092,11 +1117,15 @@ export default function OperatorPanel({ open, onClose }: Props) {
   useEffect(() => {
     let active = true;
     const stored = readStoredConversation();
+    // A choice of conversation made while the list is read, New conversation included,
+    // is kept: the read then selects nothing.
+    const choicesAtStart = operatorChoicesRef.current;
     void readConversationList("active")
       .then(({ available, merge }) => {
         if (!active || listFilterRef.current !== "active") return;
         setConversations(merge);
-        if (selectedConversationIdRef.current) return;
+        if (selectedConversationIdRef.current || operatorChoicesRef.current !== choicesAtStart)
+          return;
         const selected =
           (stored ? available.find((item) => item.id === stored) : null) ??
           available.find((item) => item.status === "active") ??
@@ -1109,7 +1138,12 @@ export default function OperatorPanel({ open, onClose }: Props) {
         }
       })
       .catch(() => {
-        if (!active || selectedConversationIdRef.current || listFilterRef.current !== "active")
+        if (
+          !active ||
+          selectedConversationIdRef.current ||
+          operatorChoicesRef.current !== choicesAtStart ||
+          listFilterRef.current !== "active"
+        )
           return;
         if (stored) {
           void loadConversation(stored);
@@ -1263,7 +1297,6 @@ export default function OperatorPanel({ open, onClose }: Props) {
 
   const items = useMemo(() => displayItems(state.frames), [state.frames]);
   const visibleItems = useMemo(() => items.slice(-visibleCount), [items, visibleCount]);
-  const proposals = useMemo(() => pendingOperatorProposals(state.frames), [state.frames]);
   const resolvedProposalIds = useMemo(() => {
     const resolved = new Set(decidedProposalIds);
     for (const item of proposals) {
@@ -1398,6 +1431,8 @@ export default function OperatorPanel({ open, onClose }: Props) {
         return;
       }
       setActionError(message);
+      // New conversation during the send clears the composer; the failed text comes back.
+      setInstruction((current) => (current.trim() ? current : trimmed));
       if (
         error instanceof ApiError &&
         error.status === 409 &&
@@ -1465,8 +1500,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
     [state.conversation, t],
   );
 
-  // Auto-allow: decide each pending proposal as it arrives. The deciding /
-  // decided sets make this idempotent across re-renders and SSE replays.
+  // Auto-allow: decide each pending proposal once, as it arrives. The tried set makes
+  // this idempotent across re-renders and SSE replays, and keeps a refused decision
+  // from being sent again on every render.
   // Deferred a tick so the decision (a network POST plus its own state
   // bookkeeping) never runs synchronously inside the effect body; the guard
   // sets keep a cancelled-then-rescheduled tick from double-deciding.
@@ -1475,7 +1511,14 @@ export default function OperatorPanel({ open, onClose }: Props) {
     const timer = window.setTimeout(() => {
       for (const item of proposals) {
         const id = item.frame.payload.proposal.id;
-        if (item.resolved || decidedProposalIds.has(id) || deciding.has(id)) continue;
+        if (
+          item.resolved ||
+          decidedProposalIds.has(id) ||
+          deciding.has(id) ||
+          autoAllowTriedRef.current.has(id)
+        )
+          continue;
+        autoAllowTriedRef.current.add(id);
         void handleProposalDecision(item.frame, "allow");
       }
     }, 0);
@@ -1601,6 +1644,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
 
   const forkConversationById = useCallback(
     async (conversation: OperatorConversation) => {
+      // The click is the choice, so a draft's conversation created during the fork
+      // request does not take the panel.
+      operatorChoicesRef.current += 1;
       setConversationBusyId(conversation.id);
       setListActionError(null);
       try {
@@ -1942,7 +1988,8 @@ export default function OperatorPanel({ open, onClose }: Props) {
                   variant="primary"
                   size="sm"
                   onClick={() => {
-                    const id = readStoredConversation();
+                    // The conversation whose load failed, else the stored one.
+                    const id = selectedConversationIdRef.current ?? readStoredConversation();
                     if (!id) return;
                     operatorChoicesRef.current += 1;
                     void loadConversation(id);
