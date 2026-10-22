@@ -12,10 +12,8 @@ from __future__ import annotations
 import asyncio
 import json
 
+import httpx
 import pytest
-import pytest_asyncio
-from aiohttp import web
-from aiohttp.test_utils import TestServer
 
 from lionagi._errors import ExecutionError
 from lionagi.hooks.bus import HookBus, HookPoint
@@ -32,6 +30,7 @@ from lionagi.operations.types import ChatParam
 from lionagi.protocols.action.tool import Tool
 from lionagi.protocols.generic.progression import Progression
 from lionagi.protocols.messages import AssistantResponse, Instruction
+from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.imodel import iModel
 from lionagi.session.branch import Branch
 
@@ -64,28 +63,23 @@ def _completion(content: dict) -> dict:
     }
 
 
-@pytest_asyncio.fixture
-async def chat_server():
-    servers = []
-
+@pytest.fixture
+def chat_server(monkeypatch):
     async def _run(replies: list[dict]) -> tuple[str, list[dict]]:
         received: list[dict] = []
 
-        async def handler(request: web.Request):
-            received.append(await request.json())
-            return web.json_response(replies[len(received) - 1])
+        def handler(request: httpx.Request):
+            received.append(json.loads(request.content))
+            return httpx.Response(200, json=replies[len(received) - 1], request=request)
 
-        app = web.Application()
-        app.router.add_route("POST", "/{tail:.*}", handler)
-        server = TestServer(app)
-        await server.start_server()
-        servers.append(server)
-        return str(server.make_url("/")).rstrip("/"), received
+        def create_client(self, *args, **kwargs):
+            return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
-    yield _run
+        monkeypatch.setattr(Endpoint, "_create_http_session", create_client)
+        monkeypatch.setattr(Endpoint, "_assert_ssrf_safe_url", lambda self: None)
+        return "https://api.example.test", received
 
-    for server in servers:
-        await server.close()
+    return _run
 
 
 def _branch(base_url: str, **kwargs) -> Branch:

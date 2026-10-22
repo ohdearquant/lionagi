@@ -1,10 +1,7 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-import json
-from unittest.mock import AsyncMock
-
-import aiohttp
+import httpx
 import pytest
 
 from lionagi.service.connections.endpoint import Endpoint
@@ -33,11 +30,9 @@ def mock_endpoint(mock_endpoint_config):
 
 @pytest.fixture
 def mock_response():
-    response = AsyncMock(spec=aiohttp.ClientResponse)
-    response.status = 200
-    response.headers = {"content-type": "application/json"}
-    response.json = AsyncMock(
-        return_value={
+    return httpx.Response(
+        200,
+        json={
             "id": "test-123",
             "object": "chat.completion",
             "created": 1234567890,
@@ -57,19 +52,15 @@ def mock_response():
                 "completion_tokens": 20,
                 "total_tokens": 30,
             },
-        }
+        },
     )
-    response.text = AsyncMock(return_value=json.dumps(response.json.return_value))
-    return response
 
 
 @pytest.fixture
 def mock_anthropic_response():
-    response = AsyncMock(spec=aiohttp.ClientResponse)
-    response.status = 200
-    response.headers = {"content-type": "application/json"}
-    response.json = AsyncMock(
-        return_value={
+    return httpx.Response(
+        200,
+        json={
             "id": "msg_123",
             "type": "message",
             "role": "assistant",
@@ -78,28 +69,18 @@ def mock_anthropic_response():
             "stop_reason": "end_turn",
             "stop_sequence": None,
             "usage": {"input_tokens": 10, "output_tokens": 20},
-        }
+        },
     )
-    response.text = AsyncMock(return_value=json.dumps(response.json.return_value))
-    return response
 
 
 @pytest.fixture
 def mock_streaming_response():
-    async def mock_iter_chunks():
-        chunks = [
-            b'data: {"id":"test","choices":[{"delta":{"content":"Hello"}}]}\n\n',
-            b'data: {"id":"test","choices":[{"delta":{"content":" world"}}]}\n\n',
-            b"data: [DONE]\n\n",
-        ]
-        for chunk in chunks:
-            yield chunk
-
-    response = AsyncMock(spec=aiohttp.ClientResponse)
-    response.status = 200
-    response.headers = {"content-type": "text/event-stream"}
-    response.content.iter_chunks = mock_iter_chunks
-    return response
+    content = (
+        b'data: {"id":"test","choices":[{"delta":{"content":"Hello"}}]}\n\n'
+        b'data: {"id":"test","choices":[{"delta":{"content":" world"}}]}\n\n'
+        b"data: [DONE]\n\n"
+    )
+    return httpx.Response(200, content=content, headers={"content-type": "text/event-stream"})
 
 
 @pytest.fixture

@@ -3181,9 +3181,9 @@ version = "0.35.5"
 source = { editable = "." }
 dependencies = [
     { name = "aiocache" },
-    { name = "aiohttp" },
     { name = "aiosqlite" },
     { name = "anyio" },
+    { name = "httpx" },
     { name = "json-repair" },
     { name = "markdown-it-py" },
     { name = "msgspec" },
@@ -3214,7 +3214,6 @@ all = [
     { name = "docling" },
     { name = "fastapi" },
     { name = "fastmcp" },
-    { name = "httpx" },
     { name = "matplotlib" },
     { name = "mcp" },
     { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -3272,7 +3271,6 @@ sqlite = [
 studio = [
     { name = "croniter" },
     { name = "fastapi" },
-    { name = "httpx" },
     { name = "starlette" },
     { name = "uvicorn" },
 ]
@@ -3284,7 +3282,6 @@ xml = [
 dev = [
     { name = "black", extra = ["jupyter"] },
     { name = "furo" },
-    { name = "httpx" },
     { name = "hypothesis" },
     { name = "ipykernel" },
     { name = "ipython", version = "8.39.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -3324,7 +3321,6 @@ requires-dist = [
     { name = "ag2", extras = ["openai"], marker = "extra == 'ag2'", specifier = ">=0.13.0" },
     { name = "ag2", extras = ["openai"], marker = "extra == 'sandbox'", specifier = ">=0.13.0" },
     { name = "aiocache", specifier = ">=0.12.0" },
-    { name = "aiohttp", specifier = ">=3.14.4" },
     { name = "aiosqlite", specifier = ">=0.22.0" },
     { name = "aiosqlite", marker = "extra == 'sqlite'", specifier = ">=0.22.0" },
     { name = "anyio", specifier = ">=4.14.2" },
@@ -3335,7 +3331,7 @@ requires-dist = [
     { name = "docling", marker = "extra == 'reader'", specifier = ">=2.91.0" },
     { name = "fastapi", marker = "extra == 'studio'", specifier = ">=0.115" },
     { name = "fastmcp", marker = "extra == 'mcp'", specifier = ">=3.2.0" },
-    { name = "httpx", marker = "extra == 'studio'", specifier = ">=0.28.1" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "json-repair", specifier = ">=0.58.0" },
     { name = "lionagi", extras = ["ag2"], marker = "extra == 'all'" },
     { name = "lionagi", extras = ["graph"], marker = "extra == 'all'" },
@@ -3383,7 +3379,6 @@ provides-extras = ["ruvector", "reader", "ollama", "mcp", "rich", "schema", "pan
 dev = [
     { name = "black", extras = ["jupyter"], specifier = ">=26.3.1" },
     { name = "furo", specifier = ">=2024.8.6" },
-    { name = "httpx", specifier = ">=0.28.1" },
     { name = "hypothesis", specifier = ">=6.152.2" },
     { name = "ipykernel", specifier = ">=6.29.5" },
     { name = "ipython", specifier = ">=8.31.0" },

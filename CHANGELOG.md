@@ -34,6 +34,14 @@ directory's `.khive/config.toml` before it starts. For example, `:child` produce
 `<submitting actor>:child`. Leaving the setting unset or empty keeps the previous
 behaviour, including accepting a write-capable submission without `cwd`.
 
+`aiohttp` is no longer a dependency (see Changed). An endpoint HTTP error that raised
+`aiohttp.ClientResponseError` raises `lionagi.service.resilience.APIClientError`, with
+`status_code`, `headers` and `response_data`; code that read `.status` reads `.status_code`.
+`EndpointConfig.client_kwargs` go to `httpx.AsyncClient`, so an aiohttp-only option such as
+`connector` raises `TypeError`. An `Endpoint` subclass that overrides `_call_aiohttp` or
+`_stream_aiohttp` raises `TypeError` when the class is defined; rename the override to
+`_call_http` or `_stream_http`.
+
 ### Added
 
 - The MCP server's `agent.submit`, `flow.submit`, `fanout.submit` and
@@ -351,6 +359,11 @@ behaviour, including accepting a write-capable submission without `cwd`.
   lookup or sweep still reaches it; run teardown logs the refusal as it logs a failed
   `StateDB.close()`. `register_shared_db()` raises any error the displaced handle's close raised,
   a refusal included, rather than replacing the entry over a handle that is still open.
+
+- `httpx` replaces `aiohttp` as the HTTP client for every endpoint request, and is now a core
+  dependency. The client still follows redirects and ignores proxy settings from the environment.
+  `EndpointConfig.timeout` now bounds each connect, read, write and pool wait rather than the
+  whole request.
 
 ### Removed
 

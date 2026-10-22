@@ -9,11 +9,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "aiocache>=0.12.0",
-    # CVE: out-of-bounds heap read in the C response parser on a malformed
-    # chunked response, request smuggling via WebSocket upgrade, and a
-    # WebSocket client that accepts compressed frames with no negotiated
-    # permessage-deflate. 3.14.4 fixes eight more advisories found in 3.14.3.
-    "aiohttp>=3.14.4",
+    "httpx>=0.28.1",
     "anyio>=4.14.2",
     # Imported directly by the flow kernel to detect the running async backend.
     # anyio dropped sniffio from its own dependencies in 4.10, so it is no
@@ -85,7 +81,6 @@ dev = [
     "pytest-xdist>=3.8.0",
     "pytest-timeout>=2.4.0",
     "pytest-benchmark>=5.1.0",
-    "httpx>=0.28.1",
     "testcontainers[postgres]>=4.0",
 ]
 
@@ -174,7 +169,6 @@ studio = [
     "uvicorn>=0.34",
     "starlette>=1.3.1",
     "croniter>=1.4",
-    "httpx>=0.28.1",
 ]
 
 all = [

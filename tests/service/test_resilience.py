@@ -283,18 +283,17 @@ class TestRetryConfig:
         assert config.jitter is True
         assert config.jitter_factor == 0.2
 
-    def test_default_retry_exceptions_cover_real_aiohttp_errors(self):
-        """Defaults must retry the errors production code actually raises
-        (aiohttp.ClientResponseError for 429/5xx, connector errors), not just
-        APIClientError, which nothing in production ever constructs."""
-        import aiohttp
+    def test_default_retry_exceptions_cover_httpx_transport_and_response_errors(self):
+        """Defaults retry transport failures and API response errors."""
+        import httpx
+
+        from lionagi.service.resilience import APIClientError
 
         config = RetryConfig()
 
-        error = aiohttp.ClientResponseError(
-            request_info=None, history=(), status=429, message="rate limited"
-        )
-        assert isinstance(error, config.retry_exceptions)
+        assert httpx.RequestError in config.retry_exceptions
+        assert APIClientError in config.retry_exceptions
+        assert isinstance(APIClientError("rate limited", status_code=429), config.retry_exceptions)
 
     def test_init_custom_values(self):
         config = RetryConfig(

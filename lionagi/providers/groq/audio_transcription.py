@@ -21,8 +21,6 @@ class GroqAudioTranscriptionEndpoint(Endpoint):
         super().__init__(config, **kwargs)
 
     async def _call(self, payload: dict, headers: dict, **kwargs):
-        import aiohttp
-
         file_data = kwargs.pop("file", None)
         filename: str = kwargs.pop("filename", "audio.mp3")
         file_factory = _replayable_file_factory(
@@ -32,25 +30,21 @@ class GroqAudioTranscriptionEndpoint(Endpoint):
         multipart_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
 
         def _build_form():
-            form = aiohttp.FormData()
+            data = {}
             for key, value in payload.items():
                 if value is not None:
-                    form.add_field(key, str(value))
+                    data[key] = str(value)
 
+            files = {}
             file_obj = file_factory()
             if file_obj is not None:
-                form.add_field(
-                    "file",
-                    file_obj,
-                    filename=filename,
-                    content_type="application/octet-stream",
-                )
-            return {"data": form}
+                files["file"] = (filename, file_obj, "application/octet-stream")
+            return {"data": data, "files": files}
 
-        # API fields stay in the multipart body; only transport kwargs
-        # (proxy, ssl, timeout, ...) are forwarded to the HTTP layer.
+        # API fields stay in the multipart body; other keyword arguments are
+        # forwarded to the HTTP request.
         transport_kwargs = {k: v for k, v in kwargs.items() if k not in payload}
-        return await self._call_aiohttp(
+        return await self._call_http(
             payload=payload,
             headers=multipart_headers,
             request_body_factory=_build_form,

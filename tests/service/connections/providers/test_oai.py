@@ -279,7 +279,7 @@ class TestOpenAIIntegration:
         with patch.object(
             openai_imodel.endpoint,
             "call",
-            return_value=mock_response.json.return_value,
+            return_value=mock_response.json(),
         ):
             result = await openai_imodel.invoke(
                 messages=[{"role": "user", "content": "Hello, GPT!"}],
@@ -352,7 +352,7 @@ class TestOpenAIIntegration:
 
         async def mock_request_with_delay(request, cache_control=False, **kwargs):
             await asyncio.sleep(0.1)
-            response = mock_response.json.return_value.copy()
+            response = mock_response.json().copy()
             response["id"] = f"chatcmpl-{request['messages'][0]['content'][-1]}"
             return response
 
@@ -451,13 +451,13 @@ class TestOpenAIIntegration:
 
     @pytest.mark.asyncio
     async def test_openai_error_handling(self, openai_imodel):
-        import aiohttp
+        import httpx
 
         # Test rate limit error
         with patch.object(
             openai_imodel.endpoint,
             "call",
-            side_effect=aiohttp.ClientError("Rate limit exceeded"),
+            side_effect=httpx.RequestError("Rate limit exceeded"),
         ):
             result = await openai_imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
 
@@ -600,7 +600,7 @@ class TestGeminiIntegration:
         with patch.object(
             gemini_imodel.endpoint,
             "call",
-            return_value=mock_response.json.return_value,
+            return_value=mock_response.json(),
         ):
             result = await gemini_imodel.invoke(
                 messages=[{"role": "user", "content": "Hello, Gemini!"}],

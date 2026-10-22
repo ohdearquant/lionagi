@@ -7,11 +7,11 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 
-import aiohttp
 import anyio
 import pytest
 
 from lionagi.service.connections import match_endpoint
+from lionagi.service.resilience import APIClientError
 from lionagi.testing import ScriptModel
 from lionagi.testing.helpers import AsyncTestHelpers
 
@@ -48,9 +48,7 @@ def _first_result(endpoint, streaming: bool):
 async def _finish_owned_task(task, stream):
     if not task.done():
         task.cancel()
-    with suppress(
-        asyncio.CancelledError, aiohttp.ClientResponseError, asyncio.TimeoutError, ValueError
-    ):
+    with suppress(asyncio.CancelledError, APIClientError, asyncio.TimeoutError, ValueError):
         await task
     if stream is not None:
         await stream.aclose()
@@ -61,7 +59,7 @@ async def _finish_owned_task(task, stream):
 @pytest.mark.parametrize(
     ("kind", "error_type"),
     [
-        ("rate_limit", aiohttp.ClientResponseError),
+        ("rate_limit", APIClientError),
         ("timeout", asyncio.TimeoutError),
         ("value_error", ValueError),
     ],
@@ -98,7 +96,7 @@ async def test_delayed_error_records_only_after_wait_and_preserves_error(
             assert record.response is None
             assert record.was_streamed is streaming
             if kind == "rate_limit":
-                assert error.value.status == 429
+                assert error.value.status_code == 429
     finally:
         await _finish_owned_task(task, stream)
 
