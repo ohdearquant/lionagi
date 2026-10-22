@@ -87,7 +87,7 @@ that code on one of two paths, and the two paths differ:
 
 - **A default `iModel` carries a request-option model**, whose fields are the Anthropic request
   model's; `cache_control` is not one of them, so the request-option filter drops the flag
-  (`service/connections/endpoint.py:373-376`) before `messages.py:1187` looks for it. Building that
+  (`service/connections/endpoint.py:438-441`) before `messages.py:1187` looks for it. Building that
   payload for the probe's last request with `cache_control=True` gave no `system` field and no cache
   mark.
 - **An endpoint with no request-option filter carries no request-option model** — an `iModel`
@@ -97,7 +97,7 @@ that code on one of two paths, and the two paths differ:
 
 `iModel` then pops the same flag from the request (`service/imodel.py:291`) and, in `Endpoint.call`,
 it switches on a local response memo, except for a call routed through an account
-(`service/connections/endpoint.py:506`, `:576-594`), a different feature.
+(`service/connections/endpoint.py:571`, `:641-659`), a different feature.
 
 **P5: the run record cannot show what caching saved.** `RunEnd` carries `cached_tokens` and
 `cache_write_tokens` (`session/signal.py:66-67`) without the lifetime of the write, and ADR-0126's
@@ -132,7 +132,7 @@ on every path, with no exception: the Anthropic adapter's `cache_control`-trigge
 Restated for both paths: on a default `iModel` the request-option filter drops the flag before the
 mark code, so no mark is placed; on an endpoint with no request-option filter — an `iModel` restored
 with `request_options` None, or a dict-configured model
-(`service/connections/endpoint.py:373-376`) — the flag reaches the mark code and one five-minute mark
+(`service/connections/endpoint.py:438-441`) — the flag reaches the mark code and one five-minute mark
 lands on the last message. With the option on and the declaration present, this record's placement
 replaces that mark. For a provider without the declaration the request is unchanged whatever the
 option says. There is no ungated change.

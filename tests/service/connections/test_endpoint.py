@@ -1395,13 +1395,16 @@ class _LocalServer:
     request line the server read is kept in ``request_lines``.
     """
 
-    def __init__(self, respond):
+    def __init__(self, respond, ssl_context: ssl.SSLContext | None = None):
         self._respond = respond
+        self._ssl_context = ssl_context
         self.request_lines: list[str] = []
         self.closing = asyncio.Event()
 
     async def __aenter__(self):
-        self._server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
+        self._server = await asyncio.start_server(
+            self._handle, "127.0.0.1", 0, ssl=self._ssl_context
+        )
         self.port = self._server.sockets[0].getsockname()[1]
         return self
 
@@ -1428,13 +1431,13 @@ class _LocalServer:
             writer.close()
 
 
-def _local_endpoint(port: int, **config) -> Endpoint:
+def _local_endpoint(port: int, scheme: str = "http", **config) -> Endpoint:
     return Endpoint(
         config=EndpointConfig(
             name="test",
             provider="test",
             endpoint="v1/chat",
-            base_url=f"http://127.0.0.1:{port}",
+            base_url=f"{scheme}://127.0.0.1:{port}",
             auth_type="bearer",
             api_key="test-key",
             **{"max_retries": 1, **config},
@@ -1632,7 +1635,7 @@ class TestRequestClientOptions:
             await client.aclose()
 
     def test_ssl_of_another_type_is_refused(self):
-        with pytest.raises(TypeError, match="ssl takes True, False or an ssl.SSLContext"):
+        with pytest.raises(TypeError, match="ssl takes True, False, None, an ssl.SSLContext"):
             _local_endpoint(1)._client_for_request({"ssl": object()})
 
     @pytest.mark.asyncio
@@ -1667,3 +1670,223 @@ class TestRequestClientOptions:
             assert len(_ssl_context_of(client).get_ca_certs()) == 1
         finally:
             await client.aclose()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [True, None])
+    async def test_ssl_true_or_none_verifies_under_a_client_that_does_not(self, value):
+        from lionagi.service.connections import endpoint as endpoint_module
+
+        endpoint = _local_endpoint(1, client_kwargs={"verify": False})
+        default = endpoint._create_http_session()
+        client, rest = endpoint._client_for_request({"ssl": value})
+        try:
+            assert _ssl_context_of(default).verify_mode == ssl.CERT_NONE
+            assert rest == {}
+            assert _ssl_context_of(client) is endpoint_module._verified_ssl_context()
+        finally:
+            await default.aclose()
+            await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_ssl_none_keeps_the_default_client(self):
+        from lionagi.service.connections import endpoint as endpoint_module
+
+        client, rest = _local_endpoint(1)._client_for_request({"ssl": None})
+        try:
+            assert rest == {}
+            assert _ssl_context_of(client) is endpoint_module._verified_ssl_context()
+        finally:
+            await client.aclose()
+
+
+def _self_signed_server_context(tmp_path) -> tuple[ssl.SSLContext, bytes]:
+    """A server context with a fresh self-signed certificate for 127.0.0.1, and that
+    certificate's DER bytes."""
+    import datetime
+    import ipaddress
+
+    pytest.importorskip("cryptography")
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes=5))
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(
+            x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    cert_file = tmp_path / "server-cert.pem"
+    key_file = tmp_path / "server-key.pem"
+    cert_file.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_file.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    context.load_cert_chain(cert_file, key_file)
+    return context, cert.public_bytes(serialization.Encoding.DER)
+
+
+async def _ok(server, line):
+    return _raw_response("200 OK", b'{"ok": true}', _JSON)
+
+
+class TestAiohttpRequestValues:
+    """The request values aiohttp took and httpx takes in another form, or not at all."""
+
+    @pytest.mark.asyncio
+    async def test_a_fingerprint_pins_the_server_certificate(self, tmp_path):
+        aiohttp = pytest.importorskip("aiohttp")
+        import hashlib
+
+        context, der = _self_signed_server_context(tmp_path)
+        pin = aiohttp.Fingerprint(hashlib.sha256(der).digest())
+        async with _LocalServer(_ok, context) as server:
+            endpoint = _local_endpoint(server.port, scheme="https")
+            with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+                # The certificate is self-signed, so the default client refuses it.
+                with pytest.raises(httpx.ConnectError):
+                    await endpoint._call_http({}, {})
+                result = await endpoint._call_http({}, {}, ssl=pin)
+
+        assert result == {"ok": True}
+        assert server.request_lines == ["POST /v1/chat HTTP/1.1"]
+
+    @pytest.mark.asyncio
+    async def test_a_fingerprint_mismatch_fails_before_the_request_is_sent(self, tmp_path):
+        aiohttp = pytest.importorskip("aiohttp")
+
+        context, _ = _self_signed_server_context(tmp_path)
+        async with _LocalServer(_ok, context) as server:
+            endpoint = _local_endpoint(server.port, scheme="https")
+            with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+                with pytest.raises(httpx.ConnectError, match="fingerprint"):
+                    await endpoint._call_http({}, {}, ssl=aiohttp.Fingerprint(b"\0" * 32))
+
+        assert server.request_lines == []
+
+    @pytest.mark.asyncio
+    async def test_a_fingerprint_pins_a_stream(self, tmp_path):
+        aiohttp = pytest.importorskip("aiohttp")
+        import hashlib
+
+        async def lines(server, line):
+            return _raw_response("200 OK", b"pinned\n", {"Content-Type": "text/event-stream"})
+
+        context, der = _self_signed_server_context(tmp_path)
+        async with _LocalServer(lines, context) as server:
+            endpoint = _local_endpoint(server.port, scheme="https")
+            with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+                pin = aiohttp.Fingerprint(hashlib.sha256(der).digest())
+                chunks = [c async for c in endpoint._stream_http({}, {}, ssl=pin)]
+                with pytest.raises(httpx.ConnectError, match="fingerprint"):
+                    wrong = aiohttp.Fingerprint(b"\0" * 32)
+                    async for _ in endpoint._stream_http({}, {}, ssl=wrong):
+                        pass
+
+        assert [c.content for c in chunks] == ["pinned"]
+        assert server.request_lines == ["POST /v1/chat HTTP/1.1"]
+
+    @pytest.mark.parametrize(
+        ("fields", "expected"),
+        [
+            ({"total": 10, "sock_read": 2}, (10, 2, 10, 10)),
+            ({"total": 5, "connect": 30, "sock_connect": 2}, (2, 5, 5, 5)),
+            ({"connect": 3}, (3, None, None, 3)),
+            ({}, (None, None, None, None)),
+        ],
+    )
+    def test_a_client_timeout_becomes_an_httpx_timeout(self, fields, expected):
+        aiohttp = pytest.importorskip("aiohttp")
+
+        _, rest = _local_endpoint(1)._client_for_request(
+            {"timeout": aiohttp.ClientTimeout(**fields)}
+        )
+        timeout = rest["timeout"]
+        assert isinstance(timeout, httpx.Timeout)
+        assert (timeout.connect, timeout.read, timeout.write, timeout.pool) == expected
+
+    @pytest.mark.asyncio
+    async def test_a_client_timeout_bounds_a_stalled_read(self):
+        aiohttp = pytest.importorskip("aiohttp")
+
+        async def stall(server, line):
+            await server.closing.wait()
+            return _raw_response("200 OK", b"{}", _JSON)
+
+        async with _LocalServer(stall) as server:
+            with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+                started = time.monotonic()
+                with pytest.raises(httpx.ReadTimeout):
+                    await _local_endpoint(server.port)._call_http(
+                        {}, {}, timeout=aiohttp.ClientTimeout(total=1)
+                    )
+                elapsed = time.monotonic() - started
+
+        assert elapsed < 4
+
+    @pytest.mark.asyncio
+    async def test_an_empty_request_proxy_goes_direct(self):
+        async with _LocalServer(_ok) as server:
+            with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+                result = await _local_endpoint(server.port)._call_http({}, {}, proxy="")
+
+        assert result == {"ok": True}
+        assert server.request_lines == ["POST /v1/chat HTTP/1.1"]
+
+
+class TestStreamRequestOptions:
+    """A stream takes the request options a call takes."""
+
+    @pytest.mark.asyncio
+    async def test_allow_redirects_false_answers_a_stream_with_the_redirect(self):
+        async with _LocalServer(TestRequestsOverALoopbackSocket._redirect_once) as server:
+            with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+                with pytest.raises(APIClientError) as info:
+                    async for _ in _local_endpoint(server.port)._stream_http(
+                        {}, {}, allow_redirects=False
+                    ):
+                        pass
+
+        assert info.value.status_code == 302
+        assert server.request_lines == ["POST /v1/chat HTTP/1.1"]
+
+    @pytest.mark.asyncio
+    async def test_a_stream_goes_through_a_request_proxy_and_direct_for_an_empty_one(self):
+        async def direct(server, line):
+            return _raw_response("200 OK", b"direct\n", {"Content-Type": "text/event-stream"})
+
+        async def forward(server, line):
+            return _raw_response("200 OK", b"proxy\n", {"Content-Type": "text/event-stream"})
+
+        async with _LocalServer(direct) as target, _LocalServer(forward) as proxy:
+            endpoint = _local_endpoint(target.port)
+            with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+                proxied = [
+                    c.content
+                    async for c in endpoint._stream_http(
+                        {}, {}, proxy=f"http://127.0.0.1:{proxy.port}"
+                    )
+                ]
+                empty = [c.content async for c in endpoint._stream_http({}, {}, proxy="")]
+
+        assert proxied == ["proxy"]
+        assert empty == ["direct"]
+        assert proxy.request_lines == [f"POST http://127.0.0.1:{target.port}/v1/chat HTTP/1.1"]
+        assert target.request_lines == ["POST /v1/chat HTTP/1.1"]
