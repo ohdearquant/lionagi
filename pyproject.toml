@@ -338,6 +338,7 @@ constraint-dependencies = [
     "python-multipart>=0.0.31",  # CVE: DoS via unbounded multipart part headers; quadratic querystring parsing; param smuggling
     "pytest>=9.0.3",        # CVE: vulnerable tmpdir handling
     "pillow>=12.3.0",       # CVE: FITS GZIP decompression bomb + additional image-parsing advisories fixed in 12.3.0
+    "pillow>=13.0.0; python_version >= '3.11'",  # advisories fixed in 13.0.0, which requires Python 3.11
     "pyjwt>=2.15.0",        # CVE: PyJWK HMAC/alg-allowlist bypass, PyJWKClient SSRF + DoS; then
                             # pre-verification payload RecursionError DoS and OKP private
                             # JWKs whose x and d do not correspond
