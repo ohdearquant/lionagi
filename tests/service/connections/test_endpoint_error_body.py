@@ -67,18 +67,21 @@ async def _call(endpoint: Endpoint):
 @pytest.mark.asyncio
 async def test_http_error_keeps_status_headers_and_parsed_body(monkeypatch):
     body = {"error": {"message": "invalid input"}}
-    client = httpx.AsyncClient(
-        transport=httpx.MockTransport(
-            lambda request: httpx.Response(
-                422,
-                json=body,
-                headers={"X-Provider-Error": "invalid"},
-                request=request,
+
+    def create_client(*args, **kwargs):
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    422,
+                    json=body,
+                    headers={"X-Provider-Error": "invalid"},
+                    request=request,
+                )
             )
         )
-    )
+
     endpoint = _endpoint("https://api.example.test")
-    monkeypatch.setattr(endpoint, "_create_http_session", lambda *args, **kwargs: client)
+    monkeypatch.setattr(endpoint, "_create_http_session", create_client)
     monkeypatch.setattr("lionagi.ln._ssrf.is_ssrf_safe", lambda *args, **kwargs: True)
 
     with pytest.raises(APIClientError) as caught:

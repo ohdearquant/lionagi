@@ -26,6 +26,21 @@ from .header_factory import HeaderFactory
 
 _CONFIGURED_TIMEOUT = object()
 
+# Built on first use and shared by every client, as aiohttp shared its own.
+_VERIFIED_SSL_CONTEXT = None
+
+
+def _verified_ssl_context():
+    # ssl.create_default_context() reads the system trust store and SSL_CERT_FILE and
+    # SSL_CERT_DIR, as aiohttp's verification did; httpx's own default is certifi's bundle.
+    global _VERIFIED_SSL_CONTEXT
+    if _VERIFIED_SSL_CONTEXT is None:
+        import ssl
+
+        _VERIFIED_SSL_CONTEXT = ssl.create_default_context()
+    return _VERIFIED_SSL_CONTEXT
+
+
 # The event types that say the call itself failed: the Responses API's
 # ``response.failed`` and Codex's ``turn.failed``. A bare ``failed`` is read the same
 # way, although no provider in this package sends one. Any other type ending in
@@ -232,8 +247,47 @@ class Endpoint:
         options = dict(self.config.client_kwargs if client_kwargs is None else client_kwargs)
         options.setdefault("follow_redirects", True)
         options.setdefault("trust_env", False)
+        options.setdefault("verify", _verified_ssl_context())
         options.setdefault("timeout", httpx.Timeout(timeout))
         return httpx.AsyncClient(**options)
+
+    def _client_for_request(self, request_kwargs: dict[str, Any]):
+        """The client for one request and the options left for the request itself.
+
+        aiohttp took ``ssl``, ``proxy`` and ``allow_redirects`` with each request. httpx
+        takes the first two from the client, as ``verify`` and ``proxy``, and the third
+        as ``follow_redirects``, so a request that passes them gets a client of its own.
+        """
+        if not request_kwargs.keys() & {"ssl", "proxy", "allow_redirects"}:
+            return self._create_http_session(), request_kwargs
+        import ssl
+
+        import httpx
+
+        request_kwargs = dict(request_kwargs)
+        if "allow_redirects" in request_kwargs:
+            if "follow_redirects" in request_kwargs:
+                raise TypeError("pass allow_redirects or follow_redirects, not both")
+            request_kwargs["follow_redirects"] = request_kwargs.pop("allow_redirects")
+        client_options: dict[str, Any] = {}
+        if "ssl" in request_kwargs:
+            verify = request_kwargs.pop("ssl")
+            if not isinstance(verify, (bool, ssl.SSLContext)):
+                raise TypeError(
+                    f"ssl takes True, False or an ssl.SSLContext, not {type(verify).__name__}"
+                )
+            if verify is not True:
+                client_options["verify"] = verify
+        if "proxy" in request_kwargs:
+            proxy = request_kwargs.pop("proxy")
+            if proxy is not None:
+                client_options["proxy"] = proxy if isinstance(proxy, httpx.Proxy) else str(proxy)
+        if not client_options:
+            return self._create_http_session(), request_kwargs
+        return (
+            self._create_http_session({**self.config.client_kwargs, **client_options}),
+            request_kwargs,
+        )
 
     def copy_runtime_state_to(self, other: Endpoint) -> None:
         pass
@@ -575,7 +629,8 @@ class Endpoint:
     ) -> Any:
         import httpx
 
-        async with self._create_http_session() as client:
+        client, request_kwargs = self._client_for_request(request_kwargs)
+        async with client:
             response = await client.request(
                 method=self.config.method,
                 url=self.config.full_url,
@@ -613,7 +668,13 @@ class Endpoint:
 
             if response_mode == "bytes":
                 return response.content
-            body = response.json()
+            try:
+                body = response.json()
+            except json.JSONDecodeError:
+                # An empty body is None, as aiohttp read it; httpx raises on one.
+                if response.content.strip():
+                    raise
+                body = None
             error = _error_in_body(payload, body)
             if error is None:
                 return body
@@ -774,7 +835,8 @@ class Endpoint:
 
         payload["stream"] = True
 
-        async with self._create_http_session() as client:
+        client, kwargs = self._client_for_request(kwargs)
+        async with client:
             async with client.stream(
                 method=self.config.method,
                 url=self.config.full_url,
