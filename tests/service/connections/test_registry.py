@@ -95,6 +95,7 @@ def test_a_padded_provider_name_is_not_trimmed_into_the_generic_endpoint():
     with pytest.raises(ProviderNotFoundError, match=" codex"):
         EndpointRegistry.match(" codex", "chat/completions")
 
+
 class TestProviderAliasCollision:
     def test_alias_colliding_with_another_providers_canonical_name_raises(self):
         @EndpointRegistry.register(provider="owner-provider", endpoint="chat")

@@ -137,6 +137,7 @@ def test_a_codex_cli_model_carries_the_workload_and_not_to_an_api_request():
     payload, _ = model.endpoint.create_payload({"prompt": "hi"})
     assert payload["request"].workload == "light"
 
+
 _CAPTURED: dict[str, Any] = {}
 
 
