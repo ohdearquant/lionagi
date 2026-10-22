@@ -241,7 +241,6 @@ Perplexity, Groq, OpenRouter): [Providers reference](docs/reference/providers.md
 ## Optional Extras
 
 ```bash
-uv add "lionagi[reader]"    # Document reading (PDF, HTML, DOCX)
 uv add "lionagi[mcp]"       # MCP server support
 uv add "lionagi[ollama]"    # Local models via Ollama
 uv add "lionagi[rich]"      # Rich terminal output

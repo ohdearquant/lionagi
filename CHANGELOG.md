@@ -34,6 +34,13 @@ directory's `.khive/config.toml` before it starts. For example, `:child` produce
 `<submitting actor>:child`. Leaving the setting unset or empty keeps the previous
 behaviour, including accepting a write-capable submission without `cwd`.
 
+The `reader` extra and document conversion are removed (see Removed). `lionagi[reader]` no
+longer exists, so an install that names it gets a missing-extra warning from the installer, and
+`lionagi[all]` no longer installs `docling`. Code that called the reader's `open` action, built
+`ReaderTool(cache_ttl=...)` or `ReaderTool(allowed_url_hosts=...)`, or passed
+`reader_tool="docling"` to `chunk()` converts documents itself and hands the text in:
+`chunk(text=...)`, or a callable `reader_tool` that returns a file's text.
+
 ### Added
 
 - The MCP server's `agent.submit`, `flow.submit`, `fanout.submit` and
@@ -353,6 +360,14 @@ behaviour, including accepting a write-capable submission without `cwd`.
   a refusal included, rather than replacing the entry over a handle that is still open.
 
 ### Removed
+
+- The `reader` optional dependency group and document conversion through `docling`. The reader
+  tool's `open` action, its converted-text cache and its remote-URL host allowlist are gone:
+  `ReaderAction` is `read` and `list_dir`, `ReaderTool` takes only a keyword `workspace_root`, and
+  the coding toolkit's reader answers `open` as an unknown action. `chunk()` accepts a callable
+  `reader_tool` only and raises `TypeError` for any other value, `"docling"` included. With
+  `docling` go the `torch`, `torchvision`, `accelerate` and OCR packages it pulled into
+  `lionagi[all]`.
 
 - A mutable `HashableModel` or `DataClass` value, the operation field models included, now
   raises `TypeError` from `hash()`, so it can no longer be put in a set or used as a dictionary
