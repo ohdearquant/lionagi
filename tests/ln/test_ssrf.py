@@ -150,20 +150,3 @@ def test_localhost_blocked():
     """'localhost' resolves to 127.0.0.1 or ::1, both blocked."""
     # Do not mock — use real DNS for this test (localhost is always loopback)
     assert is_ssrf_safe("localhost") is False
-
-
-async def test_reader_ssrf_guard_blocks_metadata_url(monkeypatch):
-    """ReaderTool rejects SSRF even when hostname is in the allowlist."""
-    import lionagi.tools.file.reader as reader_mod
-    from lionagi.tools.file.reader import ReaderRequest, ReaderTool
-
-    tool = ReaderTool(allowed_url_hosts={"metadata.example.com"})
-
-    # Monkeypatch is_ssrf_safe to simulate DNS-resolving to 169.254.169.254
-    monkeypatch.setattr(reader_mod, "is_ssrf_safe", lambda h: False)
-
-    result = await tool.handle_request(
-        ReaderRequest(action="open", path="https://metadata.example.com/file.pdf")
-    )
-    assert result.success is False
-    assert "blocked" in result.error.lower()

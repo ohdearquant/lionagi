@@ -321,7 +321,6 @@ _MISSING_DEP_HINTS = ("not installed", "is required for", "no module named")
 # Bounds the captured-output scan so an unrelated assertion can't be silently masked.
 _OPTIONAL_DEPS = (
     "pandas",
-    "docling",
     "fastmcp",
     "ollama",
     "xmltodict",

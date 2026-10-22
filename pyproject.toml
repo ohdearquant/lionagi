@@ -99,11 +99,6 @@ ruvector = [
     "numpy>=1.24,<3",
 ]
 
-
-reader = [
-    "docling>=2.91.0",
-]
-
 ollama = [
     "ollama>=0.6.1",
 ]
@@ -178,7 +173,6 @@ studio = [
 ]
 
 all = [
-    "lionagi[reader]",
     "lionagi[ollama]",
     "lionagi[mcp]",
     "lionagi[rich]",
@@ -372,13 +366,6 @@ constraint-dependencies = [
     "multidict>=6.9.1",     # CVE: reference leak in items-view union and subtraction
     "tornado>=6.5.8",       # CVE: request parsing DoS and cookie attribute injection
     "cairosvg>=2.9.1",      # CVE: recursive <use> exponential DoS; then quadratic-time <path> parsing
-    # CVE: HTML browser rendering ignoring enable_local_fetch, plugin entry points imported before
-    # the allow check, unbounded table spans, METS-GBS member limit, local images embedded from
-    # DoclingDocument JSON, file read/write when rendering untrusted TikZ, SSRF guard bypass by DNS
-    # rebinding, configured headers sent to every remote image host
-    "docling>=2.132.0",
-    "docling-slim>=2.132.0",
-    "accelerate>=1.15.0",   # CVE: path traversal and DoS via sharded checkpoint weight_map entries
     # CVE: pyvenv.cfg prompt injection, unverified seed wheels, batch and bash/fish activator
     # command injection
     "virtualenv>=21.7.13",
@@ -412,5 +399,4 @@ constraint-dependencies = [
                             # files outside base_path
     "setuptools>=83.0.0",   # CVE: MANIFEST.in exclusion bypass in sdist via Unicode NFC/NFD
                             # normalization collision on case-preserving macOS filesystems
-    "torch>=2.13.0",        # CVE: vulnerability affecting torch <= 2.12.1 (transitive via docling/torchvision)
 ]
