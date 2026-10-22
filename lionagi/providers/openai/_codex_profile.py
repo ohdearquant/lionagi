@@ -18,11 +18,12 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from lionagi._errors import ConfigurationError
 from lionagi.libs.path_safety import validate_bare_name
 
 try:
     import tomllib as _tomllib
-except ModuleNotFoundError:  # Python 3.10: the declared `tomli`, a TOML 1.0 parser like tomllib
+except ModuleNotFoundError:  # Python 3.10: the declared `tomli`; the locked 2.4.1 reads TOML 1.1
     import tomli as _tomllib  # type: ignore[no-redef]
 
 __all__ = (
@@ -33,6 +34,8 @@ __all__ = (
     "global_codex_reasoning_effort",
     "is_generated_codex_profile",
     "project_codex_profile",
+    "refuse_codex_profile_run_settings",
+    "refuse_non_absolute_codex_home",
     "resolve_codex_config_profile",
 )
 
@@ -188,6 +191,51 @@ def resolve_codex_config_profile(
     return resolved, overrides
 
 
+def refuse_codex_profile_run_settings(name: str, overrides: Mapping[str, Any]) -> None:
+    """Refuse a profile setting more than its model, for a request that ignores the user config.
+
+    The request names the profile, so its model settings still apply: every key whose
+    first segment starts with ``model_``, provider routing (``model_providers.*``)
+    included. Any other key (``sandbox_mode``, ``approval_policy``,
+    ``shell_environment_policy``) would set what the run decides for itself.
+    """
+    extra = sorted(
+        key
+        for key in overrides
+        if not key.split(".")[0].strip().strip("\"'").strip().startswith("model_")
+    )
+    if extra:
+        raise ConfigurationError(
+            f"codex config profile {name!r} sets {', '.join(extra)} besides its model "
+            "settings, and this request ignores the user config, so the run sets its own "
+            "sandbox, approvals and environment. Remove those keys from the profile, or "
+            "name a profile that sets only its model and provider."
+        )
+
+
+def refuse_non_absolute_codex_home(env: Mapping[str, str]) -> None:
+    """Refuse a CODEX_HOME, or a HOME when CODEX_HOME is unset, that is not absolute.
+
+    Both this process's environment and a request's environment are read by this
+    check. A value that is not absolute would otherwise name a different directory
+    depending on where it is resolved, and no reader here needs to agree with the
+    child about which one that is: the value is refused instead.
+    """
+    value = env.get("CODEX_HOME")
+    if value and not os.path.isabs(value):
+        raise ConfigurationError(
+            f"CODEX_HOME {value!r} is not an absolute path: it names a different "
+            "codex home depending on where it is resolved."
+        )
+    if not value:
+        home = env.get("HOME")
+        if home and not os.path.isabs(home):
+            raise ConfigurationError(
+                f"HOME {home!r} is not an absolute path: it names a different codex home "
+                "depending on where it is resolved."
+            )
+
+
 def codex_home_for_env(env: Mapping[str, str] | None) -> Path:
     """The codex home the process running under ``env`` will read.
 
@@ -204,35 +252,18 @@ def codex_home_for_env(env: Mapping[str, str] | None) -> Path:
     ACCOUNT home. Not ``Path.home()``: that reads ``$HOME`` first and only then
     the password database, so a parent whose own ``HOME`` is redirected would
     answer about a directory the child never looks at.
+
+    A ``CODEX_HOME``, or a ``HOME`` when ``CODEX_HOME`` is unset, that is not an
+    absolute path is refused before it is read, from either this process's
+    environment or a request's.
     """
     source: Mapping[str, str] = os.environ if env is None else env
+    refuse_non_absolute_codex_home(source)
     override = source.get("CODEX_HOME")
     if override:
-        return _expanduser_in(override, source)
+        return Path(override)
     home = source.get("HOME")
     return (Path(home) if home else _account_home()) / ".codex"
-
-
-def _expanduser_in(value: str, source: Mapping[str, str]) -> Path:
-    """Expand a leading ``~`` against SOURCE's home, not this process's.
-
-    ``Path.expanduser()`` reads our own ``$HOME``. That is the one thing this
-    module is careful never to do -- see the note above about ``Path.home()``
-    -- and doing it here silently undid that care for any environment naming
-    ``CODEX_HOME=~/...``: the child expanded the tilde against ITS ``HOME`` and
-    read a different directory than we resolved, so the profile that decides
-    the model was looked up in the wrong place.
-    """
-    if not value.startswith("~"):
-        return Path(value)
-    if value == "~" or value.startswith("~/"):
-        home = source.get("HOME")
-        base = Path(home) if home else _account_home()
-        return base if value == "~" else base / value[2:]
-    # ``~otheruser/...`` names an account rather than an environment, and only
-    # the password database can resolve it -- it does not differ between the
-    # two environments, so the stdlib expansion is the right instrument.
-    return Path(value).expanduser()
 
 
 def _account_home() -> Path:
@@ -260,7 +291,10 @@ def global_codex_reasoning_effort(env: Mapping[str, str] | None = None) -> str |
     whatever model a given spawn resolved — callers must clamp it to the
     resolved model before emitting it. An absent or unreadable config answers
     None (codex's own built-in default applies); unreadability is not an error
-    here because nothing was requested — this is a fallback read.
+    here because nothing was requested — this is a fallback read. A
+    ``CODEX_HOME``, or a ``HOME`` when ``CODEX_HOME`` is unset, that is not an
+    absolute path raises ``ConfigurationError`` before any read, since it names
+    no fixed directory.
 
     ``env`` is the environment the SPAWNED process will run under, when the
     caller has one. Reading our own environment instead answers about the wrong

@@ -539,6 +539,9 @@ behaviour, including accepting a write-capable submission without `cwd`.
 - Raised the `mcp` floor in the `mcp` extra to 1.30.0 (GHSA-84m7-p3x7-pcfv: sessions accumulate
   without bound in the StreamableHTTP server transport). `li mcp` serves over stdio, so its own
   server was not exposed; the floor keeps installs off the affected releases.
+- Raised the `aiohttp` floor to 3.14.4, which fixes eight advisories in 3.14.3 (CVE-2026-111063 to
+  CVE-2026-111066, CVE-2026-111748 to CVE-2026-111750 and GHSA-2g87-pp6c-29x5). The lockfiles move
+  to 3.14.4, and `uv.lock` moves `yarl` from 1.23.0 to 1.25.1, which 3.14.4 requires.
 
 ### Docs
 
