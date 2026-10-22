@@ -47,10 +47,13 @@ behaviour, including accepting a write-capable submission without `cwd`.
   do not undo a rename, pin or archive made during the read unless the server
   changed the row afterwards, and respect the current list filter. A failed send
   is reported in the conversation it was sent for: at once while it is shown,
-  otherwise once when it is selected again, with its unsent text back in the
-  composer ahead of any text typed there since. A draft whose conversation could
-  not be created, including one sent while the selected conversation was still
-  loading, reports it in the conversation then shown and keeps its text.
+  otherwise once, when it is shown again with no send in flight and no other
+  error showing, with its unsent text back in the composer ahead of any text
+  typed there since. A draft whose conversation could not be created, including
+  one sent while the selected conversation was still loading, reports it in the
+  conversation then shown and keeps its text. A draft's new conversation is
+  selected only if the operator has not chosen another conversation since the
+  send started; otherwise it is listed and the turn is submitted there.
 - Studio sessions can set or clear an explicit display label through
   `PUT /api/sessions/{session_id}`. Labels take precedence in session list and
   detail names without changing activity timestamps; clearing a label restores
@@ -169,6 +172,8 @@ behaviour, including accepting a write-capable submission without `cwd`.
 
 ### Changed
 
+- An approved Studio Operator `rename_run` sets the run's explicit display label
+  and no longer writes the run's system `name` or its `updated_at`.
 - `POST /api/studio/pairing-codes` now answers 410 for every admitted request, whatever its
   headers or the admission token. `li studio` mints a pairing code in process before it starts
   the daemon, or, against a daemon already running, obtains one over the daemon's new

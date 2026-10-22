@@ -1275,6 +1275,112 @@ describe("OperatorPanel", () => {
       expect(container.querySelector("textarea")?.value).toBe("Inspect this project");
     });
 
+    async function selectRow(row: { title: string }) {
+      await openList();
+      const button = [...container.querySelectorAll("ul li button")].find(
+        (item) => item.textContent === row.title,
+      ) as HTMLButtonElement;
+      await act(async () => button.click());
+    }
+
+    it("keeps a conversation chosen before a draft's conversation is created", async () => {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      const created = { ...firstRow, id: "created-1", title: "New conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      const loading = deferred<{ conversation: OperatorConversation; frames: OperatorFrame[] }>();
+      api.getOperatorConversation.mockReturnValueOnce(loading.promise);
+      const pending = deferred<OperatorConversation>();
+      api.createOperatorConversation.mockReturnValueOnce(pending.promise);
+      api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "request-created" });
+      const submits = api.submitOperatorTurn.mock.calls.length;
+      await mount();
+      await sendInstruction();
+      const otherLoad = deferred<{ conversation: OperatorConversation; frames: OperatorFrame[] }>();
+      api.getOperatorConversation.mockReturnValueOnce(otherLoad.promise);
+      await selectRow(other);
+
+      // The create settles while the chosen conversation is still loading.
+      await act(async () => pending.resolve(created));
+      await act(async () => otherLoad.resolve({ conversation: other, frames: [] }));
+      await act(async () => loading.resolve({ conversation: firstRow, frames: [] }));
+
+      expect(api.submitOperatorTurn).toHaveBeenCalledTimes(submits + 1);
+      expect(api.submitOperatorTurn.mock.calls[submits][0]).toBe(created.id);
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe(other.id);
+      await openList();
+      expect(container.querySelector("ul")?.textContent).toContain(created.title);
+    });
+
+    it("keeps a loaded conversation chosen before a draft's conversation is created", async () => {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      const created = { ...firstRow, id: "created-1", title: "New conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      const loading = deferred<{ conversation: OperatorConversation; frames: OperatorFrame[] }>();
+      api.getOperatorConversation.mockReturnValueOnce(loading.promise);
+      const pending = deferred<OperatorConversation>();
+      api.createOperatorConversation.mockReturnValueOnce(pending.promise);
+      api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "request-created" });
+      const submits = api.submitOperatorTurn.mock.calls.length;
+      await mount();
+      await sendInstruction();
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+
+      // The chosen conversation is shown before the create settles.
+      await act(async () => pending.resolve(created));
+
+      expect(api.submitOperatorTurn.mock.calls[submits][0]).toBe(created.id);
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe(other.id);
+    });
+
+    it("reports a kept failure after a send still in flight settles", async () => {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([]);
+      api.createOperatorConversation.mockResolvedValueOnce(firstRow);
+      const pending = deferred<{ requestId: string }>();
+      api.submitOperatorTurn.mockReturnValueOnce(pending.promise);
+      await mount();
+      await sendInstruction();
+      await openList();
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      await clickFilter("Active");
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      const select = [...container.querySelectorAll("ul li button")].find(
+        (button) => button.textContent === other.title,
+      ) as HTMLButtonElement;
+      await act(async () => select.click());
+      await act(async () => pending.reject(new Error("Draft send failed")));
+
+      // Back to the failed conversation; a draft is sent while it loads.
+      const created = { ...firstRow, id: "created-2", title: "New conversation" };
+      const again = deferred<{ conversation: OperatorConversation; frames: OperatorFrame[] }>();
+      api.getOperatorConversation.mockReturnValueOnce(again.promise);
+      await selectRow(firstRow);
+      const creating = deferred<OperatorConversation>();
+      api.createOperatorConversation.mockReturnValueOnce(creating.promise);
+      api.submitOperatorTurn.mockResolvedValueOnce({ requestId: "request-2" });
+      await typeInstruction("Second draft");
+      const send = [...container.querySelectorAll("button")].find(
+        (button) => button.textContent === "Send",
+      )!;
+      await act(async () => send.click());
+
+      await act(async () => again.resolve({ conversation: firstRow, frames: [] }));
+      // Not reported while that send still holds the composer.
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(container.querySelector("textarea")?.value).toBe("Second draft");
+
+      await act(async () => creating.resolve(created));
+      // The draft went to its new conversation, which shows neither the failure nor its text.
+      expect(window.localStorage.getItem("studio:operator-conversation")).toBe(created.id);
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(container.querySelector("textarea")?.value).toBe("");
+
+      await selectRow(firstRow);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Draft send failed");
+      expect(container.querySelector("textarea")?.value).toBe("Inspect this project");
+    });
+
     it("shows a conversation description beneath its title and in the tooltip", async () => {
       const description = "Review scheduler retries and release decisions";
       const conversation = {

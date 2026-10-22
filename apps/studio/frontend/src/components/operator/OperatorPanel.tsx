@@ -989,15 +989,6 @@ export default function OperatorPanel({ open, onClose }: Props) {
           conversation: snapshot.conversation,
           frames: snapshot.frames,
         });
-        const failed = failedSendsRef.current.get(conversationId);
-        if (failed) {
-          failedSendsRef.current.delete(conversationId);
-          setActionError(failed.message);
-          // Text typed here since keeps its place after the failed text, so neither is lost.
-          setInstruction((current) =>
-            current.trim() ? `${failed.instruction}\n${current}` : failed.instruction,
-          );
-        }
       } catch (error) {
         if (selectedConversationIdRef.current !== conversationId) return;
         dispatch({
@@ -1008,6 +999,23 @@ export default function OperatorPanel({ open, onClose }: Props) {
     },
     [t],
   );
+
+  // A failed send kept for a conversation is reported once that conversation is
+  // shown and ready, no send is in flight and no other error is showing. A send in
+  // flight still owns the composer and its outcome may clear it, and another alert
+  // would be replaced, so either one defers the report rather than losing it.
+  const shownConversationId = state.conversation?.id;
+  useEffect(() => {
+    if (!shownConversationId || state.loadState !== "ready" || sending || actionError) return;
+    const failed = failedSendsRef.current.get(shownConversationId);
+    if (!failed) return;
+    failedSendsRef.current.delete(shownConversationId);
+    setActionError(failed.message);
+    // Text typed here since keeps its place after the failed text, so neither is lost.
+    setInstruction((current) =>
+      current.trim() ? `${failed.instruction}\n${current}` : failed.instruction,
+    );
+  }, [actionError, sending, shownConversationId, state.loadState]);
 
   useEffect(() => {
     let active = true;
@@ -1322,19 +1330,25 @@ export default function OperatorPanel({ open, onClose }: Props) {
     // it is selected, else when it is selected again. A draft whose conversation
     // could not be created has none, so its failure shows where its text still is.
     let sentTo = state.conversation?.id ?? null;
+    // A draft's new conversation takes the panel only while the operator has not
+    // chosen another conversation since this send started; otherwise it is listed
+    // and the turn submitted there, and the chosen conversation stays selected.
+    const selectedAtStart = selectedConversationIdRef.current;
     try {
       let conversation = state.conversation;
       if (!conversation) {
         conversation = await createOperatorConversation();
         createdConversationIdsRef.current.add(conversation.id);
-        selectedConversationIdRef.current = conversation.id;
         sentTo = conversation.id;
-        window.localStorage.setItem(STORAGE_KEY, conversation.id);
         setConversations((current) => [
           conversation as OperatorConversation,
           ...current.filter((item) => item.id !== conversation?.id),
         ]);
-        dispatch({ type: "LOAD_SUCCESS", conversation, frames: [] });
+        if (selectedConversationIdRef.current === selectedAtStart) {
+          selectedConversationIdRef.current = conversation.id;
+          window.localStorage.setItem(STORAGE_KEY, conversation.id);
+          dispatch({ type: "LOAD_SUCCESS", conversation, frames: [] });
+        }
       }
       const context = operatorContext(
         location.pathname,
