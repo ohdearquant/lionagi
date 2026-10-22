@@ -25,6 +25,11 @@ from .header_factory import HeaderFactory
 
 _CONFIGURED_TIMEOUT = object()
 
+# Header names, folded, that a restored model drops beside the credential names
+# (``_without_credential_headers``). Only restore reads this: the redaction callers of
+# credential_fields keep their own vocabulary.
+_HEADERS_NOT_RESTORED = frozenset({"cookie", "x_auth", "host"})
+
 # What ``from_dict`` never takes from a stored config: the credential source, the
 # local-network opt-in, and the kwargs a config never writes down.
 _NOT_RESTORED = frozenset(
@@ -1029,8 +1034,9 @@ class Endpoint:
         The stored config never supplies a credential, the local-network opt-in, a grant
         or runtime state. The first two come from the keyword arguments here; a grant is
         handed to the live config again by the caller whose role names it. ``base_url``
-        given here replaces the stored one. A stored header named as a credential is
-        dropped, and of the stored client options only the headers are kept. Without
+        given here replaces the stored one. A stored header that can carry a credential
+        or pick the server is dropped (see ``_without_credential_headers``), and of the
+        stored client options only the headers are kept. Without
         the keyword arguments the config has no credential and the opt-in is off;
         ``iModel.from_dict`` then applies the provider's registration.
         """
@@ -1086,15 +1092,26 @@ class Endpoint:
 
 
 def _without_credential_headers(headers: Any) -> Any:
-    """``headers`` without each header whose name the library reads as a credential.
+    """``headers`` without each stored header a restored model must not send.
 
-    A mapping and a list of name-value pairs are filtered; any other value is returned
-    as it is, for the config or the HTTP client to accept or refuse.
+    That is a header whose name the library reads as a credential, one whose name ends
+    in ``-Key`` (``Ocp-Apim-Subscription-Key``, ``X-Auth-Key``), ``Cookie``, ``X-Auth``,
+    and ``Host``, which would send the restored key to another virtual host at the
+    same address. A mapping and a list of name-value pairs are filtered; any other
+    value is returned as it is, for the config or the HTTP client to accept or refuse.
     """
-    from lionagi.libs.credential_fields import is_secret_field_name
+    from lionagi.libs.credential_fields import fold_field_name, is_secret_field_name
 
     def names_credential(name: Any) -> bool:
-        return isinstance(name, str) and is_secret_field_name(name)
+        if not isinstance(name, str):
+            return False
+        folded = fold_field_name(name).strip("_")
+        return (
+            is_secret_field_name(name)
+            or folded in _HEADERS_NOT_RESTORED
+            or folded == "key"
+            or folded.endswith("_key")
+        )
 
     if isinstance(headers, Mapping):
         return {name: value for name, value in headers.items() if not names_credential(name)}

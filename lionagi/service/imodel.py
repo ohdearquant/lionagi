@@ -717,7 +717,8 @@ class iModel:  # noqa: N801
         """Rebuild a model from ``to_dict`` output, read as trusted input.
 
         ``data`` chooses the provider, model and settings. It never supplies a
-        credential, and can turn the local-network opt-in off but not on. Without
+        credential or a header that can carry one, and can turn the local-network
+        opt-in off but not on. Without
         ``api_key``, the environment's credential is attached only at the provider's
         registered base URL. Without ``allow_local_network``, the provider's
         registered setting applies. ``base_url`` replaces the stored URL.
@@ -811,8 +812,16 @@ def _restored_opt_in(registered: Any, data: Mapping) -> bool:
     """The provider's registered local-network opt-in, unless the stored config turned it
     off. Off, the model reaches public hosts only; on, loopback hosts only. A stored row
     may turn it off, as its writer did for a local provider served elsewhere, but never
-    on, which would point the model at this machine."""
+    on, which would point the model at this machine. A stored value other than ``True``,
+    at the top of the config or in its ``kwargs``, reads as off: ``"false"`` and ``0``
+    were off when the config parsed them, and an unknown spelling fails closed."""
     endpoint = data.get("endpoint")
     config = endpoint.get("config") if isinstance(endpoint, Mapping) else None
-    stored = config.get("allow_local_network") if isinstance(config, Mapping) else None
-    return registered.allow_local_network and stored is not False
+    if not isinstance(config, Mapping):
+        return registered.allow_local_network
+    kwargs = config.get("kwargs")
+    places = (config, kwargs) if isinstance(kwargs, Mapping) else (config,)
+    for place in places:
+        if "allow_local_network" in place and place["allow_local_network"] is not True:
+            return False
+    return registered.allow_local_network

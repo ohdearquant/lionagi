@@ -63,7 +63,7 @@ is a separate characterization, distinct from the acceptance tests in D7):
 **P1: no request in a tool loop is a prefix of the next.** Each pair of consecutive requests first
 differs at the previous round's instruction. While an instruction is current it renders its
 `Tools`, `ResponseSchema` and `ResponseFormat` sections (`protocols/messages/instruction.py:211-216`);
-once it is history it is re-rendered without them (`operations/chat/_prepare.py:228`). Rounds 0 to
+once it is history it is re-rendered without them (`operations/chat/_prepare.py:275`). Rounds 0 to
 1 differ at message 0, 1 to 2 at message 2, 2 to 3 at message 4. The current instruction is about
 3,170 characters of `json.dumps` of the whole message object, role wrapper included (3,141 of the
 content alone), almost all of it those sections, sent uncached on every call.
@@ -87,7 +87,7 @@ that code on one of two paths, and the two paths differ:
 
 - **A default `iModel` carries a request-option model**, whose fields are the Anthropic request
   model's; `cache_control` is not one of them, so the request-option filter drops the flag
-  (`service/connections/endpoint.py:312-315`) before `messages.py:1195` looks for it. Building that
+  (`service/connections/endpoint.py:317-320`) before `messages.py:1195` looks for it. Building that
   payload for the probe's last request with `cache_control=True` gave no `system` field and no cache
   mark.
 - **An endpoint with no request-option filter carries no request-option model** — an `iModel`
@@ -97,10 +97,10 @@ that code on one of two paths, and the two paths differ:
 
 `iModel` then pops the same flag from the request (`service/imodel.py:291`) and, in `Endpoint.call`,
 it switches on a local response memo, except for a call routed through an account
-(`service/connections/endpoint.py:433`, `:503-521`), a different feature.
+(`service/connections/endpoint.py:438`, `:508-526`), a different feature.
 
 **P5: the run record cannot show what caching saved.** `RunEnd` carries `cached_tokens` and
-`cache_write_tokens` (`session/signal.py:66-67`) without the lifetime of the write, and ADR-0126's
+`cache_write_tokens` (`session/signal.py:85-86`) without the lifetime of the write, and ADR-0126's
 ledger needs read and write counts per lifetime to price a run in its own sense of the word.
 
 | Concern | Decision |
@@ -132,7 +132,7 @@ on every path, with no exception: the Anthropic adapter's `cache_control`-trigge
 Restated for both paths: on a default `iModel` the request-option filter drops the flag before the
 mark code, so no mark is placed; on an endpoint with no request-option filter — an `iModel` restored
 with `request_options` None, or a dict-configured model
-(`service/connections/endpoint.py:312-315`) — the flag reaches the mark code and one five-minute mark
+(`service/connections/endpoint.py:317-320`) — the flag reaches the mark code and one five-minute mark
 lands on the last message. With the option on and the declaration present, this record's placement
 replaces that mark. For a provider without the declaration the request is unchanged whatever the
 option says. There is no ungated change.
@@ -164,7 +164,7 @@ run record counts it (D6).
 A **history rewrite** is a turn-segment change, not a new class. It is allowed; it breaks the prefix
 from the rewritten message on, so every later request in the conversation is a cache miss from
 there; and the run record counts it (D6). Today's rewrites are the hide, show and summarize
-directives of ADR-0125 step 2 (`operations/chat/_prepare.py:191-247`).
+directives of ADR-0125 step 2 (`operations/chat/_prepare.py:234-297`).
 
 ### D2: tools render once; an instruction renders the same everywhere
 
@@ -294,7 +294,7 @@ receive, and the adapter's own last-message mark is not placed on top of it. The
 
 Each model call records, side by side: uncached input tokens, cache-read tokens, cache-write tokens
 per lifetime, and output tokens. The write counts are the provider's own per-lifetime fields. As
-lionagi's extractor reads them (`session/signal.py:290-294`), those are `cache_read_input_tokens`
+lionagi's extractor reads them (`session/signal.py:317-323`), those are `cache_read_input_tokens`
 and `cache_creation_input_tokens`, the total cache-creation count, so the extractor drops the
 per-lifetime split. This record extends it to carry both, in the per-lifetime shape the provider
 reports and lion1's backend already reads: `ephemeral_5m_input_tokens` and `ephemeral_1h_input_tokens`

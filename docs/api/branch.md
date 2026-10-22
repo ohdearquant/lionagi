@@ -359,11 +359,14 @@ writer you trust, produced.
 
 Some settings lionagi sends with an HTTP model's requests belong to the process restoring the
 data rather than to the data, so a stored model never supplies them, whoever wrote it: a
-credential, the local-network opt-in, a header named as a credential (such as `Authorization`
-or `x-api-key`), and any client option other than its headers. `iModel.from_dict` attaches the
+credential, the local-network opt-in, a header that can carry a credential (one named as a
+credential, such as `Authorization` or `x-api-key`, one whose name ends in `-Key`, `Cookie` and
+`X-Auth`), the `Host` header, and any client option other than its headers. `iModel.from_dict`
+attaches the
 provider's credential from the environment only when the stored base URL is the provider's
 registered one, and takes the local-network setting from the provider's registration; a stored
-config can turn that setting off, never on. The opt-in admits loopback addresses only
+config can turn that setting off, never on, and any stored value but `true` turns it off. The
+opt-in admits loopback addresses only
 (`localhost`, `127.0.0.1`, `::1`). A caller that wants another endpoint, credential or setting
 passes it, and a key passed without a `base_url` goes to the stored URL:
 
@@ -380,8 +383,9 @@ itself.
 
 A CLI model sends no request of its own, so the rule above does not reach it. Its settings are
 restored as stored, and the child process it starts reads them: Codex `config_overrides` can
-name another provider URL and the environment variable its key is read from, and Claude Code's
-`settings` and `permission_mode` set what that child may do. The child inherits this process's
+name another provider URL and the environment variable its key is read from, Claude Code's
+`settings` and `permission_mode` set what that child may do, and a stored `mcp_servers` or
+`mcp_config` names the MCP servers it starts. The child inherits this process's
 environment unless a live caller sets one. Restore a CLI row only from a writer you trust.
 
 Next: [`Session`](session.md) — manage multiple branches

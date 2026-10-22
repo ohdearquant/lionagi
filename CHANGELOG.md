@@ -11,15 +11,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 A model restored with `iModel.from_dict` or `Branch.from_dict` whose stored base URL is not
 its provider's registered one is restored without a credential. A restored model takes the
 local-network opt-in from its provider's registration (off for a provider that is not
-registered), and a stored config can turn it off but no longer on. So a model kept for a
+registered), and a stored config can turn it off but no longer on; a stored value other than
+`true` turns it off. So a model kept for a
 gateway that needs a key fails at its first call, and so does one kept for a loopback
 address (`localhost`, `127.0.0.1`, `::1`) whose provider does not register the opt-in. To
 keep sending there, pass the key for a gateway, `iModel.from_dict(data, api_key=...)`, or the
 opt-in for a loopback address, `allow_local_network=True`. The opt-in admits loopback
 addresses only, so it does not go with a gateway's URL, and another private-network address
 is refused either way. `Branch.from_dict` takes live models instead: a `chat_model`, and a
-`parse_model` as well when one was stored. `li agent --resume` takes neither, so a branch
-saved against such a URL is resumed from Python instead. A restored model also keeps no
+`parse_model` as well when one was stored. `li agent --resume` and `--continue-last` take
+neither, so a branch saved against such a URL is resumed from Python instead. A restored model also keeps no
 client option but its headers: one that relied on a stored `trust_env`, for proxy settings
 from the environment, sets it again on the live config (`model.endpoint.config.client_kwargs`).
 
@@ -537,15 +538,18 @@ behaviour, including accepting a write-capable submission without `cwd`.
   registration, which a stored config can turn off but not on. `iModel.from_dict` takes
   `base_url`, `api_key` and `allow_local_network` from the caller, and `Branch.from_dict` takes
   `chat_model` and `parse_model`. A grant or an environment written as a top-level key of a
-  stored config is dropped too. So is a stored header whose name names a credential
-  (`Authorization`, `x-api-key`, `api-key` and the like), in `default_headers` or in the client
-  options' `headers`, which before could replace the restored key, a caller's key included; and
+  stored config is dropped too. So is a stored header that can carry a credential: one whose
+  name names a credential (`Authorization`, `x-api-key`, `api-key` and the like), one whose name
+  ends in `-Key` (`Ocp-Apim-Subscription-Key`, `X-Auth-Key`), `Cookie` and `X-Auth`, and also
+  `Host`, which would send the restored key to another virtual host. It is dropped from
+  `default_headers` and from the client options' `headers`, where before it could replace the
+  restored key, a caller's key included; and
   no client option other than `headers` is restored (`auth`, `proxy_auth`, `cookies` and
   `trust_env` among them). A CLI model's own settings are still restored as stored and read by
   the child process it starts: Codex `config_overrides` can name another provider URL and the
-  environment variable its key is read from, and Claude Code's `settings` and
-  `permission_mode` set what that child may do, so restore a CLI row only from a writer you
-  trust.
+  environment variable its key is read from, Claude Code's `settings` and `permission_mode`
+  set what that child may do, and a stored `mcp_servers` or `mcp_config` names the MCP servers
+  it starts, so restore a CLI row only from a writer you trust.
 - Raised the `mcp` floor in the `mcp` extra to 1.30.0 (GHSA-84m7-p3x7-pcfv: sessions accumulate
   without bound in the StreamableHTTP server transport). `li mcp` serves over stdio, so its own
   server was not exposed; the floor keeps installs off the affected releases.

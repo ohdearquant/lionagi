@@ -134,6 +134,31 @@ def test_a_stored_config_can_turn_a_local_providers_opt_in_off():
     assert config.allow_local_network is False
 
 
+def _lattice_row():
+    return iModel(
+        provider="lattice", model=LATTICE_MODEL, base_url="http://127.0.0.1:9999/v1"
+    ).to_dict()
+
+
+@pytest.mark.parametrize("stored", [False, 0, 0.0, "false", "off", None, "true"])
+def test_a_stored_opt_in_other_than_true_turns_a_local_providers_off(stored):
+    data = _lattice_row()
+    data["endpoint"]["config"]["allow_local_network"] = stored
+    assert iModel.from_dict(data).endpoint.config.allow_local_network is False
+
+
+def test_a_stored_opt_in_off_in_kwargs_turns_a_local_providers_off():
+    data = _lattice_row()
+    data["endpoint"]["config"].setdefault("kwargs", {})["allow_local_network"] = False
+    assert iModel.from_dict(data).endpoint.config.allow_local_network is False
+
+
+def test_a_stored_true_keeps_a_local_providers_registered_opt_in():
+    data = _lattice_row()
+    assert data["endpoint"]["config"]["allow_local_network"] is True
+    assert iModel.from_dict(data).endpoint.config.allow_local_network is True
+
+
 def test_the_caller_decides_the_opt_in():
     opened = iModel.from_dict(_stored(), allow_local_network=True)
     assert opened.endpoint.config.allow_local_network is True
@@ -204,7 +229,21 @@ def test_a_branch_takes_a_callers_parse_model_beside_the_stored_chat_model():
     assert restored.chat_model.endpoint.config.kwargs["model"] == "gpt-4.1-mini"
 
 
-CREDENTIAL_HEADERS = ["Authorization", "x-api-key", "X_Api_Key", "Proxy-Authorization", "api-key"]
+CREDENTIAL_HEADERS = [
+    "Authorization",
+    "x-api-key",
+    "X_Api_Key",
+    "Proxy-Authorization",
+    "api-key",
+    # Credentials outside the library's credential vocabulary, matched on restore only.
+    "Cookie",
+    "Ocp-Apim-Subscription-Key",
+    "X-Functions-Key",
+    "X-Auth",
+    "X-Auth-Key",
+    # Not a credential, but it would send the restored key to another virtual host.
+    "Host",
+]
 CALLERS = {
     "env-key": {},
     "caller-key": {"api_key": "sk-caller"},
@@ -216,7 +255,9 @@ CALLERS = {
 @pytest.mark.parametrize("name", CREDENTIAL_HEADERS)
 @pytest.mark.parametrize("caller", list(CALLERS.values()), ids=list(CALLERS))
 async def test_a_stored_credential_header_never_reaches_the_request(env_key, name, caller):
-    data = _stored(default_headers={name: "stored-secret", "OpenAI-Beta": "kept"})
+    data = _stored(
+        default_headers={name: "stored-secret", "OpenAI-Beta": "kept", "X-Monkey": "kept"}
+    )
     data["endpoint"]["config"]["client_kwargs"] = {
         "headers": [[name, "stored-secret"], ["X-Trace", "kept"]],
         "auth": ["user", "stored-secret"],
@@ -228,6 +269,8 @@ async def test_a_stored_credential_header_never_reaches_the_request(env_key, nam
     assert headers["Authorization"] == f"Bearer {caller.get('api_key', env_key)}"
     assert "stored-secret" not in headers.values()
     assert headers["OpenAI-Beta"] == "kept"
+    # Ends in "key" but not in "-Key": a header name, not a key.
+    assert headers["X-Monkey"] == "kept"
 
     session = endpoint._create_http_session()
     try:

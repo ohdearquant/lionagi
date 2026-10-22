@@ -134,9 +134,14 @@ way, together with `api_key` and `allow_local_network`, wherever the row puts
 them: in `kwargs`, or as a top-level key the config moves into `kwargs`. A
 restored model takes its credential and its local-network setting from the
 caller or from the provider's registration (`iModel.from_dict()`, where a
-stored config can turn the setting off but not on). A stored row never sets a
+stored config can turn the setting off but not on, and a stored value other
+than `True` turns it off). A stored row never sets a
 child process's environment: a live caller sets one, and without it the child
 inherits the restoring process's environment. It also drops each
-header whose name names a credential, from `default_headers` and from
-`client_kwargs["headers"]`, and every other `client_kwargs` option, so a stored
-row neither replaces the restored key nor hands the HTTP client one.
+header that can carry a credential (a name `is_secret_field_name` reads as one,
+a name ending in `-Key`, `Cookie`, `X-Auth`) and `Host`, from
+`default_headers` and from `client_kwargs["headers"]`, and every other
+`client_kwargs` option, so a stored row neither replaces the restored key, sends
+one of its own, nor points the restored key at another virtual host. The extra
+names are matched on restore only; the shared credential vocabulary is
+unchanged.
