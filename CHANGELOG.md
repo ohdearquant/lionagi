@@ -45,7 +45,13 @@ longer exists, so an install that names it gets a missing-extra warning from the
 `aiohttp.ClientResponseError` raises `lionagi.service.resilience.APIClientError`, with
 `status_code`, `headers` and `response_data`; code that read `.status` reads `.status_code`.
 `EndpointConfig.client_kwargs` go to `httpx.AsyncClient`, so an aiohttp-only option such as
-`connector` raises `TypeError`. An `Endpoint` subclass that overrides `_call_aiohttp` or
+`connector` raises `TypeError`. A request's `ssl`, `proxy` and `allow_redirects` are still taken;
+any other aiohttp-only request option raises `TypeError`. A transport failure raises httpx's error
+(`httpx.ConnectError`, `httpx.ReadTimeout`, `httpx.RemoteProtocolError` and the like, all
+`httpx.RequestError`) where aiohttp raised its own, so a read that stalls past the timeout raises
+`httpx.ReadTimeout`, which is not a `TimeoutError`. A 200 response whose body is not JSON raises
+`json.JSONDecodeError` and is not retried; aiohttp raised `ContentTypeError` for one not served as
+JSON, and that was retried. An `Endpoint` subclass that overrides `_call_aiohttp` or
 `_stream_aiohttp` raises `TypeError` when the class is defined; rename the override to
 `_call_http` or `_stream_http`.
 
@@ -368,7 +374,11 @@ longer exists, so an install that names it gets a missing-extra warning from the
   a refusal included, rather than replacing the entry over a handle that is still open.
 
 - `httpx` replaces `aiohttp` as the HTTP client for every endpoint request, and is now a core
-  dependency. The client still follows redirects and ignores proxy settings from the environment.
+  dependency. The client still follows redirects, ignores proxy settings from the environment and
+  verifies certificates against the trust store Python's `ssl` module loads by default,
+  `SSL_CERT_FILE` and `SSL_CERT_DIR` included, rather than the `certifi` bundle httpx uses on its
+  own. A request still takes `ssl` (`True`, `False` or an `ssl.SSLContext`), `proxy` and
+  `allow_redirects`, and an empty response body still reads as `None`.
   `EndpointConfig.timeout` now bounds each connect, read, write and pool wait rather than the
   whole request.
 

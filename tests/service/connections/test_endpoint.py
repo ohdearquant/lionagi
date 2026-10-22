@@ -4,6 +4,10 @@
 import asyncio
 import json
 import re
+import ssl
+import sys
+import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlsplit
 
@@ -1299,6 +1303,11 @@ def _response_with_status(status: int):
     return _http_response(status, {"error": f"status {status}"})
 
 
+def _session_per_attempt(status: int):
+    # Every attempt gets a client of its own, as _create_http_session gives one.
+    return lambda *args, **kwargs: _mock_session_returning(_response_with_status(status))
+
+
 class TestThe4xxSentinelUnwrapLeavesAnAcyclicCause:
     """A 4xx answer is wrapped in a sentinel the retry layer excludes, then unwrapped.
 
@@ -1322,10 +1331,11 @@ class TestThe4xxSentinelUnwrapLeavesAnAcyclicCause:
     @pytest.mark.asyncio
     async def test_the_native_path_reraise_is_not_its_own_cause(self):
         endpoint = self._make_endpoint()
-        session = _mock_session_returning(_response_with_status(401))
 
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
-            with patch.object(endpoint, "_create_http_session", return_value=session):
+            with patch.object(
+                endpoint, "_create_http_session", side_effect=_session_per_attempt(401)
+            ):
                 with pytest.raises(APIClientError) as info:
                     await endpoint._call(payload={"model": "m", "messages": []}, headers={})
 
@@ -1338,10 +1348,11 @@ class TestThe4xxSentinelUnwrapLeavesAnAcyclicCause:
         from lionagi.service.resilience import RetryConfig
 
         endpoint = self._make_endpoint(RetryConfig(max_retries=3, base_delay=0.01))
-        session = _mock_session_returning(_response_with_status(400))
 
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
-            with patch.object(endpoint, "_create_http_session", return_value=session):
+            with patch.object(
+                endpoint, "_create_http_session", side_effect=_session_per_attempt(400)
+            ):
                 with patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock()):
                     with pytest.raises(APIClientError) as info:
                         await endpoint.call({"messages": []})
@@ -1352,10 +1363,11 @@ class TestThe4xxSentinelUnwrapLeavesAnAcyclicCause:
     @pytest.mark.asyncio
     async def test_the_walk_from_the_unwrapped_error_ends(self):
         endpoint = self._make_endpoint()
-        session = _mock_session_returning(_response_with_status(403))
 
         with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
-            with patch.object(endpoint, "_create_http_session", return_value=session):
+            with patch.object(
+                endpoint, "_create_http_session", side_effect=_session_per_attempt(403)
+            ):
                 with pytest.raises(APIClientError) as info:
                     await endpoint._call(payload={"model": "m", "messages": []}, headers={})
 
@@ -1365,3 +1377,293 @@ class TestThe4xxSentinelUnwrapLeavesAnAcyclicCause:
             assert cause.__cause__ is not cause
             cause = cause.__cause__
         assert len(seen) <= 8
+
+
+_JSON = {"Content-Type": "application/json"}
+
+
+def _raw_response(status: str, body: bytes = b"", headers: dict[str, str] | None = None) -> bytes:
+    lines = [f"HTTP/1.1 {status}", f"Content-Length: {len(body)}", "Connection: close"]
+    lines += [f"{name}: {value}" for name, value in (headers or {}).items()]
+    return ("\r\n".join(lines) + "\r\n\r\n").encode("latin-1") + body
+
+
+class _LocalServer:
+    """An HTTP/1.1 server on a loopback socket.
+
+    ``respond(server, request_line)`` returns the raw response for each request; every
+    request line the server read is kept in ``request_lines``.
+    """
+
+    def __init__(self, respond):
+        self._respond = respond
+        self.request_lines: list[str] = []
+        self.closing = asyncio.Event()
+
+    async def __aenter__(self):
+        self._server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
+        self.port = self._server.sockets[0].getsockname()[1]
+        return self
+
+    async def __aexit__(self, *exc_info):
+        self.closing.set()
+        self._server.close()
+        await self._server.wait_closed()
+
+    async def _handle(self, reader, writer):
+        try:
+            head = (await reader.readuntil(b"\r\n\r\n")).decode("latin-1").split("\r\n")
+            length = 0
+            for line in head[1:]:
+                name, _, value = line.partition(":")
+                if name.strip().lower() == "content-length":
+                    length = int(value)
+            await reader.readexactly(length)
+            self.request_lines.append(head[0])
+            writer.write(await self._respond(self, head[0]))
+            await writer.drain()
+        except (ConnectionError, asyncio.IncompleteReadError):
+            pass
+        finally:
+            writer.close()
+
+
+def _local_endpoint(port: int, **config) -> Endpoint:
+    return Endpoint(
+        config=EndpointConfig(
+            name="test",
+            provider="test",
+            endpoint="v1/chat",
+            base_url=f"http://127.0.0.1:{port}",
+            auth_type="bearer",
+            api_key="test-key",
+            **{"max_retries": 1, **config},
+        )
+    )
+
+
+def _ssl_context_of(client: httpx.AsyncClient) -> ssl.SSLContext:
+    # httpx keeps the context on the transport's connection pool and has no public accessor.
+    return client._transport._pool._ssl_context
+
+
+class TestTransportFailuresAreRetried:
+    @pytest.mark.asyncio
+    async def test_a_connect_error_is_retried_on_the_native_path(self):
+        endpoint = _local_endpoint(1, max_retries=2)
+        attempts = 0
+
+        def handler(request):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise httpx.ConnectError("connection refused", request=request)
+            return httpx.Response(200, json={"ok": True}, request=request)
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch.object(
+                endpoint, "_create_http_session", side_effect=lambda *a, **k: _http_client(handler)
+            ):
+                with patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock()):
+                    result = await endpoint._call_http({}, {})
+
+        assert result == {"ok": True}
+        assert attempts == 2
+
+    @pytest.mark.asyncio
+    async def test_a_connect_error_is_retried_with_default_retry_config(self):
+        from lionagi.service.resilience import RetryConfig
+
+        endpoint = _local_endpoint(1)
+        endpoint.retry_config = RetryConfig(max_retries=2, base_delay=0.01)
+        attempts = 0
+
+        def handler(request):
+            nonlocal attempts
+            attempts += 1
+            raise httpx.ConnectError("connection refused", request=request)
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch.object(
+                endpoint, "_create_http_session", side_effect=lambda *a, **k: _http_client(handler)
+            ):
+                with patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock()):
+                    with pytest.raises(httpx.ConnectError):
+                        await endpoint.call({}, skip_payload_creation=True)
+
+        assert attempts == 3
+
+    @pytest.mark.asyncio
+    async def test_a_200_whose_body_is_not_json_is_not_retried(self):
+        endpoint = _local_endpoint(1, max_retries=3)
+        attempts = 0
+
+        def handler(request):
+            nonlocal attempts
+            attempts += 1
+            return httpx.Response(
+                200, text="<html></html>", headers={"Content-Type": "text/html"}, request=request
+            )
+
+        with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+            with patch.object(
+                endpoint, "_create_http_session", side_effect=lambda *a, **k: _http_client(handler)
+            ):
+                with patch("lionagi.ln.concurrency.patterns.anyio.sleep", AsyncMock()):
+                    with pytest.raises(json.JSONDecodeError):
+                        await endpoint._call_http({}, {})
+
+        assert attempts == 1
+
+
+class TestRequestsOverALoopbackSocket:
+    @staticmethod
+    async def _redirect_once(server, line):
+        if line.startswith("POST /v1/chat "):
+            return _raw_response("302 Found", headers={"Location": "/v1/final"})
+        return _raw_response("200 OK", b'{"ok": true}', _JSON)
+
+    @pytest.mark.asyncio
+    async def test_a_redirect_is_followed(self):
+        async with _LocalServer(self._redirect_once) as server:
+            with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+                result = await _local_endpoint(server.port)._call_http({}, {})
+
+        assert result == {"ok": True}
+        assert server.request_lines == ["POST /v1/chat HTTP/1.1", "GET /v1/final HTTP/1.1"]
+
+    @pytest.mark.asyncio
+    async def test_allow_redirects_false_answers_with_the_redirect(self):
+        async with _LocalServer(self._redirect_once) as server:
+            with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+                with pytest.raises(APIClientError) as info:
+                    await _local_endpoint(server.port)._call_http({}, {}, allow_redirects=False)
+
+        assert info.value.status_code == 302
+        assert server.request_lines == ["POST /v1/chat HTTP/1.1"]
+
+    @pytest.mark.asyncio
+    async def test_a_request_proxy_carries_the_request_and_the_environment_proxy_does_not(
+        self, monkeypatch
+    ):
+        async def direct(server, line):
+            return _raw_response("200 OK", b'{"via": "direct"}', _JSON)
+
+        async def forward(server, line):
+            return _raw_response("200 OK", b'{"via": "proxy"}', _JSON)
+
+        async with _LocalServer(direct) as target, _LocalServer(forward) as proxy:
+            proxy_url = f"http://127.0.0.1:{proxy.port}"
+            for name in ("NO_PROXY", "no_proxy"):
+                monkeypatch.delenv(name, raising=False)
+            for name in ("HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+                monkeypatch.setenv(name, proxy_url)
+            endpoint = _local_endpoint(target.port)
+            with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+                from_environment = await endpoint._call_http({}, {})
+                from_request = await endpoint._call_http({}, {}, proxy=proxy_url)
+
+        assert from_environment == {"via": "direct"}
+        assert from_request == {"via": "proxy"}
+        assert target.request_lines == ["POST /v1/chat HTTP/1.1"]
+        assert proxy.request_lines == [f"POST http://127.0.0.1:{target.port}/v1/chat HTTP/1.1"]
+
+    @pytest.mark.asyncio
+    async def test_a_stalled_read_raises_read_timeout(self):
+        async def stall(server, line):
+            await server.closing.wait()
+            return _raw_response("200 OK", b"{}", _JSON)
+
+        async with _LocalServer(stall) as server:
+            with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+                started = time.monotonic()
+                with pytest.raises(httpx.ReadTimeout) as info:
+                    await _local_endpoint(server.port, timeout=1)._call_http({}, {})
+                elapsed = time.monotonic() - started
+
+        # The configured second, well short of httpx's own five.
+        assert elapsed < 4
+        assert not isinstance(info.value, TimeoutError)
+        assert server.request_lines == ["POST /v1/chat HTTP/1.1"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body", [b"", b" \r\n"])
+    async def test_an_empty_body_reads_as_none(self, body):
+        async def empty(server, line):
+            return _raw_response("200 OK", body, _JSON)
+
+        async with _LocalServer(empty) as server:
+            with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+                result = await _local_endpoint(server.port)._call_http({}, {})
+
+        assert result is None
+        assert server.request_lines == ["POST /v1/chat HTTP/1.1"]
+
+
+class TestRequestClientOptions:
+    @pytest.mark.asyncio
+    async def test_ssl_false_gives_a_client_that_does_not_verify(self):
+        client, rest = _local_endpoint(1)._client_for_request({"ssl": False, "params": {"q": "1"}})
+        try:
+            assert rest == {"params": {"q": "1"}}
+            assert _ssl_context_of(client).verify_mode == ssl.CERT_NONE
+        finally:
+            await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_an_ssl_context_is_the_client_context(self):
+        context = ssl.create_default_context()
+        client, rest = _local_endpoint(1)._client_for_request({"ssl": context})
+        try:
+            assert rest == {}
+            assert _ssl_context_of(client) is context
+        finally:
+            await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_ssl_true_and_proxy_none_keep_the_default_client(self):
+        from lionagi.service.connections import endpoint as endpoint_module
+
+        client, rest = _local_endpoint(1)._client_for_request({"ssl": True, "proxy": None})
+        try:
+            assert rest == {}
+            assert _ssl_context_of(client) is endpoint_module._verified_ssl_context()
+        finally:
+            await client.aclose()
+
+    def test_ssl_of_another_type_is_refused(self):
+        with pytest.raises(TypeError, match="ssl takes True, False or an ssl.SSLContext"):
+            _local_endpoint(1)._client_for_request({"ssl": object()})
+
+    @pytest.mark.asyncio
+    async def test_allow_redirects_becomes_follow_redirects(self):
+        client, rest = _local_endpoint(1)._client_for_request({"allow_redirects": False})
+        await client.aclose()
+        assert rest == {"follow_redirects": False}
+
+        with pytest.raises(TypeError, match="not both"):
+            _local_endpoint(1)._client_for_request(
+                {"allow_redirects": False, "follow_redirects": True}
+            )
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows also loads its system store")
+    async def test_the_default_client_trusts_ssl_cert_file(self, monkeypatch, tmp_path):
+        import certifi
+
+        from lionagi.service.connections import endpoint as endpoint_module
+
+        bundle = Path(certifi.where()).read_text(encoding="utf-8")
+        begin = bundle.index("-----BEGIN CERTIFICATE-----")
+        end = bundle.index("-----END CERTIFICATE-----", begin) + len("-----END CERTIFICATE-----")
+        one_root = tmp_path / "one-root.pem"
+        one_root.write_text(bundle[begin:end] + "\n", encoding="ascii")
+        monkeypatch.setenv("SSL_CERT_FILE", str(one_root))
+        monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+        monkeypatch.setattr(endpoint_module, "_VERIFIED_SSL_CONTEXT", None)
+
+        client = _local_endpoint(1)._create_http_session()
+        try:
+            assert len(_ssl_context_of(client).get_ca_certs()) == 1
+        finally:
+            await client.aclose()
