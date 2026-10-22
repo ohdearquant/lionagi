@@ -1589,6 +1589,64 @@ describe("OperatorPanel", () => {
       expect(container.querySelector("textarea")?.value).toBe("Inspect this project");
     });
 
+    async function keepAFailureForTheFirstRow() {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames: [] });
+      const pending = deferred<{ requestId: string }>();
+      api.submitOperatorTurn.mockReturnValueOnce(pending.promise);
+      await mount();
+      await sendInstruction();
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      await act(async () => pending.reject(new Error("Send failed on the first row")));
+      return other;
+    }
+
+    it("leaves a reported failure showing when auto-allow decides a proposal that arrives after it", async () => {
+      window.localStorage.setItem("studio:operator-auto-allow", "1");
+      const subscriptions: StreamHandlers[] = [];
+      api.streamOperatorConversation.mockImplementation(
+        (_conversationId: string, _afterSequence: number, handlers: StreamHandlers) => {
+          subscriptions.push(handlers);
+          return vi.fn();
+        },
+      );
+      await keepAFailureForTheFirstRow();
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames: [] });
+      await selectRow(firstRow);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "Send failed on the first row",
+      );
+
+      await act(async () =>
+        subscriptions.at(-1)!.onFrame(proposalFrame(firstRow.id, "proposal-1")),
+      );
+      await flushAutoAllow();
+
+      expect(api.decideOperatorProposal).toHaveBeenCalledTimes(1);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "Send failed on the first row",
+      );
+    });
+
+    it("keeps a kept failure when auto-allow's decision on its conversation is refused", async () => {
+      window.localStorage.setItem("studio:operator-auto-allow", "1");
+      const other = await keepAFailureForTheFirstRow();
+      api.decideOperatorProposal.mockRejectedValueOnce(new Error("Decision refused"));
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
+      await selectRow(firstRow);
+      await flushAutoAllow();
+
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Decision refused");
+      expect(container.textContent).not.toContain("Send failed on the first row");
+
+      await expectTheKeptFailureOnReturn(other);
+    });
+
     it("sends a refused auto-allow decision once and leaves its error showing", async () => {
       window.localStorage.setItem("studio:operator-auto-allow", "1");
       api.listOperatorConversations.mockResolvedValueOnce([firstRow]);
@@ -1612,6 +1670,36 @@ describe("OperatorPanel", () => {
       expect(api.decideOperatorProposal).toHaveBeenCalledTimes(2);
     });
 
+    it("decides a proposal appended after New conversation once its conversation is shown again", async () => {
+      window.localStorage.setItem("studio:operator-auto-allow", "1");
+      const subscriptions: StreamHandlers[] = [];
+      api.streamOperatorConversation.mockImplementation(
+        (_conversationId: string, _afterSequence: number, handlers: StreamHandlers) => {
+          subscriptions.push(handlers);
+          return vi.fn();
+        },
+      );
+      // Frames wait for an animation frame that never runs, so the stream's cleanup
+      // appends this one after New conversation has cleared the panel.
+      vi.stubGlobal("requestAnimationFrame", () => 1);
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow]);
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames: [] });
+      await mount();
+      act(() => subscriptions.at(-1)!.onFrame(proposalFrame(firstRow.id, "proposal-1")));
+      await startANewConversation();
+      await flushAutoAllow();
+      expect(api.decideOperatorProposal).not.toHaveBeenCalled();
+
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
+      await selectRow(firstRow);
+      await flushAutoAllow();
+
+      expect(api.decideOperatorProposal).toHaveBeenCalledTimes(1);
+    });
+
     it("keeps a new conversation started before the first list read settles", async () => {
       const listing = deferred<OperatorConversation[]>();
       api.listOperatorConversations.mockReturnValueOnce(listing.promise);
@@ -1623,6 +1711,20 @@ describe("OperatorPanel", () => {
 
       expect(api.getOperatorConversation).toHaveBeenCalledTimes(loads);
       expect(window.localStorage.getItem("studio:operator-conversation")).toBeNull();
+    });
+
+    it("keeps a new conversation started before the first list read fails", async () => {
+      window.localStorage.setItem("studio:operator-conversation", firstRow.id);
+      const listing = deferred<OperatorConversation[]>();
+      api.listOperatorConversations.mockReturnValueOnce(listing.promise);
+      await mount();
+      await startANewConversation();
+      const loads = api.getOperatorConversation.mock.calls.length;
+
+      await act(async () => listing.reject(new Error("List failed")));
+
+      expect(api.getOperatorConversation).toHaveBeenCalledTimes(loads);
+      expect(container.querySelector('[role="alert"]')).toBeNull();
     });
 
     it("keeps a draft's text when its conversation cannot be created after a new conversation", async () => {

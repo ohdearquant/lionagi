@@ -39,28 +39,30 @@ behaviour, including accepting a write-capable submission without `cwd`.
 - Studio Operator can update its active conversation's title and persistent
   description. Omitted fields retain their values, and an applied effect is
   recorded with the saved change without duplicating the provider's tool result.
-  Descriptions appear in the conversation
-  list, and forks preserve the source description independently. The store adds
-  nullable `studio_operator_conversations.description`. Live conversation titles
-  and descriptions refresh after the tool result, or after a turn ends without
-  one. List refreshes retain conversations created while the read was pending,
-  do not undo a rename, pin or archive made during the read unless the server
-  changed the row afterwards, and respect the current list filter. A failed send
-  is reported in the conversation it was sent for: at once while it is shown,
-  otherwise once, when it is shown again with no send, Stop or decision in flight
-  or about to start under auto-allow and no other error showing, with its unsent
-  text back in the composer ahead of any text typed there since. Auto-allow
-  decides each proposal once; a refused decision leaves its error showing and can
-  be decided again by hand. A draft whose conversation could not be created,
-  including one sent while the selected conversation was still loading, reports it
-  in the conversation then shown and keeps its text; if a new conversation was
-  started during the send, the text comes back when the composer is empty. A
-  draft's new conversation is selected only if the operator has made no choice of
-  conversation (a row, a new or forked conversation, a retry) since the send
-  started; otherwise it is listed and the turn is submitted there, and the
-  conversation shown does not take on that turn. A fork counts as a choice from
-  the click. The first list read selects a conversation only if no choice was
-  made while it ran, and Retry loads the conversation whose load failed.
+  Descriptions appear in the conversation list, and forks preserve the source
+  description independently. The store adds nullable
+  `studio_operator_conversations.description`. Live conversation titles and
+  descriptions refresh after the tool result, or after a turn ends without one.
+  List refreshes retain conversations created while the read was pending, do not
+  undo a rename, pin or archive made during the read unless the server changed the
+  row afterwards, and respect the current list filter. A failed send is reported
+  in the conversation it was sent for: at once while it is shown, otherwise once,
+  when it is shown again with no send, Stop or decision in flight or about to
+  start under auto-allow and no other error showing, with its unsent text back in
+  the composer ahead of any text typed there since. Auto-allow sends at most one
+  decision per proposal, and none while no conversation is shown; a decision it
+  makes leaves an error already showing in place, and a refused one shows its own
+  error and can be decided again by hand. A draft whose conversation could not be
+  created, including one sent while the selected conversation was still loading,
+  reports it in the conversation then shown and keeps its text; if a new
+  conversation was started during the send, the text comes back when the composer
+  is empty. A draft's new conversation is selected only if the operator has made
+  no choice of conversation (a row, a new or forked conversation, a retry) since
+  the send started; otherwise it is listed and the turn is submitted there, and
+  the conversation shown does not take on that turn. A fork counts as a choice
+  from the click, even when it then fails. The first list read selects a
+  conversation only if no choice was made while it ran, and Retry loads the
+  conversation whose load failed.
 - Studio sessions can set or clear an explicit display label through
   `PUT /api/sessions/{session_id}`. Labels take precedence in session list and
   detail names without changing activity timestamps; clearing a label restores

@@ -1011,9 +1011,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
   // A failed send kept for a conversation is reported once that conversation is
   // shown and ready, no send, Stop or decision is in flight or about to start under
   // auto-allow, and no other error is showing. A send in flight still owns the
-  // composer and its outcome may clear it, and a Stop or decision clears the alert
-  // when it starts and replaces it when it fails, as another error showing would be
-  // replaced, so each defers the report rather than losing it.
+  // composer and its outcome may clear it, a Stop or a decision made by hand clears
+  // the alert when it starts, and each of them replaces it when it fails, as another
+  // error showing would be replaced, so each defers the report rather than losing it.
   const shownConversationId = state.conversation?.id;
   useEffect(() => {
     if (
@@ -1025,7 +1025,8 @@ export default function OperatorPanel({ open, onClose }: Props) {
       actionError
     )
       return;
-    // A proposal auto-allow will decide on its next tick; that decision clears the alert.
+    // A proposal auto-allow will decide on its next tick; if that decision fails, its
+    // error would replace the alert.
     if (
       autoAllow &&
       proposals.some(({ frame, resolved }) => {
@@ -1473,11 +1474,16 @@ export default function OperatorPanel({ open, onClose }: Props) {
   }, [state.activeRequestId, state.conversation, stopping, t]);
 
   const handleProposalDecision = useCallback(
-    async (frame: OperatorFrame<OperatorProposalPayload>, decision: "allow" | "deny") => {
+    async (
+      frame: OperatorFrame<OperatorProposalPayload>,
+      decision: "allow" | "deny",
+      auto = false,
+    ) => {
       if (!state.conversation) return;
       const proposal = frame.payload.proposal;
       setDeciding((current) => new Set(current).add(proposal.id));
-      setActionError(null);
+      // A click clears the alert; a decision auto-allow makes leaves it showing.
+      if (!auto) setActionError(null);
       try {
         await decideOperatorProposal(
           state.conversation.id,
@@ -1500,14 +1506,16 @@ export default function OperatorPanel({ open, onClose }: Props) {
     [state.conversation, t],
   );
 
-  // Auto-allow: decide each pending proposal once, as it arrives. The tried set makes
-  // this idempotent across re-renders and SSE replays, and keeps a refused decision
-  // from being sent again on every render.
+  // Auto-allow: send at most one decision per pending proposal, as it arrives. The
+  // tried set makes this idempotent across re-renders and SSE replays, and keeps a
+  // refused decision from being sent again on every render.
   // Deferred a tick so the decision (a network POST plus its own state
   // bookkeeping) never runs synchronously inside the effect body; the guard
   // sets keep a cancelled-then-rescheduled tick from double-deciding.
+  // Nothing is tried while no conversation is shown: a proposal a closing stream
+  // appends after New conversation is decided once its conversation is shown again.
   useEffect(() => {
-    if (!autoAllow) return;
+    if (!autoAllow || !shownConversationId) return;
     const timer = window.setTimeout(() => {
       for (const item of proposals) {
         const id = item.frame.payload.proposal.id;
@@ -1519,11 +1527,18 @@ export default function OperatorPanel({ open, onClose }: Props) {
         )
           continue;
         autoAllowTriedRef.current.add(id);
-        void handleProposalDecision(item.frame, "allow");
+        void handleProposalDecision(item.frame, "allow", true);
       }
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [autoAllow, proposals, decidedProposalIds, deciding, handleProposalDecision]);
+  }, [
+    autoAllow,
+    proposals,
+    decidedProposalIds,
+    deciding,
+    handleProposalDecision,
+    shownConversationId,
+  ]);
 
   const resetConversation = useCallback(() => {
     operatorChoicesRef.current += 1;
@@ -1645,7 +1660,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const forkConversationById = useCallback(
     async (conversation: OperatorConversation) => {
       // The click is the choice, so a draft's conversation created during the fork
-      // request does not take the panel.
+      // request does not take the panel, even when the fork then fails; it is listed.
       operatorChoicesRef.current += 1;
       setConversationBusyId(conversation.id);
       setListActionError(null);
