@@ -1487,7 +1487,7 @@ def test_a_relative_out_from_a_removed_current_directory_is_refused(monkeypatch,
     monkeypatch.setattr(runner.subprocess, "run", _Legs())
     monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
     monkeypatch.setattr(sys, "argv", ["run_pilot.py", "--tasks", str(tasks_file), "--out", "run"])
-    os.chdir(gone)
+    monkeypatch.chdir(gone)
     gone.rmdir()
     try:
         rc = runner.main()
@@ -1514,7 +1514,7 @@ def test_a_relative_tasks_file_from_a_removed_current_directory_is_refused(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
     out = tmp_path / "run"
     monkeypatch.setattr(sys, "argv", ["run_pilot.py", "--tasks", "tasks.yaml", "--out", str(out)])
-    os.chdir(gone)
+    monkeypatch.chdir(gone)
     gone.rmdir()
     try:
         rc = runner.main()
