@@ -47,17 +47,20 @@ longer exists, so an install that names it gets a missing-extra warning from the
 `EndpointConfig.client_kwargs` go to `httpx.AsyncClient`, so an aiohttp-only option such as
 `connector` raises `TypeError`. A request's `ssl`, `proxy`, `allow_redirects` and `timeout` are
 still taken, with the values aiohttp took (an `aiohttp.Fingerprint` or `aiohttp.ClientTimeout`
-included); any other aiohttp-only request option raises `TypeError`. A request's `ssl=True` now
-verifies certificates when the endpoint's `client_kwargs` set `verify=False`. A transport failure
-raises httpx's error (`httpx.ConnectError`, `httpx.ReadTimeout`, `httpx.RemoteProtocolError` and
-the like, all `httpx.RequestError`) where aiohttp raised its own, so a read that stalls past the
-timeout raises `httpx.ReadTimeout`, which is not a `TimeoutError`, and a certificate that does not
-match a `Fingerprint` raises `httpx.ConnectError`. A 200 response is read as JSON whatever its
-content type, so a JSON body served as `text/plain` returns its value; one whose body is not JSON
-raises `json.JSONDecodeError` and is not retried. aiohttp raised `ContentTypeError`, which was
-retried, for any body not served as JSON. An `Endpoint` subclass that overrides `_call_aiohttp` or
-`_stream_aiohttp` raises `TypeError` when the class is defined; rename the override to
-`_call_http` or `_stream_http`.
+included, and a timeout of zero or below meaning no timeout); any other aiohttp-only request option
+raises `TypeError`. A request's `ssl=True` now verifies certificates when the endpoint's
+`client_kwargs` set `verify=False`. A request pinned with an `aiohttp.Fingerprint` that a redirect
+sends from https to plain http raises `httpx.ConnectError` before anything is sent there, since the
+pin cannot be checked on a plain connection; aiohttp followed such a redirect. A transport failure
+raises httpx's error (`httpx.ConnectError`, `httpx.ReadTimeout`, `httpx.RemoteProtocolError` and the
+like, all `httpx.RequestError`) where aiohttp raised its own, so a read that stalls past the timeout
+raises `httpx.ReadTimeout`, which is not a `TimeoutError`, and a certificate that does not match a
+`Fingerprint` raises `httpx.ConnectError`. A 200 response is read as JSON whatever its content type,
+so a JSON body served as `text/plain` returns its value; one whose body is not JSON raises
+`json.JSONDecodeError` and is not retried. aiohttp raised `ContentTypeError`, which was retried, for
+any body not served as JSON. An `Endpoint` subclass that overrides `_call_aiohttp` or
+`_stream_aiohttp` raises `TypeError` when the class is defined; rename the override to `_call_http`
+or `_stream_http`.
 
 ### Added
 
@@ -383,10 +386,11 @@ retried, for any body not served as JSON. An `Endpoint` subclass that overrides 
   `SSL_CERT_FILE` and `SSL_CERT_DIR` included, rather than the `certifi` bundle httpx uses on its
   own. That store is read once, when the first client is built, as aiohttp read it once at
   import. A request still takes `ssl` (`True`, `None`, `False`, an `ssl.SSLContext` or an
-  `aiohttp.Fingerprint`), `proxy` (`None` or an empty one goes direct), `allow_redirects` and
-  `timeout`, and an empty response body still reads as `None`. `EndpointConfig.timeout`, a
-  request's numeric `timeout` and an `aiohttp.ClientTimeout`'s `total` now bound each connect,
-  read, write and pool wait rather than the whole request.
+  `aiohttp.Fingerprint`), `proxy` (`None` or an empty one adds no proxy of its own, so the
+  client's configured proxy, if any, applies), `allow_redirects` and `timeout`, and an empty
+  response body still reads as `None`. `EndpointConfig.timeout`, a request's numeric `timeout`
+  and an `aiohttp.ClientTimeout`'s `total` now bound each connect, read, write and pool wait
+  rather than the whole request; zero or below is still no timeout.
 
 ### Removed
 

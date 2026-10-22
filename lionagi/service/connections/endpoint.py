@@ -66,19 +66,51 @@ def _pinned_ssl_context(fingerprint: bytes):
     return context
 
 
+def _refuse_a_redirect_off_https():
+    """A request hook for a pinned client: a redirect from https to plain http is refused.
+
+    The pin is checked only on a TLS connection, so following such a redirect would send the
+    request, body included, to a server the pin never checked. A request first sent over
+    plain http is left alone, as aiohttp left it.
+    """
+    import httpx
+
+    first_scheme = None
+
+    async def hook(request):
+        nonlocal first_scheme
+        if first_scheme is None:
+            first_scheme = request.url.scheme
+        elif first_scheme == "https" and request.url.scheme != "https":
+            raise httpx.ConnectError(
+                f"refusing a redirect from https to {request.url.scheme}: "
+                "the certificate fingerprint cannot be checked there",
+                request=request,
+            )
+
+    return hook
+
+
+def _seconds_or_none(value):
+    """A timeout as httpx takes it: aiohttp read zero or below as no timeout, httpx as none left."""
+    if isinstance(value, (int, float)) and value <= 0:
+        return None
+    return value
+
+
 def _httpx_timeout(timeout):
     """httpx's timeout for an ``aiohttp.ClientTimeout``.
 
     httpx has no bound on a whole request, so ``total`` bounds each phase, as
     ``EndpointConfig.timeout`` does, and caps the phases ``connect``, ``sock_connect`` and
-    ``sock_read`` set.
+    ``sock_read`` set. A value of zero or below is no timeout, as aiohttp read it.
     """
     import httpx
 
-    total = timeout.total
+    total = _seconds_or_none(timeout.total)
 
     def bound(*values):
-        value = next((v for v in values if v is not None), None)
+        value = next((v for v in map(_seconds_or_none, values) if v is not None), None)
         if value is None:
             return total
         return value if total is None else min(value, total)
@@ -298,7 +330,7 @@ class Endpoint:
         options.setdefault("follow_redirects", True)
         options.setdefault("trust_env", False)
         options.setdefault("verify", _verified_ssl_context())
-        options.setdefault("timeout", httpx.Timeout(timeout))
+        options.setdefault("timeout", httpx.Timeout(_seconds_or_none(timeout)))
         return httpx.AsyncClient(**options)
 
     def _client_for_request(self, request_kwargs: dict[str, Any]):
@@ -322,6 +354,8 @@ class Endpoint:
         request_kwargs = dict(request_kwargs)
         if aiohttp is not None and isinstance(request_kwargs.get("timeout"), aiohttp.ClientTimeout):
             request_kwargs["timeout"] = _httpx_timeout(request_kwargs["timeout"])
+        elif "timeout" in request_kwargs:
+            request_kwargs["timeout"] = _seconds_or_none(request_kwargs["timeout"])
         if "allow_redirects" in request_kwargs:
             if "follow_redirects" in request_kwargs:
                 raise TypeError("pass allow_redirects or follow_redirects, not both")
@@ -337,6 +371,10 @@ class Endpoint:
                 client_options["verify"] = verify
             elif aiohttp is not None and isinstance(verify, aiohttp.Fingerprint):
                 client_options["verify"] = _pinned_ssl_context(verify.fingerprint)
+                configured = self.config.client_kwargs.get("event_hooks") or {}
+                hooks = {name: list(handlers) for name, handlers in configured.items()}
+                hooks.setdefault("request", []).append(_refuse_a_redirect_off_https())
+                client_options["event_hooks"] = hooks
             else:
                 raise TypeError(
                     "ssl takes True, False, None, an ssl.SSLContext or an aiohttp.Fingerprint, "

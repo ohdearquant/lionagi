@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import contextlib
 import json
 import re
 import ssl
@@ -1574,7 +1575,9 @@ class TestRequestsOverALoopbackSocket:
     @pytest.mark.asyncio
     async def test_a_stalled_read_raises_read_timeout(self):
         async def stall(server, line):
-            await server.closing.wait()
+            # Bounded, so a client that never times out fails the test instead of hanging it.
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(server.closing.wait(), 10)
             return _raw_response("200 OK", b"{}", _JSON)
 
         async with _LocalServer(stall) as server:
@@ -1685,6 +1688,29 @@ class TestRequestClientOptions:
             assert _ssl_context_of(client) is endpoint_module._verified_ssl_context()
         finally:
             await default.aclose()
+            await client.aclose()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [True, None])
+    async def test_ssl_true_or_none_keeps_a_configured_context(self, value):
+        context = ssl.create_default_context()
+        # A dict config: an EndpointConfig is deep-copied, and an SSLContext cannot be.
+        endpoint = Endpoint(
+            config={
+                "name": "test",
+                "provider": "test",
+                "endpoint": "v1/chat",
+                "base_url": "https://127.0.0.1:1",
+                "auth_type": "bearer",
+                "api_key": "test-key",
+                "client_kwargs": {"verify": context},
+            }
+        )
+        client, rest = endpoint._client_for_request({"ssl": value})
+        try:
+            assert rest == {}
+            assert _ssl_context_of(client) is context
+        finally:
             await client.aclose()
 
     @pytest.mark.asyncio
@@ -1803,6 +1829,73 @@ class TestAiohttpRequestValues:
         assert [c.content for c in chunks] == ["pinned"]
         assert server.request_lines == ["POST /v1/chat HTTP/1.1"]
 
+    @pytest.mark.asyncio
+    async def test_a_pinned_request_is_not_redirected_off_https(self, tmp_path):
+        aiohttp = pytest.importorskip("aiohttp")
+        import hashlib
+
+        context, der = _self_signed_server_context(tmp_path)
+        pin = aiohttp.Fingerprint(hashlib.sha256(der).digest())
+        async with _LocalServer(_ok) as plain:
+
+            async def downgrade(server, line):
+                location = f"http://127.0.0.1:{plain.port}/v1/final"
+                return _raw_response("307 Temporary Redirect", headers={"Location": location})
+
+            async with _LocalServer(downgrade, context) as server:
+                endpoint = _local_endpoint(server.port, scheme="https")
+                with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+                    with pytest.raises(httpx.ConnectError, match="redirect from https to http"):
+                        await endpoint._call_http({}, {}, ssl=pin)
+
+        assert set(server.request_lines) == {"POST /v1/chat HTTP/1.1"}
+        assert plain.request_lines == []
+
+    @pytest.mark.asyncio
+    async def test_a_pinned_request_follows_a_redirect_that_stays_on_https(self, tmp_path):
+        aiohttp = pytest.importorskip("aiohttp")
+        import hashlib
+
+        context, der = _self_signed_server_context(tmp_path)
+        pin = aiohttp.Fingerprint(hashlib.sha256(der).digest())
+        async with _LocalServer(TestRequestsOverALoopbackSocket._redirect_once, context) as server:
+            endpoint = _local_endpoint(server.port, scheme="https")
+            with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+                result = await endpoint._call_http({}, {}, ssl=pin)
+
+        assert result == {"ok": True}
+        assert server.request_lines == ["POST /v1/chat HTTP/1.1", "GET /v1/final HTTP/1.1"]
+
+    @pytest.mark.asyncio
+    async def test_a_pin_leaves_a_plain_http_request_alone(self):
+        aiohttp = pytest.importorskip("aiohttp")
+
+        async with _LocalServer(_ok) as server:
+            with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+                result = await _local_endpoint(server.port)._call_http(
+                    {}, {}, ssl=aiohttp.Fingerprint(b"\0" * 32)
+                )
+
+        assert result == {"ok": True}
+        assert server.request_lines == ["POST /v1/chat HTTP/1.1"]
+
+    @pytest.mark.asyncio
+    async def test_a_pin_keeps_the_configured_request_hooks(self):
+        aiohttp = pytest.importorskip("aiohttp")
+
+        async def record(request):
+            pass
+
+        endpoint = _local_endpoint(1, client_kwargs={"event_hooks": {"request": [record]}})
+        client, _ = endpoint._client_for_request({"ssl": aiohttp.Fingerprint(b"\0" * 32)})
+        try:
+            hooks = client.event_hooks["request"]
+            assert len(hooks) == 2
+            assert hooks[0] is record
+        finally:
+            await client.aclose()
+        assert endpoint.config.client_kwargs["event_hooks"]["request"] == [record]
+
     @pytest.mark.parametrize(
         ("fields", "expected"),
         [
@@ -1810,6 +1903,10 @@ class TestAiohttpRequestValues:
             ({"total": 5, "connect": 30, "sock_connect": 2}, (2, 5, 5, 5)),
             ({"connect": 3}, (3, None, None, 3)),
             ({}, (None, None, None, None)),
+            ({"total": 2, "connect": 10, "sock_connect": 10, "sock_read": 10}, (2, 2, 2, 2)),
+            ({"total": 0}, (None, None, None, None)),
+            ({"total": 2, "sock_read": 0}, (2, 2, 2, 2)),
+            ({"total": 0, "sock_read": 3, "connect": -1}, (None, 3, None, None)),
         ],
     )
     def test_a_client_timeout_becomes_an_httpx_timeout(self, fields, expected):
@@ -1827,7 +1924,9 @@ class TestAiohttpRequestValues:
         aiohttp = pytest.importorskip("aiohttp")
 
         async def stall(server, line):
-            await server.closing.wait()
+            # Bounded, so a client that never times out fails the test instead of hanging it.
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(server.closing.wait(), 10)
             return _raw_response("200 OK", b"{}", _JSON)
 
         async with _LocalServer(stall) as server:
@@ -1840,6 +1939,29 @@ class TestAiohttpRequestValues:
                 elapsed = time.monotonic() - started
 
         assert elapsed < 4
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("where", ["request", "float", "client timeout", "config"])
+    async def test_a_zero_timeout_is_no_timeout(self, where):
+        aiohttp = pytest.importorskip("aiohttp")
+
+        async def late(server, line):
+            await asyncio.sleep(0.3)
+            return _raw_response("200 OK", b'{"ok": true}', _JSON)
+
+        options = {
+            "request": {"timeout": 0},
+            "float": {"timeout": 0.0},
+            "client timeout": {"timeout": aiohttp.ClientTimeout(total=0)},
+            "config": {},
+        }[where]
+        async with _LocalServer(late) as server:
+            endpoint = _local_endpoint(server.port, **({"timeout": 0} if where == "config" else {}))
+            with patch("lionagi.ln._ssrf.is_ssrf_safe", return_value=True):
+                result = await endpoint._call_http({}, {}, **options)
+
+        assert result == {"ok": True}
+        assert server.request_lines == ["POST /v1/chat HTTP/1.1"]
 
     @pytest.mark.asyncio
     async def test_an_empty_request_proxy_goes_direct(self):
