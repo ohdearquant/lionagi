@@ -104,10 +104,13 @@ Each provider passes its engine name: `codex`, `claude`, `gemini`, `pi`.
 - The nested-agent check (D7) runs before admission, and the stdin payload is encoded before it,
   so neither a nested agent nor an input that cannot be encoded waits for or holds a slot.
 - The lease is taken before `create_subprocess_exec`, so an agent refused for a full pool has no
-  child. A child whose start time cannot be read is the one exception: it has started, and the
-  refusal kills it before raising (D3). Any process it started by then is not signalled: with no
-  start time, nothing shows that its process group is still the child's.
+  child. Two refusals come after the child has started. A child whose start time cannot be read
+  is killed before the refusal is raised (D3); any process it started by then is not signalled:
+  with no start time, nothing shows that its process group is still the child's.
 - After the spawn, `record_child(pid, create_time)` writes the child's identity into every slot.
+  A slot it cannot write is the second refusal, `SubagentAdmissionRefusedError` naming the pool:
+  that slot would read free once its holder exited while the child ran, so the child's process
+  group is ended and the slots are released before the error reaches the caller.
 - The lease is released when the spawn raises, when the `on_spawn` observer raises, and in the
   generator's final `finally` after `end_child_group()`, so a slot frees only once the group has
   been ended.
@@ -259,7 +262,7 @@ every CLI request model (`exclude=True`, never serialized):
 
 | Engine | `light` |
 |--------|---------|
-| codex | `--sandbox workspace-write` (or `read-only` when asked), `-c sandbox_workspace_write.writable_roots=[]`, `-c sandbox_workspace_write.network_access=false`, no linked-worktree `--add-dir`, and the account's apps and plugins turned off as `contain_account_integrations` turns them off. `account_connectors`, `bypass_approvals`, `sandbox='danger-full-access'`, `add_dir` a `profile` lionagi did not generate and any `config_overrides` key under `sandbox_mode`, `sandbox_workspace_write`, `default_permissions` (which names a permissions profile codex applies in place of the mode), `permissions`, `profile` or `profiles` are refused with `CLIInputRefusedError`, at construction and again where the process would start. Where the command line is built, so is a user or project codex config that sets a root `profile` key or `default_permissions`, defines the profile the request names, or cannot be read. The sandbox keeps the temporary directories writable, and codex starts the MCP servers it is given outside it |
+| codex | `--sandbox workspace-write` (or `read-only` when asked), `-c sandbox_workspace_write.writable_roots=[]`, `-c sandbox_workspace_write.network_access=false`, no linked-worktree `--add-dir`, and the account's apps and plugins turned off as `contain_account_integrations` turns them off. `account_connectors`, `bypass_approvals`, `sandbox='danger-full-access'`, `add_dir`, a `profile` lionagi did not generate, and any `config_overrides` key under `sandbox_mode`, `sandbox_workspace_write`, `default_permissions` (which names a permissions profile codex applies in place of the mode), `permissions`, `profile` or `profiles` are refused with `CLIInputRefusedError`, at construction and again where the process would start. Where the command line is built, so is a user or project codex config that sets a root `profile` key or `default_permissions`, defines the profile the request names, or cannot be read. The sandbox keeps the temporary directories writable, and codex starts the MCP servers it is given outside it |
 | claude_code | `Edit`, `Write` and `NotebookEdit` are added to `--disallowedTools`, merged with the caller's list into one flag. Bash stays. Claude Code has no filesystem sandbox, so this is a tool-list boundary only: a command run through Bash can still write |
 | gemini-cli | `--sandbox`, always |
 | pi | refused before the process starts: Pi has no sandbox lionagi can pin |

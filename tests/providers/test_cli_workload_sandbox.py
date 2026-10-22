@@ -142,35 +142,47 @@ def _home_with_config(tmp_path, text: str) -> dict[str, str]:
     return {"CODEX_HOME": str(home)}
 
 
-def test_a_light_codex_agent_refuses_a_root_profile_in_the_configs_codex_reads(tmp_path):
+# The project config sits at the git root; the agent runs there or in a directory below it.
+_IN_THE_ROOT_OR_BELOW = pytest.mark.parametrize("below", ["", "sub/dir"])
+
+
+@_IN_THE_ROOT_OR_BELOW
+def test_a_light_codex_agent_refuses_a_root_profile_in_the_configs_codex_reads(tmp_path, below):
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
+    cwd = repo / below
+    cwd.mkdir(parents=True, exist_ok=True)
     env = _home_with_config(tmp_path, 'profile = "wide"\n')
     with pytest.raises(CLIInputRefusedError, match="root profile key"):
-        _codex(repo, workload="light", env=env)
+        _codex(cwd, workload="light", env=env)
     (repo / ".codex").mkdir()
     (repo / ".codex" / "config.toml").write_text('profile = "wide"\n')
     with pytest.raises(CLIInputRefusedError, match="project codex config"):
-        _codex(repo, workload="light", env={"CODEX_HOME": str(tmp_path / "empty")})
+        _codex(cwd, workload="light", env={"CODEX_HOME": str(tmp_path / "empty")})
     # The same configs leave a heavy agent's command line alone.
-    assert "--sandbox" not in _codex(repo, workload="heavy", env=env)
+    assert "--sandbox" not in _codex(cwd, workload="heavy", env=env)
 
 
-def test_a_light_codex_agent_refuses_default_permissions_in_the_configs_codex_reads(tmp_path):
+@_IN_THE_ROOT_OR_BELOW
+def test_a_light_codex_agent_refuses_default_permissions_in_the_configs_codex_reads(
+    tmp_path, below
+):
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
+    cwd = repo / below
+    cwd.mkdir(parents=True, exist_ok=True)
     env = _home_with_config(tmp_path, 'default_permissions = "wide"\n')
     with pytest.raises(CLIInputRefusedError, match="sets `default_permissions`") as refused:
-        _codex(repo, workload="light", env=env)
+        _codex(cwd, workload="light", env=env)
     assert "codex-home" in str(refused.value)
     (repo / ".codex").mkdir()
     (repo / ".codex" / "config.toml").write_text('default_permissions = "wide"\n')
     empty = {"CODEX_HOME": str(tmp_path / "empty")}
     with pytest.raises(CLIInputRefusedError, match="sets `default_permissions`") as refused:
-        _codex(repo, workload="light", env=empty)
+        _codex(cwd, workload="light", env=empty)
     assert str(repo / ".codex" / "config.toml") in str(refused.value)
     # The same configs leave a heavy agent's command line alone.
-    assert "--sandbox" not in _codex(repo, workload="heavy", env=env)
+    assert "--sandbox" not in _codex(cwd, workload="heavy", env=env)
 
 
 def test_a_light_codex_agent_refuses_a_config_defining_its_generated_profile(tmp_path):

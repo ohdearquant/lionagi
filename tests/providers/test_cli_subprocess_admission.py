@@ -177,6 +177,45 @@ async def test_a_cap_set_and_an_unreadable_start_time_refuses_and_frees_the_slot
 
 
 @pytest.mark.asyncio
+async def test_a_slot_that_cannot_record_its_child_refuses_and_ends_the_child(capped, monkeypatch):
+    """A slot that cannot name its child would read free once this holder exited while the
+    child ran, so the spawn is refused, the child's group is ended and the slot is freed."""
+    from lionagi.providers import _cli_subprocess
+
+    real_write = admission._Slot.write
+    writes = []
+    ended = []
+    callbacks = []
+    real_end_group = _cli_subprocess.end_child_group
+
+    def _second_write_fails(slot):
+        writes.append(slot.pool)
+        if len(writes) > 1:
+            raise OSError(28, "No space left on device")
+        real_write(slot)
+
+    async def _record_end(proc, **kwargs):
+        ended.append((proc.pid, kwargs["spawned"].create_time))
+        await real_end_group(proc, **kwargs)
+
+    monkeypatch.setattr(admission._Slot, "write", _second_write_fails)
+    monkeypatch.setattr(_cli_subprocess, "end_child_group", _record_end)
+    stream = ndjson_from_cli(
+        [sys.executable, "-c", _SLEEPER], engine="codex", on_spawn=callbacks.append
+    )
+    with pytest.raises(SubagentAdmissionRefusedError, match="could not record") as refused:
+        async with contextlib.aclosing(stream):
+            await stream.__anext__()
+    assert refused.value.pool == "all"
+    assert writes == ["all", "all"]
+    [(pid, started)] = ended
+    assert started is not None
+    assert _await_death(pid)
+    assert callbacks == []
+    assert _held()["held"] == 0
+
+
+@pytest.mark.asyncio
 async def test_a_cap_set_and_a_second_start_time_read_succeeds_runs_and_records_it(
     capped, monkeypatch
 ):

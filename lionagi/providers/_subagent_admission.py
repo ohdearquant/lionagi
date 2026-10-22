@@ -23,7 +23,9 @@ the agent ends. Because the holder can die while its child, which leads its own
 session, keeps running, the child's pid and start time are written into the slot
 and a slot whose recorded child is still the same running process counts as
 held even when nobody holds its lock. A child whose start time could not be read
-takes no slot, since a bare pid could name a reused one; under a cap its spawn is refused.
+takes no slot, since a bare pid could name a reused one; under a cap its spawn is refused
+and the child is killed, while any processes it had started are left running, since
+nothing shows its process group is still its own.
 
 Counting a pool and taking its slot happen under that pool's admission lock
 (``<pool>/.admission``), and an agent takes the admission locks of all its pools,
@@ -387,14 +389,24 @@ class SubagentLease:
     slots: list[_Slot] = field(default_factory=list)
 
     def record_child(self, pid: int, create_time: float | None) -> None:
-        """Name the child in every slot, so a slot outlives a holder that dies first."""
+        """Name the child in every slot, so a slot outlives a holder that dies first.
+
+        A slot that cannot be written raises :class:`SubagentAdmissionRefusedError`: it would
+        read free once its holder exited while the child still ran.
+        """
         for slot in self.slots:
             if slot.fd < 0:
                 continue
             slot.record["child_pid"] = pid
             slot.record["child_started"] = create_time
-            with contextlib.suppress(OSError):
+            try:
                 slot.write()
+            except OSError as exc:
+                raise SubagentAdmissionRefusedError(
+                    f"subagent admission refused: the {slot.pool!r} slot could not record "
+                    f"the agent ({exc}), so it would read free once this process exited",
+                    pool=slot.pool,
+                ) from exc
 
     def release(self) -> None:
         slots, self.slots = self.slots, []

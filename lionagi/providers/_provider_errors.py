@@ -113,7 +113,9 @@ class SubagentAdmissionRefusedError(ProviderError):
     """No machine-wide slot for a CLI agent: a pool stayed at its cap, or admission could
     not be read. Raised before the child exists, or just after it when its start time
     could not be read twice, in which case the child is killed before this is raised;
-    with no start time to prove its process group, the group is not signalled.
+    with no start time to prove its process group, the group is not signalled. Also
+    raised just after the spawn when a slot cannot record the child, after the child's
+    group has ended.
 
     Retryable: the same request admits once a slot frees or the cap is raised.
     """

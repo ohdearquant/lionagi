@@ -927,7 +927,8 @@ async def ndjson_from_cli(
 
                 raise SubagentAdmissionRefusedError(
                     "subagent admission refused: the agent's start time could not be read, "
-                    "so its slot could not be kept past this process, and the agent was stopped"
+                    "so its slot could not be kept past this process; the agent was killed, "
+                    "and any processes it had started were left running"
                 )
         lease.record_child(spawned.pid, spawned.create_time)
 
