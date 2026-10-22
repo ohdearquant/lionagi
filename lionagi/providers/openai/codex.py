@@ -67,6 +67,7 @@ from lionagi.utils import to_dict
 from ._codex_profile import (
     _read_codex_config,
     codex_config_defining_profile,
+    codex_config_setting_default_permissions,
     codex_home_for_env,
     configured_codex_profile,
     is_generated_codex_profile,
@@ -850,10 +851,17 @@ def _plain_request(
     )
 
 
-#: The ``-c`` keys a light agent's sandbox is pinned by; a caller override of any of
-#: them could widen what the agent may write or reach, so a light request refuses them,
-#: and the ``profile``/``profiles`` keys, since a codex profile can set them too.
-_LIGHT_PINNED_OVERRIDE_ROOTS = ("sandbox_mode", "sandbox_workspace_write")
+#: The ``-c`` keys a light agent's sandbox is pinned by, and ``default_permissions``, which
+#: names a permissions profile codex applies in place of ``sandbox_mode``, with the
+#: ``permissions`` table that defines those profiles; a caller override of any of them could
+#: widen what the agent may write or reach, so a light request refuses them, and the
+#: ``profile``/``profiles`` keys, since a codex profile can set them too.
+_LIGHT_PINNED_OVERRIDE_ROOTS = (
+    "sandbox_mode",
+    "sandbox_workspace_write",
+    "default_permissions",
+    "permissions",
+)
 
 
 def _refuse_light_escape(plain: _PlainRequest) -> None:
@@ -2041,6 +2049,8 @@ class CodexCodeRequest(BaseModel):
     def _refuse_a_config_profile_for_light(self, plain: _PlainRequest) -> None:
         # A codex profile can set `sandbox_mode` and `sandbox_workspace_write`, and codex
         # before 0.135 applies the active one over the root config the light pins write to.
+        # A config's `default_permissions` names a permissions profile codex applies in
+        # place of the mode, so a user or project config that sets it is refused as well.
         # `_refuse_light_escape` has already refused a `-p` lionagi did not generate and every
         # override that names a profile; what is left is a profile chosen by the configs
         # codex reads, which only this process's view of the cwd and the child's env reach.
@@ -2066,6 +2076,13 @@ class CodexCodeRequest(BaseModel):
                             "0.135 makes active over the light sandbox"
                         )
                         break
+            if refusal is None:
+                found = codex_config_setting_default_permissions(plain.env, self.cwd())
+                if found is not None:
+                    refusal = (
+                        f"{str(found)!r} sets `default_permissions`, a permissions profile "
+                        "codex applies in place of the light sandbox"
+                    )
         except (ValueError, OSError) as exc:
             refusal = str(exc)
         if refusal is not None:

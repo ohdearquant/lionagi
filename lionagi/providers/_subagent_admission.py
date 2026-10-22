@@ -23,7 +23,7 @@ the agent ends. Because the holder can die while its child, which leads its own
 session, keeps running, the child's pid and start time are written into the slot
 and a slot whose recorded child is still the same running process counts as
 held even when nobody holds its lock. A child whose start time could not be read
-is protected only while its holder lives: a bare pid could name a reused one.
+takes no slot, since a bare pid could name a reused one; under a cap its spawn is refused.
 
 Counting a pool and taking its slot happen under that pool's admission lock
 (``<pool>/.admission``), and an agent takes the admission locks of all its pools,

@@ -166,10 +166,6 @@ def build_imodel_from_spec(
         extra.update(PROVIDER_YOLO_KWARGS.get(provider_raw, {}))
     if fast:
         extra.update(PROVIDER_FAST_KWARGS.get(provider_raw, {}))
-    if EndpointRegistry.canonical_provider(provider_raw) == "codex":
-        _add_codex_account_integration_kwargs(
-            extra, account_connectors, contain_account_integrations
-        )
     if verbose:
         extra["verbose_output"] = True
     if theme is not None:
@@ -205,6 +201,18 @@ def build_imodel_from_spec(
         api_key="dummy",
         **extra,
     )
+    if account_connectors or contain_account_integrations:
+        # Keyed on the endpoint, like the workload: a slashless "openai-codex" is an API
+        # model, whose request would carry these settings as payload keys, and a slashless
+        # name takes the default chat provider, which can be codex.
+        endpoint = model_instance.endpoint
+        if (
+            endpoint.is_cli
+            and EndpointRegistry.canonical_provider(endpoint.config.provider) == "codex"
+        ):
+            _add_codex_account_integration_kwargs(
+                endpoint.config.kwargs, account_connectors, contain_account_integrations
+            )
     if workload != DEFAULT_WORKLOAD:
         endpoint = model_instance.endpoint
         _add_workload_kwarg(endpoint.config.kwargs, endpoint, workload)

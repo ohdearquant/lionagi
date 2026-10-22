@@ -131,6 +131,36 @@ def test_a_bare_openai_codex_model_builds_an_api_endpoint_without_a_workload():
     assert "workload" not in kwargs
 
 
+def test_a_bare_openai_codex_model_takes_no_account_integration_settings():
+    """The containment settings are codex CLI options too, and an API request would carry
+    them as payload keys."""
+    asked = {"contain_account_integrations": True, "account_connectors": ("github",)}
+    model = build_imodel_from_spec("openai-codex", **asked)
+    assert type(model.endpoint).__name__ == "Endpoint"
+    assert not ({"contain_account_integrations", "account_connectors"} & set(_kwargs(model)))
+    model.endpoint.config._api_key = "dummy-key"
+    payload, _ = model.endpoint.create_payload({"prompt": "hi"})
+    assert not ({"contain_account_integrations", "account_connectors"} & set(payload))
+
+
+def test_a_slashless_model_on_a_codex_default_provider_keeps_the_containment(monkeypatch):
+    """A slashless name takes the configured chat provider; when that is codex, the model is a
+    codex agent and gets the containment settings."""
+    from lionagi import config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "settings",
+        config_mod.settings.model_copy(update={"LIONAGI_CHAT_PROVIDER": "codex"}),
+    )
+    model = build_imodel_from_spec(
+        "gpt-5.5", contain_account_integrations=True, account_connectors=("github",)
+    )
+    assert model.endpoint.is_cli
+    assert _kwargs(model)["contain_account_integrations"] is True
+    assert _kwargs(model)["account_connectors"] == ["github"]
+
+
 def test_a_codex_cli_model_carries_the_workload_and_not_to_an_api_request():
     model = build_imodel_from_spec("codex/gpt-5.5", workload="light")
     assert _kwargs(model)["workload"] == "light"

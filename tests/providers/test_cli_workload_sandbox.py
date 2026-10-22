@@ -113,6 +113,8 @@ def test_a_light_codex_agent_that_could_write_elsewhere_is_refused_at_constructi
         ({'"sandbox_workspace_write"."network_access"': True}, "sandbox_workspace_write"),
         ({"profile": "unconfined"}, "profile"),
         ({"profiles.unconfined.sandbox_mode": "danger-full-access"}, "profiles"),
+        ({"default_permissions": "wide"}, "set default_permissions"),
+        ({"permissions.wide.network.enabled": True}, "set permissions.wide.network.enabled"),
     ],
 )
 def test_a_light_codex_override_is_judged_by_the_key_codex_reads(tmp_path, overrides, named):
@@ -150,6 +152,23 @@ def test_a_light_codex_agent_refuses_a_root_profile_in_the_configs_codex_reads(t
     (repo / ".codex" / "config.toml").write_text('profile = "wide"\n')
     with pytest.raises(CLIInputRefusedError, match="project codex config"):
         _codex(repo, workload="light", env={"CODEX_HOME": str(tmp_path / "empty")})
+    # The same configs leave a heavy agent's command line alone.
+    assert "--sandbox" not in _codex(repo, workload="heavy", env=env)
+
+
+def test_a_light_codex_agent_refuses_default_permissions_in_the_configs_codex_reads(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    env = _home_with_config(tmp_path, 'default_permissions = "wide"\n')
+    with pytest.raises(CLIInputRefusedError, match="sets `default_permissions`") as refused:
+        _codex(repo, workload="light", env=env)
+    assert "codex-home" in str(refused.value)
+    (repo / ".codex").mkdir()
+    (repo / ".codex" / "config.toml").write_text('default_permissions = "wide"\n')
+    empty = {"CODEX_HOME": str(tmp_path / "empty")}
+    with pytest.raises(CLIInputRefusedError, match="sets `default_permissions`") as refused:
+        _codex(repo, workload="light", env=empty)
+    assert str(repo / ".codex" / "config.toml") in str(refused.value)
     # The same configs leave a heavy agent's command line alone.
     assert "--sandbox" not in _codex(repo, workload="heavy", env=env)
 

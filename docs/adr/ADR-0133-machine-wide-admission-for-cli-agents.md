@@ -105,7 +105,8 @@ Each provider passes its engine name: `codex`, `claude`, `gemini`, `pi`.
   so neither a nested agent nor an input that cannot be encoded waits for or holds a slot.
 - The lease is taken before `create_subprocess_exec`, so an agent refused for a full pool has no
   child. A child whose start time cannot be read is the one exception: it has started, and the
-  refusal ends its group before raising (D3).
+  refusal kills it before raising (D3). Any process it started by then is not signalled: with no
+  start time, nothing shows that its process group is still the child's.
 - After the spawn, `record_child(pid, create_time)` writes the child's identity into every slot.
 - The lease is released when the spawn raises, when the `on_spawn` observer raises, and in the
   generator's final `finally` after `end_child_group()`, so a slot frees only once the group has
@@ -171,8 +172,10 @@ A slot is the file `$LIONAGI_HOME/leases/subagents/<pool>/<index>.lock`, `index`
   name a process that took the pid over, so once the holder exits such a slot would read free
   even while the child still runs. The spawn observes the child once more for its start time; if
   the second read has none too, and the admission holds at least one slot, the spawn is refused
-  with the same `SubagentAdmissionRefusedError` a full pool raises, the child's group is ended,
-  and the slots are released. So a slot is either held for a child recorded with its start time,
+  with the same `SubagentAdmissionRefusedError` a full pool raises, the child is killed, and the
+  slots are released. The processes the child has started by then are left running: signalling
+  its process group needs the start-time evidence that is missing here, as when the first
+  observation fails outright. So a slot is either held for a child recorded with its start time,
   or not taken at all. With no cap set there are no slots to keep, and the child runs whether or
   not its start time can be read.
 - **Counting and taking happen under the pool's admission lock.** Each pool has an admission lock,
@@ -256,7 +259,7 @@ every CLI request model (`exclude=True`, never serialized):
 
 | Engine | `light` |
 |--------|---------|
-| codex | `--sandbox workspace-write` (or `read-only` when asked), `-c sandbox_workspace_write.writable_roots=[]`, `-c sandbox_workspace_write.network_access=false`, no linked-worktree `--add-dir`, and the account's apps and plugins turned off as `contain_account_integrations` turns them off. `account_connectors`, `bypass_approvals`, `sandbox='danger-full-access'`, `add_dir` and any `config_overrides` key under `sandbox_mode` or `sandbox_workspace_write` are refused with `CLIInputRefusedError`, at construction and again where the process would start. The sandbox keeps the temporary directories writable, and codex starts the MCP servers it is given outside it |
+| codex | `--sandbox workspace-write` (or `read-only` when asked), `-c sandbox_workspace_write.writable_roots=[]`, `-c sandbox_workspace_write.network_access=false`, no linked-worktree `--add-dir`, and the account's apps and plugins turned off as `contain_account_integrations` turns them off. `account_connectors`, `bypass_approvals`, `sandbox='danger-full-access'`, `add_dir` a `profile` lionagi did not generate and any `config_overrides` key under `sandbox_mode`, `sandbox_workspace_write`, `default_permissions` (which names a permissions profile codex applies in place of the mode), `permissions`, `profile` or `profiles` are refused with `CLIInputRefusedError`, at construction and again where the process would start. Where the command line is built, so is a user or project codex config that sets a root `profile` key or `default_permissions`, defines the profile the request names, or cannot be read. The sandbox keeps the temporary directories writable, and codex starts the MCP servers it is given outside it |
 | claude_code | `Edit`, `Write` and `NotebookEdit` are added to `--disallowedTools`, merged with the caller's list into one flag. Bash stays. Claude Code has no filesystem sandbox, so this is a tool-list boundary only: a command run through Bash can still write |
 | gemini-cli | `--sandbox`, always |
 | pi | refused before the process starts: Pi has no sandbox lionagi can pin |

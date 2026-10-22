@@ -1373,9 +1373,10 @@ async def _run_agent(
 
         if EndpointRegistry.canonical_provider(provider) == "codex":
             cfg.pop("contain_account_integrations", None)
-            _add_codex_account_integration_kwargs(
-                cfg, account_connectors, contain_account_integrations
-            )
+            if branch.chat_model.endpoint.is_cli:
+                _add_codex_account_integration_kwargs(
+                    cfg, account_connectors, contain_account_integrations
+                )
         # Like the connectors: the class belongs to this launch, not to the stored row.
         cfg.pop("workload", None)
         _add_workload_kwarg(cfg, branch.chat_model.endpoint, workload)
