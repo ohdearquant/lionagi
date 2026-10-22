@@ -41,6 +41,56 @@ def _verified_ssl_context():
     return _VERIFIED_SSL_CONTEXT
 
 
+def _pinned_ssl_context(fingerprint: bytes):
+    """A context for an ``aiohttp.Fingerprint``: no chain check, and the server's certificate
+    must have this SHA-256 digest, checked when the handshake completes and before the request
+    is sent, as aiohttp checked it. A mismatch fails the connection with an ``ssl.SSLError``."""
+    import hashlib
+    import ssl
+
+    class _PinnedSSLObject(ssl.SSLObject):
+        def do_handshake(self):
+            super().do_handshake()
+            # aiohttp's Fingerprint takes SHA-256 digests only.
+            got = hashlib.sha256(self.getpeercert(binary_form=True)).digest()
+            if got != fingerprint:
+                raise ssl.SSLCertVerificationError(
+                    f"the server certificate's SHA-256 fingerprint is {got.hex()}, "
+                    f"expected {fingerprint.hex()}"
+                )
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    context.sslobject_class = _PinnedSSLObject
+    return context
+
+
+def _httpx_timeout(timeout):
+    """httpx's timeout for an ``aiohttp.ClientTimeout``.
+
+    httpx has no bound on a whole request, so ``total`` bounds each phase, as
+    ``EndpointConfig.timeout`` does, and caps the phases ``connect``, ``sock_connect`` and
+    ``sock_read`` set.
+    """
+    import httpx
+
+    total = timeout.total
+
+    def bound(*values):
+        value = next((v for v in values if v is not None), None)
+        if value is None:
+            return total
+        return value if total is None else min(value, total)
+
+    return httpx.Timeout(
+        connect=bound(timeout.sock_connect, timeout.connect),
+        read=bound(timeout.sock_read),
+        write=total,
+        pool=bound(timeout.connect),
+    )
+
+
 # The event types that say the call itself failed: the Responses API's
 # ``response.failed`` and Codex's ``turn.failed``. A bare ``failed`` is read the same
 # way, although no provider in this package sends one. Any other type ending in
@@ -254,17 +304,24 @@ class Endpoint:
     def _client_for_request(self, request_kwargs: dict[str, Any]):
         """The client for one request and the options left for the request itself.
 
-        aiohttp took ``ssl``, ``proxy`` and ``allow_redirects`` with each request. httpx
-        takes the first two from the client, as ``verify`` and ``proxy``, and the third
-        as ``follow_redirects``, so a request that passes them gets a client of its own.
+        aiohttp took ``ssl``, ``proxy``, ``allow_redirects`` and ``timeout`` with each
+        request. httpx takes the first two from the client, as ``verify`` and ``proxy``, the
+        third as ``follow_redirects`` and the fourth as an ``httpx.Timeout``, so a request
+        that passes ``ssl`` or ``proxy`` gets a client of its own. A request's ``ssl=True``
+        verifies certificates even when the configured client does not.
         """
-        if not request_kwargs.keys() & {"ssl", "proxy", "allow_redirects"}:
+        if not request_kwargs.keys() & {"ssl", "proxy", "allow_redirects", "timeout"}:
             return self._create_http_session(), request_kwargs
         import ssl
+        import sys
 
         import httpx
 
+        # Set only when the caller has imported aiohttp, as building its types requires.
+        aiohttp = sys.modules.get("aiohttp")
         request_kwargs = dict(request_kwargs)
+        if aiohttp is not None and isinstance(request_kwargs.get("timeout"), aiohttp.ClientTimeout):
+            request_kwargs["timeout"] = _httpx_timeout(request_kwargs["timeout"])
         if "allow_redirects" in request_kwargs:
             if "follow_redirects" in request_kwargs:
                 raise TypeError("pass allow_redirects or follow_redirects, not both")
@@ -272,15 +329,23 @@ class Endpoint:
         client_options: dict[str, Any] = {}
         if "ssl" in request_kwargs:
             verify = request_kwargs.pop("ssl")
-            if not isinstance(verify, (bool, ssl.SSLContext)):
-                raise TypeError(
-                    f"ssl takes True, False or an ssl.SSLContext, not {type(verify).__name__}"
-                )
-            if verify is not True:
+            if verify is None or verify is True:
+                # aiohttp read None as True.
+                if self.config.client_kwargs.get("verify", True) is False:
+                    client_options["verify"] = _verified_ssl_context()
+            elif verify is False or isinstance(verify, ssl.SSLContext):
                 client_options["verify"] = verify
+            elif aiohttp is not None and isinstance(verify, aiohttp.Fingerprint):
+                client_options["verify"] = _pinned_ssl_context(verify.fingerprint)
+            else:
+                raise TypeError(
+                    "ssl takes True, False, None, an ssl.SSLContext or an aiohttp.Fingerprint, "
+                    f"not {type(verify).__name__}"
+                )
         if "proxy" in request_kwargs:
             proxy = request_kwargs.pop("proxy")
-            if proxy is not None:
+            # aiohttp went direct for an empty proxy: None, "" or an empty URL.
+            if proxy:
                 client_options["proxy"] = proxy if isinstance(proxy, httpx.Proxy) else str(proxy)
         if not client_options:
             return self._create_http_session(), request_kwargs
