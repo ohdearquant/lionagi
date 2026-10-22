@@ -56,6 +56,7 @@ of slots held for its own ancestors is refused at once as well.
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import os
 import random
@@ -365,7 +366,10 @@ class _Slot:
     def write(self) -> None:
         data = json.dumps(self.record, sort_keys=True).encode()
         # Written, then cut to length: a reader never finds the file empty while it is held.
-        os.pwrite(self.fd, data, 0)
+        written = os.pwrite(self.fd, data, 0)
+        if written != len(data):
+            # Part of a record does not parse, so the slot would read as unrecorded.
+            raise OSError(errno.ENOSPC, f"wrote {written} of the record's {len(data)} bytes")
         os.ftruncate(self.fd, len(data))
 
     def release(self) -> None:
@@ -404,7 +408,8 @@ class SubagentLease:
             except OSError as exc:
                 raise SubagentAdmissionRefusedError(
                     f"subagent admission refused: the {slot.pool!r} slot could not record "
-                    f"the agent ({exc}), so it would read free once this process exited",
+                    f"the agent ({exc}), so it would read free once this process exited; "
+                    "the agent was ended",
                     pool=slot.pool,
                 ) from exc
 

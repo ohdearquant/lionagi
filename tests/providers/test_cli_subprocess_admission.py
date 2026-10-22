@@ -11,6 +11,7 @@ recorded child is the kernel's pid.
 from __future__ import annotations
 
 import contextlib
+import os
 import sys
 import time
 from pathlib import Path
@@ -195,7 +196,7 @@ async def test_a_slot_that_cannot_record_its_child_refuses_and_ends_the_child(ca
         real_write(slot)
 
     async def _record_end(proc, **kwargs):
-        ended.append((proc.pid, kwargs["spawned"].create_time))
+        ended.append((proc.pid, kwargs["spawned"].create_time, _held()["held"]))
         await real_end_group(proc, **kwargs)
 
     monkeypatch.setattr(admission._Slot, "write", _second_write_fails)
@@ -208,11 +209,74 @@ async def test_a_slot_that_cannot_record_its_child_refuses_and_ends_the_child(ca
             await stream.__anext__()
     assert refused.value.pool == "all"
     assert writes == ["all", "all"]
-    [(pid, started)] = ended
+    [(pid, started, held_while_ending)] = ended
     assert started is not None
+    # The slot is given back after the group is ended, not before.
+    assert held_while_ending == 1
     assert _await_death(pid)
     assert callbacks == []
     assert _held()["held"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_slot_written_in_part_refuses_and_ends_the_child(capped, monkeypatch):
+    """A record written only in part does not parse, so the slot would read as unrecorded:
+    a short write is refused like a failed one."""
+    from lionagi.providers import _cli_subprocess
+
+    real_pwrite = os.pwrite
+    lengths = []
+    ended = []
+
+    def _second_write_short(fd, data, offset):
+        lengths.append(len(data))
+        if len(lengths) > 1:
+            return real_pwrite(fd, data[: len(data) // 2], offset)
+        return real_pwrite(fd, data, offset)
+
+    real_end_group = _cli_subprocess.end_child_group
+
+    async def _record_end(proc, **kwargs):
+        ended.append(proc.pid)
+        await real_end_group(proc, **kwargs)
+
+    monkeypatch.setattr(admission.os, "pwrite", _second_write_short)
+    monkeypatch.setattr(_cli_subprocess, "end_child_group", _record_end)
+    stream = ndjson_from_cli([sys.executable, "-c", _SLEEPER], engine="codex")
+    with pytest.raises(SubagentAdmissionRefusedError, match="of the record's") as refused:
+        async with contextlib.aclosing(stream):
+            await stream.__anext__()
+    assert refused.value.pool == "all"
+    assert len(lengths) == 2
+    [pid] = ended
+    assert _await_death(pid)
+    assert _held()["held"] == 0
+
+
+@pytest.mark.asyncio
+async def test_every_slot_stays_held_until_the_childs_group_is_ended(capped, monkeypatch):
+    """Each pool's slot is released after ``end_child_group`` returns, never before it runs."""
+    from lionagi.providers import _cli_subprocess
+
+    monkeypatch.setenv("LIONAGI_MAX_SUBAGENTS_CODEX", "1")
+    real_end_group = _cli_subprocess.end_child_group
+    held_while_ending = []
+
+    def _pools():
+        pools = subagent_admission_status()["pools"]
+        return {name: pools.get(name, {"held": 0})["held"] for name in ("all", "codex")}
+
+    async def _record_end(proc, **kwargs):
+        held_while_ending.append(_pools())
+        await real_end_group(proc, **kwargs)
+
+    monkeypatch.setattr(_cli_subprocess, "end_child_group", _record_end)
+    quick = 'import sys; sys.stdout.write(\'{"type": "done"}\\n\')'
+    stream = ndjson_from_cli([sys.executable, "-c", quick], engine="codex")
+    async with contextlib.aclosing(stream):
+        assert [obj async for obj in stream] == [{"type": "done"}]
+    assert held_while_ending == [{"all": 1, "codex": 1}]
+    assert _pools() == {"all": 0, "codex": 0}
 
 
 @pytest.mark.asyncio

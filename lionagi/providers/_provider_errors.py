@@ -114,10 +114,12 @@ class SubagentAdmissionRefusedError(ProviderError):
     not be read. Raised before the child exists, or just after it when its start time
     could not be read twice, in which case the child is killed before this is raised;
     with no start time to prove its process group, the group is not signalled. Also
-    raised just after the spawn when a slot cannot record the child, after the child's
-    group has ended.
+    raised just after the spawn when a slot cannot record the child, once ending the
+    child's group has been attempted (signalled, then waited for a bounded time).
 
-    Retryable: the same request admits once a slot frees or the cap is raised.
+    Retryable: at a cap the same request admits once a slot frees or the cap is raised,
+    and a slot that could not be written can be written on a later attempt, once the
+    disk has room.
     """
 
     retryable: ClassVar[bool] = True

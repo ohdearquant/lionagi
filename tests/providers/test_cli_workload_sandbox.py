@@ -185,6 +185,69 @@ def test_a_light_codex_agent_refuses_default_permissions_in_the_configs_codex_re
     assert "--sandbox" not in _codex(cwd, workload="heavy", env=env)
 
 
+def _walk_layout(tmp_path, layout):
+    """The agent's cwd and the directory holding the project config, for each walk the
+    config search makes."""
+    if layout == "no git root":
+        cwd = tmp_path / "top" / "a" / "b"
+        cwd.mkdir(parents=True)
+        return cwd, tmp_path / "top"
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    if layout == "between the cwd and the git root":
+        cwd = repo / "sub" / "dir"
+        cwd.mkdir(parents=True)
+        return cwd, repo / "sub"
+    if layout == "cwd is a symlink into the repo":
+        real = repo / "sub" / "dir"
+        real.mkdir(parents=True)
+        cwd = tmp_path / "link"
+        cwd.symlink_to(real)
+        return cwd, repo
+    # The path as spelled is in the repo; the resolved path is outside it.
+    outside = tmp_path / "outside" / "dir"
+    outside.mkdir(parents=True)
+    cwd = repo / "link"
+    cwd.symlink_to(outside)
+    return cwd, repo
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        "between the cwd and the git root",
+        "cwd is a symlink into the repo",
+        "cwd is a symlink in the repo to outside it",
+        "no git root",
+    ],
+)
+def test_a_light_codex_agent_reads_each_project_config_codex_can_merge(tmp_path, layout):
+    cwd, holder = _walk_layout(tmp_path, layout)
+    config = holder / ".codex" / "config.toml"
+    config.parent.mkdir()
+    empty = {"CODEX_HOME": str(tmp_path / "empty")}
+    config.write_text('profile = "wide"\n')
+    with pytest.raises(CLIInputRefusedError, match="project codex config"):
+        _codex(cwd, workload="light", env=empty)
+    config.write_text('default_permissions = "wide"\n')
+    with pytest.raises(CLIInputRefusedError, match="sets `default_permissions`") as refused:
+        _codex(cwd, workload="light", env=empty)
+    assert str(config) in str(refused.value) or str(config.resolve()) in str(refused.value)
+
+
+def test_a_light_codex_agent_leaves_a_project_config_above_the_git_root_unread(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    cwd = repo / "sub"
+    cwd.mkdir()
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex" / "config.toml").write_text(
+        'profile = "wide"\ndefault_permissions = "wide"\n'
+    )
+    args = _codex(cwd, workload="light", env={"CODEX_HOME": str(tmp_path / "empty")})
+    assert _pairs(args, "--sandbox") == ["workspace-write"]
+
+
 def test_a_light_codex_agent_refuses_a_config_defining_its_generated_profile(tmp_path):
     generated = "lionagi-mcp-" + "1" * 32
     env = _home_with_config(
