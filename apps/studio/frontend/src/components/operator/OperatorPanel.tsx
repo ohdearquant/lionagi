@@ -993,7 +993,10 @@ export default function OperatorPanel({ open, onClose }: Props) {
         if (failed) {
           failedSendsRef.current.delete(conversationId);
           setActionError(failed.message);
-          setInstruction((current) => current || failed.instruction);
+          // Text typed here since keeps its place after the failed text, so neither is lost.
+          setInstruction((current) =>
+            current.trim() ? `${failed.instruction}\n${current}` : failed.instruction,
+          );
         }
       } catch (error) {
         if (selectedConversationIdRef.current !== conversationId) return;
@@ -1318,7 +1321,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
     // a draft, the one created for it. A failure is reported there, at once while
     // it is selected, else when it is selected again. A draft whose conversation
     // could not be created has none, so its failure shows where its text still is.
-    let sentTo = state.conversation?.id ?? selectedConversationIdRef.current;
+    let sentTo = state.conversation?.id ?? null;
     try {
       let conversation = state.conversation;
       if (!conversation) {

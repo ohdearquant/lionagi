@@ -47,9 +47,10 @@ behaviour, including accepting a write-capable submission without `cwd`.
   do not undo a rename, pin or archive made during the read unless the server
   changed the row afterwards, and respect the current list filter. A failed send
   is reported in the conversation it was sent for: at once while it is shown,
-  otherwise when it is selected again, with its unsent text back in the
-  composer. A draft whose conversation could not be created reports it in the
-  conversation then shown.
+  otherwise once when it is selected again, with its unsent text back in the
+  composer ahead of any text typed there since. A draft whose conversation could
+  not be created, including one sent while the selected conversation was still
+  loading, reports it in the conversation then shown and keeps its text.
 - Studio sessions can set or clear an explicit display label through
   `PUT /api/sessions/{session_id}`. Labels take precedence in session list and
   detail names without changing activity timestamps; clearing a label restores

@@ -950,15 +950,19 @@ describe("OperatorPanel", () => {
       await act(async () => button.click());
     }
 
-    async function sendInstruction() {
+    async function typeInstruction(text: string) {
       const input = container.querySelector("textarea")!;
       await act(async () => {
         Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(
           input,
-          "Inspect this project",
+          text,
         );
         input.dispatchEvent(new Event("input", { bubbles: true }));
       });
+    }
+
+    async function sendInstruction() {
+      await typeInstruction("Inspect this project");
       const send = [...container.querySelectorAll("button")].find(
         (button) => button.textContent === "Send",
       )!;
@@ -1186,16 +1190,27 @@ describe("OperatorPanel", () => {
       expect(container.querySelector('[role="alert"]')).toBeNull();
       expect(container.querySelector("textarea")?.value).toBe("");
       expect(window.localStorage.getItem("studio:operator-conversation")).toBe(other.id);
+      await typeInstruction("Second draft");
 
-      await openList();
-      const back = [...container.querySelectorAll("ul li button")].find(
-        (button) => button.textContent === firstRow.title,
-      ) as HTMLButtonElement;
-      await act(async () => back.click());
+      async function reselect(row: typeof firstRow) {
+        await openList();
+        const button = [...container.querySelectorAll("ul li button")].find(
+          (item) => item.textContent === row.title,
+        ) as HTMLButtonElement;
+        await act(async () => button.click());
+      }
+      await reselect(firstRow);
 
+      // The failed text comes back in front of what was typed since; neither is lost.
       expect(container.querySelector('[role="alert"]')?.textContent).toContain("Draft send failed");
-      expect(container.querySelector("textarea")?.value).toBe("Inspect this project");
+      expect(container.querySelector("textarea")?.value).toBe("Inspect this project\nSecond draft");
       expect(window.localStorage.getItem("studio:operator-conversation")).toBe(firstRow.id);
+
+      // Reported once: leaving and selecting it again shows no alert.
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await reselect(other);
+      await reselect(firstRow);
+      expect(container.querySelector('[role="alert"]')).toBeNull();
     });
 
     it("reports a draft whose conversation could not be created where it is selected", async () => {
@@ -1221,6 +1236,43 @@ describe("OperatorPanel", () => {
       expect(container.querySelector("textarea")?.value).toBe("Inspect this project");
       expect(api.submitOperatorTurn).toHaveBeenCalledTimes(submits);
       expect(window.localStorage.getItem("studio:operator-conversation")).toBe(other.id);
+    });
+
+    it("reports a draft sent while a conversation loads where it is selected", async () => {
+      const other = { ...firstRow, id: "other", title: "Other conversation" };
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+      const loading = deferred<{ conversation: OperatorConversation; frames: OperatorFrame[] }>();
+      api.getOperatorConversation.mockReturnValueOnce(loading.promise);
+      const pending = deferred<OperatorConversation>();
+      api.createOperatorConversation.mockReturnValueOnce(pending.promise);
+      const creates = api.createOperatorConversation.mock.calls.length;
+      await mount();
+      // The first row is still loading, so the send has no conversation and creates one.
+      await sendInstruction();
+      expect(api.createOperatorConversation).toHaveBeenCalledTimes(creates + 1);
+      await openList();
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      const select = [...container.querySelectorAll("ul li button")].find(
+        (button) => button.textContent === other.title,
+      ) as HTMLButtonElement;
+      await act(async () => select.click());
+
+      await act(async () => pending.reject(new Error("Draft create failed")));
+
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "Draft create failed",
+      );
+      expect(container.querySelector("textarea")?.value).toBe("Inspect this project");
+
+      // Nothing was kept for the row that was loading, so selecting it shows no alert.
+      await act(async () => loading.resolve({ conversation: firstRow, frames: [] }));
+      await openList();
+      const back = [...container.querySelectorAll("ul li button")].find(
+        (button) => button.textContent === firstRow.title,
+      ) as HTMLButtonElement;
+      await act(async () => back.click());
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(container.querySelector("textarea")?.value).toBe("Inspect this project");
     });
 
     it("shows a conversation description beneath its title and in the tooltip", async () => {
