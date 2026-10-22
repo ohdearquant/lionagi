@@ -427,7 +427,8 @@ async def test_no_mcp_config_leaves_the_leg_no_servers_of_its_own_either(
 
     kwargs = spawn.branches[-1].chat_model.endpoint.config.kwargs
     if model.startswith("codex"):
-        assert kwargs["config_overrides"] == {"mcp_servers.khive.enabled": False}
+        assert kwargs["ignore_user_config"] is True
+        assert "config_overrides" not in kwargs
     else:
         assert kwargs["mcp_servers"] == {}
         assert kwargs["strict_mcp_config"] is True

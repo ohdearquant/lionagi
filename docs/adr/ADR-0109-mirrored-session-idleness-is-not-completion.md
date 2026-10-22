@@ -354,8 +354,8 @@ second name from it at `lionagi/state/db.py:451`.
 | `cli/monitor.py:1197,1209,1267` | Unverified | not driven |
 | `cli/machine.py:539` | Unverified, display flag | not driven |
 | `cli/_runs.py:1115,1376,1568,1870` | **Yes, by construction** | read at the source: `_linked_engine_session` (`:855-881`) resolves `session_db_id(engine_session_uid)`, which is the **Claude**-mirror row and only that one, and `:1115` branches on that row's terminal status while `:1134` handles it being `running`. The resolver imports `session_db_id` from `lionagi.state.claude_mirror` (`lionagi/cli/_runs.py:870`), and the Codex mirror derives its ids from a deliberately different namespace so that the two can never collide (`lionagi/state/codex_mirror.py:79-81`, which says so in a comment). A Codex-mirrored session is therefore not reachable through this consumer at all, which is a **separate gap and not a covered case**: whatever `idle` does to a linked Claude row, the equivalent Codex row is not linked here in the first place. Adding `idle` gives a linked row a third value that matches neither branch, so a session that is merely quiet falls through to the phantom `failed` the `running` branch exists to suppress. See the obligation below. Separately, the ADR-0105 reopen path at `lionagi/cli/_runs.py:1979-1990` is keyed by a branch id, and a mirror branch id is deterministic, so a hand-typed resume against one remains an open edge case. |
-| `cli/agent.py:836,1888` | Probably not: own run's session | not driven |
-| `cli/orchestrate/_orchestration.py:2093` | Probably not: own run's session | not driven |
+| `cli/agent.py:836,1889` | Probably not: own run's session | not driven |
+| `cli/orchestrate/_orchestration.py:2203` | Probably not: own run's session | not driven |
 | `hooks/builtins.py:71,131` | Probably not: own run's session | not driven |
 
 The unverified rows are not a claim that they are safe. Each must be driven

@@ -20,6 +20,7 @@ import logging
 
 import pytest
 
+from lionagi._errors import ConfigurationError
 from lionagi.cli._providers import (
     build_chat_model,
     build_imodel_from_spec,
@@ -209,6 +210,60 @@ class TestBothSpecEntryPointsHonourIt:
         # And it is still a CLI endpoint, which is what lets `li agent` accept
         # it at all — an openrouter/* spec is refused there.
         assert m.is_cli is True
+
+
+class TestAProfileUnderIgnoreUserConfigSetsOnlyItsModel:
+    """A request that ignores the user config still takes the profile it names, but
+    only its model settings. A profile that also set the sandbox or the approval policy
+    would decide for an isolated worker what its run decides."""
+
+    def _write_permissive(self, codex_home):
+        _write(
+            codex_home,
+            "wide",
+            'model = "vendor/m"\nmodel_provider = "openrouter"\n'
+            'sandbox_mode = "danger-full-access"\napproval_policy = "never"\n',
+        )
+
+    def test_the_spec_builder_refuses_it(self, codex_home):
+        self._write_permissive(codex_home)
+        with pytest.raises(ConfigurationError, match="sets approval_policy, sandbox_mode besides"):
+            build_imodel_from_spec("codex/wide", ignore_user_config=True)
+
+    def test_without_the_flag_it_still_applies(self, codex_home):
+        self._write_permissive(codex_home)
+        kwargs = build_imodel_from_spec("codex/wide").endpoint.config.kwargs
+        assert kwargs["config_overrides"]["sandbox_mode"] == "danger-full-access"
+        assert kwargs["config_overrides"]["approval_policy"] == "never"
+
+    def test_model_settings_and_provider_routing_still_apply(self, codex_home):
+        _write(
+            codex_home,
+            "routed",
+            'model = "vendor/m"\nmodel_provider = "openrouter"\n'
+            'model_reasoning_effort = "medium"\n'
+            '"model_providers.openrouter.base_url" = "https://openrouter.ai/api/v1"\n',
+        )
+        kwargs = build_imodel_from_spec(
+            "codex/routed", ignore_user_config=True
+        ).endpoint.config.kwargs
+        assert kwargs["model"] == "vendor/m"
+        assert kwargs["config_overrides"] == {
+            "model_provider": "openrouter",
+            "model_reasoning_effort": "medium",
+            "model_providers.openrouter.base_url": "https://openrouter.ai/api/v1",
+        }
+
+    def test_the_request_refuses_it_on_the_library_path(self, codex_home):
+        from lionagi.providers.openai.codex import CodexCodeRequest
+
+        self._write_permissive(codex_home)
+        # Refused inside request validation, so pydantic wraps it, as it wraps the
+        # resolver's own refusals there.
+        with pytest.raises(ValueError, match="sets approval_policy, sandbox_mode besides"):
+            CodexCodeRequest(model="wide", prompt="hi", ignore_user_config=True)
+        request = CodexCodeRequest(model="wide", prompt="hi")
+        assert request.model == "vendor/m"
 
 
 class TestTheEffortClampSeesTheResolvedModel:

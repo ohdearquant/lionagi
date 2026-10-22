@@ -813,8 +813,8 @@ everything since; facts past the range belong to the next wake.
 - No per-subscriber cursor exists. The durable reader positions nearest to one exist and none is a
   per-subscriber wake cursor. The team round batches the pending targets it discovers on each node
   completion, one re-invocation per target, so its position is a per-completion batch of targets,
-  not a per-subscriber position (`lionagi/cli/orchestrate/_orchestration.py:1378`, `:1414-1419`;
-  `lionagi/cli/orchestrate/flow.py:1986-2031`). A schedule holds `github_cursor`, a reader
+  not a per-subscriber position (`lionagi/cli/orchestrate/_orchestration.py:1488`, `:1524-1529`;
+  `lionagi/cli/orchestrate/flow.py:1992-2037`). A schedule holds `github_cursor`, a reader
   position that remembers how far a poll has read so a refused event is re-offered rather than
   skipped. The poller's writes advance it only forward, so a stale poll cannot move it back
   (`lionagi/state/schema.sql:463`, `:527-535`; `lionagi/state/db.py:5342-5344`, `:5474`;

@@ -1371,15 +1371,16 @@ async def _run_agent(
         if mcp_resolution.servers is not None:
             # A set resolved for this leg replaces the one its earlier run was
             # handed. The Claude map is overwritten below anyway; codex overrides
-            # are merged, so without this the leg would start both sets.
+            # are merged, so without this the leg would start both sets. An earlier
+            # empty set was carried as the ignored user config, which goes with it.
             _drop_forwarded_mcp_servers(cfg)
+            cfg.pop("ignore_user_config", None)
         apply_forwarded_mcp_servers(
             cfg,
             mcp_resolution.servers,
             provider=provider,
-            # The persisted request carries the previous run's servers; only a
-            # declared set replaces them. A failed search leaves them, as it
-            # leaves a new leg to what its CLI finds.
+            # The persisted request carries the previous run's servers; only a declared set replaces
+            # them. A failed search leaves them, as it leaves a new leg to what its CLI finds.
             exclusive=mcp_resolution.declared_empty,
         )
         missing_profile = _missing_generated_codex_profile(cfg)
