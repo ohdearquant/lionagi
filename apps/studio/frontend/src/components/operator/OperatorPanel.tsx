@@ -121,6 +121,10 @@ function groupModelsByProvider(
   })).filter((group) => group.models.length > 0);
 }
 
+// What the alert shows. A decision's error names its proposal, so a later decision of
+// that proposal that succeeds clears it and leaves any other error in place.
+type ActionError = { message: string; proposalId?: string };
+
 interface Props {
   open: boolean;
   onClose: () => void;
@@ -769,7 +773,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const [sending, setSending] = useState(false);
   const [streamEpoch, setStreamEpoch] = useState(0);
   const [stopping, setStopping] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<ActionError | null>(null);
   const [deciding, setDeciding] = useState<Set<string>>(() => new Set());
   const [decidedProposalIds, setDecidedProposalIds] = useState<Set<string>>(() => new Set());
   // Opt-in, per-browser: every pending proposal is allowed the moment it
@@ -824,8 +828,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
   // A send that failed once its conversation was no longer shown: the error and the
   // text, kept until that conversation is selected again.
   const failedSendsRef = useRef(new Map<string, { message: string; instruction: string }>());
-  // Proposals auto-allow has decided once. A refused decision is not retried by itself:
-  // its error shows, and the operator can decide again by hand.
+  // Proposals auto-allow has decided once. A decision refused while its conversation is
+  // shown is not retried by itself: its error shows, and the operator can decide again
+  // by hand. One refused after its conversation stopped being shown leaves this set.
   const autoAllowTriedRef = useRef(new Set<string>());
   // The latest rename, pin or archive result this panel wrote, per conversation.
   const writeResultsRef = useRef(new Map<string, OperatorConversation>());
@@ -910,7 +915,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
           superseded()
         )
           return;
-        setActionError(error instanceof Error ? error.message : t("errors.load"));
+        setActionError({ message: error instanceof Error ? error.message : t("errors.load") });
       }
     },
     [listFilter, readConversationList, t],
@@ -1037,8 +1042,10 @@ export default function OperatorPanel({ open, onClose }: Props) {
       return;
     const failed = failedSendsRef.current.get(shownConversationId);
     if (!failed) return;
+    // Reported once: a later error replaces this one as it replaces any other, and the
+    // text stays in the composer.
     failedSendsRef.current.delete(shownConversationId);
-    setActionError(failed.message);
+    setActionError({ message: failed.message });
     // Text typed here since keeps its place after the failed text, so neither is lost.
     setInstruction((current) =>
       current.trim() ? `${failed.instruction}\n${current}` : failed.instruction,
@@ -1149,7 +1156,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         if (stored) {
           void loadConversation(stored);
         } else {
-          setActionError(t("errors.load"));
+          setActionError({ message: t("errors.load") });
         }
       });
     return () => {
@@ -1288,7 +1295,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         effectsAcknowledgedRef.current.add(effectKey);
       })()
         .catch((error) => {
-          setActionError(error instanceof Error ? error.message : t("errors.effect"));
+          setActionError({ message: error instanceof Error ? error.message : t("errors.effect") });
         })
         .finally(() => {
           effectsInFlightRef.current.delete(effectKey);
@@ -1431,7 +1438,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
         setInstruction((current) => (current.trim() === trimmed ? "" : current));
         return;
       }
-      setActionError(message);
+      setActionError({ message });
       // New conversation during the send clears the composer; the failed text comes back.
       setInstruction((current) => (current.trim() ? current : trimmed));
       if (
@@ -1467,7 +1474,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
     try {
       await cancelOperatorRequest(state.conversation.id, state.activeRequestId);
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : t("errors.stop"));
+      setActionError({ message: error instanceof Error ? error.message : t("errors.stop") });
     } finally {
       setStopping(false);
     }
@@ -1480,21 +1487,34 @@ export default function OperatorPanel({ open, onClose }: Props) {
       auto = false,
     ) => {
       if (!state.conversation) return;
+      const conversationId = state.conversation.id;
       const proposal = frame.payload.proposal;
       setDeciding((current) => new Set(current).add(proposal.id));
-      // A click clears the alert; a decision auto-allow makes leaves it showing.
+      // A click clears the alert; a decision that auto-allow makes leaves it showing.
       if (!auto) setActionError(null);
       try {
         await decideOperatorProposal(
-          state.conversation.id,
+          conversationId,
           proposal.id,
           decision,
           proposal.commandHash,
           proposal.target?.version ?? null,
         );
         setDecidedProposalIds((current) => new Set(current).add(proposal.id));
+        // An earlier refusal of this proposal no longer holds; any other error stays.
+        setActionError((current) => (current?.proposalId === proposal.id ? null : current));
       } catch (error) {
-        setActionError(error instanceof Error ? error.message : t("errors.decision"));
+        if (selectedConversationIdRef.current !== conversationId) {
+          // Refused once its conversation was no longer shown, so it is not reported in
+          // another one. The proposal is still pending there: it counts as untried, and
+          // is decided again, by auto-allow or by hand, when that conversation is shown.
+          autoAllowTriedRef.current.delete(proposal.id);
+          return;
+        }
+        setActionError({
+          message: error instanceof Error ? error.message : t("errors.decision"),
+          proposalId: proposal.id,
+        });
       } finally {
         setDeciding((current) => {
           const next = new Set(current);
@@ -1506,9 +1526,10 @@ export default function OperatorPanel({ open, onClose }: Props) {
     [state.conversation, t],
   );
 
-  // Auto-allow: send at most one decision per pending proposal, as it arrives. The
-  // tried set makes this idempotent across re-renders and SSE replays, and keeps a
-  // refused decision from being sent again on every render.
+  // Auto-allow: send one decision per pending proposal, as it arrives. The tried set
+  // makes this idempotent across re-renders and SSE replays, and keeps a refused
+  // decision from being sent again on every render; one refused after its
+  // conversation stopped being shown leaves the set, so it is decided again there.
   // Deferred a tick so the decision (a network POST plus its own state
   // bookkeeping) never runs synchronously inside the effect body; the guard
   // sets keep a cancelled-then-rescheduled tick from double-deciding.
@@ -2088,7 +2109,9 @@ export default function OperatorPanel({ open, onClose }: Props) {
               className="mb-2 flex items-start gap-1.5 rounded border border-status-failure/30 bg-status-error-bg px-2 py-1.5 text-meta text-status-failure"
             >
               <IconError size={12} className="mt-0.5 shrink-0" />
-              <span className="min-w-0 flex-1 break-words">{actionError ?? state.error}</span>
+              <span className="min-w-0 flex-1 break-words">
+                {actionError?.message ?? state.error}
+              </span>
             </div>
           )}
           <label htmlFor="operator-instruction" className="sr-only">

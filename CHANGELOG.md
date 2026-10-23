@@ -49,10 +49,16 @@ behaviour, including accepting a write-capable submission without `cwd`.
   in the conversation it was sent for: at once while it is shown, otherwise once,
   when it is shown again with no send, Stop or decision in flight or about to
   start under auto-allow and no other error showing, with its unsent text back in
-  the composer ahead of any text typed there since. Auto-allow sends at most one
-  decision per proposal, and none while no conversation is shown; a decision it
-  makes leaves an error already showing in place, and a refused one shows its own
-  error and can be decided again by hand. A draft whose conversation could not be
+  the composer ahead of any text typed there since. Auto-allow sends one
+  decision per proposal, a second only when the first was refused after another
+  conversation was chosen, and none while no conversation is shown; a decision
+  it makes leaves an error already showing in place, except an earlier refusal
+  of the proposal it allows, which it clears, and a refused one shows its own
+  error and can be decided again by hand. A decision refused after another
+  conversation was chosen is not shown in that one; its proposal is decided
+  again, by auto-allow or by hand, when its own conversation is shown. A
+  reported failure shows once: a later error replaces it, and its text stays in
+  the composer. A draft whose conversation could not be
   created, including one sent while the selected conversation was still loading,
   reports it in the conversation then shown and keeps its text; if a new
   conversation was started during the send, the text comes back when the composer

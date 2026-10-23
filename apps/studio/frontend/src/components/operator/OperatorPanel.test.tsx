@@ -1454,30 +1454,30 @@ describe("OperatorPanel", () => {
     }
 
     // A send on the first row fails while another conversation is shown, so its
-    // failure is kept. A decision on that other conversation is still in flight when
-    // the first row is chosen again, and it fails while the row loads, so its error
-    // is showing when the row becomes ready.
+    // failure is kept. A decision on the first row's own proposal is still in flight
+    // then, and it fails while the row loads again, so its error is showing when the
+    // row becomes ready.
     async function keepAFailureBehindADecisionError(reload: {
       conversation: OperatorConversation;
       frames: OperatorFrame[];
     }) {
       const other = { ...firstRow, id: "other", title: "Other conversation" };
       api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
-      api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames: [] });
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
       const pending = deferred<{ requestId: string }>();
       api.submitOperatorTurn.mockReturnValueOnce(pending.promise);
       await mount();
       await sendInstruction();
-      api.getOperatorConversation.mockResolvedValueOnce({
-        conversation: other,
-        frames: [proposalFrame(other.id, "proposal-1")],
-      });
-      await selectRow(other);
-      await act(async () => pending.reject(new Error("Send failed on the first row")));
-
       const decision = deferred<{ proposalId: string; status: string }>();
       api.decideOperatorProposal.mockReturnValueOnce(decision.promise);
       await act(async () => buttonNamed("Allow")!.click());
+      api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+      await selectRow(other);
+      await act(async () => pending.reject(new Error("Send failed on the first row")));
+
       const reloading = deferred<{ conversation: OperatorConversation; frames: OperatorFrame[] }>();
       api.getOperatorConversation.mockReturnValueOnce(reloading.promise);
       await selectRow(firstRow);
@@ -1487,7 +1487,7 @@ describe("OperatorPanel", () => {
       return { other, draft };
     }
 
-    async function expectTheKeptFailureOnReturn(other: OperatorConversation) {
+    async function expectTheKeptFailureOnReturn(other: typeof firstRow) {
       api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
       await selectRow(other);
       api.getOperatorConversation.mockResolvedValueOnce({ conversation: firstRow, frames: [] });
@@ -1669,6 +1669,69 @@ describe("OperatorPanel", () => {
       await act(async () => buttonNamed("Allow")!.click());
       expect(api.decideOperatorProposal).toHaveBeenCalledTimes(2);
     });
+
+    it("clears a refused Allow's error when auto-allow then allows that proposal", async () => {
+      api.listOperatorConversations.mockResolvedValueOnce([firstRow]);
+      api.getOperatorConversation.mockResolvedValueOnce({
+        conversation: firstRow,
+        frames: [proposalFrame(firstRow.id, "proposal-1")],
+      });
+      api.decideOperatorProposal.mockRejectedValueOnce(new Error("Proposal expired"));
+      await mount();
+      await act(async () => buttonNamed("Allow")!.click());
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Proposal expired");
+
+      const toggle = container.querySelector<HTMLInputElement>(
+        'label[title="Auto-allow proposals"] input',
+      )!;
+      await act(async () => toggle.click());
+      await flushAutoAllow();
+
+      expect(api.decideOperatorProposal).toHaveBeenCalledTimes(2);
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    });
+
+    it.each(["auto-allow", "hand"])(
+      "shows a decision made by %s and refused after another conversation is chosen only in its own",
+      async (by) => {
+        if (by === "auto-allow") window.localStorage.setItem("studio:operator-auto-allow", "1");
+        const other = { ...firstRow, id: "other", title: "Other conversation" };
+        api.listOperatorConversations.mockResolvedValueOnce([firstRow, other]);
+        api.getOperatorConversation.mockResolvedValueOnce({
+          conversation: firstRow,
+          frames: [proposalFrame(firstRow.id, "proposal-1")],
+        });
+        const decision = deferred<never>();
+        api.decideOperatorProposal.mockReturnValueOnce(decision.promise);
+        await mount();
+        if (by === "auto-allow") await flushAutoAllow();
+        else await act(async () => buttonNamed("Allow")!.click());
+        expect(api.decideOperatorProposal).toHaveBeenCalledTimes(1);
+
+        api.getOperatorConversation.mockResolvedValueOnce({ conversation: other, frames: [] });
+        await selectRow(other);
+        await act(async () => decision.reject(new Error("Decision refused")));
+        expect(container.querySelector('[role="alert"]')).toBeNull();
+
+        api.decideOperatorProposal.mockRejectedValueOnce(new Error("Refused again"));
+        api.getOperatorConversation.mockResolvedValueOnce({
+          conversation: firstRow,
+          frames: [proposalFrame(firstRow.id, "proposal-1")],
+        });
+        await selectRow(firstRow);
+        await flushAutoAllow();
+
+        if (by === "auto-allow") {
+          // Untried again, so auto-allow decides it once more, and that refusal shows here.
+          expect(api.decideOperatorProposal).toHaveBeenCalledTimes(2);
+          expect(container.querySelector('[role="alert"]')?.textContent).toContain("Refused again");
+        } else {
+          expect(api.decideOperatorProposal).toHaveBeenCalledTimes(1);
+          expect(container.querySelector('[role="alert"]')).toBeNull();
+          expect(buttonNamed("Allow")).toBeDefined();
+        }
+      },
+    );
 
     it("decides a proposal appended after New conversation once its conversation is shown again", async () => {
       window.localStorage.setItem("studio:operator-auto-allow", "1");
