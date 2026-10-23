@@ -1,8 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Lattice provider: how it resolves, what its requests carry, and the wire against a local
-server shaped like `lattice serve`."""
+"""Lattice provider: how it resolves, what its requests carry, and its HTTP contract."""
 
 from __future__ import annotations
 
@@ -12,10 +11,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import httpx
 import pytest
-import pytest_asyncio
-from aiohttp import ClientResponseError, web
-from aiohttp.test_utils import TestServer
 from pydantic import BaseModel, ValidationError
 
 from lionagi._errors import ProviderStreamError
@@ -26,9 +23,11 @@ from lionagi.providers.lattice.chat import (
     LatticeLoraSelection,
 )
 from lionagi.providers.lattice.embed import LatticeEmbedEndpoint, LatticeEmbedRequest
+from lionagi.service.connections.endpoint import Endpoint
 from lionagi.service.connections.endpoint_config import EndpointConfig
 from lionagi.service.connections.match_endpoint import match_endpoint
 from lionagi.service.imodel import iModel
+from lionagi.service.resilience import APIClientError
 
 MODEL = "qwen3.5-0.8b"
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -51,12 +50,8 @@ def _chat_reply(content: str) -> dict:
     }
 
 
-@pytest_asyncio.fixture
-async def lattice_server():
-    """Starts a server shaped like `lattice serve` from inside the test, so it is served by
-    the test's own event loop."""
-    servers: list[TestServer] = []
-
+@pytest.fixture
+def lattice_server(monkeypatch):
     async def _start(
         reply: str = "Hello there",
         stream_events: list[dict] | None = None,
@@ -64,39 +59,21 @@ async def lattice_server():
     ) -> tuple[str, list[dict]]:
         received: list[dict] = []
 
-        async def record(request: web.Request) -> dict:
-            raw = await request.read()
+        def handler(request: httpx.Request) -> httpx.Response:
+            raw = request.content
             entry = {
-                "path": request.path,
+                "path": request.url.path,
                 "headers": dict(request.headers),
                 "raw": raw,
                 "body": json.loads(raw) if raw else {},
             }
             received.append(entry)
-            return entry
-
-        async def chat(request: web.Request):
-            entry = await record(request)
             if redirect:
-                raise web.HTTPTemporaryRedirect(location=redirect)
-            if not entry["body"].get("stream"):
-                return web.json_response(_chat_reply(reply))
-            response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
-            await response.prepare(request)
-            for event in stream_events or ():
-                await response.write(b"data: " + json.dumps(event).encode() + b"\n\n")
-            await response.write(b"data: [DONE]\n\n")
-            await response.write_eof()
-            return response
-
-        async def embeddings(request: web.Request):
-            entry = await record(request)
-            if redirect:
-                raise web.HTTPTemporaryRedirect(location=redirect)
-            items = entry["body"]["input"]
-            items = items if isinstance(items, list) else [items]
-            return web.json_response(
-                {
+                return httpx.Response(307, headers={"location": redirect}, request=request)
+            if request.url.path.endswith("/embeddings"):
+                items = entry["body"]["input"]
+                items = items if isinstance(items, list) else [items]
+                body = {
                     "object": "list",
                     "data": [
                         {"object": "embedding", "index": i, "embedding": [0.6, 0.8]}
@@ -105,28 +82,31 @@ async def lattice_server():
                     "model": MODEL,
                     "usage": {"prompt_tokens": 3, "total_tokens": 3},
                 }
+                return httpx.Response(200, json=body, request=request)
+            if not entry["body"].get("stream"):
+                return httpx.Response(200, json=_chat_reply(reply), request=request)
+            content = (
+                b"".join(
+                    b"data: " + json.dumps(event).encode() + b"\n\n"
+                    for event in (stream_events or ())
+                )
+                + b"data: [DONE]\n\n"
+            )
+            return httpx.Response(
+                200,
+                content=content,
+                headers={"content-type": "text/event-stream"},
+                request=request,
             )
 
-        async def elsewhere(request: web.Request):
-            """Where a redirect sends the request; records it so a test can see the second
-            request the client made."""
-            await record(request)
-            return web.json_response(_chat_reply(reply))
+        def create_client(self, *args, **kwargs):
+            return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
-        app = web.Application()
-        app.router.add_post("/v1/chat/completions", chat)
-        app.router.add_post("/v1/embeddings", embeddings)
-        if redirect:
-            app.router.add_route("*", redirect, elsewhere)
-        server = TestServer(app, host="127.0.0.1")
-        await server.start_server()
-        servers.append(server)
-        return str(server.make_url("/v1")), received
+        monkeypatch.setattr(Endpoint, "_create_http_session", create_client)
+        monkeypatch.setattr(Endpoint, "_assert_ssrf_safe_url", lambda self: None)
+        return "https://lattice.example.test/v1", received
 
-    yield _start
-
-    for server in servers:
-        await server.close()
+    return _start
 
 
 def test_lattice_resolves_to_its_own_keyless_loopback_endpoints(monkeypatch):
@@ -386,15 +366,17 @@ async def test_a_lattice_request_never_follows_a_redirect(lattice_server):
     embed = match_endpoint(provider="lattice", endpoint="embed", model=MODEL, base_url=base_url)
     request = {"model": MODEL, "messages": [{"role": "user", "content": "hi"}]}
 
-    with pytest.raises(ClientResponseError) as called:
+    with pytest.raises(APIClientError) as called:
         await chat.call(request)
-    with pytest.raises(ClientResponseError) as embedded:
+    with pytest.raises(APIClientError) as embedded:
         await embed.call({"model": MODEL, "input": "a"})
-    with pytest.raises(ClientResponseError) as streamed:
+    with pytest.raises(APIClientError) as streamed:
         async for _ in chat.stream(request):
             pass
 
-    assert called.value.status == embedded.value.status == streamed.value.status == 307
+    assert (
+        called.value.status_code == embedded.value.status_code == streamed.value.status_code == 307
+    )
     assert [entry["path"] for entry in received] == [
         "/v1/chat/completions",
         "/v1/embeddings",

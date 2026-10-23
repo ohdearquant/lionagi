@@ -13,6 +13,7 @@ from typing import Any, ClassVar, Literal
 from pydantic import BaseModel
 
 from lionagi.service.resilience import (
+    APIClientError,
     CircuitBreaker,
     RetryConfig,
     _reraise_inner,
@@ -24,6 +25,127 @@ from .endpoint_config import AUTHORIZATION_KWARG_NAMES, EndpointConfig
 from .header_factory import HeaderFactory
 
 _CONFIGURED_TIMEOUT = object()
+
+# Built on first use and shared by every client, as aiohttp shared its own.
+_VERIFIED_SSL_CONTEXT = None
+
+
+def _verified_ssl_context():
+    # ssl.create_default_context() reads the system trust store and SSL_CERT_FILE and
+    # SSL_CERT_DIR, as aiohttp's verification did; httpx's own default is certifi's bundle.
+    global _VERIFIED_SSL_CONTEXT
+    if _VERIFIED_SSL_CONTEXT is None:
+        import ssl
+
+        _VERIFIED_SSL_CONTEXT = ssl.create_default_context()
+    return _VERIFIED_SSL_CONTEXT
+
+
+def _pinned_ssl_context(fingerprint: bytes):
+    """A context for an ``aiohttp.Fingerprint``: no chain check, and the server's certificate
+    must have this SHA-256 digest, checked when the handshake completes and before the request
+    is sent, as aiohttp checked it. A mismatch fails the connection with an ``ssl.SSLError``."""
+    import hashlib
+    import ssl
+
+    class _PinnedSSLObject(ssl.SSLObject):
+        def do_handshake(self):
+            super().do_handshake()
+            # aiohttp's Fingerprint takes SHA-256 digests only.
+            got = hashlib.sha256(self.getpeercert(binary_form=True)).digest()
+            if got != fingerprint:
+                raise ssl.SSLCertVerificationError(
+                    f"the server certificate's SHA-256 fingerprint is {got.hex()}, "
+                    f"expected {fingerprint.hex()}"
+                )
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    context.sslobject_class = _PinnedSSLObject
+    return context
+
+
+# Built on first use, as httpx is imported only when a request is made.
+_REFUSED_REDIRECT_ERROR = None
+
+
+def _refused_redirect_error():
+    """The ``httpx.ConnectError`` a pinned client raises for a redirect off https."""
+    global _REFUSED_REDIRECT_ERROR
+    if _REFUSED_REDIRECT_ERROR is None:
+        import httpx
+
+        class RefusedRedirectError(httpx.ConnectError):
+            """A redirect off https from a pinned request; sent again, it would be refused again."""
+
+        _REFUSED_REDIRECT_ERROR = RefusedRedirectError
+    return _REFUSED_REDIRECT_ERROR
+
+
+def _refuse_a_redirect_off_https():
+    """A request hook for a pinned client: once a request has gone over https, a redirect
+    to plain http is refused.
+
+    The pin is checked only on a TLS connection, so following such a redirect would send the
+    request, body included, to a server the pin never checked. Hops over plain http before
+    the first https one are left alone, as aiohttp left them. Each request gets a client of
+    its own, so the hook sees the hops of one request.
+    """
+    https_seen = False
+
+    async def hook(request):
+        nonlocal https_seen
+        if request.url.scheme == "https":
+            https_seen = True
+        elif https_seen:
+            raise _refused_redirect_error()(
+                f"refusing a redirect from https to {request.url.scheme}: "
+                "the certificate fingerprint cannot be checked there",
+                request=request,
+            )
+
+    return hook
+
+
+def _seconds_or_none(value):
+    """A timeout as httpx takes it: aiohttp read zero or below as no timeout, httpx as none left."""
+    if isinstance(value, (int, float)) and value <= 0:
+        return None
+    return value
+
+
+def _httpx_timeout(timeout):
+    """httpx's timeout for an ``aiohttp.ClientTimeout``.
+
+    httpx has no bound on a whole request, so ``total`` bounds each phase, as
+    ``EndpointConfig.timeout`` does, and a phase takes the smallest bound set on it:
+    connecting is bounded by ``sock_connect``, ``connect`` and ``total``, reading by
+    ``sock_read`` and ``total``, and waiting for a pooled connection by ``connect`` and
+    ``total``. A value of zero or below is no timeout, as aiohttp read it, except a negative
+    ``sock_read``: aiohttp timed every read out at once on one, so it is refused here.
+    """
+    import httpx
+
+    sock_read = timeout.sock_read
+    if isinstance(sock_read, (int, float)) and sock_read < 0:
+        raise ValueError(
+            f"sock_read={sock_read!r} would time every read out at once; "
+            "pass None or 0 for no read timeout"
+        )
+    total = _seconds_or_none(timeout.total)
+
+    def bound(*values):
+        bounds = [v for v in (*map(_seconds_or_none, values), total) if v is not None]
+        return min(bounds, default=None)
+
+    return httpx.Timeout(
+        connect=bound(timeout.sock_connect, timeout.connect),
+        read=bound(timeout.sock_read),
+        write=total,
+        pool=bound(timeout.connect),
+    )
+
 
 # The event types that say the call itself failed: the Responses API's
 # ``response.failed`` and Codex's ``turn.failed``. A bare ``failed`` is read the same
@@ -176,6 +298,17 @@ class Endpoint:
     # (ADR-0127 D3). Only such an endpoint changes a request when ``prompt_caching`` is on.
     caches_system_prefix: ClassVar[bool] = False
 
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        for old_name, new_name in (
+            ("_call_aiohttp", "_call_http"),
+            ("_stream_aiohttp", "_stream_http"),
+        ):
+            if old_name in cls.__dict__:
+                raise TypeError(
+                    f"{cls.__name__} overrides a removed transport method; use {new_name} instead"
+                )
+
     def __init__(
         self,
         config: dict | EndpointConfig | None = None,
@@ -213,13 +346,77 @@ class Endpoint:
     def _create_http_session(
         self, client_kwargs: dict[str, Any] | None = None, *, timeout: Any = _CONFIGURED_TIMEOUT
     ):
-        import aiohttp
+        import httpx
 
         if timeout is _CONFIGURED_TIMEOUT:
             timeout = self.config.timeout
-        return aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(timeout),
-            **(self.config.client_kwargs if client_kwargs is None else client_kwargs),
+        options = dict(self.config.client_kwargs if client_kwargs is None else client_kwargs)
+        if "timeout" in options:
+            # A configured number of zero or below is no timeout, as the config's own is.
+            options["timeout"] = _seconds_or_none(options["timeout"])
+        options.setdefault("follow_redirects", True)
+        options.setdefault("trust_env", False)
+        options.setdefault("verify", _verified_ssl_context())
+        options.setdefault("timeout", httpx.Timeout(_seconds_or_none(timeout)))
+        return httpx.AsyncClient(**options)
+
+    def _client_for_request(self, request_kwargs: dict[str, Any]):
+        """The client for one request and the options left for the request itself.
+
+        aiohttp took ``ssl``, ``proxy``, ``allow_redirects`` and ``timeout`` with each
+        request. httpx takes the first two from the client, as ``verify`` and ``proxy``, the
+        third as ``follow_redirects`` and the fourth as an ``httpx.Timeout``, so a request
+        that passes ``ssl`` or ``proxy`` gets a client of its own. A request's ``ssl=True``
+        verifies certificates even when the configured client does not.
+        """
+        if not request_kwargs.keys() & {"ssl", "proxy", "allow_redirects", "timeout"}:
+            return self._create_http_session(), request_kwargs
+        import ssl
+        import sys
+
+        import httpx
+
+        # Set only when the caller has imported aiohttp, as building its types requires.
+        aiohttp = sys.modules.get("aiohttp")
+        request_kwargs = dict(request_kwargs)
+        if aiohttp is not None and isinstance(request_kwargs.get("timeout"), aiohttp.ClientTimeout):
+            request_kwargs["timeout"] = _httpx_timeout(request_kwargs["timeout"])
+        elif "timeout" in request_kwargs:
+            request_kwargs["timeout"] = _seconds_or_none(request_kwargs["timeout"])
+        if "allow_redirects" in request_kwargs:
+            if "follow_redirects" in request_kwargs:
+                raise TypeError("pass allow_redirects or follow_redirects, not both")
+            request_kwargs["follow_redirects"] = request_kwargs.pop("allow_redirects")
+        client_options: dict[str, Any] = {}
+        if "ssl" in request_kwargs:
+            verify = request_kwargs.pop("ssl")
+            if verify is None or verify is True:
+                # aiohttp read None as True.
+                if self.config.client_kwargs.get("verify", True) is False:
+                    client_options["verify"] = _verified_ssl_context()
+            elif verify is False or isinstance(verify, ssl.SSLContext):
+                client_options["verify"] = verify
+            elif aiohttp is not None and isinstance(verify, aiohttp.Fingerprint):
+                client_options["verify"] = _pinned_ssl_context(verify.fingerprint)
+                configured = self.config.client_kwargs.get("event_hooks") or {}
+                hooks = {name: list(handlers) for name, handlers in configured.items()}
+                hooks.setdefault("request", []).append(_refuse_a_redirect_off_https())
+                client_options["event_hooks"] = hooks
+            else:
+                raise TypeError(
+                    "ssl takes True, False, None, an ssl.SSLContext or an aiohttp.Fingerprint, "
+                    f"not {type(verify).__name__}"
+                )
+        if "proxy" in request_kwargs:
+            proxy = request_kwargs.pop("proxy")
+            # aiohttp went direct for an empty proxy: None, "" or an empty URL.
+            if proxy:
+                client_options["proxy"] = proxy if isinstance(proxy, httpx.Proxy) else str(proxy)
+        if not client_options:
+            return self._create_http_session(), request_kwargs
+        return (
+            self._create_http_session({**self.config.client_kwargs, **client_options}),
+            request_kwargs,
         )
 
     def copy_runtime_state_to(self, other: Endpoint) -> None:
@@ -396,13 +593,13 @@ class Endpoint:
             )
 
     async def _call(self, payload: dict, headers: dict, **kwargs):
-        return await self._call_aiohttp(payload=payload, headers=headers, **kwargs)
+        return await self._call_http(payload=payload, headers=headers, **kwargs)
 
     def _with_idempotency_key(self, headers: dict, *, routed: bool) -> dict:
         """*headers* with the key one logical request sends on every attempt, when retries are
         idempotent.
 
-        Minted once per logical request, before any retry path (native _call_aiohttp, the
+        Minted once per logical request, before any retry path (native _call_http, the
         opt-in RetryConfig wrapper, or a routed stream's attempts) is entered, and reused
         verbatim across every attempt, so the provider can recognize a lost-response replay as
         the same request. It also takes the place of a client-level key: one key shared by every
@@ -560,74 +757,82 @@ class Endpoint:
         error_context: str,
         _routing_scope: Any = None,
     ) -> Any:
-        import aiohttp
+        import httpx
 
-        async with self._create_http_session() as session:
-            response = None
+        client, request_kwargs = self._client_for_request(request_kwargs)
+        async with client:
             try:
-                response = await session.request(
+                response = await client.request(
                     method=self.config.method,
                     url=self.config.full_url,
                     headers=headers,
                     **body_kwargs,
                     **request_kwargs,
                 )
+            except _refused_redirect_error() as exc:
+                # Sent again, the request would reach the pinned server and be refused again.
+                raise _NonRetryableClientError(exc) from exc
 
-                if response.status == 429 or response.status >= 500:
+            status = response.status_code
+            if status == 429 or status >= 500:
+                try:
                     response.raise_for_status()
-                elif response.status != 200:
-                    try:
-                        error_body = await response.json()
-                        error_message = (
-                            f"{error_context} failed with status {response.status}: {error_body}"
-                        )
-                    except Exception:
-                        error_message = f"{error_context} failed with status {response.status}"
+                except httpx.HTTPStatusError as exc:
+                    raise APIClientError(
+                        str(exc), status_code=status, headers=response.headers
+                    ) from exc
+            elif status != 200:
+                error_kwargs = {}
+                try:
+                    error_body = response.json()
+                    error_message = f"{error_context} failed with status {status}: {error_body}"
+                    error_kwargs["response_data"] = error_body
+                except Exception:
+                    error_message = f"{error_context} failed with status {status}"
 
-                    original = aiohttp.ClientResponseError(
-                        request_info=response.request_info,
-                        history=response.history,
-                        status=response.status,
-                        message=error_message,
-                        headers=response.headers,
-                    )
-                    # 4xx (non-429): wrap in sentinel so the native retry layer
-                    # gives up immediately, preserving the original error on __cause__.
-                    raise _NonRetryableClientError(original) from original
-
-                if response_mode == "bytes":
-                    return await response.read()
-                body = await response.json()
-                error = _error_in_body(payload, body)
-                if error is None:
-                    return body
-
-                # Some OpenAI-compatible gateways answer a refused request with
-                # HTTP 200 and an error object in place of a result. Fail it the
-                # way the status it names would have failed.
-                code = error.get("code") if isinstance(error, dict) else None
-                status = (
-                    code
-                    if isinstance(code, int) and not isinstance(code, bool) and 400 <= code < 600
-                    else response.status
-                )
-                original = aiohttp.ClientResponseError(
-                    request_info=response.request_info,
-                    history=response.history,
-                    status=status,
-                    message=f"{error_context} failed with status {status}: {body}",
+                original = APIClientError(
+                    error_message,
+                    status_code=status,
                     headers=response.headers,
+                    **error_kwargs,
                 )
-                if status == 429 or status >= 500:
-                    raise original
+                # 4xx (non-429): wrap in sentinel so the native retry layer
+                # gives up immediately, preserving the original error on __cause__.
                 raise _NonRetryableClientError(original) from original
-            finally:
-                # Ensure response is properly released if coroutine is cancelled between retries.
-                # aiohttp.ClientResponse.release() is synchronous (not a coroutine) — do not await.
-                if response is not None and not response.closed:
-                    response.release()
 
-    async def _call_aiohttp(
+            if response_mode == "bytes":
+                return response.content
+            try:
+                body = response.json()
+            except json.JSONDecodeError:
+                # An empty body is None, as aiohttp read it; httpx raises on one.
+                if response.content.strip():
+                    raise
+                body = None
+            error = _error_in_body(payload, body)
+            if error is None:
+                return body
+
+            # Some OpenAI-compatible gateways answer a refused request with
+            # HTTP 200 and an error object in place of a result. Fail it the
+            # way the status it names would have failed.
+            code = error.get("code") if isinstance(error, dict) else None
+            status = (
+                code
+                if isinstance(code, int) and not isinstance(code, bool) and 400 <= code < 600
+                else response.status_code
+            )
+            original = APIClientError(
+                f"{error_context} failed with status {status}: {body}",
+                status_code=status,
+                headers=response.headers,
+                response_data=body,
+            )
+            if status == 429 or status >= 500:
+                raise original
+            raise _NonRetryableClientError(original) from original
+
+    async def _call_http(
         self,
         payload: dict[str, Any],
         headers: dict[str, str],
@@ -663,12 +868,12 @@ class Endpoint:
             _routing_scope = self._account_scope(_routing_scope)
         self._assert_ssrf_safe_url()
 
-        import aiohttp
+        import httpx
 
         build_body = request_body_factory or (lambda: {"json": payload})
 
         async def _make_request():
-            # Body rebuilt per-attempt, not before retry orchestration: FormData/BytesIO/
+            # Body rebuilt per-attempt, not before retry orchestration: multipart bodies and
             # file streams get consumed by the first POST and must not be silently replayed.
             body_kwargs = build_body()
             collision = set(body_kwargs) & set(request_kwargs)
@@ -697,7 +902,7 @@ class Endpoint:
 
         # No RetryConfig: native path excludes the 4xx sentinel so it gives up immediately.
         # max_retries is a total-attempt cap; retry_with_backoff runs +1 attempts, so subtract one.
-        retry_exceptions = (aiohttp.ClientError, asyncio.TimeoutError)
+        retry_exceptions = (httpx.RequestError, APIClientError, asyncio.TimeoutError)
         excluded_exceptions: tuple[type[Exception], ...] = (_NonRetryableClientError,)
         if routed:
             retry_exceptions = (*retry_exceptions, _RoutedRetryableError)
@@ -734,7 +939,7 @@ class Endpoint:
             # as a routed call's do.
             headers = self._with_idempotency_key(headers, routed=True)
 
-        stream = self._stream_aiohttp(
+        stream = self._stream_http(
             payload=payload,
             headers=headers,
             **scope_kwargs,
@@ -752,7 +957,7 @@ class Endpoint:
             # too, so it records how the stream ended now rather than when collected.
             await stream.aclose()
 
-    async def _stream_aiohttp(
+    async def _stream_http(
         self,
         payload: dict,
         headers: dict,
@@ -764,31 +969,28 @@ class Endpoint:
 
         payload["stream"] = True
 
-        async with self._create_http_session() as session:
-            async with session.request(
+        client, kwargs = self._client_for_request(kwargs)
+        async with client:
+            async with client.stream(
                 method=self.config.method,
                 url=self.config.full_url,
                 headers=headers,
                 json=payload,
                 **kwargs,
             ) as response:
-                if response.status != 200:
-                    import aiohttp
-
-                    raise aiohttp.ClientResponseError(
-                        request_info=response.request_info,
-                        history=response.history,
-                        status=response.status,
-                        message=f"Request failed with status {response.status}",
+                if response.status_code != 200:
+                    raise APIClientError(
+                        f"Request failed with status {response.status_code}",
+                        status_code=response.status_code,
                         headers=response.headers,
                     )
 
                 pending = ""
                 frame = _SSEFrame()
-                async for raw in response.content:
-                    if not raw:
+                async for text in response.aiter_text():
+                    if not text:
                         continue
-                    pending += raw.decode("utf-8")
+                    pending += text
                     while "\n" in pending:
                         line, pending = pending.split("\n", 1)
                         for data, name in self._frame_stream_line(line, frame):

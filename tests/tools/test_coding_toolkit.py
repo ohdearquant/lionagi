@@ -438,66 +438,24 @@ def test_editor_request_schema_is_canonical():
     )
 
 
-def test_canonical_reader_request_has_open_action():
-    """Canonical ReaderRequest must enumerate the 'open' action so CodingToolkit exposes it."""
-    from lionagi.tools.file.reader import ReaderAction
+def test_canonical_reader_request_has_read_and_list_dir_only():
+    """The reader exposes text reads and directory listings; there is no document conversion."""
+    from pydantic import ValidationError
 
-    assert hasattr(ReaderAction, "open"), "ReaderAction must include the 'open' member"
-    assert ReaderAction.open.value == "open"
+    from lionagi.tools.file.reader import ReaderAction, ReaderRequest
 
-
-async def test_reader_open_unsupported_extension_fails(tmp_path):
-    """open action on a non-document file returns a descriptive failure."""
-    f = tmp_path / "code.py"
-    f.write_text("x = 1\n")
-    _, _, tools = _make_toolkit(tmp_path)
-    result = await _tool_fn(tools, "reader")(action="open", path=str(f))
-    # Either unsupported extension or docling-not-installed — both are informative failures
-    assert result["success"] is False
-    assert result.get("error")
+    assert {a.value for a in ReaderAction} == {"read", "list_dir"}
+    with pytest.raises(ValidationError):
+        ReaderRequest(action="open", path="report.pdf")
 
 
-async def test_reader_open_missing_path_fails(tmp_path):
-    """open action with empty/None path returns failure immediately."""
-    _, _, tools = _make_toolkit(tmp_path)
-    result = await _tool_fn(tools, "reader")(action="open", path="")
-    assert result["success"] is False
-
-
-async def test_reader_open_caches_and_read_serves_from_cache(tmp_path, monkeypatch):
-    import time
-
-    import lionagi.tools.coding as _coding_mod
-    from lionagi.tools.file.reader import ReaderResponse
-
-    cached_text = "line one\nline two\nline three\n"
-
-    # Patch _open_sync in the coding module namespace (that's where the closure
-    # captures it) so we don't need docling installed in CI.
-    def _fake_open_sync(path, cache, workspace_root, allowed_url_hosts):
-        cache[path] = (cached_text, time.time())
-        lines = cached_text.split("\n")
-        return ReaderResponse(
-            success=True,
-            content=f"Opened: {path} ({len(lines)} lines). Use read to view.",
-        )
-
-    monkeypatch.setattr(_coding_mod, "_open_sync", _fake_open_sync)
-
+async def test_reader_open_action_is_unknown(tmp_path):
+    """The bound reader answers action='open' as an unknown action."""
     f = tmp_path / "report.pdf"
     f.write_bytes(b"%PDF-1.4 fake")
-
     _, _, tools = _make_toolkit(tmp_path)
-    reader_fn = _tool_fn(tools, "reader")
-
-    open_result = await reader_fn(action="open", path=str(f))
-    assert open_result["success"] is True, open_result.get("error")
-
-    # Now read should serve from cache (not from disk bytes)
-    read_result = await reader_fn(action="read", path=str(f), offset=0, limit=2)
-    assert read_result["success"] is True
-    assert "line one" in read_result["content"]
-    assert "line two" in read_result["content"]
+    result = await _tool_fn(tools, "reader")(action="open", path=str(f))
+    assert result == {"success": False, "error": "Unknown action: open"}
 
 
 def test_coding_toolkit_reader_schema_requires_path(tmp_path):
@@ -520,7 +478,7 @@ def test_coding_toolkit_reader_request_options_raises_without_path(tmp_path):
         reader_tool.request_options(action="read")
 
 
-@pytest.mark.parametrize("action", ["open", "read", "list_dir"])
+@pytest.mark.parametrize("action", ["read", "list_dir"])
 async def test_empty_path_exactly_matches_reader_tool(tmp_path, action):
     """Every reader action with empty path returns byte-identical output to ReaderTool's guard.
 
@@ -542,82 +500,3 @@ async def test_empty_path_exactly_matches_reader_tool(tmp_path, action):
     ).model_dump()
 
     assert actual == expected
-
-
-def test_docling_import_is_available():
-    """Confirm docling is installed so the 'open' action's real code path is exercisable."""
-    from docling.document_converter import DocumentConverter  # noqa: F401
-
-
-async def test_reader_open_real_html_fixture(tmp_path):
-    """Real docling open path: convert a minimal HTML file, no mocking."""
-    html_file = tmp_path / "page.html"
-    html_file.write_text("<html><body><p>Hello lion</p></body></html>", encoding="utf-8")
-
-    _, _, tools = _make_toolkit(tmp_path)
-    reader_fn = _tool_fn(tools, "reader")
-
-    result = await reader_fn(action="open", path=str(html_file))
-    assert result["success"] is True, f"open failed: {result.get('error')}"
-    assert result["content"] is not None
-
-    # Cache populated — subsequent read should serve from cache
-    read_result = await reader_fn(action="read", path=str(html_file), offset=0, limit=10)
-    assert read_result["success"] is True
-
-
-async def test_open_nonexistent_pdf_equivalence(tmp_path):
-    """nonexistent .pdf path: CodingToolkit output is byte-identical to ReaderTool."""
-    from lionagi.tools.file.reader import ReaderRequest, ReaderTool
-
-    fake_pdf = str(tmp_path / "nope.pdf")
-
-    standalone = ReaderTool(workspace_root=str(tmp_path))
-    rt_resp = await standalone.handle_request(ReaderRequest(action="open", path=fake_pdf))
-    assert rt_resp.success is False
-
-    _, _, tools = _make_toolkit(tmp_path)
-    reader_fn = _tool_fn(tools, "reader")
-    ct_result = await reader_fn(action="open", path=fake_pdf)
-    assert ct_result == rt_resp.model_dump()
-
-
-async def test_read_offset_beyond_cached_doc_equivalence(tmp_path, monkeypatch):
-    """Offset beyond end of cached doc: both CodingToolkit and ReaderTool return success=True."""
-    import time
-
-    import lionagi.tools.coding as _coding_mod
-    from lionagi.tools.file.reader import ReaderResponse, ReaderTool
-
-    cached_text = "only one line"
-
-    def _fake_open_sync(path, cache, workspace_root, allowed_url_hosts):
-        cache[path] = (cached_text, time.time())
-        return ReaderResponse(success=True, content=f"Opened: {path}")
-
-    monkeypatch.setattr(_coding_mod, "_open_sync", _fake_open_sync)
-
-    # Also patch the standalone ReaderTool's module-level _open_sync
-    import lionagi.tools.file.reader as _reader_mod
-
-    monkeypatch.setattr(_reader_mod, "_open_sync", _fake_open_sync)
-
-    f = tmp_path / "report.pdf"
-    f.write_bytes(b"%PDF-1.4 fake")
-
-    # CodingToolkit: open then read with offset=9999
-    _, _, tools = _make_toolkit(tmp_path)
-    reader_fn = _tool_fn(tools, "reader")
-    await reader_fn(action="open", path=str(f))
-    ct_result = await reader_fn(action="read", path=str(f), offset=9999, limit=10)
-    assert ct_result["success"] is True  # empty slice is still a success
-
-    # ReaderTool standalone: same scenario must produce byte-identical output
-    standalone = ReaderTool(workspace_root=str(tmp_path))
-    from lionagi.tools.file.reader import ReaderRequest
-
-    await standalone.handle_request(ReaderRequest(action="open", path=str(f)))
-    rt_resp = await standalone.handle_request(
-        ReaderRequest(action="read", path=str(f), offset=9999, limit=10)
-    )
-    assert ct_result == rt_resp.model_dump()

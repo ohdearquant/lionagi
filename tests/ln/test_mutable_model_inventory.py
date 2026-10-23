@@ -233,6 +233,9 @@ _ALLOWLIST: dict[str, str] = {
     "lionagi.protocols.generic.progression:139:28": "``Ordering[T]``, the ordering base on ``Element``",
     "lionagi.protocols.generic.progression:139:41": "``Generic[T]``, the typing generic base",
     "lionagi.protocols.graph.graph:33:34": "``Generic[T]``, the typing generic base",
+    # A class base whose module is imported inside the function that defines the class,
+    # so the scan cannot resolve the name; the class is an exception, not a model:
+    "lionagi.service.connections.endpoint:79:36": "``httpx.ConnectError``, imported lazily",
     # A metaclass the scan does not inventory; the class declares no hash authority
     # and is outside the mutable family:
     "lionagi.ln.types._sentinel:38:1": "a singleton metaclass, not a mutable model",

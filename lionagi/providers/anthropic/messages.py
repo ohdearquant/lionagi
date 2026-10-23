@@ -469,7 +469,7 @@ class AnthropicMessagesEndpoint(Endpoint):
 
         import asyncio
 
-        import aiohttp
+        import httpx
 
         from lionagi.ln.concurrency import get_cancelled_exc_class
         from lionagi.service.accounts._router import (
@@ -537,21 +537,20 @@ class AnthropicMessagesEndpoint(Endpoint):
         request_headers["Content-Type"] = "application/json"
         request_headers["x-api-key"] = attempt.key.get_secret_value()
 
-        response = None
         request_entered = False
         failure: Exception | None = None
         try:
-            async with self._create_http_session(session_kwargs, timeout=timeout) as session:
+            async with self._create_http_session(session_kwargs, timeout=timeout) as client:
                 request_entered = True
-                response = await session.request(
+                response = await client.request(
                     method=method,
                     url=url,
                     headers=request_headers,
-                    data=attempt.body,
-                    allow_redirects=False,
+                    content=attempt.body,
+                    follow_redirects=False,
                     **request_kwargs,
                 )
-                status = response.status
+                status = response.status_code
                 if status in (401, 403):
                     # A cancellation during the first of these writes lets it commit but stops
                     # the second from starting, so the block goes first: losing the attempt's
@@ -592,7 +591,7 @@ class AnthropicMessagesEndpoint(Endpoint):
 
                 # The decode error is dropped, not chained: it can quote the body.
                 try:
-                    body = await response.json()
+                    body = response.json()
                     unreadable = False
                 except Exception:
                     unreadable = True
@@ -641,7 +640,7 @@ class AnthropicMessagesEndpoint(Endpoint):
             ) from None
         except (_RoutedNoRetryError, _RoutedRetryableError):
             raise
-        except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError, ConnectionError):
+        except (httpx.RequestError, asyncio.TimeoutError, TimeoutError, ConnectionError):
             failure = (_RoutedRetryableError if request_entered else _RoutedNoRetryError)(
                 RouterErrorCode.TRANSPORT_ERROR.value,
                 account=attempt.account,
@@ -653,9 +652,6 @@ class AnthropicMessagesEndpoint(Endpoint):
                 account=attempt.account,
                 attempt_id=attempt.attempt_id,
             )
-        finally:
-            if response is not None and not response.closed:
-                response.release()
         # Settled and raised here, outside the handler, so neither a ledger error nor
         # this error carries context: the exception it stands for can quote the request
         # or the response.
@@ -666,9 +662,9 @@ class AnthropicMessagesEndpoint(Endpoint):
                 await router.settle_not_sent(attempt)
             raise failure
 
-    async def _stream_aiohttp(self, payload: dict, headers: dict, *, _routing_scope=None, **kwargs):
+    async def _stream_http(self, payload: dict, headers: dict, *, _routing_scope=None, **kwargs):
         if not self._account_routing_enabled():
-            async for chunk in super()._stream_aiohttp(
+            async for chunk in super()._stream_http(
                 payload,
                 headers,
                 _routing_scope=_routing_scope,
@@ -814,7 +810,6 @@ class AnthropicMessagesEndpoint(Endpoint):
         request_headers["Content-Type"] = "application/json"
         request_headers["x-api-key"] = attempt.key.get_secret_value()
 
-        response = None
         request_entered = False
         failure: Exception | None = None
         redactor = StreamingSecretRedactor(attempt.key)
@@ -1015,86 +1010,86 @@ class AnthropicMessagesEndpoint(Endpoint):
                     yield chunk
 
         try:
-            async with self._create_http_session(session_kwargs, timeout=timeout) as session:
+            async with self._create_http_session(session_kwargs, timeout=timeout) as client:
                 request_entered = True
-                response = await session.request(
+                async with client.stream(
                     method=method,
                     url=url,
                     headers=request_headers,
-                    data=attempt.body,
-                    allow_redirects=False,
+                    content=attempt.body,
+                    follow_redirects=False,
                     **kwargs,
-                )
-                status = response.status
-                if status in (401, 403):
-                    # A cancellation during the first of these writes lets it commit but stops
-                    # the second from starting, so the block goes first: losing the attempt's
-                    # reason keeps its ceiling held, while losing the block would leave the
-                    # refused key free to be reserved again.
-                    await router.block(attempt, "auth_required")
-                    await router.settle_unknown(attempt, "auth_required")
-                    raise AccountRoutingError(
-                        RouterErrorCode.AUTH_FAILED,
-                        account=attempt.account,
-                        attempt_id=attempt.attempt_id,
-                        http_status=status,
-                    ) from None
-                if status == 429:
-                    await router.settle_unknown(attempt, "rate_limited")
-                    raise _RoutedRetryableError(
-                        RouterErrorCode.RATE_LIMITED.value,
-                        account=attempt.account,
-                        attempt_id=attempt.attempt_id,
-                        http_status=status,
-                    )
-                if status >= 500:
-                    await router.settle_unknown(attempt, "provider_error")
-                    raise _RoutedRetryableError(
-                        RouterErrorCode.PROVIDER_ERROR.value,
-                        account=attempt.account,
-                        attempt_id=attempt.attempt_id,
-                        http_status=status,
-                    )
-                if status != 200:
-                    await router.settle_unknown(attempt, "request_rejected")
-                    raise AccountRoutingError(
-                        RouterErrorCode.REQUEST_REJECTED,
-                        account=attempt.account,
-                        attempt_id=attempt.attempt_id,
-                        http_status=status,
-                    ) from None
+                ) as response:
+                    status = response.status_code
+                    if status in (401, 403):
+                        # A cancellation during the first of these writes lets it commit but stops
+                        # the second from starting, so the block goes first: losing the attempt's
+                        # reason keeps its ceiling held, while losing the block would leave the
+                        # refused key free to be reserved again.
+                        await router.block(attempt, "auth_required")
+                        await router.settle_unknown(attempt, "auth_required")
+                        raise AccountRoutingError(
+                            RouterErrorCode.AUTH_FAILED,
+                            account=attempt.account,
+                            attempt_id=attempt.attempt_id,
+                            http_status=status,
+                        ) from None
+                    if status == 429:
+                        await router.settle_unknown(attempt, "rate_limited")
+                        raise _RoutedRetryableError(
+                            RouterErrorCode.RATE_LIMITED.value,
+                            account=attempt.account,
+                            attempt_id=attempt.attempt_id,
+                            http_status=status,
+                        )
+                    if status >= 500:
+                        await router.settle_unknown(attempt, "provider_error")
+                        raise _RoutedRetryableError(
+                            RouterErrorCode.PROVIDER_ERROR.value,
+                            account=attempt.account,
+                            attempt_id=attempt.attempt_id,
+                            http_status=status,
+                        )
+                    if status != 200:
+                        await router.settle_unknown(attempt, "request_rejected")
+                        raise AccountRoutingError(
+                            RouterErrorCode.REQUEST_REJECTED,
+                            account=attempt.account,
+                            attempt_id=attempt.attempt_id,
+                            http_status=status,
+                        ) from None
 
-                async for raw in response.content:
-                    safe = redactor.feed(raw)
-                    pending += decoder.decode(safe)
+                    async for raw in response.aiter_bytes():
+                        safe = redactor.feed(raw)
+                        pending += decoder.decode(safe)
+                        while "\n" in pending:
+                            line, pending = pending.split("\n", 1)
+                            for data, name in self._frame_stream_line(line, frame):
+                                async for chunk in emit_ready(queue_data(data, name)):
+                                    yield chunk
+                    # The byte redactor's held tail can hold several lines, the last events
+                    # of the stream among them.
+                    pending += decoder.decode(redactor.feed(b"", final=True), final=True)
                     while "\n" in pending:
                         line, pending = pending.split("\n", 1)
                         for data, name in self._frame_stream_line(line, frame):
                             async for chunk in emit_ready(queue_data(data, name)):
                                 yield chunk
-                # The byte redactor's held tail can hold several lines, the last events
-                # of the stream among them.
-                pending += decoder.decode(redactor.feed(b"", final=True), final=True)
-                while "\n" in pending:
-                    line, pending = pending.split("\n", 1)
-                    for data, name in self._frame_stream_line(line, frame):
+                    if pending:
+                        for data, name in self._frame_stream_line(pending, frame):
+                            async for chunk in emit_ready(queue_data(data, name)):
+                                yield chunk
+                    if frame.data:
+                        data, name = self._take_sse_event(frame)
                         async for chunk in emit_ready(queue_data(data, name)):
                             yield chunk
-                if pending:
-                    for data, name in self._frame_stream_line(pending, frame):
-                        async for chunk in emit_ready(queue_data(data, name)):
-                            yield chunk
-                if frame.data:
-                    data, name = self._take_sse_event(frame)
-                    async for chunk in emit_ready(queue_data(data, name)):
+                    async for chunk in emit_ready(text_redactor.finish()):
                         yield chunk
-                async for chunk in emit_ready(text_redactor.finish()):
-                    yield chunk
-                if not settled:
-                    # The stream ended before message_stop, so its usage is incomplete.
-                    reason = "stream_error" if saw_error_event else "stream_truncated"
-                    await router.settle_stream_end(attempt, None, reason=reason)
-                    settled = True
+                    if not settled:
+                        # The stream ended before message_stop, so its usage is incomplete.
+                        reason = "stream_error" if saw_error_event else "stream_truncated"
+                        await router.settle_stream_end(attempt, None, reason=reason)
+                        settled = True
         except get_cancelled_exc_class():
             # A write that fails records nothing; the cancellation still reaches the caller.
             # As on the call path, a native task.cancel() returns before the write commits.
@@ -1121,9 +1116,6 @@ class AnthropicMessagesEndpoint(Endpoint):
                 account=attempt.account,
                 attempt_id=attempt.attempt_id,
             )
-        finally:
-            if response is not None and not response.closed:
-                response.release()
         # Settled and raised here, outside the handler, so neither a ledger error nor
         # this error carries context: the exception it stands for can quote the request
         # or the response.

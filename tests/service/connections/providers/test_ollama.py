@@ -1,9 +1,11 @@
 """Tests for lionagi.providers.ollama.chat module."""
 
 import contextlib
+import json
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from pydantic import BaseModel
 
@@ -261,33 +263,24 @@ class TestOllamaModelManagement:
 
 
 class TestOllamaCall:
-    """Test Ollama call method against the real base HTTP transport.
+    """Test Ollama calls through the base HTTP transport.
 
     Only Ollama's own model listing/pulling SDK calls (``ollama.list`` /
-    ``ollama.pull``) are faked here. ``Endpoint.call`` and ``_call_aiohttp``
-    run for real against a local ``aiohttp`` server, so these tests prove the
-    wrapper actually sends a request over the wire and decodes a realistic
-    response, not merely that it delegates to its parent class.
+    ``ollama.pull``) are faked here. A MockTransport captures the HTTP request
+    and returns a realistic response without opening a network connection.
     """
 
     @staticmethod
-    async def _start_chat_completions_server(response_body: dict, received: list):
-        from aiohttp import web
-        from aiohttp.test_utils import TestServer
+    def _chat_completions_transport(response_body: dict, received: list):
+        def handler(request):
+            received.append(json.loads(request.content))
+            return httpx.Response(200, json=response_body, request=request)
 
-        async def handler(request):
-            received.append(await request.json())
-            return web.json_response(response_body)
-
-        app = web.Application()
-        app.router.add_post("/chat/completions", handler)
-        server = TestServer(app)
-        await server.start_server()
-        return server
+        return httpx.MockTransport(handler)
 
     @pytest.mark.asyncio
     @patch("lionagi.providers.ollama.chat._HAS_OLLAMA", True)
-    async def test_call_checks_model_before_request(self):
+    async def test_call_checks_model_before_request(self, monkeypatch):
         from lionagi.providers.ollama.chat import OllamaChatEndpoint
 
         # Mock available model
@@ -315,16 +308,16 @@ class TestOllamaCall:
             ],
         }
         received: list = []
-        server = await self._start_chat_completions_server(response_body, received)
-        endpoint.config.base_url = f"http://127.0.0.1:{server.port}"
-        try:
-            request = {
-                "model": "llama2",
-                "messages": [{"role": "user", "content": "hello"}],
-            }
-            result = await endpoint.call(request)
-        finally:
-            await server.close()
+        endpoint.config.base_url = "https://api.example.test/v1"
+        endpoint.config.client_kwargs = {
+            "transport": self._chat_completions_transport(response_body, received)
+        }
+        monkeypatch.setattr(endpoint, "_assert_ssrf_safe_url", lambda: None)
+        request = {
+            "model": "llama2",
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+        result = await endpoint.call(request)
 
         # Model was already available: no pull, and the wrapper must have
         # actually sent one request carrying the model and messages.
@@ -336,7 +329,7 @@ class TestOllamaCall:
 
     @pytest.mark.asyncio
     @patch("lionagi.providers.ollama.chat._HAS_OLLAMA", True)
-    async def test_call_pulls_missing_model(self, caplog):
+    async def test_call_pulls_missing_model(self, caplog, monkeypatch):
         from lionagi.providers.ollama.chat import OllamaChatEndpoint
 
         # Mock empty model list initially
@@ -364,18 +357,18 @@ class TestOllamaCall:
             ],
         }
         received: list = []
-        server = await self._start_chat_completions_server(response_body, received)
-        endpoint.config.base_url = f"http://127.0.0.1:{server.port}"
-        try:
-            request = {
-                "model": "mistral",
-                "messages": [{"role": "user", "content": "hello"}],
-            }
+        endpoint.config.base_url = "https://api.example.test/v1"
+        endpoint.config.client_kwargs = {
+            "transport": self._chat_completions_transport(response_body, received)
+        }
+        monkeypatch.setattr(endpoint, "_assert_ssrf_safe_url", lambda: None)
+        request = {
+            "model": "mistral",
+            "messages": [{"role": "user", "content": "hello"}],
+        }
 
-            with caplog.at_level("DEBUG", logger="lionagi.providers.ollama.chat"):
-                result = await endpoint.call(request)
-        finally:
-            await server.close()
+        with caplog.at_level("DEBUG", logger="lionagi.providers.ollama.chat"):
+            result = await endpoint.call(request)
 
         assert "not found locally" in caplog.text
         mock_ollama.pull.assert_called_once()

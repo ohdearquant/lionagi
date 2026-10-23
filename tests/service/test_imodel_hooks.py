@@ -37,7 +37,7 @@ class TestiModelHooks:
         with patch.object(
             imodel.endpoint,
             "call",
-            return_value=mock_response.json.return_value,
+            return_value=mock_response.json(),
         ):
             result = await imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
 
@@ -67,7 +67,7 @@ class TestiModelHooks:
         with patch.object(
             imodel.endpoint,
             "call",
-            return_value=mock_response.json.return_value,
+            return_value=mock_response.json(),
         ):
             result = await imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
 
@@ -98,7 +98,7 @@ class TestiModelHooks:
         with patch.object(
             imodel.endpoint,
             "call",
-            return_value=mock_response.json.return_value,
+            return_value=mock_response.json(),
         ):
             result = await imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
 
@@ -244,7 +244,7 @@ class TestiModelHooks:
         with patch.object(
             imodel.endpoint,
             "call",
-            return_value=mock_response.json.return_value,
+            return_value=mock_response.json(),
         ):
             result = await imodel.invoke(messages=[{"role": "user", "content": "Hello"}])
 
@@ -279,7 +279,7 @@ class TestiModelHooks:
         with patch.object(
             imodel.endpoint,
             "call",
-            return_value=mock_response.json.return_value,
+            return_value=mock_response.json(),
         ):
             # Make multiple calls
             for i in range(3):
@@ -316,7 +316,7 @@ class TestiModelHooks:
         with patch.object(
             imodel.endpoint,
             "call",
-            return_value=mock_response.json.return_value,
+            return_value=mock_response.json(),
         ):
             await imodel.invoke(
                 messages=[{"role": "user", "content": "Hello"}],
@@ -415,7 +415,7 @@ class TestiModelHooks:
         with patch.object(
             imodel.endpoint,
             "call",
-            return_value=mock_response.json.return_value,
+            return_value=mock_response.json(),
         ):
             # Make concurrent calls
             tasks = []
@@ -496,7 +496,7 @@ class TestiModelHooks:
         with patch.object(
             imodel.endpoint,
             "call",
-            return_value=mock_response.json.return_value,
+            return_value=mock_response.json(),
         ):
             await imodel.invoke(messages=[{"role": "user", "content": "First call"}])
 

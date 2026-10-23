@@ -91,8 +91,8 @@ function resolveSpawnSpec(explicitPython: string): SpawnSpec {
 
   // 3. uv-managed source checkout (e.g. Codespaces): sync the studio extra
   //    into .venv first, then run that interpreter. Zero-config from source.
-  //    --no-dev skips the dev group (sphinx, mkdocs, pyarrow, jupyter, the
-  //    pytest suite, profilers) the studio server never imports — the studio
+  //    --no-dev skips the dev group (mkdocs, pyarrow, ipython, the pytest
+  //    suite, testcontainers) the studio server never imports — the studio
   //    extra itself is four light deps, so this is most of the first-run wait.
   //    uv re-adds the dev group on demand if the user later runs the test suite.
   if (ws && venvPython && fs.existsSync(path.join(ws, "pyproject.toml"))) {

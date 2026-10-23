@@ -94,7 +94,7 @@ class TestAnthropicIntegration:
         with patch.object(
             anthropic_imodel.endpoint,
             "call",
-            return_value=mock_anthropic_response.json.return_value,
+            return_value=mock_anthropic_response.json(),
         ):
             result = await anthropic_imodel.invoke(
                 messages=[{"role": "user", "content": "Hello, Claude!"}],
@@ -196,7 +196,7 @@ class TestAnthropicIntegration:
 
         async def mock_request_with_delay(request, cache_control=False, **kwargs):
             await asyncio.sleep(0.1)
-            response = mock_anthropic_response.json.return_value.copy()
+            response = mock_anthropic_response.json().copy()
             response["id"] = f"msg_{request['messages'][0]['content'][-1]}"
             return response
 
