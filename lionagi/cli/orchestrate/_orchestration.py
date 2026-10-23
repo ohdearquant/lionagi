@@ -31,6 +31,7 @@ from lionagi.agent.factory import register_profile_injection
 from lionagi.ln._json_dump import raise_if_non_finite
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
+from lionagi.providers._subagent_admission import DEFAULT_WORKLOAD
 from lionagi.state import provenance as _provenance
 
 from .. import team as _team_module
@@ -38,6 +39,7 @@ from .._logging import hint, warn
 from .._providers import (
     AgentProfile,
     AgentProfileNotFoundError,
+    _is_light_codex,
     build_imodel_from_spec,
     list_agents,
     load_agent_profile,
@@ -932,6 +934,7 @@ async def setup_orchestration(
         contain_account_integrations=bool(
             getattr(orc_profile, "contain_account_integrations", False)
         ),
+        workload=getattr(orc_profile, "workload", None) or DEFAULT_WORKLOAD,
     )
     _orc_provider = orc_imodel.endpoint.config.provider
     _hand_mcp_servers(orc_imodel, run_mcp_servers, label="orchestrator")
@@ -1237,6 +1240,11 @@ async def build_worker_branch(
         contain_account_integrations=bool(
             not env.bare and getattr(w_profile, "contain_account_integrations", False)
         ),
+        workload=(
+            getattr(w_profile, "workload", None) or DEFAULT_WORKLOAD
+            if not env.bare
+            else DEFAULT_WORKLOAD
+        ),
         # Isolated below, so no effort is derived from the user config either.
         ignore_user_config=True,
     )
@@ -1261,11 +1269,14 @@ async def build_worker_branch(
     if is_cli:
         project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
         add_dir = w_imodel.endpoint.config.kwargs.setdefault("add_dir", [])
-        if project_root not in add_dir:
+        if not _is_light_codex(w_imodel) and project_root not in add_dir:
             add_dir.append(project_root)
+        from lionagi.service.connections.registry import EndpointRegistry
+
+        # An alias ("openai-codex") is the same provider, and gets the same grant.
         if (
             getattr(env, "team_data", None)
-            and w_imodel.endpoint.config.provider == "codex"
+            and EndpointRegistry.canonical_provider(w_imodel.endpoint.config.provider) == "codex"
             and (teams_dir := str(_team_module.TEAMS_DIR.resolve())) not in add_dir
         ):
             add_dir.append(teams_dir)

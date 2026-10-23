@@ -43,6 +43,20 @@ else:
 for _name in [name for name in os.environ if name.upper() == "LIONAGI_STATE_DB_URL"]:
     del os.environ[_name]
 
+# A machine-wide agent cap exported by the calling shell would make every test that spawns a
+# CLI child wait for, or be refused, a slot held by work outside the suite. Tests that exercise
+# admission set their own caps.
+for _name in [
+    name
+    for name in os.environ
+    if name.startswith("LIONAGI_MAX_SUBAGENTS") or name == "LIONAGI_SUBAGENT_ADMIT_WAIT_SECONDS"
+]:
+    del os.environ[_name]
+
+# A suite run by an agent lionagi started inherits that agent's depth, and lionagi reads it once
+# at import, so it goes before anything imports lionagi; _outside_any_agent below covers the rest.
+os.environ.pop("LIONAGI_AGENT_DEPTH", None)
+
 # The provider layer reads $CODEX_HOME (global codex config and config
 # profiles). Tests must never see the developer's real ~/.codex OR an
 # externally exported CODEX_HOME: a machine-local model_reasoning_effort would
@@ -269,6 +283,27 @@ def write_plugin(plugin_home):
         return bundle
 
     return _write
+
+
+@pytest.fixture(autouse=True)
+def _outside_any_agent(monkeypatch: pytest.MonkeyPatch):
+    """Run every test as if the suite had been started by hand, outside any agent.
+
+    A suite an agent runs (a review or fix leg) inherits that agent's depth and runs under its
+    process, so every test that starts a CLI child in this process would be refused as a nested
+    agent. Tests of that refusal set their own depth and ancestry. A test that starts lionagi in
+    a subprocess is not covered: the child reads its real ancestry and, under an agent, is
+    refused, which is the behaviour, not a fault of the test.
+    """
+    from lionagi.providers import _subagent_admission
+
+    # setenv first so teardown also removes a depth a test's stamp writes straight into
+    # os.environ: delenv alone records nothing to restore when the name was absent.
+    monkeypatch.setenv("LIONAGI_AGENT_DEPTH", "0")
+    monkeypatch.delenv("LIONAGI_AGENT_DEPTH")
+    monkeypatch.setattr(_subagent_admission, "_INHERITED_AGENT_DEPTH", 0)
+    monkeypatch.setattr(_subagent_admission, "_ancestor_agent_depth", lambda: (0, None))
+    monkeypatch.setattr(_subagent_admission, "_child_agent_depth", 1)
 
 
 @pytest.fixture(autouse=True)

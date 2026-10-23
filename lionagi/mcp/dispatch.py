@@ -22,6 +22,7 @@ from typing import Any
 
 from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.ln import compute_hash, now_utc
+from lionagi.providers._provider_errors import NestedAgentRefusedError
 
 from . import config, jobs, projection, roster
 from .verbs import (
@@ -832,6 +833,9 @@ def _run_spawn(verb: Verb, schema: dict[str, Any], args: dict[str, Any]) -> dict
             exclude_mcp_servers=args.get("exclude_mcp_servers"),
             write_capable=write_capable,
         )
+    except NestedAgentRefusedError as exc:
+        # Well-formed, and refused for where the caller runs, which no retry changes.
+        raise OpError("conflict", str(exc)) from exc
     except jobs.SubmittingActorError as exc:
         raise OpError("unavailable", str(exc)) from exc
     except jobs.ChildActorError as exc:

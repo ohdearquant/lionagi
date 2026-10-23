@@ -15,6 +15,7 @@ from lionagi._paths import find_lionagi_dirs as _find_lionagi_dirs
 from lionagi.libs.frontmatter import parse_frontmatter as _parse_frontmatter
 from lionagi.libs.path_safety import validate_bare_name
 from lionagi.ln import coerce_created_at
+from lionagi.providers._subagent_admission import DEFAULT_WORKLOAD, WORKLOADS
 from lionagi.providers.openai._codex_profile import (
     refuse_codex_profile_run_settings,
     resolve_codex_config_profile,
@@ -93,6 +94,26 @@ def _add_codex_account_integration_kwargs(
         extra["contain_account_integrations"] = True
 
 
+def _add_workload_kwarg(extra: dict, endpoint: Any, workload: str) -> None:
+    # Only a CLI endpoint spawns an agent process to count or sandbox; left out at the
+    # default, so a heavy leg's request is the one it was before workloads existed. The
+    # endpoint decides, not the name: a slashless "openai-codex" is an API model.
+    if workload != DEFAULT_WORKLOAD and endpoint.is_cli:
+        extra["workload"] = workload
+
+
+def _is_light_codex(imodel: iModel) -> bool:
+    # A light codex worker writes only its working directory and the artifact directory
+    # the run gives it, and codex refuses it any other writable root.
+    from lionagi.service.connections.registry import EndpointRegistry
+
+    config = imodel.endpoint.config
+    return (
+        EndpointRegistry.canonical_provider(config.provider) == "codex"
+        and config.kwargs.get("workload") == "light"
+    )
+
+
 def build_imodel_from_spec(
     spec: str,
     *,
@@ -104,6 +125,7 @@ def build_imodel_from_spec(
     fast: bool = False,
     account_connectors: tuple[str, ...] = (),
     contain_account_integrations: bool = False,
+    workload: str = DEFAULT_WORKLOAD,
     ignore_user_config: bool = False,
 ) -> iModel:
     """Parse spec, build iModel. Effort in spec unless overridden.
@@ -113,6 +135,8 @@ def build_imodel_from_spec(
     """
     ms = parse_model_spec(spec)
     effort = normalize_effort(effort_override) if effort_override is not None else ms.effort
+
+    from lionagi.service.connections.registry import EndpointRegistry
 
     extra: dict = {}
 
@@ -142,10 +166,6 @@ def build_imodel_from_spec(
         extra.update(PROVIDER_YOLO_KWARGS.get(provider_raw, {}))
     if fast:
         extra.update(PROVIDER_FAST_KWARGS.get(provider_raw, {}))
-    if provider_raw == "codex":
-        _add_codex_account_integration_kwargs(
-            extra, account_connectors, contain_account_integrations
-        )
     if verbose:
         extra["verbose_output"] = True
     if theme is not None:
@@ -175,12 +195,28 @@ def build_imodel_from_spec(
         merged.update(extra.get("config_overrides") or {})
         extra["config_overrides"] = merged
 
-    return iModel(
+    model_instance = iModel(
         model=resolved_model,
         endpoint="query_cli",
         api_key="dummy",
         **extra,
     )
+    if account_connectors or contain_account_integrations:
+        # Keyed on the endpoint, like the workload: a slashless "openai-codex" is an API
+        # model, whose request would carry these settings as payload keys, and a slashless
+        # name takes the default chat provider, which can be codex.
+        endpoint = model_instance.endpoint
+        if (
+            endpoint.is_cli
+            and EndpointRegistry.canonical_provider(endpoint.config.provider) == "codex"
+        ):
+            _add_codex_account_integration_kwargs(
+                endpoint.config.kwargs, account_connectors, contain_account_integrations
+            )
+    if workload != DEFAULT_WORKLOAD:
+        endpoint = model_instance.endpoint
+        _add_workload_kwarg(endpoint.config.kwargs, endpoint, workload)
+    return model_instance
 
 
 def build_chat_model(
@@ -196,6 +232,7 @@ def build_chat_model(
     mcp_exclusive: bool = False,
     account_connectors: tuple[str, ...] = (),
     contain_account_integrations: bool = False,
+    workload: str = DEFAULT_WORKLOAD,
 ) -> iModel | str:
     """Legacy: for agent.py compat.
 
@@ -238,7 +275,9 @@ def build_chat_model(
         extra.update(PROVIDER_YOLO_KWARGS.get(provider, {}))
     if fast:
         extra.update(PROVIDER_FAST_KWARGS.get(provider, {}))
-    if provider == "codex":
+    from lionagi.service.connections.registry import EndpointRegistry
+
+    if EndpointRegistry.canonical_provider(provider) == "codex":
         _add_codex_account_integration_kwargs(
             extra, account_connectors, contain_account_integrations
         )
@@ -274,14 +313,18 @@ def build_chat_model(
         merged.update(extra.get("config_overrides") or {})
         extra["config_overrides"] = merged
 
-    if extra:
-        return iModel(
+    if extra or workload != DEFAULT_WORKLOAD:
+        model_instance = iModel(
             provider=provider,
             endpoint="query_cli",
             model=model,
             api_key="dummy",
             **extra,
         )
+        if workload != DEFAULT_WORKLOAD:
+            endpoint = model_instance.endpoint
+            _add_workload_kwarg(endpoint.config.kwargs, endpoint, workload)
+        return model_instance
     return f"{provider}/{model}"
 
 
@@ -501,6 +544,9 @@ class AgentProfile:
     """Account app connectors a codex leg of this role may reach; naming any lifts the containment."""
     idle_timeout: int | None = None
     """Default --idle-timeout (seconds) used when the CLI flag is not given."""
+    workload: str = DEFAULT_WORKLOAD
+    """'light' (held to what its engine can enforce, counted against the total and engine caps)
+    or 'heavy' (also counted against the heavy cap); see ``li agent --workload``."""
 
 
 def _unreadable_symlink_target(path: Path) -> str | None:
@@ -660,6 +706,8 @@ def profile_config(profile: AgentProfile) -> dict[str, Any]:
         config["contain_account_integrations"] = True
     if profile.account_connectors:
         config["account_connectors"] = list(profile.account_connectors)
+    if profile.workload != DEFAULT_WORKLOAD:
+        config["workload"] = profile.workload
     return config
 
 
@@ -837,6 +885,22 @@ def _parse_profile_account_connectors(name: str, raw: Any) -> tuple[str, ...]:
     return ()
 
 
+def _parse_profile_workload(name: str, raw: Any) -> str:
+    """Validate the profile 'workload'; warn and read anything else as heavy, the class
+    that keeps the configured sandbox and counts against both caps."""
+    if raw is None:
+        return DEFAULT_WORKLOAD
+    if isinstance(raw, str) and raw in WORKLOADS:
+        return raw
+    from ._logging import warn
+
+    warn(
+        f"agent profile {name!r}: workload {raw!r} is not one of {', '.join(WORKLOADS)}; "
+        f"reading it as {DEFAULT_WORKLOAD}"
+    )
+    return DEFAULT_WORKLOAD
+
+
 def _parse_profile(name: str, text: str) -> AgentProfile:
     frontmatter, body = _parse_frontmatter(text)
 
@@ -874,6 +938,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
         idle_timeout=_parse_profile_timeout(
             name, frontmatter.get("idle_timeout"), field="idle_timeout"
         ),
+        workload=_parse_profile_workload(name, frontmatter.get("workload")),
         extra={
             k: v
             for k, v in frontmatter.items()
@@ -892,6 +957,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
                 "idle_timeout",
                 "contain_account_integrations",
                 "account_connectors",
+                "workload",
             )
         },
     )

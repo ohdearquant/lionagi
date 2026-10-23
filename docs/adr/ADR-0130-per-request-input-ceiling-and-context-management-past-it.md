@@ -53,8 +53,8 @@ turn input is limited to 1,048,576 characters, and died at turn start.
 
 **P4 — what one "request" is differs by provider.** API providers send the message list each turn.
 The Codex and fresh Gemini CLI paths flatten the non-system messages into one turn input
-(`lionagi/providers/_cli_subprocess.py:1169-1192`), and Codex carries the system text as a separate
-argument (`lionagi/providers/openai/codex.py:1776-1782`). A provider that resumes a session it holds
+(`lionagi/providers/_cli_subprocess.py:1259-1282`), and Codex carries the system text as a separate
+argument (`lionagi/providers/openai/codex.py:1879-1885`). A provider that resumes a session it holds
 sends only the new turn and keeps the history remotely, where nothing on this side can fold it.
 
 ## Decision
@@ -101,12 +101,12 @@ be measured, and under a ceiling are refused with that reason, never sent unmeas
 provider holds the history remotely, and whether a count it reports is for one request, is that
 provider adapter's statement, not an inference from a `resume` argument. The Codex adapter
 renders branch history for every turn and does not resume a Codex thread
-(`lionagi/providers/openai/codex.py:2479-2484`). Today no resuming adapter makes
+(`lionagi/providers/openai/codex.py:2637-2642`). Today no resuming adapter makes
 that statement: the Claude Code adapter yields only its terminal `result` usage, a total
 whenever the session ran more than one request. The run attaches that metadata to an
-`AssistantResponse` only when the turn produced text (`lionagi/operations/run/run.py:526-545`),
+`AssistantResponse` only when the turn produced text (`lionagi/operations/run/run.py:544-563`),
 although it separately accumulates usage and passes it to `API_POST_CALL` even without a text
-response (`lionagi/operations/run/run.py:697-702,807-815`). The Gemini CLI path reports one
+response (`lionagi/operations/run/run.py:715-720,825-833`). The Gemini CLI path reports one
 summary per invocation. Landing step 2 makes the Claude Code adapter report the input count of the
 session's last request from that request's own event, and the run keep it when the turn produced no
 text; a Gemini CLI summary for more than one turn, or one with no turn count, counts as a total.

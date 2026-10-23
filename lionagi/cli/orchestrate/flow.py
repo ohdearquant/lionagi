@@ -30,7 +30,7 @@ from lionagi.tools.communication.messenger import LionMessenger
 from .._agent_depth import stamp_worker_depth
 from .._logging import progress
 from .._logging import warn as _warn
-from .._providers import parse_model_spec
+from .._providers import _is_light_codex, parse_model_spec
 from .._util import classify_exception
 from ._checkpoint import CheckpointWriter, FlowResumeError, resolve_checkpoint_target
 from ._common import (
@@ -1261,6 +1261,27 @@ def _reconstruct_spawned_nodes(
             "and cannot be soundly rebuilt. Re-run the flow from scratch."
         )
 
+    # A node naming no assignee is rebuilt on the orchestrator's branch, with the
+    # orchestrator's class, and not with the class of the worker that asked for it,
+    # or, for an escalation retry, of the node it retries.
+    reclassed = [
+        f"{e['node_id']} ({e['emitter_workload']})"
+        for e in checkpoint_spawned
+        if retry_failed
+        and e.get("status") == "failed"
+        and not e.get("assignee")
+        and e.get("emitter_workload") is not None
+    ]
+    if reclassed:
+        raise FlowResumeError(
+            "Resume refused for reactively spawned node(s) "
+            f"[{', '.join(reclassed)}]: each ran at the class shown, asked for by a "
+            "worker of that class naming no assignee or retrying a node of that class, "
+            "and --retry-failed would run them again with the orchestrator's class, "
+            "while a resume without it refuses every failed node. Re-run the flow "
+            "from scratch."
+        )
+
     known_ids = {str(n) for n in dag_state.node_ids}
     candidate_ids = {e["node_id"] for e in checkpoint_spawned}
     replayable = ("completed",) if retry_failed else ("completed", "failed")
@@ -1836,6 +1857,7 @@ async def _execute_dag(
             # node. A lookup failure leaves these unset, which resume treats
             # as unreconstructable for this node alone (see flow.py's resume path).
             spawn_fields: dict[str, Any] = {"parent_id": sig.parent_id}
+            escalation_retry = None
             with contextlib.suppress(Exception):
                 from lionagi.protocols.ids import to_uuid
 
@@ -1861,6 +1883,20 @@ async def _execute_dag(
                         if isinstance(params, dict)
                         else getattr(params, "context", None)
                     )
+                    spawn_fields["emitter_workload"] = spawned_node.metadata.get("emitter_workload")
+                    if spawned_node.metadata.get("escalated_from") is not None:
+                        # An escalation retry runs on a clone of the branch of the node it
+                        # retries, at that node's class, and is built with no record of it:
+                        # the class is read off the branch it ran on, so a resume that would
+                        # rebuild it on the orchestrator's branch refuses it as it refuses a
+                        # spawn a light worker asked for.
+                        escalation_retry = spawned_node
+            if escalation_retry is not None:
+                # Outside the suppression above: a missing branch entry is a record that
+                # would misstate the class this retry ran at, not a lookup to skip.
+                retry_workload = _escalation_retry_workload(executor, escalation_retry)
+                if retry_workload is not _NO_RECORDED_BRANCH_MODEL:
+                    spawn_fields["emitter_workload"] = retry_workload
             _checkpoint_tasks.append(
                 _asyncio.ensure_future(
                     _checkpoint_writer.record_spawned(
@@ -2146,6 +2182,62 @@ async def _execute_dag(
         env.expect_worker(spawn_id)
         return f"{req.instruction}\n\n{note}"
 
+    _role_spawn_node = (
+        role_node_builder(
+            role_base,
+            decorate_instruction=_decorate_spawn_instruction,
+            role_aliases=role_by_worker,
+            start=_spawn_seq_start,
+        )
+        if reactive
+        else None
+    )
+
+    def _build_spawn_node(req: SpawnRequest, emitter: Any) -> Any:
+        # A request naming no assignee can be cloned from the orchestrator's
+        # branch (an independent one always is), so the class of the worker that
+        # emitted it is recorded for _spawn_branch_setup. A heavy worker carries
+        # no key, and nothing is recorded for its spawn. The class is read before
+        # the node is built, so a refused request leaves no expected worker.
+        workload = None
+        executor = _executor_ref.get("executor")
+        if not req.assignee and emitter is not None and executor is not None:
+            emitter_branch = executor.operation_branches.get(emitter.id)
+            emitter_model = getattr(emitter_branch, "chat_model", None)
+            if emitter_branch is not env.orc_branch and emitter_model is not None:
+                workload = emitter_model.endpoint.config.kwargs.get("workload")
+                if workload is not None:
+                    # An independent one runs on the orchestrator's engine, and a class
+                    # confines each engine differently, an API model's not at all: on
+                    # another engine it would not be held as the worker that asked is. A
+                    # dependent one is cloned from that worker's branch and runs on its engine.
+                    orc_model = getattr(env.orc_branch, "chat_model", None)
+                    from lionagi.service.connections.registry import EndpointRegistry
+
+                    # Compared as the providers the spellings resolve to: "claude" and
+                    # "claude_code" are one engine.
+                    asked_on = EndpointRegistry.canonical_provider(
+                        emitter_model.endpoint.config.provider
+                    )
+                    runs_on = (
+                        EndpointRegistry.canonical_provider(orc_model.endpoint.config.provider)
+                        if orc_model is not None
+                        else None
+                    )
+                    if getattr(req, "independent", False) and runs_on != asked_on:
+                        raise CLIInputRefusedError(
+                            f"spawn refused: an independent agent naming no assignee runs on "
+                            f"the orchestrator's engine ({runs_on}), and the {workload} "
+                            f"worker that asked for it runs on {asked_on}, where {workload} "
+                            "confines an agent differently. Name an assignee from the roster, "
+                            "or ask for a dependent agent, which runs on the asking worker's "
+                            "engine."
+                        )
+        node = _role_spawn_node(req, emitter)
+        if workload is not None:
+            node.metadata["emitter_workload"] = workload
+        return node
+
     def _spawn_branch_setup(operation: Any, branch: Any) -> None:
         """Assign a spawned node its artifact destination.
 
@@ -2189,10 +2281,9 @@ async def _execute_dag(
             )
             if effort_kwarg:
                 chat_model.endpoint.config.kwargs.pop(effort_kwarg, None)
-        # A request with no assignee is cloned from the orchestrator's branch,
-        # whose request carries the run's whole set, job control included. A
-        # spawned node is a leaf like a planned worker and gets the worker set
-        # the same way, as its whole set.
+        # A clone of the orchestrator's branch would carry the run's whole set,
+        # job control included. A spawned node is a leaf like a planned worker
+        # and gets the worker set the same way, as its whole set.
         worker_mcp_servers = getattr(env, "mcp_servers", None)
         _hand_mcp_servers(
             chat_model,
@@ -2202,11 +2293,36 @@ async def _execute_dag(
         )
         kwargs = chat_model.endpoint.config.kwargs
         kwargs.pop("account_connectors", None)
+        # A clone of the orchestrator's branch takes the class of the worker that
+        # asked for it, recorded by _build_spawn_node, so a light worker cannot
+        # obtain a heavy agent. The orchestrator's own class confines only its own
+        # process: with no worker behind the request, the spawn runs as a bare
+        # worker does, heavy, the class an absent key means.
+        if branch.metadata.get("clone_from") is env.orc_branch:
+            emitter_workload = operation.metadata.get("emitter_workload")
+            if emitter_workload is None:
+                kwargs.pop("workload", None)
+            else:
+                kwargs["workload"] = emitter_workload
         kwargs["repo"] = artifact_dir
         project_root = str(Path(env.cwd).resolve()) if env.cwd else str(Path.cwd().resolve())
         add_dir = kwargs.setdefault("add_dir", [])
-        if project_root not in add_dir:
+        if not _is_light_codex(chat_model) and project_root not in add_dir:
             add_dir.append(project_root)
+        # The same team grant a planned worker gets: a codex spawn in team mode
+        # needs the teams directory writable, and a light one is refused for it.
+        # An alias ("openai-codex") is the same provider.
+        from lionagi.service.connections.registry import EndpointRegistry
+
+        if (
+            getattr(env, "team_data", None)
+            and EndpointRegistry.canonical_provider(chat_model.endpoint.config.provider) == "codex"
+        ):
+            from .. import team as _team_module
+
+            teams_dir = str(_team_module.TEAMS_DIR.resolve())
+            if teams_dir not in add_dir:
+                add_dir.append(teams_dir)
 
     t_exec = time.monotonic()
     # The run-start publish is bounded the same way as the stop marker, and has
@@ -2225,16 +2341,7 @@ async def _execute_dag(
             env.builder.get_graph(),
             reactive=reactive,
             spawn_type=SpawnRequest if reactive else None,
-            node_builder=(
-                role_node_builder(
-                    role_base,
-                    decorate_instruction=_decorate_spawn_instruction,
-                    role_aliases=role_by_worker,
-                    start=_spawn_seq_start,
-                )
-                if reactive
-                else None
-            ),
+            node_builder=_build_spawn_node if reactive else None,
             max_spawn=max_spawn,
             max_concurrent=conc,
             verbose=env.verbose,
@@ -3647,3 +3754,27 @@ async def _resume_flow(
         retry_failed=retry_failed,
         **config,
     )
+
+
+_NO_RECORDED_BRANCH_MODEL = object()
+
+
+def _escalation_retry_workload(executor: Any, node: Any) -> Any:
+    """The workload class *node* ran at, read off the branch it ran on.
+
+    An escalation retry is built with no class of its own and runs on a clone of the
+    branch of the node it retries. A missing branch entry would record no class and let
+    a resume accept a light retry as heavy, so it raises instead, naming the node.
+    ``_NO_RECORDED_BRANCH_MODEL`` means the branch entry has no model to read.
+    """
+    operation_branches = getattr(executor, "operation_branches", None) or {}
+    run_branch = operation_branches.get(node.id)
+    if run_branch is None:
+        raise RuntimeError(
+            f"escalation retry {node.id} has no recorded branch, "
+            "so the workload class it ran at cannot be recorded"
+        )
+    run_model = getattr(run_branch, "chat_model", None)
+    if run_model is None:
+        return _NO_RECORDED_BRANCH_MODEL
+    return run_model.endpoint.config.kwargs.get("workload")

@@ -25,6 +25,10 @@ EXIT_CODE_BY_STATUS: dict[str, int] = {
 # started. See docs/internals/cli.md for the exit-code/exception-classification contract.
 EXIT_CODE_ENVIRONMENT_ERROR = 78
 
+# Also outside the map: no slot under the machine-wide agent caps, so the leg never started.
+# EX_TEMPFAIL, because the same command succeeds once a slot frees.
+EXIT_CODE_SUBAGENT_REFUSED = 75
+
 # Process-wide (not thread-local/ContextVar) because run_async drives each
 # command on its own thread with its own event loop, and this flag must
 # survive across that boundary. See docs/internals/cli.md for the full

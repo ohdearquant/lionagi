@@ -12,7 +12,7 @@
 ## Context
 
 An API-model `li agent` leg runs lionagi's own tool loop, `Branch.ReAct(tools=True,
-max_extensions=N)` (`lionagi/cli/agent.py:395-399`, ADR-0041 Amendment 1). Each ReAct analysis round
+max_extensions=N)` (`lionagi/cli/agent.py:407-411`, ADR-0041 Amendment 1). Each ReAct analysis round
 is at least one model request (a reply that fails to parse is asked for again), and a round's tool
 calls run through `act()`, concurrently unless the model asks for them in sequence
 (`lionagi/operations/ReAct/ReAct.py:98`, `:205`, `:542`). After the last analysis round ReAct always

@@ -680,7 +680,7 @@ exit of the invocation owning this subscription, including failure or cancellati
 cleanup. A nested operation's `RunEnd` or `RunFailed` does not settle its parent:
 `ReactiveExecutor` invokes each node's operation through `Operation.invoke`
 (`lionagi/operations/node.py:84-95`) and `Branch` emits its `RunEnd` or `RunFailed` per operation
-(`lionagi/session/branch.py:441-469`, `:1080-1133`; `lionagi/operations/run/run.py:817-828`), all
+(`lionagi/session/branch.py:441-469`, `:1080-1133`; `lionagi/operations/run/run.py:835-846`), all
 before the enclosing flow returns (`lionagi/operations/flow.py:1717`). No flow- or
 invocation-terminal session Signal exists today: the bus carries `RunEnd` per operation
 (`lionagi/session/signal.py:62`) and nothing terminal beyond it, the flow's own drain of node
@@ -813,8 +813,8 @@ everything since; facts past the range belong to the next wake.
 - No per-subscriber cursor exists. The durable reader positions nearest to one exist and none is a
   per-subscriber wake cursor. The team round batches the pending targets it discovers on each node
   completion, one re-invocation per target, so its position is a per-completion batch of targets,
-  not a per-subscriber position (`lionagi/cli/orchestrate/_orchestration.py:1488`, `:1524-1529`;
-  `lionagi/cli/orchestrate/flow.py:1992-2037`). A schedule holds `github_cursor`, a reader
+  not a per-subscriber position (`lionagi/cli/orchestrate/_orchestration.py:1499`, `:1535-1540`;
+  `lionagi/cli/orchestrate/flow.py:2028-2073`). A schedule holds `github_cursor`, a reader
   position that remembers how far a poll has read so a refused event is re-offered rather than
   skipped. The poller's writes advance it only forward, so a stale poll cannot move it back
   (`lionagi/state/schema.sql:464`, `:528-536`; `lionagi/state/db.py:5368-5370`, `:5500`;

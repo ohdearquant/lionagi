@@ -109,6 +109,46 @@ class WorkerLivenessError(ProviderError):
         self.reason: str = reason
 
 
+class SubagentAdmissionRefusedError(ProviderError):
+    """No machine-wide slot for a CLI agent: a pool stayed at its cap, or admission could
+    not be read. Raised before the child exists, or just after it when its start time
+    could not be read twice, in which case the child is killed before this is raised;
+    with no start time to prove its process group, the group is not signalled. Also
+    raised just after the spawn when a slot cannot record the child, once ending the
+    child's group has been attempted (signalled, then waited for a bounded time).
+
+    Retryable: at a cap the same request admits once a slot frees or the cap is raised,
+    and a slot that could not be written can be written on a later attempt, once the
+    disk has room.
+    """
+
+    retryable: ClassVar[bool] = True
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        pool: str = "",
+        cap: int = 0,
+        holders: tuple[int | None, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.pool: str = pool
+        self.cap: int = cap
+        self.holders: tuple[int | None, ...] = holders
+
+
+class NestedAgentRefusedError(ProviderError):
+    """A process running inside a CLI agent lionagi started tried to start another CLI
+    agent through lionagi. Raised before any admission, so nothing ran and no slot was
+    waited for.
+
+    Not retryable: the same command run from inside the same agent is refused the same way.
+    """
+
+    retryable: ClassVar[bool] = False
+
+
 # --- Emission error (separate axis — not a provider subprocess failure) ---
 
 

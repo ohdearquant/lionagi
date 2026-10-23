@@ -127,6 +127,7 @@ AGENT_HELP_FLAGS = [
     "--theme",
     "--timeout",
     "--verbose",
+    "--workload",
     "--yolo",
     "-a",
     "-c",

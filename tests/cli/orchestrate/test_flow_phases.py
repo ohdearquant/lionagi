@@ -706,7 +706,9 @@ async def test_execute_dag_reactive_wires_spawn_branch_setup_for_cli_workspace(t
     assert spawn_branch_setup is not None
 
     operation = SimpleNamespace(metadata={"spawn_id": "spawn-1"})
+    # A spawned branch is a clone, and this one is not cloned from the orchestrator's.
     cli_branch = SimpleNamespace(
+        metadata={"clone_from": object()},
         chat_model=SimpleNamespace(
             is_cli=True,
             endpoint=SimpleNamespace(
@@ -718,7 +720,7 @@ async def test_execute_dag_reactive_wires_spawn_branch_setup_for_cli_workspace(t
                     },
                 )
             ),
-        )
+        ),
     )
     spawn_branch_setup(operation, cli_branch)
 
