@@ -435,6 +435,8 @@ UNPLACED_AT_SIGN = [
     "https://stored-user:stored-secret%40gateway.example/v1",
     "https://stored-user:stored-secret%2540gateway.example/v1",
     "https://stored-user:stored-secret%EF%BC%A0gateway.example/v1",
+    "https://stored-user:stored-secret\uff0540gateway.example/v1",
+    "https://stored-user:stored-secret\ufe6bgateway.example/v1",
 ]
 
 
@@ -442,7 +444,8 @@ UNPLACED_AT_SIGN = [
 def test_a_stored_url_whose_at_sign_cannot_be_placed_is_refused(stored):
     with pytest.raises(ValueError, match="cannot be removed") as refused:
         iModel.from_dict(_stored(base_url=stored))
-    assert "stored-se" not in str(refused.value)
+    for part in ("stored-se", "stored-user", "gateway.example"):
+        assert part not in str(refused.value)
     assert "chat_model=" in str(refused.value)
 
 
@@ -461,25 +464,50 @@ def test_a_refused_url_says_why_it_cannot_be_read(stored, reason):
         iModel.from_dict(_stored(base_url=stored))
 
 
-# A host with a percent-encoded '@', once or more: the client reads no user in it and would send the
-# text as the host name, to the resolver and in the Host header.
+# A host with an encoded '@', percent-encoded once or more, or a fullwidth or small '@'
+# percent-encoded: the client reads no user in it and would send the text as the host name,
+# to the resolver and in the Host header.
 ENCODED_AT_SIGN_IN_HOST = [
     "https://stored-user%3Astored-secret%40gateway.example/v1",
     "https://stored-user%3astored-secret%40gateway.example/v1",
     "https://other:pass@stored-user%3Astored-secret%40gateway.example/v1",
     "https://stored-user%3AStored-secret%2540gateway.example/v1",
     "https://stored-user%253Astored-secret%25252540gateway.example/v1",
+    "https://stored-user%3Astored-secret%EF%BC%A0gateway.example/v1",
+    "https://stored-user%3Astored-secret%EF%B9%ABgateway.example/v1",
+    "https://stored-user%3Astored-secret%25EF%25BC%25A0gateway.example/v1",
 ]
 
 
 @pytest.mark.parametrize("entry", ["imodel", "endpoint", "branch"])
 @pytest.mark.parametrize("stored", ENCODED_AT_SIGN_IN_HOST)
 def test_a_stored_host_with_an_encoded_at_sign_is_refused(entry, stored):
-    with pytest.raises(ValueError, match="percent-encoded '@' in its host") as refused:
+    with pytest.raises(ValueError, match="encoded '@' in its host") as refused:
         _restore_through(entry, _stored(base_url=stored))
-    assert "stored-se" not in str(refused.value)
-    assert "Stored-se" not in str(refused.value)
+    for part in ("stored-se", "Stored-se", "stored-user", "gateway.example"):
+        assert part not in str(refused.value)
     assert "chat_model=" in str(refused.value)
+
+
+def _layered(layers: int) -> str:
+    # 'A' (%41) under *layers* more layers of percent-encoding, in the host.
+    return "https://gateway" + "%" + "25" * layers + "41.example/v1"
+
+
+def test_a_host_encoded_past_the_layers_read_is_refused():
+    assert iModel.from_dict(_stored(base_url=_layered(14))).endpoint.config.base_url == (
+        _layered(14)
+    )
+    with pytest.raises(ValueError, match="cannot be removed"):
+        iModel.from_dict(_stored(base_url=_layered(15)))
+
+
+def test_a_stored_kwargs_base_url_is_not_restored():
+    data = _stored()
+    data["endpoint"]["config"].setdefault("kwargs", {})["base_url"] = STORED_PASSWORD_URL
+    model = iModel.from_dict(data)
+    assert "base_url" not in model.endpoint.config.kwargs
+    assert "stored-se" not in str(model.to_dict())
 
 
 @pytest.mark.parametrize("stored", ENCODED_AT_SIGN_IN_HOST)

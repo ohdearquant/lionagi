@@ -1265,7 +1265,11 @@ class Endpoint:
             config = {k: v for k, v in config.items() if k not in _NOT_RESTORED}
             kwargs = config.get("kwargs")
             if isinstance(kwargs, dict):
-                config["kwargs"] = {k: v for k, v in kwargs.items() if k not in _NOT_RESTORED}
+                # A base_url there is a copy no request reads, the config's own field being
+                # the URL the client uses, so it is dropped with any user and password in it.
+                config["kwargs"] = {
+                    k: v for k, v in kwargs.items() if k not in _NOT_RESTORED and k != "base_url"
+                }
             # Nor does a stored header. The endpoint merges default_headers over the
             # credential header it writes, so a stored Authorization or x-api-key would
             # replace the restored key, at whatever URL the model is restored to. Of the
@@ -1339,6 +1343,9 @@ _STORED_URL_REMEDY = (
     "model to Branch.from_dict (chat_model=, parse_model=), or correct the stored URL."
 )
 
+# Layers of percent-encoding a stored URL is read through before it counts as unreadable.
+_URL_DECODE_PASSES = 16
+
 
 def _stored_base_url(config: Mapping) -> Any:
     """The stored ``base_url`` as the config reads it: bytes are decoded as UTF-8, as the
@@ -1362,18 +1369,25 @@ def _without_userinfo(url: str) -> str:
     it is. One it cannot read, or reads with no host, is refused if it has an ``@`` in
     it, since which part is a password cannot be told and the config would write the
     URL back; without an ``@`` it is returned as it is, for the client to refuse. A host
-    with a percent-encoded ``@`` is refused too: the client reads no user there and
-    sends that text as the host name, to the resolver and in the Host header. Both
-    checks decode the text until it stops changing, so ``%2540`` counts as an ``@``."""
+    with an encoded ``@`` is refused too: the client reads no user there and sends that
+    text as the host name, to the resolver and in the Host header. Both checks read the
+    text with its percent-encoding removed and its compatibility characters folded, such
+    as a fullwidth ``＠``, until it stops changing, so ``%2540`` and ``%EF%BC%A0`` count
+    as an ``@``."""
     import unicodedata
     from urllib.parse import unquote
 
     import httpx
 
-    def decoded(text: str) -> str:
-        while (once := unquote(text)) != text:
+    def has_at_sign(text: str) -> bool:
+        for _ in range(_URL_DECODE_PASSES):
+            once = unquote(unicodedata.normalize("NFKC", text))
+            if once == text:
+                return "@" in text
             text = once
-        return text
+        # Still changing after that many layers: no client sends such a URL, and what
+        # the layers hide cannot be told, so it is read as hiding an '@'.
+        return True
 
     unencodable = False
     try:
@@ -1383,13 +1397,13 @@ def _without_userinfo(url: str) -> str:
     except UnicodeError:
         parsed, unencodable = None, True
     if parsed is not None and parsed.host:
-        if "@" in decoded(parsed.host):
+        if has_at_sign(parsed.host):
             raise ValueError(
-                "The stored base_url has a percent-encoded '@' in its host, so a user "
-                f"and password in it cannot be removed. {_STORED_URL_REMEDY}"
+                "The stored base_url has an encoded '@' in its host, so a user and "
+                f"password in it cannot be removed. {_STORED_URL_REMEDY}"
             )
         return str(parsed.copy_with(userinfo=b"")) if parsed.userinfo else url
-    if "@" not in unicodedata.normalize("NFKC", decoded(url)):
+    if not has_at_sign(url):
         return url
     # The URL is not quoted: the part that cannot be placed may be the password.
     reason = (

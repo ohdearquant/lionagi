@@ -23,13 +23,14 @@ is refused either way. `Branch.from_dict` takes live models instead: a `chat_mod
 neither, so a branch saved against such a URL is resumed from Python instead. A restored model also keeps no
 client option but its headers: one that relied on a stored `trust_env`, for proxy settings
 from the environment, sets it again on the live config (`model.endpoint.config.client_kwargs`).
-Nor does it keep a user and password written into its stored base URL: for a gateway that
-reads them, pass the URL, `iModel.from_dict(data, base_url=...)`. A stored base URL whose user
-and password cannot be removed raises `ValueError` when it is restored: one with an `@` in it,
-percent-encoded or not, that the HTTP client does not read as a URL with a host, and one whose
-host has a percent-encoded `@`. Stored bytes that do not decode as UTF-8 raise `ValueError` as
-well, where they raised pydantic's `ValidationError` before, with part of the bytes in its
-message. Pass the URL the same way, or a live model to `Branch.from_dict`.
+Nor does it keep a user and password written before an `@` in its stored base URL: for a
+gateway that reads them, pass the URL, `iModel.from_dict(data, base_url=...)`. A `base_url`
+stored in the config's `kwargs`, a copy no request reads, is not restored. A stored base URL
+whose user and password cannot be removed raises `ValueError` when it is restored: one with an
+`@` in it, percent-encoded, fullwidth or plain, that the HTTP client does not read as a URL with
+a host, and one whose host has an encoded `@`. Stored bytes that do not decode as UTF-8 raise
+`ValueError` as well, without their text; they raised pydantic's `ValidationError` before, whose
+message held part of the bytes. Pass the URL the same way, or a live model to `Branch.from_dict`.
 
 Saved data whose `lion_class` or `Pile` `item_type` names a class from a package of your own
 (a dotted path outside `lionagi.`) no longer imports that class's module when it loads. Import
@@ -679,8 +680,9 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   with a host is refused, since the user and password in it cannot be removed. What is removed
   is what the client reads as the URL's user and password, a `%40` inside them included; an `@`
   it reads in the path, query or fragment is kept as written, and the client sends none of it as
-  a credential. A stored host with an `@` written as `%40` is refused: the client reads no user
-  there and would send that text as the host name, to the resolver and in the `Host` header.
+  a credential. A stored host with an `@` written as `%40`, encoded more than once, or as a
+  fullwidth or small `@` is refused: the client reads no user there and would send that text as
+  the host name, to the resolver and in the `Host` header.
   A CLI model's
   own settings are still restored as stored and read by the child process it starts: Codex `config_overrides` can name another provider URL and the
   environment variable its key is read from, Claude Code's `settings` and `permission_mode`
