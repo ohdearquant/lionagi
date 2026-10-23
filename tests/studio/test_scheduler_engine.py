@@ -4375,6 +4375,75 @@ async def test_a_github_pass_past_the_threshold_makes_the_scheduler_unready(monk
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("hang", ["poll", "action"])
+async def test_a_github_pass_counts_as_stalled_only_while_its_poll_has_not_returned(
+    monkeypatch, hang
+):
+    from lionagi.studio.scheduler import engine as engine_mod
+    from lionagi.studio.scheduler.github import GithubPollResult
+    from tests.studio.test_scheduler_github_fire_per_event import _item
+
+    clock = [1000.0]
+
+    class FakeClock:
+        @staticmethod
+        def time() -> float:
+            return clock[0]
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    monkeypatch.setattr(engine_mod, "time", FakeClock())
+    engine = engine_mod.SchedulerEngine(svc=_make_svc())
+    engine._task = asyncio.current_task()
+    engine._started_at = clock[0] - 10
+    engine._last_tick_completed_at = clock[0]
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def wait_here() -> None:
+        entered.set()
+        await release.wait()
+
+    async def poll(*args, **kwargs):
+        if hang == "poll":
+            await wait_here()
+        return GithubPollResult(items=[_item(1, "2026-01-01T00:00:00Z")], scan_complete=True)
+
+    async def fire(schedule, run_id, *, global_slot_claim, **kwargs):
+        # An event's action runs for as long as it takes; the pass waits on it.
+        if hang == "action":
+            await wait_here()
+        global_slot_claim.release()
+        return True
+
+    monkeypatch.setattr("lionagi.studio.scheduler.github.github_poll", poll)
+    monkeypatch.setattr(engine, "_fire", fire)
+    schedule = _minimal_schedule(
+        id="github-1", trigger_type="github_poll", github_repo="acme/widgets", last_fired_at=0
+    )
+    engine._start_github_tick(schedule, clock[0])
+    task = engine._github_tick_tasks["github-1"]
+
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        clock[0] += engine_mod._TICK_STALL_AFTER + 1
+        engine._last_tick_completed_at = clock[0]
+
+        report = engine.health()
+
+        if hang == "poll":
+            assert report["ready"] is False
+            assert "has polled for" in report["detail"]
+        else:
+            assert report["ready"] is True
+            assert report["status"] == "healthy"
+    finally:
+        release.set()
+        await asyncio.wait_for(task, timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_a_restart_does_not_inherit_the_previous_runs_completed_tick(monkeypatch):
     """A second run in one process must not answer with the first run's evidence.
 

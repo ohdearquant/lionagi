@@ -572,6 +572,10 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   placeholder reached the run unfilled: a command argument holding it failed at spawn, and an
   agent prompt received it as written. A template that names only what a manual trigger fills,
   `{{manual}}` and `{{fired_at}}`, still fires.
+- The scheduler's readiness (`/admin/readiness`, `li doctor`) read `stalled` whenever an action a
+  `github_poll` schedule dispatched ran for more than 300 seconds, since a poll pass waits on each
+  action it dispatches and the check timed the whole pass. It now times a pass only until its poll
+  returns, so a poll that does not return still makes the scheduler unready.
 - `extract_lndl_blocks` read only unindented three-character fences with LF line ends, so an
   indented block, a block fenced with four backticks, or CRLF output was not read at all; it now
   reads all three. A block closes only on the fence it opened with, at the same indentation, so

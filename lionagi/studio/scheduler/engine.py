@@ -433,6 +433,8 @@ class SchedulerEngine:
         # poll loop, which advances the cursor per committed event, so a pass lasts as long as the
         # slowest action it dispatched; it runs off the tick so later ticks continue meanwhile.
         self._github_tick_tasks: dict[str, asyncio.Task] = {}
+        # schedule_id -> when its pass started, kept only until its poll returns: the readiness
+        # check times the poll, not the actions the pass then waits on.
         self._github_tick_started_at: dict[str, float] = {}
         # schedule_id -> events a poll found while the fire cap was full, held for its next turn.
         self._github_batches: dict[str, _GithubBatch] = {}
@@ -646,7 +648,7 @@ class SchedulerEngine:
                 report["ready"] = False
                 report["status"] = "stalled"
                 report["detail"] = (
-                    f"github_poll pass for schedule {sid} has run for {pass_age:.0f}s "
+                    f"github_poll pass for schedule {sid} has polled for {pass_age:.0f}s "
                     f"(stall threshold {_TICK_STALL_AFTER}s)"
                 )
                 return report
@@ -1744,6 +1746,9 @@ class SchedulerEngine:
                         poller_consecutive_401=(schedule.get("poller_consecutive_401") or 0) + 1,
                     )
 
+            # The rest of the pass waits on each action it dispatches, however long that runs, so
+            # the stall check stops timing the pass here.
+            self._github_tick_started_at.pop(sid, None)
             if not polled:
                 return False
 
