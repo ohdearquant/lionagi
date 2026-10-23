@@ -524,15 +524,19 @@ async def list_sessions(
                 s.total_cost_usd,
                 s.input_tokens,
                 s.output_tokens,
-                COUNT(DISTINCT b.id) AS branch_count,
-                COALESCE(SUM(
-                    json_array_length(p.collection)
+                (
+                    SELECT COUNT(*)
+                    FROM branches b
+                    WHERE b.session_id = s.id
+                ) AS branch_count,
+                COALESCE((
+                    SELECT SUM(json_array_length(p.collection))
+                    FROM branches b
+                    JOIN progressions p ON p.id = b.progression_id
+                    WHERE b.session_id = s.id
                 ), 0) AS message_count
             FROM page
             JOIN sessions s ON s.id = page.page_id
-            LEFT JOIN branches b ON b.session_id = s.id
-            LEFT JOIN progressions p ON p.id = b.progression_id
-            GROUP BY s.id
             ORDER BY {order_by}
             """,  # noqa: S608
             [*params, limit, offset],
