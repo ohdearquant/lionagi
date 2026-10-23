@@ -1048,6 +1048,29 @@ async def test_a_contained_claude_worker_reads_no_settings_and_runs_a_fixed_tool
 
 
 @pytest.mark.asyncio
+async def test_a_contained_claude_worker_with_no_server_set_starts_none_it_discovers(
+    tmp_run, monkeypatch
+):
+    """With no server set resolved, a worker's CLI discovers servers itself. A contained one
+    would start them while ``dontAsk`` refused their tools, so it is handed the empty set as
+    its whole set; a role without the flag keeps what it discovers."""
+    monkeypatch.setattr(
+        orch_mod,
+        "load_agent_profile",
+        _claude_roles(implementer={"contain_user_settings": True}, plain={}),
+    )
+    env = await _setup(no_mcp_config=False)
+    assert env.mcp_servers is None
+
+    args = await _worker_args(env, "implementer")
+    control = await _worker_args(env, "plain")
+
+    assert "--strict-mcp-config" in args
+    assert _flag_values(args, "--allowedTools") == _CONTAINED_TOOLS
+    assert "--strict-mcp-config" not in control
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("run_bypass", [False, True])
 async def test_yolo_and_bypass_do_not_reach_a_contained_claude_worker(
     tmp_run, monkeypatch, run_bypass
@@ -1179,6 +1202,8 @@ def test_the_contained_boundary_leaves_a_claude_model_with_no_cli_alone():
         ("contain_user_settings: true\n", True, False),
         ("contain_user_settings: maybe\n", True, True),
         ("contain_user_settings: 0\n", True, True),
+        ("contain_user_settings:\n", True, True),
+        ("contain_user_settings: null\n", True, True),
     ],
 )
 def test_the_profile_flag_reads_true_or_false_and_contains_otherwise(
@@ -1196,6 +1221,49 @@ def test_the_profile_flag_reads_true_or_false_and_contains_otherwise(
     assert profile_config(profile).get("contain_user_settings") is (True if expected else None)
     assert "contain_user_settings" not in profile.extra
     assert ("is not true or false; containing" in caplog.text) is warned
+
+
+@pytest.mark.parametrize(
+    "frontmatter",
+    [
+        "model: claude_code/sonnet\ncontain_user_settings: true\nnotes: [unclosed\n",
+        "- model: claude_code/sonnet\n- contain_user_settings: true\n",
+    ],
+)
+def test_a_profile_whose_frontmatter_does_not_read_warns_that_its_settings_are_ignored(
+    caplog, frontmatter
+):
+    """A frontmatter block that does not read as YAML settings gives the profile none, the
+    flag included, so loading it says so rather than run the role uncontained in silence."""
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    text = f"---\n{frontmatter}---\n\nWork.\n"
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.contain_user_settings is False
+    assert "every setting in it is ignored, contain_user_settings included" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Work.\n",
+        "---\n---\n\nWork.\n",
+        "---\nmodel: claude_code/sonnet\n---\n\nWork.\n",
+    ],
+)
+def test_a_profile_with_no_settings_to_lose_does_not_warn(caplog, text):
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        _parse_profile("role", text)
+
+    assert "does not read as YAML settings" not in caplog.text
 
 
 def test_the_boundary_drops_a_codex_profile_and_leaves_a_claude_settings_file(codex_home):

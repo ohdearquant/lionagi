@@ -706,6 +706,9 @@ async def _spawned_branch_kwargs(
     emitter_provider: str | None = None,
     emitter_contained: bool = False,
     independent: bool = True,
+    assignee: str | None = None,
+    role_contained: bool = False,
+    handed: list | None = None,
     expected: list | None = None,
     refuses: bool = False,
 ) -> dict:
@@ -718,7 +721,10 @@ async def _spawned_branch_kwargs(
     orchestrator's branch, as the executor clones it. *emitter_provider* puts that worker
     on another engine than the orchestrator's, and *emitter_contained* runs it with no
     settings files read (``contain_user_settings``). With *independent* false the request is a
-    dependent one, cloned from that worker's branch. *expected* collects the spawn ids
+    dependent one, cloned from that worker's branch. With *assignee* the request names a
+    Claude role of that name, and is cloned from its branch, which *role_contained* runs with
+    no settings files read. *handed* collects the server set each hand-off gives the
+    spawn and whether it is the whole set. *expected* collects the spawn ids
     the run is told to expect a worker for. With *refuses* the node builder must refuse
     the request, and the refusal's text comes back as ``{"refusal": ...}``."""
     import lionagi.engines as engines_mod
@@ -748,7 +754,12 @@ async def _spawned_branch_kwargs(
     monkeypatch.setattr(engines_mod, "PlanningEngine", _Engine)
     monkeypatch.setattr(flow_mod, "_persist_session_phase", _noop)
     monkeypatch.setattr(flow_mod, "_persist_control_poller_state_bounded", _noop)
-    monkeypatch.setattr(flow_mod, "_hand_mcp_servers", lambda *a, **k: None)
+
+    def _hand(imodel, servers, **kwargs):
+        if handed is not None:
+            handed.append((servers, kwargs.get("exclusive")))
+
+    monkeypatch.setattr(flow_mod, "_hand_mcp_servers", _hand)
 
     def _branch(
         name: str, branch_workload: str = workload, branch_provider: str = provider
@@ -772,6 +783,13 @@ async def _spawned_branch_kwargs(
         )
 
     orchestrator = _branch("orchestrator")
+    role_branch = None
+    if assignee is not None:
+        role_branch = _branch(assignee, branch_provider="claude_code")
+        if role_contained:
+            from lionagi.cli.orchestrate._orchestration import _isolate_worker_cli_config
+
+            _isolate_worker_cli_config(role_branch.chat_model, contain_user_settings=True)
     env = SimpleNamespace(
         orc_branch=orchestrator,
         run=SimpleNamespace(agent_artifact_dir=lambda aid: tmp_path / "artifacts" / aid),
@@ -793,7 +811,8 @@ async def _spawned_branch_kwargs(
         known_nodes=set(),
         deps_by_node={},
         worker_models={},
-        role_base={},
+        role_base={} if role_branch is None else {assignee: role_branch},
+        role_artifact_defaults={},
         op_segments=[],
         max_spawn=5,
     )
@@ -818,7 +837,9 @@ async def _spawned_branch_kwargs(
         captured["executor_ref"]["executor"] = SimpleNamespace(
             operation_branches={emitter.id: emitter_branch}
         )
-        request = SpawnRequest(instruction="check the result", independent=independent)
+        request = SpawnRequest(
+            instruction="check the result", independent=independent, assignee=assignee
+        )
         if refuses:
             from lionagi._errors import CLIInputRefusedError
 
@@ -826,8 +847,12 @@ async def _spawned_branch_kwargs(
                 captured["node_builder"](request, emitter)
             return {"refusal": str(refused.value)}
         operation = captured["node_builder"](request, emitter)
-        assert operation.branch_id is None
-        source = orchestrator if independent else emitter_branch
+        if role_branch is not None:
+            assert operation.branch_id == role_branch.id
+            source = role_branch
+        else:
+            assert operation.branch_id is None
+            source = orchestrator if independent else emitter_branch
     orchestrator_kwargs = dict(orchestrator.chat_model.endpoint.config.kwargs)
     branch = source.clone()
     captured["setup"](operation, branch)
@@ -1074,6 +1099,68 @@ async def test_an_agent_a_claude_worker_with_its_settings_asks_for_keeps_them(
 
     assert kwargs.get("setting_sources") is None
     assert kwargs.get("disallowed_tools") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role_contained", [False, True])
+async def test_an_agent_a_contained_claude_worker_asks_for_by_role_reads_no_settings(
+    tmp_path, monkeypatch, role_contained
+):
+    """A request naming a role is cloned from that role's branch, which reads the settings
+    files unless the role is contained too, so naming a role is no way back to them either."""
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by=DEFAULT_WORKLOAD,
+        emitter_contained=True,
+        assignee="reviewer",
+        role_contained=role_contained,
+    )
+
+    assert kwargs["setting_sources"] == ""
+    assert kwargs["permission_mode"] == "dontAsk"
+    assert kwargs["disallowed_tools"] == ["Agent", "Task"]
+
+
+@pytest.mark.asyncio
+async def test_an_agent_a_claude_worker_with_its_settings_asks_for_by_role_keeps_them(
+    tmp_path, monkeypatch
+):
+    kwargs = await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by=DEFAULT_WORKLOAD,
+        assignee="reviewer",
+    )
+
+    assert kwargs.get("setting_sources") is None
+    assert kwargs.get("disallowed_tools") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("emitter_contained", [False, True])
+async def test_a_contained_spawn_with_no_server_set_is_handed_the_empty_set_whole(
+    tmp_path, monkeypatch, emitter_contained
+):
+    """With no worker set resolved, a spawn keeps the servers its CLI discovers, unless it
+    is contained: those would start while dontAsk refused their tools, so it is handed the
+    empty set as its whole set."""
+    handed: list = []
+    await _spawned_branch_kwargs(
+        tmp_path,
+        monkeypatch,
+        DEFAULT_WORKLOAD,
+        provider="claude_code",
+        emitted_by=DEFAULT_WORKLOAD,
+        emitter_contained=emitter_contained,
+        handed=handed,
+    )
+
+    assert handed == ([({}, True)] if emitter_contained else [(None, False)])
 
 
 @pytest.mark.asyncio

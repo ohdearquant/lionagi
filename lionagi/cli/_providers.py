@@ -874,10 +874,12 @@ def _parse_profile_contain_account_integrations(name: str, raw: Any) -> bool:
     return True
 
 
-def _parse_profile_contain_user_settings(name: str, raw: Any) -> bool:
-    """Validate the profile flag; an unreadable value warns and defaults to contained."""
-    if raw is None:
+def _parse_profile_contain_user_settings(name: str, frontmatter: dict) -> bool:
+    """Validate the profile flag. Absent, it is off; a value other than true or false, an
+    empty one included, warns and defaults to contained."""
+    if "contain_user_settings" not in frontmatter:
         return False
+    raw = frontmatter["contain_user_settings"]
     if isinstance(raw, bool):
         return raw
     from ._logging import warn
@@ -918,8 +920,32 @@ def _parse_profile_workload(name: str, raw: Any) -> str:
     return DEFAULT_WORKLOAD
 
 
+def _warn_on_unread_frontmatter(name: str, text: str) -> None:
+    """Warn when a profile opens a frontmatter block that is not read: the reader then
+    returns no settings at all, ``model`` and ``contain_user_settings`` among them."""
+    import yaml
+
+    from lionagi.libs.frontmatter import parse_frontmatter_strict
+
+    try:
+        parse_frontmatter_strict(text)
+    except yaml.YAMLError as exc:
+        # An empty block holds no settings to lose.
+        if not text.strip()[3:].split("\n---", 1)[0].strip():
+            return
+        from ._logging import warn
+
+        reason = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+        warn(
+            f"agent profile {name!r}: its frontmatter does not read as YAML settings "
+            f"({reason}); every setting in it is ignored, contain_user_settings included"
+        )
+
+
 def _parse_profile(name: str, text: str) -> AgentProfile:
     frontmatter, body = _parse_frontmatter(text)
+    if not frontmatter:
+        _warn_on_unread_frontmatter(name, text)
 
     lion_system = bool(frontmatter.get("lion_system", True))
     raw_body = body  # always the body as written, before any expansion
@@ -956,9 +982,7 @@ def _parse_profile(name: str, text: str) -> AgentProfile:
             name, frontmatter.get("idle_timeout"), field="idle_timeout"
         ),
         workload=_parse_profile_workload(name, frontmatter.get("workload")),
-        contain_user_settings=_parse_profile_contain_user_settings(
-            name, frontmatter.get("contain_user_settings")
-        ),
+        contain_user_settings=_parse_profile_contain_user_settings(name, frontmatter),
         extra={
             k: v
             for k, v in frontmatter.items()
