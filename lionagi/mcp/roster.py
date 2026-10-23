@@ -160,14 +160,15 @@ def _resolved_fields() -> tuple[str, ...]:
     profile may or may not carry, so the schema recognises them either way."""
     from lionagi.cli._providers import AgentProfile, profile_config
 
-    # Both optional account-integration fields set, so the keys profile_config
-    # adds only when set are listed too.
+    # Both optional account-integration fields and the settings containment set,
+    # so the keys profile_config adds only when set are listed too.
     base = tuple(
         profile_config(
             AgentProfile(
                 name="",
                 contain_account_integrations=True,
                 account_connectors=("github",),
+                contain_user_settings=True,
             )
         )
     )

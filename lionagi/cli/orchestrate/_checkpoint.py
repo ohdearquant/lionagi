@@ -103,6 +103,7 @@ class CheckpointWriter:
         spawn_id: str | None = None,
         context: Any | None = None,
         emitter_workload: str | None = None,
+        emitter_contains_user_settings: bool = False,
     ) -> None:
         """Record one reactively spawned node's outcome, keyed by its own node id.
 
@@ -119,6 +120,8 @@ class CheckpointWriter:
         `None` when there's no context payload. `emitter_workload` is the class of
         the worker that asked for a node naming no assignee, when that class is not
         the default; resume reads it to refuse re-running such a node at another.
+        `emitter_contains_user_settings` is recorded the same way, when that worker
+        ran with no settings files read.
         """
         async with self._lock:
             entry = {
@@ -134,6 +137,8 @@ class CheckpointWriter:
             }
             if emitter_workload is not None:
                 entry["emitter_workload"] = emitter_workload
+            if emitter_contains_user_settings:
+                entry["emitter_contains_user_settings"] = True
             for i, existing in enumerate(self.spawned):
                 if existing.get("node_id") == node_id:
                     self.spawned[i] = entry
