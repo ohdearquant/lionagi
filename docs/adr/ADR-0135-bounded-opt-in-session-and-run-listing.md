@@ -385,7 +385,7 @@ Sequence:
 3. Implement versioned endpoints and required indexes/migrations; preserve v1 conformance.
 4. Add a separate typed v2 client rather than changing RunListResponse's numeric-total
    promise. Test unknown/exact totals, empty/partial windows, context restart and invalid
-   cursors. Fleet history's numbered-page/has_next pager must explicitly adopt continuations.
+   cursors. The history view's numbered-page/has_next pager must explicitly adopt continuations.
 5. Update generated request/response schema and Studio surface/operator documentation;
    disclose bounded_contains scope, candidate offsets, exact-count cost, update semantics,
    and keyboard/load-more behavior on empty windows.
@@ -496,6 +496,5 @@ Public source anchors for the qualitative design baseline are
 `lionagi/studio/services/sessions.py` (SessionFilter, _SESSION_SORTS, list_sessions,
 count_sessions and route), `runs.py` (_RunListQuery/list_runs_route),
 `lionagi/studio/services/_db.py` (configured local-file guard), `lionagi/studio/app.py`
-(authentication), and `apps/studio/frontend/src/lib/api.ts` plus
-`components/fleet/FleetView.tsx` (v1 client/pager). No runtime source change is part of
-this ADR patch.
+(authentication), and `apps/studio/frontend/src/lib/api.ts` (v1 client contract).
+No runtime source change is part of this ADR patch.
