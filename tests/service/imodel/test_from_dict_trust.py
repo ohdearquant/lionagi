@@ -61,7 +61,6 @@ def test_the_env_key_is_attached_at_another_spelling_of_the_registered_url(env_k
         "http://api.openai.com/v1",
         "https://api.openai.com/v2",
         "https://api.openai.com.gateway.example/v1",
-        "https://api.openai.com:notaport/v1",
         "https://someone@api.openai.com/v1",
     ],
 )
@@ -336,6 +335,7 @@ def test_a_callers_url_keeps_its_user_and_password(env_key):
         "https://gateway.example/v1/%2540team",
         "https://gateway.example/v1?team=%40x",
         "https://gateway.example/v1#%40team",
+        "https://[::1]/v1/@team",
     ],
 )
 def test_an_at_sign_after_the_host_is_kept(url):
@@ -452,7 +452,10 @@ def test_a_stored_url_whose_at_sign_cannot_be_placed_is_refused(stored):
 @pytest.mark.parametrize(
     ("stored", "reason"),
     [
-        ("https://stored-user:stored-secret@", "does not read as a URL with a host"),
+        (
+            "https://stored-user:stored-secret@",
+            "has an '@' in it but does not read as a URL with a host",
+        ),
         (
             "https://stored-user:stored-secret@gateway.example/v1/\ud800",
             "has a character the HTTP client cannot encode",
@@ -498,8 +501,24 @@ def test_a_host_encoded_past_the_layers_read_is_refused():
     assert iModel.from_dict(_stored(base_url=_layered(14))).endpoint.config.base_url == (
         _layered(14)
     )
-    with pytest.raises(ValueError, match="cannot be removed"):
+    with pytest.raises(ValueError, match="has a host that is still percent-encoded after 16"):
         iModel.from_dict(_stored(base_url=_layered(15)))
+
+
+def test_text_encoded_past_the_layers_read_is_refused_after_a_port_or_with_no_host():
+    deep = "%" + "25" * 15 + "41"
+    kept = f"https://gateway.example/v1/{deep}"
+    assert iModel.from_dict(_stored(base_url=kept)).endpoint.config.base_url == kept
+    with pytest.raises(ValueError, match="has a port and a path that is still percent-encoded"):
+        iModel.from_dict(_stored(base_url=f"https://gateway.example:8443/v1/{deep}"))
+    with pytest.raises(ValueError, match="base_url is still percent-encoded after 16"):
+        iModel.from_dict(_stored(base_url=f"internal{deep}"))
+
+
+def test_a_user_is_removed_from_a_url_with_an_at_sign_after_its_host():
+    stored = "https://stored-user:stored-secret@gateway.example/v1/@team"
+    config = iModel.from_dict(_stored(base_url=stored)).endpoint.config
+    assert config.base_url == "https://gateway.example/v1/@team"
 
 
 def test_a_stored_kwargs_base_url_is_not_restored():
@@ -508,6 +527,75 @@ def test_a_stored_kwargs_base_url_is_not_restored():
     model = iModel.from_dict(data)
     assert "base_url" not in model.endpoint.config.kwargs
     assert "stored-se" not in str(model.to_dict())
+
+
+# A password whose first characters the client reads as a port, the '@' after it
+# then sitting in the path, query or fragment: the client reads no user and sends the
+# rest of the password to the host it read from the user name.
+PORT_BEFORE_AT_SIGN = [
+    "https://stored-user:12/stored-secret@gateway.example/v1",
+    "https://stored-user:/stored-secret@gateway.example/v1",
+    "https://stored-user:12?stored-secret@gateway.example/v1",
+    "https://stored-user:12#stored-secret@gateway.example/v1",
+    "https://stored-user:12/stored-secret%40gateway.example/v1",
+    "https://other:pass@stored-user:12/stored-secret@gateway.example/v1",
+    "https://[::1]:12/stored-secret@gateway.example/v1",
+]
+
+
+@pytest.mark.parametrize("entry", ["imodel", "endpoint", "branch"])
+@pytest.mark.parametrize("stored", PORT_BEFORE_AT_SIGN)
+def test_a_stored_url_with_an_at_sign_after_its_port_is_refused(entry, stored):
+    with pytest.raises(
+        ValueError, match="after a ':' that the HTTP client reads as the end of its host"
+    ) as refused:
+        _restore_through(entry, _stored(base_url=stored))
+    for part in ("stored-se", "stored-user", "gateway.example"):
+        assert part not in str(refused.value)
+    assert "chat_model=" in str(refused.value)
+
+
+# A host the client reads with a ':' in it once percent-encoding is removed: a user and
+# password, or the start of one, that would be sent as the host name.
+ENCODED_COLON_IN_HOST = [
+    "https://stored-user%3Astored-secret/v1",
+    "https://stored-user%3A12/stored-secret@gateway.example/v1",
+    "https://stored-user%EF%BC%9Astored-secret/v1",
+]
+
+
+@pytest.mark.parametrize("stored", ENCODED_COLON_IN_HOST)
+def test_a_stored_host_with_an_encoded_colon_is_refused(stored):
+    with pytest.raises(ValueError, match="encoded ':' in its host") as refused:
+        iModel.from_dict(_stored(base_url=stored))
+    for part in ("stored-se", "stored-user", "gateway.example"):
+        assert part not in str(refused.value)
+    assert "chat_model=" in str(refused.value)
+
+
+# No '@', but text after a ':' the client cannot read as a port: it may be a password,
+# and the client would name it in its error and resolve the user name as the host.
+NOT_A_PORT = [
+    "https://stored-user:stored-secret/v1",
+    "https://gateway.example:port/v1",
+    "https://api.openai.com:notaport/v1",
+    "https://stored-user\uff1a12/v1",
+]
+
+
+@pytest.mark.parametrize("stored", NOT_A_PORT)
+def test_a_stored_url_with_text_that_is_not_a_port_is_refused(stored):
+    with pytest.raises(ValueError, match="may be a password, so it is not restored") as refused:
+        iModel.from_dict(_stored(base_url=stored))
+    for part in ("stored-se", "stored-user", "port"):
+        assert part not in str(refused.value)
+    assert "chat_model=" in str(refused.value)
+
+
+@pytest.mark.parametrize("stored", PORT_BEFORE_AT_SIGN + ENCODED_COLON_IN_HOST + NOT_A_PORT)
+def test_a_callers_url_replaces_a_stored_url_with_a_misread_port(stored):
+    config = iModel.from_dict(_stored(base_url=stored), base_url=ELSEWHERE).endpoint.config
+    assert config.base_url == ELSEWHERE
 
 
 @pytest.mark.parametrize("stored", ENCODED_AT_SIGN_IN_HOST)
@@ -524,7 +612,14 @@ def test_a_callers_url_replaces_a_stored_url_that_is_refused(stored):
 
 @pytest.mark.parametrize(
     "stored",
-    ["internal", "", "https://gateway.example:port/v1", "https://gateway.example/v1/\ud800"],
+    [
+        "internal",
+        "",
+        "https://gateway.example:8443/v1",
+        "https://[::1]:8080/v1",
+        "https://[fe80::1%25en0]/v1",
+        "https://gateway.example/v1/\ud800",
+    ],
 )
 def test_a_stored_url_without_an_at_sign_is_kept_as_written(stored):
     assert iModel.from_dict(_stored(base_url=stored)).endpoint.config.base_url == stored
