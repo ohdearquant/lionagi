@@ -282,17 +282,18 @@ class TestErrorShapeWithoutADaemon:
     """
 
     def test_schedule_runs_unreachable_studio_reports_diagnostic(self):
-        # Hold a bound-but-never-listening socket for the duration of the
-        # subprocess: the OS reserves the port for us (no other process can
-        # take it), and with no listen queue every connect attempt gets a
-        # deterministic ECONNREFUSED — unlike a hardcoded low port, which
-        # firewalls can silently drop (hang) rather than refuse.
+        # A loopback port the OS just handed out and released: nothing listens
+        # there, so a connect is refused at once, unlike a hardcoded low port,
+        # which a firewall can drop silently. The socket is not kept bound for
+        # the call: Linux refuses a connect to a bound port that does not
+        # listen, but macOS does not answer it, and the CLI then reports a
+        # timeout instead.
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
-            env = os.environ.copy()
-            env["LIONAGI_STUDIO_URL"] = f"http://127.0.0.1:{port}"
-            result = _run(["schedule", "runs", "nonexistent-schedule-id"], env=env)
+        env = os.environ.copy()
+        env["LIONAGI_STUDIO_URL"] = f"http://127.0.0.1:{port}"
+        result = _run(["schedule", "runs", "nonexistent-schedule-id"], env=env)
         assert result.returncode == 1
         assert "Cannot reach Studio" in result.stderr
         assert f"127.0.0.1:{port}" in result.stderr
