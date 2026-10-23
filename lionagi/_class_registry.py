@@ -50,7 +50,8 @@ _IMPORTED = f"its module is imported and holds no class of that name; {_MOVED}"
 _LAZY = (
     "its module is imported and may supply the name through a module-level "
     "__getattr__, which is called only for a module under an allowed prefix; allow "
-    "its package with lionagi.ln.register_type_prefix()"
+    "its package with lionagi.ln.register_type_prefix(), giving its prefix with the "
+    'trailing dot ("mypkg.")'
 )
 _NESTED = (
     "its path runs through a class, which a dotted path does not reach into; register "
@@ -58,7 +59,8 @@ _NESTED = (
 )
 _OUTSIDE = (
     "its module is outside the allowed prefixes; import that module first, allow its "
-    f"package with lionagi.ln.register_type_prefix(), or, {_MOVED}"
+    "package with lionagi.ln.register_type_prefix(), giving its prefix with the trailing "
+    f'dot ("mypkg."), or, {_MOVED}'
 )
 # How much of a name, or of why it failed to load, an error message repeats: the
 # name comes from serialized data and can be any length.

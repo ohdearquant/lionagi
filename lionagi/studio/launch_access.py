@@ -4,8 +4,8 @@
 
 A daemon with no ``LIONAGI_STUDIO_AUTH_TOKEN`` refuses API requests from a browser
 origin that is neither loopback nor its own. ``li studio`` opens the hosted page
-anyway, so the page needs two credentials: a bearer for API admission and a
-decision capability for the two Operator decision routes. This module holds both,
+anyway, so the page holds two credentials: a bearer for API admission and a decision
+capability the two Operator decision routes record as who decided. This module holds both,
 minted per process and kept in memory only. They are never put in the environment,
 so the processes the daemon spawns do not inherit them, and they are never written
 anywhere.

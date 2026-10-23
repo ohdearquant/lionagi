@@ -728,6 +728,21 @@ class TestRemoteOriginNeedsToken:
 
         assert resp.status_code == 401
 
+    def test_a_refused_origin_cannot_update_a_session(self, make_client):
+        client = make_client()
+        path = "/api/sessions/no-such-session"
+        body = {"display_name": "renamed"}
+
+        refused = client.put(
+            path, headers={**_LOOPBACK, "Origin": "http://10.0.0.5:8765"}, json=body
+        )
+        accepted = client.put(
+            path, headers={**_LOOPBACK, "Origin": "http://localhost:5173"}, json=body
+        )
+
+        assert refused.status_code == 401
+        assert accepted.status_code != 401
+
     def test_the_daemons_own_origin_is_accepted_on_a_configured_bind_host(
         self, monkeypatch, make_client
     ):

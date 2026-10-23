@@ -677,3 +677,24 @@ def test_a_class_nested_under_the_deepest_imported_module_is_still_found(monkeyp
     monkeypatch.setattr(_utils, "_TYPE_CACHE", {})
     with pytest.raises(ValueError, match="register the class under this dotted name"):
         get_class(f"{module_name}.Outer.Inner")
+
+
+def test_the_prefix_remedy_names_the_trailing_dot(probe_module, monkeypatch):
+    def supply(name):
+        return LocalElement
+
+    lazy = types.ModuleType("lion_class_getattr_dot_zz")
+    lazy.__getattr__ = supply
+    monkeypatch.setitem(sys.modules, "lion_class_getattr_dot_zz", lazy)
+    for name in (f"{_MODULE}.Thing", "lion_class_getattr_dot_zz.Thing"):
+        with pytest.raises(ValueError) as raised:
+            get_class(name)
+        assert 'register_type_prefix(), giving its prefix with the trailing dot ("mypkg.")' in str(
+            raised.value
+        ), name
+
+    # The prefix without its dot is refused, and with it the class loads.
+    with pytest.raises(ValueError, match="Prefix must end with"):
+        _utils.register_type_prefix(_MODULE)
+    _utils.register_type_prefix(f"{_MODULE}.")
+    assert get_class(f"{_MODULE}.Thing").__name__ == "Thing"
