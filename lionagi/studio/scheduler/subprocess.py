@@ -617,6 +617,10 @@ def build_argv(
         stored_args = _playbook_args(schedule)
         play_args = stored_args if isinstance(stored_args, dict) else {}
 
+    # A kind that does not send its prompt neither renders nor checks it: a command launch sends
+    # its arguments only, whatever its stored prompt would render to.
+    if not _sends_prompt(schedule, kind):
+        prompt = ""
     # Render template variables from trigger context FIRST, then validate the
     # rendered prompt so that template-injected values (e.g. '{{payload}}' →
     # '--') are caught before argv construction.

@@ -1439,6 +1439,10 @@ async def test_fire_now_is_not_refused_for_a_placeholder_its_launch_does_not_sen
             {"action_kind": "command", "action_command": "uv", "action_command_args": "x"},
             "action_command_args must be a list of strings",
         ),
+        (
+            {"action_cwd": "/nonexistent-lionagi-schedule-root"},
+            "could not be resolved to an existing directory",
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -1481,6 +1485,19 @@ def test_the_rendered_prompt_is_only_one_the_launch_sends(fields, recorded):
     schedule = _minimal_schedule(action_prompt="check {{pr_number}}", **fields)
     poll_context = {"github_events": [{"pr_number": 7}], "fired_at": 1.0}
     assert render_action_prompt(schedule, poll_context) == recorded
+
+
+def test_a_launch_that_sends_no_prompt_neither_renders_nor_checks_it(monkeypatch):
+    from lionagi.studio.scheduler.subprocess import build_argv
+
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "uv")
+    command = {"action_kind": "command", "action_command": "uv", "action_command_args": ["-V"]}
+    context = {"payload": "--"}
+    argv, _ = build_argv(_minimal_schedule(action_prompt="{{payload}}", **command), context)
+    assert argv == build_argv(_minimal_schedule(action_prompt="", **command), context)[0]
+    # A launch that sends the same prompt still refuses what it renders to.
+    with pytest.raises(ValueError, match="'--' is not allowed"):
+        build_argv(_minimal_schedule(action_prompt="{{payload}}", action_kind="agent"), context)
 
 
 def test_an_engine_spec_that_renders_empty_is_refused_when_the_launch_is_built():
@@ -4339,6 +4356,21 @@ async def test_stop_ends_the_loop_rather_than_restarting_it(monkeypatch):
         # stop() is idempotent, so this only matters when an assertion above never reached it:
         # a live loop outliving its test runs during every later one.
         await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_scheduler_that_is_stopping_is_not_ready():
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    engine = SchedulerEngine(svc=_make_svc())
+    # stop() has begun and the tick loop is still winding down, so its task is still set.
+    engine._task = asyncio.current_task()
+    engine._started_at = time.time() - 10
+    engine._last_tick_completed_at = time.time()
+    engine._stopping = True
+    report = engine.health()
+    assert report["status"] == "stopping"
+    assert report["ready"] is False
 
 
 @pytest.mark.asyncio

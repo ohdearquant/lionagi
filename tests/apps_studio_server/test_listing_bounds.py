@@ -353,6 +353,7 @@ class TestStoreProbe:
         wait first. When SQLite's does, the read raises a lock error rather than being
         cancelled, and that store is as slow as one the deadline gave up on. Any other error
         still means the store could not be read."""
+        import contextvars
         import sqlite3
 
         import aiosqlite
@@ -372,7 +373,28 @@ class TestStoreProbe:
             async def close(self):
                 return None
 
-        monkeypatch.setattr(aiosqlite, "connect", lambda *a, **kw: _LockedConnection())
+        from lionagi.studio.services import admin as admin_svc
+
+        # Only the probe's own connection is the locked one: the app opens the store for its
+        # startup work as well, which must get the real driver.
+        probing = contextvars.ContextVar("probing", default=False)
+        real_connect = aiosqlite.connect
+        real_probe = admin_svc.store_probe
+
+        async def _probe(**kwargs):
+            token = probing.set(True)
+            try:
+                return await real_probe(**kwargs)
+            finally:
+                probing.reset(token)
+
+        def _connect(*args, **kwargs):
+            if probing.get():
+                return _LockedConnection()
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr(admin_svc, "store_probe", _probe)
+        monkeypatch.setattr(aiosqlite, "connect", _connect)
         body = client.get("/api/admin/readiness", params={"timeout_ms": 1000}).json()
         assert body["status"] == status, body
         if status == "slow":

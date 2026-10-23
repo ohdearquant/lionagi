@@ -602,11 +602,12 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   neither launch sends it. The scheduler fills templates in those two fields only: others, such as
   `action_extra_args`, `action_playbook_args` or a `flow_yaml` spec, go as written and are not
   checked. A schedule whose stored fields cannot launch, such as one with an unknown action kind,
-  an invalid playbook name, a command outside the allowlist or an `engine` schedule with no
-  engine kind, is refused for that reason first, with the error its launch would raise. A value
-  that only a filled template makes invalid, such as a prompt that renders to a flag, is still
-  refused when the launch is built. The run record of a launch that sends no prompt no longer
-  shows its `action_prompt`.
+  an invalid playbook name, a command outside the allowlist, an `engine` schedule with no engine
+  kind or an `action_cwd` or `action_project` that no longer resolves to a directory, is refused
+  for that reason first, with the error its launch would raise. A value that only a filled
+  template makes invalid, such as a sent prompt that renders to a flag, is still refused when the
+  launch is built; a launch that sends no prompt no longer fills or checks it, and its run record
+  no longer shows its `action_prompt`.
 - The store probe in `/admin/readiness` could report a store that another connection held locked
   as `unavailable` rather than `slow`. The probe sets SQLite's busy timeout to its own deadline,
   and when SQLite's wait ran out first the read raised "database is locked", which the probe read
@@ -618,7 +619,8 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   The interval now counts from the later of the last fire and the last poll, so the schedule
   polls once per interval whatever the poll found. The exception is a poll whose kept events are
   dropped because the schedule has moved past them: the poll that found them counts as never
-  made, and the schedule lists afresh at the tick that drops them. A restarted scheduler polls at
+  made, so the interval counts from the last fire alone, and the schedule lists afresh once that
+  has passed, at the tick that drops them if it already has. A restarted scheduler polls at
   its first tick if the interval has passed since the last fire.
 - `extract_lndl_blocks` read only unindented three-character fences with LF line ends, so an
   indented block, a block fenced with four backticks, or CRLF output was not read at all; it now
