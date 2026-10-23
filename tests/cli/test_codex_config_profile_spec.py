@@ -410,36 +410,99 @@ class TestAQuotedServerKeyIsNotAdoptedEither:
 
 class TestAProviderAliasBuildsAsItsProvider:
     """``openai-codex`` and ``Codex`` resolve to the codex endpoint, so a spec naming one takes
-    what a ``codex`` spec takes: its config profiles, its effort and its yolo flags."""
+    what a ``codex`` spec takes: its config profiles, its effort, the effort it derives from the
+    global config, and its yolo, bypass and fast flags."""
 
     @pytest.fixture
     def routed(self, codex_home):
         _write(codex_home, "routed", 'model = "vendor/m"\nmodel_provider = "openrouter"\n')
+        (codex_home / "config.toml").write_text('model_reasoning_effort = "ultra"\n')
+
+    @staticmethod
+    def _expected_effort(model, effort):
+        # The global ultra is clamped to gpt-5.5's xhigh ceiling; a profile's model is one no
+        # ceiling is known for, so nothing is derived for it.
+        return effort or ("xhigh" if model == "gpt-5.5" else None)
+
+    @staticmethod
+    def _flag_kwargs(flag):
+        from lionagi.service.providers import (
+            PROVIDER_BYPASS_KWARGS,
+            PROVIDER_FAST_KWARGS,
+            PROVIDER_YOLO_KWARGS,
+        )
+
+        table = {"yolo": PROVIDER_YOLO_KWARGS, "bypass": PROVIDER_BYPASS_KWARGS}.get(
+            flag, PROVIDER_FAST_KWARGS
+        )
+        assert table["codex"]
+        return table["codex"]
 
     @pytest.mark.parametrize("alias", ["openai-codex", "Codex"])
     @pytest.mark.parametrize("model", ["routed", "gpt-5.5"])
-    def test_the_spec_builder(self, routed, alias, model):
+    @pytest.mark.parametrize("flag", ["yolo", "bypass", "fast"])
+    @pytest.mark.parametrize("effort", ["high", None])
+    def test_the_spec_builder(self, routed, alias, model, flag, effort):
         built = {
             provider: build_imodel_from_spec(
-                f"{provider}/{model}", yolo=True, effort_override="high"
+                f"{provider}/{model}", effort_override=effort, **{flag: True}
             ).endpoint
             for provider in ("codex", alias)
         }
 
         assert type(built[alias]) is type(built["codex"])
         assert built[alias].config.kwargs == built["codex"].config.kwargs
-        assert built[alias].config.kwargs["reasoning_effort"] == "high"
+        kwargs = built[alias].config.kwargs
+        assert kwargs.get("reasoning_effort") == self._expected_effort(model, effort)
+        for key, value in self._flag_kwargs(flag).items():
+            assert kwargs.get(key) == value
 
     @pytest.mark.parametrize("alias", ["openai-codex", "Codex"])
     @pytest.mark.parametrize("model", ["routed", "gpt-5.5"])
-    def test_the_chat_model_builder(self, routed, alias, model):
+    @pytest.mark.parametrize("flag", ["yolo", "bypass", "fast"])
+    @pytest.mark.parametrize("effort", ["high", None])
+    def test_the_chat_model_builder(self, routed, alias, model, flag, effort):
         built = {
             provider: build_chat_model(
-                provider=provider, model=model, yolo=True, verbose=False, theme=None, effort="high"
+                provider=provider,
+                model=model,
+                yolo=flag == "yolo",
+                verbose=False,
+                theme=None,
+                effort=effort,
+                bypass=flag == "bypass",
+                fast=flag == "fast",
             ).endpoint
             for provider in ("codex", alias)
         }
 
         assert type(built[alias]) is type(built["codex"])
         assert built[alias].config.kwargs == built["codex"].config.kwargs
-        assert built[alias].config.kwargs["reasoning_effort"] == "high"
+        kwargs = built[alias].config.kwargs
+        assert kwargs.get("reasoning_effort") == self._expected_effort(model, effort)
+        for key, value in self._flag_kwargs(flag).items():
+            assert kwargs.get(key) == value
+
+    @pytest.mark.parametrize("alias", ["openai-codex", "Codex"])
+    def test_the_persisted_effort_is_the_one_the_endpoint_runs(self, codex_home, alias):
+        from lionagi.cli._providers import resolve_persisted_effort
+
+        imodel = build_imodel_from_spec(f"{alias}/gpt-5.5", effort_override="ultra")
+
+        assert imodel.endpoint.config.kwargs["reasoning_effort"] == "xhigh"
+        assert resolve_persisted_effort(alias, imodel, "ultra") == "xhigh"
+
+    @pytest.mark.parametrize("alias", ["openai-codex", "Codex"])
+    def test_an_effort_suffix_on_the_model_routes_to_the_effort(self, codex_home, alias):
+        from lionagi import iModel
+
+        built = {
+            provider: iModel(
+                provider=provider, endpoint="query_cli", model="gpt-5.5-high", api_key="dummy"
+            ).endpoint.config.kwargs
+            for provider in ("codex", alias)
+        }
+
+        assert built[alias] == built["codex"]
+        assert built[alias]["model"] == "gpt-5.5"
+        assert built[alias]["reasoning_effort"] == "high"

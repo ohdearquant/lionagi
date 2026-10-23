@@ -161,10 +161,14 @@ def reclamp_effort_for_model(provider: str, effort: str | None, model: str | Non
     A persisted effort carries the ceiling of the model it was resolved for;
     replaying it onto another model can exceed that model's ceiling (an
     ``ultra`` resolved for gpt-5.6-sol replayed on gpt-5.3-codex-spark).
-    Callers that swap a model under an existing effort re-clamp here.
+    Callers that swap a model under an existing effort re-clamp here. An alias
+    (``openai-codex``) is clamped as the provider it names.
     """
     if effort is None:
         return None
+    from lionagi.service.connections.registry import EndpointRegistry
+
+    provider = EndpointRegistry.canonical_provider(provider or "")
     if provider == "codex":
         return _clamp_codex_effort(effort, model)
     if provider in _CLAUDE_PROVIDER_NAMES:

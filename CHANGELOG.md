@@ -262,15 +262,20 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   `--sandbox workspace-write`); one on any other CLI is refused, since that CLI would read its
   own user settings. `--retry-failed` refuses to run one again on a branch that reads settings
   files: the orchestrator's, or a role's that is neither a contained Claude worker, a codex
-  worker nor a model that is not a CLI. A value other than `true` or `false`, an empty one
-  included, warns and contains. A profile whose frontmatter does not read as YAML settings now
-  warns that every setting in it is ignored, except a top-level `contain_user_settings` line of
-  its own, key quoted or not, which is still read. With more than one such line, in a block that
-  reads or not, the flag is off only when every one reads `false`, and a block that reads warns.
-  A byte-order mark or another invisible format character ahead of a profile's frontmatter no
-  longer hides it; any other character there hides the block and every setting in it, with a
-  warning, except a `contain_user_settings` line of its own, which is still read. Containment is
-  unchanged for `li agent -a`, which reads profiles the same way and so prints the same warnings.
+  worker nor a model that is not a CLI. The flag is read as YAML reads the block: an indented
+  block, a quoted or `?` key and a `<<` merge key all count, an explicit key wins over a merged
+  one, and a key given more than once warns and leaves the flag off only when every one reads
+  `false`. A value other than `true` or `false` warns and contains: an empty one, `null`, `0`
+  and the YAML 1.1 words `off`, `no`, `yes` and `on` included. A profile whose frontmatter does
+  not read as YAML settings now warns that every setting in it is ignored, and contains its
+  worker when the block names `contain_user_settings` anywhere, whatever value it gives; a block
+  with no closing `---` runs to the end of the file. A byte-order mark or another invisible
+  format character ahead of a profile's frontmatter no longer hides it. Any other character on
+  the delimiter's line hides the block and every setting in it, with a warning, and contains when
+  the block names the flag; text on lines of its own ahead of the first `---` leaves the profile
+  all prompt, as before, unless the block after it names the flag, which then contains and warns.
+  Containment is unchanged for `li agent -a`, which reads profiles the same way and so prints the
+  same warnings.
 
 ### Changed
 
@@ -533,9 +538,12 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   takes the MCP servers it is handed over `-c`, as a `codex` one does, where before they were
   reported as not reachable for it, and an `openai-codex` worker in `li o flow` and `li o fanout`
   runs with `--ignore-user-config`, as every codex worker does, where before it read your codex
-  configuration. A spec on an alias also builds as its provider's does, in `li agent`,
-  `li o flow` and `create_agent`: `openai-codex/<name>` resolves a codex config profile, and an
-  alias takes its provider's effort and `yolo` settings, which it lost before.
+  configuration. A spec on an alias also builds as its provider's does: in `li agent` and
+  `li o flow`, `openai-codex/<name>` resolves a codex config profile, and there and in
+  `create_agent` an alias takes its provider's effort, the effort it derives from the global
+  codex config, and its `yolo`, bypass and fast settings, which it lost before. The effort an
+  alias session stores is the one its endpoint runs, a resume onto another model re-clamps it as
+  for the provider, and an effort suffix on the model name (`gpt-5.5-high`) routes to the effort.
 
 - `extract_docstring(func, style="rest")`, and `function_to_schema(..., style="rest")` with it,
   keeps a parameter's whole description. Indented lines after `:param x:` were dropped, so a
