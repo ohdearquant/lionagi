@@ -338,12 +338,13 @@ async def test_context_cancelled_open_shields_partial_engine_disposal(monkeypatc
     state = StateDB(":memory:")
 
     async def hang_schema() -> None:
+        scope.deadline = anyio.current_time()
         await anyio.sleep_forever()
 
     monkeypatch.setattr(state, "_apply_schema", hang_schema)
 
     with pytest.raises(TimeoutError):
-        with anyio.fail_after(0.01):
+        with anyio.fail_after(None) as scope:
             async with state:
                 raise AssertionError("context body must not run")
 
