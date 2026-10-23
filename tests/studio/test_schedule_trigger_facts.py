@@ -11,6 +11,22 @@ from lionagi.state.db import StateDB
 from lionagi.studio.services import schedules
 
 
+def _past_the_parsers_depth(opener: str) -> str:
+    """Nesting the C scanner refuses with its depth error, found on this interpreter: from
+    Python 3.14 that limit is measured in stack bytes, so the depth it allows differs by platform
+    and thread. Call it at the depth of the code under test or shallower, never deeper."""
+    for depth in (100_000, 1_000_000, 10_000_000):
+        text = opener * depth
+        try:
+            json.loads(text)
+        except RecursionError as exc:
+            assert "while decoding a JSON" in str(exc)
+            return text
+        except ValueError:
+            pass
+    raise AssertionError(f"{opener!r} nested 10,000,000 deep never reached the parser's depth")
+
+
 @pytest.mark.parametrize(
     "project", [schedules._run_view, schedules._run_summary, schedules._run_record]
 )
@@ -112,8 +128,8 @@ def test_invalid_missed_fire_times_are_null_and_json_safe(value, encoded):
         # An integer past the interpreter's digit limit, and nesting past the parser's depth:
         # neither text is a context, and neither may fail the read.
         {"trigger_context": '{"n": 1' + "0" * 4999 + "}"},
-        {"trigger_context": "[" * 100_000},
-        {"trigger_context": '{"a": ' * 100_000},
+        {"trigger_context": _past_the_parsers_depth("[")},
+        {"trigger_context": _past_the_parsers_depth('{"a": ')},
     ],
     ids=["absent", "truncated", "string", "digit-limit", "nesting", "object-nesting"],
 )
@@ -150,7 +166,7 @@ def test_only_the_trigger_context_column_keeps_text_past_the_parsers_depth():
     recursion limit, so the row read keeps text past that depth only in trigger_context, whose
     projection reads it as no context; every other JSON column raises it as before. An integer
     past the digit limit is a property of the text alone, so every column keeps that text."""
-    nested = "[" * 100_000
+    nested = _past_the_parsers_depth("[")
     assert StateDB._row_to_dict({"trigger_context": nested})["trigger_context"] == nested
     for key in ("node_metadata", "payload", "action_args"):
         with pytest.raises(RecursionError, match="while decoding a JSON"):
