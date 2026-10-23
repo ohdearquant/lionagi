@@ -18,12 +18,12 @@ un-gate of a cancelled run's status.
 
 from __future__ import annotations
 
-import asyncio
 import time
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from lionagi.ln.concurrency import sleep
 from lionagi.state.session_naming import resolve_display_name
 
 from .redact import MAX_CANDIDATES, public_project
@@ -425,7 +425,7 @@ async def cancel_run(arguments: dict[str, Any]) -> dict[str, Any]:
             status = proposal["status"]
         if status in {"succeeded", "failed", "cancelled", "expired", "conflict"}:
             return _redacted_cancel_result(proposal, run_id)
-        await asyncio.sleep(0.1)
+        await sleep(0.1)
 
 
 async def execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:

@@ -19,6 +19,8 @@ import sys
 import time
 from typing import Any
 
+from lionagi.ln.concurrency import sleep
+
 from .store import OperatorStore
 
 _TOOL_SCHEMA = {
@@ -109,7 +111,7 @@ async def request_permission(arguments: dict[str, Any]) -> dict[str, Any]:
             else:
                 message = "The human at the Studio permission prompt declined this tool request"
             return {"behavior": "deny", "message": message}
-        await asyncio.sleep(0.1)
+        await sleep(0.1)
 
 
 async def _dispatch(message: dict[str, Any]) -> dict[str, Any] | None:

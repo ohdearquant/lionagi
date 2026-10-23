@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import json
 import logging
@@ -29,6 +28,7 @@ from lionagi._errors import ConfigurationError
 from lionagi.agent import AgentSpec, create_agent
 from lionagi.agent.factory import register_profile_injection
 from lionagi.ln._json_dump import raise_if_non_finite
+from lionagi.ln.concurrency import sleep
 from lionagi.operations.builder import OperationGraphBuilder
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.state import provenance as _provenance
@@ -1792,7 +1792,7 @@ _SQLITE_ADMISSION_RETRY_DELAYS: tuple[float, ...] = (0.05, 0.15)
 
 
 async def _sleep_before_sqlite_admission_retry(delay: float) -> None:
-    await asyncio.sleep(delay)
+    await sleep(delay)
 
 
 def _is_sqlite_writer_contention(exc: BaseException) -> bool:

@@ -17,9 +17,8 @@ from pathlib import Path
 from typing import TypeVar
 from uuid import UUID
 
-import anyio
-
 from lionagi.ln import now_utc
+from lionagi.ln.concurrency import run_sync
 from lionagi.service.accounts._types import (
     INT64_MAX,
     AccountRoutingError,
@@ -186,7 +185,7 @@ class CredentialLedger:
 
     async def _run(self, operation: Callable[[], _T]) -> _T:
         try:
-            return await anyio.to_thread.run_sync(operation, abandon_on_cancel=False)
+            return await run_sync(operation)
         except sqlite3.OperationalError as exc:
             message = str(exc).lower()
             if "locked" in message or "busy" in message:

@@ -21,8 +21,9 @@ import time
 from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
 
-import anyio
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+from lionagi.ln.concurrency import run_sync, sleep
 
 from .cancel_run import CANCEL_RUN_DESCRIPTION, CancelRunInput, cancel_run
 from .conversation_metadata import UpdateConversationInput
@@ -1032,7 +1033,7 @@ async def list_agents(arguments: dict[str, Any]) -> dict[str, Any]:
     from lionagi.studio.services.agents import list_agents as _list_agents
     from lionagi.studio.services.redaction import demo_mode_enabled, project_agent_fields
 
-    rows = await anyio.to_thread.run_sync(_list_agents)
+    rows = await run_sync(_list_agents)
     redact = demo_mode_enabled()
     projected = []
     for row in rows[: args.limit]:
@@ -1054,7 +1055,7 @@ async def list_playbooks(arguments: dict[str, Any]) -> dict[str, Any]:
     args = ListPlaybooksInput.model_validate(arguments)
     from lionagi.studio.services.playbooks import list_playbooks as _list_playbooks
 
-    rows = await anyio.to_thread.run_sync(_list_playbooks)
+    rows = await run_sync(_list_playbooks)
     projected = [
         {
             "name": row.get("name"),
@@ -1140,7 +1141,7 @@ async def resolve_playbook_version(playbook: str) -> str:
     """Fingerprint the exact playbook content without exposing its host path."""
     from lionagi.studio.services.playbooks import fingerprint_playbook
 
-    return await anyio.to_thread.run_sync(fingerprint_playbook, playbook)
+    return await run_sync(fingerprint_playbook, playbook)
 
 
 def _playbook_placeholder_problems(
@@ -1191,9 +1192,7 @@ async def launch_playbook(arguments: dict[str, Any]) -> dict[str, Any]:
     args = LaunchPlaybookInput.model_validate(arguments)
     store, conversation_id, request_id = _identity()
     target_version = await resolve_playbook_version(args.playbook)
-    problem = await anyio.to_thread.run_sync(
-        _playbook_placeholder_problems, args.playbook, args.input, args.args
-    )
+    problem = await run_sync(_playbook_placeholder_problems, args.playbook, args.input, args.args)
     if problem is not None:
         return {"status": "refused", "reason": problem}
     command = {
@@ -1243,7 +1242,7 @@ async def launch_playbook(arguments: dict[str, Any]) -> dict[str, Any]:
             status = proposal["status"]
         if status in {"succeeded", "failed", "cancelled", "expired", "conflict"}:
             return _redacted_launch_result(proposal)
-        await asyncio.sleep(0.1)
+        await sleep(0.1)
 
 
 _TOOL_HANDLERS = {
