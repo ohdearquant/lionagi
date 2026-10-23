@@ -842,7 +842,7 @@ def _check_orchestrator_clone_profile(env: OrchestrationEnv) -> None:
     if _canonical_provider(imodel.endpoint.config.provider) != "codex":
         return
     provider, _, name = parse_model_spec(env.default_model_spec).model.partition("/")
-    if provider != "codex" or not name:
+    if _canonical_provider(provider) != "codex" or not name:
         return
     resolved = resolve_codex_config_profile(name)
     if resolved is None:

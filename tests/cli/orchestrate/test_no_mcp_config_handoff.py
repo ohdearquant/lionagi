@@ -1310,6 +1310,7 @@ def test_a_profile_that_starts_with_a_byte_order_mark_keeps_its_settings(caplog,
         (["contain_user_settings: true", "contain_user_settings: false"], True),
         (["contain_user_settings: false", "contain_user_settings: true"], True),
         (["contain_user_settings: false", "contain_user_settings: maybe"], True),
+        (["contain_user_settings: maybe", "contain_user_settings: false"], True),
         (["contain_user_settings: false", "contain_user_settings: false"], False),
         (['"contain_user_settings": true'], True),
         (["'contain_user_settings': true"], True),
@@ -1332,6 +1333,72 @@ def test_no_line_of_a_frontmatter_that_does_not_read_turns_containment_off_alone
 
     assert profile.contain_user_settings is expected
     assert "every setting in it is ignored except contain_user_settings" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("lines", "expected"),
+    [
+        (["contain_user_settings: true", "contain_user_settings: false"], True),
+        (["contain_user_settings: false", "contain_user_settings: true"], True),
+        (["contain_user_settings: maybe", "contain_user_settings: false"], True),
+        (['"contain_user_settings": true', "contain_user_settings: false"], True),
+        (["contain_user_settings: false", "contain_user_settings: false"], False),
+    ],
+)
+def test_no_line_of_a_frontmatter_that_reads_turns_containment_off_alone(caplog, lines, expected):
+    """YAML keeps the last of a repeated key, so a block that reads follows the rule of one
+    that does not: the flag is off only when every line naming it reads false."""
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    flag = "".join(f"{line}\n" for line in lines)
+    text = f"---\nmodel: claude_code/sonnet\n{flag}---\n\nWork.\n"
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.model == "claude_code/sonnet"
+    assert profile.contain_user_settings is expected
+    assert "contain_user_settings is set on 2 lines" in caplog.text
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+@pytest.mark.parametrize(
+    "prefix",
+    ["\ufe0f", "\u034f", "\u3164", "\u2800", "\u115f", "\x00", "x", "# notes\n"],
+)
+@pytest.mark.parametrize(("flag", "expected"), [("true", True), ("false", False)])
+def test_the_flag_holds_when_something_ahead_of_the_frontmatter_hides_it(
+    caplog, newline, prefix, flag, expected
+):
+    """A character ahead of the opening delimiter that is neither whitespace nor a format
+    character hides the block, and with it every other setting, but not the flag."""
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    text = prefix + newline.join(
+        ["---", "model: claude_code/sonnet", f"contain_user_settings: {flag}", "---", "", "Work."]
+    )
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.model is None
+    assert profile.contain_user_settings is expected
+    assert "no frontmatter block opens it" in caplog.text
+
+
+def test_a_profile_without_frontmatter_or_the_flag_does_not_warn(caplog):
+    import logging
+
+    from lionagi.cli._providers import _parse_profile
+
+    text = "\u3164---\nmodel: claude_code/sonnet\n---\n\nWork.\n"
+    with caplog.at_level(logging.WARNING, logger="lionagi.cli.warn"):
+        profile = _parse_profile("role", text)
+
+    assert profile.contain_user_settings is False
+    assert "no frontmatter block opens it" not in caplog.text
 
 
 def test_a_false_in_the_body_of_an_unclosed_frontmatter_does_not_turn_containment_off(caplog):

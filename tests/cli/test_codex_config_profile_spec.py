@@ -406,3 +406,40 @@ class TestAQuotedServerKeyIsNotAdoptedEither:
         )
         _, overrides = resolve_codex_config_profile("segment")
         assert overrides == {"model_provider": "openrouter"}
+
+
+class TestAProviderAliasBuildsAsItsProvider:
+    """``openai-codex`` and ``Codex`` resolve to the codex endpoint, so a spec naming one takes
+    what a ``codex`` spec takes: its config profiles, its effort and its yolo flags."""
+
+    @pytest.fixture
+    def routed(self, codex_home):
+        _write(codex_home, "routed", 'model = "vendor/m"\nmodel_provider = "openrouter"\n')
+
+    @pytest.mark.parametrize("alias", ["openai-codex", "Codex"])
+    @pytest.mark.parametrize("model", ["routed", "gpt-5.5"])
+    def test_the_spec_builder(self, routed, alias, model):
+        built = {
+            provider: build_imodel_from_spec(
+                f"{provider}/{model}", yolo=True, effort_override="high"
+            ).endpoint
+            for provider in ("codex", alias)
+        }
+
+        assert type(built[alias]) is type(built["codex"])
+        assert built[alias].config.kwargs == built["codex"].config.kwargs
+        assert built[alias].config.kwargs["reasoning_effort"] == "high"
+
+    @pytest.mark.parametrize("alias", ["openai-codex", "Codex"])
+    @pytest.mark.parametrize("model", ["routed", "gpt-5.5"])
+    def test_the_chat_model_builder(self, routed, alias, model):
+        built = {
+            provider: build_chat_model(
+                provider=provider, model=model, yolo=True, verbose=False, theme=None, effort="high"
+            ).endpoint
+            for provider in ("codex", alias)
+        }
+
+        assert type(built[alias]) is type(built["codex"])
+        assert built[alias].config.kwargs == built["codex"].config.kwargs
+        assert built[alias].config.kwargs["reasoning_effort"] == "high"
