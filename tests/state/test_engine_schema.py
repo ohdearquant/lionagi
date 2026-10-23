@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -674,8 +675,11 @@ class _RecordingLog:
     def warning(self, msg, *args):
         self.warnings.append(msg % args if args else msg)
 
+    def info(self, *_args):
+        pass
 
-def _engine_with_recorded_log(monkeypatch, tmp_path, version_info, version_str):
+
+def _record_sqlite_version(monkeypatch, version_info, version_str):
     import lionagi.state.engine as engine_mod
 
     recorder = _RecordingLog()
@@ -683,7 +687,12 @@ def _engine_with_recorded_log(monkeypatch, tmp_path, version_info, version_str):
     monkeypatch.setattr(engine_mod, "_wal_reset_warning_emitted", False)
     monkeypatch.setattr(sqlite3, "sqlite_version_info", version_info)
     monkeypatch.setattr(sqlite3, "sqlite_version", version_str)
-    engine = engine_mod.make_engine(f"sqlite+aiosqlite:///{tmp_path / 'v.db'}")
+    return recorder
+
+
+def _engine_with_recorded_log(monkeypatch, tmp_path, version_info, version_str, *, url=None):
+    recorder = _record_sqlite_version(monkeypatch, version_info, version_str)
+    engine = make_engine(url or f"sqlite+aiosqlite:///{tmp_path / 'v.db'}")
     return recorder, engine
 
 
@@ -692,9 +701,16 @@ async def test_make_engine_warns_on_unfixed_sqlite(monkeypatch, tmp_path):
     reported, not assumed away."""
     recorder, engine = _engine_with_recorded_log(monkeypatch, tmp_path, (3, 46, 0), "3.46.0")
     try:
+        assert recorder.warnings == []
+        async with engine.connect() as conn:
+            assert await conn.scalar(sa.text("PRAGMA journal_mode")) == "wal"
+            assert await conn.scalar(sa.text("PRAGMA wal_autocheckpoint")) == 1000
         assert len(recorder.warnings) == 1
-        assert "3.46.0" in recorder.warnings[0]
-        assert "3.51.3" in recorder.warnings[0]
+        warning = recorder.warnings[0]
+        assert "3.46.0" in warning
+        assert "3.51.3" in warning
+        assert "Python runtime" in warning
+        assert "docs/internals/runtime.md#sqlite-wal-reset-policy" in warning
     finally:
         await engine.dispose()
 
@@ -705,15 +721,115 @@ async def test_make_engine_warns_once_per_process(monkeypatch, tmp_path):
     recorder, engine = _engine_with_recorded_log(monkeypatch, tmp_path, (3, 46, 0), "3.46.0")
     second = engine_mod.make_engine(f"sqlite+aiosqlite:///{tmp_path / 'v2.db'}")
     try:
+        assert recorder.warnings == []
+        for candidate in (engine, second):
+            async with candidate.connect() as conn:
+                assert await conn.scalar(sa.text("PRAGMA journal_mode")) == "wal"
         assert len(recorder.warnings) == 1
     finally:
         await engine.dispose()
         await second.dispose()
 
 
-async def test_make_engine_silent_on_fixed_sqlite(monkeypatch, tmp_path):
-    recorder, engine = _engine_with_recorded_log(monkeypatch, tmp_path, (3, 51, 3), "3.51.3")
+@pytest.mark.parametrize("version_info", [(3, 44, 6), (3, 50, 7), (3, 51, 3)])
+async def test_make_engine_silent_on_fixed_sqlite(monkeypatch, tmp_path, version_info):
+    version_str = ".".join(map(str, version_info))
+    recorder, engine = _engine_with_recorded_log(monkeypatch, tmp_path, version_info, version_str)
     try:
+        async with engine.connect() as conn:
+            assert await conn.scalar(sa.text("PRAGMA journal_mode")) == "wal"
         assert recorder.warnings == []
     finally:
         await engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "sqlite+aiosqlite:///:memory:",
+        "sqlite+aiosqlite://",
+        "sqlite+aiosqlite:///file:wal-warning?mode=memory&cache=shared&uri=true",
+    ],
+    ids=["memory", "empty-database", "memory-uri"],
+)
+async def test_make_engine_silent_without_wal(monkeypatch, tmp_path, url):
+    recorder, engine = _engine_with_recorded_log(
+        monkeypatch, tmp_path, (3, 46, 0), "3.46.0", url=url
+    )
+    try:
+        async with engine.connect() as conn:
+            assert await conn.scalar(sa.text("PRAGMA journal_mode")) == "memory"
+        assert recorder.warnings == []
+        file_engine = make_engine(f"sqlite+aiosqlite:///{tmp_path / 'after-memory.db'}")
+        try:
+            async with file_engine.connect() as conn:
+                assert await conn.scalar(sa.text("PRAGMA journal_mode")) == "wal"
+            assert len(recorder.warnings) == 1
+        finally:
+            await file_engine.dispose()
+    finally:
+        await engine.dispose()
+
+
+async def test_make_readonly_engine_silent_on_unfixed_sqlite(monkeypatch, tmp_path):
+    path = tmp_path / "readonly-wal.db"
+    with closing(sqlite3.connect(path)) as conn:
+        assert conn.execute("PRAGMA journal_mode = WAL").fetchone()[0] == "wal"
+        conn.execute("CREATE TABLE retained (id INTEGER)")
+        conn.execute("INSERT INTO retained VALUES (1)")
+        conn.commit()
+    recorder = _record_sqlite_version(monkeypatch, (3, 46, 0), "3.46.0")
+    engine = make_readonly_engine(f"sqlite+aiosqlite:///{path}")
+    try:
+        async with engine.connect() as conn:
+            assert await conn.scalar(sa.text("SELECT id FROM retained")) == 1
+            assert await conn.scalar(sa.text("PRAGMA query_only")) == 1
+            assert await conn.scalar(sa.text("PRAGMA journal_mode")) == "wal"
+        assert recorder.warnings == []
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.parametrize("journal", ["wal", "delete"])
+async def test_compatibility_wal_warning_leaves_journal_mode_unchanged(
+    monkeypatch, tmp_path, journal
+):
+    from lionagi.state.compat import CompatibilityProfile, StateCompatibilityRefused, read_closure
+    from lionagi.state.db import StateDB
+
+    path = tmp_path / "managed.db"
+    with closing(sqlite3.connect(path)) as conn:
+        assert conn.execute(f"PRAGMA journal_mode = {journal}").fetchone()[0] == journal
+        conn.executescript(
+            "CREATE TABLE retained (id INTEGER PRIMARY KEY);"
+            "INSERT INTO retained VALUES (1);"
+            "CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+            "INSERT INTO schema_meta VALUES ('lineage', 'manager');"
+        )
+        profile = CompatibilityProfile(
+            name="wal-warning",
+            version=1,
+            closure=read_closure(conn, ["retained"]),
+            writes={},
+            operations={"probe"},
+        )
+    recorder = _record_sqlite_version(monkeypatch, (3, 46, 0), "3.46.0")
+    db = StateDB(path, compatibility=profile)
+    try:
+        if journal == "delete":
+            with pytest.raises(StateCompatibilityRefused, match="journal_mode is delete"):
+                await db.open()
+            assert db._engine is None
+        else:
+            await db.open()
+            assert await db.fetch_one("SELECT id FROM retained") == {"id": 1}
+        assert len(recorder.warnings) == 1
+        warning = recorder.warnings[0]
+        assert "Concurrent WAL connections may trigger this race" in warning
+        assert "Compatibility opens leave journal_mode unchanged" in warning
+        assert "refuse non-WAL stores" in warning
+    finally:
+        await db.close()
+    with closing(sqlite3.connect(path)) as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == journal
+        assert conn.execute("SELECT id FROM retained").fetchall() == [(1,)]

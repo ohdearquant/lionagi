@@ -21,12 +21,12 @@ reference resolution rather than a third private copy of that logic.
 
 from __future__ import annotations
 
-import asyncio
 import time
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from lionagi.ln.concurrency import sleep
 from lionagi.state.session_naming import resolve_display_name, validate_name_characters
 
 from .redact import public_project
@@ -177,7 +177,7 @@ async def rename_session(arguments: dict[str, Any]) -> dict[str, Any]:
             status = proposal["status"]
         if status in {"succeeded", "failed", "cancelled", "expired", "conflict"}:
             return _redacted_rename_result(proposal, run_id)
-        await asyncio.sleep(0.1)
+        await sleep(0.1)
 
 
 async def execute_rename_session_command(command: dict[str, Any]) -> dict[str, Any]:

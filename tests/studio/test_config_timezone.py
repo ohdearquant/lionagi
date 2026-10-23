@@ -116,11 +116,12 @@ def test_multi_level_zone_name_keeps_all_its_parts(tz_host):
 
 
 def test_directory_that_merely_looks_like_a_tree_is_not_one(tz_host):
-    """A path under some unrelated directory named ``zoneinfo.backup`` is not
-    a zone source. Only the configured search roots are — and since the host
-    did point somewhere readable, failing to name it is a refusal, not a
-    default."""
+    """A readable localtime in ``zoneinfo.backup`` remains a refusal even
+    when the same zone is loadable from a configured root. The link-path
+    fallback accepts only a component spelled exactly ``zoneinfo``, so a
+    lookalike tree cannot supply the zone name or silently default to UTC."""
     link, set_roots, zone_file = tz_host
+    zone_file("zoneinfo")
     link.symlink_to(zone_file("zoneinfo.backup"))
     set_roots("zoneinfo")
 
@@ -875,18 +876,6 @@ def test_link_named_zone_that_no_root_can_load_still_raises(tz_host):
     link, set_roots, zone_file = tz_host
     link.symlink_to(zone_file("zoneinfo", "Nowhere/Fake", data_from="America/New_York"))
     set_roots("empty-tree")
-
-    with pytest.raises(config.SystemTimezoneUnreadableError):
-        config._system_local_tz_name()
-
-
-def test_suffixed_lookalike_tree_still_refuses_after_fallback(tz_host):
-    """The fallback keys on a component spelled exactly ``zoneinfo``; a
-    lookalike such as ``zoneinfo.backup`` stays a refusal (the containment
-    rule's judgment, unchanged)."""
-    link, set_roots, zone_file = tz_host
-    link.symlink_to(zone_file("zoneinfo.backup"))
-    set_roots("zoneinfo")
 
     with pytest.raises(config.SystemTimezoneUnreadableError):
         config._system_local_tz_name()

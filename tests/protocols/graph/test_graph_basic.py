@@ -199,3 +199,16 @@ class TestGraphProperties:
         assert len(graph.internal_edges) == 1
         assert edge.id in graph.node_edge_mapping[node.id]["in"]
         assert edge.id in graph.node_edge_mapping[node.id]["out"]
+
+
+def test_display_without_matplotlib_names_the_package(monkeypatch):
+    """The graph extra no longer installs matplotlib, so the error names the package itself."""
+    pytest.importorskip("networkx")
+    import lionagi.protocols.graph.graph as graph_module
+
+    monkeypatch.setattr(graph_module, "_MATPLIB_AVAILABLE", False)
+    with pytest.raises(ImportError) as excinfo:
+        Graph().display()
+    message = str(excinfo.value)
+    assert message.endswith("Please install `matplotlib`.")
+    assert "lionagi[graph]" not in message

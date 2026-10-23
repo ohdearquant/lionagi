@@ -314,7 +314,7 @@ class Graph(Element, Relational, Generic[T]):
         if _MATPLIB_AVAILABLE is not True:
             raise ImportError(
                 "The 'matplotlib' package is required for this feature. "
-                "Please install `matplotlib` or `'lionagi[graph]'`."
+                "Please install `matplotlib`."
             )
 
         import matplotlib.pyplot as plt  # type: ignore

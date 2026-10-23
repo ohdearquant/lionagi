@@ -244,7 +244,7 @@ Perplexity, Groq, OpenRouter): [Providers reference](docs/reference/providers.md
 uv add "lionagi[mcp]"       # MCP server support
 uv add "lionagi[ollama]"    # Local models via Ollama
 uv add "lionagi[rich]"      # Rich terminal output
-uv add "lionagi[graph]"     # Flow visualization
+uv add "lionagi[graph]"     # networkx export (drawing also needs matplotlib)
 uv add "lionagi[postgres]"  # PostgreSQL persistence
 uv add "lionagi[ruvector]"  # Native vector memory and retrieval (RuVector)
 uv add "lionagi[all]"       # Everything

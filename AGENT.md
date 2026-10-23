@@ -20,7 +20,7 @@ uv run pytest -m unit                       # By marker; see pyproject.toml for 
 uv run pytest -n0 -s tests/path.py          # Debug: no parallelism, show stdout
 uv run pytest --cov=lionagi                 # With coverage
 uv run ruff format . && uv run ruff check --fix .  # Format + autofix lint
-pre-commit run -a                           # All hooks (file sanity, ruff, pyupgrade, markdownlint, etc.)
+uvx pre-commit run -a                       # All hooks (file sanity, ruff, pyupgrade, markdownlint, etc.)
 uv build                                    # Build wheel
 ```
 

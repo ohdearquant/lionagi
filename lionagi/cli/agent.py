@@ -25,6 +25,7 @@ from lionagi.ln.concurrency import (
     cancelled_exc_classes,
     fail_after,
     run_async,
+    sleep,
 )
 from lionagi.mcp.config import JOB_MARKER_ENV_VAR
 from lionagi.protocols.generic.log import DataLoggerConfig
@@ -1811,7 +1812,7 @@ async def _run_agent(
 
     async def _heartbeat_loop():
         while True:
-            await _asyncio.sleep(_HEARTBEAT_INTERVAL_S)
+            await sleep(_HEARTBEAT_INTERVAL_S)
             line = _hb_report.line(_hb_time.monotonic())
             # Steer receipt ack: a queued operator message cannot land
             # mid-turn, so tell the operator it was received and when it

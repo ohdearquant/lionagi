@@ -1,6 +1,8 @@
 """One-shot Daytona connectivity check. Run once, delete the sandbox, report.
 
-uv run python benchmarks/orchestration/_daytona_smoke.py
+No lionagi extra installs daytona, so the run names it:
+
+uv run --with 'daytona>=0.171.0' python benchmarks/orchestration/_daytona_smoke.py
 """
 
 from __future__ import annotations
@@ -12,6 +14,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from lionagi.tools.daytona import _require_daytona  # noqa: E402
+
+_require_daytona()
 from daytona import AsyncDaytona  # noqa: E402
 
 
