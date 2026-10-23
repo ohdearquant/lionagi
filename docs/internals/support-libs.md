@@ -84,7 +84,8 @@ resolves it, the `ValueError` says why loading failed and chains that error.
 raises `ValueError` otherwise, and a `Pile`'s `item_type` names
 resolve the same way, so data naming a class from a package of your own needs
 its defining module imported first or its package prefix registered. The error
-gives the remedy that fits the name: `register_type_prefix()` for a dotted name
+gives the remedy that fits the name: `register_type_prefix()`, given the
+package's prefix with its trailing dot (`"mypkg."`), for a dotted name
 outside the allowed prefixes whose module is not imported, or whose imported
 module has a module-level `__getattr__` (called only under an allowed prefix);
 the dotted form for a bare name; why loading failed for a name under an allowed
