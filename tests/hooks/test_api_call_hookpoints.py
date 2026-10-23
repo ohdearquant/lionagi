@@ -126,6 +126,24 @@ async def test_chat_emits_api_post_call_with_error_status_when_invoke_raises():
     assert "provider is down" not in post["error"]
 
 
+async def test_chat_pairs_api_pre_and_post_call_when_the_request_cannot_be_prepared(monkeypatch):
+    branch = LionAGIMockFactory.create_mocked_branch(response="hello")
+    calls = _wire(branch, HookPoint.API_PRE_CALL, HookPoint.API_POST_CALL)
+
+    def _broken(*_args, **_kwargs):
+        raise ValueError("request could not be prepared")
+
+    monkeypatch.setattr("lionagi.operations.chat.chat._prepare_run_kwargs", _broken)
+
+    with pytest.raises(ValueError, match="could not be prepared"):
+        await branch.chat("hi there")
+
+    assert len(calls[HookPoint.API_PRE_CALL]) == 1
+    assert len(calls[HookPoint.API_POST_CALL]) == 1
+    assert calls[HookPoint.API_POST_CALL][0]["status"] == "error"
+    branch.chat_model.invoke.assert_not_called()
+
+
 async def test_chat_emits_api_post_call_error_from_failed_status_without_raise():
     """A provider-returned FAILED APICalling carries its failure reason on
     ``api_call.execution.error``, not as a raised exception -- the payload's
