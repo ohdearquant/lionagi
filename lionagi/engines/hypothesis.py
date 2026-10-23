@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Callable
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Literal
 
@@ -494,7 +496,7 @@ def _accepted_verdict(run: HypothesisRun, d: DedupChecked) -> bool:
     recorded this fallback accepts it, in a live run as in a collected one.
     """
     f = run.find(d.finding_ref)
-    if not isinstance(f, FindingPosted):
+    if not isinstance(f, FindingPosted) or run._finding_refused(f):
         return False
     accepted = run.dedup_verdicts.get(f.eid)
     if accepted is not None:
@@ -571,11 +573,31 @@ class HypothesisRun(ChainRun):
         # was not an orphan. Later verdicts for the same finding are ignored,
         # and only these count as a finding's search having answered.
         self.dedup_verdicts: dict[str, DedupChecked] = {}
+        # Only the exact finding dispatched by this caller task is a seed.
+        # Spawned tasks inherit context, but not the caller task's identity.
+        self._caller_finding: ContextVar[tuple[FindingPosted, Any] | None] = ContextVar(
+            "hypothesis_caller_finding", default=None
+        )
+        # Keep refused live objects in the audit store without letting later
+        # references revive them. Collected historical events have no refusal.
+        self._refused_findings: dict[int, FindingPosted] = {}
 
     # -- typed overrides (narrower signatures than the Any base) ---------------
 
     def collect(self, event: ChainEvent) -> ChainEvent:
         return super().collect(event)  # type: ignore[return-value]
+
+    async def emit(self, event: Any) -> list[Any]:
+        if not isinstance(event, FindingPosted):
+            return await super().emit(event)
+        token = self._caller_finding.set((event, asyncio.current_task()))
+        try:
+            return await super().emit(event)
+        finally:
+            self._caller_finding.reset(token)
+
+    def _finding_refused(self, finding: FindingPosted) -> bool:
+        return self._refused_findings.get(id(finding)) is finding
 
     def find(self, eid: str) -> ChainEvent | None:
         return super().find(eid)
@@ -648,7 +670,7 @@ def _derive_question_gen(run: HypothesisRun, parent_ref: str) -> int | None:
         return 0
     parent = run.find(parent_ref)
     if isinstance(parent, FindingPosted):
-        return parent.gen
+        return None if run._finding_refused(parent) else parent.gen
     if isinstance(parent, QuestionRaised):
         return parent.gen + 1
     if isinstance(parent, ResultRecorded):
@@ -869,8 +891,11 @@ class HypothesisEngine(Engine):
 
     def _on_finding(self, run: HypothesisRun, f: FindingPosted) -> None:
         # Never trust the emitted gen — derive it from the indexed parent.
+        caller = run._caller_finding.get()
+        caller_seed = caller is not None and caller[0] is f and caller[1] is asyncio.current_task()
         gen = _derive_finding_gen(run, f.parent_ref)
-        if gen is None:
+        if gen is None or (not f.parent_ref and not caller_seed):
+            run._refused_findings[id(f)] = f
             # An unroutable parent_ref must never fall back to a fresh gen-0
             # seed, since that would restart the depth budget.
             run.notify(
@@ -883,6 +908,7 @@ class HypothesisEngine(Engine):
             return
         if run.seen(f"f:{f.description}|{f.evidence}|{f.source}|{f.parent_ref}"):
             return
+        run._refused_findings.pop(id(f), None)
         if self.dedup_repo:
             run.spawn(self._guard(run, "dedup", self._dedup, f))
         else:
@@ -890,7 +916,7 @@ class HypothesisEngine(Engine):
 
     def _on_dedup(self, run: HypothesisRun, d: DedupChecked) -> None:
         f = run.find(d.finding_ref)
-        if not isinstance(f, FindingPosted):
+        if not isinstance(f, FindingPosted) or run._finding_refused(f):
             run.notify("dedup_orphan", eid=d.eid, finding_ref=d.finding_ref)
             return
         if f.gen > 0 and f.eid not in run.dedup_judged:
