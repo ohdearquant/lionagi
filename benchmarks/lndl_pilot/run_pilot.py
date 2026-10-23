@@ -220,6 +220,9 @@ def task_problems(tasks: object) -> list[str]:
             problems.append(f"{name}: `id` repeats, ignoring letter case")
         else:
             seen.add(tid.lower())
+        if task.get("none_of"):
+            # check_answer reads `none_of` from `accept` only, so one beside it would be ignored.
+            problems.append(f"{name}: `none_of` outside `accept`")
         for key in ("class", "prompt"):
             value = task.get(key)
             if not isinstance(value, str) or not value:
@@ -426,8 +429,38 @@ def main() -> int:
         return 2
     if args.only:
         tasks = [t for t in tasks if t["id"] in wanted]
+    # Relative to this directory, as summarize.py reads it, when the task file is in it. Found by
+    # file identity and spelled as the directory lists it, so a spelling that a case-insensitive
+    # volume accepts (`--tasks TASKS.yaml`) still names the file here.
+    tasks_file = str(tasks_path)
+    for parent in tasks_path.parents:
+        if os.path.samefile(parent, HERE):
+            spelled = HERE
+            for part in tasks_path.relative_to(parent).parts:
+                # Only an entry whose name is the given one but for letter case is compared, so a
+                # link or a second hard link under another name is never taken for the file and a
+                # dangling link is never followed; a directory that cannot be listed keeps the
+                # name given.
+                try:
+                    entries = os.listdir(spelled)
+                except OSError:
+                    entries = []
+                name = part
+                if part not in entries:
+                    name = next(
+                        (
+                            n
+                            for n in entries
+                            if n.casefold() == part.casefold()
+                            and os.path.samefile(spelled / n, spelled / part)
+                        ),
+                        part,
+                    )
+                spelled /= name
+            tasks_file = str(spelled.relative_to(HERE))
+            break
     header = {
-        "tasks_file": str(tasks_path),
+        "tasks_file": tasks_file,
         "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "tasks_sha256": hashlib.sha256(tasks_bytes).hexdigest(),
         "task_count": len(tasks),
@@ -502,45 +535,60 @@ def main() -> int:
             stopped = "interrupted twice"
     else:
         pool.shutdown()
-    with lock:
-        rows = sorted(recorded, key=lambda r: (r["id"], r["loop"]))
-    failed = [f for f in futures if f.done() and not f.cancelled() and f.exception() is not None]
+
+    def write_summary(still_running: bool) -> tuple[dict, list[dict], list[cf.Future]]:
+        with lock:
+            rows = sorted(recorded, key=lambda r: (r["id"], r["loop"]))
+        failed = [
+            f for f in futures if f.done() and not f.cancelled() and f.exception() is not None
+        ]
+        reasons = []
+        if len(tasks) < task_set:
+            reasons.append(f"the run covers {len(tasks)} of {task_set} tasks (--only)")
+        if failed:
+            reasons.append(f"{len(failed)} task(s) stopped on a harness error")
+        if stopped:
+            reasons.append(f"{stopped} after {len(rows)} of {len(tasks) * len(loops)} legs")
+        if still_running:
+            reasons.append("rows of legs still running may follow in results.jsonl")
+        summary = summarize(rows, loops, partial="; ".join(reasons))
+        (out / "summary.json").write_text(json.dumps(summary, indent=2))
+        lines = [
+            "| id | class | " + " | ".join(f"{l} req / tools / wall / ok" for l in loops) + " |",  # noqa: E741
+            "|---|---|" + "---|" * len(loops),
+        ]
+        # Every task the run covers has a line, so a leg with no recorded row reads `not run`.
+        for task in sorted(tasks, key=lambda t: t["id"]):
+            tid = task["id"]
+            cells = []
+            for loop in loops:
+                r = next((x for x in rows if x["id"] == tid and x["loop"] == loop), None)
+                if r is None:
+                    cells.append("not run")
+                    continue
+                counts = [
+                    "-" if r[k] is None else str(r[k])
+                    for k in ("requests", "tool_calls", "wall_seconds")
+                ]
+                cells.append(" / ".join([*counts, "yes" if r["accepted"] else "no"]))
+            cls = task["class"].replace("|", "\\|")
+            lines.append(f"| {tid} | {cls} | " + " | ".join(cells) + " |")
+        (out / "table.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return summary, rows, failed
+
+    summary, rows, failed = write_summary(stopped == "interrupted twice")
+    if stopped == "interrupted twice":
+        # The process exits only once the legs still running end (the executor joins its threads
+        # at exit), so the summary and table are written again then, with their rows; a third
+        # interrupt stops this wait and keeps them as written above.
+        try:
+            cf.wait([f for f in futures if not f.cancelled()])
+        except KeyboardInterrupt:
+            pass
+        else:
+            summary, rows, failed = write_summary(False)
     for fut in failed:
         print(f"a task stopped on a harness error: {fut.exception()!r}", file=sys.stderr)
-    reasons = []
-    if len(tasks) < task_set:
-        reasons.append(f"the run covers {len(tasks)} of {task_set} tasks (--only)")
-    if failed:
-        reasons.append(f"{len(failed)} task(s) stopped on a harness error")
-    if stopped:
-        reasons.append(f"{stopped} after {len(rows)} of {len(tasks) * len(loops)} legs")
-    if stopped == "interrupted twice":
-        # The legs still running are not waited for here, but the process exits only once they
-        # end (the executor joins its threads at exit), and each appends its row as it does.
-        reasons.append("rows of legs still running may follow in results.jsonl")
-    summary = summarize(rows, loops, partial="; ".join(reasons))
-    (out / "summary.json").write_text(json.dumps(summary, indent=2))
-    lines = [
-        "| id | class | " + " | ".join(f"{l} req / tools / wall / ok" for l in loops) + " |",  # noqa: E741
-        "|---|---|" + "---|" * len(loops),
-    ]
-    # Every task the run covers has a line, so a leg with no recorded row reads `not run`.
-    for task in sorted(tasks, key=lambda t: t["id"]):
-        tid = task["id"]
-        cells = []
-        for loop in loops:
-            r = next((x for x in rows if x["id"] == tid and x["loop"] == loop), None)
-            if r is None:
-                cells.append("not run")
-                continue
-            counts = [
-                "-" if r[k] is None else str(r[k])
-                for k in ("requests", "tool_calls", "wall_seconds")
-            ]
-            cells.append(" / ".join([*counts, "yes" if r["accepted"] else "no"]))
-        cls = task["class"].replace("|", "\\|")
-        lines.append(f"| {tid} | {cls} | " + " | ".join(cells) + " |")
-    (out / "table.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(json.dumps(summary, indent=2))
     if stopped:
         return 130

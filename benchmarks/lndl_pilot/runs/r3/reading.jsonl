@@ -1,48 +1,48 @@
-{"id": "t01", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/_spec_limits.py:11"}
-{"id": "t01", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/_spec_limits.py:11"}
-{"id": "t02", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/version.py:1"}
-{"id": "t02", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/version.py:1"}
-{"id": "t03", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/cli/agent.py:89"}
-{"id": "t03", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/cli/agent.py:89"}
-{"id": "t04", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/cli/agent.py:87"}
-{"id": "t04", "loop": "react", "check": "rejected", "reading": "wrong", "source_6fa69b19": "lionagi/cli/agent.py:87"}
-{"id": "t05", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/tools/code/bash.py:35"}
-{"id": "t05", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/tools/code/bash.py:35"}
-{"id": "t06", "loop": "lndl", "check": "rejected", "reading": "right", "source_6fa69b19": "lionagi/tools/_subprocess.py:20"}
-{"id": "t06", "loop": "react", "check": "rejected", "reading": "right", "source_6fa69b19": "lionagi/tools/_subprocess.py:20"}
-{"id": "t07", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/tools/file/reader.py:24"}
-{"id": "t07", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/tools/file/reader.py:24"}
-{"id": "t08", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/cli/agent.py:83"}
-{"id": "t08", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/cli/agent.py:83"}
-{"id": "t09", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/agent/permissions.py:83-88"}
-{"id": "t09", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/agent/permissions.py:83-88"}
-{"id": "t10", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/hooks/bus.py:71"}
-{"id": "t10", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/hooks/bus.py:71"}
-{"id": "t11", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/tools/coding.py:286-294"}
-{"id": "t11", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/tools/coding.py:286-294"}
-{"id": "t12", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/dispatch/outbox.py:48"}
-{"id": "t12", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/dispatch/outbox.py:48"}
-{"id": "t13", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/protocols/messages/base.py:21-28"}
-{"id": "t13", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/protocols/messages/base.py:21-28"}
-{"id": "t14", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/protocols/generic/event.py:30-39"}
-{"id": "t14", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/protocols/generic/event.py:30-39"}
-{"id": "t15", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/session/control.py:13-17"}
-{"id": "t15", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/session/control.py:13-17"}
-{"id": "t16", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/service/providers.py:34-43"}
-{"id": "t16", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/service/providers.py:34-43"}
-{"id": "t17", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/work/form.py:40"}
-{"id": "t17", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/work/form.py:40"}
-{"id": "t18", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/engines/__init__.py:10-59"}
-{"id": "t18", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/engines/__init__.py:10-59"}
-{"id": "t19", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/libs/path_safety.py:11-13"}
-{"id": "t19", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/libs/path_safety.py:11-13"}
-{"id": "t20", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/agent/factory.py:512-519"}
-{"id": "t20", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/agent/factory.py:512-519"}
-{"id": "t21", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/cli/agent.py:265-271"}
-{"id": "t21", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/cli/agent.py:265-271"}
-{"id": "t22", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/agent/spec.py:48-56"}
-{"id": "t22", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/agent/spec.py:48-56"}
-{"id": "t23", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/mcp/config.py:35"}
-{"id": "t23", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/mcp/config.py:35"}
-{"id": "t24", "loop": "lndl", "check": "accepted", "reading": "wrong", "source_6fa69b19": "lionagi/mcp/config.py:19"}
-{"id": "t24", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/mcp/config.py:19"}
+{"id": "t01", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/_spec_limits.py:11", "source_208bcc08": "lionagi/_spec_limits.py:11"}
+{"id": "t01", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/_spec_limits.py:11", "source_208bcc08": "lionagi/_spec_limits.py:11"}
+{"id": "t02", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/version.py:1", "source_208bcc08": "lionagi/version.py:1"}
+{"id": "t02", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/version.py:1", "source_208bcc08": "lionagi/version.py:1"}
+{"id": "t03", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/cli/agent.py:89", "source_208bcc08": "lionagi/cli/agent.py:109"}
+{"id": "t03", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/cli/agent.py:89", "source_208bcc08": "lionagi/cli/agent.py:109"}
+{"id": "t04", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/cli/agent.py:87", "source_208bcc08": "lionagi/cli/agent.py:93"}
+{"id": "t04", "loop": "react", "check": "rejected", "reading": "wrong", "source_6fa69b19": "lionagi/cli/agent.py:87", "source_208bcc08": "lionagi/cli/agent.py:93"}
+{"id": "t05", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/tools/code/bash.py:35", "source_208bcc08": "lionagi/tools/code/bash.py:35"}
+{"id": "t05", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/tools/code/bash.py:35", "source_208bcc08": "lionagi/tools/code/bash.py:35"}
+{"id": "t06", "loop": "lndl", "check": "rejected", "reading": "right", "source_6fa69b19": "lionagi/tools/_subprocess.py:20", "source_208bcc08": "lionagi/tools/_subprocess.py:21"}
+{"id": "t06", "loop": "react", "check": "rejected", "reading": "right", "source_6fa69b19": "lionagi/tools/_subprocess.py:20", "source_208bcc08": "lionagi/tools/_subprocess.py:21"}
+{"id": "t07", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/tools/file/reader.py:24", "source_208bcc08": "lionagi/tools/file/reader.py:25"}
+{"id": "t07", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/tools/file/reader.py:24", "source_208bcc08": "lionagi/tools/file/reader.py:25"}
+{"id": "t08", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/cli/agent.py:83", "source_208bcc08": "lionagi/cli/agent.py:89"}
+{"id": "t08", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/cli/agent.py:83", "source_208bcc08": "lionagi/cli/agent.py:89"}
+{"id": "t09", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/agent/permissions.py:83-88", "source_208bcc08": "lionagi/agent/permissions.py:83-88"}
+{"id": "t09", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/agent/permissions.py:83-88", "source_208bcc08": "lionagi/agent/permissions.py:83-88"}
+{"id": "t10", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/hooks/bus.py:71", "source_208bcc08": "lionagi/hooks/bus.py:71"}
+{"id": "t10", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/hooks/bus.py:71", "source_208bcc08": "lionagi/hooks/bus.py:71"}
+{"id": "t11", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/tools/coding.py:286-294", "source_208bcc08": "lionagi/tools/coding.py:287-295"}
+{"id": "t11", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/tools/coding.py:286-294", "source_208bcc08": "lionagi/tools/coding.py:287-295"}
+{"id": "t12", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/dispatch/outbox.py:48", "source_208bcc08": "lionagi/dispatch/outbox.py:48"}
+{"id": "t12", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/dispatch/outbox.py:48", "source_208bcc08": "lionagi/dispatch/outbox.py:48"}
+{"id": "t13", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/protocols/messages/base.py:21-28", "source_208bcc08": "lionagi/protocols/messages/base.py:21-28"}
+{"id": "t13", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/protocols/messages/base.py:21-28", "source_208bcc08": "lionagi/protocols/messages/base.py:21-28"}
+{"id": "t14", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/protocols/generic/event.py:30-39", "source_208bcc08": "lionagi/protocols/generic/event.py:30-39"}
+{"id": "t14", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/protocols/generic/event.py:30-39", "source_208bcc08": "lionagi/protocols/generic/event.py:30-39"}
+{"id": "t15", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/session/control.py:13-17", "source_208bcc08": "lionagi/session/control.py:13-17"}
+{"id": "t15", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/session/control.py:13-17", "source_208bcc08": "lionagi/session/control.py:13-17"}
+{"id": "t16", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/service/providers.py:34-43", "source_208bcc08": "lionagi/service/providers.py:34-43"}
+{"id": "t16", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/service/providers.py:34-43", "source_208bcc08": "lionagi/service/providers.py:34-43"}
+{"id": "t17", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/work/form.py:40", "source_208bcc08": "lionagi/work/form.py:40"}
+{"id": "t17", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/work/form.py:40", "source_208bcc08": "lionagi/work/form.py:40"}
+{"id": "t18", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/engines/__init__.py:10-59", "source_208bcc08": "lionagi/engines/__init__.py:10-59"}
+{"id": "t18", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/engines/__init__.py:10-59", "source_208bcc08": "lionagi/engines/__init__.py:10-59"}
+{"id": "t19", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/libs/path_safety.py:11-13", "source_208bcc08": "lionagi/libs/path_safety.py:11-13"}
+{"id": "t19", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/libs/path_safety.py:11-13", "source_208bcc08": "lionagi/libs/path_safety.py:11-13"}
+{"id": "t20", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/agent/factory.py:512-519", "source_208bcc08": "lionagi/agent/factory.py:512-519"}
+{"id": "t20", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/agent/factory.py:512-519", "source_208bcc08": "lionagi/agent/factory.py:512-519"}
+{"id": "t21", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/cli/agent.py:265-271", "source_208bcc08": "lionagi/cli/agent.py:305-311"}
+{"id": "t21", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/cli/agent.py:265-271", "source_208bcc08": "lionagi/cli/agent.py:305-311"}
+{"id": "t22", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/agent/spec.py:48-56", "source_208bcc08": "lionagi/agent/spec.py:48-56"}
+{"id": "t22", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/agent/spec.py:48-56", "source_208bcc08": "lionagi/agent/spec.py:48-56"}
+{"id": "t23", "loop": "lndl", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/mcp/config.py:35", "source_208bcc08": "lionagi/mcp/config.py:35"}
+{"id": "t23", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/mcp/config.py:35", "source_208bcc08": "lionagi/mcp/config.py:35"}
+{"id": "t24", "loop": "lndl", "check": "accepted", "reading": "wrong", "source_6fa69b19": "lionagi/mcp/config.py:19", "source_208bcc08": "lionagi/mcp/config.py:19"}
+{"id": "t24", "loop": "react", "check": "accepted", "reading": "right", "source_6fa69b19": "lionagi/mcp/config.py:19", "source_208bcc08": "lionagi/mcp/config.py:19"}

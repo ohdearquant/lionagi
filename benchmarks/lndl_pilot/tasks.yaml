@@ -5,7 +5,6 @@ tasks:
   accept:
     all_of:
     - '262144'
-  none_of: []
   truth: lionagi/_spec_limits.py:11 — MAX_SPEC_PROMPT_CHARS = 256 * 1024 = 262144
   reference_answer: MAX_SPEC_PROMPT_CHARS is 262144 (256 * 1024), defined in lionagi/_spec_limits.py.
   decoy_answer: MAX_SPEC_PROMPT_CHARS is 131072 (128 * 1024).
@@ -15,7 +14,6 @@ tasks:
   accept:
     all_of:
     - 0.35.5
-  none_of: []
   truth: lionagi/version.py:1 — __version__ = "0.35.5"
   reference_answer: The version is 0.35.5.
   decoy_answer: The version is 0.34.5.
@@ -26,7 +24,6 @@ tasks:
   accept:
     all_of:
     - '8192'
-  none_of: []
   truth: lionagi/cli/agent.py:89 — _ANTHROPIC_DEFAULT_MAX_TOKENS = 8192
   reference_answer: The Anthropic default max_tokens is 8192.
   decoy_answer: The Anthropic default max_tokens is 4096.
@@ -37,7 +34,6 @@ tasks:
   accept:
     all_of:
     - '10'
-  none_of: []
   truth: lionagi/cli/agent.py:87 — _API_DEFAULT_MAX_EXTENSIONS = 10
   reference_answer: The default max_extensions is 10.
   decoy_answer: The default max_extensions is 20.
@@ -47,7 +43,6 @@ tasks:
   accept:
     all_of:
     - '30000'
-  none_of: []
   truth: lionagi/tools/code/bash.py:35 — BashRequest.timeout description says Defaults to 30000 (30 s)
   reference_answer: The default timeout is 30000 ms (30 s).
   decoy_answer: The default timeout is 60000 ms (60 s).
@@ -58,10 +53,9 @@ tasks:
     before truncating, and what is the name of the regex constant used to reject shell control operators?
   accept:
     all_of:
-    - '100000'
+    - 're:\b100[,_ ]?000\b'
     - _SHELL_CONTROL
     none_of: []
-  none_of: []
   truth: lionagi/tools/_subprocess.py:20 — _MAX_OUTPUT_BYTES = 100_000; lionagi/tools/_subprocess.py:18
     — _SHELL_CONTROL = re.compile(...); imported by lionagi/tools/code/bash.py:13 — from .._subprocess
     import _SHELL_CONTROL
@@ -74,7 +68,6 @@ tasks:
   accept:
     all_of:
     - '300'
-  none_of: []
   truth: lionagi/tools/file/reader.py:24 — _CACHE_TTL_SECONDS = 300
   reference_answer: The cache TTL is 300 seconds (5 minutes).
   decoy_answer: The cache TTL is 600 seconds (10 minutes).
@@ -87,7 +80,6 @@ tasks:
     - reader
     - search
     - context
-  none_of: []
   truth: 'lionagi/cli/agent.py:83 — _API_TOOL_SETS = {''read'': (''reader'', ''search'', ''context'')};
     tools at lionagi/tools/file/reader.py (ReaderTool), lionagi/tools/code/search.py (SearchTool), lionagi/tools/context/context.py
     (ContextTool)'
@@ -104,7 +96,6 @@ tasks:
     - context
     - editor
     - bash
-  none_of: []
   truth: lionagi/agent/permissions.py:83-88 — read_only() allows reader/search/context ['*'], denies editor
     and bash ['*']
   reference_answer: read_only allows reader, search, and context; it denies editor and bash.
@@ -118,7 +109,6 @@ tasks:
     - ARTIFACT_CREATED
     - TOOL_PRE
     - USER_PROMPT_SUBMIT
-  none_of: []
   truth: lionagi/hooks/bus.py:71 — DORMANT_POINTS = frozenset({HookPoint.ARTIFACT_CREATED}); lionagi/hooks/bus.py:76
     — _BLOCKING_POINTS = frozenset({HookPoint.TOOL_PRE, HookPoint.USER_PROMPT_SUBMIT})
   reference_answer: DORMANT_POINTS contains ARTIFACT_CREATED; _BLOCKING_POINTS contains TOOL_PRE and USER_PROMPT_SUBMIT.
@@ -131,7 +121,6 @@ tasks:
     all_of:
     - '8'
     - context
-  none_of: []
   truth: lionagi/tools/coding.py:286-294 — DEFAULT_CODING_TOOLS = ('reader', 'editor', 'bash', 'search',
     'code_check', 'code_nav', 'ast_search', 'context') — 8 items including context
   reference_answer: 'DEFAULT_CODING_TOOLS lists 8 tools: reader, editor, bash, search, code_check, code_nav,
@@ -147,7 +136,6 @@ tasks:
     - '8'
     - '10'
     - '30'
-  none_of: []
   truth: lionagi/dispatch/outbox.py:48 — DEFAULT_MAX_ATTEMPTS = 8; outbox.py:49 — NOTIFY_TIMEOUT_SECONDS
     = 10.0; outbox.py:55 — _BASE_BACKOFF_SECONDS = 30
   reference_answer: DEFAULT_MAX_ATTEMPTS is 8, NOTIFY_TIMEOUT_SECONDS is 10.0, and the base backoff is
@@ -164,14 +152,13 @@ tasks:
     - assistant
     - unset
     - action
-  none_of: []
   truth: 'lionagi/protocols/messages/base.py:21-28 — class MessageRole: SYSTEM=''system'', USER=''user'',
     ASSISTANT=''assistant'', UNSET=''unset'', ACTION=''action''; 5 members'
   reference_answer: 'MessageRole has 5 members: system, user, assistant, unset, action.'
   decoy_answer: 'MessageRole has 4 members: system, user, assistant, tool.'
   enumerate_command: git -C tree grep -n 'class MessageRole' lionagi/protocols/messages/base.py; then
     sed -n '21,28p' lionagi/protocols/messages/base.py
-  enumerate_known_member: system (lionagi/protocols/messages/base.py:23)
+  enumerate_known_member: system (lionagi/protocols/messages/base.py:24)
 - id: t14
   class: enumerate
   prompt: List all the members of the EventStatus enum from lionagi/protocols/generic/event.py.
@@ -184,7 +171,6 @@ tasks:
     - skipped
     - cancelled
     - aborted
-  none_of: []
   truth: 'lionagi/protocols/generic/event.py:30-39 — class EventStatus: PENDING=''pending'', PROCESSING=''processing'',
     COMPLETED=''completed'', FAILED=''failed'', SKIPPED=''skipped'', CANCELLED=''cancelled'', ABORTED=''aborted'';
     7 members'
@@ -201,7 +187,6 @@ tasks:
     - continue
     - cancel
     - break
-  none_of: []
   truth: 'lionagi/session/control.py:13-17 — class LoopDirective: CONTINUE=''continue'', CANCEL=''cancel'',
     BREAK=''break''; 3 members'
   reference_answer: 'LoopDirective has 3 members: continue, cancel, break.'
@@ -222,7 +207,6 @@ tasks:
     - max
     - ultra
     none_of: []
-  none_of: []
   truth: lionagi/service/providers.py:34-43 — EFFORT_LEVELS = frozenset({'none', 'minimal', 'low', 'medium',
     'high', 'xhigh', 'max', 'ultra'}); 8 levels
   reference_answer: 'EFFORT_LEVELS has 8 levels: none, minimal, low, medium, high, xhigh, max, ultra.'
@@ -240,7 +224,6 @@ tasks:
     - error
     - submitted
     - completed
-  none_of: []
   truth: lionagi/work/form.py:40 — FormStatus = Literal['draft', 'filled', 'validated', 'error', 'submitted',
     'completed']; 6 states
   reference_answer: 'FormStatus has 6 states: draft, filled, validated, error, submitted, completed.'
@@ -258,7 +241,6 @@ tasks:
     - ReviewEngine
     - HypothesisEngine
     - CodingEngine
-  none_of: []
   truth: 'lionagi/engines/__init__.py:10-59 — imports 5 Engine subclasses: PlanningEngine (planning.py:132),
     ResearchEngine (research.py:125), ReviewEngine (review.py:516), HypothesisEngine (hypothesis.py:662),
     CodingEngine (coding.py:444)'
@@ -278,13 +260,12 @@ tasks:
     - id_ed25519
     - id_ecdsa
     - .htpasswd
-  none_of: []
   truth: lionagi/libs/path_safety.py:11-13 — DENIED_NAMES = frozenset({'.env', '.netrc', 'id_rsa', 'id_ed25519',
     'id_ecdsa', '.htpasswd'}); 6 names
   reference_answer: 'DENIED_NAMES has 6 entries: .env, .netrc, id_rsa, id_ed25519, id_ecdsa, .htpasswd.'
   decoy_answer: 'DENIED_NAMES has 5 entries: .env, .netrc, id_rsa, id_ed25519, .htpasswd.'
   enumerate_command: sed -n '12,14p' lionagi/libs/path_safety.py
-  enumerate_known_member: .env (lionagi/libs/path_safety.py:13)
+  enumerate_known_member: .env (lionagi/libs/path_safety.py:12)
 - id: t20
   class: trace
   prompt: When the agent factory encounters tool_spec == 'search' in _register_tools, what class does
@@ -293,8 +274,7 @@ tasks:
     all_of:
     - SearchTool
     - workspace_root
-    - lionagi/tools/code/search.py
-  none_of: []
+    - 're:lionagi/tools/code/search\.py|lionagi\.tools\.code\.search\b'
   truth: lionagi/agent/factory.py:512-519 — imports SearchTool from lionagi.tools.code.search, constructs
     SearchTool(workspace_root=workspace_root); SearchTool defined at lionagi/tools/code/search.py:193
   reference_answer: It imports SearchTool from lionagi.tools.code.search, passes workspace_root=<str>
@@ -309,7 +289,6 @@ tasks:
     all_of:
     - _API_TOOL_SETS
     - _wire_secure_guards
-  none_of: []
   truth: lionagi/cli/agent.py:265-271 — spec.coding_tools = _API_TOOL_SETS[tools] (line 271); _wire_secure_guards(spec,
     cwd) (line 272); _wire_secure_guards defined at lionagi/agent/spec.py:44
   reference_answer: It sets spec.coding_tools to _API_TOOL_SETS[tools] and calls _wire_secure_guards(spec,
@@ -326,7 +305,6 @@ tasks:
     - bash
     - reader
     - editor
-  none_of: []
   truth: lionagi/agent/spec.py:48-56 — imports guard_destructive, guard_paths from lionagi.agent.hooks;
     spec.security_pre('bash', guard_destructive); path_guard = guard_paths(allowed_paths=[workspace_root]);
     spec.security_pre('reader', path_guard); spec.security_pre('editor', path_guard)
@@ -342,7 +320,6 @@ tasks:
     all_of:
     - LIONAGI_MCP_JOB_RUN_ID
     - _apply_detached_execution_boundary
-  none_of: []
   truth: lionagi/mcp/config.py:35 — JOB_MARKER_ENV_VAR = 'LIONAGI_MCP_JOB_RUN_ID'; lionagi/cli/agent.py:25
     — imports JOB_MARKER_ENV_VAR from lionagi.mcp.config; lionagi/cli/agent.py:114-116 — _apply_detached_execution_boundary
     reads os.environ.get(JOB_MARKER_ENV_VAR)
@@ -357,9 +334,8 @@ tasks:
   accept:
     all_of:
     - .lionagi
-    - RUNS_DIR
-    - JOBS_DIR
-  none_of: []
+    - 're:RUNS_DIR\W{0,5}=\s*\W{0,3}RUNS_ROOT'
+    - 're:JOBS_DIR\W{0,5}=\s*\W{0,3}LIONAGI_HOME'
   truth: lionagi/_paths.py:20 — LIONAGI_HOME = Path(os.environ.get('LIONAGI_HOME', Path.home() / '.lionagi'));
     lionagi/mcp/config.py:16 — imports LIONAGI_HOME, RUNS_ROOT from lionagi._paths; config.py:19 — RUNS_DIR
     = RUNS_ROOT; config.py:23 — JOBS_DIR = LIONAGI_HOME / 'mcp' / 'jobs'
