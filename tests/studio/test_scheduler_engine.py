@@ -1333,6 +1333,7 @@ async def test_fire_now_refuses_a_template_a_manual_trigger_cannot_fill(monkeypa
             await engine.fire_now("sched-001")
 
     assert f"has no value for {names} on a manual trigger" in str(refused.value)
+    assert "which fills only {{manual}} and {{fired_at}}" in str(refused.value)
     mock_tracked.assert_not_called()
     assert engine.global_slot_holders == []
 
@@ -1443,6 +1444,14 @@ async def test_fire_now_is_not_refused_for_a_placeholder_its_launch_does_not_sen
             {"action_cwd": "/nonexistent-lionagi-schedule-root"},
             "could not be resolved to an existing directory",
         ),
+        # `li play` has no '--' separator, so a stored prompt it sends must not open with '-'.
+        *(
+            (
+                {"action_kind": kind, "action_playbook": "triage", "action_prompt": "--bypass"},
+                "action_prompt for a play launch must not start with '-'",
+            )
+            for kind in ("play", "playbook")
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -1463,6 +1472,56 @@ async def test_fire_now_refuses_a_schedule_that_cannot_launch_for_that_reason(
             await engine.fire_now("sched-001")
 
     assert "has no value for" not in str(refused.value)
+    mock_tracked.assert_not_called()
+    assert engine.global_slot_holders == []
+
+
+@pytest.mark.asyncio
+async def test_fire_now_refusal_for_a_missing_root_names_that_root_and_not_the_daemon_cwd(
+    monkeypatch, tmp_path
+):
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    daemon_cwd = tmp_path / "daemon-working-dir"
+    daemon_cwd.mkdir()
+    monkeypatch.chdir(daemon_cwd)
+    svc = _make_svc()
+    svc.get_schedule.return_value = _minimal_schedule(
+        action_cwd="/nonexistent-lionagi-schedule-root"
+    )
+    engine = SchedulerEngine(svc=svc)
+
+    with patch.object(engine, "_tracked_fire") as mock_tracked:
+        with pytest.raises(ValueError) as refused:
+            await engine.fire_now("sched-001")
+
+    message = str(refused.value)
+    assert "'sched-001'" in message
+    assert "'/nonexistent-lionagi-schedule-root'" in message
+    assert "daemon-working-dir" not in message
+    mock_tracked.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fire_now_refuses_when_the_project_registry_cannot_be_read(monkeypatch):
+    import sqlite3
+
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+    from lionagi.studio.services import projects
+
+    async def unreadable(name):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(projects, "get_project", unreadable)
+    svc = _make_svc()
+    svc.get_schedule.return_value = _minimal_schedule(action_project="proj")
+    engine = SchedulerEngine(svc=svc)
+
+    with patch.object(engine, "_tracked_fire") as mock_tracked:
+        with pytest.raises(ValueError, match=r"could not be read \(OperationalError\)") as refused:
+            await engine.fire_now("sched-001")
+
+    assert "database is locked" not in str(refused.value)
     mock_tracked.assert_not_called()
     assert engine.global_slot_holders == []
 

@@ -611,11 +611,19 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   `action_extra_args`, `action_playbook_args` or a `flow_yaml` spec, go as written and are not
   checked. A schedule whose stored fields cannot launch, such as one with an unknown action kind,
   an invalid playbook name, a command outside the allowlist, an `engine` schedule with no engine
-  kind or an `action_cwd` or `action_project` that no longer resolves to a directory, is refused
-  for that reason first, with the error its launch would raise. A value that only a filled
-  template makes invalid, such as a sent prompt that renders to a flag, is still refused when the
-  launch is built; a launch that sends no prompt no longer fills or checks it, and its run record
-  no longer shows its `action_prompt`.
+  kind, a `play` schedule whose stored prompt, sent beside its playbook, starts with `-`, or an
+  `action_cwd` or `action_project` that no longer resolves to a directory, is refused for that
+  reason first, with the error its launch would raise. The refusal for a root names the schedule
+  and its root, never the daemon's working directory, and a project registry that cannot be read
+  is refused with a 400 naming the error's class. A value that only a filled template makes
+  invalid, such as a sent prompt that renders to a flag, is still refused when the launch is
+  built; a launch that sends no prompt no longer fills or checks it, and its run record no longer
+  shows its `action_prompt`.
+- Creating or updating a `play` schedule with a playbook is refused with a 400 when the
+  `action_prompt` it sends starts with `-`: `li play` takes no `--` separator, so the prompt
+  re-parsed as one of its flags at every fire. An update is checked when it sets the kind, the
+  prompt or the playbook, so a row stored before the check can still be edited in its other
+  fields; its fires and manual triggers are refused.
 - The store probe in `/admin/readiness` could report a store that another connection held locked
   as `unavailable` rather than `slow`. The probe sets SQLite's busy timeout to its own deadline,
   and when SQLite's wait ran out first the read raised "database is locked", which the probe read

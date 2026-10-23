@@ -10,6 +10,7 @@ import pytest
 from lionagi.studio.scheduler.subprocess import (
     _validate_playbook_args,
     build_argv,
+    validate_launch_fields,
 )
 
 
@@ -83,6 +84,17 @@ class TestBuildArgvPlay:
         with pytest.raises(ValueError, match="must not start with '-'") as refused:
             build_argv(schedule, {"pr_title": "--private-title"}, executable_prefix=["li"])
         assert "private-title" not in str(refused.value)
+
+    @pytest.mark.parametrize("kind", ["play", "playbook"])
+    def test_a_stored_leading_dash_prompt_is_refused_before_rendering(self, kind):
+        # A manual trigger runs this check before it records a run.
+        with pytest.raises(ValueError, match="must not start with '-'"):
+            validate_launch_fields(_play_schedule(action_kind=kind, action_prompt="--bypass"))
+
+    @pytest.mark.parametrize("playbook", [None, ""])
+    def test_a_leading_dash_prompt_is_kept_when_no_playbook_sends_it(self, playbook):
+        schedule = _play_schedule(action_playbook=playbook, action_prompt="--bypass")
+        assert validate_launch_fields(schedule) == "play"
 
     @pytest.mark.parametrize(
         "bad_args",

@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import sqlite3
 import time
 import uuid
 from dataclasses import dataclass
@@ -866,14 +867,24 @@ class SchedulerEngine:
         try:
             await _resolve_action_cwd(schedule)
         except SchedulerCwdInheritRefusedError as exc:
-            raise ValueError(f"{exc} Manual trigger refused.") from exc
+            # The caller is told the schedule's own root, never the daemon's working directory.
+            raise ValueError(
+                f"Schedule {exc.schedule_id!r}: configured execution root "
+                f"{exc.configured_root!r} could not be resolved to an existing directory; manual "
+                "trigger refused. Point the schedule at an existing action_cwd or action_project."
+            ) from exc
+        except sqlite3.Error as exc:
+            raise ValueError(
+                f"Schedule {schedule_id!r}: the project registry its action_project is read from "
+                f"could not be read ({type(exc).__name__}); manual trigger refused."
+            ) from exc
         unfilled = _subprocess.unfilled_template_vars(schedule, trigger_context)
         if unfilled:
             names = ", ".join("{{" + name + "}}" for name in unfilled)
             raise ValueError(
                 f"Schedule {schedule_id!r} has no value for {names} on a manual trigger, "
-                "which carries no event; manual trigger refused. Only a trigger that delivers an "
-                "event with that field fills it."
+                "which fills only {{manual}} and {{fired_at}}; manual trigger refused. Only a "
+                "trigger that supplies that name fills it, such as a poll whose event carries it."
             )
         if await self._check_budget(schedule):
             raise ValueError(

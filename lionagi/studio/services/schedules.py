@@ -330,6 +330,23 @@ def _svc_validate_prompt(prompt: str | None) -> None:
     _validate_prompt(prompt)
 
 
+def _svc_validate_play_prompt(schedule: dict[str, Any]) -> None:
+    """Service-boundary check: a play launch has no '--' separator, so a prompt it sends that
+    starts with '-' would re-parse as a flag of `li play`."""
+    from lionagi.studio.scheduler.subprocess import _ALIAS_ACTION_KINDS, _sends_prompt
+
+    kind = schedule.get("action_kind")
+    kind = _ALIAS_ACTION_KINDS.get(kind, kind)
+    prompt = schedule.get("action_prompt")
+    if (
+        kind == "play"
+        and _sends_prompt(schedule, kind)
+        and isinstance(prompt, str)
+        and prompt.startswith("-")
+    ):
+        raise ValueError("action_prompt for a play launch must not start with '-'")
+
+
 def _validate_flow_yaml_spec(yaml_text: str) -> str | None:
     """Parse and validate an inline YAML flow spec; returns an error message on
     failure or None on success. Mirrors _validate_spec_fields() in the CLI —
@@ -1116,6 +1133,7 @@ async def create_schedule(data: dict[str, Any]) -> dict[str, Any]:
 
     _svc_validate_action_model(data.get("action_model"))
     _svc_validate_prompt(data.get("action_prompt"))
+    _svc_validate_play_prompt(data)
     _svc_validate_identifier(data.get("action_agent"), "action_agent")
     _svc_validate_identifier(data.get("action_project"), "action_project")
     _svc_validate_identifier(data.get("action_playbook"), "action_playbook")
@@ -1252,6 +1270,10 @@ async def update_schedule(schedule_id: str, fields: dict[str, Any]) -> bool:
             _svc_validate_threshold_config(fields["threshold_config"])
 
         effective = {**schedule, **fields}
+        # Checked only when the update sets a field it reads, so a row stored before the check
+        # can still be paused or edited elsewhere.
+        if {"action_kind", "action_prompt", "action_playbook"} & set(fields):
+            _svc_validate_play_prompt(effective)
         effective_repo = effective.get("github_repo")
         if effective_repo is not None:
             _svc_validate_github_repo(effective_repo)
