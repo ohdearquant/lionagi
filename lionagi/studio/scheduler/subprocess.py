@@ -540,8 +540,9 @@ def validate_launch_fields(schedule: dict) -> str:
     if kind == "play":
         _validate_playbook_args(_playbook_args(schedule))
         # `li play` has no '--' separator, so a sent prompt that starts with '-' re-parses as a
-        # flag. A stored one is refused here, before a run is recorded; one that only its
-        # rendering makes start with '-' is refused in build_argv.
+        # flag. A stored one is refused here: a manual trigger reads this before a run is
+        # recorded, and a scheduled or chained fire records the refusal as its run's failure.
+        # One that only its rendering makes start with '-' is refused in build_argv.
         if _sends_prompt(schedule, kind) and str(schedule.get("action_prompt") or "").startswith(
             "-"
         ):

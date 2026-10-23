@@ -1499,11 +1499,14 @@ async def test_fire_now_refusal_for_a_missing_root_names_that_root_and_not_the_d
     assert "'sched-001'" in message
     assert "'/nonexistent-lionagi-schedule-root'" in message
     assert "daemon-working-dir" not in message
+    # The original error, whose text names the daemon's directory, is not attached either.
+    assert refused.value.__cause__ is None
+    assert refused.value.__context__ is None
     mock_tracked.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_fire_now_refuses_when_the_project_registry_cannot_be_read(monkeypatch):
+async def test_fire_now_refuses_when_the_project_registry_cannot_be_read(monkeypatch, caplog):
     import sqlite3
 
     from lionagi.studio.scheduler.engine import SchedulerEngine
@@ -1517,11 +1520,20 @@ async def test_fire_now_refuses_when_the_project_registry_cannot_be_read(monkeyp
     svc.get_schedule.return_value = _minimal_schedule(action_project="proj")
     engine = SchedulerEngine(svc=svc)
 
-    with patch.object(engine, "_tracked_fire") as mock_tracked:
-        with pytest.raises(ValueError, match=r"could not be read \(OperationalError\)") as refused:
-            await engine.fire_now("sched-001")
+    with caplog.at_level(logging.WARNING, logger="lionagi.studio.scheduler.engine"):
+        with patch.object(engine, "_tracked_fire") as mock_tracked:
+            with pytest.raises(
+                ValueError, match=r"could not be read \(OperationalError\)"
+            ) as refused:
+                await engine.fire_now("sched-001")
 
     assert "database is locked" not in str(refused.value)
+    assert refused.value.__cause__ is None
+    assert refused.value.__context__ is None
+    # A fault of the store, not the request: the operator's log keeps the error.
+    (record,) = [r for r in caplog.records if "project registry could not be read" in r.message]
+    assert record.exc_info is not None
+    assert "database is locked" in str(record.exc_info[1])
     mock_tracked.assert_not_called()
     assert engine.global_slot_holders == []
 
@@ -5123,3 +5135,38 @@ async def test_a_replacement_tick_loop_actually_advances_again(monkeypatch):
         assert engine.health()["status"] == "healthy"
     finally:
         await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_scheduled_fire_of_a_stored_dash_play_prompt_fails_its_run_and_spawns_nothing(
+    monkeypatch,
+):
+    """A row stored before the dash-prompt check is refused when it fires on its schedule: the
+    run is recorded, as every scheduled fire's is, and fails naming the refusal, and no process
+    starts. Only a manual trigger refuses it before a run is recorded."""
+    from lionagi.studio.scheduler import engine as engine_mod
+    from lionagi.studio.scheduler import subprocess as sched_subprocess
+    from lionagi.studio.scheduler.signals import SchedulerSignalBus, ScheduleRunFailed
+
+    monkeypatch.setattr(sched_subprocess, "resolve_li_executable", lambda: (["li"], None))
+    spawn = AsyncMock(return_value=(0, ""))
+    monkeypatch.setattr(sched_subprocess, "spawn_and_wait", spawn)
+    svc = _make_svc()
+    bus = SchedulerSignalBus()
+    failed: list = []
+    bus.observe(ScheduleRunFailed, handler=failed.append)
+    engine = engine_mod.SchedulerEngine(svc=svc, signal_bus=bus)
+    schedule = _minimal_schedule(
+        action_kind="play", action_playbook="triage", action_prompt="--bypass"
+    )
+
+    await fire_with_claim(engine, schedule, "run-dash", trigger_context={"scheduled": True})
+
+    assert spawn.await_count == 0
+    assert svc.create_invocation.await_count == 1
+    assert [(s.reason_code, s.error_detail) for s in failed] == [
+        (
+            "run.failed.exception",
+            "ValueError: action_prompt for a play launch must not start with '-'",
+        )
+    ]

@@ -864,20 +864,31 @@ class SchedulerEngine:
         # row's {{pr_number}}, would reach the run unfilled. Refuse before anything is reserved or
         # recorded, and refuse a schedule that cannot launch at all for that reason first.
         _subprocess.validate_launch_fields(schedule)
+        # Each refusal is raised outside its handler, so neither its cause nor its context
+        # carries the original error, whose text can name the daemon's working directory.
+        refusal = None
         try:
             await _resolve_action_cwd(schedule)
         except SchedulerCwdInheritRefusedError as exc:
             # The caller is told the schedule's own root, never the daemon's working directory.
-            raise ValueError(
+            refusal = (
                 f"Schedule {exc.schedule_id!r}: configured execution root "
                 f"{exc.configured_root!r} could not be resolved to an existing directory; manual "
                 "trigger refused. Point the schedule at an existing action_cwd or action_project."
-            ) from exc
+            )
         except sqlite3.Error as exc:
-            raise ValueError(
+            # A fault of this store, not of the request: the operator's log keeps the error.
+            _log.warning(
+                "manual trigger of schedule %s: the project registry could not be read",
+                schedule_id,
+                exc_info=True,
+            )
+            refusal = (
                 f"Schedule {schedule_id!r}: the project registry its action_project is read from "
                 f"could not be read ({type(exc).__name__}); manual trigger refused."
-            ) from exc
+            )
+        if refusal is not None:
+            raise ValueError(refusal)
         unfilled = _subprocess.unfilled_template_vars(schedule, trigger_context)
         if unfilled:
             names = ", ".join("{{" + name + "}}" for name in unfilled)

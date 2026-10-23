@@ -91,6 +91,20 @@ def test_create_rejects_a_play_prompt_that_opens_with_a_dash_before_db_write(kin
     asyncio.run(_run())
 
 
+@pytest.mark.parametrize("kind", ["play", "playbook"])
+def test_create_keeps_a_dash_prompt_on_a_play_without_a_playbook(kind):
+    # Without a playbook the launch sends no prompt, so nothing re-parses it as a flag.
+    async def _run() -> None:
+        with patch("lionagi.studio.services.schedules.StateDB") as state_db:
+            db = AsyncMock()
+            state_db.return_value.__aenter__ = AsyncMock(return_value=db)
+            state_db.return_value.__aexit__ = AsyncMock(return_value=False)
+            await create_schedule(_play_data("--bypass", action_kind=kind, action_playbook=None))
+            db.create_schedule.assert_awaited_once()
+
+    asyncio.run(_run())
+
+
 @pytest.mark.parametrize(
     ("stored", "fields"),
     [

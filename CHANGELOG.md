@@ -632,7 +632,9 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   `action_cwd` or `action_project` that no longer resolves to a directory, is refused for that
   reason first, with the error its launch would raise. The refusal for a root names the schedule
   and its root, never the daemon's working directory, and a project registry that cannot be read
-  is refused with a 400 naming the error's class. A value that only a filled template makes
+  is refused with a 400 naming the error's class and logged; on a store that is not a local
+  SQLite file, which cannot read the registry, the trigger answers 501, as the store's other
+  local-only routes do. A value that only a filled template makes
   invalid, such as a sent prompt that renders to a flag, is still refused when the launch is
   built; a launch that sends no prompt no longer fills or checks it, and its run record no longer
   shows its `action_prompt`.
@@ -640,7 +642,9 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   `action_prompt` it sends starts with `-`: `li play` takes no `--` separator, so the prompt
   re-parsed as one of its flags at every fire. An update is checked when it sets the kind, the
   prompt or the playbook, so a row stored before the check can still be edited in its other
-  fields; its fires and manual triggers are refused.
+  fields. A manual trigger of such a row is refused before a run is recorded; when it fires on
+  its schedule or as a chained run, the run is recorded, as every such fire's is, and fails
+  naming the refusal, and no process starts.
 - The store probe in `/admin/readiness` could report a store that another connection held locked
   as `unavailable` rather than `slow`. The probe sets SQLite's busy timeout to its own deadline,
   and when SQLite's wait ran out first the read raised "database is locked", which the probe read
