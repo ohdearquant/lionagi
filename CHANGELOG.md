@@ -107,6 +107,9 @@ longer exists, so an install that names it gets a missing-extra warning from the
 `reader_tool="docling"` to `chunk()` converts documents itself and hands the text in:
 `chunk(text=...)`, or a callable `reader_tool` that returns a file's text.
 
+`lionagi[graph]` no longer installs `matplotlib` (see Removed). Code that draws a graph with
+`Graph.display()`, and `li o flow --show-graph`, installs `matplotlib` beside it.
+
 `aiohttp` is no longer a dependency (see Changed). An endpoint HTTP error that raised
 `aiohttp.ClientResponseError` raises `lionagi.service.resilience.APIClientError`, with
 `status_code`, `headers` and `response_data`; code that read `.status` reads `.status_code`.
@@ -531,6 +534,14 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   `docling` go the `torch`, `torchvision`, `accelerate` and OCR packages it pulled into
   `lionagi[all]`.
 
+- `matplotlib` from the `graph` extra, and the `imaging` extra of `mkdocs-material` from the docs
+  dependency group, whose social-card plugin the docs do not enable. They were the last two
+  packages that brought Pillow into `uv.lock`, so Pillow leaves the lock, with `contourpy`,
+  `cycler`, `fonttools`, `kiwisolver` and `pyparsing` under matplotlib and `cairosvg`,
+  `cairocffi`, `cssselect2`, `tinycss2`, `webencodings` and `defusedxml` under the imaging
+  extra. `Graph.display()` and `li o flow --show-graph` still draw with matplotlib when it is
+  installed, and raise `ImportError` naming it when it is not.
+
 - `msgspec` is no longer a dependency. lionagi still accepts a `msgspec.Struct` value wherever it
   accepted one before, when `msgspec` is installed; code that passes one installs `msgspec`
   itself.
@@ -756,9 +767,9 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   `black` 26.10.1 and `opentelemetry-api` 1.45.1. The studio frontend and the VS Code extension
   move their test runner to `vitest` 4.1.12 and its packages with it, `@vitest/mocker` 4.1.12
   among them (CVE-2026-112949 and CVE-2026-112950, published against `@vitest/mocker`); the
-  frontend's lockfile also moves `tinyrainbow` from 3.1.0 to 3.2.0. One release with published
-  advisories stays: `uv.lock` keeps Pillow 12.3.0 for Python 3.10, since Pillow 13.0.0, the
-  release that fixes them, requires Python 3.11.
+  frontend's lockfile also moves `tinyrainbow` from 3.1.0 to 3.2.0. Pillow, whose published
+  advisories are fixed only in 13.0.0, a release that requires Python 3.11, is no longer in
+  `uv.lock` (see Removed).
 - An endpoint's private-address check before a request now resolves the host name as the
   HTTP client encodes it. For a name outside ASCII the resolver's encoding and the client's
   differ (`straße.example` resolves as `strasse.example` but the client connects to
