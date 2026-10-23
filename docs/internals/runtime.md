@@ -39,16 +39,21 @@ now carries a 1-2 line pointer; this file carries the substance. Organized by mo
   raised. The driver's statement cache is off (`cached_statements=0`) because the authorizer runs
   only when SQLite prepares a statement, and one of its decisions (no COMMIT of a transaction in
   which a statement was denied) depends on the transaction, not on the statement text.
-- `has_wal_reset_fix()` — identifies the known fixed versions for the
+- `has_wal_reset_fix()` — returns true for known fixed versions and versions that predate WAL;
+  see the
   [SQLite WAL-reset policy](#sqlite-wal-reset-policy) below.
 
 #### SQLite WAL-reset policy
 
-The state engine keeps WAL enabled for concurrent readers and writers. On a linked SQLite
-version without a known WAL-reset fix, it warns once per process and continues; it does not
-impose a version floor or serialize every connection to the database file. Deployments using
-concurrent state access should use a fixed runtime rather than treating the warning as a
-corruption safeguard.
+The writable state engine requests WAL for concurrent readers and writers. On a linked SQLite
+version without a known WAL-reset fix, it warns when a connection first enters WAL mode and
+continues. Creating the engine alone does not warn, and in-memory connections that remain in
+memory journal mode do not warn. Compatibility engines leave the store's journal mode unchanged:
+they warn when constructed, before connection setup and admission, which may then refuse a
+non-WAL store. The warning is shared once per process across both engine types. Read-only engines
+do not emit it. The engine does not impose a version floor or serialize every connection to the
+database file. Deployments using concurrent state access should use a fixed runtime rather than
+treating the warning as a corruption safeguard.
 
 [SQLite's WAL-reset documentation](https://www.sqlite.org/wal.html#walresetbug) identifies the
 **likely** affected range as 3.7.0 through 3.51.2. The fix is in 3.51.3 and later, and is also

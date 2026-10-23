@@ -129,15 +129,16 @@ _wal_reset_warning_emitted = False
 
 
 def _warn_if_wal_reset_unfixed() -> None:
-    """Warn once before WAL use on a SQLite version without a known WAL-reset fix."""
+    """Warn once about possible WAL use on a runtime without a known WAL-reset fix."""
     global _wal_reset_warning_emitted
     if _wal_reset_warning_emitted or has_wal_reset_fix(sqlite3.sqlite_version_info):
         return
     _wal_reset_warning_emitted = True
     _log.warning(
         "Linked SQLite %s may be exposed to the WAL-reset corruption race "
-        "(fixed in 3.51.3; backported to 3.44.6 and 3.50.7). WAL remains enabled "
-        "for concurrent readers and writers. Use a Python runtime linked to a fixed "
+        "(fixed in 3.51.3; backported to 3.44.6 and 3.50.7). Concurrent WAL connections "
+        "may trigger this race. Compatibility opens leave journal_mode unchanged "
+        "and refuse non-WAL stores. Use a Python runtime linked to a fixed "
         "SQLite; see the exposure conditions and temporary serialization limits at "
         "https://github.com/ohdearquant/lionagi/blob/main/"
         "docs/internals/runtime.md#sqlite-wal-reset-policy.",
@@ -772,7 +773,6 @@ def make_engine(url: str, *, before_settings=None, **overrides):
     dialect = dialect_of(url)
 
     if dialect == "sqlite":
-        _warn_if_wal_reset_unfixed()
         announce_busy_timeout()
         kwargs: dict = {"echo": False, "json_serializer": _dumps_with_uuid}
         kwargs.update(overrides)
@@ -799,6 +799,8 @@ def make_engine(url: str, *, before_settings=None, **overrides):
                         pass
                     raise
             cursor.execute("PRAGMA journal_mode = WAL")
+            if str(cursor.fetchone()[0]).lower() == "wal":
+                _warn_if_wal_reset_unfixed()
             cursor.execute("PRAGMA synchronous = NORMAL")
             cursor.execute("PRAGMA foreign_keys = ON")
             cursor.execute("PRAGMA cache_size = -64000")
