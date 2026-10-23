@@ -265,10 +265,12 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   worker nor a model that is not a CLI. A value other than `true` or `false`, an empty one
   included, warns and contains. A profile whose frontmatter does not read as YAML settings now
   warns that every setting in it is ignored, except a top-level `contain_user_settings` line of
-  its own, key quoted or not, which is still read; with more than one such line the flag is off
-  only when every one reads `false`. Whitespace or an invisible character such as a byte-order
-  mark ahead of a profile's frontmatter no longer hides it. Containment is unchanged for
-  `li agent -a`, which reads profiles the same way and so prints the same warnings.
+  its own, key quoted or not, which is still read. With more than one such line, in a block that
+  reads or not, the flag is off only when every one reads `false`, and a block that reads warns.
+  A byte-order mark or another invisible format character ahead of a profile's frontmatter no
+  longer hides it; any other character there hides the block and every setting in it, with a
+  warning, except a `contain_user_settings` line of its own, which is still read. Containment is
+  unchanged for `li agent -a`, which reads profiles the same way and so prints the same warnings.
 
 ### Changed
 
@@ -531,8 +533,9 @@ raises `TypeError` when the class is defined; rename the override to `_call_http
   takes the MCP servers it is handed over `-c`, as a `codex` one does, where before they were
   reported as not reachable for it, and an `openai-codex` worker in `li o flow` and `li o fanout`
   runs with `--ignore-user-config`, as every codex worker does, where before it read your codex
-  configuration. The same folding decides which provider's effort setting a copy of the
-  orchestrator drops.
+  configuration. A spec on an alias also builds as its provider's does, in `li agent`,
+  `li o flow` and `create_agent`: `openai-codex/<name>` resolves a codex config profile, and an
+  alias takes its provider's effort and `yolo` settings, which it lost before.
 
 - A GitHub poll schedule on a quiet repository read `overdue` in schedule health: a poll that finds
   no new event creates no run, so its last fire aged past the cadence while the poller was working.
